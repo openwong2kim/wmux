@@ -33,6 +33,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { BrainAdapter, BrainEvent, BrainStartOptions, BrainUsage } from './BrainAdapter';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { COMMANDER_MODE_ARG } from '../../shared/commanderSurface';
+import { WMUX_SERVER_KEY } from '../../shared/mcpTargets';
 import { getWmuxDir } from '../../daemon/config';
 
 // ── wire types (structural subset of ACP; validated defensively) ────────────
@@ -388,7 +389,7 @@ export class AcpBrainAdapter implements BrainAdapter {
       : [];
     return [
       {
-        name: 'wmux',
+        name: WMUX_SERVER_KEY,
         command: process.execPath,
         // P4 Layer 1: --commander is an ARG so an env-stripping host cannot
         // widen the tool surface; the token env below is the workspace

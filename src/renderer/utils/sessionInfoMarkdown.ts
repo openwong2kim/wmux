@@ -1,4 +1,5 @@
 import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
+import { PRODUCT_NAME } from '../../shared/productIdentity';
 
 // MIME types for drag-and-drop payloads.
 // External AI chats (Claude Desktop, ChatGPT, Cursor) read text/plain.
@@ -84,7 +85,7 @@ export function buildWorkspaceMarkdown(ws: Workspace): string {
   const meta = ws.metadata;
 
   const lines: string[] = [
-    `# wmux Workspace: "${ws.name}"`,
+    `# ${PRODUCT_NAME} Workspace: "${ws.name}"`,
     `- Workspace ID: ${ws.id}`,
     '',
     '## Panes',
@@ -109,7 +110,7 @@ export function buildPaneMarkdown(ws: Workspace, paneId: string): string {
   const meta = ws.metadata;
 
   const lines: string[] = [
-    `# wmux Pane in "${ws.name}"`,
+    `# ${PRODUCT_NAME} Pane in "${ws.name}"`,
     `- Workspace ID: ${ws.id}`,
     `- Pane ID: ${paneId}`,
     '',

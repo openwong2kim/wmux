@@ -215,7 +215,7 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           )}
           {!prep.credentialReadSupported && (
             <div className="text-[10px] text-[var(--text-muted)]">
-              On macOS wmux can't auto-detect this login (the credential is in the shared keychain). Click below once you've logged in.
+              On macOS Forge Mux can't auto-detect this login (the credential is in the shared keychain). Click below once you've logged in.
             </div>
           )}
           {prep.credentialReadSupported && !pollTimedOut ? (

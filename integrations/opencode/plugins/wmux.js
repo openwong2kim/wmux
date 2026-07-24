@@ -24,13 +24,13 @@
 // pipe-RPC infra are duplicated from integrations/codex/bin/wmux-codex-notify.mjs
 // by design (same constraint the Codex/Claude bridges accept).
 //
-// Routing: the envelope carries WMUX_PTY_ID (injected by the wmux daemon into
+// Routing: the envelope carries WMUX_PTY_ID (injected by the Forge Mux daemon into
 // the pane env at spawn) — the exact per-pane key hooks.rpc.ts prefers. Since
 // opencode runs INSIDE a wmux pane, the env propagates through and pins the
 // signal to the right pane even when a workspace has several panes.
 //
 // Best-effort + non-blocking: every failure is swallowed + logged to
-// ~/.wmux/opencode-bridge.log; a wmux problem must never stall an opencode turn.
+// ~/.fmux/opencode-bridge.log; a wmux problem must never stall an opencode turn.
 
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
@@ -61,7 +61,7 @@ function getPipeName() {
   if (typeof override === 'string' && override.length > 0) return override;
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\fmux-${username}`;
   }
   return join(homedir() || '/tmp', '.fmux.sock');
 }

@@ -26,8 +26,8 @@ vi.mock('../../../shared/platform', () => ({
   isMac: true,
 }));
 
-const APPLE_SILICON = '/opt/homebrew/Caskroom/wmux';
-const INTEL_MAC = '/usr/local/Caskroom/wmux';
+const APPLE_SILICON = '/opt/homebrew/Caskroom/fmux';
+const INTEL_MAC = '/usr/local/Caskroom/fmux';
 
 function makeStat(isDir: boolean) {
   return { isDirectory: () => isDir };
@@ -47,7 +47,7 @@ describe('BrewDetector', () => {
   describe('on macOS', () => {
     // Top-level vi.mock already sets isMac: true. No re-mock needed.
 
-    it('returns true and the Apple Silicon path when /opt/homebrew/Caskroom/wmux exists', async () => {
+    it('returns true and the Apple Silicon path when /opt/homebrew/Caskroom/fmux exists', async () => {
       fsMocks.existsSync.mockImplementation((p: string) => p === APPLE_SILICON);
       fsMocks.statSync.mockImplementation((p: string) => makeStat(p === APPLE_SILICON));
 
@@ -56,7 +56,7 @@ describe('BrewDetector', () => {
       expect(getBrewCaskroomPath()).toBe(APPLE_SILICON);
     });
 
-    it('returns true and the Intel path when /usr/local/Caskroom/wmux exists', async () => {
+    it('returns true and the Intel path when /usr/local/Caskroom/fmux exists', async () => {
       fsMocks.existsSync.mockImplementation((p: string) => p === INTEL_MAC);
       fsMocks.statSync.mockImplementation((p: string) => makeStat(p === INTEL_MAC));
 

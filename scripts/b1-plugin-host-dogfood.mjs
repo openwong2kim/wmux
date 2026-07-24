@@ -7,7 +7,7 @@
 //   1. the sidebar lists the Hello Panel contribution
 //   2. an unconfirmed plugin shows approve-to-enable (no iframe mounted)
 //   3. approving via the standard PermissionApprovalDialog mounts the
-//      sandboxed iframe served over wmux-plugin://
+//      sandboxed iframe served over fmux-plugin://
 //   4. the bridge works: the panel renders "N workspace(s)" via a real
 //      workspace.list RPC from inside the sandbox
 //   5. a palette command (badge-first-pane) triggers ui.decoratePane and
@@ -102,7 +102,7 @@ function check(name, ok, detail = '') {
   let bridgeOk = false;
   for (let i = 0; i < 10 && !bridgeOk; i++) {
     for (const f of page.frames()) {
-      if (!f.url().startsWith('wmux-plugin://hello-panel/')) continue;
+      if (!f.url().startsWith('fmux-plugin://hello-panel/')) continue;
       const status = await f.evaluate(() => document.getElementById('status')?.textContent ?? '').catch(() => '');
       if (/\d+ workspace\(s\)/.test(status)) { bridgeOk = true; break; }
       if (status) console.log(`[info] panel status: ${status}`);

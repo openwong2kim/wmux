@@ -1,7 +1,7 @@
-# wmux event-recorder (reference plugin)
+# Forge Mux event-recorder (reference plugin)
 
-A small, standalone, dependency-free external plugin for the [wmux](../../README.md)
-substrate. It connects to a running wmux over the local RPC pipe, subscribes to
+A small, standalone, dependency-free external plugin for the [Forge Mux](../../README.md)
+substrate. It connects to a running Forge Mux over the local RPC pipe, subscribes to
 the lifecycle event bus, and streams every event to an NDJSON file while
 pretty-printing it to the console. Optionally it annotates the pane it is
 watching with its own metadata.
@@ -25,27 +25,27 @@ It exercises four substrate surfaces end-to-end:
 
 ## Prerequisites
 
-- **A running wmux** for the current OS user, with at least one workspace open.
+- **A running Forge Mux** for the current OS user, with at least one workspace open.
   The recorder talks to the same daemon the GUI uses.
 - **Node.js >= 18.** No `npm install` needed — there are no dependencies.
 
-The recorder finds wmux automatically:
+The recorder finds Forge Mux automatically:
 
-- **Token** — `WMUX_AUTH_TOKEN` if set (you are running inside a wmux pane),
-  otherwise the file `~/.wmux-auth-token` (a plain UUID string, no JSON).
+- **Token** — `WMUX_AUTH_TOKEN` if set (you are running inside a Forge Mux pane),
+  otherwise the file `~/.fmux-auth-token` (a plain UUID string, no JSON).
 - **Endpoint** — `WMUX_SOCKET_PATH` if set, otherwise the platform default:
-  `\\.\pipe\wmux-<username>` on Windows, `~/.wmux.sock` on POSIX.
+  `\\.\pipe\fmux-<username>` on Windows, `~/.fmux.sock` on POSIX.
 - **TCP fallback** (Windows only) — if the pipe returns `EPERM`/`ENOENT`, it
-  reads the port from `~/.wmux-tcp-port` and connects to `127.0.0.1:<port>`.
+  reads the port from `~/.fmux-tcp-port` and connects to `127.0.0.1:<port>`.
 
-These are the exact rules wmux itself uses (`getPipeName` / `getAuthTokenPath` /
+These are the exact rules Forge Mux itself uses (`getPipeName` / `getAuthTokenPath` /
 `getTcpPortPath` / `ENV_KEYS` in `src/shared/constants.ts`).
 
 ---
 
 ## Two trust modes
 
-wmux records a per-plugin trust entry keyed on the `clientName` you send. There
+Forge Mux records a per-plugin trust entry keyed on the `clientName` you send. There
 are two ways to run the recorder.
 
 ### 1. Identity mode (the real pattern) — default
@@ -62,25 +62,25 @@ The recorder:
    the capability set it intends to use.
 3. Makes its first gated RPC (`workspace.list`).
 
-In **enforce mode** (production wmux default), step 3 is rejected with
+In **enforce mode** (production Forge Mux default), step 3 is rejected with
 `rejection.reason === "identity-status"`, `status: "unconfirmed"`, and a
-`pendingApproval.promptId`. wmux pops an approval dialog showing the declared
+`pendingApproval.promptId`. Forge Mux pops an approval dialog showing the declared
 capabilities and rationale. The recorder logs:
 
 ```
-[recorder ...] workspace.list: waiting for approval in the wmux UI (promptId=…)
+[recorder ...] workspace.list: waiting for approval in the Forge Mux UI (promptId=…)
 ```
 
 and retries the same RPC on a 2-second backoff (the `withApprovalRetry` idiom —
 see [`mcp-plugin-spec.md` §4.4](../../docs/api/mcp-plugin-spec.md)). Once you
-**approve** in the wmux UI, the status flips to `trusted` and the retry
+**approve** in the Forge Mux UI, the status flips to `trusted` and the retry
 succeeds. If you **deny**, the next retry comes back with `status: "denied"` and
 the recorder stops.
 
-In **shadow mode** (dev wmux / `npm start` / `NODE_ENV=test` default), the
+In **shadow mode** (dev Forge Mux / `npm start` / `NODE_ENV=test` default), the
 would-be rejection is logged server-side but the handler still runs, so the
 recorder proceeds without an approval dialog. The mode is controlled by
-`mcp.mode` in `~/.wmux/config.json` (`"shadow"` | `"enforce"`).
+`mcp.mode` in `~/.fmux/config.json` (`"shadow"` | `"enforce"`).
 
 ### 2. Legacy mode (grandfathered quick demo)
 
@@ -238,7 +238,7 @@ re-reads the version and retries once (optimistic concurrency, `PROTOCOL.md`
 
 ### Workspace resolution — `PROTOCOL.md` §6.1
 
-An external plugin launched from a non-wmux terminal has no workspace of its
+An external plugin launched from a non-Forge Mux terminal has no workspace of its
 own. This recorder is a pure **observer**: it calls `workspace.list` and filters
 by id (`--workspace`, or the first workspace by default). A plugin that needs to
 *act inside* a dedicated workspace instead would call `mcp.claimWorkspace`,
@@ -252,7 +252,7 @@ path C).
 `--legacy --once` against a fresh workspace prints something like:
 
 ```
-[recorder 2026-06-09T…Z] endpoint = \\.\pipe\wmux-rizz
+[recorder 2026-06-09T…Z] endpoint = \\.\pipe\fmux-rizz
 [recorder 2026-06-09T…Z] mode = legacy (grandfathered)
 [recorder 2026-06-09T…Z] types = pane.created,pane.closed,pane.focused,pane.metadata.changed,workspace.metadata.changed,process.started,process.exited,agent.lifecycle
 [recorder 2026-06-09T…Z] out = ./events.ndjson
@@ -270,8 +270,8 @@ Each line in `events.ndjson` is one full event object, e.g.:
 {"type":"agent.lifecycle","seq":42,"ts":1717900000000,"workspaceId":"ws-1","ptyId":"pty-1","kind":"agent.stop","source":"hook","agent":"claude","decision":"emit"}
 ```
 
-In identity mode against an enforce-mode wmux you will additionally see the
-approval-wait line until you click Approve in the wmux window.
+In identity mode against an enforce-mode Forge Mux you will additionally see the
+approval-wait line until you click Approve in the Forge Mux window.
 
 ---
 

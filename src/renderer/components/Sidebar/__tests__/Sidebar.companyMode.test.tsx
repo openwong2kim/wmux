@@ -38,7 +38,7 @@ describe('Sidebar — company mode wiring (regression guard)', () => {
   });
 
   // NOTE: the Workspaces⇄Company sidebar toggle (data-company-toggle) was
-  // intentionally removed in the titlebar refactor (1bbf3f8) — the WMUX wordmark
+  // intentionally removed in the titlebar refactor (1bbf3f8) — the FMUX wordmark
   // and workspace button took that spot. Company mode is a held/paid track, so
   // its entry stays in the command palette rather than a sidebar affordance;
   // this guard therefore no longer asserts a sidebar toggle. The rendering

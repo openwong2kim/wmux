@@ -51,7 +51,7 @@ function okIdentify(): RpcResponse {
   return {
     id: 'x',
     ok: true,
-    result: { app: 'wmux', version: '3.2.0', platform: 'win32', electronVersion: '30' },
+    result: { app: 'fmux', version: '3.2.0', platform: 'win32', electronVersion: '30' },
   };
 }
 
@@ -207,7 +207,7 @@ describe('environment section', () => {
   it('WARNs (informational) when the app pipe is unreachable but does not FAIL', async () => {
     // main process down (pipe probe rejects), daemon still alive (default ping).
     const deps = makeDeps({
-      appPipeReachable: vi.fn().mockRejectedValue(new Error('wmux is not running.')),
+      appPipeReachable: vi.fn().mockRejectedValue(new Error('fmux is not running.')),
     });
     const r = await buildDoctorReport(deps);
     const line = r.environment.lines.find(
@@ -280,7 +280,7 @@ describe('daemon section', () => {
 
   it('FAILs with recovery steps when the daemon ping rejects (down)', async () => {
     const deps = makeDeps({
-      ping: vi.fn().mockRejectedValue(new Error('wmux is not running. Start the app first.')),
+      ping: vi.fn().mockRejectedValue(new Error('fmux is not running. Start the app first.')),
     });
     const r = await buildDoctorReport(deps);
     expect(r.daemon.verdict).toBe('FAIL');
@@ -468,7 +468,7 @@ describe('overall verdict + rendering', () => {
   it('renders a non-empty human report without throwing', async () => {
     const r = await buildDoctorReport(makeDeps());
     const text = renderReport(r);
-    expect(text).toContain('wmux doctor');
+    expect(text).toContain('fmux doctor');
     expect(text).toContain('environment');
     expect(text).toContain('daemon');
     expect(text).toContain('boot phases');

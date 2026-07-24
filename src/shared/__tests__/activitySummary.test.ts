@@ -42,7 +42,7 @@ describe('summarizeActivity — tool_name → activity string', () => {
     { name: 'WebSearch query', tool: 'WebSearch', input: { query: 'typescript satisfies' }, expected: '🌐 typescript satisfies' },
 
     // mcp__<srv>__<tool> → {srv}:{tool}
-    { name: 'mcp tool', tool: 'mcp__wmux__pane_split', input: {}, expected: 'wmux:pane_split' },
+    { name: 'mcp tool', tool: 'mcp__fmux__pane_split', input: {}, expected: 'fmux:pane_split' },
     { name: 'mcp tool ignores input', tool: 'mcp__github__create_pr', input: { anything: 'x' }, expected: 'github:create_pr' },
     // An MCP tool literally named Read must NOT be treated as the builtin Read.
     { name: 'mcp tool named Read', tool: 'mcp__srv__Read', input: { file_path: '/a/b.ts' }, expected: 'srv:Read' },

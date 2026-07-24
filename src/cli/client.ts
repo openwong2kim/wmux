@@ -106,7 +106,7 @@ function attemptRequest(
         clearTimeout(timer);
         const wrapped = new Error(
           err.code === 'ENOENT' || err.code === 'ECONNREFUSED'
-            ? 'wmux is not running. Start the app first.'
+            ? 'fmux is not running. Start the app first.'
             : `Connection error: ${err.message}`,
         ) as Error & { code?: string };
         wrapped.code = err.code;
@@ -171,7 +171,7 @@ export async function sendRequest(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error('wmux is not running. Start the app first.');
+  throw lastError instanceof Error ? lastError : new Error('fmux is not running. Start the app first.');
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ export async function sendRequest(
 // so a caller that needs daemon liveness/bootTrace must connect to the daemon
 // pipe directly — going through getPipeName() returns "Unknown method".
 //
-// `wmux doctor` is the consumer: it must diagnose the daemon EVEN WHEN the
+// `fmux doctor` is the consumer: it must diagnose the daemon EVEN WHEN the
 // main process is dead (the app crashed but the detached daemon is still up,
 // or vice versa), so it cannot rely on a main-pipe proxy. The helpers below
 // resolve the daemon pipe + token exactly the way the launcher does.

@@ -133,7 +133,7 @@ export const ja = {
   'settings.scrollbackRestore': '起動時に復元',
   'settings.scrollbackRestoreDesc': '再起動後に前のセッション出力を再接続。オフにすると毎回すべてのペインが新規状態で起動。',
   'settings.updates': 'アップデート',
-  'settings.wmuxUpdates': 'wmux アップデート',
+  'settings.wmuxUpdates': 'Forge Mux アップデート',
   'settings.updateFailed': 'アップデート確認に失敗しました',
   'settings.lastCheckedNever': '最終確認: なし',
   'settings.installUpdate': 'アップデートをインストール',
@@ -281,7 +281,7 @@ export const ja = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': '自動アップデート',
-  'firstRun.autoUpdateMessage': 'WMUXが自動的にアップデートを確認するようにしますか？後で設定から変更できます。',
+  'firstRun.autoUpdateMessage': 'Forge Muxが自動的にアップデートを確認するようにしますか？後で設定から変更できます。',
   'firstRun.enable': '有効にする',
   'firstRun.disable': 'いいえ',
 
@@ -291,7 +291,7 @@ export const ja = {
   'settings.firstRunSetup.lastCompleted': '最終完了: {date}',
   'settings.firstRunSetup.notCompleted': 'まだ完了していません',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': '検出済み',
   'settings.firstRunSetup.statusNotDetected': '未検出',
   'settings.firstRunSetup.statusRegistered': '登録済み',
@@ -303,12 +303,12 @@ export const ja = {
   'claudeIntegration.tab': 'Claude 連携',
   'claudeIntegration.signalHealth.title': 'プラグインのシグナル状態',
   'claudeIntegration.signalHealth.unknownBody':
-    'プラグインの状態: まだ検出されていません。Claude Code で下記のコマンドを実行してインストールしてください。最初のフックが発火すると、wmux が検出を確認します。',
+    'プラグインの状態: まだ検出されていません。Claude Code で下記のコマンドを実行してインストールしてください。最初のフックが発火すると、Forge Mux が検出を確認します。',
   'claudeIntegration.signalHealth.detectedLastReceived': '最後のシグナル: {rel}',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'レイテンシ P50 {p50}ms · P95 {p95}ms · サンプル {count} 件',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'ワークスペースの一致: {matched}/{total} 件のフックが wmux のペインに対応付けられました',
+    'ワークスペースの一致: {matched}/{total} 件のフックが Forge Mux のペインに対応付けられました',
   'claudeIntegration.signalHealth.staleBody':
     'プラグインの状態: 古くなっています。最後のフックが届いたのは {rel} です — プラグインの発火が止まったか、Claude Code がアイドル状態の可能性があります。',
   'claudeIntegration.signalHealth.copyInstallCommand': 'インストールコマンドをコピー',

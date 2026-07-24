@@ -17,7 +17,7 @@ export const en = {
   'sidebar.screenOff': 'Screen off',
   'sidebar.screenOn': 'Screen on',
   'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',
-  'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
+  'sidebar.screenOffAccessibility': 'Grant Accessibility permission to Forge Mux (System Settings → Privacy & Security → Accessibility).',
   'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.agentTooltip': 'Toggle agent panel',
 
@@ -242,8 +242,8 @@ export const en = {
   // X8 — in-pane supervised-restart marker. The trailing hint is the Ctrl+C
   // escape hatch disclosure (decision ⑨): the user can stop auto-restart from
   // the pane menu. Two variants: with/without the dead process's exit code.
-  'terminal.supervisedRestart': '[wmux] supervised restart #{count} — stop: pane menu',
-  'terminal.supervisedRestartExit': '[wmux] supervised restart #{count} (exit {code}) — stop: pane menu',
+  'terminal.supervisedRestart': '[fmux] supervised restart #{count} — stop: pane menu',
+  'terminal.supervisedRestartExit': '[fmux] supervised restart #{count} (exit {code}) — stop: pane menu',
   'terminal.copied': 'Copied!',
   'terminal.copyFailed': 'Copy failed — selection kept',
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
@@ -349,7 +349,7 @@ export const en = {
   'settings.autoUpdateDesc': 'Automatically check for and install updates',
   'settings.startup': 'Startup',
   'settings.startOnLogin': 'Start on Windows startup',
-  'settings.startOnLoginDesc': 'Launch wmux automatically when you sign in to Windows',
+  'settings.startOnLoginDesc': 'Launch Forge Mux automatically when you sign in to Windows',
   'settings.checkUpdate': 'Check for updates',
   'settings.checking': 'Checking...',
   'settings.upToDate': 'Up to date',
@@ -376,11 +376,11 @@ export const en = {
   'settings.orchestratorModelDefault': 'Default (subscription model)',
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
-    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
+    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any Forge Mux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
   // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
   'settings.roleBindings': 'Role → model enforcement',
   'settings.roleBindingsDesc':
-    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, the seeded command of a project pane whose wmux.json leaf declares a role, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
+    'Pin an agent and model to each role. Launches that Forge Mux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, the seeded command of a project pane whose fmux.json leaf declares a role, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
   'settings.roleBindingAgentPlaceholder': 'agent',
   'settings.roleBindingModelPlaceholder': 'model (optional)',
   'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
@@ -388,9 +388,9 @@ export const en = {
   'settings.roleBindingModelLabel': '{role} model',
   'settings.roleBindingArgsLabel': '{role} extra args',
   'settings.roleBindingHintNoAgent':
-    'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
+    'Pick an agent too — a model on its own is not enforced (Forge Mux can’t tell whose --model flag it is).',
   'settings.roleBindingHintNoGrammar':
-    'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
+    'Forge Mux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
   'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
@@ -416,8 +416,8 @@ export const en = {
   'deck.contextCleared': 'Orchestrator context cleared — the next turn starts fresh.',
   'deck.contextClearFailed': 'Could not clear the orchestrator context.',
   // Claude Code hook-bridge install prompt (launch + mode-raise nudge).
-  'hooks.prompt.title': 'Install wmux hooks for accurate agent signals',
-  'hooks.prompt.body': 'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.',
+  'hooks.prompt.title': 'Install Forge Mux hooks for accurate agent signals',
+  'hooks.prompt.body': 'Without hooks, Forge Mux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.',
   'hooks.prompt.install': 'Install hooks',
   'hooks.prompt.installing': 'Installing…',
   'hooks.prompt.later': 'Later',
@@ -448,7 +448,7 @@ export const en = {
     'Enabling opens a LAN port on the selected interface — Windows may prompt you to allow it. Only the Private network profile is used; public networks are never exposed.',
   'settings.lanlinkLoading': 'Checking LanLink status…',
   'settings.lanlinkApplying': 'Applying…',
-  'settings.lanlinkUnavailable': 'LanLink needs the wmux daemon — unavailable in local-only mode. It will appear once the daemon connects.',
+  'settings.lanlinkUnavailable': 'LanLink needs the Forge Mux daemon — unavailable in local-only mode. It will appear once the daemon connects.',
   // LanLink pairing (PR-5)
   'settings.lanlinkPair': 'Pairing',
   'settings.lanlinkPairDisabled': 'Enable LanLink and select a network interface above to pair with another machine.',
@@ -503,7 +503,7 @@ export const en = {
   'settings.browserDiscard': 'Discard hidden browsers (frees memory)',
   'settings.browserDiscardDesc': 'After a browser pane stays invisible for 5 minutes, unload it entirely to reclaim its memory. The page reloads when you return (scroll position and unsaved form input are lost). Panes playing audio are never discarded; automation wakes a discarded pane automatically.',
   'settings.updates': 'Updates',
-  'settings.wmuxUpdates': 'wmux updates',
+  'settings.wmuxUpdates': 'Forge Mux updates',
   'settings.updateFailed': 'Failed to check for updates',
   'settings.lastCheckedNever': 'Last checked: never',
   'settings.installUpdate': 'Install update',
@@ -540,7 +540,7 @@ export const en = {
   'settings.paneFlash': 'Flash effect on new notification ring',
   'settings.paneFlashDesc': 'Plays a 500ms flash before the steady glow. Skips flash if disabled (goes straight to glow).',
   'settings.taskbarFlash': 'Flash taskbar when window is unfocused',
-  'settings.taskbarFlashDesc': 'Triggers Windows taskbar attention when a notification arrives and wmux is hidden.',
+  'settings.taskbarFlashDesc': 'Triggers Windows taskbar attention when a notification arrives and Forge Mux is hidden.',
   'settings.notificationSoundChoice': 'Notification sound',
   'settings.notificationSoundChoiceDesc': 'default = play the system notification sound. none = silent.',
   'settings.notificationSoundChoiceDefault': 'Default',
@@ -719,18 +719,18 @@ export const en = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Automatic Updates',
-  'firstRun.autoUpdateMessage': 'Would you like WMUX to automatically check for updates? You can change this later in Settings.',
+  'firstRun.autoUpdateMessage': 'Would you like Forge Mux to automatically check for updates? You can change this later in Settings.',
   'firstRun.enable': 'Enable',
   'firstRun.disable': 'No thanks',
 
   // First-run wizard (Plan 1.15) — magical-moment onboarding
-  'firstRunWizard.title': 'Welcome to wmux',
+  'firstRunWizard.title': 'Welcome to Forge Mux',
   'firstRunWizard.subtitle': 'Let\'s set up your first magical moment.',
   'firstRunWizard.claudeDetected': 'Claude Code detected',
   'firstRunWizard.claudeNotDetected': 'Claude Code not detected',
   'firstRunWizard.claudeInstallHint': 'Install Claude Code first to try the sample task.',
-  'firstRunWizard.mcpRegistered': 'wmux MCP server: registered',
-  'firstRunWizard.mcpNotRegistered': 'wmux MCP server: not registered',
+  'firstRunWizard.mcpRegistered': 'Forge Mux MCP server: registered',
+  'firstRunWizard.mcpNotRegistered': 'Forge Mux MCP server: not registered',
   'firstRunWizard.registerMcpButton': 'Register',
   'firstRunWizard.sampleTaskHeading': 'Try a sample task',
   'firstRunWizard.sampleTaskDescription': 'Open a 2x2 split and let Claude search the web for you.',
@@ -750,18 +750,18 @@ export const en = {
   'firstRunWizard.statuslineError': 'Install failed. You can retry, or run `wmux setup-statusline` from a terminal.',
 
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
-  'firstRunWizard.error.PERM.problem': 'wmux could not write to ~/.claude.json.',
+  'firstRunWizard.error.PERM.problem': 'Forge Mux could not write to ~/.claude.json.',
   'firstRunWizard.error.PERM.cause': 'The file is owned by another user, or has restrictive permissions.',
-  'firstRunWizard.error.PERM.fix': 'Run `chmod 600 ~/.claude.json` and try again, or register manually with `wmux mcp register`.',
+  'firstRunWizard.error.PERM.fix': 'Run `chmod 600 ~/.claude.json` and try again, or register manually with `fmux mcp register`.',
   'firstRunWizard.error.PARSE.problem': 'Your ~/.claude.json file is malformed.',
   'firstRunWizard.error.PARSE.cause': 'A previous edit left the JSON invalid (missing comma, unmatched brace, etc.).',
   'firstRunWizard.error.PARSE.fix': 'Fix the JSON manually, or back it up and let Claude Code recreate it.',
-  'firstRunWizard.error.IO.problem': 'wmux could not read or write the Claude config.',
+  'firstRunWizard.error.IO.problem': 'Forge Mux could not read or write the Claude config.',
   'firstRunWizard.error.IO.cause': 'Disk error, missing home directory, or filesystem read-only.',
   'firstRunWizard.error.IO.fix': 'Check disk space and home directory permissions, then retry.',
   'firstRunWizard.error.UNKNOWN.problem': 'Registration failed.',
   'firstRunWizard.error.UNKNOWN.cause': 'An unexpected error occurred.',
-  'firstRunWizard.error.UNKNOWN.fix': 'Try again, or run `wmux mcp register` from the terminal.',
+  'firstRunWizard.error.UNKNOWN.fix': 'Try again, or run `fmux mcp register` from the terminal.',
 
   // Onboarding spotlight tour (steps.ts / OnboardingOverlay) — shown after the
   // first-run wizard completes (AppLayout gates on firstRunCompleted). Missing
@@ -795,7 +795,7 @@ export const en = {
   'settings.firstRunSetup.lastCompleted': 'Last completed: {date}',
   'settings.firstRunSetup.notCompleted': 'Not completed yet',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'detected',
   'settings.firstRunSetup.statusNotDetected': 'not detected',
   'settings.firstRunSetup.statusRegistered': 'registered',
@@ -807,12 +807,12 @@ export const en = {
   'claudeIntegration.tab': 'Claude integration',
   'claudeIntegration.signalHealth.title': 'Plugin signal health',
   'claudeIntegration.signalHealth.unknownBody':
-    'Plugin status: not yet observed. Install with the command below in Claude Code. wmux confirms detection once the first hook fires.',
+    'Plugin status: not yet observed. Install with the command below in Claude Code. Forge Mux confirms detection once the first hook fires.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Last signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latency P50 {p50}ms · P95 {p95}ms · {count} samples',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Workspace match: {matched}/{total} hooks resolved to a wmux pane',
+    'Workspace match: {matched}/{total} hooks resolved to a Forge Mux pane',
   'claudeIntegration.signalHealth.staleBody':
     'Plugin status: stale. Last hook arrived {rel} — the plugin may have stopped firing or Claude Code is idle.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Copy install command',
@@ -883,7 +883,7 @@ export const en = {
   'channels.memberStaleTitle': 'Agent pane is gone or restarting',
   'channels.joinedToast': 'Added {workspace} to #{channel}',
   'channels.daemonStaleBanner':
-    'Channels were updated, but the background daemon is still running the old version. Quit wmux fully and start it again to finish the update.',
+    'Channels were updated, but the background daemon is still running the old version. Quit Forge Mux fully and start it again to finish the update.',
   'daemon.replacingToast':
     'Updating the background daemon to this version — panes may pause briefly and restore automatically.',
   'channels.alreadyMemberToast': '{workspace} is already in #{channel}',

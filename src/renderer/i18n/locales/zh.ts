@@ -133,7 +133,7 @@ export const zh = {
   'settings.scrollbackRestore': '启动时恢复',
   'settings.scrollbackRestoreDesc': '重启后重新连接到上次会话输出。关闭则每次启动所有面板都从空白开始。',
   'settings.updates': '更新',
-  'settings.wmuxUpdates': 'wmux 更新',
+  'settings.wmuxUpdates': 'Forge Mux 更新',
   'settings.updateFailed': '检查更新失败',
   'settings.lastCheckedNever': '上次检查：从未',
   'settings.installUpdate': '安装更新',
@@ -281,7 +281,7 @@ export const zh = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': '自动更新',
-  'firstRun.autoUpdateMessage': '是否让 WMUX 自动检查更新？您可以稍后在设置中更改。',
+  'firstRun.autoUpdateMessage': '是否让 Forge Mux 自动检查更新？您可以稍后在设置中更改。',
   'firstRun.enable': '启用',
   'firstRun.disable': '不需要',
 
@@ -291,7 +291,7 @@ export const zh = {
   'settings.firstRunSetup.lastCompleted': '上次完成：{date}',
   'settings.firstRunSetup.notCompleted': '尚未完成',
   'settings.firstRunSetup.claudeStatus': 'Claude Code：{status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP：{status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP：{status}',
   'settings.firstRunSetup.statusDetected': '已检测到',
   'settings.firstRunSetup.statusNotDetected': '未检测到',
   'settings.firstRunSetup.statusRegistered': '已注册',
@@ -303,11 +303,11 @@ export const zh = {
   'claudeIntegration.tab': 'Claude 集成',
   'claudeIntegration.signalHealth.title': '插件信号健康状况',
   'claudeIntegration.signalHealth.unknownBody':
-    '插件状态：尚未观测到。请在 Claude Code 中使用下方命令安装。首个钩子触发后，wmux 即会确认检测到插件。',
+    '插件状态：尚未观测到。请在 Claude Code 中使用下方命令安装。首个钩子触发后，Forge Mux 即会确认检测到插件。',
   'claudeIntegration.signalHealth.detectedLastReceived': '上次信号：{rel}。',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     '延迟 P50 {p50}ms · P95 {p95}ms · {count} 个样本',
-  'claudeIntegration.signalHealth.workspaceMatchFormat': '工作区匹配：{matched}/{total} 个钩子已解析到 wmux 面板',
+  'claudeIntegration.signalHealth.workspaceMatchFormat': '工作区匹配：{matched}/{total} 个钩子已解析到 Forge Mux 面板',
   'claudeIntegration.signalHealth.staleBody':
     '插件状态：已过期。最近一个钩子在 {rel}到达 — 插件可能已停止触发，或 Claude Code 处于空闲状态。',
   'claudeIntegration.signalHealth.copyInstallCommand': '复制安装命令',

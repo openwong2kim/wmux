@@ -39,7 +39,7 @@ describe('SystemVitals', () => {
   it('provides exact resource details on hover', () => {
     const tooltip = buildSystemVitalsTooltip(stats);
     expect(tooltip).toContain('Host RAM: 24.0 GB / 32.0 GB (75%)');
-    expect(tooltip).toContain('wmux: 931 MB');
+    expect(tooltip).toContain('fmux: 931 MB');
     expect(tooltip).toContain('WSL VM RAM: 17.6 GB / 20.0 GB (88%)');
   });
 });

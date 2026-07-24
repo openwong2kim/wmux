@@ -178,6 +178,17 @@ export function registerTarget(
       ownedKeys?.add(WMUX_SERVER_KEY);
     }
 
+    // Drop owned legacy keys (e.g. pre-fork `wmux`) so agent configs do not
+    // advertise two Forge/upstream servers side by side after re-register.
+    const legacyOwned = WMUX_SERVER_KEYS.filter((k) => {
+      if (k === WMUX_SERVER_KEY) return false;
+      const entry = getMcpServerEntry(parseConfig(newText, target.format), target.format, k);
+      return isWmuxOwnedEntry(entry);
+    });
+    if (legacyOwned.length > 0) {
+      newText = removeMcpServers(newText, target.format, legacyOwned);
+    }
+
     // Legacy cleanup only applies to Claude's JSON (old wmux-playwright keys
     // plus the removed wmux-a2a server, in case a historical stray exists).
     if (target.id === 'claude') {

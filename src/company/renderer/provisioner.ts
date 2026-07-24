@@ -169,12 +169,12 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
       `You are the CEO of "${companyName}".`,
       `Organization: ${orgChart}.`,
       `Your job: 1) Assign tasks to department leads. 2) Review results from leads. 3) Make final decisions.`,
-      `Communication: Use the wmux CLI tool (Bash) to send messages:`,
-      `- Send task: wmux company message --from "CEO" --to "DeptName" "task description"`,
-      `- Broadcast: wmux company message --from "CEO" --broadcast "announcement"`,
-      `- You will RECEIVE messages in your terminal as "━━━ WMUX MESSAGE ━━━" blocks.`,
-      `- When leads request approval, respond via: wmux company message --from "CEO" --to "DeptName" "APPROVED" or "REJECTED: reason"`,
-      `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
+      `Communication: Use the fmux CLI tool (Bash) to send messages:`,
+      `- Send task: fmux company message --from "CEO" --to "DeptName" "task description"`,
+      `- Broadcast: fmux company message --from "CEO" --broadcast "announcement"`,
+      `- You will RECEIVE messages in your terminal as "━━━ FMUX MESSAGE ━━━" blocks.`,
+      `- When leads request approval, respond via: fmux company message --from "CEO" --to "DeptName" "APPROVED" or "REJECTED: reason"`,
+      `IMPORTANT: Always use the fmux CLI to send messages. Do NOT output [FMUX-MSG] text directly.`,
     ].join(' ');
 
     const { workspaceId: ceoWsId } = await spawnAgentWorkspace(
@@ -200,13 +200,13 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
         `You are the ${dept.leadName.replace(/-/g, ' ')}, leading the ${dept.name} department of "${companyName}".`,
         `Your team members: ${memberNames}.`,
         `Other departments: ${otherDepts}.`,
-        `Communication: Use the wmux CLI tool (Bash) to send messages:`,
-        `- Assign task to member: wmux company message --from "${dept.name} Lead" --to "MemberName" "task"`,
-        `- Report to CEO: wmux company message --from "${dept.name}" --to "CEO" "result summary"`,
-        `- You RECEIVE messages as "━━━ WMUX MESSAGE ━━━" blocks in your terminal.`,
+        `Communication: Use the fmux CLI tool (Bash) to send messages:`,
+        `- Assign task to member: fmux company message --from "${dept.name} Lead" --to "MemberName" "task"`,
+        `- Report to CEO: fmux company message --from "${dept.name}" --to "CEO" "result summary"`,
+        `- You RECEIVE messages as "━━━ FMUX MESSAGE ━━━" blocks in your terminal.`,
         `Members run in plan mode — review their plans and approve before they execute.`,
-        `Workflow: 1) Receive CEO task. 2) Decompose into subtasks. 3) Assign via wmux CLI. 4) Review member plans. 5) Consolidate and report to CEO.`,
-        `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
+        `Workflow: 1) Receive CEO task. 2) Decompose into subtasks. 3) Assign via fmux CLI. 4) Review member plans. 5) Consolidate and report to CEO.`,
+        `IMPORTANT: Always use the fmux CLI to send messages. Do NOT output [FMUX-MSG] text directly.`,
       ].join(' ');
 
       // Lead preset for SOUL file — Claude Code reads .claude/CLAUDE.md automatically
@@ -239,12 +239,12 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
         const memPrompt = [
           `You are ${mem.name}, the ${mem.preset.replace(/-/g, ' ')} in the ${dept.name} department of "${companyName}".`,
           `Your lead: ${dept.leadName}. Your teammates: ${teammates}.`,
-          `Communication: Use the wmux CLI tool (Bash) to send messages:`,
-          `- Report completion: wmux company message --from "${mem.name}" --to "${dept.name} Lead" "DONE: summary"`,
-          `- Report blockers: wmux company message --from "${mem.name}" --to "${dept.name} Lead" "BLOCKED: reason"`,
-          `- You RECEIVE tasks as "━━━ WMUX MESSAGE ━━━" blocks in your terminal.`,
+          `Communication: Use the fmux CLI tool (Bash) to send messages:`,
+          `- Report completion: fmux company message --from "${mem.name}" --to "${dept.name} Lead" "DONE: summary"`,
+          `- Report blockers: fmux company message --from "${mem.name}" --to "${dept.name} Lead" "BLOCKED: reason"`,
+          `- You RECEIVE tasks as "━━━ FMUX MESSAGE ━━━" blocks in your terminal.`,
           `You are in PLAN MODE. Create a plan first, then wait for your lead to approve before executing.`,
-          `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
+          `IMPORTANT: Always use the fmux CLI to send messages. Do NOT output [FMUX-MSG] text directly.`,
         ].join(' ');
 
         const { workspaceId: memWsId, ptyId: memPtyId } = await spawnAgentWorkspace(
@@ -288,12 +288,12 @@ export async function spawnMember(
   const rolePrompt = [
     `You are ${memberName}, the ${preset.replace(/-/g, ' ')} in the ${deptName} department of "${companyName}".`,
     `Your lead: ${leadName}. Your teammates: ${teammates}.`,
-    `Communication: Use the wmux CLI tool (Bash) to send messages:`,
-    `- Report completion: wmux company message --from "${memberName}" --to "${leadName}" "DONE: summary"`,
-    `- Report blockers: wmux company message --from "${memberName}" --to "${leadName}" "BLOCKED: reason"`,
-    `- You RECEIVE tasks as "━━━ WMUX MESSAGE ━━━" blocks in your terminal.`,
+    `Communication: Use the fmux CLI tool (Bash) to send messages:`,
+    `- Report completion: fmux company message --from "${memberName}" --to "${leadName}" "DONE: summary"`,
+    `- Report blockers: fmux company message --from "${memberName}" --to "${leadName}" "BLOCKED: reason"`,
+    `- You RECEIVE tasks as "━━━ FMUX MESSAGE ━━━" blocks in your terminal.`,
     `You are in PLAN MODE. Create a plan first, then wait for your lead to approve before executing.`,
-    `IMPORTANT: Always use the wmux CLI. Do NOT output [WMUX-MSG] text directly.`,
+    `IMPORTANT: Always use the fmux CLI. Do NOT output [FMUX-MSG] text directly.`,
   ].join(' ');
 
   const { workspaceId, ptyId } = await spawnAgentWorkspace(

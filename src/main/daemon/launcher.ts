@@ -7,6 +7,7 @@ import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../../shared/constants';
+import { PRODUCT_NAME } from '../../shared/productIdentity';
 import { markBoot } from '../util/bootTrace';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../../shared/processLiveness';
 
@@ -48,20 +49,20 @@ async function askUserToRecoverFromStalePid(opts: {
   if (!app || typeof app.isReady !== 'function' || !app.isReady()) return false;
 
   const detail = [
-    `wmux thinks a previous daemon at PID ${opts.pid} may still be alive,`,
+    `${PRODUCT_NAME} thinks a previous daemon at PID ${opts.pid} may still be alive,`,
     `but the OS will not confirm what process owns that PID.`,
     '',
     `Reason: ${opts.reason}`,
     '',
     'You can either:',
-    `  • Let wmux clean up ${opts.pidFile} and start a fresh daemon.`,
+    `  • Let ${PRODUCT_NAME} clean up ${opts.pidFile} and start a fresh daemon.`,
     '  • Cancel — investigate manually first. To force-kill, run in an',
     `    elevated PowerShell:  taskkill /F /PID ${opts.pid}`,
   ].join('\n');
 
   const { response } = await dialog.showMessageBox({
     type: 'warning',
-    title: 'wmux daemon recovery',
+    title: `${PRODUCT_NAME} daemon recovery`,
     message: 'Could not verify the existing daemon process.',
     detail,
     buttons: ['Clean up and start fresh', 'Cancel'],
@@ -991,7 +992,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
           }
           if (outcome === 'refuse') {
             throw new Error(
-              `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
+              `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches fmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
             );
           }
           console.warn(
@@ -1006,7 +1007,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
               `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
             );
           } else {
-            // (a) Verified wmux daemon (image+cmdline match) that missed the
+            // (a) Verified fmux daemon (image+cmdline match) that missed the
             //     two-shot (250+250 ms) ping. Before the DESTRUCTIVE SIGKILL —
             //     which nukes the very sessions the user chose to keep
             //     (Defect 2) — escalate the ping budget. A busy-but-alive
@@ -1087,9 +1088,9 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
                 }
               }
             }
-            // (a) Verified wmux daemon → kill before respawning.
+            // (a) Verified fmux daemon → kill before respawning.
             console.warn(
-              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
+              `[launcher] PID ${existingPid} verified fmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
             );
             let killSucceeded = true;
             try {
@@ -1110,7 +1111,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
                 killSucceeded = false;
                 console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
                 throw new Error(
-                  `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Run in an elevated PowerShell:  taskkill /F /PID ${existingPid}  — then retry.`,
+                  `[launcher] verified fmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Run in an elevated PowerShell:  taskkill /F /PID ${existingPid}  — then retry.`,
                 );
               }
             }

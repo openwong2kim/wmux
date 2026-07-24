@@ -46,7 +46,7 @@ let MY_WORKSPACE_ID = '';
 let workspaceResolved = false;
 
 const server = new McpServer({
-  name: 'wmux-company',
+  name: 'fmux-company',
   version: getVersion(),
 });
 
@@ -164,7 +164,7 @@ async function requireWorkspaceId(): Promise<string> {
   const wsId = await resolveWorkspaceId();
   if (!wsId) {
     throw new Error(
-      'Workspace identity unknown. Make sure you are running inside a wmux terminal workspace.'
+      'Workspace identity unknown. Make sure you are running inside a Forge Mux terminal workspace.'
     );
   }
   return wsId;
@@ -280,6 +280,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('wmux-a2a MCP server failed to start:', err);
+  console.error('fmux-a2a MCP server failed to start:', err);
   process.exit(1);
 });

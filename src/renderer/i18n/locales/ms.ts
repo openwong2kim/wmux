@@ -131,7 +131,7 @@ export const ms = {
   'settings.scrollbackRestore': 'Pulih semasa mula',
   'settings.scrollbackRestoreDesc': 'Sambung semula output sesi sebelumnya selepas mula semula. Matikan untuk setiap panel mula segar.',
   'settings.updates': 'Kemas kini',
-  'settings.wmuxUpdates': 'Kemas kini wmux',
+  'settings.wmuxUpdates': 'Kemas kini Forge Mux',
   'settings.updateFailed': 'Gagal memeriksa kemas kini',
   'settings.lastCheckedNever': 'Pemeriksaan terakhir: tidak pernah',
   'settings.installUpdate': 'Pasang kemas kini',
@@ -238,7 +238,7 @@ export const ms = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Kemas Kini Automatik',
-  'firstRun.autoUpdateMessage': 'Adakah anda mahu WMUX memeriksa kemas kini secara automatik? Anda boleh ubah ini kemudian di Tetapan.',
+  'firstRun.autoUpdateMessage': 'Adakah anda mahu Forge Mux memeriksa kemas kini secara automatik? Anda boleh ubah ini kemudian di Tetapan.',
   'firstRun.enable': 'Dayakan',
   'firstRun.disable': 'Tidak, terima kasih',
 
@@ -249,7 +249,7 @@ export const ms = {
   'settings.firstRunSetup.lastCompleted': 'Terakhir diselesaikan: {date}',
   'settings.firstRunSetup.notCompleted': 'Belum diselesaikan lagi',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'dikesan',
   'settings.firstRunSetup.statusNotDetected': 'tidak dikesan',
   'settings.firstRunSetup.statusRegistered': 'didaftarkan',
@@ -261,12 +261,12 @@ export const ms = {
   'claudeIntegration.tab': 'Penyepaduan Claude',
   'claudeIntegration.signalHealth.title': 'Kesihatan isyarat pemalam',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status pemalam: belum diperhatikan. Pasang dengan arahan di bawah dalam Claude Code. wmux akan mengesahkan pengesanan sebaik sahaja hook pertama dicetuskan.',
+    'Status pemalam: belum diperhatikan. Pasang dengan arahan di bawah dalam Claude Code. Forge Mux akan mengesahkan pengesanan sebaik sahaja hook pertama dicetuskan.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Isyarat terakhir {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Kependaman P50 {p50}ms · P95 {p95}ms · {count} sampel',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Padanan ruang kerja: {matched}/{total} hook dipadankan ke panel wmux',
+    'Padanan ruang kerja: {matched}/{total} hook dipadankan ke panel Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'Status pemalam: basi. Hook terakhir tiba {rel} — pemalam mungkin telah berhenti dicetuskan atau Claude Code sedang tidak aktif.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Salin arahan pemasangan',

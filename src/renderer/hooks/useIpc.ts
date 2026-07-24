@@ -80,7 +80,7 @@ const DEFAULT_MESSAGES: Record<IpcErrorCode, string> = {
   VALIDATION_ERROR: 'Request is invalid.',
   NOT_FOUND: 'Item not found.',
   PERMISSION_DENIED: 'Permission denied.',
-  RESOURCE_EXHAUSTED: 'Terminal session limit reached. Close some panes or restart wmux, then try again.',
+  RESOURCE_EXHAUSTED: 'Terminal session limit reached. Close some panes or restart Forge Mux, then try again.',
   UNKNOWN: 'An unknown error occurred.',
 };
 

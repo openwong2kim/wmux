@@ -203,7 +203,7 @@ export class McpRegistrar {
       }
 
       this.registered = true;
-      console.log(`[McpRegistrar] Registered wmux MCP → ${mcpScript}`);
+      console.log(`[McpRegistrar] Registered fmux MCP → ${mcpScript}`);
     } catch (err) {
       console.error('[McpRegistrar] Failed to register:', err);
       // macOS Time Machine restore / sudo-written configs surface

@@ -1,5 +1,5 @@
 /**
- * `wmux channel` — the universal agent surface for Channels v2.
+ * `fmux channel` — the universal agent surface for Channels v2.
  *
  * What these tests pin:
  *  1. Transport: every subcommand rides the DAEMON pipe (sendDaemonRequest),
@@ -62,7 +62,7 @@ beforeEach(() => {
 
 const okEnvelope = (result: unknown) => ({ id: 'x', ok: true as const, result });
 
-describe('wmux channel — transport + identity', () => {
+describe('fmux channel — transport + identity', () => {
   it('unread rides the daemon pipe with senderPtyId and NO workspace claim', async () => {
     daemonRpc.mockResolvedValue(okEnvelope({ ok: true, entries: [] }));
     await handleChannel('unread', [], false);
@@ -181,7 +181,7 @@ describe('wmux channel — transport + identity', () => {
     await handleChannel('read', ['ch-1'], false);
     const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(out).toContain('[seq 5] pm: hi');
-    expect(out).not.toContain('wmux channel ack'); // no misleading hint for a non-member
+    expect(out).not.toContain('fmux channel ack'); // no misleading hint for a non-member
   });
 
   it('a channel NAME starting with "ch-" still resolves via the listing (exact ids win)', async () => {
@@ -242,7 +242,7 @@ describe('wmux channel — transport + identity', () => {
     const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     // Full page → the continue hint points at the NEXT page.
     expect(out).toContain('--since 7');
-    expect(out).toContain('wmux channel ack ch-1 6');
+    expect(out).toContain('fmux channel ack ch-1 6');
   });
 
   it('multi-row + --since maps the ack hint back to the ONE matching row (--member included)', async () => {
@@ -256,7 +256,7 @@ describe('wmux channel — transport + identity', () => {
     // and the wake worker re-nudges forever (Codex round-3).
     await handleChannel('read', ['ch-1', '--since', '5'], false);
     const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
-    expect(out).toContain('wmux channel ack ch-1 5 --member codex');
+    expect(out).toContain('fmux channel ack ch-1 5 --member codex');
   });
 
   it('a bare -- ends option parsing: post bodies keep flag-like tokens (--limit 5)', async () => {
@@ -271,12 +271,12 @@ describe('wmux channel — transport + identity', () => {
   });
 });
 
-describe('wmux channel — failure surfaces', () => {
+describe('fmux channel — failure surfaces', () => {
   it('a mutation with no resolvable pane identity fails closed BEFORE any RPC', async () => {
     selfContext.mockResolvedValue({});
     await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
     expect(daemonRpc).not.toHaveBeenCalled();
-    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('not inside a wmux pane');
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('not inside a Forge Mux pane');
   });
 
   it('a daemon-level channel error (result.ok=false) exits 1 with the error code visible', async () => {
@@ -326,7 +326,7 @@ describe('wmux channel — failure surfaces', () => {
   });
 });
 
-describe('wmux channel join — 1d member id discipline', () => {
+describe('fmux channel join — 1d member id discipline', () => {
   it('join WITHOUT --member and WITHOUT $WMUX_MEMBER_ID fails closed (no more shared "agent" default)', async () => {
     daemonRpc.mockResolvedValue(okEnvelope({ ok: true }));
     await expect(handleChannel('join', ['ch-1'], false)).rejects.toThrow('exit(1)');
@@ -359,7 +359,7 @@ describe('wmux channel join — 1d member id discipline', () => {
   });
 });
 
-describe('wmux channel post — 1c server feedback', () => {
+describe('fmux channel post — 1c server feedback', () => {
   it('prints the SERVER-resolved member id and the unmatched warning', async () => {
     daemonRpc.mockResolvedValue(
       okEnvelope({

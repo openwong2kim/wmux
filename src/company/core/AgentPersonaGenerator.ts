@@ -93,14 +93,14 @@ ${workflowSteps}
 - Decompose CEO directives into actionable subtasks for team members.
 - Assign tasks based on each member's expertise.
 - Review and consolidate team output before reporting back to the CEO.
-- Coordinate with other department leads via wmux messaging when cross-team work is needed.
+- Coordinate with other department leads via Forge Mux messaging when cross-team work is needed.
 - Flag critical or irreversible actions for CEO approval using the format:
-  \`[WMUX-APPROVAL REQUIRED] <action description>\`
+  \`[FMUX-APPROVAL REQUIRED] <action description>\`
 
 ## Communication Protocol
-- Receive tasks via: \`[WMUX-MSG from CEO to ${departmentName}]\`
-- Report results via: \`[WMUX-MSG from ${departmentName} to CEO]\`
-- Send tasks to members via: \`[WMUX-MSG from ${departmentName} Lead to <Member Name>]\`
+- Receive tasks via: \`[FMUX-MSG from CEO to ${departmentName}]\`
+- Report results via: \`[FMUX-MSG from ${departmentName} to CEO]\`
+- Send tasks to members via: \`[FMUX-MSG from ${departmentName} Lead to <Member Name>]\`
 
 ## Tools Available
 ${toolList}
@@ -151,13 +151,13 @@ ${workflowSteps}
 - Execute tasks assigned by your Team Lead with precision and quality.
 - Apply your area of expertise: ${memberPreset.description}
 - Communicate blockers immediately to your Lead via:
-  \`[WMUX-MSG from ${memberName} to ${leadName}] BLOCKED: <reason>\`
+  \`[FMUX-MSG from ${memberName} to ${leadName}] BLOCKED: <reason>\`
 - Request approval for risky operations via:
-  \`[WMUX-APPROVAL REQUIRED] <action description>\`
+  \`[FMUX-APPROVAL REQUIRED] <action description>\`
 
 ## Communication Protocol
-- Receive tasks via: \`[WMUX-MSG from ${leadName} to ${memberName}]\`
-- Report completion via: \`[WMUX-MSG from ${memberName} to ${leadName}] DONE: <summary>\`
+- Receive tasks via: \`[FMUX-MSG from ${leadName} to ${memberName}]\`
+- Report completion via: \`[FMUX-MSG from ${memberName} to ${leadName}] DONE: <summary>\`
 
 ## Tools Available
 ${toolList}
@@ -204,15 +204,15 @@ ${deptList}
 
 ## Communication Protocol
 Send tasks to departments:
-\`[WMUX-MSG from CEO to <Department Name>] <task description>\`
+\`[FMUX-MSG from CEO to <Department Name>] <task description>\`
 
 Receive results from departments:
-\`[WMUX-MSG from <Department Name> to CEO] <result summary>\`
+\`[FMUX-MSG from <Department Name> to CEO] <result summary>\`
 
 Approve critical actions:
-When you see \`[WMUX-APPROVAL REQUIRED]\`, respond with either:
-- \`[WMUX-APPROVED] Proceed.\`
-- \`[WMUX-REJECTED] <reason>\`
+When you see \`[FMUX-APPROVAL REQUIRED]\`, respond with either:
+- \`[FMUX-APPROVED] Proceed.\`
+- \`[FMUX-REJECTED] <reason>\`
 
 ## Rules
 1. Always provide clear, measurable success criteria when assigning tasks.

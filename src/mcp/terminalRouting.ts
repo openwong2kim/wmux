@@ -137,7 +137,7 @@ async function resolveInner(
       rpcDownSeen += 1;
       if (rpcDownSeen >= rpcDownAttempts) {
         throw new Error(
-          'wmux main process is not reachable (it may be starting or restarting). ' +
+          'Forge Mux main process is not reachable (it may be starting or restarting). ' +
             'Retry the terminal operation in a few seconds.',
         );
       }

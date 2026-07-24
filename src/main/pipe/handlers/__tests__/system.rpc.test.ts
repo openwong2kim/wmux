@@ -108,7 +108,7 @@ describe('system.rpc — system.identify', () => {
       platform: string;
       electronVersion: string;
     };
-    expect(result.app).toBe('wmux');
+    expect(result.app).toBe('fmux');
     expect(result.version).toBe('2.9.0-test');
     expect(typeof result.platform).toBe('string');
   });

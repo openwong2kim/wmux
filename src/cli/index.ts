@@ -20,10 +20,10 @@ import { handleChannel } from './commands/channel';
 import { handleWeb } from './commands/web';
 
 const HELP_TEXT = `
-wmux CLI
+fmux CLI
 
 USAGE
-  wmux <command> [options]
+  fmux <command> [options]
 
 WORKSPACE COMMANDS
   list-workspaces                   List all workspaces
@@ -48,7 +48,7 @@ INPUT COMMANDS
   send-key <keystroke>              Send a key (e.g. Enter, ctrl-c, Tab)
   read-screen [--tail <n>]          Read the current terminal screen content
 
-  Inside a wmux pane these target the pane you ran the command from
+  Inside a Forge Mux pane these target the pane you ran the command from
   (verified PID-map identity). Options: --pane <ptyId> to target another
   pane explicitly, --active to target the UI-focused pane instead.
 
@@ -77,13 +77,13 @@ WEB ACCESS (browser / PWA over Tailscale)
         [--stop]                    Stop the web server and revoke its token
 
 NOTIFICATION COMMANDS
-  notify <title> [body]             Show a notification in wmux
+  notify <title> [body]             Show a notification in Forge Mux
          [--type info|warning|error|agent] [--workspace <id>]
 
 SYSTEM COMMANDS
   set-status <text>                 Set a status message on the active workspace
   set-progress <0-100>              Set a progress value on the active workspace
-  identify                          Show wmux app info
+  identify                          Show Forge Mux app info
   capabilities                      List all supported RPC methods
 
 CHANNEL COMMANDS (agent messaging — Channels v2 durable inbox)
@@ -95,7 +95,7 @@ CHANNEL COMMANDS (agent messaging — Channels v2 durable inbox)
   channel list                      Channels visible to your workspace
 
   Works headless (talks to the daemon directly). Typical nudged-agent loop:
-  unread → read → work → post → ack. Run 'wmux channel help' for details.
+  unread → read → work → post → ack. Run 'fmux channel help' for details.
 
 DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,
@@ -114,9 +114,9 @@ BROWSER COMMANDS
   browser session list              List available profiles
 
 MCP COMMANDS
-  mcp check                         Show whether wmux MCP servers are registered
-  mcp register                      Add wmux entries to ~/.claude.json
-  mcp unregister                    Remove wmux entries from ~/.claude.json
+  mcp check                         Show whether Forge Mux MCP servers are registered
+  mcp register                      Add Forge Mux entries to ~/.claude.json
+  mcp unregister                    Remove Forge Mux entries from ~/.claude.json
 
 CLAUDE CODE INTEGRATION
   setup-hooks                       Install Claude Code hooks (no plugin needed)
@@ -131,17 +131,17 @@ GLOBAL FLAGS
   --help      Show this help text
 
 EXAMPLES
-  wmux list-workspaces
-  wmux new-workspace --name dev
-  wmux send "echo hello" --submit
-  wmux notify "Done" "Build finished"
-  wmux open http://localhost:3000
-  wmux identify --json
-  wmux browser navigate "https://example.com"
-  wmux browser close
-  wmux doctor
-  wmux doctor --json
-  wmux doctor --performance
+  fmux list-workspaces
+  fmux new-workspace --name dev
+  fmux send "echo hello" --submit
+  fmux notify "Done" "Build finished"
+  fmux open http://localhost:3000
+  fmux identify --json
+  fmux browser navigate "https://example.com"
+  fmux browser close
+  fmux doctor
+  fmux doctor --json
+  fmux doctor --performance
 `.trimStart();
 
 const WORKSPACE_CMDS = new Set([
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     } else if (cmd === 'channel') {
       await handleChannel(rest[0], rest.slice(1), jsonMode);
     } else {
-      console.error(`Unknown command: "${cmd}". Run 'wmux --help' for usage.`);
+      console.error(`Unknown command: "${cmd}". Run 'fmux --help' for usage.`);
       process.exit(1);
     }
   } catch (err: unknown) {

@@ -563,7 +563,7 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
     severity: 'caution',
     summary: 'Can send and read agent-to-agent messages',
     detail:
-      'The plugin can dispatch tasks to other agents in your wmux session and read their responses. `a2a.execute` additionally lets it spawn agents with bypassPermissions.',
+      'The plugin can dispatch tasks to other agents in your Forge Mux session and read their responses. `a2a.execute` additionally lets it spawn agents with bypassPermissions.',
   },
   'metadata': {
     severity: 'neutral',
@@ -591,7 +591,7 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
   },
   'ui': {
     severity: 'neutral',
-    summary: 'Can add panels and widgets to the wmux UI',
+    summary: 'Can add panels and widgets to the Forge Mux UI',
     detail:
       'The plugin renders its own interface in a sandboxed frame (sidebar panel, status-bar widget, pane badges, or command-palette entries). The frame cannot read your terminal or other UI — any data access requires the capabilities listed separately.',
   },
@@ -603,7 +603,7 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
   },
   'internal': {
     severity: 'critical',
-    summary: 'wmux internal — should never be shown to user',
+    summary: 'Forge Mux internal — should never be shown to user',
     detail:
       'Reserved capability that no plugin can declare. If you see this in an approval dialog, file a bug.',
   },

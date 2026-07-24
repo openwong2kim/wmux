@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  Reference wmux UI plugin panel. Demonstrates the v1 bridge:
+  Reference Forge Mux UI plugin panel. Demonstrates the v1 bridge:
     1. wait for the host's { v: 1, kind: 'init' } message carrying a MessagePort
     2. send { v: 1, id, kind: 'request', method, params? } envelopes on the port
     3. match { kind: 'response' } envelopes by id
@@ -8,7 +8,7 @@
        { kind: 'command' } palette invocations (requires ui.commands)
     5. decorate a pane via the ui.decoratePane RPC (requires ui.pane-decoration)
 
-  Install for dogfooding: copy this directory to ~/.wmux/plugins/hello-panel/
+  Install for dogfooding: copy this directory to ~/.fmux/plugins/hello-panel/
 -->
 <html>
 <head>

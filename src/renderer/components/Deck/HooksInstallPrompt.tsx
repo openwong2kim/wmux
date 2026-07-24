@@ -105,7 +105,7 @@ export function HooksInstallPrompt({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={t('hooks.prompt.title') || 'Install wmux hooks'}
+        aria-label={t('hooks.prompt.title') || 'Install Forge Mux hooks'}
         className="w-[420px] max-w-[90vw] bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-lg shadow-xl p-4 text-[13px] text-[var(--text-main)]"
         {...tokenAttrs('textMain', 'text')}
       >
@@ -130,11 +130,11 @@ export function HooksInstallPrompt({
         ) : (
           <>
             <div className="font-semibold mb-2">
-              {t('hooks.prompt.title') || 'Install wmux hooks for accurate agent signals'}
+              {t('hooks.prompt.title') || 'Install Forge Mux hooks for accurate agent signals'}
             </div>
             <p className="text-[var(--text-sub)] mb-2">
               {t('hooks.prompt.body') ||
-                'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.'}
+                'Without hooks, Forge Mux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.'}
             </p>
             {phase === 'error' && (
               <p className="text-[var(--accent)] mb-2" data-hooks-error>

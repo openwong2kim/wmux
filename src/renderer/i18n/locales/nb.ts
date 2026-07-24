@@ -131,7 +131,7 @@ export const nb = {
   'settings.scrollbackRestore': 'Gjenopprett ved oppstart',
   'settings.scrollbackRestoreDesc': 'Koble til forrige øktutdata på nytt etter omstart. Skru av for å starte hvert panel tomt.',
   'settings.updates': 'Oppdateringer',
-  'settings.wmuxUpdates': 'wmux-oppdateringer',
+  'settings.wmuxUpdates': 'Forge Mux-oppdateringer',
   'settings.updateFailed': 'Klarte ikke å sjekke oppdateringer',
   'settings.lastCheckedNever': 'Sist sjekket: aldri',
   'settings.installUpdate': 'Installer oppdatering',
@@ -238,7 +238,7 @@ export const nb = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Automatiske oppdateringer',
-  'firstRun.autoUpdateMessage': 'Vil du at WMUX skal se etter oppdateringer automatisk? Du kan endre dette senere i Innstillinger.',
+  'firstRun.autoUpdateMessage': 'Vil du at Forge Mux skal se etter oppdateringer automatisk? Du kan endre dette senere i Innstillinger.',
   'firstRun.enable': 'Aktiver',
   'firstRun.disable': 'Nei takk',
 
@@ -249,7 +249,7 @@ export const nb = {
   'settings.firstRunSetup.lastCompleted': 'Sist fullført: {date}',
   'settings.firstRunSetup.notCompleted': 'Ikke fullført ennå',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'oppdaget',
   'settings.firstRunSetup.statusNotDetected': 'ikke oppdaget',
   'settings.firstRunSetup.statusRegistered': 'registrert',
@@ -261,12 +261,12 @@ export const nb = {
   'claudeIntegration.tab': 'Claude-integrasjon',
   'claudeIntegration.signalHealth.title': 'Signaltilstand for programtillegg',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status for programtillegg: ikke observert ennå. Installer med kommandoen nedenfor i Claude Code. wmux bekrefter oppdagelse så snart den første kroken utløses.',
+    'Status for programtillegg: ikke observert ennå. Installer med kommandoen nedenfor i Claude Code. Forge Mux bekrefter oppdagelse så snart den første kroken utløses.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Siste signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Forsinkelse P50 {p50}ms · P95 {p95}ms · {count} prøver',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Treff på arbeidsområde: {matched}/{total} kroker løst til et wmux-panel',
+    'Treff på arbeidsområde: {matched}/{total} kroker løst til et Forge Mux-panel',
   'claudeIntegration.signalHealth.staleBody':
     'Status for programtillegg: foreldet. Siste krok kom {rel} — programtillegget kan ha sluttet å utløses, eller Claude Code er inaktiv.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Kopier installasjonskommando',

@@ -104,7 +104,7 @@ describe('ChannelWakeWorker — injection mechanics', () => {
     expect(h.writes).toHaveLength(1);
     expect(h.writes[0].sessionId).toBe('pty-1');
     expect(h.writes[0].data).toContain('#general: 2 unread (1 mention you)');
-    expect(h.writes[0].data).toContain('wmux channel read ch-1 --since 3');
+    expect(h.writes[0].data).toContain('fmux channel read ch-1 --since 3');
     expect(h.writes[0].data).not.toContain('\r');
     flushEnter();
     expect(h.writes).toHaveLength(2);
@@ -366,7 +366,7 @@ describe('pickTarget — never guess', () => {
     // Live -dev proof: the member's real claude pane was ATTACHED (deferred to
     // the renderer Stop-hook path), leaving a bare zsh (lastDetectedAgent none)
     // as the lone "eligible" pane. The old fallback auto-submitted
-    // `wmux channel read ch-… --since N` into that shell, which ran the pasted
+    // `fmux channel read ch-… --since N` into that shell, which ran the pasted
     // hint as a command. A shell with no agent is never a wake target.
     expect(
       pickTarget(

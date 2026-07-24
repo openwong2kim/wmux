@@ -6,11 +6,11 @@ import type { RpcResponse } from '../../shared/rpc';
 const VALID_TYPES = new Set(['info', 'warning', 'error', 'agent']);
 
 /**
- * wmux notify <title> [body]            — positional shorthand
- * wmux notify --title <t> --body <b>    — explicit flags (legacy)
+ * fmux notify <title> [body]            — positional shorthand
+ * fmux notify --title <t> --body <b>    — explicit flags (legacy)
  * Options: --type info|warning|error|agent, --workspace <id>
  *
- * When run inside a wmux pane the notification is routed to the caller's own
+ * When run inside a Forge Mux pane the notification is routed to the caller's own
  * workspace (verified PID-map identity) so scripts in background workspaces
  * notify the right place instead of whichever workspace the user is viewing.
  */
@@ -41,7 +41,7 @@ export async function handleNotify(
   const body = flagBody ?? (flagTitle ? positionals.join(' ') : positionals.slice(1).join(' '));
 
   if (!title) {
-    console.error('Error: notify requires a title — `wmux notify "Done" "Build finished"` or --title/--body');
+    console.error('Error: notify requires a title — `fmux notify "Done" "Build finished"` or --title/--body');
     process.exit(1);
   }
   if (type && !VALID_TYPES.has(type)) {

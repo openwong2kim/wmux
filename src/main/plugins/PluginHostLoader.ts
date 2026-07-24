@@ -6,7 +6,7 @@
 //
 //   ~/.wmux/plugins/<name>/manifest.json   (required, see shared/pluginHost)
 //   ~/.wmux/plugins/<name>/**              (static assets, served read-only
-//                                           over wmux-plugin://<name>/...)
+//                                           over fmux-plugin://<name>/...)
 //
 // Loading a manifest is equivalent to the MCP `mcp.identify` +
 // `mcp.declarePermissions` handshake: the declaration goes through
@@ -31,7 +31,7 @@ import type { PluginTrustStore } from '../mcp/PluginTrustStore';
 export interface LoadedHostPlugin {
   manifest: PluginManifest;
   /** Absolute, realpath-resolved bundle directory — the containment root
-   *  the wmux-plugin:// protocol handler checks every request against. */
+   *  the fmux-plugin:// protocol handler checks every request against. */
   dir: string;
 }
 
@@ -212,7 +212,7 @@ export class PluginHostLoader {
   /**
    * Resolve a bundle-relative URL path to an absolute file path, or null
    * when the plugin is unknown or the path escapes the bundle directory.
-   * This is the containment gate the wmux-plugin:// protocol handler
+   * This is the containment gate the fmux-plugin:// protocol handler
    * trusts — keep it paranoid:
    *   - only loaded plugins resolve (an arbitrary dir name is not enough)
    *   - normalized path must stay strictly inside the realpathed bundle dir

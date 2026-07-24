@@ -106,7 +106,7 @@ describe('AcpBrainAdapter', () => {
     const { spawnFn } = scriptedAgent({
       updates: [
         { sessionUpdate: 'agent_message_chunk', content: [{ type: 'text', text: 'hi ' }] },
-        { sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'wmux pane_list', kind: 'other' },
+        { sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'fmux pane_list', kind: 'other' },
         { sessionUpdate: 'tool_call_update', toolCallId: 'tc1', status: 'completed' },
         { sessionUpdate: 'agent_message_chunk', content: [{ type: 'text', text: 'done' }] },
       ],
@@ -123,7 +123,7 @@ describe('AcpBrainAdapter', () => {
       'turn-end',
     ]);
     const toolEnd = events[2] as Extract<BrainEvent, { type: 'tool-end' }>;
-    expect(toolEnd.name).toBe('wmux pane_list');
+    expect(toolEnd.name).toBe('fmux pane_list');
     expect(toolEnd.ok).toBe(true);
     const end = events[4] as Extract<BrainEvent, { type: 'turn-end' }>;
     expect(end.sessionId).toBe('acp-sess-1');
@@ -146,7 +146,7 @@ describe('AcpBrainAdapter', () => {
       Record<string, unknown>
     >;
     expect(servers).toHaveLength(1);
-    expect(servers[0].name).toBe('wmux');
+    expect(servers[0].name).toBe('fmux');
     expect(servers[0].args).toEqual(['/fake/mcp.js', '--commander']);
     const env = servers[0].env as Array<{ name: string; value: string }>;
     const token = env.find((e) => e.name === 'WMUX_COMMANDER_TOKEN')?.value ?? '';

@@ -131,7 +131,7 @@ export const da = {
   'settings.scrollbackRestore': 'Gendan ved opstart',
   'settings.scrollbackRestoreDesc': 'Tilslut tidligere sessionoutput igen efter genstart. Slå fra for at hvert panel starter tomt.',
   'settings.updates': 'Opdateringer',
-  'settings.wmuxUpdates': 'wmux-opdateringer',
+  'settings.wmuxUpdates': 'Forge Mux-opdateringer',
   'settings.updateFailed': 'Tjek af opdateringer mislykkedes',
   'settings.lastCheckedNever': 'Sidst tjekket: aldrig',
   'settings.installUpdate': 'Installer opdatering',
@@ -238,7 +238,7 @@ export const da = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Automatiske opdateringer',
-  'firstRun.autoUpdateMessage': 'Vil du have WMUX til at tjekke for opdateringer automatisk? Du kan ændre dette senere i Indstillinger.',
+  'firstRun.autoUpdateMessage': 'Vil du have Forge Mux til at tjekke for opdateringer automatisk? Du kan ændre dette senere i Indstillinger.',
   'firstRun.enable': 'Aktiver',
   'firstRun.disable': 'Nej tak',
 
@@ -248,7 +248,7 @@ export const da = {
   'settings.firstRunSetup.lastCompleted': 'Sidst fuldført: {date}',
   'settings.firstRunSetup.notCompleted': 'Ikke fuldført endnu',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'fundet',
   'settings.firstRunSetup.statusNotDetected': 'ikke fundet',
   'settings.firstRunSetup.statusRegistered': 'registreret',
@@ -260,12 +260,12 @@ export const da = {
   'claudeIntegration.tab': 'Claude-integration',
   'claudeIntegration.signalHealth.title': 'Plugin-signaltilstand',
   'claudeIntegration.signalHealth.unknownBody':
-    'Plugin-status: endnu ikke observeret. Installer med kommandoen nedenfor i Claude Code. wmux bekræfter registrering, når den første hook udløses.',
+    'Plugin-status: endnu ikke observeret. Installer med kommandoen nedenfor i Claude Code. Forge Mux bekræfter registrering, når den første hook udløses.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Seneste signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latenstid P50 {p50}ms · P95 {p95}ms · {count} målinger',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Arbejdsområde-match: {matched}/{total} hooks knyttet til et wmux-panel',
+    'Arbejdsområde-match: {matched}/{total} hooks knyttet til et Forge Mux-panel',
   'claudeIntegration.signalHealth.staleBody':
     'Plugin-status: forældet. Seneste hook ankom {rel} — pluginnet er måske holdt op med at udløse, eller Claude Code er inaktiv.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiér installationskommando',

@@ -32,7 +32,7 @@ describe('applyBrainEvent', () => {
     let msgs = openTurn();
     msgs = applyBrainEvent(msgs, {
       type: 'tool-start',
-      name: 'mcp__wmux__pane_split',
+      name: 'mcp__fmux__pane_split',
       inputSummary: 'ws-1',
       toolId: 'tu-1',
       paneId: 'pane-9',
@@ -42,14 +42,14 @@ describe('applyBrainEvent', () => {
     expect(msgs[1].tools![0]).toMatchObject({ name: 'pane_split', paneId: 'pane-9' });
     expect(msgs[1].tools![0].ok).toBeUndefined(); // still running
 
-    msgs = applyBrainEvent(msgs, { type: 'tool-end', name: 'mcp__wmux__pane_split', ok: true, toolId: 'tu-1' });
+    msgs = applyBrainEvent(msgs, { type: 'tool-end', name: 'mcp__fmux__pane_split', ok: true, toolId: 'tu-1' });
     expect(msgs[1].tools![0].ok).toBe(true);
   });
 
   it('closes tool-end by name when no toolId is present', () => {
     let msgs = openTurn();
-    msgs = applyBrainEvent(msgs, { type: 'tool-start', name: 'mcp__wmux__terminal_read', inputSummary: '' });
-    msgs = applyBrainEvent(msgs, { type: 'tool-end', name: 'mcp__wmux__terminal_read', ok: false });
+    msgs = applyBrainEvent(msgs, { type: 'tool-start', name: 'mcp__fmux__terminal_read', inputSummary: '' });
+    msgs = applyBrainEvent(msgs, { type: 'tool-end', name: 'mcp__fmux__terminal_read', ok: false });
     expect(msgs[1].tools![0].ok).toBe(false);
   });
 
@@ -147,7 +147,7 @@ describe('applyBrainEvent', () => {
 
 describe('shortToolName', () => {
   it('strips the mcp server prefix', () => {
-    expect(shortToolName('mcp__wmux__pane_split')).toBe('pane_split');
+    expect(shortToolName('mcp__fmux__pane_split')).toBe('pane_split');
     expect(shortToolName('plainTool')).toBe('plainTool');
   });
 });

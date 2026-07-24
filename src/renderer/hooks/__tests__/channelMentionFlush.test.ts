@@ -86,7 +86,7 @@ describe('buildChannelMentionNudge', () => {
     // fix appends a reply-gate that forbids greeting/ack replies — no forced
     // "+ reply". Without seq metadata the ack falls back to the unread form.)
     expect(n).toBe(
-      '[wmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[fmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: fmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
     expect(n).not.toContain('to read + reply'); // never force a reflex reply (loop cause)
     expect(n).not.toMatch(/[\r\n]/);
@@ -104,7 +104,7 @@ describe('buildChannelMentionNudge', () => {
     expect(n).not.toContain('rm -rf');
     expect(n).not.toContain('IGNORE');
     expect(n).toBe(
-      '[wmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[fmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: fmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
   });
 
@@ -114,7 +114,7 @@ describe('buildChannelMentionNudge', () => {
       { id: 'chmention-ch-1-6', metadata: { title: 'b' } },
     ]);
     expect(n).toBe(
-      '[wmux-channel] 2 channel mentions — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[fmux-channel] 2 channel mentions — read: a2a_task_query role:agent, then ack: fmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
   });
 
@@ -285,30 +285,30 @@ describe('buildChannelMentionNudge — 2a-1 ack hint (close the consume loop)', 
   it('single mention → exact ack command with channel name, seq, and quoted member id', () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)')]);
     expect(n).toContain('mention in #general');
-    expect(n).toContain("wmux channel ack general 7 --member 'w26-1(claude)'");
+    expect(n).toContain("fmux channel ack general 7 --member 'w26-1(claude)'");
   });
 
   it('multiple mentions in one channel → ack up to the max seq', () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)'), nudgeTask(9, 'w26-1(claude)')]);
     expect(n).toContain('2 channel mentions');
-    expect(n).toContain('wmux channel ack general 9');
+    expect(n).toContain('fmux channel ack general 9');
   });
 
   it('missing seq metadata → falls back to the unread hint (no fabricated ack)', () => {
     const n = buildChannelMentionNudge([nudgeTask(null)]);
-    expect(n).toContain('then ack: wmux channel unread');
-    expect(n).not.toContain('wmux channel ack');
+    expect(n).toContain('then ack: fmux channel unread');
+    expect(n).not.toContain('fmux channel ack');
   });
 
   it('malformed title (B7 fallback) → no ack command is fabricated', () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)', 'no delimiter here')]);
-    expect(n).toContain('then ack: wmux channel unread');
-    expect(n).not.toContain('wmux channel ack');
+    expect(n).toContain('then ack: fmux channel unread');
+    expect(n).not.toContain('fmux channel ack');
   });
 
   it('member id with quote-unsafe chars → --member flag omitted, ack still present', () => {
     const n = buildChannelMentionNudge([nudgeTask(7, "we'ird id")]);
-    expect(n).toContain('wmux channel ack general 7');
+    expect(n).toContain('fmux channel ack general 7');
     expect(n).not.toContain('--member');
   });
 });
@@ -409,8 +409,8 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
       nt(7, 'm1', '#general — mention from A'),
       nt(8, 'm1', '#ops — mention from B'),
     ]);
-    expect(n).not.toContain('wmux channel ack');
-    expect(n).toContain('wmux channel unread');
+    expect(n).not.toContain('fmux channel ack');
+    expect(n).toContain('fmux channel unread');
   });
 
   it('two distinct mentioned members → ack present but --member omitted', () => {
@@ -418,13 +418,13 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
       nt(7, 'w1-1(claude)', '#general — mention from A'),
       nt(9, 'w2-1(codex)', '#general — mention from A'),
     ]);
-    expect(n).toContain('wmux channel ack general 9');
+    expect(n).toContain('fmux channel ack general 9');
     expect(n).not.toContain('--member');
   });
 
   it('un-pinned (degraded) group → ack present but --member omitted (F4: never ack another member cursor)', () => {
     const n = buildChannelMentionNudge([nt(7, 'w1-1(claude)', '#general — mention from A', false)]);
-    expect(n).toContain('wmux channel ack general 7');
+    expect(n).toContain('fmux channel ack general 7');
     expect(n).not.toContain('--member');
   });
 });

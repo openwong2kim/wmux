@@ -241,11 +241,11 @@ describe('LocalPtyDelivery', () => {
     expect(result.snapshot[0].ptyId).toBe('pty-fresh');
   });
 
-  it('defaultChannelMessage wraps the body in a WMUX CHANNEL envelope', () => {
+  it('defaultChannelMessage wraps the body in a FMUX CHANNEL envelope', () => {
     const out = defaultChannelMessage(
       makeMessage({ channelId: 'ch-general', memberName: 'Alice', text: 'hi' }),
     );
-    expect(out).toContain('WMUX CHANNEL');
+    expect(out).toContain('FMUX CHANNEL');
     expect(out).toContain('Alice');
     expect(out).toContain('hi');
     expect(out.split('\n').length).toBeGreaterThan(1);

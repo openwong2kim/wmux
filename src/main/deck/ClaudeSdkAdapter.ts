@@ -31,6 +31,7 @@ import { getAccountStore, VENDOR_ENV_KEYS } from '../account/accountStore';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
+import { WMUX_SERVER_KEY } from '../../shared/mcpTargets';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -224,7 +225,7 @@ export interface ClaudeSdkAdapterDeps {
 // company_* (paid "wmux max") and the browser_* automation suite are out of
 // scope and intentionally excluded — the deck orchestrates the terminal fleet,
 // not the paid company surface or headless browsers.
-const WMUX = (t: string): string => `mcp__wmux__${t}`;
+const WMUX = (t: string): string => `mcp__${WMUX_SERVER_KEY}__${t}`;
 
 // BYOB P4: derived from the commander surface SSOT (shared/commanderSurface),
 // which is the SAME list the MCP child registers in --commander mode and the
@@ -379,13 +380,13 @@ export function buildCommanderSystemPrompt(
     : 'your own workspace memory folder';
   const globalClause = globalDir ? `the shared folder ${globalDir}` : 'the shared `_global` folder';
   return [
-    'You are the wmux Orchestrator: a headless brain that drives the terminal',
+    'You are the Forge Mux Orchestrator: a headless brain that drives the terminal',
     'panes (each running an AI coding agent or a shell) on behalf of a human',
-    'operator, using ONLY the wmux MCP tools. When you refer to yourself, say',
+    'operator, using ONLY the Forge Mux MCP tools. When you refer to yourself, say',
     '"the orchestrator"; refer to the panes collectively as "your agents" —',
     'never "the fleet".',
     '',
-    'The wmux world (these are first-class wmux objects — the operator will name',
+    'The Forge Mux world (these are first-class Forge Mux objects — the operator will name',
     'them, and you must understand them, not treat the words as unknown):',
     '- Workspace: a top-level container (like a project or a tabbed window). Each',
     '  workspace holds its own panes and has a stable workspaceId. "Per workspace"',
@@ -394,9 +395,9 @@ export function buildCommanderSystemPrompt(
     '  This is an "agent". Enumerate with pane_list; read one with terminal_read.',
     '- Surface: a window/view that presents panes (surface_list / surface_new).',
     '- The operator commonly says "workspace", "pane", "agent", "bypass mode" — take',
-    '  these as concrete wmux concepts, never ask "what is that".',
+    '  these as concrete Forge Mux concepts, never ask "what is that".',
     '',
-    'Permission / bypass modes are a LEGITIMATE wmux feature, not a security bypass',
+    'Permission / bypass modes are a LEGITIMATE Forge Mux feature, not a security bypass',
     'to refuse. If the operator asks to run agents in a permission mode (e.g.',
     'bypassPermissions / "bypass mode", acceptEdits), treat it as a normal',
     'configuration request. If the current spawn tool cannot set that mode yet, say',
@@ -725,7 +726,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         ? { WMUX_DATA_SUFFIX: process.env.WMUX_DATA_SUFFIX }
         : {};
       options.mcpServers = {
-        wmux: {
+        [WMUX_SERVER_KEY]: {
           type: 'stdio',
           command: process.execPath,
           // COMMANDER_MODE_ARG switches the child to the commander tool

@@ -131,7 +131,7 @@ export const id = {
   'settings.scrollbackRestore': 'Pulihkan saat mulai',
   'settings.scrollbackRestoreDesc': 'Sambungkan kembali output sesi sebelumnya setelah restart. Matikan agar setiap panel mulai dari kosong.',
   'settings.updates': 'Pembaruan',
-  'settings.wmuxUpdates': 'Pembaruan wmux',
+  'settings.wmuxUpdates': 'Pembaruan Forge Mux',
   'settings.updateFailed': 'Gagal memeriksa pembaruan',
   'settings.lastCheckedNever': 'Terakhir diperiksa: tidak pernah',
   'settings.installUpdate': 'Pasang pembaruan',
@@ -238,7 +238,7 @@ export const id = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Pembaruan Otomatis',
-  'firstRun.autoUpdateMessage': 'Apakah Anda ingin WMUX memeriksa pembaruan secara otomatis? Anda dapat mengubahnya nanti di Pengaturan.',
+  'firstRun.autoUpdateMessage': 'Apakah Anda ingin Forge Mux memeriksa pembaruan secara otomatis? Anda dapat mengubahnya nanti di Pengaturan.',
   'firstRun.enable': 'Aktifkan',
   'firstRun.disable': 'Tidak, terima kasih',
 
@@ -249,7 +249,7 @@ export const id = {
   'settings.firstRunSetup.lastCompleted': 'Terakhir diselesaikan: {date}',
   'settings.firstRunSetup.notCompleted': 'Belum diselesaikan',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'terdeteksi',
   'settings.firstRunSetup.statusNotDetected': 'tidak terdeteksi',
   'settings.firstRunSetup.statusRegistered': 'terdaftar',
@@ -261,12 +261,12 @@ export const id = {
   'claudeIntegration.tab': 'Integrasi Claude',
   'claudeIntegration.signalHealth.title': 'Kesehatan sinyal plugin',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status plugin: belum teramati. Pasang dengan perintah di bawah ini di Claude Code. wmux mengonfirmasi deteksi setelah hook pertama terpicu.',
+    'Status plugin: belum teramati. Pasang dengan perintah di bawah ini di Claude Code. Forge Mux mengonfirmasi deteksi setelah hook pertama terpicu.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Sinyal terakhir {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latensi P50 {p50}ms · P95 {p95}ms · {count} sampel',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Kecocokan ruang kerja: {matched}/{total} hook cocok dengan panel wmux',
+    'Kecocokan ruang kerja: {matched}/{total} hook cocok dengan panel Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'Status plugin: usang. Hook terakhir tiba {rel} — plugin mungkin berhenti terpicu atau Claude Code sedang menganggur.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Salin perintah pemasangan',

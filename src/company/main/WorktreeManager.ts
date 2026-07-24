@@ -209,9 +209,9 @@ for file in $STAGED; do
   fi
 done
 if [ -n "$BLOCKED" ]; then
-  echo "[wmux] BLOCKED: The following files are outside your owned scope:"
+  echo "[fmux] BLOCKED: The following files are outside your owned scope:"
   echo -e "$BLOCKED"
-  echo "[wmux] Owned files pattern: $OWNED_FILES"
+  echo "[fmux] Owned files pattern: $OWNED_FILES"
   exit 1
 fi
 exit 0

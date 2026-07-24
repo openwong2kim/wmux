@@ -521,7 +521,7 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
           id: generateId('inbox'),
           timestamp: Date.now(),
           read: false,
-          from: '[WMUX-SYSTEM]',
+          from: '[FMUX-SYSTEM]',
           message: `Task abandoned after 3 identical attempts from ${msg.from}. Change approach or escalate.`,
         };
         inbox.push(warning);

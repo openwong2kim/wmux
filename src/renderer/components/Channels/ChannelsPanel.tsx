@@ -421,7 +421,7 @@ export interface ChannelsPanelViewProps {
    *  came online isn't reflected yet). */
   onRefresh?: () => void;
   /** Ship review C1 — the attached daemon predates the channels migration this
-   *  renderer requires (it survived the app upgrade). Renders a "restart wmux"
+   *  renderer requires (it survived the app upgrade). Renders a "restart Forge Mux"
    *  banner; posting/joining may fail with NOT_A_MEMBER until the restart. */
   daemonStale?: boolean;
   /** operator-join (design §2.2/§3) — the discovery list backing the collapsed
@@ -542,7 +542,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         >
           <span aria-hidden="true">⚠ </span>
           {t('channels.daemonStaleBanner') ||
-            'Channels were updated, but the background daemon is still on the old version. Quit wmux fully and start it again to finish.'}
+            'Channels were updated, but the background daemon is still on the old version. Quit Forge Mux fully and start it again to finish.'}
         </div>
       )}
 

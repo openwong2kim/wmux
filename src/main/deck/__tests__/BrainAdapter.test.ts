@@ -30,7 +30,7 @@ describe('normalizeSdkMessage', () => {
       message: {
         content: [
           { type: 'text', text: 'Spawning a worker' },
-          { type: 'tool_use', id: 'tu-1', name: 'mcp__wmux__pane_split', input: { workspaceId: 'ws-1' } },
+          { type: 'tool_use', id: 'tu-1', name: 'mcp__fmux__pane_split', input: { workspaceId: 'ws-1' } },
         ],
       },
     };
@@ -38,12 +38,12 @@ describe('normalizeSdkMessage', () => {
     expect(events[0]).toEqual({ type: 'text-delta', text: 'Spawning a worker' });
     expect(events[1]).toMatchObject({
       type: 'tool-start',
-      name: 'mcp__wmux__pane_split',
+      name: 'mcp__fmux__pane_split',
       toolId: 'tu-1',
       workspaceId: 'ws-1',
     });
     // The id→name mapping is recorded for the later tool_result.
-    expect(state.toolNames.get('tu-1')).toBe('mcp__wmux__pane_split');
+    expect(state.toolNames.get('tu-1')).toBe('mcp__fmux__pane_split');
   });
 
   it('extracts a pane target onto tool-start when present', () => {
@@ -52,7 +52,7 @@ describe('normalizeSdkMessage', () => {
       {
         type: 'assistant',
         message: {
-          content: [{ type: 'tool_use', id: 'tu-2', name: 'mcp__wmux__terminal_send', input: { paneId: 'pane-9', text: 'ls' } }],
+          content: [{ type: 'tool_use', id: 'tu-2', name: 'mcp__fmux__terminal_send', input: { paneId: 'pane-9', text: 'ls' } }],
         },
       },
       state,
@@ -62,12 +62,12 @@ describe('normalizeSdkMessage', () => {
 
   it('maps a user tool_result to tool-end with ok reflecting is_error', () => {
     const state = createNormalizeState();
-    state.toolNames.set('tu-1', 'mcp__wmux__pane_split');
+    state.toolNames.set('tu-1', 'mcp__fmux__pane_split');
     const ok = normalizeSdkMessage(
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1' }] } },
       state,
     );
-    expect(ok[0]).toEqual({ type: 'tool-end', name: 'mcp__wmux__pane_split', ok: true, toolId: 'tu-1' });
+    expect(ok[0]).toEqual({ type: 'tool-end', name: 'mcp__fmux__pane_split', ok: true, toolId: 'tu-1' });
 
     const failed = normalizeSdkMessage(
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', is_error: true }] } },
@@ -252,13 +252,13 @@ describe('normalizeResetToMs', () => {
 
 describe('summarizeToolInput', () => {
   it('summarizes a pane command compactly', () => {
-    expect(summarizeToolInput('mcp__wmux__terminal_send', { paneId: 'pane-9', text: 'npm test' })).toBe(
+    expect(summarizeToolInput('mcp__fmux__terminal_send', { paneId: 'pane-9', text: 'npm test' })).toBe(
       'pane-9 · npm test',
     );
   });
   it('truncates long text', () => {
     const long = 'x'.repeat(200);
-    const s = summarizeToolInput('mcp__wmux__terminal_send', { text: long });
+    const s = summarizeToolInput('mcp__fmux__terminal_send', { text: long });
     expect(s.length).toBeLessThanOrEqual(60);
     expect(s.endsWith('…')).toBe(true);
   });

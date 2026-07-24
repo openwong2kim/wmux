@@ -1,13 +1,13 @@
-# wmux ↔ OpenCode bridge
+# Forge Mux ↔ OpenCode bridge
 
-Lets the wmux **orchestrator** (Command Deck) know when an OpenCode agent
+Lets the Forge Mux **orchestrator** (Command Deck) know when an OpenCode agent
 finishes a turn.
 
 ## Why
 
 The orchestrator wakes on `agent.stop` lifecycle events. Claude Code emits them
 through its hook plugin and Codex through its `notify` bridge. OpenCode had no
-bridge, so its turn completions reached wmux through **none** of the three
+bridge, so its turn completions reached Forge Mux through **none** of the three
 detection paths:
 
 - **hook** — no OpenCode bridge existed;
@@ -39,18 +39,18 @@ Restart `opencode` after copying.
 
 ## Verify
 
-1. Run `opencode` **inside a wmux pane** (so the `WMUX_PTY_ID` pane env is
+1. Run `opencode` **inside a Forge Mux pane** (so the `WMUX_PTY_ID` pane env is
    present for routing).
 2. Give it a task and let a turn finish.
-3. Check `~/.wmux/opencode-bridge.log` — you should see a `"loaded"` line at
+3. Check `~/.fmux/opencode-bridge.log` — you should see a `"loaded"` line at
    startup and an `"ok"` line each time a turn completes. `rpc-failed` /
-   `no-auth-token` lines point at the problem (wmux not running, or the pane env
+   `no-auth-token` lines point at the problem (Forge Mux not running, or the pane env
    not propagating).
 
 ## What it sends
 
-Two canonical wmux `AgentSignal`s, over the same `hooks.signal` pipe RPC the
-Claude/Codex bridges use (`hooks.rpc.ts` is agent-agnostic, so no wmux-side
+Two canonical Forge Mux `AgentSignal`s, over the same `hooks.signal` pipe RPC the
+Claude/Codex bridges use (`hooks.rpc.ts` is agent-agnostic, so no Forge Mux-side
 change is needed). Routing prefers `ptyId` (exact per-pane) → `workspaceId` → `cwd`.
 
 - On **`session.idle`** (a turn finished) → `agent.stop`:

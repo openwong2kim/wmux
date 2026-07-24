@@ -131,7 +131,7 @@ export const de = {
   'settings.scrollbackRestore': 'Beim Start wiederherstellen',
   'settings.scrollbackRestoreDesc': 'Nach Neustart vorige Sitzungsausgabe wieder einbinden. Aus = jeder Bereich startet leer.',
   'settings.updates': 'Updates',
-  'settings.wmuxUpdates': 'wmux-Updates',
+  'settings.wmuxUpdates': 'Forge Mux-Updates',
   'settings.updateFailed': 'Update-Prüfung fehlgeschlagen',
   'settings.lastCheckedNever': 'Zuletzt geprüft: nie',
   'settings.installUpdate': 'Update installieren',
@@ -238,7 +238,7 @@ export const de = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Automatische Updates',
-  'firstRun.autoUpdateMessage': 'Soll WMUX automatisch nach Updates suchen? Sie können dies später in den Einstellungen ändern.',
+  'firstRun.autoUpdateMessage': 'Soll Forge Mux automatisch nach Updates suchen? Sie können dies später in den Einstellungen ändern.',
   'firstRun.enable': 'Aktivieren',
   'firstRun.disable': 'Nein danke',
 
@@ -249,7 +249,7 @@ export const de = {
   'settings.firstRunSetup.lastCompleted': 'Zuletzt abgeschlossen: {date}',
   'settings.firstRunSetup.notCompleted': 'Noch nicht abgeschlossen',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'erkannt',
   'settings.firstRunSetup.statusNotDetected': 'nicht erkannt',
   'settings.firstRunSetup.statusRegistered': 'registriert',
@@ -261,12 +261,12 @@ export const de = {
   'claudeIntegration.tab': 'Claude-Integration',
   'claudeIntegration.signalHealth.title': 'Plugin-Signalzustand',
   'claudeIntegration.signalHealth.unknownBody':
-    'Plugin-Status: noch kein Signal empfangen. Installieren Sie es mit dem untenstehenden Befehl in Claude Code. wmux bestätigt die Erkennung, sobald der erste Hook ausgelöst wird.',
+    'Plugin-Status: noch kein Signal empfangen. Installieren Sie es mit dem untenstehenden Befehl in Claude Code. Forge Mux bestätigt die Erkennung, sobald der erste Hook ausgelöst wird.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Letztes Signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latenz P50 {p50}ms · P95 {p95}ms · {count} Messwerte',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Arbeitsbereich-Zuordnung: {matched}/{total} Hooks wurden einem wmux-Bereich zugeordnet',
+    'Arbeitsbereich-Zuordnung: {matched}/{total} Hooks wurden einem Forge Mux-Bereich zugeordnet',
   'claudeIntegration.signalHealth.staleBody':
     'Plugin-Status: veraltet. Letzter Hook traf {rel} ein — das Plugin sendet möglicherweise keine Signale mehr oder Claude Code ist inaktiv.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Installationsbefehl kopieren',

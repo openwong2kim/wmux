@@ -3851,7 +3851,7 @@ function logExitHandoff(via: string): void {
 async function main(): Promise<void> {
   const startTime = Date.now();
   markDaemonBoot('main-start');
-  log('info', `wmux-daemon starting (PID ${process.pid})`);
+  log('info', `fmux-daemon starting (PID ${process.pid})`);
 
   // 1. Single-instance check
   if (!(await acquireLock())) {

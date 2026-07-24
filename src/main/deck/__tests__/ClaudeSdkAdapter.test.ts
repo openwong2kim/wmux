@@ -133,15 +133,15 @@ describe('ClaudeSdkAdapter', () => {
     // OWN binary in Node mode (never a PATH `node` — end users may not have one),
     // and carries the per-spawn commander token (fleet-wide routing — codex P1).
     const mcpServers = opts1.mcpServers as {
-      wmux: { type: string; command: string; args: string[]; env: Record<string, string> };
+      fmux: { type: string; command: string; args: string[]; env: Record<string, string> };
     };
-    expect(mcpServers.wmux.type).toBe('stdio');
-    expect(mcpServers.wmux.command).toBe(process.execPath);
+    expect(mcpServers.fmux.type).toBe('stdio');
+    expect(mcpServers.fmux.command).toBe(process.execPath);
     // P4 role gate: the brain's MCP child always runs in commander mode — an
     // ARG (not env) so a brain host that strips env can't widen the surface.
-    expect(mcpServers.wmux.args).toEqual(['/fake/mcp.js', '--commander']);
-    expect(mcpServers.wmux.env.ELECTRON_RUN_AS_NODE).toBe('1');
-    expect(mcpServers.wmux.env.WMUX_COMMANDER_TOKEN?.length).toBeGreaterThanOrEqual(64);
+    expect(mcpServers.fmux.args).toEqual(['/fake/mcp.js', '--commander']);
+    expect(mcpServers.fmux.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    expect(mcpServers.fmux.env.WMUX_COMMANDER_TOKEN?.length).toBeGreaterThanOrEqual(64);
     expect(opts1.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
 
     await collect(adapter.send('second'));
@@ -151,9 +151,9 @@ describe('ClaudeSdkAdapter', () => {
   });
 
   it('default allow-list omits the destructive close tools (P3 gate)', () => {
-    expect(DEFAULT_ALLOWED_TOOLS).toContain('mcp__wmux__pane_split');
-    expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__wmux__pane_close');
-    expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__wmux__surface_close');
+    expect(DEFAULT_ALLOWED_TOOLS).toContain('mcp__fmux__pane_split');
+    expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__fmux__pane_close');
+    expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__fmux__surface_close');
   });
 
   it('hard-disallows the built-in subagent/file/shell tools on every spawn', async () => {
@@ -320,7 +320,7 @@ describe('ClaudeSdkAdapter', () => {
     })).behavior).toBe('deny');
     expect((await canUseTool('Bash', { command: 'rm -rf /' })).behavior).toBe('deny');
     // An MCP tool outside the allow-list reaching the callback stays denied.
-    expect((await canUseTool('mcp__wmux__pane_close', { paneId: 'p1' })).behavior).toBe('deny');
+    expect((await canUseTool('mcp__fmux__pane_close', { paneId: 'p1' })).behavior).toBe('deny');
   });
 
   it('grounds real-pane agent launches in the system prompt (no theater)', () => {

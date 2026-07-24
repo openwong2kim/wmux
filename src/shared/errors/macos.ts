@@ -27,11 +27,11 @@ export const MACOS_ERRORS = {
   gatekeeperBlocked: {
     code: 'GATEKEEPER_BLOCKED',
     problem:
-      'macOS won\'t open wmux: "wmux can\'t be opened because Apple cannot check it for malicious software"',
+      'macOS won\'t open Forge Mux: "fmux can\'t be opened because Apple cannot check it for malicious software"',
     cause:
       'The downloaded build is not yet notarized by Apple, or the quarantine extended attribute is set. Notarized DMGs from GitHub Releases skip this dialog.',
     fix:
-      'Right-click wmux.app -> Open -> confirm. Or run: xattr -d com.apple.quarantine /Applications/wmux.app',
+      'Right-click Forge Mux.app -> Open -> confirm. Or run: xattr -d com.apple.quarantine /Applications/Forge\\ Mux.app',
     docsUrl: 'https://support.apple.com/guide/mac-help/mh40616/mac',
   },
   nodePtyBuildFailed: {
@@ -43,18 +43,18 @@ export const MACOS_ERRORS = {
   },
   mcpPermissionDenied: {
     code: 'MCP_PERMISSION_DENIED',
-    problem: 'wmux could not register the MCP server in ~/.claude.json',
+    problem: 'Forge Mux could not register the MCP server in ~/.claude.json',
     cause:
       'The file exists but is not writable by the current user (likely due to Time Machine restore or sudo write).',
     fix:
-      'Run: chmod 600 ~/.claude.json -- or delete and recreate: mv ~/.claude.json ~/.claude.json.bak && wmux mcp register',
+      'Run: chmod 600 ~/.claude.json -- or delete and recreate: mv ~/.claude.json ~/.claude.json.bak && fmux mcp register',
   },
   brewTapNotFound: {
     code: 'BREW_TAP_NOT_FOUND',
-    problem: "brew install openwong2kim/tap/wmux fails with 'No such tap'",
-    cause: 'Homebrew tap is not registered locally.',
+    problem: "brew install --cask fmux fails with 'No such cask' or 'No such tap'",
+    cause: 'Homebrew has not fetched the Forge Mux cask / tap yet.',
     fix:
-      'Run: brew tap openwong2kim/tap https://github.com/openwong2kim/homebrew-tap -- then retry the install',
+      'Run: brew update -- then retry: brew install --cask fmux',
   },
   playwrightChromiumQuarantine: {
     code: 'PLAYWRIGHT_CHROMIUM_QUARANTINE',

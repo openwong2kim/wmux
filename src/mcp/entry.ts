@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   // a reconnect must re-run the MCP initialize handshake to re-establish
   // identity (see wireClientIdentityHook in index.ts).
   transport.onclose = async () => {
-    console.log('[wmux-mcp] Transport closed, disconnecting Playwright');
+    console.log('[fmux-mcp] Transport closed, disconnecting Playwright');
     clearClientIdentity();
     await PlaywrightEngine.getInstance().disconnect();
   };
@@ -49,6 +49,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('wmux MCP server failed to start:', err);
+  console.error('fmux MCP server failed to start:', err);
   process.exit(1);
 });

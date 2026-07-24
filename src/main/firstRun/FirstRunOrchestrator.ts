@@ -175,7 +175,7 @@ export class FirstRunOrchestrator {
     const status = this.mcpRegistrar.getStatus();
     const claude = status.targets.find((t) => t.id === 'claude');
     if (claude?.wmux.registered) return { ok: true };
-    return { ok: false, code: 'UNKNOWN', message: 'registration completed without recording wmux entry' };
+    return { ok: false, code: 'UNKNOWN', message: 'registration completed without recording fmux entry' };
   }
 
   private errorMessage(e: unknown, fallback: string): string {

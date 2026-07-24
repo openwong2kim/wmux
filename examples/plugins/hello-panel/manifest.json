@@ -1,7 +1,7 @@
 {
   "name": "hello-panel",
   "version": "0.2.0",
-  "description": "Reference wmux UI plugin: workspace list, event feed, palette command, and a pane badge.",
+  "description": "Reference Forge Mux UI plugin: workspace list, event feed, palette command, and a pane badge.",
   "capabilities": [
     "ui.sidebar",
     "ui.commands",

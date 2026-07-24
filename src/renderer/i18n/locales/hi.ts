@@ -131,7 +131,7 @@ export const hi = {
   'settings.scrollbackRestore': 'शुरू में पुनर्स्थापित करें',
   'settings.scrollbackRestoreDesc': 'पुनरारंभ के बाद पिछले सेशन का आउटपुट जोड़ें। बंद करें तो हर पैनल खाली शुरू होगा।',
   'settings.updates': 'अपडेट',
-  'settings.wmuxUpdates': 'wmux अपडेट',
+  'settings.wmuxUpdates': 'Forge Mux अपडेट',
   'settings.updateFailed': 'अपडेट जाँच विफल',
   'settings.lastCheckedNever': 'अंतिम जाँच: कभी नहीं',
   'settings.installUpdate': 'अपडेट इंस्टॉल करें',
@@ -238,7 +238,7 @@ export const hi = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'स्वतः अपडेट',
-  'firstRun.autoUpdateMessage': 'क्या आप चाहते हैं कि WMUX स्वचालित रूप से अपडेट जाँचे? आप इसे बाद में सेटिंग्स में बदल सकते हैं।',
+  'firstRun.autoUpdateMessage': 'क्या आप चाहते हैं कि Forge Mux स्वचालित रूप से अपडेट जाँचे? आप इसे बाद में सेटिंग्स में बदल सकते हैं।',
   'firstRun.enable': 'सक्षम करें',
   'firstRun.disable': 'नहीं, धन्यवाद',
 
@@ -248,7 +248,7 @@ export const hi = {
   'settings.firstRunSetup.lastCompleted': 'अंतिम बार पूरा हुआ: {date}',
   'settings.firstRunSetup.notCompleted': 'अभी तक पूरा नहीं हुआ',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'पता चला',
   'settings.firstRunSetup.statusNotDetected': 'पता नहीं चला',
   'settings.firstRunSetup.statusRegistered': 'पंजीकृत',
@@ -260,12 +260,12 @@ export const hi = {
   'claudeIntegration.tab': 'Claude एकीकरण',
   'claudeIntegration.signalHealth.title': 'प्लगइन सिग्नल स्थिति',
   'claudeIntegration.signalHealth.unknownBody':
-    'प्लगइन स्थिति: अभी तक नहीं देखा गया। Claude Code में नीचे दिए गए कमांड से इंस्टॉल करें। पहला हुक चलते ही wmux पता लगने की पुष्टि कर देता है।',
+    'प्लगइन स्थिति: अभी तक नहीं देखा गया। Claude Code में नीचे दिए गए कमांड से इंस्टॉल करें। पहला हुक चलते ही Forge Mux पता लगने की पुष्टि कर देता है।',
   'claudeIntegration.signalHealth.detectedLastReceived': 'अंतिम सिग्नल {rel}।',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'विलंबता P50 {p50}ms · P95 {p95}ms · {count} नमूने',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'वर्कस्पेस मिलान: {matched}/{total} हुक किसी wmux पेन से मैप हुए',
+    'वर्कस्पेस मिलान: {matched}/{total} हुक किसी Forge Mux पेन से मैप हुए',
   'claudeIntegration.signalHealth.staleBody':
     'प्लगइन स्थिति: पुरानी। अंतिम हुक {rel} आया — हो सकता है प्लगइन ने चलना बंद कर दिया हो या Claude Code निष्क्रिय हो।',
   'claudeIntegration.signalHealth.copyInstallCommand': 'इंस्टॉल कमांड कॉपी करें',

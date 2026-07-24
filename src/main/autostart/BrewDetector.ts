@@ -2,12 +2,12 @@ import * as fs from 'fs';
 import { isMac } from '../../shared/platform';
 
 const BREW_CASKROOM_PATHS = [
-  '/opt/homebrew/Caskroom/wmux',  // Apple Silicon (default Homebrew prefix)
-  '/usr/local/Caskroom/wmux',     // Intel Mac (legacy Homebrew prefix)
+  '/opt/homebrew/Caskroom/fmux',  // Apple Silicon (default Homebrew prefix)
+  '/usr/local/Caskroom/fmux',     // Intel Mac (legacy Homebrew prefix)
 ];
 
 /**
- * Returns true when this wmux installation appears to come from Homebrew Cask.
+ * Returns true when this Forge Mux installation appears to come from Homebrew Cask.
  * Used to disable in-app auto-update so brew/cask can manage upgrades.
  *
  * Detection: cask receipt directories live under Caskroom regardless of where

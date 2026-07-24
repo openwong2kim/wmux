@@ -1,8 +1,8 @@
 // === wmux Plugin Host types (B-1) ===
 //
-// UI plugins are static bundles under `~/.wmux/plugins/<name>/` described by
+// UI plugins are static bundles under `~/.fmux/plugins/<name>/` described by
 // a `manifest.json`. Their UI runs in a sandboxed iframe (allow-scripts only,
-// opaque origin) served over the `wmux-plugin://` protocol; all host
+// opaque origin) served over the `fmux-plugin://` protocol; all host
 // interaction goes through the postMessage bridge envelope below, which maps
 // 1:1 onto the existing RPC method space so the Phase 2.2 permission stack
 // (PluginTrustStore / PermissionEnforcer / methodCapabilityMap) applies
@@ -18,11 +18,11 @@ import type { WmuxEvent } from './events';
 export const PLUGIN_BRIDGE_VERSION = 1 as const;
 
 /** Protocol scheme serving plugin bundle files to sandboxed iframes. */
-export const PLUGIN_PROTOCOL_SCHEME = 'wmux-plugin';
+export const PLUGIN_PROTOCOL_SCHEME = 'fmux-plugin';
 
 /**
  * Plugin directory names double as the identity key in plugin-trust.json
- * and as the host segment of `wmux-plugin://<name>/...` URLs, so the
+ * and as the host segment of `fmux-plugin://<name>/...` URLs, so the
  * charset is restricted to what is safe in both.
  */
 export const PLUGIN_NAME_REGEX = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -167,7 +167,7 @@ const MAX_ACTIVATION_EVENTS = 32;
 const MAX_COMMANDS = 64;
 
 /**
- * Bundle-relative entry paths become `wmux-plugin://<name>/<entry>` URLs.
+ * Bundle-relative entry paths become `fmux-plugin://<name>/<entry>` URLs.
  * Reject anything that could escape the bundle dir or smuggle a scheme;
  * the protocol handler re-validates with a realpath containment check —
  * this is the first of two gates, not the only one.

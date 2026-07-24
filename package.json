@@ -41,17 +41,17 @@
     "electron"
   ],
   "author": {
-    "name": "openwong2kim",
+    "name": "skflowne",
     "email": "100856670+openwong2kim@users.noreply.github.com"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/openwong2kim/wmux.git"
+    "url": "https://github.com/skflowne/fmux.git"
   },
-  "homepage": "https://github.com/openwong2kim/wmux#readme",
+  "homepage": "https://github.com/skflowne/fmux#readme",
   "bugs": {
-    "url": "https://github.com/openwong2kim/wmux/issues"
+    "url": "https://github.com/skflowne/fmux/issues"
   },
   "engines": {
     "node": ">=18.0.0"

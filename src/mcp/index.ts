@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
+import { WMUX_SERVER_KEY } from '../shared/mcpTargets';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
@@ -364,7 +365,7 @@ function logIdentity(msg: string): void {
   if (loggedIdentityMsgs.has(msg)) return;
   if (loggedIdentityMsgs.size >= 50) loggedIdentityMsgs.clear();
   loggedIdentityMsgs.add(msg);
-  console.error(`[wmux-mcp] identity: ${msg}`);
+  console.error(`[fmux-mcp] identity: ${msg}`);
 }
 
 let identityEnvLogged = false;
@@ -378,7 +379,7 @@ function logIdentityEnvOnce(): void {
 }
 
 const server = new McpServer({
-  name: 'wmux',
+  name: WMUX_SERVER_KEY,
   version: getVersion(),
 });
 
@@ -726,7 +727,7 @@ async function requireWorkspaceId(): Promise<string> {
   if (!wsId) {
     throw new Error(
       'Workspace identity unknown. This MCP server cannot determine which workspace it belongs to. ' +
-      'Make sure you are running inside a wmux terminal workspace.'
+      'Make sure you are running inside a Forge Mux terminal workspace.'
     );
   }
   return wsId;
@@ -899,7 +900,7 @@ server.tool(
 
 server.tool(
   'terminal_read_events',
-  'Return structured OSC 133 prompt/command events (prompt_start, prompt_end, command_start, command_end with exit code) from a terminal. Requires shell integration — wmux auto-injects for pwsh and bash; cmd.exe is unsupported. Use this instead of terminal_read when you need command boundaries, exit codes, or byte offsets for diff-style reads.',
+  'Return structured OSC 133 prompt/command events (prompt_start, prompt_end, command_start, command_end with exit code) from a terminal. Requires shell integration — Forge Mux auto-injects for pwsh and bash; cmd.exe is unsupported. Use this instead of terminal_read when you need command boundaries, exit codes, or byte offsets for diff-style reads.',
   TERMINAL_READ_EVENTS_SHAPE,
   async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
     const route = await resolveTerminalRouteBound(ptyId);
@@ -1005,7 +1006,7 @@ server.tool(
 
 server.tool(
   'workspace_list',
-  'List all workspaces in wmux',
+  'List all workspaces in Forge Mux',
   {},
   async () => callRpc('workspace.list'),
 );
@@ -1082,7 +1083,7 @@ server.tool(
 
 server.tool(
   'wmux_events_poll',
-  'Poll the wmux EventBus for pane, process, agent, notification, and A2A task lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace — EXCEPT `a2a.task`, which is dual-party (visible to both the sending and receiving workspace; see the `types` field for details).',
+  'Poll the Forge Mux EventBus for pane, process, agent, notification, and A2A task lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace — EXCEPT `a2a.task`, which is dual-party (visible to both the sending and receiving workspace; see the `types` field for details).',
   WMUX_EVENTS_POLL_SHAPE,
   async ({ cursor, types, max }) => {
     const workspaceId = await requireWorkspaceId();

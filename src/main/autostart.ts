@@ -36,7 +36,9 @@ function electronApp(): Electron.App | null {
 }
 
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const VALUE_NAME = 'wmux';
+const VALUE_NAME = 'fmux';
+/** Pre-identity-boundary Run value — remove on write so login doesn't start twice. */
+const LEGACY_VALUE_NAME = 'wmux';
 
 // Hard cap on every reg.exe spawn. A wedged reg.exe (AV interception, a
 // corrupt hive, a GPO hook) would otherwise hang the synchronous call — which
@@ -60,8 +62,9 @@ function regExe(): string {
  */
 
 /**
- * True only when the per-user Run key currently holds a `wmux` value. On any
- * platform other than win32, or if reg.exe errors for any reason, returns false.
+ * True only when the per-user Run key currently holds a `fmux` (or legacy
+ * `wmux`) value. On any platform other than win32, or if reg.exe errors for
+ * any reason, returns false.
  */
 export function isAutostartEnabled(): boolean {
   if (process.platform === 'darwin') {
@@ -74,10 +77,14 @@ export function isAutostartEnabled(): boolean {
     }
   }
   if (process.platform !== 'win32') return false;
+  return hasRunValue(VALUE_NAME) || hasRunValue(LEGACY_VALUE_NAME);
+}
+
+function hasRunValue(name: string): boolean {
   try {
-    // `reg query ... /v wmux` exits 0 when the value exists, non-zero (throws
+    // `reg query ... /v <name>` exits 0 when the value exists, non-zero (throws
     // via execFileSync) when it is absent. stdio ignored — we only need the code.
-    execFileSync(regExe(), ['query', RUN_KEY, '/v', VALUE_NAME], {
+    execFileSync(regExe(), ['query', RUN_KEY, '/v', name], {
       windowsHide: true,
       stdio: 'ignore',
       timeout: REG_TIMEOUT_MS,
@@ -85,6 +92,17 @@ export function isAutostartEnabled(): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function deleteRunValue(name: string): void {
+  try {
+    execFileSync(regExe(), ['delete', RUN_KEY, '/v', name, '/f'], {
+      windowsHide: true,
+      timeout: REG_TIMEOUT_MS,
+    });
+  } catch {
+    /* best-effort — absent is fine */
   }
 }
 
@@ -106,6 +124,8 @@ export function enableAutostart(exePath: string = process.execPath): void {
       ['add', RUN_KEY, '/v', VALUE_NAME, '/t', 'REG_SZ', '/d', `"${exePath}"`, '/f'],
       { windowsHide: true, timeout: REG_TIMEOUT_MS },
     );
+    // Drop the legacy value so a prior identity doesn't double-launch at login.
+    deleteRunValue(LEGACY_VALUE_NAME);
   } catch {
     /* best-effort */
   }
@@ -122,14 +142,8 @@ export function disableAutostart(): void {
     return;
   }
   if (process.platform !== 'win32') return;
-  try {
-    execFileSync(regExe(), ['delete', RUN_KEY, '/v', VALUE_NAME, '/f'], {
-      windowsHide: true,
-      timeout: REG_TIMEOUT_MS,
-    });
-  } catch {
-    /* best-effort */
-  }
+  deleteRunValue(VALUE_NAME);
+  deleteRunValue(LEGACY_VALUE_NAME);
 }
 
 /** Convenience wrapper used by the IPC handler: set to the requested state. */

@@ -2,6 +2,7 @@ import { app } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { ALL_RPC_METHODS, type PaneMetadataCapabilities } from '../../../shared/rpc';
 import { WMUX_EVENT_TYPES, RING_CAPACITY } from '../../../shared/events';
+import { PRODUCT_SLUG } from '../../../shared/productIdentity';
 import { eventBus } from '../../events/EventBus';
 
 /**
@@ -21,7 +22,7 @@ export function registerSystemRpc(router: RpcRouter): void {
    */
   router.register('system.identify', (_params): Promise<SystemIdentity> => {
     return Promise.resolve({
-      app: 'wmux',
+      app: PRODUCT_SLUG,
       version: app.getVersion(),
       platform: process.platform,
       electronVersion: process.versions.electron ?? 'unknown',

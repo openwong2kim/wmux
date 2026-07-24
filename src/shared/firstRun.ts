@@ -81,7 +81,7 @@ export const FIRST_RUN_REOPEN_EVENT = 'wmux:firstrun-reopen';
  * Verbatim — do not alter without coordinating with SampleTaskRunner / wizard copy.
  */
 export const SAMPLE_TASK_COMMAND =
-  'claude "Use the wmux browser_open tool to navigate to https://www.google.com/search?q=wmux"';
+  'claude "Use the fmux browser_open tool to navigate to https://www.google.com/search?q=forge+mux"';
 
 /** OSC133 prompt-ready handshake timeout (ms). After this, fallback "Press Enter" UI. */
 export const OSC133_TIMEOUT_MS = 5000;

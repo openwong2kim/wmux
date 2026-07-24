@@ -1,8 +1,8 @@
 /**
- * X4 — `wmux` CLI shim installation (Windows / Squirrel).
+ * X4 — `fmux` CLI shim installation (Windows / Squirrel).
  *
  * The packaged app ships the bundled CLI at `<app>/resources/cli-bundle/index.js`.
- * To make `wmux` callable from any shell we drop a tiny `wmux.cmd` shim into
+ * To make `fmux` callable from any shell we drop a tiny `fmux.cmd` shim into
  * `<squirrelRoot>/bin` (a version-independent directory next to Update.exe)
  * and register that directory on the USER Path.
  *
@@ -51,6 +51,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { PRODUCT_CLI, PRODUCT_SLUG } from '../shared/productIdentity';
 
 /**
  * Batch shim content. Uses `%~dp0` (the shim's own directory, `<squirrelRoot>/bin`)
@@ -71,12 +72,12 @@ export function buildShimCmd(): string {
     'for /f "delims=" %%i in (\'dir /b /ad /o-d "%~dp0..\\app-*" 2^>nul\') do (',
     // No `call` — it is only needed for batch files and would re-expand
     // %-sequences and carets in the forwarded arguments.
-    '  "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
-    '  goto :wmux_done',
+    `  "%~dp0..\\%%i\\${PRODUCT_SLUG}.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*`,
+    `  goto :${PRODUCT_SLUG}_done`,
     ')',
-    'echo wmux: no app directory found in "%~dp0.." >&2',
+    `echo ${PRODUCT_CLI}: no app directory found in "%~dp0.." >&2`,
     'exit /b 1',
-    ':wmux_done',
+    `:${PRODUCT_SLUG}_done`,
     'endlocal & exit /b %ERRORLEVEL%',
     '',
   ].join('\r\n');
@@ -193,7 +194,7 @@ export function buildPathEditScript(
     // its failure must never mask a successful write.
     `try {`,
     `  $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);'`,
-    `  $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'Wmux' -PassThru`,
+    `  $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'Fmux' -PassThru`,
     `  [System.UIntPtr]$res = [System.UIntPtr]::Zero`,
     `  $null = $w::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res)`,
     `} catch { }`,
@@ -255,7 +256,7 @@ function runPathEdit(binDir: string, op: 'add' | 'remove'): void {
 }
 
 export interface ShimPaths {
-  /** Version-independent dir that receives wmux.cmd — `<squirrelRoot>/bin`. */
+  /** Version-independent dir that receives fmux.cmd — `<squirrelRoot>/bin`. */
   binDir: string;
   /** Bundled CLI entry inside the current version's resources. */
   cliJsPath: string;
@@ -269,7 +270,7 @@ export interface ShimPaths {
  */
 export function deriveShimPaths(execPath: string): ShimPaths {
   const appDir = path.win32.dirname(execPath); // …\wmux\app-X.Y.Z
-  const rootDir = path.win32.resolve(appDir, '..'); // …\wmux (Update.exe lives here)
+  const rootDir = path.win32.resolve(appDir, '..'); // …mux (Update.exe lives here)
   return {
     binDir: path.win32.join(rootDir, 'bin'),
     cliJsPath: path.win32.join(appDir, 'resources', 'cli-bundle', 'index.js'),
@@ -289,7 +290,7 @@ export function installCliShim(execPath: string): void {
       return;
     }
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(path.join(binDir, 'wmux.cmd'), buildShimCmd(), 'utf8');
+    fs.writeFileSync(path.join(binDir, `${PRODUCT_CLI}.cmd`), buildShimCmd(), 'utf8');
     runPathEdit(binDir, 'add');
   } catch (err) {
     console.warn('[cliShim] shim install failed (non-fatal):', err);
@@ -299,14 +300,14 @@ export function installCliShim(execPath: string): void {
 // ─── macOS (darwin) CLI shim ─────────────────────────────────────────────────
 //
 // DMG/ZIP installs have no Squirrel-style install hook, so on first launch we try once to
-// symlink `/usr/local/bin/wmux` → <app bundle>/Contents/Resources/cli-bundle/index.js
-// (fallback `~/.local/bin/wmux` on permission failure). The cli-bundle entry is an esbuild
+// symlink `/usr/local/bin/fmux` → <app bundle>/Contents/Resources/cli-bundle/index.js
+// (fallback `~/.local/bin/fmux` on permission failure). The cli-bundle entry is an esbuild
 // bundle with `#!/usr/bin/env node` shebang, so symlink + exec bit runs directly from shell
 // (chmod does not change content hash, so codesign seal stays safe).
 //
 // Ownership rule: never touch an existing file that is not "ours" (symlink pointing at
-// cli-bundle inside a wmux app bundle) — avoids collision with Homebrew cask etc. If ours
-// but target is an old bundle path, refresh to current target.
+// cli-bundle inside a Forge Mux app bundle) — avoids collision with Homebrew cask / upstream
+// wmux. If ours but target is an old bundle path, refresh to current target.
 
 /** Result of installCliShimDarwin. guidance is user-facing hint when non-null. */
 export interface DarwinShimInstallResult {
@@ -317,7 +318,7 @@ export interface DarwinShimInstallResult {
 
 /** Derive bundle CLI entry from darwin executable path. */
 export function deriveDarwinCliTarget(execPath: string): string {
-  // <bundle>/Contents/MacOS/wmux → <bundle>/Contents/Resources/cli-bundle/index.js
+  // <bundle>/Contents/MacOS/fmux → <bundle>/Contents/Resources/cli-bundle/index.js
   const contentsDir = path.posix.resolve(path.posix.dirname(execPath), '..');
   return path.posix.join(contentsDir, 'Resources', 'cli-bundle', 'index.js');
 }
@@ -350,11 +351,11 @@ export function installCliShimDarwin(
   } catch { /* best-effort */ }
 
   const fallbackDir = path.posix.join(homeDir, '.local', 'bin');
-  const candidates = opts.candidates ?? ['/usr/local/bin/wmux', path.posix.join(fallbackDir, 'wmux')];
+  const candidates = opts.candidates ?? [`/usr/local/bin/${PRODUCT_CLI}`, path.posix.join(fallbackDir, PRODUCT_CLI)];
 
   for (const linkPath of candidates) {
     // Check existing entry — if not ours, stop immediately on any candidate
-    // (Homebrew cask etc. may already provide `wmux`).
+    // (Homebrew cask / upstream wmux may already provide a same-named binary).
     let existing: fs.Stats | null = null;
     try {
       existing = fs.lstatSync(linkPath);
@@ -396,7 +397,7 @@ export function installCliShimDarwin(
       .some((p) => p.replace(/\/+$/, '') === linkDir);
     const guidance = onPath
       ? null
-      : `wmux CLI installed at ${linkPath}, but ${linkDir} is not on your PATH. ` +
+      : `${PRODUCT_CLI} CLI installed at ${linkPath}, but ${linkDir} is not on your PATH. ` +
         `Add it with: echo 'export PATH="${linkDir}:$PATH"' >> ~/.zshrc`;
     return { status: 'installed', linkPath, guidance };
   }
@@ -422,7 +423,7 @@ export function darwinShimNeedsRepair(
   const homeDir = opts.homeDir ?? (process.env.HOME || '');
   const target = deriveDarwinCliTarget(execPath);
   const fallbackDir = path.posix.join(homeDir, '.local', 'bin');
-  const candidates = opts.candidates ?? ['/usr/local/bin/wmux', path.posix.join(fallbackDir, 'wmux')];
+  const candidates = opts.candidates ?? [`/usr/local/bin/${PRODUCT_CLI}`, path.posix.join(fallbackDir, PRODUCT_CLI)];
 
   for (const linkPath of candidates) {
     let st: fs.Stats | null = null;

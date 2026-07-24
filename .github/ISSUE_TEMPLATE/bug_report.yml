@@ -1,14 +1,14 @@
 name: Bug report
-description: Something in wmux is broken or behaves unexpectedly.
+description: Something in Forge Mux is broken or behaves unexpectedly.
 title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a bug. wmux is a native Windows
+        Thanks for taking the time to file a bug. Forge Mux is a native Windows
         terminal multiplexer — please include enough detail for us to reproduce
-        it on a clean machine. Search [existing issues](https://github.com/openwong2kim/wmux/issues?q=is%3Aissue)
+        it on a clean machine. Search [existing issues](https://github.com/skflowne/fmux/issues?q=is%3Aissue)
         first; if you find a match, add a 👍 or a comment instead of opening a new one.
 
   - type: textarea
@@ -24,9 +24,9 @@ body:
     id: repro
     attributes:
       label: Steps to reproduce
-      description: Number the exact steps so we can follow along. Include any `wmux.json` or layout that matters.
+      description: Number the exact steps so we can follow along. Include any `fmux.json` or layout that matters.
       placeholder: |
-        1. Launch wmux
+        1. Launch Forge Mux
         2. Open a workspace and run `claude`
         3. Press Ctrl+D to split right
         4. Observe the right pane is blank
@@ -42,10 +42,10 @@ body:
       required: true
 
   - type: input
-    id: wmux-version
+    id: fmux-version
     attributes:
-      label: wmux version
-      description: "Found in Settings → About, or run `wmux --version`."
+      label: Forge Mux version
+      description: "Found in Settings → About, or run `fmux --version`."
       placeholder: e.g. 3.6.0
     validations:
       required: true
@@ -53,7 +53,7 @@ body:
   - type: dropdown
     id: install-method
     attributes:
-      label: How did you install wmux?
+      label: How did you install Forge Mux?
       options:
         - winget
         - Chocolatey
@@ -107,7 +107,7 @@ body:
       label: Logs, screenshots, or recordings
       description: |
         Attach anything that helps. Daemon and renderer logs live under
-        `%APPDATA%\wmux\logs`. Drag-and-drop images or paste a short clip.
+        `%APPDATA%\fmux\logs`. Drag-and-drop images or paste a short clip.
         Code and logs are rendered automatically — no backticks needed.
       render: shell
     validations:
@@ -120,5 +120,5 @@ body:
       options:
         - label: I searched existing issues and this is not a duplicate.
           required: true
-        - label: I am on Windows 10 or 11 (wmux is Windows-only).
+        - label: I am on Windows 10 or 11 (Forge Mux is Windows-only).
           required: true

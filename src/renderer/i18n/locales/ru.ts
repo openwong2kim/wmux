@@ -131,7 +131,7 @@ export const ru = {
   'settings.scrollbackRestore': 'Восстанавливать при запуске',
   'settings.scrollbackRestoreDesc': 'После перезапуска подключаться к выводу прошлой сессии. Отключите, чтобы каждая панель запускалась с чистого листа.',
   'settings.updates': 'Обновления',
-  'settings.wmuxUpdates': 'Обновления wmux',
+  'settings.wmuxUpdates': 'Обновления Forge Mux',
   'settings.updateFailed': 'Не удалось проверить обновления',
   'settings.lastCheckedNever': 'Последняя проверка: никогда',
   'settings.installUpdate': 'Установить обновление',
@@ -238,7 +238,7 @@ export const ru = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Автоматические обновления',
-  'firstRun.autoUpdateMessage': 'Разрешить WMUX автоматически проверять обновления? Это можно изменить позже в настройках.',
+  'firstRun.autoUpdateMessage': 'Разрешить Forge Mux автоматически проверять обновления? Это можно изменить позже в настройках.',
   'firstRun.enable': 'Включить',
   'firstRun.disable': 'Нет, спасибо',
 
@@ -249,7 +249,7 @@ export const ru = {
   'settings.firstRunSetup.lastCompleted': 'Последнее завершение: {date}',
   'settings.firstRunSetup.notCompleted': 'Ещё не завершено',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'обнаружен',
   'settings.firstRunSetup.statusNotDetected': 'не обнаружен',
   'settings.firstRunSetup.statusRegistered': 'зарегистрирован',
@@ -261,12 +261,12 @@ export const ru = {
   'claudeIntegration.tab': 'Интеграция с Claude',
   'claudeIntegration.signalHealth.title': 'Состояние сигнала плагина',
   'claudeIntegration.signalHealth.unknownBody':
-    'Статус плагина: ещё не зафиксирован. Установите его командой ниже в Claude Code. wmux подтвердит обнаружение, как только сработает первый хук.',
+    'Статус плагина: ещё не зафиксирован. Установите его командой ниже в Claude Code. Forge Mux подтвердит обнаружение, как только сработает первый хук.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Последний сигнал {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Задержка P50 {p50}ms · P95 {p95}ms · {count} измерений',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Совпадение рабочих пространств: {matched}/{total} хуков сопоставлены с панелью wmux',
+    'Совпадение рабочих пространств: {matched}/{total} хуков сопоставлены с панелью Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'Статус плагина: устарел. Последний хук пришёл {rel} — возможно, плагин перестал срабатывать или Claude Code простаивает.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Копировать команду установки',

@@ -94,7 +94,7 @@ export type RespawnEvent =
        * without any captured throw (e.g. spawnAndConnect kept returning
        * null without raising). Main consumes this to populate the
        * Electron dialog so the user has something more actionable than
-       * "wmux daemon could not start".
+       * "Forge Mux daemon could not start".
        */
       lastError?: string;
     };
@@ -171,7 +171,7 @@ export class DaemonRespawnController {
    * spawnAndConnect null returns inside attemptRespawn, and any other
    * caught error in the lifecycle. Surfaces in `respawn-exhausted` so
    * the renderer / main dialog can show a meaningful diagnostic instead
-   * of a generic "wmux daemon could not start".
+   * of a generic "Forge Mux daemon could not start".
    */
   private lastError: string | undefined;
   /**

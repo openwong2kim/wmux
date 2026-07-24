@@ -90,7 +90,7 @@ describe('sessionInfoMarkdown', () => {
   it('buildWorkspaceMarkdown matches the legacy clipboard fixture byte-for-byte', () => {
     const ws = makeWorkspace();
     const expected = [
-      '# wmux Workspace: "My WS"',
+      '# Forge Mux Workspace: "My WS"',
       '- Workspace ID: ws-1',
       '',
       '## Panes',
@@ -136,7 +136,7 @@ describe('sessionInfoMarkdown', () => {
     const ws = makeWorkspace();
     const md = buildPaneMarkdown(ws, 'pane-1');
 
-    expect(md).toContain('# wmux Pane in "My WS"');
+    expect(md).toContain('# Forge Mux Pane in "My WS"');
     expect(md).toContain('- Workspace ID: ws-1');
     expect(md).toContain('- Pane ID: pane-1');
     expect(md).toContain('## Surfaces');

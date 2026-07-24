@@ -17,7 +17,7 @@ export const ko = {
   'sidebar.screenOff': '화면 끄기',
   'sidebar.screenOn': '화면 켜기',
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
-  'sidebar.screenOffAccessibility': 'wmux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
+  'sidebar.screenOffAccessibility': 'Forge Mux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
   'sidebar.screenOffFailed': '내장 화면 전환에 실패했습니다.',
   'sidebar.agentTooltip': '에이전트 패널 토글',
 
@@ -183,8 +183,8 @@ export const ko = {
   'terminal.staleScreen': '화면이 최신이 아닐 수 있음 — 재시도 예정',
   'retention.migratedNotice': '이번 업데이트부터 숨겨진 패널의 렌더링을 일시정지합니다 (모든 것은 계속 실행되며, 다시 표시될 때 따라잡습니다). Settings → Terminal에서 끌 수 있습니다.',
   'retention.migratedNoticeTurnOff': '끄기',
-  'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 창 메뉴',
-  'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
+  'terminal.supervisedRestart': '[fmux] 감독 재시작 #{count} — 중지: 창 메뉴',
+  'terminal.supervisedRestartExit': '[fmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
   'terminal.copied': '복사됨!',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
@@ -255,7 +255,7 @@ export const ko = {
   'settings.autoUpdateDesc': '자동으로 업데이트를 확인하고 설치합니다',
   'settings.startup': '시작 프로그램',
   'settings.startOnLogin': 'Windows 시작 시 자동 실행',
-  'settings.startOnLoginDesc': 'Windows에 로그인하면 wmux를 자동으로 실행합니다',
+  'settings.startOnLoginDesc': 'Windows에 로그인하면 Forge Mux를 자동으로 실행합니다',
   'settings.checkUpdate': '업데이트 확인',
   'settings.checking': '확인 중...',
   'settings.upToDate': '최신 버전',
@@ -283,7 +283,7 @@ export const ko = {
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
-    'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
+    'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(Forge Mux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
   // Per-workspace agent mode — single autonomy knob (off/assist/auto).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',
@@ -302,8 +302,8 @@ export const ko = {
   'deck.contextCleared': '오케스트레이터 컨텍스트를 지웠습니다 — 다음 턴은 새 대화로 시작합니다.',
   'deck.contextClearFailed': '오케스트레이터 컨텍스트를 지우지 못했습니다.',
   // Prompt Claude Code hook bridge install (on run + when raising mode).
-  'hooks.prompt.title': '정확한 agent 신호를 위해 wmux hook을 설치하세요',
-  'hooks.prompt.body': 'hook이 없으면 wmux는 화면 텍스트를 읽어 agent 완료를 추측합니다 — 완료·승인 신호를 놓칠 수 있습니다. Claude Code 설정에 hook 브리지를 설치하면 신호가 정확해집니다.',
+  'hooks.prompt.title': '정확한 agent 신호를 위해 Forge Mux hook을 설치하세요',
+  'hooks.prompt.body': 'hook이 없으면 Forge Mux는 화면 텍스트를 읽어 agent 완료를 추측합니다 — 완료·승인 신호를 놓칠 수 있습니다. Claude Code 설정에 hook 브리지를 설치하면 신호가 정확해집니다.',
   'hooks.prompt.install': 'hook 설치',
   'hooks.prompt.installing': '설치 중…',
   'hooks.prompt.later': '나중에',
@@ -334,7 +334,7 @@ export const ko = {
     '켜면 선택한 인터페이스에서 LAN 포트를 엽니다 — Windows가 허용을 물을 수 있습니다. Private(개인) 네트워크 프로필에서만 동작하며, 공용 네트워크에는 절대 노출되지 않습니다.',
   'settings.lanlinkLoading': 'LanLink 상태 확인 중…',
   'settings.lanlinkApplying': '적용 중…',
-  'settings.lanlinkUnavailable': 'LanLink는 wmux 데몬이 필요합니다 — 로컬 전용 모드에서는 사용할 수 없습니다. 데몬이 연결되면 표시됩니다.',
+  'settings.lanlinkUnavailable': 'LanLink는 Forge Mux 데몬이 필요합니다 — 로컬 전용 모드에서는 사용할 수 없습니다. 데몬이 연결되면 표시됩니다.',
   // LanLink pairing (PR-5)
   'settings.lanlinkPair': '페어링',
   'settings.lanlinkPairDisabled': '다른 머신과 페어링하려면 위에서 LanLink를 켜고 네트워크 인터페이스를 선택하세요.',
@@ -389,7 +389,7 @@ export const ko = {
   'settings.browserDiscard': '숨은 브라우저 내리기 (메모리 절감)',
   'settings.browserDiscardDesc': '브라우저 패널이 5분 동안 보이지 않으면 완전히 내려 메모리를 회수합니다. 돌아오면 페이지가 다시 로드됩니다(스크롤 위치와 저장하지 않은 입력은 사라집니다). 오디오 재생 중인 패널은 내리지 않으며, 자동화는 내려간 패널을 자동으로 깨웁니다.',
   'settings.updates': '업데이트',
-  'settings.wmuxUpdates': 'wmux 업데이트',
+  'settings.wmuxUpdates': 'Forge Mux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',
   'settings.lastCheckedNever': '마지막 확인: 없음',
   'settings.installUpdate': '업데이트 설치',
@@ -544,18 +544,18 @@ export const ko = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': '자동 업데이트',
-  'firstRun.autoUpdateMessage': 'WMUX가 자동으로 업데이트를 확인하도록 할까요? 나중에 설정에서 변경할 수 있습니다.',
+  'firstRun.autoUpdateMessage': 'Forge Mux가 자동으로 업데이트를 확인하도록 할까요? 나중에 설정에서 변경할 수 있습니다.',
   'firstRun.enable': '사용',
   'firstRun.disable': '사용 안 함',
 
   // First-run wizard (Plan 1.15) — magical-moment onboarding
-  'firstRunWizard.title': 'wmux에 오신 것을 환영합니다',
+  'firstRunWizard.title': 'Forge Mux에 오신 것을 환영합니다',
   'firstRunWizard.subtitle': '첫 매직 모먼트를 설정해 봅시다.',
   'firstRunWizard.claudeDetected': 'Claude Code 감지됨',
   'firstRunWizard.claudeNotDetected': 'Claude Code를 찾을 수 없습니다',
   'firstRunWizard.claudeInstallHint': '샘플 작업을 사용하려면 먼저 Claude Code를 설치하세요.',
-  'firstRunWizard.mcpRegistered': 'wmux MCP 서버: 등록됨',
-  'firstRunWizard.mcpNotRegistered': 'wmux MCP 서버: 미등록',
+  'firstRunWizard.mcpRegistered': 'Forge Mux MCP 서버: 등록됨',
+  'firstRunWizard.mcpNotRegistered': 'Forge Mux MCP 서버: 미등록',
   'firstRunWizard.registerMcpButton': '등록',
   'firstRunWizard.sampleTaskHeading': '샘플 작업 시도',
   'firstRunWizard.sampleTaskDescription': '2x2 분할을 열고 Claude에게 웹 검색을 시켜봅니다.',
@@ -577,7 +577,7 @@ export const ko = {
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
   'firstRunWizard.error.PERM.problem': '~/.claude.json에 쓸 수 없습니다.',
   'firstRunWizard.error.PERM.cause': '다른 사용자가 소유하거나 권한이 제한되어 있습니다.',
-  'firstRunWizard.error.PERM.fix': '`chmod 600 ~/.claude.json` 후 재시도하거나, `wmux mcp register`로 수동 등록하세요.',
+  'firstRunWizard.error.PERM.fix': '`chmod 600 ~/.claude.json` 후 재시도하거나, `fmux mcp register`로 수동 등록하세요.',
   'firstRunWizard.error.PARSE.problem': '~/.claude.json 파일이 손상되었습니다.',
   'firstRunWizard.error.PARSE.cause': '이전 편집으로 JSON 형식이 잘못되었습니다 (쉼표 누락, 중괄호 불일치 등).',
   'firstRunWizard.error.PARSE.fix': 'JSON을 수동으로 수정하거나 백업 후 Claude Code가 재생성하도록 하세요.',
@@ -586,7 +586,7 @@ export const ko = {
   'firstRunWizard.error.IO.fix': '디스크 공간과 홈 디렉토리 권한을 확인 후 재시도하세요.',
   'firstRunWizard.error.UNKNOWN.problem': '등록에 실패했습니다.',
   'firstRunWizard.error.UNKNOWN.cause': '예상치 못한 오류가 발생했습니다.',
-  'firstRunWizard.error.UNKNOWN.fix': '재시도하거나 터미널에서 `wmux mcp register`를 실행하세요.',
+  'firstRunWizard.error.UNKNOWN.fix': '재시도하거나 터미널에서 `fmux mcp register`를 실행하세요.',
 
   // Onboarding spotlight tour (steps.ts / OnboardingOverlay) — #452
   'onboarding.step1.title': '터미널',
@@ -618,7 +618,7 @@ export const ko = {
   'settings.firstRunSetup.lastCompleted': '마지막 완료: {date}',
   'settings.firstRunSetup.notCompleted': '아직 완료되지 않음',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': '감지됨',
   'settings.firstRunSetup.statusNotDetected': '감지되지 않음',
   'settings.firstRunSetup.statusRegistered': '등록됨',
@@ -630,12 +630,12 @@ export const ko = {
   'claudeIntegration.tab': 'Claude 연동',
   'claudeIntegration.signalHealth.title': '플러그인 신호 상태',
   'claudeIntegration.signalHealth.unknownBody':
-    '플러그인 상태: 아직 신호가 관측되지 않았습니다. Claude Code에서 아래 명령을 실행해 설치하세요. 첫 hook이 발생하면 wmux가 자동으로 감지합니다.',
+    '플러그인 상태: 아직 신호가 관측되지 않았습니다. Claude Code에서 아래 명령을 실행해 설치하세요. 첫 hook이 발생하면 Forge Mux가 자동으로 감지합니다.',
   'claudeIntegration.signalHealth.detectedLastReceived': '마지막 신호 {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     '지연 P50 {p50}ms · P95 {p95}ms · 샘플 {count}건',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    '워크스페이스 매칭: {matched}/{total} hook이 wmux pane으로 해결됨',
+    '워크스페이스 매칭: {matched}/{total} hook이 Forge Mux pane으로 해결됨',
   'claudeIntegration.signalHealth.staleBody':
     '플러그인 상태: 오래됨. 마지막 hook이 {rel}에 도착했습니다 — 플러그인이 멈췄거나 Claude Code가 휴면 상태일 수 있습니다.',
   'claudeIntegration.signalHealth.copyInstallCommand': '설치 명령 복사',
@@ -734,7 +734,7 @@ export const ko = {
   'channels.memberStaleTitle': '에이전트 판이 사라졌거나 재시작 중입니다',
   'channels.joinedToast': '{workspace}을(를) #{channel}에 추가했습니다',
   'channels.daemonStaleBanner':
-    '채널이 업데이트되었지만 백그라운드 데몬이 이전 버전으로 실행 중입니다. wmux를 완전히 종료한 뒤 다시 시작하면 적용됩니다.',
+    '채널이 업데이트되었지만 백그라운드 데몬이 이전 버전으로 실행 중입니다. Forge Mux를 완전히 종료한 뒤 다시 시작하면 적용됩니다.',
   'daemon.replacingToast':
     '백그라운드 데몬을 이 버전으로 업데이트하는 중입니다 — 판이 잠시 멈췄다가 자동으로 복원될 수 있습니다.',
   'channels.alreadyMemberToast': '{workspace}은(는) 이미 #{channel}에 있습니다',

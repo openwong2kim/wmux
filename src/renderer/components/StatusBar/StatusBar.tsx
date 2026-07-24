@@ -11,6 +11,7 @@ import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import { PRODUCT_NAME } from '../../../shared/productIdentity';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -160,7 +161,7 @@ export default function StatusBar() {
       {/* Left: current workspace (back at its original status-row spot —
           owner call) + transient indicators (prefix mode, branch, badge) */}
       <div className="flex items-center gap-3" style={noDrag}>
-        <span className="text-[12px] text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
+        <span className="text-[12px] text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || PRODUCT_NAME}</span>
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]

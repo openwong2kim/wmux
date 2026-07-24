@@ -58,7 +58,7 @@ function sleep(ms: number): Promise<void> {
 async function main(): Promise<void> {
   const token = readAuthToken();
   if (!token) {
-    console.error('[wmux-mcp-shim] auth token not found. Is wmux running?');
+    console.error('[fmux-mcp-shim] auth token not found. Is Forge Mux running?');
     process.exit(1);
   }
 
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   }
   if (!socket) {
     console.error(
-      `[wmux-mcp-shim] cannot reach broker at ${pipeName}: ` +
+      `[fmux-mcp-shim] cannot reach broker at ${pipeName}: ` +
         `${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
     );
     process.exit(1);
@@ -119,11 +119,11 @@ async function main(): Promise<void> {
 
   // Broker went away mid-session → exit non-zero (see failure contract).
   socket.on('close', () => {
-    console.error('[wmux-mcp-shim] broker connection closed');
+    console.error('[fmux-mcp-shim] broker connection closed');
     process.exit(1);
   });
   socket.on('error', (err) => {
-    console.error(`[wmux-mcp-shim] broker connection error: ${err.message}`);
+    console.error(`[fmux-mcp-shim] broker connection error: ${err.message}`);
     process.exit(1);
   });
 
@@ -136,6 +136,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[wmux-mcp-shim] failed to start:', err);
+  console.error('[fmux-mcp-shim] failed to start:', err);
   process.exit(1);
 });

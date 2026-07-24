@@ -131,7 +131,7 @@ export const zhTW = {
   'settings.scrollbackRestore': '啟動時還原',
   'settings.scrollbackRestoreDesc': '重新啟動後重新連接上一個工作階段的輸出。關閉時每個面板都從空白開始。',
   'settings.updates': '更新',
-  'settings.wmuxUpdates': 'wmux 更新',
+  'settings.wmuxUpdates': 'Forge Mux 更新',
   'settings.updateFailed': '檢查更新失敗',
   'settings.lastCheckedNever': '最後檢查: 從未',
   'settings.installUpdate': '安裝更新',
@@ -238,7 +238,7 @@ export const zhTW = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': '自動更新',
-  'firstRun.autoUpdateMessage': '要讓 WMUX 自動檢查更新嗎? 您之後可以在設定中變更。',
+  'firstRun.autoUpdateMessage': '要讓 Forge Mux 自動檢查更新嗎? 您之後可以在設定中變更。',
   'firstRun.enable': '啟用',
   'firstRun.disable': '不用了',
 
@@ -248,7 +248,7 @@ export const zhTW = {
   'settings.firstRunSetup.lastCompleted': '上次完成：{date}',
   'settings.firstRunSetup.notCompleted': '尚未完成',
   'settings.firstRunSetup.claudeStatus': 'Claude Code：{status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP：{status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP：{status}',
   'settings.firstRunSetup.statusDetected': '已偵測到',
   'settings.firstRunSetup.statusNotDetected': '未偵測到',
   'settings.firstRunSetup.statusRegistered': '已註冊',
@@ -260,12 +260,12 @@ export const zhTW = {
   'claudeIntegration.tab': 'Claude 整合',
   'claudeIntegration.signalHealth.title': '外掛訊號健康狀態',
   'claudeIntegration.signalHealth.unknownBody':
-    '外掛狀態：尚未偵測到。請在 Claude Code 中使用下方指令安裝。第一個 hook 觸發後，wmux 即會確認偵測結果。',
+    '外掛狀態：尚未偵測到。請在 Claude Code 中使用下方指令安裝。第一個 hook 觸發後，Forge Mux 即會確認偵測結果。',
   'claudeIntegration.signalHealth.detectedLastReceived': '上次收到訊號：{rel}。',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     '延遲 P50 {p50}ms · P95 {p95}ms · {count} 個樣本',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    '工作區比對：{matched}/{total} 個 hook 對應到 wmux 面板',
+    '工作區比對：{matched}/{total} 個 hook 對應到 Forge Mux 面板',
   'claudeIntegration.signalHealth.staleBody':
     '外掛狀態：已停滯。上次 hook 於 {rel} 送達 — 外掛可能已停止觸發，或 Claude Code 處於閒置狀態。',
   'claudeIntegration.signalHealth.copyInstallCommand': '複製安裝指令',

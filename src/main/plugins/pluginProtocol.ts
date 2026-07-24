@@ -1,7 +1,7 @@
-// wmux-plugin:// protocol — serves UI plugin bundle files to sandboxed
+// fmux-plugin:// protocol — serves UI plugin bundle files to sandboxed
 // iframes. Read-only, GET-only, loaded-plugins-only.
 //
-// URL shape: wmux-plugin://<plugin-name>/<bundle-relative-path>
+// URL shape: fmux-plugin://<plugin-name>/<bundle-relative-path>
 //
 // Security properties (the iframe sandbox depends on these):
 //   - only plugins the PluginHostLoader actually loaded resolve — an

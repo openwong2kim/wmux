@@ -73,7 +73,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const connId = ++connSeq;
   const scope: ConnectionScope = createConnectionScope();
 
-  const log = (msg: string) => console.error(`[wmux-mcp-broker] #${connId} ${msg}`);
+  const log = (msg: string) => console.error(`[fmux-mcp-broker] #${connId} ${msg}`);
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
@@ -155,7 +155,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 function main(): void {
   const expectedToken = readAuthToken();
   if (!expectedToken) {
-    console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');
+    console.error('[fmux-mcp-broker] auth token not found; refusing to serve. Is Forge Mux running?');
     process.exit(1);
   }
 
@@ -171,7 +171,7 @@ function main(): void {
     // socket open forever. Destroy any socket that hasn't delivered its
     // handshake line within the window; cleared the moment the line arrives.
     const authTimer = setTimeout(() => {
-      console.error('[wmux-mcp-broker] handshake timeout, dropping connection');
+      console.error('[fmux-mcp-broker] handshake timeout, dropping connection');
       socket.destroy();
     }, HANDSHAKE_TIMEOUT_MS);
     socket.once('close', () => clearTimeout(authTimer));
@@ -181,7 +181,7 @@ function main(): void {
       const nl = buffer.indexOf(0x0a);
       if (nl === -1) {
         if (buffer.length > MAX_HANDSHAKE) {
-          console.error('[wmux-mcp-broker] oversized handshake, dropping connection');
+          console.error('[fmux-mcp-broker] oversized handshake, dropping connection');
           socket.destroy();
         }
         return;
@@ -197,12 +197,12 @@ function main(): void {
       } catch { /* fall through to reject */ }
 
       if (!handshake || handshake.wmuxShim !== 1) {
-        console.error('[wmux-mcp-broker] malformed handshake, dropping connection');
+        console.error('[fmux-mcp-broker] malformed handshake, dropping connection');
         socket.destroy();
         return;
       }
       if (!tokenMatches(handshake.authToken, expectedToken)) {
-        console.error('[wmux-mcp-broker] auth failed, dropping connection');
+        console.error('[fmux-mcp-broker] auth failed, dropping connection');
         socket.destroy();
         return;
       }
@@ -216,7 +216,7 @@ function main(): void {
           socket.resume();
         })
         .catch((err) => {
-          console.error('[wmux-mcp-broker] failed to host connection:', err);
+          console.error('[fmux-mcp-broker] failed to host connection:', err);
           socket.destroy();
         });
     };
@@ -229,7 +229,7 @@ function main(): void {
   server.on('error', (err) => {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'EADDRINUSE') {
-      console.error(`[wmux-mcp-broker] server error: ${err.message}`);
+      console.error(`[fmux-mcp-broker] server error: ${err.message}`);
       process.exit(1);
       return;
     }
@@ -241,14 +241,14 @@ function main(): void {
     // listen once. Windows named pipes vanish with their owner (no stale file),
     // so there the only cause is a live broker — stand down directly.
     if (process.platform === 'win32' || staleRetried) {
-      console.error('[wmux-mcp-broker] pipe in use by a live broker; standing down');
+      console.error('[fmux-mcp-broker] pipe in use by a live broker; standing down');
       process.exit(75);
       return;
     }
     const probe = net.connect(pipeName);
     probe.once('connect', () => {
       probe.destroy();
-      console.error('[wmux-mcp-broker] another broker is live; standing down');
+      console.error('[fmux-mcp-broker] another broker is live; standing down');
       process.exit(75);
     });
     probe.once('error', () => {
@@ -258,13 +258,13 @@ function main(): void {
         fs.unlinkSync(pipeName);
       } catch { /* already gone / not a filesystem path — listen retry decides */ }
       server.listen(pipeName, () => {
-        console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
+        console.error(`[fmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
       });
     });
   });
 
   server.listen(pipeName, () => {
-    console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
+    console.error(`[fmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
 
   const shutdown = () => {

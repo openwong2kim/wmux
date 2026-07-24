@@ -97,13 +97,13 @@ export interface LocalPtyDeps {
 export const defaultChannelNudge: FormatChannelNudge = (message) => {
   const shortChannel = (message.channelId || '').replace(/^ch-/, '').slice(0, 8);
   const shortMember = sanitizeA2aName(message.memberName || '').slice(0, 32);
-  return `[wmux-channel #${shortChannel} from ${shortMember} — see channel history (seq ${message.seq})]`;
+  return `[fmux-channel #${shortChannel} from ${shortMember} — see channel history (seq ${message.seq})]`;
 };
 
 /**
  * Default message-body formatter. Bracketed-paste-friendly envelope:
  *
- *   ━━━ WMUX CHANNEL #general ━━━
+ *   ━━━ FMUX CHANNEL #general ━━━
  *   [Alice] hello world
  *   ━━ END ━━
  *
@@ -129,7 +129,7 @@ export const defaultChannelMessage: FormatChannelMessage = (message) => {
     .replace(/\r/g, '');                       // CR (LF preserved)
   return [
     '',
-    `━━━ WMUX CHANNEL #${shortChannel} ━━━`,
+    `━━━ FMUX CHANNEL #${shortChannel} ━━━`,
     `[${safeName}] ${safeText}`,
     `━━━ END ━━━`,
     '',

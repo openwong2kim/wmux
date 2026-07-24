@@ -47,7 +47,7 @@ function safeBody(message: string): string {
  * Wraps an A2A message in a structured envelope with Unicode box-drawing
  * delimiters (━) so the receiving agent can clearly identify it.
  *
- *   ━━━ WMUX A2A [Priority: HIGH] ━━━
+ *   ━━━ FMUX A2A [Priority: HIGH] ━━━
  *   From: Workspace 1
  *   To: Workspace 2
  *
@@ -63,7 +63,7 @@ export function formatA2aMessage(
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
     '',
-    `━━━ WMUX A2A${priLine} ━━━`,
+    `━━━ FMUX A2A${priLine} ━━━`,
     `From: ${safeName(from)}`,
     `To: ${safeName(to)}`,
     '',
@@ -76,7 +76,7 @@ export function formatA2aMessage(
 /**
  * Broadcast variant — delivered to all workspaces.
  *
- *   ━━━ WMUX A2A BROADCAST [Priority: HIGH] ━━━
+ *   ━━━ FMUX A2A BROADCAST [Priority: HIGH] ━━━
  *   From: Workspace 1
  *
  *   All workspaces: please pull latest.
@@ -90,7 +90,7 @@ export function formatA2aBroadcast(
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
     '',
-    `━━━ WMUX A2A BROADCAST${priLine} ━━━`,
+    `━━━ FMUX A2A BROADCAST${priLine} ━━━`,
     `From: ${safeName(from)}`,
     '',
     safeBody(message).trimEnd(),

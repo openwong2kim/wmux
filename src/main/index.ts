@@ -49,6 +49,7 @@ import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir } from '../shared/constants';
+import { PRODUCT_NAME, PRODUCT_REPO_URL } from '../shared/productIdentity';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
@@ -181,7 +182,7 @@ if (process.platform === 'win32') {
       try {
         const killed = terminateRunningAppInstances();
         if (killed.length > 0) {
-          console.log(`[Squirrel] terminated running wmux instance(s) before install work: ${killed.join(', ')}`);
+          console.log(`[Squirrel] terminated running Forge Mux instance(s) before install work: ${killed.join(', ')}`);
         }
       } catch { /* best-effort */ }
     }
@@ -564,7 +565,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
     }
     lastCrashTime = now;
     if (crashCount >= 3) {
-      require('electron').dialog.showErrorBox('wmux', 'Renderer crashed repeatedly. Please restart.');
+      require('electron').dialog.showErrorBox(PRODUCT_NAME, 'Renderer crashed repeatedly. Please restart.');
       app.quit();
       return;
     }
@@ -968,11 +969,11 @@ app.on('ready', async () => {
   // best-practice for downstream redistribution and complements the
   // bundled LICENSE / THIRD_PARTY_NOTICES files.
   app.setAboutPanelOptions({
-    applicationName: 'wmux',
+    applicationName: PRODUCT_NAME,
     applicationVersion: app.getVersion(),
     version: app.getVersion(),
     copyright: 'MIT License — see LICENSE in the install folder.',
-    website: 'https://github.com/skflowne/fmux',
+    website: PRODUCT_REPO_URL,
     iconPath: app.isPackaged
       ? path.join(process.resourcesPath, 'icon.png')
       : path.join(__dirname, '..', '..', 'assets', 'icon.png'),
@@ -987,7 +988,7 @@ app.on('ready', async () => {
   // originally motivated full serialization is now closed by the
   // get-ready-state resolver queue + paneGate instead of by ordering).
   // Plugin host (B-1): discover UI plugin bundles and serve them over
-  // wmux-plugin:// to sandboxed iframes. Registered before the window
+  // fmux-plugin:// to sandboxed iframes. Registered before the window
   // loads so panel iframes never race the protocol handler. Best-effort:
   // a broken plugins dir must never block app boot.
   try {
@@ -1227,9 +1228,9 @@ app.on('ready', async () => {
         if (process.env.WMUX_NO_DIALOG !== '1') {
           const hint = event.lastError && event.lastError.length > 0
             ? event.lastError
-            : 'wmux could not bring the daemon back up after 5 retries.';
+            : 'Forge Mux could not bring the daemon back up after 5 retries.';
           dialog.showErrorBox(
-            'wmux daemon unavailable',
+            'Forge Mux daemon unavailable',
             `${hint}\n\nForge Mux will keep running in local-only mode. To recover:\n  1. Quit Forge Mux from the tray.\n  2. In an elevated PowerShell, run:  Get-Process | Where-Object { $_.Path -like '*fmux*' }\n  3. taskkill /F /PID <pid>  for any leftover daemon process.\n  4. Delete ~/.fmux/daemon.pid if it exists.\n  5. Re-launch Forge Mux.`,
           );
         }

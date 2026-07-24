@@ -107,7 +107,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  process.stdout.write(`wmux event-recorder — reference plugin (v${VERSION})
+  process.stdout.write(`Forge Mux event-recorder — reference plugin (v${VERSION})
 
 Usage: node recorder.mjs [options]
 
@@ -191,12 +191,12 @@ async function withApprovalRetry(client, fn, label) {
       const rej = err instanceof WmuxRpcError ? err.rejection : undefined;
       if (rej && rej.reason === 'identity-status') {
         if (rej.status === 'denied') {
-          log(`${label}: plugin DENIED by user — stopping. Edit ~/.wmux/plugin-trust.json to restore.`);
+          log(`${label}: plugin DENIED by user — stopping. Edit ~/.fmux/plugin-trust.json to restore.`);
           throw err;
         }
         const promptId = rej.pendingApproval?.promptId;
         if (!announced) {
-          log(`${label}: waiting for approval in the wmux UI (promptId=${promptId ?? 'n/a'})`);
+          log(`${label}: waiting for approval in the Forge Mux UI (promptId=${promptId ?? 'n/a'})`);
           announced = true;
         }
         await sleep(BACKOFF_MS);
@@ -327,7 +327,7 @@ async function main() {
   );
   const workspaces = asArray(wsResult);
   if (workspaces.length === 0) {
-    log('no workspaces found — is wmux running with at least one workspace?');
+    log('no workspaces found — is Forge Mux running with at least one workspace?');
     client.close();
     return 1;
   }

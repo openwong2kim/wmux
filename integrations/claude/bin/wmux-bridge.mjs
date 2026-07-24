@@ -6,12 +6,12 @@
 //   1. Determines the hook name from process.argv[2].
 //   2. Reads the Claude Code hook payload from stdin (JSON).
 //   3. Builds the canonical AgentSignal envelope.
-//   4. Sends the envelope to the first reachable wmux endpoint:
+//   4. Sends the envelope to the first reachable Forge Mux endpoint:
 //        a. Native hosts try the daemon control pipe first, then the main pipe.
 //        b. WSL connects to the Windows main process over its authenticated TCP
 //           fallback, trying mirrored-loopback and NAT-gateway addresses.
-//   5. Logs the outcome (and which endpoint served it) to ~/.wmux/bridge.log.
-//   6. Exits 0 ALWAYS (so a wmux problem never breaks Claude Code).
+//   5. Logs the outcome (and which endpoint served it) to ~/.fmux/bridge.log.
+//   6. Exits 0 ALWAYS (so a Forge Mux problem never breaks Claude Code).
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside a Claude Code plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -90,8 +90,8 @@ function localHome() {
 // native transports cross the VM boundary: the Windows named pipe and the
 // Linux Unix socket are each invisible to the other side. But the app also
 // runs a TCP fallback (PipeServer.startTcpFallback → <bind>:<port>, port
-// persisted to %USERPROFILE%\.wmux-tcp-port, token to
-// %USERPROFILE%\.wmux-auth-token). We read the Windows-side token + port from
+// persisted to %USERPROFILE%\.fmux-tcp-port, token to
+// %USERPROFILE%\.fmux-auth-token). We read the Windows-side token + port from
 // the mounted drive and connect over TCP.
 //
 // Two WSL2 networking modes, both handled by trying targets in order:
@@ -227,7 +227,7 @@ function readDefaultGatewayIp() {
 function getRpcTargets() {
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return [`\\\\.\\pipe\\wmux-${username}`];
+    return [`\\\\.\\pipe\\fmux-${username}`];
   }
   if (isWsl()) {
     const winHome = resolveWindowsHomeFromWsl();
@@ -905,7 +905,7 @@ async function main() {
     permissionMode = extractPermissionModeFromTranscript(transcriptPath) ?? undefined;
   }
 
-  // Env-first routing identifiers. When Claude Code runs inside a wmux
+  // Env-first routing identifiers. When Claude Code runs inside a Forge Mux
   // pane, the PTYManager injects WMUX_WORKSPACE_ID / WMUX_SURFACE_ID into
   // the shell env. Claude Code → bridge subprocess inherits the env. The
   // daemon prefers these over cwd because cwd matching is ambiguous when

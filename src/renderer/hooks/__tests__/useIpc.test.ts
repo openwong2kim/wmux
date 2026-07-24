@@ -48,7 +48,7 @@ describe('useIpc / createInvoke', () => {
       { code: 'VALIDATION_ERROR',    expected: 'Request is invalid.' },
       { code: 'NOT_FOUND',           expected: 'Item not found.' },
       { code: 'PERMISSION_DENIED',   expected: 'Permission denied.' },
-      { code: 'RESOURCE_EXHAUSTED',  expected: 'Terminal session limit reached. Close some panes or restart wmux, then try again.' },
+      { code: 'RESOURCE_EXHAUSTED',  expected: 'Terminal session limit reached. Close some panes or restart Forge Mux, then try again.' },
       { code: 'UNKNOWN',             expected: 'An unknown error occurred.' },
     ];
 
@@ -215,14 +215,14 @@ describe('useIpc / createInvoke', () => {
     it('classifies by `[CODE] ` token even when Electron prepends the invoke envelope', async () => {
       const invoke = createInvoke(undefined, toastSpy);
       const wrapped = new Error(
-        `Error invoking remote method 'pty:create': Error: [RESOURCE_EXHAUSTED] Cannot create new terminal: 200 active sessions already running. Close some panes (or restart wmux) and try again.`,
+        `Error invoking remote method 'pty:create': Error: [RESOURCE_EXHAUSTED] Cannot create new terminal: 200 active sessions already running. Close some panes (or restart Forge Mux) and try again.`,
       );
       const result = await invoke(async () => { throw wrapped; });
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe('RESOURCE_EXHAUSTED');
         expect(result.error.message).toBe(
-          'Terminal session limit reached. Close some panes or restart wmux, then try again.',
+          'Terminal session limit reached. Close some panes or restart Forge Mux, then try again.',
         );
       }
     });

@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
+import { PRODUCT_NAME } from '../../shared/productIdentity';
 import { attachFlashFrameAutoClear } from './flashFrame';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
@@ -79,7 +80,7 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'wmux',
+    title: PRODUCT_NAME,
     // Resolve via app.isPackaged (mirrors tray.ts) — not NODE_ENV, which isn't
     // reliably set and could send an unpackaged build to the packaged path.
     icon: app.isPackaged

@@ -31,7 +31,7 @@ describe('classifyWorkspaceListResult — env-hint liveness gate', () => {
   it('returns "unknown" for the renderer retryable "still starting" envelope', () => {
     // This is the boot-reconcile shape the renderer returns while paneGate is
     // pending. It must NOT be read as "absent" — the hint may be perfectly valid.
-    const result = { error: 'wmux is still starting (paneGate=pending)', retryable: true };
+    const result = { error: 'Forge Mux is still starting (paneGate=pending)', retryable: true };
     expect(classifyWorkspaceListResult(result, WS)).toBe('unknown');
   });
 

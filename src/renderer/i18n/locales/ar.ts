@@ -131,7 +131,7 @@ export const ar = {
   'settings.scrollbackRestore': 'استعادة عند البدء',
   'settings.scrollbackRestoreDesc': 'أعد ربط مخرجات الجلسة السابقة بعد إعادة التشغيل. أوقفه لتبدأ كل لوحة فارغة.',
   'settings.updates': 'التحديثات',
-  'settings.wmuxUpdates': 'تحديثات wmux',
+  'settings.wmuxUpdates': 'تحديثات Forge Mux',
   'settings.updateFailed': 'فشل التحقق من التحديثات',
   'settings.lastCheckedNever': 'آخر تحقق: أبداً',
   'settings.installUpdate': 'تثبيت التحديث',
@@ -238,7 +238,7 @@ export const ar = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'التحديثات التلقائية',
-  'firstRun.autoUpdateMessage': 'هل تريد أن يتحقق WMUX من التحديثات تلقائياً؟ يمكنك تغيير ذلك لاحقاً في الإعدادات.',
+  'firstRun.autoUpdateMessage': 'هل تريد أن يتحقق Forge Mux من التحديثات تلقائياً؟ يمكنك تغيير ذلك لاحقاً في الإعدادات.',
   'firstRun.enable': 'تفعيل',
   'firstRun.disable': 'لا، شكراً',
 
@@ -249,7 +249,7 @@ export const ar = {
   'settings.firstRunSetup.lastCompleted': 'آخر اكتمال: {date}',
   'settings.firstRunSetup.notCompleted': 'لم يكتمل بعد',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'مكتشف',
   'settings.firstRunSetup.statusNotDetected': 'غير مكتشف',
   'settings.firstRunSetup.statusRegistered': 'مسجَّل',
@@ -261,12 +261,12 @@ export const ar = {
   'claudeIntegration.tab': 'تكامل Claude',
   'claudeIntegration.signalHealth.title': 'سلامة إشارة الإضافة',
   'claudeIntegration.signalHealth.unknownBody':
-    'حالة الإضافة: لم تُرصد بعد. ثبِّتها باستخدام الأمر أدناه في Claude Code. يؤكد wmux الكشف بمجرد تشغيل أول خطّاف.',
+    'حالة الإضافة: لم تُرصد بعد. ثبِّتها باستخدام الأمر أدناه في Claude Code. يؤكد Forge Mux الكشف بمجرد تشغيل أول خطّاف.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'آخر إشارة {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'زمن الاستجابة P50 {p50}ms · P95 {p95}ms · {count} عيّنة',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'تطابق مساحة العمل: {matched}/{total} خطّاف تم ربطه بجزء wmux',
+    'تطابق مساحة العمل: {matched}/{total} خطّاف تم ربطه بجزء Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'حالة الإضافة: قديمة. وصل آخر خطّاف {rel} — ربما توقفت الإضافة عن العمل أو أن Claude Code خامل.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'نسخ أمر التثبيت',

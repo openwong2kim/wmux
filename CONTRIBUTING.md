@@ -1,18 +1,23 @@
-# Contributing to wmux
+# Contributing to Forge Mux
 
-Thanks for your interest in contributing to wmux! Here's how to get started.
+Thanks for your interest in contributing to Forge Mux! Here's how to get started.
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/openwong2kim/wmux.git
-cd wmux
+git clone https://github.com/skflowne/fmux.git
+cd fmux
 npm install
 npm run start   # dev mode
 npm test        # run tests
 ```
 
 Requires Node.js 22+ and Windows 10/11 (ConPTY).
+
+Forge Mux keeps upstream `wmux` identifiers in much of the source (symbols,
+filenames, env vars) so rebasing onto [openwong2kim/wmux](https://github.com/openwong2kim/wmux)
+stays reviewable. User-facing product, CLI, and install destinations use
+**Forge Mux** / **fmux**.
 
 ## Pull Requests
 

@@ -131,7 +131,7 @@ export const tr = {
   'settings.scrollbackRestore': 'Başlangıçta geri yükle',
   'settings.scrollbackRestoreDesc': 'Yeniden başlatma sonrası önceki oturum çıktısını yeniden bağla. Her bölmeyi boş başlatmak için kapatın.',
   'settings.updates': 'Güncellemeler',
-  'settings.wmuxUpdates': 'wmux güncellemeleri',
+  'settings.wmuxUpdates': 'Forge Mux güncellemeleri',
   'settings.updateFailed': 'Güncelleme denetimi başarısız',
   'settings.lastCheckedNever': 'Son denetim: hiç',
   'settings.installUpdate': 'Güncellemeyi yükle',
@@ -238,7 +238,7 @@ export const tr = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Otomatik Güncellemeler',
-  'firstRun.autoUpdateMessage': 'WMUX güncellemeleri otomatik denetlemesin mi? Bunu daha sonra Ayarlar\'dan değiştirebilirsiniz.',
+  'firstRun.autoUpdateMessage': 'Forge Mux güncellemeleri otomatik denetlemesin mi? Bunu daha sonra Ayarlar\'dan değiştirebilirsiniz.',
   'firstRun.enable': 'Etkinleştir',
   'firstRun.disable': 'Hayır, teşekkürler',
 
@@ -249,7 +249,7 @@ export const tr = {
   'settings.firstRunSetup.lastCompleted': 'Son tamamlanma: {date}',
   'settings.firstRunSetup.notCompleted': 'henüz tamamlanmadı',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'algılandı',
   'settings.firstRunSetup.statusNotDetected': 'algılanmadı',
   'settings.firstRunSetup.statusRegistered': 'kayıtlı',
@@ -261,12 +261,12 @@ export const tr = {
   'claudeIntegration.tab': 'Claude entegrasyonu',
   'claudeIntegration.signalHealth.title': 'Eklenti sinyal durumu',
   'claudeIntegration.signalHealth.unknownBody':
-    'Eklenti durumu: henüz gözlemlenmedi. Claude Code içinde aşağıdaki komutla yükleyin. İlk kanca tetiklendiğinde wmux algılamayı onaylar.',
+    'Eklenti durumu: henüz gözlemlenmedi. Claude Code içinde aşağıdaki komutla yükleyin. İlk kanca tetiklendiğinde Forge Mux algılamayı onaylar.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Son sinyal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Gecikme P50 {p50}ms · P95 {p95}ms · {count} örnek',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Çalışma alanı eşleşmesi: {matched}/{total} kanca bir wmux bölmesine çözümlendi',
+    'Çalışma alanı eşleşmesi: {matched}/{total} kanca bir Forge Mux bölmesine çözümlendi',
   'claudeIntegration.signalHealth.staleBody':
     'Eklenti durumu: eski. Son kanca {rel} geldi — eklenti tetiklemeyi durdurmuş olabilir ya da Claude Code boşta.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Yükleme komutunu kopyala',

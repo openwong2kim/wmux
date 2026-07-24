@@ -35,6 +35,8 @@ import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { PRODUCT_NAME, PRODUCT_REPO_URL } from '../../../shared/productIdentity';
+import { WMUX_SERVER_KEY } from '../../../shared/mcpTargets';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1068,7 +1070,7 @@ function McpStatusSection() {
       </div>
       {target.configExists ? (
         <>
-          {renderRow('wmux', target.wmux)}
+          {renderRow(WMUX_SERVER_KEY, target.wmux)}
           <p className="text-[10px] text-[color:var(--text-muted)] font-mono truncate" title={target.configPath}>
             {target.configPath}
             {target.configModified ? ` · modified ${new Date(target.configModified).toLocaleString()}` : ''}
@@ -1141,7 +1143,7 @@ function McpStatusSection() {
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          MCP status unavailable. Restart wmux and try again.
+          MCP status unavailable. Restart {PRODUCT_NAME} and try again.
         </div>
       )}
     </div>
@@ -4347,7 +4349,7 @@ function TabAbout() {
         </span>
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <span className="text-base font-semibold font-mono tracking-wide text-[color:var(--text-main)]">wmux</span>
+            <span className="text-base font-semibold font-mono tracking-wide text-[color:var(--text-main)]">{PRODUCT_NAME}</span>
             <span className="text-[11px] font-mono tabular-nums text-[color:var(--accent-blue)]">v{__APP_VERSION__}</span>
           </div>
           <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5 truncate">
@@ -4377,7 +4379,7 @@ function TabAbout() {
       <div>
         <SectionLabel label={t('settings.links')} />
         <a
-          href="https://github.com/openwong2kim/wmux"
+          href={PRODUCT_REPO_URL}
           target="_blank"
           rel="noopener noreferrer"
           className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}

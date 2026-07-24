@@ -35,10 +35,10 @@ describe('ClaudeDetector', () => {
     vi.mocked(fs.readFile).mockReset();
   });
 
-  it('returns claudeFound + mcpRegistered when ~/.claude exists and ~/.claude.json has mcpServers.wmux', async () => {
+  it('returns claudeFound + mcpRegistered when ~/.claude exists and ~/.claude.json has mcpServers.fmux', async () => {
     vi.mocked(fs.stat).mockResolvedValueOnce(makeDirStat() as unknown as Awaited<ReturnType<typeof fs.stat>>);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
-      JSON.stringify({ mcpServers: { wmux: { command: 'wmux', args: ['mcp'] } } }),
+      JSON.stringify({ mcpServers: { fmux: { command: 'fmux', args: ['mcp'] } } }),
     );
 
     const result = await new ClaudeDetector().detect();
@@ -52,7 +52,18 @@ describe('ClaudeDetector', () => {
     expect(vi.mocked(fs.readFile)).toHaveBeenCalledWith(EXPECTED_JSON, 'utf8');
   });
 
-  it('returns mcpRegistered:false when ~/.claude.json parses but lacks mcpServers.wmux', async () => {
+  it('also treats a legacy mcpServers.wmux entry as registered', async () => {
+    vi.mocked(fs.stat).mockResolvedValueOnce(makeDirStat() as unknown as Awaited<ReturnType<typeof fs.stat>>);
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old.js'] } } }),
+    );
+
+    const result = await new ClaudeDetector().detect();
+
+    expect(result.mcpRegistered).toBe(true);
+  });
+
+  it('returns mcpRegistered:false when ~/.claude.json parses but lacks mcpServers.fmux', async () => {
     vi.mocked(fs.stat).mockResolvedValueOnce(makeDirStat() as unknown as Awaited<ReturnType<typeof fs.stat>>);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ mcpServers: { other: { command: 'other' } }, theme: 'dark' }),

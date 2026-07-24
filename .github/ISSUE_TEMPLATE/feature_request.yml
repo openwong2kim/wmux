@@ -1,13 +1,13 @@
 name: Feature request
-description: Suggest an idea or improvement for wmux.
+description: Suggest an idea or improvement for Forge Mux.
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping shape wmux. Search [existing issues](https://github.com/openwong2kim/wmux/issues?q=is%3Aissue)
-        and [Discussions](https://github.com/openwong2kim/wmux/discussions) first —
+        Thanks for helping shape Forge Mux. Search [existing issues](https://github.com/skflowne/fmux/issues?q=is%3Aissue)
+        and [Discussions](https://github.com/skflowne/fmux/discussions) first —
         if your idea is open-ended, a Discussion is often a better home for it.
 
   - type: textarea

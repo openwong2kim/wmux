@@ -34,7 +34,7 @@ export async function handleSystem(
       } else {
         ensureOk(response);
         const info = response.result as IdentifyResult;
-        console.log(`app:      ${info?.app ?? 'wmux'}`);
+        console.log(`app:      ${info?.app ?? 'fmux'}`);
         console.log(`version:  ${info?.version ?? getFallbackVersion()}`);
         console.log(`platform: ${info?.platform ?? process.platform}`);
       }

@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
- * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
+ * `fmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
  * Claude Code's user settings (`~/.claude/settings.json`), WITHOUT requiring the
  * `/plugin marketplace add` flow. This is the plugin-LESS alternative to the
  * `wmux-claude-integration` Claude Code plugin: same 4 hook events, same proven
@@ -14,7 +14,7 @@ import * as path from 'path';
  *   Squirrel.Windows installs wmux into versioned `app-x.y.z` directories that
  *   change on every update. A hook command pointing into the install dir would
  *   break the moment the app updates. So we copy the bridge to a stable location
- *   under `~/.wmux/hooks/` and reference THAT path from settings.json — it
+ *   under `~/.fmux/hooks/` and reference THAT path from settings.json — it
  *   survives app updates, and every `setup-hooks` run refreshes the copy so the
  *   bridge stays in sync with the installed app.
  *
@@ -24,16 +24,16 @@ import * as path from 'path';
  */
 
 const HELP_TEXT = `
-wmux setup-hooks — install Claude Code hooks without the marketplace plugin
+fmux setup-hooks — install Claude Code hooks without the marketplace plugin
 
 USAGE
-  wmux setup-hooks [--remove | --status] [--json]
+  fmux setup-hooks [--remove | --status] [--json]
 
 ACTIONS (mutually exclusive; default = install)
-  (default)    Install wmux hook entries into ~/.claude/settings.json and copy
-               the bridge to ~/.wmux/hooks/wmux-bridge.mjs.
-  --remove     Remove only the wmux-owned hook entries (leaves your other hooks).
-  --status     Report whether wmux hooks are installed, whether the copied bridge
+  (default)    Install Forge Mux hook entries into ~/.claude/settings.json and copy
+               the bridge to ~/.fmux/hooks/wmux-bridge.mjs.
+  --remove     Remove only the Forge Mux-owned hook entries (leaves your other hooks).
+  --status     Report whether Forge Mux hooks are installed, whether the copied bridge
                is up to date, and a double-signal warning if the plugin is also
                installed.
 
@@ -63,7 +63,7 @@ const WMUX_PLUGIN_MARKER = 'wmux-claude-integration';
 export interface SetupHooksPaths {
   /** Claude Code user settings: `~/.claude/settings.json`. */
   settingsPath: string;
-  /** Stable bridge install location: `~/.wmux/hooks/wmux-bridge.mjs`. */
+  /** Stable bridge install location: `~/.fmux/hooks/wmux-bridge.mjs`. */
   bridgeDest: string;
   /** Bundled bridge source, or null when it could not be located. */
   bridgeSource: string | null;
@@ -264,7 +264,7 @@ function jsonMentions(value: unknown, needle: string, depth = 0): boolean {
  * (`<claudeDir>/plugins/installed_plugins.json`). Returns true when the manifest
  * references the plugin by key or value. A missing OR malformed manifest is
  * tolerated and treated as "not installed" — fail-open to the plugin-LESS
- * install path so a corrupt manifest never blocks `wmux setup-hooks`.
+ * install path so a corrupt manifest never blocks `fmux setup-hooks`.
  */
 function detectPluginViaManifest(settingsPath: string): boolean {
   const manifestPath = path.join(path.dirname(settingsPath), 'plugins', 'installed_plugins.json');
@@ -313,7 +313,7 @@ function copyBridge(paths: SetupHooksPaths): BridgeCopyResult {
     return {
       copied: false,
       warning:
-        'Could not locate the bundled wmux-bridge.mjs next to this CLI. Reinstall wmux or run from a repo checkout.',
+        'Could not locate the bundled wmux-bridge.mjs next to this CLI. Reinstall Forge Mux or run from a repo checkout.',
     };
   }
   const dir = path.dirname(paths.bridgeDest);
@@ -649,11 +649,11 @@ function printInstall(outcome: InstallOutcome, jsonMode: boolean): void {
     console.log('Skipped writing settings.json hook entries to avoid double signals.');
     if (outcome.removedForPlugin > 0) {
       console.log(
-        `Removed ${outcome.removedForPlugin} duplicate wmux hook entr${outcome.removedForPlugin === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}.`,
+        `Removed ${outcome.removedForPlugin} duplicate Forge Mux hook entr${outcome.removedForPlugin === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}.`,
       );
       console.log('Restart your Claude Code session for the change to take effect.');
     } else {
-      console.log('No duplicate wmux hook entries in settings.json — nothing to change.');
+      console.log('No duplicate Forge Mux hook entries in settings.json — nothing to change.');
     }
     return;
   }
@@ -678,10 +678,10 @@ function printRemove(outcome: RemoveOutcome, jsonMode: boolean): void {
     return;
   }
   if (outcome.removed === 0) {
-    console.log('No wmux hooks found in settings.json — nothing changed.');
+    console.log('No Forge Mux hooks found in settings.json — nothing changed.');
     return;
   }
-  console.log(`Removed ${outcome.removed} wmux hook entr${outcome.removed === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}`);
+  console.log(`Removed ${outcome.removed} Forge Mux hook entr${outcome.removed === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}`);
   console.log('Restart your Claude Code session for the change to take effect.');
 }
 
@@ -693,15 +693,15 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
   if (outcome.settingsCorrupted) {
     console.log(`settings: ${outcome.settingsPath} (UNPARSEABLE — fix before installing)`);
   } else if (outcome.installedEvents.length > 0) {
-    console.log(`settings: wmux hooks installed for ${outcome.installedEvents.join(', ')}`);
+    console.log(`settings: Forge Mux hooks installed for ${outcome.installedEvents.join(', ')}`);
   } else {
-    console.log('settings: wmux hooks NOT installed — run `wmux setup-hooks` to add them.');
+    console.log('settings: Forge Mux hooks NOT installed — run `fmux setup-hooks` to add them.');
   }
 
   if (!outcome.bridgeExists) {
     console.log(`bridge:   not copied yet (${outcome.bridgeDest})`);
   } else if (outcome.bridgeStale) {
-    console.log(`bridge:   ${outcome.bridgeDest} (STALE — re-run \`wmux setup-hooks\` to refresh)`);
+    console.log(`bridge:   ${outcome.bridgeDest} (STALE — re-run \`fmux setup-hooks\` to refresh)`);
   } else {
     console.log(`bridge:   ${outcome.bridgeDest} (up to date)`);
   }
@@ -710,7 +710,7 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     console.warn(
       'WARNING: the wmux-claude-integration plugin is ALSO installed. Each turn ' +
         'will fire double signals (hook-vs-hook is not deduped). Use only one — ' +
-        'either uninstall the plugin or run `wmux setup-hooks --remove`.',
+        'either uninstall the plugin or run `fmux setup-hooks --remove`.',
     );
   }
 }
@@ -737,7 +737,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // to delete.
   const unknown = args.filter((a) => a !== '--remove' && a !== '--status');
   if (unknown.length > 0) {
-    console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
+    console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'fmux setup-hooks --help' for usage.`);
     process.exit(1);
     return;
   }
@@ -747,7 +747,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (status) {
     const outcome = statusHooks(paths);
     printStatus(outcome, jsonMode);
-    // Scripted `wmux setup-hooks --status && …` must be able to gate on a
+    // Scripted `fmux setup-hooks --status && …` must be able to gate on a
     // corrupted settings.json.
     if (outcome.settingsCorrupted) process.exit(1);
     return;

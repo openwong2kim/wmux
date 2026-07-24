@@ -26,7 +26,7 @@
 //
 // Self-contained on purpose: Claude Code invokes it as a bare `node` command
 // from settings.json, so no TS imports and no wmux install-dir dependency
-// (installed to the stable ~/.wmux/hooks/ path by `wmux setup-statusline`).
+// (installed to the stable ~/.fmux/hooks/ path by `fmux setup-statusline`).
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

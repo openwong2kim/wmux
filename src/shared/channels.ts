@@ -358,7 +358,7 @@ export const HUMAN_MEMBER_ID = 'local-ui';
  * Channels schema epoch — the DAEMON-SIDE migration generation the current
  * renderer requires. The daemon reports it additively on the
  * `a2a.channel.list` response; the renderer compares on hydration and shows a
- * "restart wmux" banner when the value is missing/lower (a long-lived daemon
+ * "restart Forge Mux" banner when the value is missing/lower (a long-lived daemon
  * survives app upgrades by design, so a P5 renderer can find itself attached
  * to a pre-P5 daemon whose state still holds scattered per-workspace human
  * rows — posts would fail NOT_A_MEMBER with no explanation; ship review C1).

@@ -12,9 +12,9 @@ import {
 } from '../../shared/mcpRegistration';
 
 /**
- * `wmux mcp …` — inspect / manage MCP registration across the installed agent
+ * `fmux mcp …` — inspect / manage MCP registration across the installed agent
  * CLIs (Claude `~/.claude.json`, Codex `~/.codex/config.toml`, Gemini
- * `~/.gemini/settings.json`) without touching the running wmux daemon. Reading
+ * `~/.gemini/settings.json`) without touching the running Forge Mux daemon. Reading
  * and editing the configs directly means the user can verify the integration
  * even when the GUI app is not running (DX-D4: CLI as a one-line verification
  * path; Settings panel as the GUI parity).
@@ -26,18 +26,18 @@ import {
  */
 
 const HELP_TEXT = `
-wmux mcp — inspect / manage MCP registration across agent CLIs
+fmux mcp — inspect / manage MCP registration across agent CLIs
 
 USAGE
-  wmux mcp <subcommand> [--target <id>] [--json]
+  fmux mcp <subcommand> [--target <id>] [--json]
 
 SUBCOMMANDS
-  check        Show whether the wmux MCP server is registered in each agent config.
-  register     Add the wmux entry to each installed agent's config.
+  check        Show whether the Forge Mux MCP server is registered in each agent config.
+  register     Add the Forge Mux entry to each installed agent's config.
                Note: written paths point at this CLI's own bundle layout — for a
                GUI re-register that uses the running app's resolved paths, use
                Settings → General → MCP → Re-register.
-  unregister   Remove the wmux key from each agent config.
+  unregister   Remove the Forge Mux key from each agent config.
                Other entries are left untouched.
 
 OPTIONS
@@ -83,7 +83,7 @@ function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
     }
     const fmt = (srv: { registered: boolean; path: string | null }) =>
       srv.registered ? `registered → ${srv.path}` : 'NOT REGISTERED';
-    console.log(`  wmux:   ${fmt(s.wmux)}`);
+    console.log(`  fmux:   ${fmt(s.wmux)}`);
     console.log(`  config: ${s.configPath} (${formatModified(s.configModified)})`);
   }
 }
@@ -207,7 +207,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // The wmux MCP script is required; bail if the bundle can't be found.
       if (!wmuxScript) {
         const warning =
-          'Could not locate the wmux MCP bundle next to this CLI. Open the wmux app once and use Settings → General → MCP → Re-register, or reinstall wmux.';
+          'Could not locate the Forge Mux MCP bundle next to this CLI. Open the Forge Mux app once and use Settings → General → MCP → Re-register, or reinstall Forge Mux.';
         if (jsonMode) console.log(JSON.stringify({ error: warning }, null, 2));
         else console.error(warning);
         process.exit(1);
@@ -221,7 +221,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
         catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
       });
       if (jsonMode) {
-        console.log(JSON.stringify({ scripts: { wmux: wmuxScript }, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
+        console.log(JSON.stringify({ scripts: { fmux: wmuxScript }, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
         if (results.some((r) => r.error)) process.exit(1);
         return;
       }
@@ -251,7 +251,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
           console.warn(`  left foreign key(s) ${result.foreign.join(', ')} untouched`);
         }
       }
-      console.log(`  wmux → ${wmuxScript}`);
+      console.log(`  fmux → ${wmuxScript}`);
       if (wroteAny) console.log('Restart the affected agent(s) to pick up the new server.');
       if (failed) process.exit(1);
       return;
@@ -277,7 +277,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
         } else if (!result.configExisted) {
           console.log(`${target.displayName}: no config — nothing to unregister`);
         } else if (result.removed.length === 0) {
-          console.log(`${target.displayName}: wmux not registered — nothing changed`);
+          console.log(`${target.displayName}: Forge Mux not registered — nothing changed`);
         } else {
           console.log(`${target.displayName}: removed ${result.removed.join(', ')} from ${result.configPath}`);
         }
@@ -287,7 +287,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     default: {
-      console.error(`Unknown mcp subcommand: "${sub}". Run 'wmux mcp --help' for usage.`);
+      console.error(`Unknown mcp subcommand: "${sub}". Run 'fmux mcp --help' for usage.`);
       process.exit(1);
     }
   }

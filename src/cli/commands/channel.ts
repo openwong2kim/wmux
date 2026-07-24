@@ -1,13 +1,13 @@
-// ─── `wmux channel` — the universal agent surface for Channels v2 ─────────
+// ─── `fmux channel` — the universal agent surface for Channels v2 ─────────
 //
-// Any shell-capable agent running inside a wmux pane (Codex, OpenCode,
+// Any shell-capable agent running inside a Forge Mux pane (Codex, OpenCode,
 // Hermes, a bash loop…) participates in channels through these subcommands —
 // no MCP client required. This file is deliberately the onboarding doc: an
-// agent that can read `wmux channel --help` can be a channel member.
+// agent that can read `fmux channel --help` can be a channel member.
 //
 // Transport: the DAEMON control pipe, directly (`sendDaemonRequest`) — NOT
 // the main-process pipe. Rationale (design doc "Two RPC surfaces and trust model"):
-// the daemon owns channel state and survives the GUI, so `wmux channel`
+// the daemon owns channel state and survives the GUI, so `fmux channel`
 // keeps working headless (GUI closed, reboot-recovery window) — which is the
 // money-demo path. Identity: we attach `senderPtyId` and the daemon stamps
 // `verifiedWorkspaceId` server-side from its OWN session record
@@ -19,7 +19,7 @@
 //   2. env WMUX_PTY_ID — stamped into the pane env at spawn by the daemon
 //      session itself; survives headless. Same-user forgeable (#113 ceiling,
 //      accepted): the daemon still derives the WORKSPACE from its own record.
-// Outside a wmux pane both fail → mutations fail closed (NOT_AUTHORIZED).
+// Outside a Forge Mux pane both fail → mutations fail closed (NOT_AUTHORIZED).
 
 import { sendRequest, sendDaemonRequest } from '../client';
 import { parseFlag } from '../utils';
@@ -28,28 +28,28 @@ import type { RpcMethod, RpcResponse } from '../../shared/rpc';
 import { ENV_KEYS } from '../../shared/constants';
 
 export const CHANNEL_HELP = `
-wmux channel — durable agent messaging (Channels v2)
+fmux channel — durable agent messaging (Channels v2)
 
-  You are (probably) an agent in a wmux pane. Teammates post messages to
+  You are (probably) an agent in a Forge Mux pane. Teammates post messages to
   channels; you read them, reply, and ACK what you consumed. While you have
   unread mentions you will be re-nudged — ack is what makes it stop.
 
-  wmux channel unread [--member <id>]
+  fmux channel unread [--member <id>]
       Your per-channel unread + mention counts. Cheap; call when nudged.
-  wmux channel read <channel> [--since <seq>] [--limit <n>]
+  fmux channel read <channel> [--since <seq>] [--limit <n>]
       Print messages, oldest first, paging forward. Without --since it
       starts from YOUR unread cursor (when you have one member row here).
       A full page prints a continue hint. <channel> is an id (ch-…) or name.
-  wmux channel post <channel> <text…> [--member <id>] [--name <display>]
+  fmux channel post <channel> <text…> [--member <id>] [--name <display>]
       Post a message. Your workspace identity is stamped server-side.
       Body may contain flag-like tokens after a bare --:
-        wmux channel post dev -- try again with --limit 5
-  wmux channel ack <channel> <uptoSeq|all> [--member <id>]
+        fmux channel post dev -- try again with --limit 5
+  fmux channel ack <channel> <uptoSeq|all> [--member <id>]
       Mark messages ≤ uptoSeq consumed ('all' = everything currently there).
       Advance-only; clears unread; stops re-nudges. Ack only what you read.
-  wmux channel join <channel> [--member <id>] [--name <display>]
+  fmux channel join <channel> [--member <id>] [--name <display>]
       Join a public channel as <member>.
-  wmux channel list
+  fmux channel list
       Channels visible to your workspace.
 
   --member is your member id in the channel. Defaults to $WMUX_MEMBER_ID
@@ -86,8 +86,8 @@ async function resolveSenderPtyId(): Promise<string> {
 
 function exitNoPaneIdentity(): never {
   console.error(
-    'Error: not inside a wmux pane (no resolvable pane identity — PID walk missed and WMUX_PTY_ID is unset).\n' +
-      'Channel mutations are fail-closed without one. Run this from a shell inside a wmux pane.',
+    'Error: not inside a Forge Mux pane (no resolvable pane identity — PID walk missed and WMUX_PTY_ID is unset).\n' +
+      'Channel mutations are fail-closed without one. Run this from a shell inside a Forge Mux pane.',
   );
   process.exit(1);
 }
@@ -152,7 +152,7 @@ async function resolveChannelId(ref: string): Promise<string> {
   }
   if (ref.startsWith('ch-')) return ref;
   console.error(
-    `Error: no visible channel named "${ref}". Run \`wmux channel list\` to see what your workspace can reach.`,
+    `Error: no visible channel named "${ref}". Run \`fmux channel list\` to see what your workspace can reach.`,
   );
   process.exit(1);
 }
@@ -173,7 +173,7 @@ function requiredMemberIdFrom(args: string[]): string {
   const id = parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'];
   if (id !== undefined && id.length > 0) return id;
   console.error(
-    'Error: no member id. Pass --member <id> (or run inside a wmux pane, where $WMUX_MEMBER_ID is stamped at spawn). Refusing the old "agent" default — shared ids made agents indistinguishable in the roster.',
+    'Error: no member id. Pass --member <id> (or run inside a Forge Mux pane, where $WMUX_MEMBER_ID is stamped at spawn). Refusing the old "agent" default — shared ids made agents indistinguishable in the roster.',
   );
   process.exit(1);
 }
@@ -260,7 +260,7 @@ const fmtMsg = (m: { seq?: number; memberName?: string; memberId?: string; text?
 export async function handleChannel(sub: string | undefined, args: string[], jsonMode: boolean): Promise<void> {
   // A bare `--` ends option parsing: everything after it is verbatim
   // positional payload — post bodies often contain flag-like tokens
-  // (`wmux channel post dev -- try --limit 5`), and the pair-aware stripper
+  // (`fmux channel post dev -- try --limit 5`), and the pair-aware stripper
   // below would otherwise eat them as channel options (Codex re-review P3).
   // The global --json/--help flags are consumed by the CLI entry before argv
   // reaches subcommands, so those two cannot ride a body either way.
@@ -305,7 +305,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log(
           `#${e.name} (${e.channelId}) member=${e.memberId}: ${e.unread} unread` +
             (e.mentionUnread > 0 ? ` (${e.mentionUnread} mention you)` : '') +
-            ` — read: wmux channel read ${e.channelId} --since ${e.lastReadSeq + 1}${trimmed}`,
+            ` — read: fmux channel read ${e.channelId} --since ${e.lastReadSeq + 1}${trimmed}`,
         );
       }
       return;
@@ -314,7 +314,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
     case 'read': {
       const [ref] = positionals;
       if (!ref) {
-        console.error('Usage: wmux channel read <channel> [--since <seq>] [--limit <n>]');
+        console.error('Usage: fmux channel read <channel> [--since <seq>] [--limit <n>]');
         process.exit(1);
       }
       const channelId = await resolveChannelId(ref);
@@ -346,7 +346,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       for (const m of messages) console.log(fmtMsg(m));
       const last = messages[messages.length - 1];
       if (sinceUsed !== undefined && messages.length === limitUsed) {
-        console.log(`(full page — more may remain: wmux channel read ${channelId} --since ${last.seq + 1})`);
+        console.log(`(full page — more may remain: fmux channel read ${channelId} --since ${last.seq + 1})`);
       }
       if (rows.length > 1) {
         // Multi-row workspace: a bare ack would hit the never-guess error, so
@@ -358,17 +358,17 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         const matched = sinceUsed !== undefined ? rows.filter((r) => r.lastReadSeq + 1 === sinceUsed) : [];
         const hintId = explicit ?? (matched.length === 1 ? matched[0].memberId : undefined);
         if (hintId !== undefined) {
-          console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq} --member ${hintId})`);
+          console.log(`(consumed? then: fmux channel ack ${channelId} ${last.seq} --member ${hintId})`);
         } else {
           // No safe attribution (tail browse / ambiguous cursor match) —
           // route through the per-row cursors instead of printing a command
           // that either errors or jumps a cursor over unseen messages.
           console.log(
-            `(this workspace has ${rows.length} member rows — run: wmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
+            `(this workspace has ${rows.length} member rows — run: fmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
           );
         }
       } else if (rows.length === 1) {
-        console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
+        console.log(`(consumed? then: fmux channel ack ${channelId} ${last.seq})`);
       }
       // rows.length === 0 (not a member / browsing) prints NO ack hint (GLM
       // review): this caller has no cursor, so an ack would be a receipt-only
@@ -380,7 +380,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       const [ref, ...textParts] = positionals;
       const text = textParts.join(' ');
       if (!ref || !text) {
-        console.error('Usage: wmux channel post <channel> <text…> [--member <id>] [--name <display>]');
+        console.error('Usage: fmux channel post <channel> <text…> [--member <id>] [--name <display>]');
         process.exit(1);
       }
       await requirePaneIdentityOrExit();
@@ -425,7 +425,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
     case 'ack': {
       const [ref, uptoRaw] = positionals;
       if (!ref || !uptoRaw) {
-        console.error("Usage: wmux channel ack <channel> <uptoSeq|all> [--member <id>]");
+        console.error("Usage: fmux channel ack <channel> <uptoSeq|all> [--member <id>]");
         process.exit(1);
       }
       // Validate the seq BEFORE any network round-trip (fail fast on a local
@@ -468,7 +468,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
     case 'join': {
       const [ref] = positionals;
       if (!ref) {
-        console.error('Usage: wmux channel join <channel> [--member <id>] [--name <display>]');
+        console.error('Usage: fmux channel join <channel> [--member <id>] [--name <display>]');
         process.exit(1);
       }
       const channelId = await resolveChannelId(ref);

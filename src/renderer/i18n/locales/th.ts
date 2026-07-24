@@ -131,7 +131,7 @@ export const th = {
   'settings.scrollbackRestore': 'กู้คืนเมื่อเริ่มต้น',
   'settings.scrollbackRestoreDesc': 'เชื่อมต่อเอาต์พุตของเซสชันก่อนหน้าใหม่หลังเริ่มต้นใหม่ ปิดเพื่อให้ทุกพาเนลเริ่มต้นว่างเปล่า',
   'settings.updates': 'การอัปเดต',
-  'settings.wmuxUpdates': 'การอัปเดต wmux',
+  'settings.wmuxUpdates': 'การอัปเดต Forge Mux',
   'settings.updateFailed': 'ตรวจสอบการอัปเดตไม่สำเร็จ',
   'settings.lastCheckedNever': 'ตรวจสอบครั้งล่าสุด: ไม่เคย',
   'settings.installUpdate': 'ติดตั้งการอัปเดต',
@@ -238,7 +238,7 @@ export const th = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'การอัปเดตอัตโนมัติ',
-  'firstRun.autoUpdateMessage': 'ต้องการให้ WMUX ตรวจสอบการอัปเดตโดยอัตโนมัติหรือไม่? คุณสามารถเปลี่ยนแปลงได้ในภายหลังในการตั้งค่า',
+  'firstRun.autoUpdateMessage': 'ต้องการให้ Forge Mux ตรวจสอบการอัปเดตโดยอัตโนมัติหรือไม่? คุณสามารถเปลี่ยนแปลงได้ในภายหลังในการตั้งค่า',
   'firstRun.enable': 'เปิดใช้งาน',
   'firstRun.disable': 'ไม่ ขอบคุณ',
 
@@ -248,7 +248,7 @@ export const th = {
   'settings.firstRunSetup.lastCompleted': 'ทำเสร็จครั้งล่าสุด: {date}',
   'settings.firstRunSetup.notCompleted': 'ยังทำไม่เสร็จ',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'ตรวจพบแล้ว',
   'settings.firstRunSetup.statusNotDetected': 'ไม่พบ',
   'settings.firstRunSetup.statusRegistered': 'ลงทะเบียนแล้ว',
@@ -260,12 +260,12 @@ export const th = {
   'claudeIntegration.tab': 'การเชื่อมต่อ Claude',
   'claudeIntegration.signalHealth.title': 'สถานะสัญญาณปลั๊กอิน',
   'claudeIntegration.signalHealth.unknownBody':
-    'สถานะปลั๊กอิน: ยังไม่พบสัญญาณ ติดตั้งโดยใช้คำสั่งด้านล่างนี้ใน Claude Code แล้ว wmux จะยืนยันการตรวจพบเมื่อ hook แรกทำงาน',
+    'สถานะปลั๊กอิน: ยังไม่พบสัญญาณ ติดตั้งโดยใช้คำสั่งด้านล่างนี้ใน Claude Code แล้ว Forge Mux จะยืนยันการตรวจพบเมื่อ hook แรกทำงาน',
   'claudeIntegration.signalHealth.detectedLastReceived': 'สัญญาณล่าสุดเมื่อ {rel}',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'ความหน่วง P50 {p50}ms · P95 {p95}ms · {count} ตัวอย่าง',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'การจับคู่พื้นที่ทำงาน: {matched}/{total} hook เชื่อมโยงกับพาเนลของ wmux',
+    'การจับคู่พื้นที่ทำงาน: {matched}/{total} hook เชื่อมโยงกับพาเนลของ Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'สถานะปลั๊กอิน: ค้าง hook ล่าสุดมาถึงเมื่อ {rel} — ปลั๊กอินอาจหยุดส่งสัญญาณ หรือ Claude Code กำลังว่างอยู่',
   'claudeIntegration.signalHealth.copyInstallCommand': 'คัดลอกคำสั่งติดตั้ง',

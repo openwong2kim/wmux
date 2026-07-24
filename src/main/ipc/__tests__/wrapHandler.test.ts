@@ -85,7 +85,7 @@ describe('wrapHandler', () => {
     const wrapped = wrapHandler('pty:create', (_event: unknown) => {
       throw new Error(
         'Cannot create new terminal: 200 active sessions already running. ' +
-          'Close some panes (or restart wmux) and try again.',
+          'Close some panes (or restart Forge Mux) and try again.',
       );
     });
     await expect(wrapped({} as never)).rejects.toThrow();
@@ -107,7 +107,7 @@ describe('wrapHandler', () => {
   it('stamps the RESOURCE_EXHAUSTED code into the message prefix', async () => {
     const err = new Error(
       'Cannot create new terminal: 200 active sessions already running. ' +
-        'Close some panes (or restart wmux) and try again.',
+        'Close some panes (or restart Forge Mux) and try again.',
     );
     const wrapped = wrapHandler('pty:create', (_event: unknown) => {
       throw err;

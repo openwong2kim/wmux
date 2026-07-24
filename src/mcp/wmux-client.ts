@@ -171,7 +171,7 @@ function attemptRpc(
         settled = true;
         clearTimeout(timer);
         if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
-          reject(new Error('wmux is not running. Start the app first.'));
+          reject(new Error('Forge Mux is not running. Start the app first.'));
         } else {
           reject(new Error(`Connection error: ${err.message}`));
         }
@@ -198,7 +198,7 @@ export async function sendRpc(
 ): Promise<unknown> {
   const token = readAuthToken();
   if (!token) {
-    throw new Error('wmux auth token not found. Is wmux running?');
+    throw new Error('fmux auth token not found. Is Forge Mux running?');
   }
 
   // Try WMUX_SOCKET_PATH first (if set), then fall back to getPipeName().
@@ -242,5 +242,5 @@ export async function sendRpc(
     } catch { /* fall through */ }
   }
 
-  throw lastError ?? new Error('wmux is not running. Start the app first.');
+  throw lastError ?? new Error('Forge Mux is not running. Start the app first.');
 }

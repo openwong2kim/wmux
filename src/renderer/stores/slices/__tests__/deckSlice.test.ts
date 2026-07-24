@@ -99,8 +99,8 @@ describe('deckSlice', () => {
       const st = useStore.getState();
       st.startDeckBrainTurn(WS_A, 'go');
       st.applyDeckBrainEvent(WS_A, { type: 'text-delta', text: 'working' });
-      st.applyDeckBrainEvent(WS_A, { type: 'tool-start', name: 'mcp__wmux__pane_list', inputSummary: '' });
-      st.applyDeckBrainEvent(WS_A, { type: 'tool-end', name: 'mcp__wmux__pane_list', ok: true });
+      st.applyDeckBrainEvent(WS_A, { type: 'tool-start', name: 'mcp__fmux__pane_list', inputSummary: '' });
+      st.applyDeckBrainEvent(WS_A, { type: 'tool-end', name: 'mcp__fmux__pane_list', ok: true });
       expect(threadOf(WS_A).status).toBe('busy');
       st.applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: 'sess-1' });
 

@@ -1,5 +1,5 @@
 /**
- * Daemon control-pipe resolution for `wmux doctor`.
+ * Daemon control-pipe resolution for `fmux doctor`.
  *
  * Regression guard for the doctor "down — Unknown method: daemon.ping" defect:
  * the doctor used to ping the daemon via the MAIN process pipe, where

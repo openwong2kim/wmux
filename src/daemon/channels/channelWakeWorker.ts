@@ -5,7 +5,7 @@
 // this worker only shortens the time until an agent LOOKS. It injects a
 // one-line hint into an idle member pane's PTY:
 //
-//   [wmux] #general: 2 unread (1 mention you) — run: wmux channel read ch-… --since 5
+//   [fmux] #general: 2 unread (1 mention you) — run: fmux channel read ch-… --since 5
 //
 // Wake strategy stack (design doc):
 //   - ATTACHED Claude panes are SKIPPED here — the renderer's Stop-hook
@@ -336,7 +336,7 @@ export class ChannelWakeWorker {
   private inject(sessionId: string, entry: WakeUnreadEntry): boolean {
     const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
     const line = sanitizeLine(
-      `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
+      `[fmux] #${entry.name}: ${entry.unread} unread${mention} — run: fmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
     );
     this.deps.log('info', `[wake] nudging ${sessionId} for ${entry.channelId}#${entry.memberId} (${entry.unread} unread)`);
     try {

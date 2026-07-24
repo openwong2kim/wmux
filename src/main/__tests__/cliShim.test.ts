@@ -26,7 +26,7 @@ describe('buildShimCmd', () => {
     // Full invocation: direct exec (no `call` — it re-expands %/^ in args),
     // exact quoting, and %* forwarding
     expect(cmd).toContain(
-      '  "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
+      '  "%~dp0..\\%%i\\fmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
     );
     expect(cmd).not.toContain('call "');
     // No hardcoded version path
@@ -36,7 +36,7 @@ describe('buildShimCmd', () => {
 
 describe('buildPathEditScript', () => {
   it('add: reads raw (unexpanded) registry value and writes back as ExpandString', () => {
-    const script = buildPathEditScript('C:\\Users\\u\\AppData\\Local\\wmux\\bin', 'add');
+    const script = buildPathEditScript('C:\\Users\\u\\AppData\\Local\\fmux\\bin', 'add');
     // %VAR% entries must NOT be expanded-and-baked-in on rewrite
     expect(script).toContain('DoNotExpandEnvironmentNames');
     // REG_EXPAND_SZ must be preserved (SetEnvironmentVariable demotes to REG_SZ)
@@ -50,7 +50,7 @@ describe('buildPathEditScript', () => {
   });
 
   it('remove: filters only the exact bin entry', () => {
-    const script = buildPathEditScript('C:\\wmux\\bin', 'remove');
+    const script = buildPathEditScript('C:\\fmux\\bin', 'remove');
     expect(script).toContain('if ($hit) {');
     expect(script).toContain('Where-Object');
     expect(script).toContain('-ne $bin');
@@ -63,7 +63,7 @@ describe('buildPathEditScript', () => {
 
   it('never uses setx or [Environment]::SetEnvironmentVariable', () => {
     for (const op of ['add', 'remove'] as const) {
-      const script = buildPathEditScript('C:\\wmux\\bin', op);
+      const script = buildPathEditScript('C:\\fmux\\bin', op);
       expect(script).not.toContain('setx');
       expect(script).not.toContain('SetEnvironmentVariable');
     }
@@ -148,11 +148,11 @@ describe('explainPathEditExit', () => {
 describe('deriveShimPaths', () => {
   it('derives version-independent bin dir + versioned cli-bundle path', () => {
     const { binDir, cliJsPath } = deriveShimPaths(
-      'C:\\Users\\u\\AppData\\Local\\wmux\\app-3.2.0\\wmux.exe',
+      'C:\\Users\\u\\AppData\\Local\\fmux\\app-3.2.0\\fmux.exe',
     );
-    expect(binDir).toBe('C:\\Users\\u\\AppData\\Local\\wmux\\bin');
+    expect(binDir).toBe('C:\\Users\\u\\AppData\\Local\\fmux\\bin');
     expect(cliJsPath).toBe(
-      'C:\\Users\\u\\AppData\\Local\\wmux\\app-3.2.0\\resources\\cli-bundle\\index.js',
+      'C:\\Users\\u\\AppData\\Local\\fmux\\app-3.2.0\\resources\\cli-bundle\\index.js',
     );
   });
 });
@@ -281,7 +281,7 @@ describe.skipIf(process.platform === 'win32')('installCliShimDarwin', () => {
     const contents = path.join(tmp, 'wmux.app', 'Contents');
     fs.mkdirSync(path.join(contents, 'MacOS'), { recursive: true });
     fs.mkdirSync(path.join(contents, 'Resources', 'cli-bundle'), { recursive: true });
-    execPath = path.join(contents, 'MacOS', 'wmux');
+    execPath = path.join(contents, 'MacOS', 'fmux');
     target = path.join(contents, 'Resources', 'cli-bundle', 'index.js');
     fs.writeFileSync(target, '#!/usr/bin/env node\n', 'utf8');
   });
@@ -370,7 +370,7 @@ describe.skipIf(process.platform === 'win32')('installCliShimDarwin', () => {
     it('foreign symlink and absent link never need repair', () => {
       const foreign = path.join(tmp, 'bin', 'wmux');
       fs.mkdirSync(path.dirname(foreign), { recursive: true });
-      fs.symlinkSync('/opt/homebrew/Cellar/wmux/bin/wmux', foreign); // not owned shape
+      fs.symlinkSync('/opt/homebrew/Cellar/wmux/bin/fmux', foreign); // not owned shape
       const absent = path.join(tmp, 'nope', 'wmux');
       expect(darwinShimNeedsRepair(execPath, { homeDir: tmp, candidates: [foreign, absent] })).toBe(false);
     });

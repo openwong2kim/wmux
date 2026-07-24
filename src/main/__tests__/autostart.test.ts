@@ -64,7 +64,17 @@ describe('autostart (win32)', () => {
     const { isAutostartEnabled } = await load();
     expect(isAutostartEnabled()).toBe(true);
     const [, argv] = execFileSync.mock.calls[0];
-    expect(argv).toEqual(['query', RUN_KEY, '/v', 'wmux']);
+    expect(argv).toEqual(['query', RUN_KEY, '/v', 'fmux']);
+  });
+
+  it('isAutostartEnabled falls back to a legacy wmux Run value', async () => {
+    execFileSync.mockImplementation((_exe: string, argv: string[]) => {
+      if (argv.includes('fmux')) throw new Error('not found');
+      return Buffer.from('');
+    });
+    const { isAutostartEnabled } = await load();
+    expect(isAutostartEnabled()).toBe(true);
+    expect(execFileSync.mock.calls.map((c) => (c[1] as string[])[3])).toEqual(['fmux', 'wmux']);
   });
 
   it('isAutostartEnabled returns false when reg query throws (value absent)', async () => {
@@ -76,19 +86,21 @@ describe('autostart (win32)', () => {
   it('enableAutostart writes the Run value with the given exe path', async () => {
     execFileSync.mockReturnValue(Buffer.from(''));
     const { enableAutostart } = await load();
-    enableAutostart('C:\\apps\\wmux\\wmux.exe');
-    const [, argv] = execFileSync.mock.calls[0];
-    expect(argv).toEqual([
-      'add', RUN_KEY, '/v', 'wmux', '/t', 'REG_SZ', '/d', '"C:\\apps\\wmux\\wmux.exe"', '/f',
+    enableAutostart('C:\\apps\\fmux\\fmux.exe');
+    expect(execFileSync.mock.calls.map((c) => c[1] as string[])).toEqual([
+      ['add', RUN_KEY, '/v', 'fmux', '/t', 'REG_SZ', '/d', '"C:\\apps\\fmux\\fmux.exe"', '/f'],
+      ['delete', RUN_KEY, '/v', 'wmux', '/f'],
     ]);
   });
 
-  it('disableAutostart deletes the Run value', async () => {
+  it('disableAutostart deletes both current and legacy Run values', async () => {
     execFileSync.mockReturnValue(Buffer.from(''));
     const { disableAutostart } = await load();
     disableAutostart();
-    const [, argv] = execFileSync.mock.calls[0];
-    expect(argv).toEqual(['delete', RUN_KEY, '/v', 'wmux', '/f']);
+    expect(execFileSync.mock.calls.map((c) => c[1] as string[])).toEqual([
+      ['delete', RUN_KEY, '/v', 'fmux', '/f'],
+      ['delete', RUN_KEY, '/v', 'wmux', '/f'],
+    ]);
   });
 
   it('setAutostartEnabled(true) adds then re-queries the resulting state', async () => {
@@ -96,16 +108,16 @@ describe('autostart (win32)', () => {
     const { setAutostartEnabled } = await load();
     expect(setAutostartEnabled(true)).toBe(true);
     const verbs = execFileSync.mock.calls.map((c) => (c[1] as string[])[0]);
-    expect(verbs).toEqual(['add', 'query']);
+    expect(verbs).toEqual(['add', 'delete', 'query']);
   });
 
   it('refreshAutostartEntry re-adds only when the key already exists', async () => {
-    // query succeeds → key present → expect a follow-up add
+    // query succeeds → key present → expect a follow-up add (+ legacy cleanup)
     execFileSync.mockReturnValue(Buffer.from(''));
     const { refreshAutostartEntry } = await load();
-    refreshAutostartEntry('C:\\apps\\wmux\\app-2\\wmux.exe');
+    refreshAutostartEntry('C:\\apps\\fmux\\app-2\\fmux.exe');
     const verbs = execFileSync.mock.calls.map((c) => (c[1] as string[])[0]);
-    expect(verbs).toEqual(['query', 'add']);
+    expect(verbs).toEqual(['query', 'add', 'delete']);
   });
 
   it('refreshAutostartEntry is a no-op when the key is absent', async () => {
@@ -114,7 +126,7 @@ describe('autostart (win32)', () => {
     const { refreshAutostartEntry } = await load();
     refreshAutostartEntry();
     const verbs = execFileSync.mock.calls.map((c) => (c[1] as string[])[0]);
-    expect(verbs).toEqual(['query']); // query only, no add
+    expect(verbs).toEqual(['query', 'query']); // fmux then legacy wmux, no add
   });
 });
 

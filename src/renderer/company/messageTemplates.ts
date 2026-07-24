@@ -46,7 +46,7 @@ function safeBody(message: string): string {
  * accidentally trigger routing pattern matching.
  *
  * Example output:
- *   ━━━ WMUX MESSAGE [Priority: HIGH] ━━━
+ *   ━━━ FMUX MESSAGE [Priority: HIGH] ━━━
  *   From: CEO
  *   To: FE Dev
  *
@@ -62,7 +62,7 @@ export function formatMessage(
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
     '',
-    `━━━ WMUX MESSAGE${priLine} ━━━`,
+    `━━━ FMUX MESSAGE${priLine} ━━━`,
     `From: ${safeName(from)}`,
     `To: ${safeName(to)}`,
     '',
@@ -78,7 +78,7 @@ export function formatMessage(
  * `formatMessage` to prevent routing pattern collisions.
  *
  * Example output:
- *   ━━━ WMUX BROADCAST [Priority: HIGH] ━━━
+ *   ━━━ FMUX BROADCAST [Priority: HIGH] ━━━
  *   From: CEO
  *
  *   All hands on deck.
@@ -92,7 +92,7 @@ export function formatBroadcast(
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
     '',
-    `━━━ WMUX BROADCAST${priLine} ━━━`,
+    `━━━ FMUX BROADCAST${priLine} ━━━`,
     `From: ${safeName(from)}`,
     '',
     safeBody(message).trimEnd(),

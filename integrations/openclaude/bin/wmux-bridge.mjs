@@ -6,12 +6,12 @@
 //   1. Determines the hook name from process.argv[2].
 //   2. Reads the OpenClaude hook payload from stdin (JSON).
 //   3. Builds the canonical AgentSignal envelope.
-//   4. Sends it to the first wmux endpoint that answers: the DAEMON control
-//      pipe (`daemon.hooks.signal`, token ~/.wmux/daemon-auth-token — works
+//   4. Sends it to the first Forge Mux endpoint that answers: the DAEMON control
+//      pipe (`daemon.hooks.signal`, token ~/.fmux/daemon-auth-token — works
 //      with the GUI closed), else the MAIN pipe (`hooks.signal`, token
-//      ~/.wmux-auth-token). WMUX_HOOKS_TO_MAIN=1 forces main-only.
-//   5. Logs the outcome (and the endpoint that served it) to ~/.wmux/bridge.log.
-//   6. Exits 0 ALWAYS (so a wmux problem never breaks OpenClaude).
+//      ~/.fmux-auth-token). WMUX_HOOKS_TO_MAIN=1 forces main-only.
+//   5. Logs the outcome (and the endpoint that served it) to ~/.fmux/bridge.log.
+//   6. Exits 0 ALWAYS (so a Forge Mux problem never breaks OpenClaude).
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside an OpenClaude plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -60,7 +60,7 @@ function getAuthTokenPath() {
 function getPipeName() {
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\fmux-${username}`;
   }
   return join(homedir() || '/tmp', '.fmux.sock');
 }

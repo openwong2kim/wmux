@@ -61,7 +61,7 @@ export function printResult(response: RpcResponse): void {
  * Print the error field of a failed RPC response to stderr and exit with 1.
  */
 export function printError(response: RpcResponse): void {
-  const msg = !response.ok ? response.error : 'Unknown error from wmux';
+  const msg = !response.ok ? response.error : 'Unknown error from fmux';
   console.error(`Error: ${msg}`);
   process.exit(1);
 }

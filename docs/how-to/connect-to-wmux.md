@@ -1,32 +1,32 @@
-# How to connect to wmux
+# How to connect to Forge Mux
 
-> **Goal:** open an authenticated JSON-RPC socket to a running wmux daemon, from
+> **Goal:** open an authenticated JSON-RPC socket to a running Forge Mux daemon, from
 > either an in-pane process or an external terminal, on Windows or POSIX.
 
-Assumes you can run Node ≥ 18 and a wmux instance is already running. The full
+Assumes you can run Node ≥ 18 and a Forge Mux instance is already running. The full
 security model is in [`PROTOCOL.md` §5](../PROTOCOL.md#5-named-pipe-security-model);
 this recipe is the wire mechanics.
 
 ## Steps
 
 1. **Resolve the auth token.** Two sources, in priority order:
-   - If your process was spawned *inside* a wmux pane, the token is in the
+   - If your process was spawned *inside* a Forge Mux pane, the token is in the
      `WMUX_AUTH_TOKEN` environment variable (injected by `PTYManager` — see
      `ENV_KEYS` in `src/shared/constants.ts`). Use it directly.
    - Otherwise (external terminal — `cmd`, Windows Terminal, VS Code, SSH), read
-     the token file at `~/.wmux-auth-token`. It is a bare UUID string, **not**
+     the token file at `~/.fmux-auth-token`. It is a bare UUID string, **not**
      JSON — do not `JSON.parse` it; just `.trim()`.
 
 2. **Resolve the endpoint.** Also two sources:
    - In-pane: `WMUX_SOCKET_PATH` env var points at the live socket.
    - External: derive the platform default. On Windows it is the named pipe
-     `\\.\pipe\wmux-<username>` where `<username>` is `os.userInfo().username`
+     `\\.\pipe\fmux-<username>` where `<username>` is `os.userInfo().username`
      (falling back to `default`). On POSIX it is the Unix domain socket
-     `<homedir>/.wmux.sock`. `net.connect()` accepts either string directly.
+     `<homedir>/.fmux.sock`. `net.connect()` accepts either string directly.
 
 3. **Connect, with the Windows TCP fallback.** On Windows the named pipe can
    reject with `EPERM` (elevated/non-elevated mismatch) or `ENOENT`. When it
-   does, read the port number from `~/.wmux-tcp-port` (a bare integer) and
+   does, read the port number from `~/.fmux-tcp-port` (a bare integer) and
    connect to `127.0.0.1:<port>` instead. The daemon only runs this fallback
    listener on Windows.
 
@@ -62,15 +62,15 @@ import { randomUUID } from 'node:crypto';
 const home = () => process.env.USERPROFILE || process.env.HOME || os.homedir();
 function endpoint() {
   if (process.env.WMUX_SOCKET_PATH) return process.env.WMUX_SOCKET_PATH;
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wmux-${os.userInfo().username || 'default'}`;
-  return `${os.homedir()}/.wmux.sock`;
+  if (process.platform === 'win32') return `\\\\.\\pipe\\fmux-${os.userInfo().username || 'default'}`;
+  return `${os.homedir()}/.fmux.sock`;
 }
 function loadToken() {
   if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN.trim();
-  return fs.readFileSync(`${home()}/.wmux-auth-token`, 'utf8').trim();
+  return fs.readFileSync(`${home()}/.fmux-auth-token`, 'utf8').trim();
 }
 function tcpFallback() { // Windows EPERM/ENOENT path
-  try { const p = Number(fs.readFileSync(`${home()}/.wmux-tcp-port`, 'utf8').trim()); if (p > 0) return { host: '127.0.0.1', port: p }; } catch {}
+  try { const p = Number(fs.readFileSync(`${home()}/.fmux-tcp-port`, 'utf8').trim()); if (p > 0) return { host: '127.0.0.1', port: p }; } catch {}
   return null;
 }
 
@@ -109,10 +109,10 @@ The example above connects to the named pipe / socket only. To add the Windows
 TCP fallback, retry `net.connect(tcpFallback())` inside the socket's `'error'`
 handler when `err.code` is `EPERM` or `ENOENT` and `tcpFallback()` is non-null.
 
-> **Fallback caveat:** `~/.wmux-tcp-port` is removed only on clean daemon
-> shutdown. After a crash — or when wmux simply isn't running (`ENOENT`) — a
+> **Fallback caveat:** `~/.fmux-tcp-port` is removed only on clean daemon
+> shutdown. After a crash — or when Forge Mux simply isn't running (`ENOENT`) — a
 > stale file can linger, and a client following it would hand the auth token
-> to whatever local process now owns that loopback port. Fine under wmux's
+> to whatever local process now owns that loopback port. Fine under Forge Mux's
 > single-user threat model; on shared machines prefer the named pipe and
 > treat the port file as advisory.
 
@@ -120,7 +120,7 @@ handler when `err.code` is `EPERM` or `ENOENT` and `tcpFallback()` is non-null.
 
 - **The token file is a UUID, not JSON.** `JSON.parse` on it throws. Read it as
   UTF-8 and `.trim()`.
-- **Endpoint and token must match the same wmux user.** Both are derived from
+- **Endpoint and token must match the same Forge Mux user.** Both are derived from
   the OS user; you cannot read user A's token and connect to user B's pipe.
 - **`clientName` is optional, but omitting it changes enforcement.** A request
   with no `clientName` is recorded as `legacy` and grandfathered through the

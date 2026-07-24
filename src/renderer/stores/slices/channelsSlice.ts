@@ -178,7 +178,7 @@ export interface ChannelsSlice {
   channelMentions: Record<string, number>;
   /** Ship review C1 — true when the attached daemon reported a channels epoch
    *  older than this renderer requires (a long-lived pre-P5 daemon survived the
-   *  app upgrade). Drives the "restart wmux" banner in ChannelsPanel; set from
+   *  app upgrade). Drives the "restart Forge Mux" banner in ChannelsPanel; set from
    *  hydration on every (re)connect, so it self-clears after a daemon restart. */
   channelsDaemonStale: boolean;
   setChannelsDaemonStale: (stale: boolean) => void;

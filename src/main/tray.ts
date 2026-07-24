@@ -2,6 +2,7 @@ import { app, Tray, Menu, nativeImage, BrowserWindow, shell, dialog } from 'elec
 import fs from 'fs';
 import path from 'path';
 import { platformChoice } from '../shared/platform';
+import { PRODUCT_NAME } from '../shared/productIdentity';
 
 let tray: Tray | null = null;
 // Retained so updateTraySessionCount() can rebuild the context menu (and so
@@ -49,7 +50,7 @@ function buildContextMenu(
 ): Menu {
   const openOrReveal = async (file: string | null): Promise<void> => {
     if (!file) {
-      dialog.showErrorBox('wmux', 'License file is missing from this build.');
+      dialog.showErrorBox(PRODUCT_NAME, 'License file is missing from this build.');
       return;
     }
     const err = await shell.openPath(file);
@@ -58,7 +59,7 @@ function buildContextMenu(
 
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: 'Open wmux',
+      label: `Open ${PRODUCT_NAME}`,
       click: () => {
         mainWindow.show();
         mainWindow.focus();
@@ -66,13 +67,13 @@ function buildContextMenu(
     },
     { type: 'separator' },
     {
-      label: 'About wmux',
+      label: `About ${PRODUCT_NAME}`,
       click: () => {
         app.showAboutPanel();
       },
     },
     {
-      label: 'License (wmux)',
+      label: `License (${PRODUCT_NAME})`,
       click: () => void openOrReveal(resolveResource('LICENSE')),
     },
     {
@@ -98,7 +99,7 @@ function buildContextMenu(
       },
     },
     {
-      label: 'Shut down wmux (close all sessions)',
+      label: `Shut down ${PRODUCT_NAME} (close all sessions)`,
       click: () => {
         callbacks.onShutdownAll();
         app.quit();
@@ -119,8 +120,8 @@ export function updateTraySessionCount(sessionCount: number | null): void {
   if (!tray || !trayWindow || !trayCallbacks) return;
   tray.setToolTip(
     typeof sessionCount === 'number' && sessionCount > 0
-      ? `wmux — ${sessionCount} background session${sessionCount === 1 ? '' : 's'} running`
-      : 'wmux',
+      ? `${PRODUCT_NAME} — ${sessionCount} background session${sessionCount === 1 ? '' : 's'} running`
+      : PRODUCT_NAME,
   );
   tray.setContextMenu(buildContextMenu(trayWindow, trayCallbacks, sessionCount));
 }
@@ -152,11 +153,11 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
   tray = new Tray(trayImage);
   trayWindow = mainWindow;
   trayCallbacks = callbacks;
-  tray.setToolTip('wmux');
+  tray.setToolTip(PRODUCT_NAME);
 
-  // License / About handlers — surface the MIT notice for wmux itself
+  // License / About handlers — surface the MIT notice for Forge Mux itself
   // and the bundled THIRD_PARTY_NOTICES so users (and downstream
-  // distributors) can find the attribution that ships next to wmux.exe.
+  // distributors) can find the attribution that ships next to fmux.exe.
   // `shell.openPath` opens the file in the user's default text app;
   // failure (missing file in a stripped build, no associated app, etc.)
   // falls back to revealing the containing folder so the file is still

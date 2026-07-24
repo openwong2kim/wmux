@@ -7,13 +7,13 @@ import type { RpcResponse } from '../../shared/rpc';
  * wmux open <url> [--workspace <id>]
  *
  * Opens (or reuses — X3 semantics) a browser pane and navigates it to <url>.
- * Inside a wmux pane the browser opens in the caller's own workspace via
+ * Inside a Forge Mux pane the browser opens in the caller's own workspace via
  * verified PID-map identity; otherwise the active workspace is used.
  */
 export async function handleOpen(args: string[], jsonMode: boolean): Promise<void> {
   const url = args.find((a) => !a.startsWith('--'));
   if (!url) {
-    console.error('Error: open requires <url> — e.g. `wmux open http://localhost:3000`');
+    console.error('Error: open requires <url> — e.g. `fmux open http://localhost:3000`');
     process.exit(1);
   }
 
@@ -41,26 +41,26 @@ export async function handleOpen(args: string[], jsonMode: boolean): Promise<voi
 }
 
 const BROWSER_HELP = `
-wmux browser — Browser Commands
+fmux browser — Browser Commands
 
 USAGE
-  wmux browser <subcommand> [args]
+  fmux browser <subcommand> [args]
 
 SUBCOMMANDS
   navigate <url>                  Navigate the active browser surface to a URL
   close [--workspace <id>]        Close the browser panel (defaults to your own
-                                  workspace when run inside a wmux pane)
+                                  workspace when run inside a Forge Mux pane)
   session start [--profile <name>]  Start a browser session
   session stop                      Stop the active browser session
   session status                    Show active session status
   session list                      List available profiles
 
 EXAMPLES
-  wmux browser navigate "https://example.com"
-  wmux browser close
-  wmux browser session start --profile login
-  wmux browser session status
-  wmux browser session list
+  fmux browser navigate "https://example.com"
+  fmux browser close
+  fmux browser session start --profile login
+  fmux browser session status
+  fmux browser session list
 `.trimStart();
 
 export async function handleBrowser(
@@ -97,7 +97,7 @@ export async function handleBrowser(
 
     // ── browser close [--workspace <id>] ─────────────────────────────────────
     case 'close': {
-      // Mirror `wmux open`: inside a wmux pane the close targets the caller's
+      // Mirror `fmux open`: inside a Forge Mux pane the close targets the caller's
       // own workspace via verified PID-map identity, so it can never tear down
       // a browser the user is viewing in another workspace. Outside a pane the
       // identity resolves to nothing and the active workspace is used (the
@@ -129,7 +129,7 @@ export async function handleBrowser(
     case 'session': {
       const action = rest[0];
       if (!action || action === '--help' || action === '-h') {
-        console.log('Usage: wmux browser session <start|stop|status|list>');
+        console.log('Usage: fmux browser session <start|stop|status|list>');
         process.exit(0);
       }
 
@@ -196,7 +196,7 @@ export async function handleBrowser(
     }
 
     default:
-      console.error(`Unknown browser subcommand: "${sub}". Run 'wmux browser --help' for usage.`);
+      console.error(`Unknown browser subcommand: "${sub}". Run 'fmux browser --help' for usage.`);
       process.exit(1);
   }
 }

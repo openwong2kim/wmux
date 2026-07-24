@@ -243,7 +243,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (liveCount >= maxSessions) {
       throw new Error(
         `Cannot create new terminal: ${maxSessions} active sessions already running. ` +
-          `Close some panes (or restart wmux) and try again.`,
+          `Close some panes (or restart Forge Mux) and try again.`,
       );
     }
 

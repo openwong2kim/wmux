@@ -131,7 +131,7 @@ export const vi = {
   'settings.scrollbackRestore': 'Khôi phục khi khởi động',
   'settings.scrollbackRestoreDesc': 'Kết nối lại đầu ra phiên trước sau khi khởi động lại. Tắt để mọi khung khởi động trống.',
   'settings.updates': 'Cập nhật',
-  'settings.wmuxUpdates': 'Cập nhật wmux',
+  'settings.wmuxUpdates': 'Cập nhật Forge Mux',
   'settings.updateFailed': 'Kiểm tra cập nhật thất bại',
   'settings.lastCheckedNever': 'Lần kiểm tra cuối: chưa bao giờ',
   'settings.installUpdate': 'Cài đặt cập nhật',
@@ -238,7 +238,7 @@ export const vi = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Tự động cập nhật',
-  'firstRun.autoUpdateMessage': 'Bạn có muốn WMUX tự động kiểm tra cập nhật? Bạn có thể đổi sau trong Cài đặt.',
+  'firstRun.autoUpdateMessage': 'Bạn có muốn Forge Mux tự động kiểm tra cập nhật? Bạn có thể đổi sau trong Cài đặt.',
   'firstRun.enable': 'Bật',
   'firstRun.disable': 'Không, cảm ơn',
 
@@ -248,7 +248,7 @@ export const vi = {
   'settings.firstRunSetup.lastCompleted': 'Hoàn tất lần cuối: {date}',
   'settings.firstRunSetup.notCompleted': 'Chưa hoàn tất',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'đã phát hiện',
   'settings.firstRunSetup.statusNotDetected': 'chưa phát hiện',
   'settings.firstRunSetup.statusRegistered': 'đã đăng ký',
@@ -260,12 +260,12 @@ export const vi = {
   'claudeIntegration.tab': 'Tích hợp Claude',
   'claudeIntegration.signalHealth.title': 'Tình trạng tín hiệu plugin',
   'claudeIntegration.signalHealth.unknownBody':
-    'Trạng thái plugin: chưa quan sát được. Hãy cài đặt bằng lệnh bên dưới trong Claude Code. wmux sẽ xác nhận phát hiện khi hook đầu tiên kích hoạt.',
+    'Trạng thái plugin: chưa quan sát được. Hãy cài đặt bằng lệnh bên dưới trong Claude Code. Forge Mux sẽ xác nhận phát hiện khi hook đầu tiên kích hoạt.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Tín hiệu cuối {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Độ trễ P50 {p50}ms · P95 {p95}ms · {count} mẫu',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Khớp không gian làm việc: {matched}/{total} hook đã phân giải về một khung wmux',
+    'Khớp không gian làm việc: {matched}/{total} hook đã phân giải về một khung Forge Mux',
   'claudeIntegration.signalHealth.staleBody':
     'Trạng thái plugin: đã cũ. Hook cuối đến {rel} — plugin có thể đã ngừng kích hoạt hoặc Claude Code đang nhàn rỗi.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Sao chép lệnh cài đặt',

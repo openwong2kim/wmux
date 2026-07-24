@@ -1,5 +1,5 @@
 /**
- * `wmux doctor [--json] [--performance]` — one-shot diagnostic for a wmux
+ * `fmux doctor [--json] [--performance]` — one-shot diagnostic for a wmux
  * install.
  *
  * Prints section-by-section health (OK / WARN / FAIL / SKIP) covering the
@@ -234,7 +234,7 @@ function buildEnvironment(
     verdict: appPipeReachable ? 'OK' : 'WARN',
     hint: appPipeReachable
       ? undefined
-      : 'The wmux app (main process) is not answering on its control pipe — it may be closed. ' +
+      : 'The Forge Mux app (main process) is not answering on its control pipe — it may be closed. ' +
         'The daemon is diagnosed independently below.',
   });
 
@@ -247,7 +247,7 @@ function buildEnvironment(
     verdict: tokenPresent ? 'OK' : 'WARN',
     hint: tokenPresent
       ? undefined
-      : 'No auth token on disk — wmux has not run yet, or its state dir was cleared.',
+      : 'No auth token on disk — Forge Mux has not run yet, or its state dir was cleared.',
   });
 
   const suffix = deps.env.WMUX_DATA_SUFFIX;
@@ -280,10 +280,10 @@ function buildDaemon(
       verdict: 'FAIL',
       lines,
       recovery: [
-        'Start (or restart) the wmux app — the daemon is spawned on launch.',
-        'If the app is already running, fully quit it (tray → Shut down wmux) and relaunch.',
+        'Start (or restart) the Forge Mux app — the daemon is spawned on launch.',
+        'If the app is already running, fully quit it (tray → Shut down Forge Mux) and relaunch.',
         'Check the daemon log (see the logs section below) for a spawn/lock error.',
-        'If a stale lock is suspected, removing ~/.wmux*/daemon.lock and relaunching is safe — live sessions are re-recovered.',
+        'If a stale lock is suspected, removing ~/.fmux*/daemon.lock and relaunching is safe — live sessions are re-recovered.',
       ],
     };
   }
@@ -591,7 +591,7 @@ function getFallbackVersion(): string {
  * The Windows path is the dogfood-verified one; the others are best-effort.
  */
 export function resolveMainLogPath(date: string): string {
-  const appName = 'wmux';
+  const appName = 'fmux';
   const suffix = dataSuffix();
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming');
@@ -681,7 +681,7 @@ function fmtMs(ms: number | null): string {
 
 export function renderReport(report: DoctorReport): string {
   const out: string[] = [];
-  out.push(`wmux doctor — overall ${VERDICT_TAG[report.overall]}`);
+  out.push(`fmux doctor — overall ${VERDICT_TAG[report.overall]}`);
   out.push('');
 
   const section = (title: string, verdict: Verdict, lines: CheckLine[]) => {

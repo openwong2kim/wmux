@@ -114,7 +114,7 @@ export class TaskPrService {
 
   async createPr(input: CreatePrInput): Promise<CreatePrResult> {
     const { taskId, verifiedWorkspaceId, worktreePath, branch, title } = input;
-    const body = input.body && input.body.length > 0 ? input.body : `wmux fan-out task: ${title}`;
+    const body = input.body && input.body.length > 0 ? input.body : `fmux fan-out task: ${title}`;
 
     // ── ① gh gate: version + auth (G3 — version ≠ auth) ──
     try {

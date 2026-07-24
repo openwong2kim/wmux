@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SystemStatsSnapshot } from '../../../shared/systemStats';
+import { PRODUCT_SLUG } from '../../../shared/productIdentity';
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -27,7 +28,7 @@ export function buildSystemVitalsTooltip(stats: SystemStatsSnapshot): string {
   const lines = [
     `Host CPU: ${stats.cpuPercent}%`,
     formatMemory('Host RAM', stats.memory),
-    `wmux: ${formatBytes(stats.appMemoryBytes)}`,
+    `${PRODUCT_SLUG}: ${formatBytes(stats.appMemoryBytes)}`,
   ];
   if (stats.wsl) {
     lines.push(formatMemory('WSL VM RAM', stats.wsl.memory));

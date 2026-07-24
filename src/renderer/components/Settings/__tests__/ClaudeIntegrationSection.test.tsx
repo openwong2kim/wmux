@@ -84,15 +84,15 @@ describe('INSTALL_COMMAND payload', () => {
     expect(lines[1]).toMatch(/^\/plugin install /);
   });
 
-  it('references the openwong2kim/wmux marketplace and the wmux-claude-integration plugin', () => {
-    expect(INSTALL_COMMAND).toContain('openwong2kim/wmux');
+  it('references the skflowne/fmux marketplace and the wmux-claude-integration plugin', () => {
+    expect(INSTALL_COMMAND).toContain('skflowne/fmux');
     expect(INSTALL_COMMAND).toContain('wmux-claude-integration');
   });
 
   it('plugin install command pins the marketplace via @-suffix', () => {
     // Prevents the install from picking a same-named plugin from a
     // different marketplace if the user has more than one configured.
-    expect(INSTALL_COMMAND).toContain('@wmux');
+    expect(INSTALL_COMMAND).toContain('@fmux');
   });
 });
 

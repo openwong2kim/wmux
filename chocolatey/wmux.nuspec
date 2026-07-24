@@ -5,8 +5,8 @@
     <!-- version is injected by CI from package.json -->
     <version>$version$</version>
     <title>Forge Mux</title>
-    <authors>openwong2kim</authors>
-    <owners>openwong2kim</owners>
+    <authors>skflowne</authors>
+    <owners>skflowne</owners>
     <projectUrl>https://github.com/skflowne/fmux</projectUrl>
     <iconUrl>https://raw.githubusercontent.com/skflowne/fmux/main/assets/icon.ico</iconUrl>
     <licenseUrl>https://github.com/skflowne/fmux/blob/main/LICENSE</licenseUrl>
@@ -16,7 +16,7 @@
     <tags>terminal multiplexer ai-agent mcp windows electron developer-tools cli</tags>
     <summary>Windows terminal multiplexer built for AI coding agents</summary>
     <description><![CDATA[
-## wmux — Windows Terminal Multiplexer for AI Agents
+## Forge Mux — Windows Terminal Multiplexer for AI Agents
 
 Split panes, manage sessions, and run Claude Code / Codex / Gemini CLI side by side.
 Built-in MCP server lets AI agents control terminals programmatically.

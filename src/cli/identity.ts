@@ -108,7 +108,7 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
     if (!Number.isNaN(pid)) byPid.set(pid, entry);
   }
 
-  // Depth 0 — our direct parent. Free (no spawn); covers `wmux …` typed
+  // Depth 0 — our direct parent. Free (no spawn); covers `fmux …` typed
   // straight into a pane shell.
   const direct = byPid.get(deps.ppid);
   if (direct) return toContext(direct);

@@ -35,11 +35,11 @@ import { useT } from '../../hooks/useT';
 export const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
 
 // Install command pair. Marketplace name comes from /.claude-plugin/marketplace.json
-// (owner=openwong2kim, name=wmux). Plugin name from integrations/claude/.claude-plugin/plugin.json.
+// (owner=fmux, name=fmux). Plugin name from integrations/claude/.claude-plugin/plugin.json.
 // Both commands on one clipboard payload, newline-separated. Exported so unit
 // tests can assert the exact payload written to the clipboard.
 export const INSTALL_COMMAND =
-  '/plugin marketplace add openwong2kim/wmux\n/plugin install wmux-claude-integration@wmux';
+  '/plugin marketplace add skflowne/fmux\n/plugin install wmux-claude-integration@fmux';
 
 /**
  * Format a "time since" string given a millisecond delta. Uses

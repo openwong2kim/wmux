@@ -13,8 +13,10 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 
-const PRIVATE_RULE = 'wmux LanLink (Private)';
-const PUBLIC_DENY_RULE = 'wmux LanLink (Public deny)';
+const PRIVATE_RULE = 'fmux LanLink (Private)';
+const LEGACY_PRIVATE_RULE = 'wmux LanLink (Private)';
+const PUBLIC_DENY_RULE = 'fmux LanLink (Public deny)';
+const LEGACY_PUBLIC_DENY_RULE = 'wmux LanLink (Public deny)';
 
 function netshPath(): string {
   return path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'netsh.exe');
@@ -39,8 +41,11 @@ export async function applyLanLinkFirewall(port: number, exe: string): Promise<v
   if (process.platform !== 'win32') return;
   const netsh = netshPath();
   // delete-then-add so a port/exe change leaves no stale rule.
+  // Also drop legacy wmux-named rules from pre-identity builds.
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PRIVATE_RULE}`]);
+  await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_PRIVATE_RULE}`]);
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PUBLIC_DENY_RULE}`]);
+  await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_PUBLIC_DENY_RULE}`]);
   await run(netsh, [
     'advfirewall', 'firewall', 'add', 'rule', `name=${PRIVATE_RULE}`,
     'dir=in', 'action=allow', 'protocol=TCP', `localport=${port}`, 'profile=private', `program=${exe}`, 'enable=yes',
@@ -61,5 +66,7 @@ export async function removeLanLinkFirewall(): Promise<void> {
   if (process.platform !== 'win32') return;
   const netsh = netshPath();
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PRIVATE_RULE}`]);
+  await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_PRIVATE_RULE}`]);
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PUBLIC_DENY_RULE}`]);
+  await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_PUBLIC_DENY_RULE}`]);
 }

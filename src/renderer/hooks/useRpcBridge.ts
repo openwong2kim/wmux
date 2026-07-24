@@ -362,7 +362,7 @@ function buildA2aNudge(taskId: string, senderName: string): string {
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
-  return `[wmux] new A2A task ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
+  return `[fmux] new A2A task ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // or about to be cleared by the fallback. Returning a structured
   // error lets the caller retry once the gate flips.
   if (store.paneGate !== 'ready') {
-    return { error: 'wmux is still starting (paneGate=pending)', retryable: true };
+    return { error: 'Forge Mux is still starting (paneGate=pending)', retryable: true };
   }
 
   // -------------------------------------------------------------------------

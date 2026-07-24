@@ -6,6 +6,10 @@ import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconPlus } from '../icons';
 import PresetPicker from '../Sidebar/PresetPicker';
+import { PRODUCT_SLUG } from '../../../shared/productIdentity';
+
+/** Compact titlebar wordmark — uppercase slug matches the old WMUX monogram style. */
+const TITLEBAR_WORDMARK = PRODUCT_SLUG.toUpperCase();
 
 /**
  * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
@@ -179,7 +183,7 @@ export default function Titlebar() {
         {...tokenAttrs('bgMantle', 'bg')}
       >
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>
-          WMUX
+          {TITLEBAR_WORDMARK}
         </span>
         <button
           ref={plusBtnRef}

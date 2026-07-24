@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to wmux. Fill the template out — reviewers use it as the
+Thanks for contributing to Forge Mux. Fill the template out — reviewers use it as the
 landing checklist. Sections that don't apply: write "n/a" rather than deleting
 the header, so reviewers know you considered them.
 -->

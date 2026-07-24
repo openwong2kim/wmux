@@ -1,18 +1,18 @@
 {
-  "name": "wmux",
+  "name": "fmux",
   "owner": {
-    "name": "wmux",
-    "url": "https://github.com/openwong2kim/wmux"
+    "name": "fmux",
+    "url": "https://github.com/skflowne/fmux"
   },
   "metadata": {
-    "description": "wmux Claude Code integrations — hook bridges and future usage meters.",
+    "description": "Forge Mux Claude Code integrations — hook bridges and future usage meters.",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "wmux-claude-integration",
       "source": "./integrations/claude",
-      "description": "Deterministic Claude Code → wmux notifications via PostToolUse / Stop / SubagentStop / SessionStart hooks. Replaces wmux's regex-based agent detector with 100%-accurate hook signals when installed."
+      "description": "Deterministic Claude Code → Forge Mux notifications via PostToolUse / Stop / SubagentStop / SessionStart hooks. Replaces regex-based agent detector with 100%-accurate hook signals when installed."
     }
   ]
 }

@@ -54,18 +54,18 @@ function homeDir() {
 
 function defaultPipeName() {
   // === src/shared/constants.ts getPipeName() ===
-  // Windows : \\.\pipe\wmux-<username>  (os.userInfo().username, NOT $USERNAME —
+  // Windows : \\.\pipe\fmux-<username>  (os.userInfo().username, NOT $USERNAME —
   //           env vars may not propagate to subprocesses spawned by an MCP host)
-  // POSIX   : <homedir>/.wmux.sock
+  // POSIX   : <homedir>/.fmux.sock
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-${os.userInfo().username || 'default'}`;
+    return `\\\\.\\pipe\\fmux-${os.userInfo().username || 'default'}`;
   }
-  return `${os.homedir()}/.wmux.sock`;
+  return `${os.homedir()}/.fmux.sock`;
 }
 
 /**
  * Resolve the wmux auth token. In-pane plugins get it from WMUX_AUTH_TOKEN;
- * external plugins read the plain-UUID token file `~/.wmux-auth-token`
+ * external plugins read the plain-UUID token file `~/.fmux-auth-token`
  * (src/shared/constants.ts getAuthTokenPath — the file is a bare UUID string,
  * NOT JSON). Throws if neither is available (wmux not running, or token not
  * yet written).
@@ -74,7 +74,7 @@ export function loadToken() {
   if (process.env[ 'WMUX_AUTH_TOKEN' ]) {
     return process.env[ 'WMUX_AUTH_TOKEN' ].trim();
   }
-  const tokenPath = `${homeDir()}/.wmux-auth-token`;
+  const tokenPath = `${homeDir()}/.fmux-auth-token`;
   return fs.readFileSync(tokenPath, 'utf8').trim();
 }
 
@@ -91,7 +91,7 @@ export function endpoint() {
  * Windows-only TCP fallback (src/shared/constants.ts getTcpPortPath). When the
  * named pipe rejects the connection with EPERM (a known Windows pipe-ACL
  * edge case), wmux's PipeServer also listens on 127.0.0.1:<port> and writes
- * the chosen port to `~/.wmux-tcp-port`. Returns { host, port } or null.
+ * the chosen port to `~/.fmux-tcp-port`. Returns { host, port } or null.
  *
  * Caveat: the port file is removed only on clean daemon shutdown, so after a
  * crash (or when wmux simply isn't running — pipe ENOENT) a STALE file can
@@ -103,7 +103,7 @@ export function endpoint() {
  */
 function tcpFallback() {
   try {
-    const portPath = `${homeDir()}/.wmux-tcp-port`;
+    const portPath = `${homeDir()}/.fmux-tcp-port`;
     const port = Number(fs.readFileSync(portPath, 'utf8').trim());
     if (port > 0) return { host: '127.0.0.1', port };
   } catch {
@@ -264,7 +264,7 @@ export class WmuxClient {
 
   _onClose() {
     this.sock = null;
-    const err = new Error('wmux socket closed');
+    const err = new Error('Forge Mux socket closed');
     for (const [, waiter] of this.pending) {
       clearTimeout(waiter.timer);
       waiter.reject(err);

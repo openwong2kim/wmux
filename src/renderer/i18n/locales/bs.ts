@@ -131,7 +131,7 @@ export const bs = {
   'settings.scrollbackRestore': 'Vrati pri pokretanju',
   'settings.scrollbackRestoreDesc': 'Ponovo poveži izlaz prethodne sesije nakon ponovnog pokretanja. Isključi da svaki panel počne prazan.',
   'settings.updates': 'Ažuriranja',
-  'settings.wmuxUpdates': 'wmux ažuriranja',
+  'settings.wmuxUpdates': 'Forge Mux ažuriranja',
   'settings.updateFailed': 'Provjera ažuriranja neuspjela',
   'settings.lastCheckedNever': 'Posljednja provjera: nikad',
   'settings.installUpdate': 'Instaliraj ažuriranje',
@@ -238,7 +238,7 @@ export const bs = {
 
   // First-run auto-update prompt
   'firstRun.autoUpdateTitle': 'Automatska ažuriranja',
-  'firstRun.autoUpdateMessage': 'Želite li da WMUX automatski provjerava ažuriranja? Možete to promijeniti kasnije u Postavkama.',
+  'firstRun.autoUpdateMessage': 'Želite li da Forge Mux automatski provjerava ažuriranja? Možete to promijeniti kasnije u Postavkama.',
   'firstRun.enable': 'Omogući',
   'firstRun.disable': 'Ne, hvala',
 
@@ -249,7 +249,7 @@ export const bs = {
   'settings.firstRunSetup.lastCompleted': 'Posljednji put završeno: {date}',
   'settings.firstRunSetup.notCompleted': 'Još nije završeno',
   'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
-  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.mcpStatus': 'Forge Mux MCP: {status}',
   'settings.firstRunSetup.statusDetected': 'otkriveno',
   'settings.firstRunSetup.statusNotDetected': 'nije otkriveno',
   'settings.firstRunSetup.statusRegistered': 'registrirano',
@@ -261,12 +261,12 @@ export const bs = {
   'claudeIntegration.tab': 'Claude integracija',
   'claudeIntegration.signalHealth.title': 'Stanje signala dodatka',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status dodatka: još nije zabilježen. Instaliraj komandom ispod u Claude Code. wmux potvrđuje otkrivanje čim se okine prvi hook.',
+    'Status dodatka: još nije zabilježen. Instaliraj komandom ispod u Claude Code. Forge Mux potvrđuje otkrivanje čim se okine prvi hook.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Posljednji signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latencija P50 {p50}ms · P95 {p95}ms · {count} uzoraka',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
-    'Podudaranje radnog prostora: {matched}/{total} hookova razriješeno na wmux panel',
+    'Podudaranje radnog prostora: {matched}/{total} hookova razriješeno na Forge Mux panel',
   'claudeIntegration.signalHealth.staleBody':
     'Status dodatka: zastario. Posljednji hook stigao {rel} — dodatak je možda prestao okidati ili Claude Code miruje.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiraj komandu za instalaciju',

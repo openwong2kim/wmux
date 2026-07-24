@@ -118,8 +118,8 @@ export function buildChannelMentionNudge(
       : '';
   const ackHint =
     validLabel && sameChannel && seqs.length === tasks.length && seqs.length > 0
-      ? `then ack: wmux channel ack ${channelLabel.slice(1)} ${Math.max(...seqs)}${memberFlag}`
-      : 'then ack: wmux channel unread';
+      ? `then ack: fmux channel ack ${channelLabel.slice(1)} ${Math.max(...seqs)}${memberFlag}`
+      : 'then ack: fmux channel unread';
   // Dogfood RCA 2026-07-05 (no-signal greeting loop): the nudge used to say
   // "read + reply", which — pasted and AUTO-SUBMITTED into the agent's prompt —
   // forced a reply to EVERY mention, so a greeting drew a greeting, which
@@ -132,11 +132,11 @@ export function buildChannelMentionNudge(
     'Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.';
   if (tasks.length === 1) {
     return singleLine(
-      `[wmux-channel] mention in ${channelLabel} — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
+      `[fmux-channel] mention in ${channelLabel} — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
     );
   }
   return singleLine(
-    `[wmux-channel] ${tasks.length} channel mentions — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
+    `[fmux-channel] ${tasks.length} channel mentions — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
   );
 }
 
