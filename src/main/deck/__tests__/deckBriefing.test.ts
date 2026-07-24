@@ -1,11 +1,16 @@
 // Unit tests for the pure briefing builder: priority ordering, the
-// delta-vs-prior-snapshot computation (null prior ⇒ no delta), greeting
-// templates, auto-expand rules, and never-throw on null/empty feeds.
+// delta-vs-prior-snapshot computation (null prior ⇒ no delta), the structured
+// headline counts (prose lives in the renderer), the content guard, auto-expand
+// + rising-edge rules, payload caps, and never-throw on null/empty feeds.
 
 import { describe, it, expect } from 'vitest';
 import {
+  BRIEFING_LIMITS,
   buildWorkspaceBriefing,
-  renderBriefingGreeting,
+  briefingHasContent,
+  briefingSignal,
+  isNewlyActionable,
+  summarizeBriefingCounts,
   hasBriefingDelta,
   shouldAutoExpandBriefing,
   toBriefedSnapshot,
@@ -158,27 +163,13 @@ describe('buildWorkspaceBriefing — delta vs prior snapshot', () => {
   });
 });
 
-describe('renderBriefingGreeting', () => {
-  it('empty workspace → nothing running', () => {
+describe('headline counts (structured, never prose)', () => {
+  it('empty workspace → all-zero counts', () => {
     const b = buildWorkspaceBriefing({ ...baseInputs, snapshot: null });
-    expect(b.greeting).toBe('Nothing running here yet.');
+    expect(b.counts).toEqual({ total: 0, blocked: 0, errored: 0, running: 0, done: 0, idle: 0 });
   });
 
-  it('empty workspace with a pending decision → decision greeting', () => {
-    const b = buildWorkspaceBriefing({ ...baseInputs, snapshot: null, decision: decision() });
-    expect(b.greeting).toBe('One decision is waiting on you.');
-  });
-
-  it('cold start prefixes "Welcome back."', () => {
-    const b = buildWorkspaceBriefing({
-      ...baseInputs,
-      coldStart: true,
-      snapshot: snap([{ ptyId: 'p1', agentStatus: 'complete' }]),
-    });
-    expect(b.greeting).toBe('Welcome back. 1 finished.');
-  });
-
-  it('composes "N need you, M running, K finished"', () => {
+  it('buckets every reason, including idle', () => {
     const b = buildWorkspaceBriefing({
       ...baseInputs,
       snapshot: snap([
@@ -186,20 +177,145 @@ describe('renderBriefingGreeting', () => {
         { ptyId: 'b', agentStatus: 'running' },
         { ptyId: 'c', agentStatus: 'running' },
         { ptyId: 'd', agentStatus: 'complete' },
+        { ptyId: 'e', agentStatus: 'error' },
+        { ptyId: 'f', agentStatus: 'idle' },
       ]),
     });
-    expect(b.greeting).toBe('1 needs you, 2 running, 1 finished.');
+    expect(b.counts).toEqual({ total: 6, blocked: 1, errored: 1, running: 2, done: 1, idle: 1 });
   });
 
-  it('all idle → idle greeting', () => {
+  it('the builder ships NO prose — no locale-bearing string on the payload', () => {
     const b = buildWorkspaceBriefing({
       ...baseInputs,
-      snapshot: snap([
-        { ptyId: 'a', agentStatus: 'idle' },
-        { ptyId: 'b', agentStatus: 'idle' },
-      ]),
+      coldStart: true,
+      snapshot: snap([{ ptyId: 'p1', agentStatus: 'complete' }]),
     });
-    expect(b.greeting).toBe('All 2 agents are idle.');
+    expect(b).not.toHaveProperty('greeting');
+    expect(JSON.stringify(b)).not.toContain('Welcome back');
+  });
+
+  it('summarizeBriefingCounts is pure over a pane list', () => {
+    expect(
+      summarizeBriefingCounts([
+        { ptyId: 'a', agentName: null, agentStatus: 'idle', priority: 5, reason: 'idle' },
+        { ptyId: 'b', agentName: null, agentStatus: 'idle', priority: 5, reason: 'idle' },
+      ]),
+    ).toEqual({ total: 2, blocked: 0, errored: 0, running: 0, done: 0, idle: 2 });
+  });
+});
+
+describe('briefingHasContent', () => {
+  it('an empty workspace with nothing pending has NOTHING to say', () => {
+    expect(briefingHasContent(buildWorkspaceBriefing({ ...baseInputs, snapshot: null }))).toBe(
+      false,
+    );
+  });
+
+  it('a cold start alone is not content (no empty container opens)', () => {
+    const b = buildWorkspaceBriefing({ ...baseInputs, snapshot: null, coldStart: true });
+    expect(briefingHasContent(b)).toBe(false);
+    expect(shouldAutoExpandBriefing(b)).toBe(false);
+  });
+
+  it('a pane, a pending decision, a loop, or a real delta each count as content', () => {
+    expect(
+      briefingHasContent(
+        buildWorkspaceBriefing({ ...baseInputs, snapshot: snap([{ ptyId: 'p', agentStatus: 'idle' }]) }),
+      ),
+    ).toBe(true);
+    expect(
+      briefingHasContent(buildWorkspaceBriefing({ ...baseInputs, decision: decision() })),
+    ).toBe(true);
+    const loop = {
+      objective: 'ship it',
+      steps: [],
+      tasks: [],
+      progressLog: [],
+      status: 'running',
+      tier: 'continue',
+      iterations: 25,
+      updatedAt: 1,
+    } as WorkspaceLoopState;
+    expect(briefingHasContent(buildWorkspaceBriefing({ ...baseInputs, loop }))).toBe(true);
+    const prior: BriefedSnapshot = { panes: [], decisionId: 'old', at: 1 };
+    expect(
+      briefingHasContent(buildWorkspaceBriefing({ ...baseInputs, decision: decision({ id: 'new' }), prior })),
+    ).toBe(true);
+  });
+});
+
+describe('isNewlyActionable (the card\'s rising-edge rule)', () => {
+  const withBlocked = (ids: string[], decisionId: string | null = null) => ({
+    decisionId,
+    blocked: ids,
+  });
+
+  it('no previous observation ⇒ not a rising edge (hydration owns that)', () => {
+    expect(isNewlyActionable(null, withBlocked(['p1']))).toBe(false);
+  });
+
+  it('the SAME blocked pane re-reported on every refresh is not a rising edge', () => {
+    expect(isNewlyActionable(withBlocked(['p1']), withBlocked(['p1']))).toBe(false);
+  });
+
+  it('an ADDITIONAL blocked pane is a rising edge', () => {
+    expect(isNewlyActionable(withBlocked(['p1']), withBlocked(['p1', 'p2']))).toBe(true);
+  });
+
+  it('a decision that just appeared (or was replaced) is a rising edge', () => {
+    expect(isNewlyActionable(withBlocked([], null), withBlocked([], 'dec-1'))).toBe(true);
+    expect(isNewlyActionable(withBlocked([], 'dec-1'), withBlocked([], 'dec-2'))).toBe(true);
+  });
+
+  it('the same decision persisting is not a rising edge, and losing one never is', () => {
+    expect(isNewlyActionable(withBlocked([], 'dec-1'), withBlocked([], 'dec-1'))).toBe(false);
+    expect(isNewlyActionable(withBlocked(['p1'], 'dec-1'), withBlocked([], null))).toBe(false);
+  });
+
+  it('briefingSignal extracts the decision id + newly-blocked ids', () => {
+    const prior: BriefedSnapshot = { panes: [{ ptyId: 'p', agentStatus: 'running' }], decisionId: null, at: 1 };
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([{ ptyId: 'p', agentStatus: 'awaiting_input' }]),
+      decision: decision({ id: 'dec-7' }),
+      prior,
+    });
+    expect(briefingSignal(b)).toEqual({ decisionId: 'dec-7', blocked: ['p'] });
+  });
+});
+
+describe('payload caps', () => {
+  it('caps agentName, cwd and the loop objective', () => {
+    const long = 'x'.repeat(500);
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: {
+        workspaceId: 'ws-1',
+        ts: 1,
+        panes: [
+          {
+            ptyId: 'p1',
+            agentName: long,
+            agentStatus: 'running',
+            isActivePane: false,
+            cwd: long,
+          },
+        ],
+      },
+      loop: {
+        objective: long,
+        steps: [],
+        tasks: [],
+        progressLog: [],
+        status: 'running',
+        tier: 'continue',
+        iterations: 25,
+        updatedAt: 1,
+      } as WorkspaceLoopState,
+    });
+    expect(b.panes[0].agentName!.length).toBe(BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS);
+    expect(b.panes[0].cwd!.length).toBe(BRIEFING_LIMITS.MAX_CWD_CHARS);
+    expect(b.loop!.objective.length).toBe(BRIEFING_LIMITS.MAX_OBJECTIVE_CHARS);
   });
 });
 
@@ -207,8 +323,9 @@ describe('shouldAutoExpandBriefing', () => {
   const build = (over: Partial<Parameters<typeof buildWorkspaceBriefing>[0]>) =>
     buildWorkspaceBriefing({ ...baseInputs, ...over });
 
-  it('expands on cold start', () => {
-    expect(shouldAutoExpandBriefing(build({ coldStart: true }))).toBe(true);
+  it('expands on cold start WHEN there is something to report', () => {
+    const b = build({ coldStart: true, snapshot: snap([{ ptyId: 'p', agentStatus: 'running' }]) });
+    expect(shouldAutoExpandBriefing(b)).toBe(true);
   });
 
   it('expands on a newly-blocked pane', () => {
@@ -265,7 +382,7 @@ describe('loop summary + never-throw + snapshot', () => {
     });
     expect(b.workspaceName).toBe('ws-1');
     expect(b.panes).toEqual([]);
-    expect(b.greeting).toBe('Nothing running here yet.');
+    expect(b.counts.total).toBe(0);
   });
 
   it('toBriefedSnapshot distils status-only panes + decision id', () => {

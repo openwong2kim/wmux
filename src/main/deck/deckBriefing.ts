@@ -9,7 +9,7 @@
 // pattern): the handler resolves every feed (fleet snapshot, decision, mode,
 // loop, the prior snapshot) and hands them in, so the builder needs no store
 // access and unit-tests without IO. Never throws — a null snapshot / null entry /
-// missing loop all degrade to a greeting-only briefing.
+// missing loop all degrade to a headline-only briefing.
 
 import type { AgentStatus } from '../../shared/types';
 import type { AgentMode } from './deckAutonomyStore';
@@ -34,7 +34,7 @@ export type BriefingReason = 'blocked' | 'error' | 'finished' | 'running' | 'idl
 
 /** The delta versus the last-viewed snapshot (§ "changed while away"). null when
  *  there is no prior snapshot (first-ever view) — the card then renders
- *  greeting-only, with NO "everything is new" delta line. */
+ *  headline-only, with NO "everything is new" delta line. */
 export interface BriefingChange {
   /** ptyIds that newly became complete since the last view. */
   finished: string[];
@@ -46,12 +46,25 @@ export interface BriefingChange {
   newDecision: boolean;
 }
 
+/** The headline as STRUCTURED counts, never as prose. The main process does not
+ *  know the operator's language, so it ships numbers and the renderer composes
+ *  the sentence from whole-sentence i18n keys (English pluralization must not be
+ *  baked into main). */
+export interface BriefingCounts {
+  total: number;
+  blocked: number;
+  errored: number;
+  running: number;
+  done: number;
+  idle: number;
+}
+
 export interface WorkspaceBriefing {
   workspaceId: string;
   workspaceName: string;
   mode: AgentMode;
-  /** Deterministic one-line headline (renderBriefingGreeting). */
-  greeting: string;
+  /** Deterministic headline inputs (summarizeBriefingCounts). */
+  counts: BriefingCounts;
   /** The #568 "blocked on you" — a POINTER only; the DeckDecisionCard owns the
    *  resolve UI, so the briefing never renders a second control for it. */
   pendingDecision: WorkspaceDecision | null;
@@ -86,6 +99,21 @@ const PRIORITY: Record<AgentStatus, number> = {
   idle: 5,
 };
 
+/** Caps on the free-form strings that ride the briefing payload. `cwd` is
+ *  OSC 7-influenced (issue #540) and `agentName` / `loop.objective` are
+ *  operator/agent text — React escapes them and the briefing never enters an LLM
+ *  prompt, so this is consistency with the other deck payload caps rather than a
+ *  live exploit fix. */
+export const BRIEFING_LIMITS = {
+  MAX_AGENT_NAME_CHARS: 80,
+  MAX_CWD_CHARS: 200,
+  MAX_OBJECTIVE_CHARS: 200,
+} as const;
+
+function cap(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) : s;
+}
+
 function reasonFor(status: AgentStatus): BriefingReason {
   switch (status) {
     case 'awaiting_input':
@@ -108,7 +136,7 @@ export interface BuildBriefingInputs {
   /** The workspace list entry (for its name). null when the mirror hasn't been
    *  populated yet — the briefing falls back to the id. */
   entry: WorkspaceListEntry | null;
-  /** The per-workspace fleet snapshot. null / empty ⇒ greeting-only. */
+  /** The per-workspace fleet snapshot. null / empty ⇒ headline-only. */
   snapshot: FleetSnapshot | null;
   decision: WorkspaceDecision | null;
   mode: AgentMode;
@@ -134,9 +162,9 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
   const panes: BriefingPane[] = rawPanes
     .map((p) => ({
       ptyId: p.ptyId,
-      agentName: p.agentName,
+      agentName: p.agentName ? cap(p.agentName, BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS) : p.agentName,
       agentStatus: p.agentStatus,
-      ...(p.cwd ? { cwd: p.cwd } : {}),
+      ...(p.cwd ? { cwd: cap(p.cwd, BRIEFING_LIMITS.MAX_CWD_CHARS) } : {}),
       priority: PRIORITY[p.agentStatus] ?? 5,
       reason: reasonFor(p.agentStatus),
     }))
@@ -147,7 +175,7 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
   const loopSummary =
     loop && loop.objective
       ? {
-          objective: loop.objective,
+          objective: cap(loop.objective, BRIEFING_LIMITS.MAX_OBJECTIVE_CHARS),
           passes: loop.tasks.filter((t) => t.passes).length,
           taskCount: loop.tasks.length,
         }
@@ -155,11 +183,11 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
 
   const changed = computeChange(rawPanes, pendingDecision, prior);
 
-  const briefing: WorkspaceBriefing = {
+  return {
     workspaceId,
     workspaceName: entry?.name || workspaceId,
     mode,
-    greeting: '',
+    counts: summarizeBriefingCounts(panes),
     pendingDecision,
     loop: loopSummary,
     panes,
@@ -167,8 +195,6 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
     coldStart,
     builtAt,
   };
-  briefing.greeting = renderBriefingGreeting(briefing);
-  return briefing;
 }
 
 /**
@@ -207,37 +233,28 @@ function computeChange(
 }
 
 /**
- * The deterministic one-line headline. `coldStart` gets the fuller "Welcome
- * back" treatment; a manual re-brief stays terse. Composed from CURRENT fleet
- * composition (the "changed while away" delta line is rendered separately by the
- * card). Pure + exported for unit testing.
+ * The deterministic headline inputs: how many panes sit in each reason bucket.
+ * Numbers only — the renderer turns them into a sentence with whole-sentence
+ * i18n keys, because main has no locale and English pluralization ("1 needs you"
+ * vs "2 need you") must not be hard-coded here. Pure + exported for unit testing.
  */
-export function renderBriefingGreeting(b: WorkspaceBriefing): string {
-  const prefix = b.coldStart ? 'Welcome back. ' : '';
-  if (b.panes.length === 0) {
-    if (b.pendingDecision) return `${prefix}One decision is waiting on you.`.trim();
-    return `${prefix}Nothing running here yet.`.trim();
+export function summarizeBriefingCounts(panes: readonly BriefingPane[]): BriefingCounts {
+  const counts: BriefingCounts = {
+    total: panes.length,
+    blocked: 0,
+    errored: 0,
+    running: 0,
+    done: 0,
+    idle: 0,
+  };
+  for (const p of panes) {
+    if (p.reason === 'running') counts.running += 1;
+    else if (p.reason === 'blocked') counts.blocked += 1;
+    else if (p.reason === 'finished') counts.done += 1;
+    else if (p.reason === 'error') counts.errored += 1;
+    else counts.idle += 1;
   }
-  let running = 0;
-  let blocked = 0;
-  let done = 0;
-  let errored = 0;
-  for (const p of b.panes) {
-    if (p.reason === 'running') running += 1;
-    else if (p.reason === 'blocked') blocked += 1;
-    else if (p.reason === 'finished') done += 1;
-    else if (p.reason === 'error') errored += 1;
-  }
-  const clauses: string[] = [];
-  if (blocked > 0) clauses.push(`${blocked} need${blocked === 1 ? 's' : ''} you`);
-  if (errored > 0) clauses.push(`${errored} in error`);
-  if (running > 0) clauses.push(`${running} running`);
-  if (done > 0) clauses.push(`${done} finished`);
-  if (clauses.length === 0) {
-    const n = b.panes.length;
-    return `${prefix}${n === 1 ? 'The agent is idle' : `All ${n} agents are idle`}.`.trim();
-  }
-  return `${prefix}${clauses.join(', ')}.`.trim();
+  return counts;
 }
 
 /** Whether the delta carries anything worth a "changed while away" line. */
@@ -252,15 +269,59 @@ export function hasBriefingDelta(changed: BriefingChange | null): boolean {
 }
 
 /**
+ * Whether this briefing has anything worth rendering at all. An empty workspace
+ * with no decision, no loop and no delta has NOTHING to say, and DESIGN.md is
+ * explicit that a surface with nothing to report must not render (the always-on
+ * instrument strip was removed the day it landed — "no dead gauges, no extra
+ * chrome row"). The sibling DeckFleet applies the same rule.
+ */
+export function briefingHasContent(b: WorkspaceBriefing): boolean {
+  return (
+    b.panes.length > 0 ||
+    b.pendingDecision !== null ||
+    b.loop !== null ||
+    hasBriefingDelta(b.changed)
+  );
+}
+
+/**
  * Whether the card should auto-expand rather than sit as a collapsed one-line
  * affordance. Locked owner decision: expand ONLY on cold start, a newly-raised
  * decision, or a newly-blocked pane — a plain "finished" stays collapsed so the
- * card never nags on every workspace switch.
+ * card never nags on every workspace switch. A cold start with NOTHING to report
+ * does not expand either: opening an empty container is the dead-chrome failure.
  */
 export function shouldAutoExpandBriefing(b: WorkspaceBriefing): boolean {
+  if (!briefingHasContent(b)) return false;
   if (b.coldStart) return true;
   if (!b.changed) return false;
   return b.changed.newDecision || b.changed.newlyBlocked.length > 0;
+}
+
+/** The actionable-state fingerprint the card diffs between refreshes. */
+export interface BriefingSignal {
+  decisionId: string | null;
+  blocked: readonly string[];
+}
+
+export function briefingSignal(b: WorkspaceBriefing): BriefingSignal {
+  return {
+    decisionId: b.pendingDecision?.id ?? null,
+    blocked: b.changed ? [...b.changed.newlyBlocked] : [],
+  };
+}
+
+/**
+ * Did something NEW become actionable between two refreshes — a decision that
+ * just appeared, or a pane that just became blocked? The card auto-expands on a
+ * rising edge only; a background refresh that merely re-reports the same blocked
+ * pane must leave the operator's expand/collapse alone (the card fought the user
+ * when every 200ms stream tick re-applied the auto-expand rule).
+ */
+export function isNewlyActionable(prev: BriefingSignal | null, next: BriefingSignal): boolean {
+  if (!prev) return false; // first observation — the hydration path owns that decision
+  if (next.decisionId !== null && next.decisionId !== prev.decisionId) return true;
+  return next.blocked.some((ptyId) => !prev.blocked.includes(ptyId));
 }
 
 /** Distil a built briefing into the tiny status-only snapshot to persist after a
