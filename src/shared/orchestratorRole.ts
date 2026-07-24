@@ -98,6 +98,21 @@ export function launcherSupportsModelFlag(stem: string): boolean {
   return stem in MODEL_FLAG_BY_LAUNCHER;
 }
 
+/** Launcher stems wmux recognizes as agent CLIs. Used ONLY to decide whether an
+ *  agent-mismatch is worth reporting: launching `ls` in a bound pane is normal
+ *  and silent, launching a DIFFERENT agent than the role binding names is a
+ *  policy deviation the operator should hear about. Mirrors the AgentSlug
+ *  vocabulary (shared/events.ts). */
+const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
+  'claude',
+  'codex',
+  'gemini',
+  'aider',
+  'opencode',
+  'copilot',
+  'openclaude',
+]);
+
 /** Max lengths for the binding fields at the normalization boundary. `args` is
  *  the widest surface (arbitrary flags) so it gets the command-sized cap. */
 export const ROLE_BINDING_AGENT_MAX = 48;
@@ -203,8 +218,20 @@ export function applyRoleBinding(
   if (tokens.length === 0) return { command, changed: false };
   const stem = launcherStem(tokens[0].value);
 
-  // Agent gate: a binding that names an agent only applies to that launcher.
-  if (binding.agent && binding.agent !== stem) return { command, changed: false };
+  // Agent gate: a binding that names an agent only applies to that launcher —
+  // never force a codex model alias into a claude launch. Launching a DIFFERENT
+  // known agent than the role names is a silent policy deviation, so say so;
+  // an ordinary shell command (`ls`) in a bound pane stays silent.
+  if (binding.agent && binding.agent !== stem) {
+    if (KNOWN_AGENT_STEMS.has(stem)) {
+      return {
+        command,
+        changed: false,
+        note: `Role is bound to "${binding.agent}", but "${stem}" was launched here; the binding does not apply and nothing was enforced.`,
+      };
+    }
+    return { command, changed: false };
+  }
 
   const grammar = MODEL_FLAG_BY_LAUNCHER[stem];
 

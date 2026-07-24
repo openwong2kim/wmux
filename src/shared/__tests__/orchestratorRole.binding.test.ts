@@ -61,6 +61,14 @@ describe('applyRoleBinding — model enforcement transform (D2)', () => {
     const r = applyRoleBinding('claude', { agent: 'codex', model: 'o3' });
     expect(r.changed).toBe(false);
     expect(r.command).toBe('claude');
+    // ...but a different KNOWN agent is a policy deviation, so it is reported.
+    expect(r.note).toMatch(/bound to "codex"/);
+  });
+
+  it('stays silent when a non-agent command runs in a bound pane', () => {
+    const r = applyRoleBinding('ls -la', { agent: 'codex', model: 'o3' });
+    expect(r.changed).toBe(false);
+    expect(r.note).toBeUndefined();
   });
 
   it('applies when the binding agent matches the launcher stem', () => {
