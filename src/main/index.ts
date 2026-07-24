@@ -253,6 +253,15 @@ markBoot('module-eval-end');
 
 function appInit(): void {
 
+// Pin the application name to the display name, independent of how the build
+// is packaged. The packaged artifacts live under the `fmux` slug (no space in
+// the out dir / .app bundle name), but app.getName() is what userData —
+// %APPDATA%\Forge Mux, ~/Library/Application Support/Forge Mux — is derived
+// from, and it is also the name shown in dialogs and the macOS menu bar. Set it
+// BEFORE the first getPath('userData') below so the data dir can never drift
+// with a packaging rename.
+app.setName(PRODUCT_NAME);
+
 // Instance isolation: dev builds (!app.isPackaged) share SingletonLock, userData, socket,
 // and ~/.wmux with packaged builds and other checkouts (both productName "wmux"), causing
 // collisions. In dev, pin WMUX_DATA_SUFFIX='-dev' to isolate all paths (socket/token/daemon/home)

@@ -16,6 +16,9 @@ on:
       # touching only a helper (e.g. the tree-walk contamination guard, #570)
       # must still re-run the gate. A named list silently skipped those.
       - 'scripts/perf-*.mjs'
+      # The packaged-app path/identity helper the harness derives out/<app>
+      # from — a rename there breaks every scenario before it starts.
+      - 'scripts/helpers/packaged-app.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/perf.yml'

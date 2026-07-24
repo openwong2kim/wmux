@@ -233,7 +233,7 @@ regression first.
   and the `daemon-spawned → daemon-pipe-file-seen` span (a second exe image
   scan), while genuine code cost inflates phases uniformly. For a one-off
   LOCAL diagnosis you can temporarily add a Defender exclusion for
-  `out\wmux-win32-x64` plus the bench temp root via the Windows Security UI,
+  `out\fmux-win32-x64` plus the bench temp root via the Windows Security UI,
   re-run `--skip-input --skip-ram --cold-runs 3`, diff the phase tables, and
   **remove the exclusions afterwards**. Never automate or ship exclusions —
   this is a diagnostic procedure only.

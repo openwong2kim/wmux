@@ -11,6 +11,13 @@
 // Win32_Process row to one attribution bucket using Electron's child-process
 // `--type=` command-line flag plus image-name heuristics, so measureRam() can
 // emit an additive `ram.breakdown` field without touching product code.
+//
+// The image-name heuristic asks helpers/packaged-app.mjs rather than matching a
+// product literal — the packaged binary is named after package.json's
+// executableName, so a hardcoded "wmux" silently drops every one of the fork's
+// processes into the `other` bucket.
+
+import { isAppImageName } from './helpers/packaged-app.mjs';
 
 /**
  * Attribution categories. Order is the display order in the bench log.
@@ -103,8 +110,8 @@ export function classifyProcess(row, opts = {}) {
   // 4. The Electron main/browser process: the wmux.exe image with no --type.
   //    (The daemon was already peeled off by the pid match above, so any
   //    remaining typeless wmux.exe is the main process.)
-  const isWmuxImage = name.includes('wmux') || (mainPid != null && pid === mainPid);
-  if (isWmuxImage && !type) return 'main';
+  const isAppImage = isAppImageName(name) || (mainPid != null && pid === mainPid);
+  if (isAppImage && !type) return 'main';
 
   // 5. Some dev builds name the Electron main image electron.exe — treat a
   //    typeless electron.exe as main too.
@@ -134,8 +141,8 @@ function isUnreadableWmuxCommandLine(row, opts = {}) {
   const { pid, mainPid, daemonPid } = opts;
   // The daemon is pinned by pid; its null command line never skews `main`.
   if (daemonPid != null && pid != null && pid === daemonPid) return false;
-  const isWmuxImage = name.includes('wmux') || (mainPid != null && pid === mainPid);
-  if (!isWmuxImage) return false;
+  const isAppImage = isAppImageName(name) || (mainPid != null && pid === mainPid);
+  if (!isAppImage) return false;
   const commandLine = row?.commandLine;
   // CIM returns null (or, defensively, an empty string) when the bench user
   // lacks read access to the target process's command line.

@@ -19,7 +19,11 @@ import * as path from 'path';
 // `wmux-{version} Setup.exe` (space), which 404s the Choco install and
 // fails the `\.Setup\.exe$` regex — silently, because winget-releaser
 // runs with continue-on-error.
-const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as {
+  version: string;
+  productName: string;
+  executableName: string;
+};
 const SQUIRREL_SETUP_EXE = `fmux-${pkg.version}.Setup.exe`;
 
 function copyDirSync(src: string, dest: string, skipFile?: (name: string) => boolean): void {
@@ -199,12 +203,29 @@ const config: ForgeConfig = {
     ignoreModules: ['node-pty'],
   },
   packagerConfig: {
+    // Package under the slug, not the display name: electron-packager names the
+    // output dir `<name>-<platform>-<arch>` and the macOS bundle `<name>.app`,
+    // and "Forge Mux" put a SPACE in both. That space reaches every consumer of
+    // the build — the perf harness's packaged-app path, the release workflow's
+    // word-split `find` over out/make artifacts, Defender exclusions, docs — so
+    // the artifact namespace stays `fmux` and the display name is carried by
+    // Info.plist (below) and app.setName() in src/main/index.ts instead.
+    name: pkg.executableName,
+    // macOS: the bundle DIRECTORY is fmux.app, but Finder, the menu bar, and
+    // Electron's app.getName() (hence ~/Library/Application Support/<name>) read
+    // these keys — so the user-visible name stays "Forge Mux".
+    extendInfo: {
+      CFBundleName: pkg.productName,
+      CFBundleDisplayName: pkg.productName,
+    },
     // The binary must be fmux.exe / fmux, not derived from productName
     // ("Forge Mux.exe"): the Windows CLI shim invokes `<app-dir>\fmux.exe`,
     // the AUMID is com.squirrel.fmux.fmux (= com.squirrel.<nupkg>.<exe>), and
     // the macOS shim targets <bundle>/Contents/MacOS/fmux. The bundle/app
-    // display name stays "Forge Mux" via productName.
-    executableName: 'fmux',
+    // display name is set separately (see `name`/`extendInfo` above). The value
+    // lives in package.json so harness scripts can derive the packaged binary
+    // path from the same source (scripts/helpers/packaged-app.mjs).
+    executableName: pkg.executableName,
     asar: {
       unpack: '**/node_modules/node-pty/**',
     },

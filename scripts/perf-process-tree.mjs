@@ -35,6 +35,8 @@
 // unlike CommandLine, it is not access-gated — so the check is never a coin
 // flip: all 356 rows of the desktop snapshot above carried a timestamp.
 
+import { isAppImageName } from './helpers/packaged-app.mjs';
+
 /** Sample caps for the forensic fields — enough to diagnose, small in JSON. */
 const REJECTED_SAMPLE_CAP = 10;
 
@@ -166,8 +168,10 @@ export function collectProcessTree(rows, roots) {
  * on the measurement path, answered from the snapshot we already have instead
  * of spawning another PowerShell.
  *
- * Matching is by image name only. The daemon shares the packaged app's image
- * (wmux.exe) and, per the classifier's notes, frequently reports a null
+ * Matching is by image name only (via helpers/packaged-app.mjs, so the name
+ * follows package.json's executableName rather than a product literal). The
+ * daemon shares the packaged app's image and, per the classifier's notes,
+ * frequently reports a null
  * CommandLine — so requiring a "daemon" token on the command line would reject
  * the real daemon. A node.exe daemon (dev shape) is accepted when its command
  * line does name a daemon entry.
@@ -181,8 +185,8 @@ export function looksLikeDaemonRow(row, mainRow) {
   const name = String(row.Name ?? '').toLowerCase();
   if (!name) return false;
   const mainName = String(mainRow?.Name ?? '').toLowerCase();
-  if (mainName && name === mainName) return true; // packaged: daemon shares wmux.exe
-  if (name.includes('wmux')) return true;
+  if (mainName && name === mainName) return true; // packaged: daemon shares the app image
+  if (isAppImageName(name)) return true;
   const cmd = String(row.CommandLine ?? '').toLowerCase();
   return name === 'node.exe' && cmd.includes('daemon');
 }

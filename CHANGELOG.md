@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **User-facing chrome and install destinations now say Forge Mux / fmux.** Window title, tray, About, Settings brand link, titlebar **FMUX** wordmark, i18n copy, CLI help, autostart Run key, CLI shim name, MCP server registration key, and `system.identify` app id use the Forge identity. Agent-visible envelopes (`FMUX MESSAGE` / `FMUX A2A` / `FMUX-MSG`), doctor and MCP error copy, daemon dialogs, company-mode CLI examples, and Windows LanLink firewall rule names follow the same identity. Claude/Codex/OpenCode/OpenClaude bridges and the event-recorder example now connect to `\\.\pipe\fmux-<user>` (not the legacy `wmux` pipe). Homebrew Cask detection looks under `Caskroom/fmux`. Source symbols, event names, protocol strings, and historical docs keep `wmux` where that reduces upstream merge noise.
 ### Fixed
+### Fixed
+
+- **The performance benchmark runs against the fork's packaged app again.** `scripts/perf-bench.mjs` still looked for `out\wmux-win32-x64\wmux.exe` and for the app's old `wmux`-named pipes, home directory, and userData folder, so the Perf CI job failed on every push to `main` before it measured anything. The packaged path and the whole runtime namespace now derive from `package.json` (shared via `scripts/helpers/packaged-app.mjs`, which `forge.config.ts` also feeds from), and the RAM attribution recognizes the renamed binary. Bench shutdown also sweeps for a daemon respawned while the app window was still up, instead of leaving it running.
+
+### Changed
+
+- **Build artifacts are named after the `fmux` slug instead of the display name.** The packaged output directory (`out/fmux-win32-x64`), the macOS bundle directory (`fmux.app`), and the macOS `.dmg`/`.zip` filenames no longer contain a space, which every script consuming a build had to work around. Nothing user-visible changes: the app still reports itself as Forge Mux in dialogs, the macOS menu bar, and Finder (`CFBundleName`/`CFBundleDisplayName`), and its data directory is unchanged (`%APPDATA%\Forge Mux`, `~/Library/Application Support/Forge Mux`) — the main process now pins the application name explicitly so it can never drift with a packaging rename.
+
 ## [1.0.0] — 2026-07-24
 
 Initial Forge Mux release, based on upstream wmux 3.33.0 (plus two later

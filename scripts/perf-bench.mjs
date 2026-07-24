@@ -1,7 +1,8 @@
 /**
  * perf-bench.mjs — A1 app-level performance benchmark for wmux.
  *
- * WHAT THIS MEASURES (against the PACKAGED app, out/wmux-win32-x64/wmux.exe)
+ * WHAT THIS MEASURES (against the PACKAGED app in out/, path derived from the
+ * package.json productName/executableName — see helpers/packaged-app.mjs)
  * --------------------------------------------------------------------------
  *   coldStart      spawn→CDP-ready, spawn→pipe-ready, spawn→renderer (.xterm
  *                  mounted), spawn→first PTY data at the renderer (the prompt
@@ -47,16 +48,16 @@
  * ---------------
  * Each app instance gets a fresh temp USERPROFILE/HOME/APPDATA/LOCALAPPDATA
  * AND a unique WMUX_DATA_SUFFIX. The suffix re-keys the main pipe, the daemon
- * pipe, the auth tokens, ~/.wmux and the Electron userData dir (and therefore
- * the single-instance lock), so the bench can run while a real wmux is open —
- * no pre-flight abort needed (unlike substrate-bench.mjs).
+ * pipe, the auth tokens, the app home dir and the Electron userData dir (and
+ * therefore the single-instance lock), so the bench can run while a real
+ * instance is open — no pre-flight abort needed (unlike substrate-bench.mjs).
  *
  * CLEANUP (the substrate-bench daemon leak, fixed here)
  * -----------------------------------------------------
  * The daemon is spawned DETACHED by the app and survives SIGTERM on the main
  * exe (quit=detach persistence design). This harness explicitly sends
- * `daemon.shutdown` on the daemon pipe (name read from <home>/.wmux<suffix>/
- * daemon-pipe, token from <home>/.wmux/daemon-auth-token) and falls back to a
+ * `daemon.shutdown` on the daemon pipe (name read from the app home dir's
+ * daemon-pipe file, token from its daemon-auth-token) and falls back to a
  * pid-file kill, then verifies both pipes are gone before the next cold run.
  *
  * MEASUREMENT CAVEATS
@@ -88,22 +89,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
 import { accumulateBreakdown, classifyProcess, RAM_CATEGORIES } from './perf-process-classify.mjs';
 import { collectProcessTree, looksLikeDaemonRow } from './perf-process-tree.mjs';
 import { summarizeSamples, compareImeEcho, judgeFrameStall } from './perf-scenarios.mjs';
+import {
+  REPO_ROOT,
+  appHomeDir,
+  authTokenPath,
+  daemonAuthTokenPaths,
+  daemonPipeName,
+  isAppImageName,
+  mainPipeName,
+  packagedAppExe,
+  packagedAppUrlPrefix,
+  userDataDir,
+} from './helpers/packaged-app.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+// Packaged-app path and runtime namespace both derive from package.json
+// (productName/executableName) — a hardcoded `out/<name>-win32-x64/<name>.exe`
+// breaks on every rename of the product.
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 // Identity guard: the app picks a RANDOM CDP port in 18800-18899. If that port
-// is already taken (a live wmux, or a zombie listener from a dead one), the
+// is already taken (a live instance, or a zombie listener from a dead one), the
 // bind silently fails and connectOverCDP would attach to the OTHER app — and
 // the bench would type keystrokes into someone's real terminal. Only accept
 // renderer pages whose URL lives under OUR packaged build dir.
-const APP_URL_PREFIX = pathToFileURL(path.join(REPO_ROOT, 'out', 'wmux-win32-x64')).href.toLowerCase();
+const APP_URL_PREFIX = packagedAppUrlPrefix();
 
 // === CLI ===
 function parseArgs(argv) {
@@ -403,7 +416,7 @@ const liveInstances = new Set();
 function makeInstance() {
   const seq = INSTANCE_SEQ++;
   const suffix = `-bench${process.pid}r${seq}`;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-perf-${seq}-`));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `perf-bench-${seq}-`));
   const env = {
     ...process.env,
     USERPROFILE: home,
@@ -422,16 +435,16 @@ function makeInstance() {
   // otherwise pop the first-run wizard, whose fixed-inset overlay swallows the
   // bench's pane click and steals terminal focus (all input samples drop).
   // This also makes coldStart measure the REGULAR boot, not the wizard boot.
-  const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
-  fs.mkdirSync(userDataDir, { recursive: true });
-  fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
+  const instUserDataDir = userDataDir(env.APPDATA, suffix);
+  fs.mkdirSync(instUserDataDir, { recursive: true });
+  fs.writeFileSync(path.join(instUserDataDir, '.first-run'), new Date().toISOString(), 'utf8');
   // PR D scrollback A/B: pre-seed session.json so loadSession applies the
   // scrollbackLines preference BEFORE any terminal mounts (see
   // buildScrollbackSeedSession for why this beats CDP store-injection). Only
   // when --scrollback-lines is supplied; otherwise the app boots untouched.
   if (ARGS.scrollbackLines != null || ARGS.hiddenRetention) {
     fs.writeFileSync(
-      path.join(userDataDir, 'session.json'),
+      path.join(instUserDataDir, 'session.json'),
       JSON.stringify(buildScrollbackSeedSession(ARGS.scrollbackLines)),
       'utf8',
     );
@@ -439,9 +452,9 @@ function makeInstance() {
   return {
     seq, suffix, home, env,
     proc: null, cdpPort: null, browser: null, page: null,
-    mainPipe: `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`,
-    daemonPipeFallback: `\\\\.\\pipe\\wmux-daemon${suffix}-${USERNAME}`,
-    wmuxDir: path.join(home, `.wmux${suffix}`),
+    mainPipe: mainPipeName(suffix, USERNAME),
+    daemonPipeFallback: daemonPipeName(suffix, USERNAME),
+    appHome: appHomeDir(home, suffix),
     t0: null,
     milestones: {},
     bootMarks: {},   // [boot-trace] mark lines from the app, ms relative to t0
@@ -511,23 +524,20 @@ function spawnInstance(inst) {
 
 function readDaemonPid(inst) {
   try {
-    const pid = Number(fs.readFileSync(path.join(inst.wmuxDir, 'daemon.pid'), 'utf8').trim());
+    const pid = Number(fs.readFileSync(path.join(inst.appHome, 'daemon.pid'), 'utf8').trim());
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch { return null; }
 }
 function readDaemonPipeName(inst) {
   try {
-    const name = fs.readFileSync(path.join(inst.wmuxDir, 'daemon-pipe'), 'utf8').trim();
+    const name = fs.readFileSync(path.join(inst.appHome, 'daemon-pipe'), 'utf8').trim();
     return name || inst.daemonPipeFallback;
   } catch { return inst.daemonPipeFallback; }
 }
 function readDaemonToken(inst) {
-  // DaemonPipeServer.getTokenPath() is NOT suffix-aware (~/.wmux/daemon-auth-token);
+  // DaemonPipeServer.getTokenPath() is NOT suffix-aware (~/.<exe>/daemon-auth-token);
   // probe the suffixed dir too in case that ever changes.
-  for (const p of [
-    path.join(inst.home, '.wmux', 'daemon-auth-token'),
-    path.join(inst.wmuxDir, 'daemon-auth-token'),
-  ]) {
+  for (const p of daemonAuthTokenPaths(inst.home, inst.suffix)) {
     try { return fs.readFileSync(p, 'utf8').trim(); } catch { /* next */ }
   }
   return null;
@@ -535,11 +545,11 @@ function readDaemonToken(inst) {
 
 // Best-effort identity check before the fallback SIGKILL: the pid file lives
 // in OUR temp home, but a pid can be recycled by the OS between the alive
-// check and the kill. Require the live process to still look like the wmux
-// daemon (image wmux.exe/node + a daemon script on the command line). On
-// lookup ERROR we default to killing (it is our pid file); on a verified
+// check and the kill. Require the live process to still look like our own
+// daemon (the app's image name or node + a daemon script on the command line).
+// On lookup ERROR we default to killing (it is our pid file); on a verified
 // MISMATCH we skip.
-async function pidLooksLikeWmuxDaemon(pid) {
+async function pidLooksLikeOurDaemon(pid) {
   return new Promise((resolve) => {
     execFile(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command',
       `Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}" | Select-Object Name,CommandLine | ConvertTo-Json -Compress`],
@@ -549,22 +559,19 @@ async function pidLooksLikeWmuxDaemon(pid) {
         const p = JSON.parse(stdout);
         const name = String(p.Name ?? '').toLowerCase();
         const cmd = String(p.CommandLine ?? '').toLowerCase();
-        resolve((name.includes('wmux') || name.includes('node')) && cmd.includes('daemon'));
+        resolve((isAppImageName(name) || name.includes('node')) && cmd.includes('daemon'));
       } catch { resolve(true); }
     });
   });
 }
 
-// Graceful full shutdown: daemon.shutdown on the daemon pipe → pid-file kill
-// fallback → terminate the main exe → verify both pipes are gone → rm home.
-async function shutdownInstance(inst, { removeHome = true } = {}) {
-  if (inst.shuttingDown) return; // re-entrancy guard (double SIGINT, FATAL+SIGINT race)
-  inst.shuttingDown = true;
-  liveInstances.delete(inst);
-  try { await inst.browser?.close(); } catch { /* noop */ }
-  inst.browser = null;
-  inst.page = null;
-
+// Tear down the daemon: graceful `daemon.shutdown` on its control pipe, then a
+// pid-file kill backstop. Every path (pid file, pipe-name hint, token) is
+// re-read on each call, so a REPLACEMENT daemon — the main app's respawn
+// controller reacts to the first one dying while the window is still up — is
+// found under its new pid/pipe on the second sweep instead of surviving the
+// bench. Returns true when the recorded daemon pid is gone.
+async function terminateDaemon(inst, { waitMs = 8000 } = {}) {
   const daemonPid = readDaemonPid(inst);
   const daemonPipe = readDaemonPipeName(inst);
   const token = readDaemonToken(inst);
@@ -578,22 +585,43 @@ async function shutdownInstance(inst, { removeHome = true } = {}) {
   }
   // Pid-file backstop. The pid file lives in OUR isolated temp home, so this
   // cannot target a foreign process by construction.
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + waitMs;
   while (daemonPid && pidAlive(daemonPid) && Date.now() < deadline) await sleep(150);
   if (daemonPid && pidAlive(daemonPid)) {
-    if (await pidLooksLikeWmuxDaemon(daemonPid)) {
+    if (await pidLooksLikeOurDaemon(daemonPid)) {
       try { process.kill(daemonPid); } catch { /* noop */ }
       await sleep(300);
       if (pidAlive(daemonPid)) { try { process.kill(daemonPid, 'SIGKILL'); } catch { /* noop */ } }
     } else {
-      console.error(`[app#${inst.seq}] daemon pid ${daemonPid} no longer looks like a wmux daemon (recycled?) — not killing`);
+      console.error(`[app#${inst.seq}] daemon pid ${daemonPid} no longer looks like our daemon (recycled?) — not killing`);
     }
   }
+  return !(daemonPid && pidAlive(daemonPid));
+}
+
+// Graceful full shutdown: daemon teardown → terminate the main exe → a second
+// daemon sweep (catches a respawned one) → verify both pipes are gone → rm home.
+async function shutdownInstance(inst, { removeHome = true } = {}) {
+  if (inst.shuttingDown) return; // re-entrancy guard (double SIGINT, FATAL+SIGINT race)
+  inst.shuttingDown = true;
+  liveInstances.delete(inst);
+  try { await inst.browser?.close(); } catch { /* noop */ }
+  inst.browser = null;
+  inst.page = null;
+
+  await terminateDaemon(inst);
 
   if (inst.proc && !inst.proc.killed) { try { inst.proc.kill(); } catch { /* noop */ } }
   const exitDeadline = Date.now() + 5000;
   while (inst.proc && inst.proc.exitCode === null && Date.now() < exitDeadline) await sleep(100);
   if (inst.proc && inst.proc.exitCode === null) { try { inst.proc.kill('SIGKILL'); } catch { /* noop */ } }
+
+  // Second sweep, now that no window is left to respawn anything: the first
+  // teardown runs while the app is still up, so its DaemonRespawnController can
+  // answer the daemon's exit by spawning a fresh one under a NEW pid — which
+  // then outlives the bench (a detached daemon survives the main exe by design).
+  await terminateDaemon(inst, { waitMs: 3000 });
+  const daemonPipe = readDaemonPipeName(inst);
 
   // Verify the pipes actually went away (next cold run must not reuse them —
   // a unique per-run suffix already prevents collisions, this is belt+braces).
@@ -915,7 +943,7 @@ async function measureInputLatency(page, sampleTarget, label) {
 // there is no behavior change and no baseline shift on the happy path. Either
 // way the layout ends at one pane, so the subsequent split-to-8 still lands on 8.
 async function recoverInputLatencyViaSplit(inst, sampleTarget) {
-  const tokenPath = path.join(inst.home, `.wmux${inst.suffix}-auth-token`);
+  const tokenPath = authTokenPath(inst.home, inst.suffix);
   const token = await waitFor('main auth token (recover)', () => {
     try { return fs.readFileSync(tokenPath, 'utf8').trim() || null; } catch { return null; }
   }, 5000, 100);
@@ -1188,7 +1216,7 @@ async function measureWebglOccupancy(page) {
 // identical to the split-to-8 / recover paths — factored so the three W2
 // scenarios don't each re-implement it).
 async function openMainClient(inst) {
-  const tokenPath = path.join(inst.home, `.wmux${inst.suffix}-auth-token`);
+  const tokenPath = authTokenPath(inst.home, inst.suffix);
   const token = await waitFor('main auth token', () => {
     try { return fs.readFileSync(tokenPath, 'utf8').trim() || null; } catch { return null; }
   }, 5000, 100);
@@ -1973,7 +2001,7 @@ process.on('exit', () => {
   // ---------- split to 8 panes ----------
   if (!ARGS.skipInput || !ARGS.skipRam) {
     console.log('--- splitting to 8 panes ---');
-    const tokenPath = path.join(lastInst.home, `.wmux${lastInst.suffix}-auth-token`);
+    const tokenPath = authTokenPath(lastInst.home, lastInst.suffix);
     const token = (await waitFor('main auth token', () => {
       try { return fs.readFileSync(tokenPath, 'utf8').trim() || null; } catch { return null; }
     }, 5000, 100));

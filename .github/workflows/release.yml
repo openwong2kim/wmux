@@ -334,7 +334,9 @@ jobs:
           FILES=$(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \))
           if [ -z "$FILES" ]; then echo "No macOS artifacts found — skipping upload"; exit 0; fi
           printf 'Uploading:\n%s\n' "$FILES"
-          # Filenames carry no spaces (wmux-<ver>-<arch>.dmg); intentional word split.
+          # Filenames carry no spaces (fmux-<ver>-<arch>.dmg — the makers name
+          # artifacts after packagerConfig.name, the slug, not the display
+          # name); intentional word split.
           # shellcheck disable=SC2086
           gh release upload "$RELEASE_TAG" $FILES --clobber
 

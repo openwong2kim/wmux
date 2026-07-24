@@ -1,6 +1,7 @@
 {
   "name": "fmux",
   "productName": "Forge Mux",
+  "executableName": "fmux",
   "version": "1.0.0",
   "description": "Workspace multiplexer for AI coding agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
