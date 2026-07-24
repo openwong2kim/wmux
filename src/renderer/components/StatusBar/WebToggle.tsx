@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
+import { IconBrowser } from '../icons';
 import {
   webIsExposed,
   type WebStartArgs,
@@ -198,7 +199,14 @@ export function WebPopoverBody({
 
 // ─── The mounted toggle ────────────────────────────────────────────────────
 
-export default function WebToggle() {
+/**
+ * `statusbar` — the compact instrument-strip chip (quiet text + amber dot).
+ * `sidebar`  — a full-width labeled row matching the Agent / Git entries at the
+ *              foot of the workspace list, with the popover opening upward.
+ */
+export type WebToggleVariant = 'statusbar' | 'sidebar';
+
+export default function WebToggle({ variant = 'statusbar' }: { variant?: WebToggleVariant } = {}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
@@ -207,6 +215,9 @@ export default function WebToggle() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [anchorLeft, setAnchorLeft] = useState(8);
+  // Sidebar rows sit at the bottom of a tall column, so the popover has to open
+  // upward from the button instead of hanging off the titlebar.
+  const [anchorBottom, setAnchorBottom] = useState<number | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
 
@@ -270,11 +281,27 @@ export default function WebToggle() {
         // reflects the actual mode, and anchor the popover under the button.
         const r = btnRef.current?.getBoundingClientRect();
         const menuWidth = 288; // w-72
-        if (r) setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+        if (r) {
+          if (variant === 'sidebar') {
+            // Fly out beside the row, bottom-aligned with it: opening upward
+            // would cover the sibling Agent / Git rows. Prefer the side facing
+            // the content area, and fall back if it would overflow.
+            const toRight = r.right + 6 + menuWidth <= window.innerWidth - 8;
+            setAnchorLeft(
+              toRight
+                ? r.right + 6
+                : Math.max(8, r.left - 6 - menuWidth),
+            );
+            setAnchorBottom(Math.max(8, window.innerHeight - r.bottom));
+          } else {
+            setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+            setAnchorBottom(null);
+          }
+        }
       }
       return !v;
     });
-  }, []);
+  }, [variant]);
 
   const handleStart = useCallback(async () => {
     const a = webApi();
@@ -319,26 +346,52 @@ export default function WebToggle() {
 
   const running = info.running === true;
 
+  const isSidebar = variant === 'sidebar';
+
+  // Sidebar row: same geometry and type as the Agent / Git entries above it.
+  // Colour follows the Git precedent — steel while the popover is open
+  // (navigation), amber while the server is running (alive), muted at rest.
+  const sidebarClass = `flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+    open
+      ? 'text-[var(--accent-blue)]'
+      : running
+        ? 'text-[var(--accent)] hover:opacity-80'
+        : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+  }`;
+
+  const statusbarClass = `flex items-center gap-1.5 transition-colors ${
+    running
+      ? 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
+      : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
+  }`;
+
   return (
-    <div className="relative flex items-center">
+    <div className={isSidebar ? 'contents' : 'relative flex items-center'}>
       <button
         ref={btnRef}
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
         aria-haspopup="dialog"
+        aria-pressed={isSidebar ? running : undefined}
         title={t('web.tooltip')}
-        data-testid="statusbar-web-toggle"
-        className={`flex items-center gap-1.5 transition-colors ${
-          running
-            ? 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
-            : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
-        }`}
+        data-testid={isSidebar ? 'sidebar-web-toggle' : 'statusbar-web-toggle'}
+        data-sidebar-web={isSidebar ? '' : undefined}
+        style={isSidebar ? ({ borderColor: 'var(--border-soft)' } as CSSProperties) : undefined}
+        className={isSidebar ? sidebarClass : statusbarClass}
       >
-        {running ? (
+        {isSidebar ? (
+          <IconBrowser size={14} />
+        ) : running ? (
           <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--accent)]" />
         ) : null}
-        {t('web.label')}
+        <span>{t('web.label')}</span>
+        {isSidebar && running ? (
+          <span
+            aria-hidden="true"
+            className="ml-auto w-[6px] h-[6px] rounded-full bg-[var(--accent)]"
+          />
+        ) : null}
       </button>
 
       {open ? (
@@ -346,7 +399,9 @@ export default function WebToggle() {
           ref={popRef}
           role="dialog"
           aria-label={t('web.headline')}
-          style={{ left: anchorLeft, top: 40 } as CSSProperties}
+          style={(anchorBottom !== null
+            ? { left: anchorLeft, bottom: anchorBottom }
+            : { left: anchorLeft, top: 40 }) as CSSProperties}
           className="fixed z-50 w-72 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
         >
           <WebPopoverBody

@@ -11,6 +11,7 @@ import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconRobot, IconGitBranch } from '../icons';
+import WebToggle from '../StatusBar/WebToggle';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
@@ -265,6 +266,13 @@ export default function Sidebar() {
           </span>
         )}
       </button>
+
+      {/* wmux web toggle — the third entry in this footer cluster (Agent · Git ·
+          web). Serving panes to a browser is a workspace-level capability like
+          the other two, so it belongs on the same rail rather than in the status
+          strip. Amber while the server is running (alive); the popover opens
+          upward from here. */}
+      <WebToggle variant="sidebar" />
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}

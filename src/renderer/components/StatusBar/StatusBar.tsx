@@ -9,7 +9,6 @@ import { tokenAttrs } from '../../themes';
 import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
-import WebToggle from './WebToggle';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 /**
@@ -215,10 +214,6 @@ export default function StatusBar() {
             {(t('strip.needsYou') || '{count} need you').replace('{count}', String(fleetVitals.needsYou))}
           </button>
         )}
-        {/* wmux web — quiet toggle for the daemon-hosted browser terminal.
-            Renders as muted "web" at rest; grows an amber alive-dot when the
-            server is running (DESIGN: chips appear only when meaningful). */}
-        <WebToggle />
         {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockUsage isCompanyMode={isCompanyMode} />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
