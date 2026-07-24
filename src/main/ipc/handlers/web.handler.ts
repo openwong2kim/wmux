@@ -77,6 +77,14 @@ export function registerWebHandlers(getDaemonClient: () => DaemonClient | null):
     ),
   );
 
+  ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
+  ipcMain.handle(
+    IPC.WEB_PAIR_REFRESH,
+    wrapHandler(IPC.WEB_PAIR_REFRESH, async (): Promise<WebTerminalInfo> => {
+      return call('daemon.web.pairRefresh', {});
+    }),
+  );
+
   ipcMain.removeHandler(IPC.WEB_STOP);
   ipcMain.handle(
     IPC.WEB_STOP,
@@ -89,5 +97,6 @@ export function registerWebHandlers(getDaemonClient: () => DaemonClient | null):
     ipcMain.removeHandler(IPC.WEB_STATUS);
     ipcMain.removeHandler(IPC.WEB_START);
     ipcMain.removeHandler(IPC.WEB_STOP);
+    ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
   };
 }

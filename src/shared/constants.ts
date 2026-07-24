@@ -411,6 +411,7 @@ export const IPC = {
   WEB_STATUS: 'web:status',
   WEB_START: 'web:start',
   WEB_STOP: 'web:stop',
+  WEB_PAIR_REFRESH: 'web:pairRefresh',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',
@@ -490,6 +491,16 @@ export function getMcpBrokerPipeName(): string {
 export const ENV_KEYS = {
   WORKSPACE_ID: 'WMUX_WORKSPACE_ID',
   SURFACE_ID: 'WMUX_SURFACE_ID',
+  // Human-readable name of the pane's workspace, stamped next to WORKSPACE_ID.
+  // DISPLAY ONLY — never a routing/authorization key (workspace names are
+  // user-editable and not unique; WORKSPACE_ID stays the identity). It exists
+  // because consumers OUTSIDE the renderer (wmux web, which is served by the
+  // daemon and has no access to the workspace tree) can otherwise only label a
+  // pane by its cwd. Deliberately OPTIONAL and snapshot-shaped: it is the name
+  // as of spawn time, so it is absent for panes created before this key existed
+  // and stale for a workspace renamed afterwards. Consumers must fall back to
+  // the id / cwd rather than trusting it as current.
+  WORKSPACE_NAME: 'WMUX_WORKSPACE_NAME',
   // X6 ③: the daemon session id of the pane, injected by the daemon at spawn
   // (DaemonSessionManager.createSession). Unlike SURFACE_ID — which the renderer
   // never supplies at pty.create time because a surface is minted AFTER the pty

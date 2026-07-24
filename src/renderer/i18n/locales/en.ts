@@ -303,10 +303,16 @@ export const en = {
   'web.readOnly': 'read-only',
   'web.inputEnabled': 'INPUT ENABLED',
   'web.viewers': '{count} viewer(s)',
-  'web.copyUrl': 'Copy URL',
   'web.copied': 'Copied',
+  'web.copy': 'Copy',
+  'web.open': 'Open',
+  'web.openHere': 'Open on this machine',
+  'web.onPhone': 'On your phone',
+  'web.pairHint': 'Open this address, then enter the code:',
   'web.pairCode': 'Pairing code',
   'web.pairValidity': 'valid 10 min · single use',
+  'web.pairSpent': 'The code was used or expired.',
+  'web.newPairCode': 'New code',
   'web.daemonOffline': 'wmux web needs the background daemon, which is not running.',
 
   // Settings

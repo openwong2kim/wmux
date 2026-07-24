@@ -1642,6 +1642,9 @@ function registerRpcHandlers(
   });
   pipeServer.onRpc('daemon.web.stop', async () => webServer.stop());
   pipeServer.onRpc('daemon.web.status', async () => webServer.status());
+  // Operator-initiated pairing-code refresh — the escape hatch when a code has
+  // been used or has expired and another device still needs to pair.
+  pipeServer.onRpc('daemon.web.pairRefresh', async () => webServer.refreshPairCode());
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
   // External pipe clients are blocked upstream by the 'wmux.internal'

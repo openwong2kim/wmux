@@ -109,6 +109,12 @@ declare global {
         start: (args: WebStartArgs) => Promise<WebTerminalInfo>;
         /** Stop the server. Resolves the post-stop state (`running:false`). */
         stop: () => Promise<WebTerminalInfo>;
+        /**
+         * Mint a fresh pairing code. Needed because a code is single-use and
+         * expires, which would otherwise leave no way to pair another device
+         * short of restarting the server.
+         */
+        pairRefresh: () => Promise<WebTerminalInfo>;
       };
     };
     clipboardAPI: {

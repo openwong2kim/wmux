@@ -4,6 +4,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSessionManager } from '../DaemonSessionManager';
+import { ENV_KEYS } from '../../shared/constants';
 
 /**
  * wmux web — a read-only-by-default browser terminal served BY THE DAEMON.
@@ -243,6 +244,21 @@ export class WebTerminalServer {
     return { stopped: true };
   }
 
+  /**
+   * Mint a fresh pairing code on operator request.
+   *
+   * The lazy regeneration in `handlePair` is deliberately rate-limited because
+   * it is reachable by whoever can hit the port. This path is different: it is
+   * an authenticated control-plane call from the GUI, i.e. the operator asking
+   * in person, so it mints immediately. Without it, a consumed or expired code
+   * left no way to pair a second device short of restarting the server.
+   */
+  refreshPairCode(): WebTerminalInfo {
+    if (!this.server) return { running: false };
+    this.generatePairCode();
+    return this.status();
+  }
+
   status(): WebTerminalInfo {
     if (!this.server || !this.opts) return { running: false };
     return {
@@ -338,6 +354,7 @@ export class WebTerminalServer {
     state: string;
     agent: string | null;
     lastActivity: string;
+    workspace?: string;
   }> {
     return this.deps.sessionManager.listLiveSessions().map((s) => ({
       id: s.id,
@@ -347,6 +364,7 @@ export class WebTerminalServer {
       state: s.state,
       agent: s.agent?.displayName ?? s.lastDetectedAgent ?? null,
       lastActivity: s.lastActivity,
+      ...workspaceLabelOf(s.env),
     }));
   }
 
@@ -642,6 +660,31 @@ export class WebTerminalServer {
 
 function writeSse(res: http.ServerResponse, event: string, data: string): void {
   res.write(`event: ${event}\ndata: ${data}\n\n`);
+}
+
+/**
+ * Which workspace a pane belongs to, for the browser's session labels.
+ *
+ * `DaemonSession` has no workspace field — workspaces are a renderer/main
+ * concept — but main stamps the identity into every pane's child env at spawn
+ * (resolveSpawnEnv) and the daemon persists that env verbatim, so the answer is
+ * already here. We read EXACTLY the two identity keys: the session env is the
+ * pane's full resolved environment (credentials, account config dirs) and must
+ * never reach a browser wholesale.
+ *
+ * ONLY the name is surfaced. The workspace id is deliberately NOT a fallback:
+ * it is a UUID (`ws-192b59b5-…`), which tells a human nothing and is strictly
+ * worse than the cwd label the frontend already falls back to.
+ *
+ * HONEST LIMITATION: the name is a spawn-time snapshot of the env, so panes
+ * created before WMUX_WORKSPACE_NAME existed have none (the frontend shows the
+ * cwd, exactly as before), and a workspace renamed after a pane spawned keeps
+ * showing the old name here. We never invent a label.
+ */
+function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?: string } {
+  const value = env?.[ENV_KEYS.WORKSPACE_NAME];
+  const workspace = typeof value === 'string' ? value.trim() : '';
+  return workspace ? { workspace } : {};
 }
 
 function readIfExists(p: string): Buffer | null {

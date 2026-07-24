@@ -28,12 +28,16 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     allowInput: false,
     expose: false,
     busy: false,
-    copied: false,
+    copied: null,
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
     onCopyUrl: vi.fn(),
+    onCopyPairUrl: vi.fn(),
+    onCopyPairCode: vi.fn(),
+    onOpenUrl: vi.fn(),
+    onNewPairCode: vi.fn(),
     t,
   };
   return renderToStaticMarkup(createElement(WebPopoverBody, { ...base, ...overrides }));
@@ -98,7 +102,7 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('127.0.0.1:7681');
     expect(html).toContain('web.viewers');
     expect(html).toContain('http://127.0.0.1:7681/');
-    expect(html).toContain('web.copyUrl');
+    expect(html).toContain('web.copy');
     expect(html).toContain('482913');
     expect(html).toContain('text-[22px]'); // pair code rendered large
     expect(html).toContain('web.pairValidity');
@@ -130,8 +134,24 @@ describe('WebPopoverBody — on state', () => {
     expect(html).not.toContain('accent-red');
   });
 
-  it('copied state swaps the copy label', () => {
-    const html = renderBody({ info: runningInfo, copied: true });
-    expect(html).toContain('web.copied');
+  it('only the copied field swaps its label', () => {
+    const html = renderBody({ info: runningInfo, copied: 'pairCode' });
+    // Exactly one button reads "Copied"; the others still offer to copy.
+    expect(html.split('web.copied').length - 1).toBe(1);
+    expect(html).toContain('web.copy');
+  });
+
+  it('offers a way back when the pairing code is spent, instead of hiding the section', () => {
+    const html = renderBody({ info: { ...runningInfo, pairCode: undefined } });
+    expect(html).toContain('web.onPhone');
+    expect(html).toContain('web.newPairCode');
+  });
+
+  it('offers both connection paths: an openable URL and a token-free pair address', () => {
+    const html = renderBody({ info: runningInfo });
+    expect(html).toContain('web.openHere');
+    expect(html).toContain('web.onPhone');
+    // The phone address must not carry the token — that is the point of the code.
+    expect(html).toContain('/pair');
   });
 });

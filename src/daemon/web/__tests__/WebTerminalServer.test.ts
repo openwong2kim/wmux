@@ -16,10 +16,26 @@ function makeDeps() {
     bridge,
     ptyProcess: { write },
   };
-  const live = [{
-    id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
-    agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
-  }];
+  // Three panes covering the workspace-label matrix: named workspace, a legacy
+  // pane spawned before WMUX_WORKSPACE_NAME existed (id present, name absent),
+  // and no wmux identity at all.
+  const live = [
+    {
+      id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1', ANTHROPIC_API_KEY: 'sk-secret' },
+    },
+    {
+      id: 's2', cwd: '/y', cols: 80, rows: 24, state: 'attached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_WORKSPACE_ID: 'ws-legacy' },
+    },
+    {
+      id: 's3', cwd: '/z', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { PATH: '/usr/bin' },
+    },
+  ];
   // The real DaemonSessionManager is an EventEmitter; the server tees its
   // session:critical / session:notification events, so the fake must emit too.
   const sessionManager = Object.assign(new EventEmitter(), {
@@ -74,6 +90,32 @@ describe('WebTerminalServer', () => {
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ allowInput: false });
+  });
+
+  it('labels sessions by workspace NAME only, and leaks nothing else from env', async () => {
+    const info = await startRO();
+    const res = await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) });
+    expect(res.status).toBe(200);
+    const { sessions } = (await res.json()) as { sessions: Array<Record<string, unknown>> };
+
+    // Named workspace wins.
+    expect(sessions[0].workspace).toBe('Workspace 1');
+    // A pane that predates WMUX_WORKSPACE_NAME carries only the id. The id is a
+    // UUID and means nothing to a human, so it is NOT used as a fallback — the
+    // field stays absent and the frontend keeps showing its cwd label.
+    expect('workspace' in sessions[1]).toBe(false);
+    // No wmux identity at all → the field is absent, so the frontend falls back
+    // to its cwd label instead of showing a fabricated workspace.
+    expect('workspace' in sessions[2]).toBe(false);
+
+    // Only the workspace NAME is read out of the pane env — the rest of it
+    // (credentials, account config dirs, and the meaningless workspace UUID)
+    // must never reach the browser.
+    const wire = JSON.stringify(sessions);
+    expect(wire).not.toContain('sk-secret');
+    expect(wire).not.toContain('ANTHROPIC_API_KEY');
+    expect(wire).not.toContain('/usr/bin');
+    expect(wire).not.toContain('ws-legacy');
   });
 
   it('rejects input when started read-only (403), accepts and writes when --allow-input (204)', async () => {

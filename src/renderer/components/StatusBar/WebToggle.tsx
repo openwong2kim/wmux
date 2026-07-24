@@ -51,6 +51,24 @@ export function webBindLabel(info: WebTerminalInfo): string {
   return `${info.host ?? ''}:${info.port ?? ''}`;
 }
 
+/**
+ * The address to type on the phone: origin + `/pair`, with NO token in it —
+ * that is the whole point of the pairing code (a 6-char code instead of a
+ * 36-char UUID). When exposed we prefer a reachable LAN/tailnet address over
+ * loopback, because 127.0.0.1 means nothing on another device.
+ */
+export function webPairUrl(info: WebTerminalInfo): string {
+  const urls = info.urls ?? [];
+  if (urls.length === 0) return '';
+  const reachable = urls.find((u) => !/\/\/(127\.0\.0\.1|localhost|\[::1\])[:/]/.test(u));
+  const chosen = reachable ?? urls[0];
+  try {
+    return `${new URL(chosen).origin}/pair`;
+  } catch {
+    return '';
+  }
+}
+
 // ─── Presentational popover body (renderToStaticMarkup-testable) ───────────
 
 export interface WebPopoverBodyProps {
@@ -58,14 +76,22 @@ export interface WebPopoverBodyProps {
   allowInput: boolean;
   expose: boolean;
   busy: boolean;
-  copied: boolean;
+  /** Which value was just copied, so only that button flips to "Copied". */
+  copied: CopyTarget;
   onToggleAllowInput: () => void;
   onToggleExpose: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyUrl: () => void;
+  onCopyPairUrl: () => void;
+  onCopyPairCode: () => void;
+  onOpenUrl: () => void;
+  onNewPairCode: () => void;
   t: (key: string) => string;
 }
+
+/** Nothing copied, or the field whose copy button should read "Copied". */
+export type CopyTarget = null | 'url' | 'pairUrl' | 'pairCode';
 
 /**
  * The popover contents. Split from WebToggle so the node-env test suite can
@@ -84,6 +110,10 @@ export function WebPopoverBody({
   onStart,
   onStop,
   onCopyUrl,
+  onCopyPairUrl,
+  onCopyPairCode,
+  onOpenUrl,
+  onNewPairCode,
   t,
 }: WebPopoverBodyProps) {
   if (!info.running) {
@@ -131,6 +161,7 @@ export function WebPopoverBody({
   }
 
   const url = primaryWebUrl(info);
+  const pairUrl = webPairUrl(info);
   const exposed = webIsExposed(info);
   const viewers =
     typeof info.clients === 'number'
@@ -148,30 +179,92 @@ export function WebPopoverBody({
         {viewers ? <span className="text-[var(--text-sub)]">· {viewers}</span> : null}
       </div>
 
+      {/* Path 1 — this machine. The URL carries the token, so it just works;
+          clicking opens it in the default browser rather than being dead text. */}
       {url ? (
-        <div className="flex items-center gap-1.5">
-          <span className="flex-1 min-w-0 truncate font-mono text-[11px] text-[var(--text-sub)] select-all">
-            {url}
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+            {t('web.openHere')}
           </span>
-          <button
-            type="button"
-            onClick={onCopyUrl}
-            className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
-          >
-            {copied ? t('web.copied') : t('web.copyUrl')}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenUrl}
+              title={url}
+              className={`flex-1 min-w-0 truncate text-left font-mono text-[11px] text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+            >
+              {url}
+            </button>
+            <button
+              type="button"
+              onClick={onCopyUrl}
+              className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            >
+              {copied === 'url' ? t('web.copied') : t('web.copy')}
+            </button>
+          </div>
         </div>
       ) : null}
 
-      {info.pairCode ? (
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairCode')}</span>
-          <span className="font-mono text-[22px] font-bold tracking-widest text-[var(--text-main)] select-all">
-            {info.pairCode}
+      {/* Path 2 — another device. This is what the pairing code exists for:
+          typing a 36-char token on a phone keyboard is miserable, so the phone
+          opens a token-free /pair address and enters six characters instead. */}
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+          {t('web.onPhone')}
+        </span>
+        {info.pairCode ? (
+          <>
+          <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+            {t('web.pairHint')}
           </span>
+          {pairUrl ? (
+            <div className="flex items-center gap-1.5">
+              <span className="flex-1 min-w-0 truncate font-mono text-[11px] text-[var(--text-sub)] select-all">
+                {pairUrl}
+              </span>
+              <button
+                type="button"
+                onClick={onCopyPairUrl}
+                className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+              >
+                {copied === 'pairUrl' ? t('web.copied') : t('web.copy')}
+              </button>
+            </div>
+          ) : null}
+          <div className="flex items-center gap-1.5">
+            <span className="flex-1 font-mono text-[22px] font-bold tracking-widest text-[var(--text-main)] select-all">
+              {info.pairCode}
+            </span>
+            <button
+              type="button"
+              onClick={onCopyPairCode}
+              className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            >
+              {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
+            </button>
+          </div>
           <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
-        </div>
-      ) : null}
+          </>
+        ) : (
+          // A code is single-use and time-limited. Without this the section
+          // would simply vanish once it is spent, stranding the operator with
+          // no way to pair another device short of restarting the server.
+          <>
+            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+              {t('web.pairSpent')}
+            </span>
+            <button
+              type="button"
+              onClick={onNewPairCode}
+              disabled={busy}
+              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
+            >
+              {t('web.newPairCode')}
+            </button>
+          </>
+        )}
+      </div>
 
       <div className="text-[11px]">
         {info.allowInput ? (
@@ -213,7 +306,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
   // Sidebar rows sit at the bottom of a tall column, so the popover has to open
   // upward from the button instead of hanging off the titlebar.
@@ -328,17 +421,51 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     }
   }, []);
 
-  const handleCopyUrl = useCallback(async () => {
+  const copyValue = useCallback(async (target: Exclude<CopyTarget, null>, value: string) => {
+    if (!value) return;
+    try {
+      await window.clipboardAPI?.writeText(value);
+      setCopied(target);
+      setTimeout(() => setCopied((c) => (c === target ? null : c)), 1500);
+    } catch {
+      /* clipboard lock/size error — every value stays select-all for manual copy */
+    }
+  }, []);
+
+  const handleCopyUrl = useCallback(
+    () => copyValue('url', primaryWebUrl(info)),
+    [copyValue, info],
+  );
+  const handleCopyPairUrl = useCallback(
+    () => copyValue('pairUrl', webPairUrl(info)),
+    [copyValue, info],
+  );
+  const handleCopyPairCode = useCallback(
+    () => copyValue('pairCode', info.pairCode ?? ''),
+    [copyValue, info],
+  );
+
+  const handleNewPairCode = useCallback(async () => {
+    const a = webApi();
+    if (!a?.pairRefresh) return;
+    setBusy(true);
+    try {
+      setInfo(await a.pairRefresh());
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  // The URL is the one value that is directly actionable on this machine, so
+  // clicking it opens the browser instead of leaving the operator to copy and
+  // paste. Falls back to a copy when no shell bridge exists.
+  const handleOpenUrl = useCallback(() => {
     const url = primaryWebUrl(info);
     if (!url) return;
-    try {
-      await window.clipboardAPI?.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard lock/size error — the URL stays selectable for manual copy */
-    }
-  }, [info]);
+    const shell = window.electronAPI?.shell;
+    if (shell?.openExternal) void shell.openExternal(url);
+    else void copyValue('url', url);
+  }, [copyValue, info]);
 
   // The web bridge is absent entirely (e.g. under a stripped test harness) —
   // render nothing rather than a dead control.
@@ -415,6 +542,10 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             onStart={handleStart}
             onStop={handleStop}
             onCopyUrl={handleCopyUrl}
+            onCopyPairUrl={handleCopyPairUrl}
+            onCopyPairCode={handleCopyPairCode}
+            onOpenUrl={handleOpenUrl}
+            onNewPairCode={handleNewPairCode}
             t={t}
           />
         </div>
