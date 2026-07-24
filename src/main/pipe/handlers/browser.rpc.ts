@@ -415,9 +415,24 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   /**
    * browser.cdp.info
    * Returns the CDP port and minimal target metadata required for Playwright attachment.
-   * params: none
+   * params: { workspaceId?: string }
+   *
+   * When a caller passes its resolved `workspaceId`, `targets` is filtered to
+   * that workspace server-side and `targetsScoped: true` is set (#580, Option
+   * 1). This stops the RPC from volunteering other workspaces' live targets to
+   * a caller that identifies itself — defense-in-depth within the same-OS-user
+   * trust ceiling, NOT a hard seal: `cdpPort` is still returned, so a holder of
+   * it can enumerate every target via the CDP `/json` endpoint directly.
+   * `cdpPort` and `shellUrl` are workspace-agnostic and always returned in full.
+   * A param-less call keeps the legacy unscoped shape (no flag) for callers that
+   * only need the port/shell URL.
    */
-  router.register('browser.cdp.info', async () => {
+  router.register('browser.cdp.info', async (params) => {
+    const callerWorkspaceId =
+      typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
+        ? params['workspaceId']
+        : undefined;
+
     let targets = webviewCdpManager.listTargets();
 
     // If no targets yet, wait briefly for in-flight registrations to complete.
@@ -426,6 +441,13 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       await new Promise((r) => setTimeout(r, 1500));
       targets = webviewCdpManager.listTargets();
     }
+
+    // Server-side workspace scoping. An untagged target (older registration
+    // path) is dropped from a scoped response rather than leaked, since it
+    // cannot be proven to belong to the caller.
+    const scopedTargets = callerWorkspaceId
+      ? targets.filter((t) => t.workspaceId === callerWorkspaceId)
+      : targets;
 
     const cdpPort: number = webviewCdpManager.getCdpPort();
 
@@ -444,7 +466,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     return {
       cdpPort,
       ...(shellUrl && { shellUrl }),
-      targets: targets.map((t) => ({
+      // Lets a scoped caller tell "I own no live targets" (empty + scoped) from
+      // "legacy main that can't scope" (empty + unscoped). The engine gates its
+      // leniency fallback on this.
+      ...(callerWorkspaceId && { targetsScoped: true }),
+      targets: scopedTargets.map((t) => ({
         surfaceId: t.surfaceId,
         targetId: t.targetId,
         // Owning workspace (#554) — lets the read path scope page selection to
