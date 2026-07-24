@@ -65,7 +65,7 @@ WEB ACCESS (browser / PWA over Tailscale)
         [--host <addr>]             Explicit bind address (overrides --expose)
         [--allow-input]             Enable keyboard input (off by default)
         [--allow-host <h1,h2>]      Extra Host headers to accept, for a reverse
-                                    proxy in front (e.g. a `tailscale serve`
+                                    proxy in front (e.g. a 'tailscale serve'
                                     MagicDNS name)
         [--new-token]               Mint a fresh access token, revoking every
                                     device already paired
