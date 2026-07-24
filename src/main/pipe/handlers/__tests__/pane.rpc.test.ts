@@ -1309,6 +1309,235 @@ describe('pane.rpc — metadata', () => {
       expect(entry.version).toBe(1);
     });
   });
+
+  // D2 SECURITY — `custom['orchestrator.role']` selects which enforced
+  // agent/model binding applies to a pane, so it must be the operator's to
+  // assign. An agent on the external wire (MCP / CLI / raw pipe) is not
+  // first-party and cannot write it; the trusted in-process bridge can.
+  describe('orchestrator.role is operator-only on the wire (D2)', () => {
+    const ROLE = 'orchestrator.role';
+    /** The wire (PipeServer) dispatches WITHOUT the firstParty option. */
+    const asAgent = (router: RpcRouter, params: Record<string, unknown>, id = 'agent') =>
+      router.dispatch({ id, method: 'pane.setMetadata', params });
+    /** The renderer bridge / plugin host dispatch WITH it. */
+    const asOperator = (router: RpcRouter, params: Record<string, unknown>, id = 'op') =>
+      router.dispatch({ id, method: 'pane.setMetadata', params }, { firstParty: true });
+
+    it('strips the role key from a non-first-party write', async () => {
+      const { router, store } = setupWithStore();
+      const res = await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        custom: { [ROLE]: 'Builder' },
+      });
+
+      expect(res.ok).toBe(true);
+      expect(store.get('pane-a').metadata.custom?.[ROLE]).toBeUndefined();
+    });
+
+    it('reports the denial on the reply so the caller can tell it did not take', async () => {
+      const { router } = setupWithStore();
+      const res = await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        custom: { [ROLE]: 'Builder' },
+      });
+
+      expect(res.ok).toBe(true);
+      const payload = res.ok ? (res.result as { rejectedKeys?: string[]; note?: string }) : {};
+      expect(payload.rejectedKeys).toEqual([ROLE]);
+      expect(payload.note).toMatch(/assigned by the operator/);
+    });
+
+    it('still applies the rest of the patch (strip, not reject)', async () => {
+      const { router, store } = setupWithStore();
+      const res = await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        label: 'Worker 3',
+        status: 'busy',
+        custom: { [ROLE]: 'Builder', 'my.tool.state': 'ok' },
+      });
+
+      expect(res.ok).toBe(true);
+      const meta = store.get('pane-a').metadata;
+      expect(meta.label).toBe('Worker 3');
+      expect(meta.status).toBe('busy');
+      expect(meta.custom?.['my.tool.state']).toBe('ok');
+      expect(meta.custom?.[ROLE]).toBeUndefined();
+    });
+
+    it('cannot OVERWRITE an operator-assigned role', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        custom: { [ROLE]: 'Builder' },
+      });
+
+      expect(store.get('pane-a').metadata.custom?.[ROLE]).toBe('Reviewer');
+    });
+
+    // Dropping the role is itself the attack: an unbound role misses the
+    // lookup and fail-open hands the agent the default model. A `replace`
+    // deletes every custom key the patch omits, so stripping alone is not
+    // enough — the existing value must be carried forward.
+    it('cannot ERASE an operator-assigned role via mergeMode replace', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        mergeMode: 'replace',
+        custom: { 'my.tool.state': 'ok' },
+      });
+
+      const meta = store.get('pane-a').metadata;
+      expect(meta.custom?.[ROLE]).toBe('Reviewer');
+      expect(meta.custom?.['my.tool.state']).toBe('ok');
+    });
+
+    it('cannot ERASE the role via a replace that omits custom entirely', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        mergeMode: 'replace',
+        label: 'Renamed',
+      });
+
+      const meta = store.get('pane-a').metadata;
+      expect(meta.custom?.[ROLE]).toBe('Reviewer');
+      expect(meta.label).toBe('Renamed');
+    });
+
+    it('leaves an unrelated replace alone when no role is set', async () => {
+      const { router, store } = setupWithStore();
+      const res = await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        mergeMode: 'replace',
+        custom: { 'my.tool.state': 'ok' },
+      });
+
+      expect(res.ok).toBe(true);
+      const payload = res.ok ? (res.result as { rejectedKeys?: string[] }) : {};
+      expect(payload.rejectedKeys).toBeUndefined();
+      expect(store.get('pane-a').metadata.custom).toEqual({ 'my.tool.state': 'ok' });
+    });
+
+    // replaceShared preserves base.custom wholesale and ignores patch.custom,
+    // so the role is already unreachable there — assert it stays that way.
+    it('leaves the role intact under mergeMode replaceShared', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      await asAgent(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        mergeMode: 'replaceShared',
+        label: 'Shared',
+        custom: { [ROLE]: 'Builder' },
+      });
+
+      const meta = store.get('pane-a').metadata;
+      expect(meta.custom?.[ROLE]).toBe('Reviewer');
+      expect(meta.label).toBe('Shared');
+    });
+
+    it('a first-party caller CAN still set the role', async () => {
+      const { router, store } = setupWithStore();
+      const res = await asOperator(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        custom: { [ROLE]: 'Builder' },
+      });
+
+      expect(res.ok).toBe(true);
+      const payload = res.ok ? (res.result as { rejectedKeys?: string[] }) : {};
+      expect(payload.rejectedKeys).toBeUndefined();
+      expect(store.get('pane-a').metadata.custom?.[ROLE]).toBe('Builder');
+    });
+
+    // pane.clearMetadata is the SECOND route to the same key — a wholesale
+    // clear drops the role along with everything else.
+    it('cannot ERASE the role via pane.clearMetadata', async () => {
+      const { router, store } = setupWithStore();
+      store.set(
+        'pane-a',
+        { label: 'Worker', custom: { [ROLE]: 'Reviewer', 'my.tool.state': 'ok' } },
+        { workspaceId: 'ws-1' },
+      );
+
+      const res = await router.dispatch({
+        id: 'clear-agent',
+        method: 'pane.clearMetadata',
+        params: { paneId: 'pane-a', workspaceId: 'ws-1' },
+      });
+
+      expect(res.ok).toBe(true);
+      const payload = res.ok ? (res.result as { rejectedKeys?: string[]; note?: string }) : {};
+      expect(payload.rejectedKeys).toEqual([ROLE]);
+      expect(payload.note).toMatch(/preserved/);
+      // Everything else really is gone — this is a clear, not a no-op.
+      const meta = store.get('pane-a').metadata;
+      expect(meta.custom?.[ROLE]).toBe('Reviewer');
+      expect(meta.label).toBeUndefined();
+      expect(meta.custom?.['my.tool.state']).toBeUndefined();
+    });
+
+    it('a non-first-party clear is unchanged when the pane has no role', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { label: 'Worker' }, { workspaceId: 'ws-1' });
+
+      const res = await router.dispatch({
+        id: 'clear-norole',
+        method: 'pane.clearMetadata',
+        params: { paneId: 'pane-a', workspaceId: 'ws-1' },
+      });
+
+      expect(res.ok).toBe(true);
+      const payload = res.ok ? (res.result as { rejectedKeys?: string[] }) : {};
+      expect(payload.rejectedKeys).toBeUndefined();
+      expect(store.get('pane-a').metadata).toEqual({});
+    });
+
+    it('a first-party clear still wipes the role (operator unassign)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      const res = await router.dispatch(
+        {
+          id: 'clear-op',
+          method: 'pane.clearMetadata',
+          params: { paneId: 'pane-a', workspaceId: 'ws-1' },
+        },
+        { firstParty: true },
+      );
+
+      expect(res.ok).toBe(true);
+      expect(store.get('pane-a').metadata).toEqual({});
+    });
+
+    it('a first-party replace can still clear the role (unassign)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-a', { custom: { [ROLE]: 'Reviewer' } }, { workspaceId: 'ws-1' });
+
+      await asOperator(router, {
+        paneId: 'pane-a',
+        workspaceId: 'ws-1',
+        mergeMode: 'replace',
+        custom: {},
+      });
+
+      expect(store.get('pane-a').metadata.custom?.[ROLE]).toBeUndefined();
+    });
+  });
 });
 
 // === X8: pane.list supervision join ===

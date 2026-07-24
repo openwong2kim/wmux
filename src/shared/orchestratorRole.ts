@@ -21,13 +21,19 @@ export const ORCH_ROLES = ['Builder', 'Reviewer', 'Tester', 'Planner'] as const;
 export type OrchRole = (typeof ORCH_ROLES)[number];
 
 /** Max length of a role once read. This value is injected VERBATIM into the
- *  orchestrator LLM's workspace snapshot, and the `custom['orchestrator.role']`
- *  key is writable by ANY `pane_set_metadata` caller (a worker pane can set its
- *  own role, not just the operator dropdown) — and `custom` values, unlike the
- *  `label`/`role` metadata fields, are NOT length-capped by MetadataStore (only
+ *  orchestrator LLM's workspace snapshot, and `custom` values — unlike the
+ *  `label`/`role` metadata fields — are NOT length-capped by MetadataStore (only
  *  the ~8KB whole-blob cap applies). So we neutralize the value at the read
  *  boundary: single line, no control chars, length-capped. Matches the label
- *  cap so a role can't out-inject a label. */
+ *  cap so a role can't out-inject a label.
+ *
+ *  The write boundary is now operator-only — `pane.setMetadata` strips this key
+ *  from any non-first-party caller (see pane.rpc.ts guardRoleKey), so a worker
+ *  pane can no longer assign its own role. The read-boundary sanitization below
+ *  stays as defense in depth: it still covers metadata.json entries written
+ *  before that gate existed or hand-edited since, and the first-party path
+ *  (Fleet dropdown / plugin host), which is trusted for AUTHORITY but is not a
+ *  reason to inject unvalidated text into an LLM prompt. */
 export const ORCH_ROLE_MAX = 64;
 
 /** Read a pane's assigned role from a metadata `custom` map, sanitized for
