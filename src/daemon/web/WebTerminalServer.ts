@@ -109,6 +109,15 @@ export interface WebTerminalInfo {
    * surfaced rather than left to a daemon log nobody reads.
    */
   deviceCredentials?: boolean;
+  /**
+   * The TLS fronts the operator named with `--allow-host`, if any.
+   *
+   * Surfaced so `--status` and the GUI can name the address that actually works
+   * from a phone. `wmux web --tailscale` binds loopback on purpose, so without
+   * this the only thing status could report for the supported phone setup was a
+   * loopback URL — correct about the bind, useless to the operator.
+   */
+  allowedHosts?: string[];
 }
 
 /**
@@ -801,6 +810,7 @@ export class WebTerminalServer {
       pairCode: pair.code,
       pairExpiresAt: pair.expiresAt,
       deviceCredentials: !!this.deps.devices,
+      allowedHosts: this.frontedHosts(),
     };
   }
 
@@ -1820,15 +1830,39 @@ export class WebTerminalServer {
     const { host, port } = this.opts;
     const token = this.token;
     const suffix = `:${port}/?token=${token}`;
+    // A named TLS front comes FIRST, because it is the address that actually
+    // works from a phone. `wmux web --tailscale` binds loopback and lets
+    // `tailscale serve` terminate HTTPS, so without this the only thing
+    // `--status` could print for that setup was `http://127.0.0.1:<port>`,
+    // which is useless on the device the whole feature exists for.
+    //
+    // No port: a front is named because it terminates TLS on 443. An operator
+    // who fronted on another port writes it into `--allow-host` themselves and
+    // it rides through verbatim.
+    const fronted = this.frontedHosts().map((h) => `https://${h}/?token=${token}`);
     // When bound to all interfaces, enumerate concrete reachable addresses so
     // the operator can pick their tailnet IP; otherwise report the bind host.
     if (host === '0.0.0.0' || host === '::') {
       const addrs = collectIpv4();
       const urls = addrs.map((a) => `http://${a}${suffix}`);
       urls.push(`http://127.0.0.1${suffix}`);
-      return urls;
+      return [...fronted, ...urls];
     }
-    return [`http://${urlAuthority(host)}${suffix}`];
+    return [...fronted, `http://${urlAuthority(host)}${suffix}`];
+  }
+
+  /**
+   * The TLS fronts the operator named with `--allow-host`, normalized the same
+   * way the Host gate normalizes them so the two cannot disagree.
+   *
+   * Only the operator-supplied extras — never the loopback names and local IPs
+   * the server adds to `allowedHosts` for the rebinding check, which are not
+   * fronts and would each produce an `https://` URL that answers nothing.
+   */
+  private frontedHosts(): string[] {
+    return (this.opts?.allowedHosts ?? [])
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
   }
 
   private loadAssets(): void {

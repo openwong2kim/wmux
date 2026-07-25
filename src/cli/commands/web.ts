@@ -25,6 +25,8 @@ interface WebInfo {
   pairExpiresAt?: number;
   /** False when the device roster is unavailable — pairing falls back to the shared token. */
   deviceCredentials?: boolean;
+  /** TLS fronts named with `--allow-host`. The address a phone can actually use. */
+  allowedHosts?: string[];
 }
 
 /**
@@ -159,6 +161,27 @@ function pickPairHost(urls: string[], info: WebInfo, loopbackOnly: boolean): str
 }
 
 /**
+ * The origin to print for pairing, scheme included.
+ *
+ * A named TLS front wins over everything, INCLUDING a loopback bind — that
+ * combination is not an edge case, it is what `wmux web --tailscale` produces on
+ * purpose (bind 127.0.0.1, let `tailscale serve` terminate HTTPS). `pickPairHost`
+ * skips the URL scan when the bind is loopback, which is right for a bare
+ * loopback server and wrong the moment a front exists, so the front is checked
+ * before that gate rather than inside it.
+ *
+ * This is also why `--status` needed the front in the first place: `tailnet` is
+ * only populated by the invocation that SET UP the serve, so a later `--status`
+ * had nothing to go on and printed a loopback URL to an operator holding a
+ * phone.
+ */
+function pickPairOrigin(urls: string[], info: WebInfo, loopbackOnly: boolean): string {
+  const front = (info.allowedHosts ?? []).find((h) => h.trim().length > 0);
+  if (front) return `https://${front.trim()}`;
+  return `http://${pickPairHost(urls, info, loopbackOnly)}`;
+}
+
+/**
  * The `--status` warning for a server running WITHOUT per-device credentials,
  * or `null` when there is nothing to say.
  *
@@ -253,7 +276,9 @@ function report(
     console.log(`    ${tailnet.url}/?token=${info.token ?? ''}`);
   } else if (urls.length) {
     console.log('');
-    console.log(loopbackOnly ? '  Open locally:' : '  Open on your phone (same Tailscale tailnet or LAN):');
+    // A front means the phone can reach this even though the bind is loopback.
+    const phoneReachable = !loopbackOnly || (info.allowedHosts ?? []).length > 0;
+    console.log(phoneReachable ? '  Open on your phone (same Tailscale tailnet or LAN):' : '  Open locally:');
     for (const u of urls) console.log(`    ${u}`);
   } else if (info.token) {
     console.log(`  token: ${info.token}`);
@@ -263,7 +288,7 @@ function report(
   // Prefer the tailnet origin, else the first non-loopback URL's host, so the
   // phone hits a reachable /pair.
   if (info.pairCode) {
-    const pairOrigin = tailnet ? tailnet.url : `http://${pickPairHost(urls, info, loopbackOnly)}`;
+    const pairOrigin = tailnet ? tailnet.url : pickPairOrigin(urls, info, loopbackOnly);
     console.log('');
     console.log('  Pair from phone (no token typing):');
     console.log(`    open  ${pairOrigin}/pair`);

@@ -1711,6 +1711,33 @@ describe('WebTerminalServer', () => {
     expect(deviceMintCalls).toEqual([]);
   });
 
+  it('★ status names the TLS front, which is the only address a phone can use', async () => {
+    // The supported phone setup binds LOOPBACK and lets `tailscale serve`
+    // terminate HTTPS, so reporting the bind alone was correct and useless.
+    const info = await server.start({
+      port: 0,
+      host: '127.0.0.1',
+      allowInput: false,
+      allowedHosts: ['Machine.tail-net.ts.net'],
+    });
+    const status = server.status();
+
+    expect(status.allowedHosts).toEqual(['machine.tail-net.ts.net']);
+    // The front comes first, and carries no port: it terminates TLS on 443.
+    expect((status.urls ?? [])[0]).toBe(
+      `https://machine.tail-net.ts.net/?token=${info.token as string}`,
+    );
+    // The loopback URL is still there for someone sitting at the desktop.
+    expect((status.urls ?? []).some((u) => u.startsWith('http://127.0.0.1:'))).toBe(true);
+  });
+
+  it('reports no fronts when none were named', async () => {
+    await startRO();
+    const status = server.status();
+    expect(status.allowedHosts).toEqual([]);
+    expect((status.urls ?? []).every((u) => u.startsWith('http://'))).toBe(true);
+  });
+
   it('mints on a loopback bind without an allow-host front', async () => {
     await startRO();
     const started = server.startPairing({ name: 'Desk browser' });
