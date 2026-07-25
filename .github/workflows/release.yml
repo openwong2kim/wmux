@@ -343,8 +343,13 @@ jobs:
       # legs never race or clobber each other). The ZIP referenced here is the
       # signed+notarized+stapled bundle Squirrel.Mac installs.
       - name: Write and upload the darwin update manifest
+        # always(): mirrors the upload step above — if only the DMG maker died,
+        # the ZIP still backs the update feed and MUST get its manifest. Safety
+        # comes from the asset-existence check below (never publish a pointer to
+        # a 404 download), and from failing LOUDLY (no continue-on-error): a
+        # missing manifest silently cuts off darwin auto-updates until the next
+        # release, which must show up red in CI.
         if: always()
-        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -352,9 +357,19 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          ZIP=$(find out/make -type f -name '*darwin-arm64*.zip' | head -n 1)
-          if [ -z "$ZIP" ]; then echo "No darwin-arm64 zip found — skipping manifest"; exit 0; fi
+          # -print -quit avoids the find|head SIGPIPE trap under pipefail; the
+          # count check refuses to guess when more than one zip matches.
+          COUNT=$(find out/make -type f -name '*darwin-arm64*.zip' | wc -l | tr -d ' ')
+          if [ "$COUNT" -eq 0 ]; then echo "No darwin-arm64 zip found — skipping manifest"; exit 0; fi
+          if [ "$COUNT" -gt 1 ]; then echo "ERROR: $COUNT darwin-arm64 zips found — refusing to pick one"; exit 1; fi
+          ZIP=$(find out/make -type f -name '*darwin-arm64*.zip' -print -quit)
           FILE=$(basename "$ZIP")
+          # The manifest must reference an asset that actually made it onto the
+          # release — never publish a pointer to a missing download.
+          if ! gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' | grep -qxF "$FILE"; then
+            echo "ERROR: $FILE is not on release $RELEASE_TAG — refusing to publish a manifest for it"
+            exit 1
+          fi
           SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
           MANIFEST="$RUNNER_TEMP/update-manifest-darwin-arm64.json"
           printf '{"version":"%s","file":"%s","sha256":"%s","url":"https://github.com/openwong2kim/wmux/releases/download/%s/%s"}' \

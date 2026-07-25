@@ -135,7 +135,12 @@ export class AutoUpdater {
       if (update) {
         const isNewVersion = this.pendingUpdate?.name !== update.name;
         this.pendingUpdate = update;
-        if (isNewVersion) this.downloadedPath = null; // a newer update supersedes any prior download
+        if (isNewVersion && this.downloadedPath) {
+          // A newer update supersedes any prior download — drop the stale
+          // artifact from disk too, or every release leaves one behind in temp.
+          void unlink(this.downloadedPath).catch(() => { /* best-effort cleanup */ });
+          this.downloadedPath = null;
+        }
         this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
           status: 'available',
           releaseName: update.name,
@@ -192,6 +197,18 @@ export class AutoUpdater {
       tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
         this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
       });
+      if (this.pendingUpdate?.name !== pending.name) {
+        // A newer release superseded this download mid-flight (check() replaced
+        // pendingUpdate). Committing it would let a one-shot install restart the
+        // app into the OLD version — discard and fetch the current one instead.
+        console.log(`[AutoUpdater] download of ${pending.name} superseded by ${this.pendingUpdate?.name ?? 'none'} — discarding`);
+        await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
+        tempPath = null;
+        // Re-dispatch AFTER the finally below clears isDownloading — calling
+        // synchronously here would let finally clobber the new run's guard.
+        queueMicrotask(() => void this.downloadUpdate());
+        return;
+      }
       this.downloadedPath = tempPath;
       console.log('[AutoUpdater] Update downloaded + verified (sha256 match) — ready to install');
       this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
@@ -306,6 +323,11 @@ export class AutoUpdater {
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
+        // The caller only learns the temp path on resolve, so a failed or
+        // sha-mismatched partial download must be removed HERE or it stays on
+        // disk forever (and a tampered artifact would linger in temp). Wait for
+        // 'close' — unlinking while the handle is still open fails on Windows.
+        out.once('close', () => { void unlink(dest).catch(() => { /* best-effort */ }); });
         out.destroy();
         reject(err);
       };
@@ -472,6 +494,10 @@ export class AutoUpdater {
       autoUpdater.on('update-downloaded', () => {
         console.log('[AutoUpdater] Squirrel.Mac staged the verified update — restarting to install (sessions persist in the daemon)');
         cleanup();
+        // Squirrel has its own staged copy now — drop our temp ZIP so it does
+        // not survive the relaunch and pile up release after release.
+        void unlink(zipPath).catch(() => { /* best-effort cleanup */ });
+        this.downloadedPath = null;
         autoUpdater.quitAndInstall();
       });
       autoUpdater.on('error', (err: Error) => {
