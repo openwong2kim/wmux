@@ -12,6 +12,7 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 import { ENV_KEYS } from '../../shared/constants';
 import { capSnapshot } from './snapshotWindow';
 import { startSseHeartbeat } from './sseHeartbeat';
+import { buildWebCsp } from './webCsp';
 
 /**
  * wmux web — a read-only-by-default browser terminal served BY THE DAEMON.
@@ -398,6 +399,12 @@ export class WebTerminalServer {
   private manifest: Buffer | null = null;
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
+  /**
+   * The CSP for the assets currently loaded. Initialized to the asset-less
+   * policy (`script-src 'none'`) so a request that somehow arrives before
+   * `loadAssets()` is served the locked-down header, never a permissive one.
+   */
+  private csp: string = buildWebCsp(null);
 
   constructor(private readonly deps: WebTerminalServerDeps) {}
 
@@ -1676,14 +1683,20 @@ export class WebTerminalServer {
    *     terminal and redress clicks into a pane (worse with `--allow-input`);
    *   - `nosniff`, so nothing is re-interpreted as an executable type;
    *   - `no-referrer`, which also keeps the SSE URL's `?token=` (the one route
-   *     that must carry it) out of any outbound Referer.
+   *     that must carry it) out of any outbound Referer;
+   *   - the full CSP, which used to be `frame-ancestors 'none'` alone. That was
+   *     defensible only while the credential an XSS could steal expired at the
+   *     next restart; M3 made credentials durable, so `script-src` pinned to the
+   *     inlined bundle's hashes is now part of what makes them safe to hand out.
+   *     See webCsp.ts for how the hashes are derived and why `style-src` is the
+   *     one directive that is not hash-pinned.
    */
   private securityHeaders(): Record<string, string> {
     return {
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "frame-ancestors 'none'",
+      'Content-Security-Policy': this.csp,
     };
   }
 
@@ -1740,6 +1753,10 @@ export class WebTerminalServer {
     this.manifest = readIfExists(path.join(dir, 'manifest.webmanifest'));
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
+    // Derived from the page we just loaded, once per start rather than per
+    // request: hashing 583 KB on the way out of every JSON reply would be a
+    // real cost for a header that cannot change while the process runs.
+    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null);
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
     }
