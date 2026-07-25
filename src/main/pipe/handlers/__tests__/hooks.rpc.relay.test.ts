@@ -303,14 +303,67 @@ describe('M1 side effects run on exactly ONE path', () => {
 
 describe('relayHookSignalToDaemon', () => {
   it('returns null for a null client', async () => {
-    expect(await relayHookSignalToDaemon(null, signal())).toBeNull();
+    expect(await relayHookSignalToDaemon(null, signal())).toMatchObject({ response: null, mayProcessLocally: true });
   });
 
   it('returns null for a disconnected client without calling rpc', async () => {
     const rpc = vi.fn();
     const client = { isConnected: false, rpc } as unknown as DaemonClient;
-    expect(await relayHookSignalToDaemon(client, signal())).toBeNull();
+    expect(await relayHookSignalToDaemon(client, signal())).toMatchObject({ response: null, mayProcessLocally: true });
     expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reprocess locally after an ambiguous failure', async () => {
+    // A timeout rejects AFTER the write, so the daemon may already have ingested
+    // and broadcast the signal. Replaying it here would double-fire the
+    // notification and write a second entry into a divergent ledger — the same
+    // rule the bridge applies in shouldTryNextTarget.
+    for (const message of [
+      'RPC timeout: daemon.hooks.signal (1500ms)',
+      'DaemonClient disconnecting',
+      'DaemonClient disconnected',
+    ]) {
+      const client = {
+        isConnected: true,
+        rpc: async () => { throw new Error(message); },
+      } as unknown as DaemonClient;
+      const out = await relayHookSignalToDaemon(client, signal());
+      expect(out.mayProcessLocally).toBe(false);
+      expect(out.canonical).toBe(false);
+      expect(out.response).toEqual({ ok: false, reason: 'internal-error' });
+    }
+  });
+
+  it('DOES process locally when the daemon provably refused', async () => {
+    // A pre-M1 daemon replies "Unknown method", which DaemonClient surfaces as
+    // a throw. That is a refusal, not an ambiguity — treating it as ambiguous
+    // would take hooks silent for anyone upgrading past an old daemon.
+    for (const message of [
+      'Unknown method: daemon.hooks.signal',
+      'unauthorized',
+      'DaemonClient not connected',
+    ]) {
+      const client = {
+        isConnected: true,
+        rpc: async () => { throw new Error(message); },
+      } as unknown as DaemonClient;
+      const out = await relayHookSignalToDaemon(client, signal());
+      expect(out.mayProcessLocally).toBe(true);
+      expect(out.response).toBeNull();
+    }
+  });
+
+  it('marks an unreadable daemon answer as non-canonical', async () => {
+    // Still stops the caller (the daemon answered, so it ingested), but must
+    // not be scored as a verdict — it is not one.
+    const client = {
+      isConnected: true,
+      rpc: async () => 'nonsense',
+    } as unknown as DaemonClient;
+    const out = await relayHookSignalToDaemon(client, signal());
+    expect(out.mayProcessLocally).toBe(false);
+    expect(out.canonical).toBe(false);
+    expect(out.response).toEqual({ ok: true });
   });
 
   it('sends the envelope under a budget below the bridge 2s cap', async () => {

@@ -195,9 +195,22 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     question?: string;
     options?: string[];
   }): Promise<void> {
+    // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
+    // which can be seconds later (a resolve ahead of it is holding the chain
+    // through a screen re-read), and the body closed over the caller's object —
+    // so a caller that reused or mutated it in the meantime could have this
+    // record persisted against the wrong pane or question. Nothing does that
+    // today; the contract should not depend on that staying true.
+    const snapshot = {
+      sessionId: input.sessionId,
+      agent: input.agent,
+      workspaceId: input.workspaceId,
+      question: input.question,
+      options: input.options ? [...input.options] : undefined,
+    };
     return this.mutate(() => {
       const superseded = this.requests.find(
-        (r) => r.state === 'pending' && r.sessionId === input.sessionId,
+        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId,
       );
       const events: ApprovalEvent[] = [];
       if (superseded) {
@@ -207,15 +220,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       }
       const created: ApprovalRequest = {
         id: this.newId(),
-        sessionId: input.sessionId,
-        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-        agent: input.agent,
+        sessionId: snapshot.sessionId,
+        ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+        agent: snapshot.agent,
         kind: 'awaiting_input',
         // A4 — the question the operator is being asked to answer. Absent when
         // the envelope carried no usable shape; never a reason to skip the
         // request.
-        ...(input.question ? { question: input.question } : {}),
-        ...(input.options && input.options.length > 0 ? { options: [...input.options] } : {}),
+        ...(snapshot.question ? { question: snapshot.question } : {}),
+        ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
         createdAt: this.now(),
         state: 'pending',
       };

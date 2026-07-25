@@ -267,21 +267,70 @@ export const DAEMON_RELAY_TIMEOUT_MS = 1_500;
  * missing) still lands on the main pipe, and this relay puts that signal into
  * the same ledger instead of a second, divergent one in main.
  *
- * Returns the daemon's verdict, or `null` when the daemon did not take the
- * signal — daemon down / mid-restart, or too old to know the method (an
- * `Unknown method` reply rejects the DaemonClient promise and lands in the
- * catch). `null` means "main owns this one": the caller falls through to the
- * pre-M1 local processing.
+ * The outcome carries three separate facts, because collapsing them is how both
+ * of this relay's bugs happened:
  *
- * A daemon that ANSWERED has ingested the signal, so a response we can't parse
- * still resolves to `{ ok: true }` — re-processing it locally would double-fire
- * the notification and poison the ledger for the turn.
+ *   `mayProcessLocally` — true ONLY when the request provably never reached a
+ *     server. This is the same rule the bridge applies in `shouldTryNextTarget`
+ *     ("STOPS when the request was written but never answered"), and main was
+ *     not applying it: a 1.5s timeout rejects AFTER the write, so the daemon
+ *     may well have ingested and broadcast the signal already. Replaying it
+ *     locally then double-fires the notification AND writes a second entry into
+ *     a divergent ledger, which corrupts arbitration for the whole turn — worse
+ *     than the dropped notification a rare timeout costs.
+ *
+ *   `canonical` — true only when the daemon returned a response we could
+ *     actually read. An unparseable answer is still normalized to `{ok:true}`
+ *     so the caller stops, but it is NOT a verdict, so it must not be scored as
+ *     one (the workspace-match counter was counting it as a confirmed match).
+ *
+ *   `response` — the verdict itself, or null when main owns the signal.
  */
+export interface HookRelayOutcome {
+  response: HookSignalResponse | null;
+  mayProcessLocally: boolean;
+  canonical: boolean;
+}
+
+/** The daemon was never reached; the pre-M1 local path owns this signal. */
+const RELAY_NOT_TAKEN: HookRelayOutcome = {
+  response: null,
+  mayProcessLocally: true,
+  canonical: false,
+};
+
+/**
+ * The DaemonClient rejections that mean "written, but never answered".
+ *
+ * Enumerated rather than inferred, and the DEFAULT is the safe one — the same
+ * posture `shouldTryNextTarget` takes in the bridge, which advances unless it
+ * is explicitly told the request was in flight. Getting the default backwards
+ * matters: a pre-M1 daemon replies `Unknown method: daemon.hooks.signal`, which
+ * DaemonClient surfaces as a throw, and treating THAT as ambiguous would stop
+ * main from processing a signal the daemon definitively refused — hooks would
+ * go silent for anyone still running an old daemon through an upgrade.
+ *
+ * Everything not listed here either never reached the socket ('not connected')
+ * or came back as a reply, and both are provably not-ingested.
+ */
+const AMBIGUOUS_RELAY_ERRORS = [
+  // No reply inside DAEMON_RELAY_TIMEOUT_MS — the daemon may have ingested it.
+  'RPC timeout:',
+  // In flight when a shutdown began, or when the socket died under us.
+  'DaemonClient disconnecting',
+  'DaemonClient disconnected',
+] as const;
+
+function isAmbiguousFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return AMBIGUOUS_RELAY_ERRORS.some((needle) => message.includes(needle));
+}
+
 export async function relayHookSignalToDaemon(
   client: Pick<DaemonClient, 'isConnected' | 'rpc'> | null,
   signal: AgentSignal,
-): Promise<HookSignalResponse | null> {
-  if (!client || !client.isConnected) return null;
+): Promise<HookRelayOutcome> {
+  if (!client || !client.isConnected) return RELAY_NOT_TAKEN;
   let result: unknown;
   try {
     result = await client.rpc(
@@ -290,13 +339,23 @@ export async function relayHookSignalToDaemon(
       { timeoutMs: DAEMON_RELAY_TIMEOUT_MS },
     );
   } catch (err) {
-    console.warn(`[hooks.signal] daemon relay failed, processing locally: ${String(err)}`);
-    return null;
+    if (isAmbiguousFailure(err)) {
+      // Written but unanswered. Report the failure rather than re-running the
+      // signal against main's own ledger.
+      console.warn(`[hooks.signal] daemon relay ambiguous, NOT reprocessing locally: ${String(err)}`);
+      return {
+        response: { ok: false, reason: 'internal-error' },
+        mayProcessLocally: false,
+        canonical: false,
+      };
+    }
+    console.warn(`[hooks.signal] daemon relay not taken, processing locally: ${String(err)}`);
+    return RELAY_NOT_TAKEN;
   }
   if (result && typeof result === 'object' && typeof (result as HookSignalResponse).ok === 'boolean') {
-    return result as HookSignalResponse;
+    return { response: result as HookSignalResponse, mayProcessLocally: false, canonical: true };
   }
-  return { ok: true };
+  return { response: { ok: true }, mayProcessLocally: false, canonical: false };
 }
 
 // RCA (2026-05-29 dogfood, bridge.log): the handler used to do a renderer
@@ -422,8 +481,9 @@ export function registerHooksRpc(
     //     pre-M1 local path, unchanged. The latency meter is fed above the
     //     relay on purpose: the Settings hook-health card must keep counting
     //     signals that main merely passes through.
-    const relayed = await relayHookSignalToDaemon(getDaemonClient?.() ?? null, signal);
-    if (relayed) {
+    const relay = await relayHookSignalToDaemon(getDaemonClient?.() ?? null, signal);
+    if (!relay.mayProcessLocally) {
+      const relayed = relay.response ?? { ok: true };
       // Feed the OTHER half of the split counter too. `recordSignal` runs above
       // the relay so pass-through signals still count as "the plugin is alive",
       // but `recordWorkspaceMatch` only ran in the fallback below — so with a
@@ -432,11 +492,15 @@ export function registerHooksRpc(
       // split was introduced to prevent. The daemon already decided this; its
       // verdict is in the response.
       //
-      // Only the two outcomes that ARE a resolution answer. 'invalid-envelope'
-      // and 'internal-error' say nothing about whether a workspace owned the
-      // cwd, and scoring them either way would bias the rate.
-      if (relayed.ok) meter.recordWorkspaceMatch(true);
-      else if (relayed.reason === 'no-workspace-match') meter.recordWorkspaceMatch(false);
+      // Only the two outcomes that ARE a resolution answer, and only from a
+      // response we could actually read. 'invalid-envelope' and
+      // 'internal-error' say nothing about whether a workspace owned the cwd,
+      // and a normalized-unknown `{ok:true}` is a "stop here" marker rather
+      // than a verdict — scoring either would bias the rate.
+      if (relay.canonical) {
+        if (relayed.ok) meter.recordWorkspaceMatch(true);
+        else if (relayed.reason === 'no-workspace-match') meter.recordWorkspaceMatch(false);
+      }
       return relayed;
     }
 
