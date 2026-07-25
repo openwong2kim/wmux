@@ -238,6 +238,7 @@ function makeApprovals() {
         recentlyResolved: records.filter((r) => r.state !== 'pending'),
       };
     },
+    pendingCount: () => records.filter((r) => r.state === 'pending').length,
     resolve: async (params) => {
       resolveCalls.push({ ...params });
       return box.result;

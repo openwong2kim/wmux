@@ -199,6 +199,8 @@ export interface ApprovalResolveParams {
 export interface ApprovalRegistryApi {
   /** Snapshot. Returns copies — a caller can never mutate registry state. */
   list(): ApprovalListResult;
+  /** Count only, no copying/sorting — for callers that just need "is anything pending". */
+  pendingCount(): number;
   /**
    * CAS + pre-write screen re-verify + one keystroke. Never throws: every
    * failure is a `{ok:false, reason}`, because the callers are an HTTP handler

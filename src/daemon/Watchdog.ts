@@ -18,8 +18,18 @@ export interface WatchdogCallbacks {
    * - `lastDisconnectAt`: ms timestamp of the most recent moment
    *   connections fell to zero, or `null` if a client has never
    *   connected during this daemon's lifetime
+   * - `pendingApprovals`: unresolved approval requests (optional — a caller
+   *   that omits it is treated as 0). A read-only SSE viewer (`wmux web` /
+   *   the phone app watching a pane) deliberately does NOT appear anywhere
+   *   in this signal set — per the M4 native-app decision, a viewer must
+   *   not keep the daemon alive. A pending approval must.
    */
-  onIdleCheck?: () => { connections: number; sessions: number; lastDisconnectAt: number | null };
+  onIdleCheck?: () => {
+    connections: number;
+    sessions: number;
+    lastDisconnectAt: number | null;
+    pendingApprovals?: number;
+  };
   /**
    * Fired when the watchdog determines the daemon has been idle long
    * enough to self-terminate. Daemon main loop hooks this to call its
@@ -184,10 +194,11 @@ export class Watchdog {
     // `evaluateIdle()` unit calls, so the unit suite stays log-silent.
     const traceIdle = this.checkCount > 0 && this.checkCount % 5 === 0;
 
-    if (info.connections > 0 || info.sessions > 0) {
+    const pendingApprovals = info.pendingApprovals ?? 0;
+    if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0) {
       if (traceIdle) {
         console.log(
-          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} (pid=${process.pid})`,
+          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} pendingApprovals=${pendingApprovals} (pid=${process.pid})`,
         );
       }
       return;
