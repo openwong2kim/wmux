@@ -160,7 +160,14 @@ on the daemon pipe, so no orphaned background process survives the run.
 | --- | --- |
 | `baseline-local.json` | Blessed numbers for the **dev machine**. The sensitive baseline — local hardware is stable, so thresholds bite. |
 | `baseline-ci.json` | Blessed numbers for **windows-latest** runners. May not exist yet; until it does, CI runs record-only. |
-| `history.ndjson` | Main-branch trend, one NDJSON line per push, appended by CI. |
+
+The main-branch trend is **not** in this directory: CI publishes it to the
+`bench-history` branch as `history.ndjson`, one NDJSON line per push. Read it
+with `git show origin/bench-history:history.ndjson` (after
+`git fetch origin bench-history`) or browse the branch on GitHub. It lives off
+`main` because the CI bot cannot push to a protected branch — when the trend
+did live here, every append was rejected and the trend silently recorded
+nothing for six weeks (#602).
 
 ## Gate semantics
 
@@ -180,6 +187,16 @@ ordinary noise. Thresholds per metric:
 | `inputLatency8.frameMs.p95` | 1.5 | 10 ms |
 | `ram.idle1Pane.workingSetBytes` | 1.3 | 100 MiB |
 | `ram.panes8.workingSetBytes` | 1.3 | 150 MiB |
+| `frameBudget.N4/N8/N16.frameDeltaMs.p95` | 2.0 | 8 ms |
+| `hiddenFlood.N4/N8.echoMs.p95` | 2.0 | 50 ms |
+| `hiddenFlood.N4/N8.frameDeltaMs.p95` | 2.0 | 8 ms |
+
+Each `N` gates against its own baseline entry — there is no single budget shared
+across N. Two further gates are baseline-**independent** correctness checks
+(`ime.pass`, `webglContextLoss.pass`): present-and-not-`true` fails, absent
+skips. `GATES` and `BOOL_GATES` in `scripts/perf-compare.mjs` are the source of
+truth for this table, and every one of them writes a trend field of the same
+name (see `historyLine`).
 
 Other rules:
 
@@ -229,7 +246,23 @@ regression first.
 
 `.github/workflows/perf.yml` runs on `windows-latest`: package → bench
 (`--mode ci`) → compare against `bench/baseline-ci.json` → write
-`perf-summary.md` into the job step summary and upload artifacts. On pushes to
-`main` it also appends a trend line to `bench/history.ndjson` and commits it
-(`[perf-history]`); `paths-ignore` keeps that commit from re-triggering the
-workflow.
+`perf-summary.md` into the job step summary and upload artifacts.
+
+On pushes to `main` it also publishes that run's trend line to the
+`bench-history` branch (`[perf-history]`), appending it to `history.ndjson`
+there. Three properties of that step are deliberate:
+
+- It runs **even when the gate failed**. A red run is precisely the sample a
+  noise investigation needs; skipping it would leave the trend describing only
+  the runs that already passed.
+- It never checks the branch out. The commit is assembled with git plumbing
+  (`hash-object` → `update-index`/`write-tree` → `commit-tree` → `push`), so the
+  packaged build in the working tree is untouched, and a concurrent `main` push
+  simply rejects the (fast-forward-by-construction) push and the retry re-reads
+  the new tip. If the existing trend cannot be read, the step refuses to publish
+  rather than replace the series with a single line.
+- A failure to publish is **loud but never fatal** — an `::error::` annotation
+  plus a job-summary caution, and exit 0. A lost trend line must not fail the
+  perf gate, but it must not pass unnoticed either: as a bare warning it went
+  unnoticed for six weeks (#602). The line also rides along in the run's
+  uploaded artifacts, so a failed publish can still be recovered by hand.
