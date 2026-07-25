@@ -49,6 +49,8 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { DeviceStore } from './web/DeviceStore';
+import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
@@ -66,6 +68,25 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+
+// M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
+// as the servers above: both WebTerminalServer construction paths inject it, and
+// the daemon.web.device* RPCs operate on the same roster. Built lazily by
+// getDeviceStore() rather than at import time, because the constructor reads
+// devices.json off disk and module init must stay free of IO.
+let deviceStore: DeviceStore | null = null;
+
+/**
+ * The one device roster in this process. A second instance would be a second
+ * in-memory view of the same file: a revoke applied to one would leave the
+ * other still authenticating that device until the next restart.
+ */
+function getDeviceStore(): DeviceStore {
+  if (!deviceStore) {
+    deviceStore = new DeviceStore({ wmuxDir, log: (level, msg) => log(level, msg) });
+  }
+  return deviceStore;
+}
 
 // M2 — approval registry. Module-scoped for the same reason as the two above:
 // the hook ingest creates requests, the daemon.approvals.* RPCs read and
@@ -168,6 +189,11 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         sessionManager,
         assetsDir: resolveWebAssetsDir(),
         log: (level, msg) => log(level, msg),
+        // M3 — without this, /pair degrades to handing out the shared operator
+        // token and nothing is individually revocable. Injected at BOTH
+        // construction sites: a restored server serves paired phones on their
+        // own credentials, exactly like one the operator just started.
+        devices: getDeviceStore(),
         // M2 — /api/approvals answers 503 without this. Safe at both
         // construction sites: main() builds the registry before it registers
         // RPC handlers and before it kicks off this restore.
@@ -1821,6 +1847,8 @@ function registerRpcHandlers(
       sessionManager,
       assetsDir: resolveWebAssetsDir(),
       log: (level, msg) => log(level, msg),
+      // M3 — see the restore path for why the roster is injected at both sites.
+      devices: getDeviceStore(),
       // M2 — see the restore path: the approval routes need the registry, and
       // it exists by the time either site runs.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
@@ -1884,6 +1912,42 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.web.pairRefresh', async () => {
     await afterRestore();
     return webServer.refreshPairCode();
+  });
+
+  // M3 — per-device credentials. Same class of token-only string method as the
+  // rest of daemon.web.*: deliberately NOT in the RpcMethod union or
+  // methodCapabilityMap, so they add no gen-api-reference surface. These three
+  // are the whole operator surface for the roster — the GUI Settings UI is
+  // M6-adjacent and out of scope; these RPCs are the seam it will call.
+  //
+  // All three wait on the boot restore for the reason the comment above gives:
+  // an operator RPC that lands mid-restore must not race the restore's own bind.
+  pipeServer.onRpc('daemon.web.pairStart', async (params) => {
+    await afterRestore();
+    const name = typeof params['name'] === 'string' ? params['name'].trim() : '';
+    // Naming is REQUIRED here rather than defaulted, and this is the layer that
+    // enforces it: the operator is present at exactly this moment, and a roster
+    // of unnamed devices cannot be operated — "which of these three do I
+    // revoke" has no answer six months later. The server tolerates an absent
+    // name (it has to; the pre-M3 pairing path still exists), so the
+    // requirement lives at the operator seam.
+    if (!name) return { ok: false, error: 'a device name is required to pair' };
+    return webServer.startPairing({ name });
+  });
+
+  pipeServer.onRpc('daemon.web.deviceList', async () => {
+    await afterRestore();
+    return { devices: getDeviceStore().list() };
+  });
+
+  pipeServer.onRpc('daemon.web.deviceRevoke', async (params) => {
+    await afterRestore();
+    const deviceId = typeof params['deviceId'] === 'string' ? params['deviceId'] : '';
+    // Ordering lives in revokeDeviceAndDisconnect (persist first, then cut the
+    // live streams — and cut them even when the write failed, because an
+    // established SSE never re-authenticates). Extracted so the three branches
+    // are unit-testable without a daemon; see its tests.
+    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer);
   });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).

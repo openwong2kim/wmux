@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
-import { WebTerminalServer } from '../WebTerminalServer';
+import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import type {
   ApprovalEvent,
   ApprovalRegistryApi,
@@ -57,7 +57,58 @@ function makeDeps() {
     getSession: (id: string) => (id === 's1' ? managed : undefined),
     listLiveSessions: () => live,
   }) as unknown as DaemonSessionManager;
-  return { sessionManager, bridge, write, ...makeApprovals() };
+  return { sessionManager, bridge, write, ...makeApprovals(), ...makeDevices() };
+}
+
+/**
+ * A stand-in for Worker A's DeviceStore (M3). The real one owns the KDF and its
+ * parameters, the per-device salt, `devices.json`, the derived-key cache and the
+ * audit log — none of which the HTTP surface may know about, which is why the
+ * fake is two functions: the web layer only ever asks "whose credential is
+ * this?" and "mint one for the device I just named".
+ *
+ * `roster` is mutable so a test can revoke a device out from under a live
+ * stream; `box.mintThrows` covers a roster the daemon cannot persist.
+ */
+function makeDevices() {
+  const roster = new Map<string, { secret: string; name?: string; revoked: boolean }>();
+  const resolveCalls: Array<{ deviceId: string; secret: string }> = [];
+  const mintCalls: Array<{ name?: string }> = [];
+  const touchCalls: string[] = [];
+  const box = { mintThrows: false };
+  let seq = 0;
+  const devices: WebDeviceResolver = {
+    async mint(params) {
+      mintCalls.push({ ...params });
+      if (box.mintThrows) throw new Error('roster write failed');
+      seq += 1;
+      const deviceId = `dev-${seq}`;
+      const deviceSecret = `s3cr3t-${seq}`;
+      roster.set(deviceId, { secret: deviceSecret, name: params.name, revoked: false });
+      return { deviceId, deviceSecret };
+    },
+    async resolve(deviceId, secret) {
+      resolveCalls.push({ deviceId, secret });
+      const rec = roster.get(deviceId);
+      // Unknown and revoked are separate answers on purpose — the phone shows
+      // different copy for "never heard of you" and "the operator threw you out".
+      if (!rec) return { ok: false, reason: 'unknown' };
+      if (rec.revoked) return { ok: false, reason: 'revoked' };
+      if (rec.secret !== secret) return { ok: false, reason: 'unknown' };
+      return { ok: true, deviceId, ...(rec.name ? { name: rec.name } : {}) };
+    },
+    touch(deviceId) {
+      touchCalls.push(deviceId);
+    },
+  };
+  return {
+    devices,
+    deviceRoster: roster,
+    deviceResolveCalls: resolveCalls,
+    deviceMintCalls: mintCalls,
+    deviceTouchCalls: touchCalls,
+    deviceBox: box,
+  };
 }
 
 /**
@@ -126,6 +177,10 @@ describe('WebTerminalServer', () => {
   let emitApproval: (type: ApprovalEvent['type'], request: ApprovalRequest) => void;
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
   let approvalBox: { result: ApprovalResolveResult; listThrows: boolean };
+  let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
+  let deviceMintCalls: Array<{ name?: string }>;
+  let deviceTouchCalls: string[];
+  let deviceBox: { mintThrows: boolean };
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -137,9 +192,14 @@ describe('WebTerminalServer', () => {
     emitApproval = deps.emitApproval;
     approvalListeners = deps.approvalListeners;
     approvalBox = deps.approvalBox;
+    deviceRoster = deps.deviceRoster;
+    deviceMintCalls = deps.deviceMintCalls;
+    deviceTouchCalls = deps.deviceTouchCalls;
+    deviceBox = deps.deviceBox;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
+      devices: deps.devices,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -307,7 +367,7 @@ describe('WebTerminalServer', () => {
     expect((info.pairExpiresAt as number)).toBeGreaterThan(Date.now());
   });
 
-  it('/api/pair with the right code returns the token once, then 403 (single use)', async () => {
+  it('/api/pair with the right code returns a credential once, then 403 (single use)', async () => {
     const info = await startRO();
     const code = info.pairCode as string;
     const token = info.token as string;
@@ -315,7 +375,14 @@ describe('WebTerminalServer', () => {
     // No auth header needed — pairing is the only unauthenticated /api route.
     const ok = await fetch(`${base()}/api/pair?code=${code}`);
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ token });
+    // M3: what the phone gets is ITS OWN credential, never the shared operator
+    // token — that is the whole point of making the token durable revocable.
+    expect(await ok.json()).toEqual({
+      deviceId: 'dev-1',
+      deviceSecret: 's3cr3t-1',
+      token: 'dev-1.s3cr3t-1',
+    });
+    expect(token).not.toBe('dev-1.s3cr3t-1');
 
     // The code is burned — a second use fails.
     const reuse = await fetch(`${base()}/api/pair?code=${code}`);
@@ -1290,5 +1357,483 @@ describe('WebTerminalServer', () => {
     expect(res.status).toBe(500);
     // The server is still up and every other route still answers.
     expect((await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) })).status).toBe(200);
+  });
+
+  // ── per-device credentials (M3) ────────────────────────────────────────────
+
+  /** Name a device, redeem its code, and return what the phone would store. */
+  const pairDevice = async (name?: string) => {
+    const started = server.startPairing({ name });
+    if (!started.ok) throw new Error(`startPairing refused: ${started.error}`);
+    const res = await fetch(`${base()}/api/pair?code=${started.code}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as { deviceId: string; deviceSecret: string; token: string };
+  };
+
+  /** Open a pane SSE stream with a credential in the Authorization header. */
+  const openStream = async (cred: string) => {
+    const ac = new AbortController();
+    const res = await fetch(`${base()}/api/stream?session=s1`, { signal: ac.signal, headers: bearer(cred) });
+    const reader = res.body ? (res.body as ReadableStream<Uint8Array>).getReader() : null;
+    return { ac, res, reader };
+  };
+
+  /** Open the attention SSE stream with a credential in the Authorization header. */
+  const openEvents = async (cred: string) => {
+    const ac = new AbortController();
+    const res = await fetch(`${base()}/api/events`, {
+      signal: ac.signal,
+      headers: { ...bearer(cred), Accept: 'text/event-stream' },
+    });
+    const reader = res.body ? (res.body as ReadableStream<Uint8Array>).getReader() : null;
+    return { ac, res, reader };
+  };
+
+  /** True once the SERVER ends the stream; false if it is still open at the deadline. */
+  const closedWithin = async (reader: ReadableStreamDefaultReader<Uint8Array>, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const chunk = await readWithin(reader, deadline);
+      if (!chunk) return false; // deadline hit with the stream still alive
+      if (chunk.done) return true;
+    }
+    return false;
+  };
+
+  it('★ pairs a NAMED device and hands it its own credential, not the shared token', async () => {
+    const info = await startRO();
+    const paired = await pairDevice('Wife phone');
+
+    expect(paired.deviceId).toBe('dev-1');
+    // The composed `deviceId.secret` is what the client presents as its Bearer;
+    // the operator token is a different secret and stays with the operator.
+    expect(paired.token).toBe(`${paired.deviceId}.${paired.deviceSecret}`);
+    expect(paired.token).not.toBe(info.token);
+    // The operator named the device BEFORE the code existed (§3): a roster of
+    // UUIDs cannot be operated, so the name has to reach the store.
+    expect(deviceMintCalls).toEqual([{ name: 'Wife phone' }]);
+
+    // A second pairing is a DIFFERENT device — that is the whole point.
+    const second = await pairDevice('Tablet');
+    expect(second.deviceId).not.toBe(paired.deviceId);
+    expect(second.deviceSecret).not.toBe(paired.deviceSecret);
+  });
+
+  it('★ authenticates the routes a phone actually uses with a device credential', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    approvalRecords.push(mkApproval({ id: 'ap-dev' }));
+
+    expect((await fetch(`${base()}/api/config`, { headers: bearer(token) })).status).toBe(200);
+    expect((await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).status).toBe(200);
+    expect((await fetch(`${base()}/api/approvals`, { headers: bearer(token) })).status).toBe(200);
+    expect((await fetch(`${base()}/api/events`, { headers: bearer(token) })).status).toBe(200);
+
+    // Answering a prompt is the reason the phone exists; a device must be able
+    // to do it on a read-only server exactly as the operator can.
+    const resolved = await postApproval(token, 'ap-dev', { decision: 'approve' });
+    expect(resolved.status).toBe(200);
+    expect(resolveCalls).toEqual([{ id: 'ap-dev', decision: 'approve', resolvedBy: 'web' }]);
+
+    // Every authenticated device request is reported to the roster, so
+    // `lastSeenAt` reflects use rather than only the pairing moment.
+    expect(deviceTouchCalls.length).toBeGreaterThan(0);
+    expect(new Set(deviceTouchCalls)).toEqual(new Set(['dev-1']));
+
+    // Both SSE routes, credential in the header.
+    const pane = await openStream(token);
+    expect(pane.res.status).toBe(200);
+    pane.ac.abort();
+    const attn = await openEvents(token);
+    expect(attn.res.status).toBe(200);
+    attn.ac.abort();
+  });
+
+  it('★ leaves the operator token authenticating every route, device store or not', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    approvalRecords.push(mkApproval({ id: 'ap-op' }));
+
+    expect((await fetch(`${base()}/api/config`, { headers: bearer(token) })).status).toBe(200);
+    expect((await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).status).toBe(200);
+    expect((await fetch(`${base()}/api/approvals`, { headers: bearer(token) })).status).toBe(200);
+    expect((await postApproval(token, 'ap-op', { decision: 'deny' })).status).toBe(200);
+    expect(
+      (await fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(token), body: 'hi' })).status,
+    ).toBe(204);
+
+    // Including the `?token=` SSE exception, which is what the CLI's advertised
+    // `http://…/?token=…` URLs rely on.
+    const ac = new AbortController();
+    const pane = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, {
+      signal: ac.signal,
+    });
+    expect(pane.status).toBe(200);
+    ac.abort();
+    const attn = await readEventStream(`${base()}/api/events?token=${encodeURIComponent(token)}`, /event: reset/);
+    expect(attn.status).toBe(200);
+
+    // …and the daemon-side control surface is untouched by M3.
+    expect(server.status().token).toBe(token);
+    expect(server.refreshPairCode().pairCode).toMatch(/^[A-Z2-9]{6}$/);
+  });
+
+  it('★ 401s a revoked device with reason `revoked` AND kills its live streams at once', async () => {
+    await startRO();
+    const victim = await pairDevice('Old phone');
+    const bystander = await pairDevice('Keeps working');
+
+    const victimPane = await openStream(victim.token);
+    const victimAttn = await openEvents(victim.token);
+    const bystanderPane = await openStream(bystander.token);
+    expect(victimPane.res.status).toBe(200);
+    expect(victimAttn.res.status).toBe(200);
+    expect(bystanderPane.res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+
+    // The store's half of a revoke (Worker A persists first); then the seam the
+    // daemon calls to make it immediate rather than eventual.
+    deviceRoster.get(victim.deviceId)!.revoked = true;
+    expect(server.disconnectDevice(victim.deviceId)).toBe(2);
+
+    // The revoked device's streams are gone NOW, not on its next reconnect.
+    expect(await closedWithin(victimPane.reader!, 1000)).toBe(true);
+    expect(await closedWithin(victimAttn.reader!, 1000)).toBe(true);
+    // …and nobody else's are.
+    expect(await closedWithin(bystanderPane.reader!, 150)).toBe(false);
+
+    // The next request says WHY, so the phone can show honest copy instead of
+    // guessing between "server restarted" and "you were thrown out".
+    const after = await fetch(`${base()}/api/sessions`, { headers: bearer(victim.token) });
+    expect(after.status).toBe(401);
+    expect(await after.json()).toEqual({ error: 'unauthorized', reason: 'revoked' });
+
+    // The bystander is unaffected by its neighbour's revocation.
+    expect((await fetch(`${base()}/api/sessions`, { headers: bearer(bystander.token) })).status).toBe(200);
+
+    victimPane.ac.abort();
+    victimAttn.ac.abort();
+    bystanderPane.ac.abort();
+  });
+
+  it('distinguishes an unknown credential from a revoked one', async () => {
+    const info = await startRO();
+    await pairDevice('Phone');
+
+    // A credential from another daemon / a wiped roster.
+    const unknown = await fetch(`${base()}/api/sessions`, { headers: bearer('dev-404.whatever') });
+    expect(unknown.status).toBe(401);
+    expect(await unknown.json()).toEqual({ error: 'unauthorized', reason: 'unknown' });
+
+    // The right device id with the wrong secret is 'unknown' too — never
+    // 'revoked', which would confirm the id exists.
+    const wrongSecret = await fetch(`${base()}/api/sessions`, { headers: bearer('dev-1.not-the-secret') });
+    expect(wrongSecret.status).toBe(401);
+    expect((await wrongSecret.json()).reason).toBe('unknown');
+
+    // A bad operator token reads the same way.
+    const badToken = await fetch(`${base()}/api/sessions`, { headers: bearer(`${info.token}x`) });
+    expect(badToken.status).toBe(401);
+    expect((await badToken.json()).reason).toBe('unknown');
+  });
+
+  it('★ refuses a device credential in ?token= — the SSE query exception is operator-only', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const q = encodeURIComponent(token);
+
+    // A device secret is durable and never expires; a query string is the one
+    // place a credential is guaranteed to be written down.
+    const pane = await fetch(`${base()}/api/stream?session=s1&token=${q}`);
+    expect(pane.status).toBe(401);
+    expect((await pane.json()).reason).toBe('unknown');
+    const attn = await readEventStream(`${base()}/api/events?token=${q}`, /never/);
+    expect(attn.status).toBe(401);
+
+    // The same credential in the header opens both.
+    const okPane = await openStream(token);
+    expect(okPane.res.status).toBe(200);
+    okPane.ac.abort();
+  });
+
+  it('★ refuses to mint over a plaintext --expose bind, and allows it behind an allow-host front', async () => {
+    // A real non-loopback bind: the gate reads the bind, and on 0.0.0.0 the
+    // Host header is caller-chosen and proves nothing about where the request
+    // came from — so loopback-addressed pairing is refused here too.
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    const port = info.port as number;
+
+    const refusedUpFront = server.startPairing({ name: 'Phone' });
+    expect(refusedUpFront.ok).toBe(false);
+    if (!refusedUpFront.ok) {
+      // Actionable: it names the remedy, not just the refusal.
+      expect(refusedUpFront.error).toContain('--allow-host');
+      expect(refusedUpFront.error).toContain('tailscale serve');
+    }
+
+    // And redemption refuses too, since the operator may have re-exposed the
+    // server after minting a code. The code is NOT burned by the refusal.
+    const code = server.status().pairCode as string;
+    const denied = await getWithHost(port, `/api/pair?code=${code}`, `127.0.0.1:${port}`);
+    expect(denied.status).toBe(403);
+    expect(JSON.parse(denied.body).error).toBe('insecure-transport');
+    expect(deviceMintCalls).toEqual([]);
+    expect(server.status().pairCode).toBe(code);
+
+    // Behind a TLS front the operator named, minting is allowed.
+    await server.stop();
+    const fronted = await server.start({
+      port: 0,
+      host: '0.0.0.0',
+      allowInput: false,
+      allowedHosts: ['machine.tail-net.ts.net'],
+    });
+    const started = server.startPairing({ name: 'Phone' });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const ok = await getWithHost(fronted.port as number, `/api/pair?code=${started.code}`, 'machine.tail-net.ts.net');
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body).deviceId).toBe('dev-1');
+  });
+
+  it('mints on a loopback bind without an allow-host front', async () => {
+    await startRO();
+    const started = server.startPairing({ name: 'Desk browser' });
+    expect(started.ok).toBe(true);
+  });
+
+  it('does not burn the pairing code when the roster cannot be persisted', async () => {
+    await startRO();
+    const started = server.startPairing({ name: 'Phone' });
+    if (!started.ok) throw new Error(started.error);
+    deviceBox.mintThrows = true;
+
+    const failed = await fetch(`${base()}/api/pair?code=${started.code}`);
+    expect(failed.status).toBe(500);
+    // A credential the daemon cannot remember is one the operator can never
+    // revoke, so it must not be handed out — and the operator must not be left
+    // re-reading a code that has already been consumed.
+    expect(server.status().pairCode).toBe(started.code);
+
+    deviceBox.mintThrows = false;
+    const retried = await fetch(`${base()}/api/pair?code=${started.code}`);
+    expect(retried.status).toBe(200);
+  });
+
+  it('falls back to the shared token on a daemon that wired no device store', async () => {
+    const bare = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    try {
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${info.pairCode}`);
+      expect(res.status).toBe(200);
+      // Degraded, not broken: pairing still works, but there is no per-device
+      // identity to revoke on this server.
+      expect(await res.json()).toEqual({ token: info.token });
+      // And a device-shaped credential authenticates nothing here.
+      const dev = await fetch(`http://127.0.0.1:${info.port}/api/sessions`, { headers: bearer('dev-1.s3cr3t-1') });
+      expect(dev.status).toBe(401);
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  it('keeps the pairing name across a burned code, and drops it once redeemed', async () => {
+    await startRO();
+    const started = server.startPairing({ name: 'Named phone' });
+    if (!started.ok) throw new Error(started.error);
+
+    // Burn the attempt budget, wait out the cooldown, and let the server mint a
+    // replacement code: the operator is still pairing the SAME device.
+    for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZ`);
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+    let replacement: string;
+    try {
+      await fetch(`${base()}/api/pair?code=ZZZZZZ`);
+      replacement = server.status().pairCode as string;
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(replacement).toHaveLength(6);
+    expect(replacement).not.toBe(started.code);
+
+    const paired = await fetch(`${base()}/api/pair?code=${replacement}`);
+    expect(paired.status).toBe(200);
+    expect(deviceMintCalls).toEqual([{ name: 'Named phone' }]);
+
+    // Redeeming consumes the name: the next device must not inherit it.
+    server.refreshPairCode();
+    const next = server.status().pairCode as string;
+    expect((await fetch(`${base()}/api/pair?code=${next}`)).status).toBe(200);
+    expect(deviceMintCalls[1]).toEqual({ name: undefined });
+  });
+
+  // ── stream tickets (B3) ────────────────────────────────────────────────────
+
+  /** Ask for the `?ticket=` capability the way a browser device would. */
+  const getTicket = (cred: string) =>
+    fetch(`${base()}/api/stream-ticket`, { method: 'POST', headers: bearer(cred) });
+
+  const ticketFor = async (cred: string): Promise<string> => {
+    const res = await getTicket(cred);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ticket: string; expiresAt: number };
+    expect(typeof body.ticket).toBe('string');
+    expect(body.expiresAt).toBeGreaterThan(Date.now());
+    return body.ticket;
+  };
+
+  it('★ issues a stream ticket to a device, and it opens BOTH SSE routes', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const ticket = await ticketFor(token);
+
+    // The whole point: a URL a browser EventSource can actually be given.
+    const ac = new AbortController();
+    const pane = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`, {
+      signal: ac.signal,
+    });
+    expect(pane.status).toBe(200);
+    ac.abort();
+
+    const attn = await readEventStream(
+      `${base()}/api/events?ticket=${encodeURIComponent(ticket)}`,
+      /event: reset/,
+    );
+    expect(attn.status).toBe(200);
+
+    // NOT single-use — EventSource retries the same URL, so burning it on first
+    // use would make the first ordinary reconnect a permanent failure.
+    const again = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`);
+    expect(again.status).toBe(200);
+  });
+
+  it('issues tickets ONLY to devices — the operator is told to use ?token=', async () => {
+    const info = await startRO();
+    const refused = await getTicket(info.token as string);
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error).toBe('tickets-are-for-devices');
+
+    // And an unauthenticated / unknown caller never reaches the issuer at all.
+    expect((await fetch(`${base()}/api/stream-ticket`, { method: 'POST' })).status).toBe(401);
+    expect((await getTicket('dev-404.nope')).status).toBe(401);
+  });
+
+  it('a ticket is a capability, not a credential — it opens streams and nothing else', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const ticket = await ticketFor(token);
+    const q = encodeURIComponent(ticket);
+
+    // Non-SSE routes never consult it, whatever it is presented as.
+    expect((await fetch(`${base()}/api/sessions?ticket=${q}`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/approvals?ticket=${q}`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/sessions`, { headers: bearer(ticket) })).status).toBe(401);
+    // Including the issuer itself: a ticket cannot mint another ticket.
+    expect((await getTicket(ticket)).status).toBe(401);
+  });
+
+  it('★ rejects an expired ticket (injected clock, no two-minute sleep)', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const ticket = await ticketFor(token);
+
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 121_000);
+    try {
+      const stale = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`);
+      expect(stale.status).toBe(401);
+      expect((await stale.json()).reason).toBe('unknown');
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // The device's own credential is untouched by its ticket expiring — it just
+    // asks for another one.
+    const fresh = await ticketFor(token);
+    expect(fresh).not.toBe(ticket);
+    const ok = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(fresh)}`);
+    expect(ok.status).toBe(200);
+  });
+
+  it('★ revoke invalidates outstanding tickets AND open streams, leaving others alone', async () => {
+    await startRO();
+    const victim = await pairDevice('Old phone');
+    const bystander = await pairDevice('Keeps working');
+    const victimTicket = await ticketFor(victim.token);
+    const bystanderTicket = await ticketFor(bystander.token);
+
+    // A stream opened WITH the ticket must be torn down like any other: the
+    // ticket path tags the client with the device, which is what makes it
+    // reachable by disconnectDevice at all.
+    const ac = new AbortController();
+    const pane = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(victimTicket)}`, {
+      signal: ac.signal,
+    });
+    expect(pane.status).toBe(200);
+    const reader = (pane.body as ReadableStream<Uint8Array>).getReader();
+    await new Promise((r) => setTimeout(r, 30));
+
+    deviceRoster.get(victim.deviceId)!.revoked = true;
+    expect(server.disconnectDevice(victim.deviceId)).toBe(1);
+
+    expect(await closedWithin(reader, 1000)).toBe(true);
+    // The outstanding ticket is destroyed too — otherwise revocation would have
+    // a two-minute hole in it during which the phone could reopen a stream.
+    const reopened = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(victimTicket)}`);
+    expect(reopened.status).toBe(401);
+    // …and it cannot get a replacement, because its credential is dead.
+    expect((await getTicket(victim.token)).status).toBe(401);
+    expect((await getTicket(victim.token)).status).toBe(401);
+
+    // The neighbour's ticket still opens a stream.
+    const survivor = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(bystanderTicket)}`);
+    expect(survivor.status).toBe(200);
+    ac.abort();
+  });
+
+  it('keeps the operator ?token= path working untouched alongside tickets', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    await pairDevice('Phone');
+
+    const ac = new AbortController();
+    const pane = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, {
+      signal: ac.signal,
+    });
+    expect(pane.status).toBe(200);
+    ac.abort();
+    const attn = await readEventStream(`${base()}/api/events?token=${encodeURIComponent(token)}`, /event: reset/);
+    expect(attn.status).toBe(200);
+    // A bogus ticket does not become valid just because tickets exist.
+    expect((await fetch(`${base()}/api/stream?session=s1&ticket=not-a-ticket`)).status).toBe(401);
+  });
+
+  it('drops outstanding tickets on stop(), so none survives into the next server', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const ticket = await ticketFor(token);
+    await server.stop();
+
+    await startRO();
+    const stale = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`);
+    expect(stale.status).toBe(401);
+  });
+
+  it('drops every device stream on stop(), so a revoke after a restart finds nothing', async () => {
+    await startRO();
+    const device = await pairDevice('Phone');
+    const pane = await openStream(device.token);
+    expect(pane.res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+
+    await server.stop();
+    expect(await closedWithin(pane.reader!, 1000)).toBe(true);
+    expect(server.disconnectDevice(device.deviceId)).toBe(0);
+    pane.ac.abort();
   });
 });

@@ -155,11 +155,18 @@
     setTimeout(function () { applyViewMode(); rescale(); }, 200);
   });
 
-  // SSE is the ONLY endpoint that carries the token in the query string
-  // (EventSource cannot set headers). Every other call uses a Bearer header so
-  // the token stays out of query strings / URL logs.
+  // SSE is the ONLY endpoint that carries a credential in the query string
+  // (EventSource cannot set headers). Every other call uses a Bearer header.
+  //
+  // WHICH credential depends on how this browser authenticated. An operator
+  // token rides `?token=` exactly as it always has. A per-device credential
+  // never may: it is durable and never expires, and a query string is the one
+  // place a secret is guaranteed to be written down (history, proxy logs,
+  // Referer). A device uses `?ticket=` instead — a two-minute, device-bound
+  // capability that only opens a stream. See ensureStreamTicket.
   function streamUrl(pathname) {
     var sep = pathname.indexOf('?') >= 0 ? '&' : '?';
+    if (streamTicket) return pathname + sep + 'ticket=' + encodeURIComponent(streamTicket);
     return pathname + sep + 'token=' + encodeURIComponent(token);
   }
   function authHeaders(extra) {
@@ -168,9 +175,88 @@
     return h;
   }
 
+  // ── stream tickets ─────────────────────────────────────────────────────────
+  var streamTicket = '';
+  var streamTicketExpiresAt = 0;
+  // Latched after one 403: this session authenticates with the operator token,
+  // which needs no ticket. Without the latch every reconnect would re-ask.
+  var ticketsUnavailable = false;
+  // Renew early — a ticket that expired between building the URL and the
+  // browser's retry would fail the very reconnect it exists to survive.
+  var TICKET_RENEW_MARGIN_MS = 15000;
+
+  function ticketIsFresh() {
+    return !!streamTicket && Date.now() < streamTicketExpiresAt - TICKET_RENEW_MARGIN_MS;
+  }
+
+  /**
+   * Resolve true once a usable ticket is held, false when this session does not
+   * use them (operator token) or cannot get one. NEVER rejects: every caller's
+   * next move is to open the stream regardless and let the normal error path
+   * deal with it, so a failure here must not break the chain.
+   */
+  function ensureStreamTicket(force) {
+    if (ticketsUnavailable) return Promise.resolve(false);
+    if (!force && ticketIsFresh()) return Promise.resolve(true);
+    return fetch('/api/stream-ticket', { method: 'POST', headers: authHeaders() }).then(function (r) {
+      // 403 = the operator token, which opens streams with ?token= directly.
+      if (r.status === 403) { ticketsUnavailable = true; return false; }
+      if (r.status === 401) {
+        return readReason(r).then(function (reason) { requireToken(true, reason); return false; });
+      }
+      if (r.status !== 200) return false;
+      return r.json().then(function (b) {
+        if (!b || !b.ticket) return false;
+        streamTicket = b.ticket;
+        streamTicketExpiresAt = typeof b.expiresAt === 'number' ? b.expiresAt : Date.now() + 60000;
+        return true;
+      });
+    }, function () { return false; });
+  }
+
+  /**
+   * A stream that ends CLOSED (readyState 2) got a non-200 and will NEVER retry
+   * on its own. For a ticketed session that is almost always just an expired
+   * ticket, so take a fresh one and rebuild the streams. The attention channel
+   * comes back through its own `?since=` cursor, so #600's replay still covers
+   * whatever landed while we were away.
+   *
+   * Rate-limited: four split tiles fail independently, and a genuinely dead
+   * server must not become a tight reopen loop.
+   */
+  var RENEW_MS = 3000;
+  var renewAt = 0;
+  var renewing = false;
+  function renewStreams() {
+    // Operator sessions hold no ticket and their URLs never go stale — leave
+    // them to EventSource's own retry, exactly as before.
+    if (!streamTicket || renewing || Date.now() - renewAt < RENEW_MS) return;
+    renewing = true;
+    renewAt = Date.now();
+    ensureStreamTicket(true).then(function (ok) {
+      renewing = false;
+      if (!ok) return; // credential is gone; requireToken has already taken over
+      if (es) { es.close(); es = null; }
+      destroyTiles();
+      if (attnEs) { attnEs.close(); attnEs = null; }
+      openAttentionStream();
+      applyViewMode();
+    }, function () { renewing = false; });
+  }
+
+  /** The server's 401 `reason` ('revoked' | 'unknown'), or '' if unreadable. */
+  function readReason(r) {
+    return r.json().then(function (b) { return (b && b.reason) || ''; }, function () { return ''; });
+  }
+
   function api(pathname) {
     return fetch(pathname, { headers: authHeaders() }).then(function (r) {
-      if (r.status === 401) { requireToken(true); throw new Error('unauthorized'); }
+      if (r.status === 401) {
+        return readReason(r).then(function (reason) {
+          requireToken(true, reason);
+          throw new Error('unauthorized');
+        });
+      }
       return r;
     });
   }
@@ -200,15 +286,34 @@
     var done = function () { authProbing = false; };
     fetch('/api/config', { headers: { Authorization: 'Bearer ' + probed } }).then(function (r) {
       done();
-      if (r.status === 401 && token === probed) requireToken(true);
+      if (r.status === 401 && token === probed) {
+        readReason(r).then(function (reason) {
+          if (token === probed) requireToken(true, reason);
+        });
+      }
       // Anything else: a genuine outage, or a stale verdict about a token we
       // no longer use — the "reconnecting…" the caller set is the right answer.
     }, done);
   }
 
-  /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
-  function requireToken(stale) {
+  /**
+   * Show the inline auth form. `stale` marks a rejected credential vs a missing
+   * one; `reason` is the server's own verdict ('revoked' | 'unknown').
+   *
+   * `revoked` earns its own copy because it is the one case with a definite
+   * cause and a definite remedy: a human removed this device on purpose, and
+   * no amount of retrying will help — only a new pairing code will. Guessing
+   * "the server was stopped" at someone whose phone was deliberately cut off
+   * is the failure #599's screen could not avoid; now the server says which.
+   */
+  function requireToken(stale, reason) {
     if (es) { es.close(); es = null; }
+    // The ticket was minted for the credential that just got refused; it is
+    // dead with it, and holding one would send the next open down the ticket
+    // path instead of showing this form.
+    streamTicket = '';
+    streamTicketExpiresAt = 0;
+    ticketsUnavailable = false;
     // The attention stream carries the same rejected token; drop it so the next
     // successful init opens a fresh one (with the stored cursor, so nothing is lost).
     if (attnEs) { attnEs.close(); attnEs = null; }
@@ -226,10 +331,12 @@
     setConn('error', 'no access');
     showOverlay(
       'auth',
-      stale ? 'Access token rejected' : 'Access token required',
-      stale
-        ? 'The stored token is no longer valid — the server was stopped, or a new token was issued. A pairing code is the quickest way back in.'
-        : 'Paste the token printed by wmux web, or open the full URL that includes it.'
+      reason === 'revoked' ? 'This device was removed' : stale ? 'Access token rejected' : 'Access token required',
+      reason === 'revoked'
+        ? 'The operator revoked this device from the wmux desktop. Ask them for a new pairing code to connect again.'
+        : stale
+          ? 'The stored token is no longer valid — the server was stopped, or a new token was issued. A pairing code is the quickest way back in.'
+          : 'Paste the token printed by wmux web, or open the full URL that includes it.'
     );
     if (authInput) { authInput.value = ''; setTimeout(function () { authInput.focus(); }, 50); }
   }
@@ -915,7 +1022,12 @@
       src.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
     }
     src.onopen = function () { if (sink.open) sink.open(); };
-    src.onerror = function () { if (sink.error) sink.error(); };
+    src.onerror = function () {
+      if (sink.error) sink.error();
+      // CLOSED means a non-200 and no further retry of its own — for a ticketed
+      // session, usually an expired ticket. renewStreams is a no-op otherwise.
+      if (src.readyState === 2) renewStreams();
+    };
     return src;
   }
 
@@ -955,6 +1067,9 @@
       if (attnEs && attnEs.readyState === 2) {
         attnEs.close();
         attnEs = null;
+        // A ticketed session can recover this itself: take a fresh ticket and
+        // reopen, and `lastAttentionCursor` replays whatever was missed.
+        renewStreams();
       }
     };
   }
@@ -1347,7 +1462,10 @@
         kbKeysEl.innerHTML = '';
         kbAgentBtn.setAttribute('hidden', '');
       }
-      return loadSessions();
+      // Before any stream opens: a device credential cannot ride a query string,
+      // so without a ticket in hand the first EventSource would 401. A no-op
+      // for an operator-token session, which needs none.
+      return ensureStreamTicket(false).then(function () { return loadSessions(); });
     }).catch(function (err) {
       if (err && err.message === 'unauthorized') return; // auth form already shown
       setConn('error', 'error');

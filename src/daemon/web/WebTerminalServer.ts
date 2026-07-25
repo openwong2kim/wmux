@@ -27,8 +27,15 @@ import { ENV_KEYS } from '../../shared/constants';
  *
  * Security posture:
  *   - Nothing listens until `daemon.web.start` is invoked (default unchanged).
- *   - A FRESH random web token is minted per start; the daemon master token
- *     never touches the network. Every `/api/*` call is checked timing-safe.
+ *   - TWO credential forms, both checked timing-safe on every `/api/*` call:
+ *     the OPERATOR token (minted per start, carried across restarts by #596,
+ *     used by the CLI/GUI and the advertised URLs) and a per-DEVICE credential
+ *     (`<deviceId>.<secret>`, minted by pairing, individually revocable). The
+ *     daemon master token never touches the network in either case.
+ *   - Only the operator token may ride in `?token=`. A device secret is durable
+ *     and never expires, so it is header-only on every route including SSE. A
+ *     browser device opens a stream with `?ticket=` instead: a two-minute,
+ *     device-bound capability from `POST /api/stream-ticket` (B3).
  *   - FREE-FORM input is impossible unless the server was started with
  *     `allowInput` (execute-impossible stays the default — the operator opts in
  *     explicitly). The ONE carve-out is `POST /api/approvals/:id`, which works
@@ -37,10 +44,13 @@ import { ENV_KEYS } from '../../shared/constants';
  *
  * Route table (everything under `/api/` is Bearer-gated unless noted):
  *   GET  /                     app shell (unauthenticated, no secrets)
- *   GET  /api/pair?code=       the ONLY unauthenticated API route
+ *   GET  /api/pair?code=       the ONLY unauthenticated API route; mints this
+ *                              device's own credential (refused over plaintext
+ *                              off-machine transports — see mintRefusal)
  *   GET  /api/config           allowInput flag
  *   GET  /api/sessions         pane list
- *   GET  /api/stream?session=  SSE pane bytes (`?token=` allowed — EventSource)
+ *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
+ *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
  *                              allowed) or JSON backlog (Bearer only)
  *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
@@ -86,9 +96,84 @@ export interface WebTerminalInfo {
   pairExpiresAt?: number;
 }
 
+/**
+ * The answer to "does this `<deviceId>.<secret>` belong to a live device?".
+ *
+ * The two failure reasons are NOT interchangeable and must not be collapsed:
+ * `revoked` is the operator's own decision and the phone should say so ("this
+ * device was removed — ask for a new pairing code"), while `unknown` is a
+ * credential this daemon has never seen (a wiped roster, a different machine,
+ * a typo). #599 shipped a 401 screen that could only guess; this is what lets
+ * it stop guessing.
+ */
+export type DeviceAuthResult =
+  | { ok: true; deviceId: string; name?: string }
+  | { ok: false; reason: 'unknown' | 'revoked' };
+
+/**
+ * Per-device credentials as far as the HTTP surface is concerned (M3).
+ *
+ * STRUCTURAL ON PURPOSE. The implementation (`DeviceStore`) owns the KDF and
+ * its parameters, the per-device salt, the roster file, the derived-key cache
+ * and the audit log — none of which this module may know about, for the same
+ * reason it does not know how the approval registry picks keystrokes. What the
+ * web server needs is exactly two verbs: turn a presented credential into an
+ * identity, and mint one for a device the operator just named.
+ *
+ * `resolve` MUST NOT throw: an unreadable roster is an auth failure, never a
+ * 500 on a route that would otherwise have answered. It may be async because a
+ * password KDF has to be — a synchronous scrypt on the request path would stall
+ * the daemon's whole event loop once per call.
+ *
+ * NO EXPIRY. A device credential lives until it is revoked; there is no TTL and
+ * no refresh (contract §7). Revocation is the whole mechanism, which is why it
+ * has to be immediate — see `disconnectDevice`.
+ */
+export interface WebDeviceResolver {
+  resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
+  mint(params: { name?: string }): Promise<{ deviceId: string; deviceSecret: string }>;
+  /**
+   * Record a successful auth. Optional because it is bookkeeping, not
+   * authorization: a store that does not track `lastSeenAt` is still a valid
+   * resolver, and a roster row with a stale timestamp is a cosmetic loss.
+   * Called on every authenticated device request — the store decides how often
+   * that is worth writing down.
+   */
+  touch?(deviceId: string): void;
+}
+
+/**
+ * WHO is making this request. Tagged onto every SSE client so a revoke can find
+ * that device's live streams and end them, instead of leaving a torn-down
+ * device watching panes until it happens to reconnect.
+ */
+export type WebPrincipal =
+  | { kind: 'operator' }
+  | { kind: 'device'; deviceId: string; name?: string };
+
+/** Authenticated identity, or why the credential was refused. */
+type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 'unknown' | 'revoked' };
+
+/**
+ * What `daemon.web.pairStart` answers. A discriminated union rather than
+ * `{ok, code?, error?}` so a caller cannot read `code` off a refusal — but
+ * still structurally assignable to that looser shape if the RPC layer declares
+ * one. `error` is operator-facing copy: it says what to do, not just "no".
+ */
+export type WebPairStartResult =
+  | { ok: true; code: string; expiresAt: number }
+  | { ok: false; error: string };
+
 interface WebTerminalServerDeps {
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
+  /**
+   * Per-device credential store (M3). Optional, like `approvals`: a daemon that
+   * could not build one still serves every route on the operator token, and
+   * `/api/pair` degrades to the pre-M3 shared-token response with a warning
+   * rather than leaving the operator unable to pair anything at all.
+   */
+  devices?: WebDeviceResolver;
   /**
    * The daemon's approval registry. Optional: a daemon that has not wired one
    * (or a unit test that does not care) still serves every other route, and the
@@ -146,17 +231,58 @@ const MAX_JSON_BODY_BYTES = 8 * 1024;
  * rather than a bare 409.
  */
 const APPROVAL_RESOLVED_BY = 'web';
+/**
+ * Separator inside a device credential (`<deviceId>.<secret>`). A dot because
+ * the operator token is a `randomUUID` and contains none, so the two forms are
+ * distinguishable without ever having to guess which one was presented.
+ */
+const DEVICE_CREDENTIAL_SEP = '.';
+/**
+ * Stream-ticket lifetime (B3).
+ *
+ * Long enough to open a stream and to survive the browser's own retry, short
+ * enough that a ticket recovered from a proxy log or a Referer is worthless by
+ * the time anyone reads it. Deliberately NOT the credential's lifetime: the
+ * credential never expires, the ticket almost immediately does.
+ */
+const STREAM_TICKET_TTL_MS = 120_000;
+/** 256 bits of CSPRNG — the reason a plain Map lookup is safe (see resolveStreamTicket). */
+const STREAM_TICKET_BYTES = 32;
+/**
+ * Outstanding tickets held across all devices. Expired entries are pruned
+ * first; the cap only bounds memory if an authenticated device asks for
+ * tickets in a loop, which no client of ours does.
+ */
+const MAX_STREAM_TICKETS = 512;
 
 interface SseClient {
   res: http.ServerResponse;
   sessionId: string;
   detach: () => void;
+  /** Whose stream this is, so a revoke can end exactly that device's. */
+  principal: WebPrincipal;
+}
+
+/**
+ * A short-lived capability to OPEN a stream, and nothing else (B3).
+ *
+ * It exists because `EventSource` cannot set headers, and a device credential
+ * is durable — putting one in a query string would write a permanent secret
+ * into history, proxy logs and Referer headers. A ticket is the narrow thing a
+ * URL can safely carry: it grants opening a stream, it expires in two minutes,
+ * it is bound to one device, and revoking that device destroys it.
+ */
+interface StreamTicket {
+  deviceId: string;
+  name?: string;
+  expiresAt: number;
 }
 
 /** A live `/api/events` subscriber (fleet-wide attention only, no pane bytes). */
 interface EventClient {
   res: http.ServerResponse;
   detach: () => void;
+  principal: WebPrincipal;
 }
 
 /**
@@ -225,6 +351,22 @@ export class WebTerminalServer {
   private allowedHosts = new Set<string>();
   /** When the current pairing code was minted (throttles regeneration). */
   private pairRegeneratedAt = 0;
+  /**
+   * The name the operator gave the device they are pairing RIGHT NOW (§3:
+   * naming happens before the code is minted, because a roster of UUIDs cannot
+   * be operated). Survives an automatic code regeneration — a burned code does
+   * not change who the operator was trying to pair — and is cleared the moment
+   * a code is successfully redeemed, so the next device cannot inherit it.
+   */
+  private pendingDeviceName: string | undefined;
+  /**
+   * Outstanding stream tickets, keyed by the ticket itself (B3).
+   *
+   * In memory only and cleared on stop(): a ticket is a capability to open a
+   * stream against THIS running server, so there is nothing to carry across a
+   * restart — the client asks for another one, which costs it one request.
+   */
+  private readonly streamTickets = new Map<string, StreamTicket>();
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
   private readonly onSessionCritical = (payload: { sessionId: string; event?: unknown }): void =>
@@ -268,6 +410,7 @@ export class WebTerminalServer {
     this.loadAssets();
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
+    this.pendingDeviceName = undefined;
     this.generatePairCode();
 
     const server = http.createServer((req, res) => {
@@ -275,13 +418,7 @@ export class WebTerminalServer {
       try {
         this.handle(req, res);
       } catch (err) {
-        this.deps.log('warn', `[web] request handler threw: ${errMsg(err)}`);
-        try {
-          if (!res.headersSent) res.writeHead(500);
-          res.end();
-        } catch {
-          /* socket already gone */
-        }
+        this.failRequest(res, err);
       }
     });
 
@@ -369,6 +506,9 @@ export class WebTerminalServer {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
+    this.pendingDeviceName = undefined;
+    // Capabilities against a server that is going away. Nothing to preserve.
+    this.streamTickets.clear();
 
     for (const client of this.clients) {
       try {
@@ -420,6 +560,180 @@ export class WebTerminalServer {
     if (!this.server) return { running: false };
     this.generatePairCode();
     return this.status();
+  }
+
+  /**
+   * `daemon.web.pairStart {name}` — name the device, THEN mint its code (§3).
+   *
+   * Separate from `refreshPairCode` rather than a parameter on it because the
+   * two answer different questions. `refreshPairCode` is "the code went stale,
+   * give me another for whatever I was already doing"; this is "I am about to
+   * pair THIS device", which is the only moment a human is present to say what
+   * to call it, and the only moment the transport is worth refusing over.
+   *
+   * The transport check is deliberately made here as well as at redemption:
+   * failing at redemption alone means the operator reads a code off the GUI,
+   * walks to the phone, types it, and only then learns the server would never
+   * have minted anything.
+   */
+  startPairing(params: { name?: string } = {}): WebPairStartResult {
+    if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
+    const refusal = this.mintRefusal();
+    if (refusal) return { ok: false, error: refusal };
+    const label = typeof params.name === 'string' ? params.name.trim() : '';
+    this.generatePairCode();
+    this.pendingDeviceName = label || undefined;
+    return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
+  }
+
+  /**
+   * End every live SSE stream held by one device, right now.
+   *
+   * This is the teardown half of revocation (§5), and it is a METHOD rather
+   * than a listener on the store so the ordering is visible at the call site:
+   * `daemon.web.deviceRevoke` persists first, checks the write succeeded, and
+   * only then calls this. A device the operator believes is gone must not be
+   * watching panes until its next reconnect, and a stream that outlives the
+   * roster entry is exactly that.
+   *
+   * Returns how many connections were closed, so the RPC can report it. The
+   * operator's own streams and every other device's are untouched.
+   */
+  disconnectDevice(deviceId: string): number {
+    if (!deviceId) return 0;
+    const isTarget = (p: WebPrincipal): boolean => p.kind === 'device' && p.deviceId === deviceId;
+    // Outstanding tickets die with the device (B3). Closing the streams alone
+    // would leave a revoked phone holding a capability that reopens one for up
+    // to the ticket TTL — a revocation with a two-minute hole in it.
+    for (const [ticket, held] of [...this.streamTickets]) {
+      if (held.deviceId === deviceId) this.streamTickets.delete(ticket);
+    }
+    let closed = 0;
+    for (const client of [...this.clients]) {
+      if (!isTarget(client.principal)) continue;
+      this.clients.delete(client);
+      closed += 1;
+      try {
+        client.detach();
+        client.res.end();
+      } catch {
+        /* socket already gone — the end state we wanted either way */
+      }
+    }
+    for (const client of [...this.eventClients]) {
+      if (!isTarget(client.principal)) continue;
+      this.eventClients.delete(client);
+      closed += 1;
+      try {
+        client.detach();
+        client.res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (closed > 0) {
+      this.deps.log('info', `[web] revoked device ${deviceId}: closed ${closed} live stream(s)`);
+    }
+    return closed;
+  }
+
+  /**
+   * `POST /api/stream-ticket` — trade a device credential (header, as always)
+   * for a short-lived capability that MAY ride a query string.
+   *
+   * Devices only. The operator token already opens a stream with `?token=`, and
+   * handing the operator a second way in would grow this into a parallel auth
+   * system for no gain — the ticket exists solely because `EventSource` cannot
+   * set headers, and the native app (URLSession sets headers on a streaming
+   * request freely) will never need one either.
+   */
+  private issueStreamTicket(principal: WebPrincipal): { ticket: string; expiresAt: number } | null {
+    if (principal.kind !== 'device') return null;
+    this.pruneStreamTickets();
+    const ticket = crypto.randomBytes(STREAM_TICKET_BYTES).toString('base64url');
+    const expiresAt = Date.now() + STREAM_TICKET_TTL_MS;
+    this.streamTickets.set(ticket, {
+      deviceId: principal.deviceId,
+      ...(principal.name ? { name: principal.name } : {}),
+      expiresAt,
+    });
+    return { ticket, expiresAt };
+  }
+
+  /**
+   * Turn a presented ticket back into the device that asked for it, or `null`.
+   *
+   * A plain Map lookup, deliberately: the ticket is 256 bits of CSPRNG with a
+   * two-minute life, so the only thing a timing difference could reveal is
+   * whether a key the caller already chose exists — and finding one by guessing
+   * is 2^256 work inside a 120-second window. There is no stored secret to
+   * compare against here, which is the whole difference between a capability
+   * and a credential.
+   *
+   * NOT single-use. `EventSource` retries the SAME url on its own, so burning
+   * the ticket on first use would turn every ordinary reconnect into a
+   * permanent failure with no way for the page to notice or recover.
+   */
+  private resolveStreamTicket(raw: string | null): WebPrincipal | null {
+    if (!raw) return null;
+    const held = this.streamTickets.get(raw);
+    if (!held) return null;
+    if (Date.now() > held.expiresAt) {
+      this.streamTickets.delete(raw);
+      return null;
+    }
+    return { kind: 'device', deviceId: held.deviceId, ...(held.name ? { name: held.name } : {}) };
+  }
+
+  /** Drop expired tickets, then the oldest if the cap is still exceeded. */
+  private pruneStreamTickets(): void {
+    const now = Date.now();
+    for (const [ticket, held] of [...this.streamTickets]) {
+      if (now > held.expiresAt) this.streamTickets.delete(ticket);
+    }
+    if (this.streamTickets.size < MAX_STREAM_TICKETS) return;
+    const byAge = [...this.streamTickets].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    const excess = this.streamTickets.size - MAX_STREAM_TICKETS + 1;
+    for (let i = 0; i < excess && i < byAge.length; i++) this.streamTickets.delete(byAge[i][0]);
+  }
+
+  /**
+   * Why a durable device secret must not be minted over this transport, or
+   * `null` when it may be.
+   *
+   * The shared operator token was survivable in cleartext partly because it
+   * died on restart; #599 made it durable and M3 makes the per-device one
+   * durable too, so `--expose` without a TLS front now means handing a
+   * long-lived secret to anything on the LAN. Loopback is fine (nothing
+   * off-machine reaches it). A host the operator listed with `--allow-host` is
+   * fine, because that flag exists precisely to name the TLS front (`tailscale
+   * serve`) that forwards to us.
+   *
+   * `requestHost` is the Host of the redeeming request when there is one; with
+   * none (the operator-side pairStart) the question is only whether a front is
+   * configured at all.
+   *
+   * NOTE this refuses minting for a browser sitting at `127.0.0.1` on an
+   * exposed server too. That is not an oversight: on a `0.0.0.0` bind the Host
+   * header is caller-chosen and proves nothing about where the bytes came from,
+   * so the bind is the only honest thing to judge. The operator token path is
+   * untouched — this gate only guards NEW durable device credentials.
+   */
+  private mintRefusal(requestHost?: string): string | null {
+    const bind = this.opts?.host ?? '';
+    if (isLoopbackHost(bind)) return null;
+    const extras = (this.opts?.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean);
+    if (requestHost === undefined) {
+      if (extras.length > 0) return null;
+    } else if (extras.includes(requestHost.toLowerCase())) {
+      return null;
+    }
+    return (
+      `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
+      'over plain HTTP, so the credential would cross the network in the clear and it never expires. ' +
+      'Put a TLS front in front of it (e.g. `tailscale serve`) and restart with ' +
+      '`wmux web --allow-host <that hostname>`, or pair over loopback.'
+    );
   }
 
   status(): WebTerminalInfo {
@@ -507,55 +821,109 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      return this.handlePair(res, url);
+      this.handlePair(res, url, hostname).catch((err: unknown) => this.failRequest(res, err));
+      return;
     }
 
-    // Everything under /api/* is token-gated. Only the SSE stream may carry the
-    // token in the query string (EventSource cannot set headers); every other
-    // endpoint requires an Authorization: Bearer header, keeping the token out
-    // of query strings and URL/proxy logs.
     if (p.startsWith('/api/')) {
-      // `/api/events` answers in two shapes on one route: an EventSource (which
-      // cannot set headers, so it gets the same `?token=` exception as
-      // `/api/stream`) and a plain JSON backlog fetch (Bearer only, like every
-      // other endpoint). The Accept header decides which, and therefore also
-      // which auth rule applies.
-      const wantsEventStream =
-        req.method === 'GET' &&
-        p === '/api/events' &&
-        String(req.headers.accept ?? '').includes('text/event-stream');
-      const isStream = (req.method === 'GET' && p === '/api/stream') || wantsEventStream;
-      if (!this.isAuthed(req, url, isStream)) {
-        return this.json(res, 401, { error: 'unauthorized' });
-      }
-      if (req.method === 'GET' && p === '/api/config') {
-        return this.json(res, 200, { allowInput: this.opts?.allowInput === true });
-      }
-      if (req.method === 'GET' && p === '/api/sessions') {
-        return this.json(res, 200, { sessions: this.listSessions() });
-      }
-      if (req.method === 'GET' && p === '/api/stream') {
-        return this.handleStream(req, res, url);
-      }
-      if (req.method === 'GET' && p === '/api/events') {
-        return wantsEventStream
-          ? this.handleEventStream(req, res, url)
-          : this.handleEventBacklog(res, url);
-      }
-      if (req.method === 'POST' && p === '/api/input') {
-        return this.handleInput(req, res, url);
-      }
-      if (req.method === 'GET' && p === '/api/approvals') {
-        return this.handleApprovalsList(res);
-      }
-      if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
-        return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length));
-      }
-      return this.json(res, 404, { error: 'not found' });
+      // Verifying a device credential means running a KDF, which is async by
+      // construction, so the whole /api/* branch sits behind one await. The
+      // route table itself is unchanged — see handleApi.
+      this.handleApi(req, res, url, p).catch((err: unknown) => this.failRequest(res, err));
+      return;
     }
 
     res.writeHead(404);
     res.end();
+  }
+
+  /**
+   * Everything under `/api/*`: authenticate, then route.
+   *
+   * Both credential forms are accepted here (operator token, device
+   * credential), and the ROUTES do not care which — a paired phone can list
+   * panes, watch a stream and answer an approval exactly as the operator can.
+   * What differs is only what a revoke can take away, which is why the
+   * principal is carried into the two SSE handlers and nowhere else.
+   */
+  private async handleApi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    p: string,
+  ): Promise<void> {
+    // `/api/events` answers in two shapes on one route: an EventSource (which
+    // cannot set headers, so it gets the same `?token=` exception as
+    // `/api/stream`) and a plain JSON backlog fetch (Bearer only, like every
+    // other endpoint). The Accept header decides which, and therefore also
+    // which auth rule applies.
+    const wantsEventStream =
+      req.method === 'GET' &&
+      p === '/api/events' &&
+      String(req.headers.accept ?? '').includes('text/event-stream');
+    const isStream = (req.method === 'GET' && p === '/api/stream') || wantsEventStream;
+    const auth = await this.authenticate(req, url, isStream);
+    if (!auth.ok) {
+      // The reason is the point: #599's 401 screen had to guess between "the
+      // server restarted" and "you were thrown out", and guessed wrong either
+      // way. `revoked` is the operator's decision and deserves its own copy.
+      //
+      // IT IS COPY, NOT A CLAIM. `revoked` comes from a deviceId lookup alone —
+      // the store answers it WITHOUT verifying the secret, deliberately, so a
+      // revoked phone reconnecting in a loop cannot force a KDF derivation per
+      // retry. So this field says "a credential naming this device was
+      // presented", not "the holder proved they are that device". Never let
+      // anything but wording key on it.
+      return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
+    }
+    const principal = auth.principal;
+    if (req.method === 'GET' && p === '/api/config') {
+      return this.json(res, 200, { allowInput: this.opts?.allowInput === true });
+    }
+    if (req.method === 'GET' && p === '/api/sessions') {
+      return this.json(res, 200, { sessions: this.listSessions() });
+    }
+    if (req.method === 'GET' && p === '/api/stream') {
+      return this.handleStream(req, res, url, principal);
+    }
+    if (req.method === 'GET' && p === '/api/events') {
+      return wantsEventStream
+        ? this.handleEventStream(req, res, url, principal)
+        : this.handleEventBacklog(res, url);
+    }
+    if (req.method === 'POST' && p === '/api/stream-ticket') {
+      const issued = this.issueStreamTicket(principal);
+      if (!issued) {
+        return this.json(res, 403, {
+          error: 'tickets-are-for-devices',
+          detail:
+            'stream tickets exist so a paired device can open an EventSource, which cannot set headers. ' +
+            'The operator token opens a stream with ?token= directly.',
+        });
+      }
+      return this.json(res, 200, issued);
+    }
+    if (req.method === 'POST' && p === '/api/input') {
+      return this.handleInput(req, res, url);
+    }
+    if (req.method === 'GET' && p === '/api/approvals') {
+      return this.handleApprovalsList(res);
+    }
+    if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
+      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length));
+    }
+    return this.json(res, 404, { error: 'not found' });
+  }
+
+  /** Last-resort 500 for a handler that threw or rejected. */
+  private failRequest(res: http.ServerResponse, err: unknown): void {
+    this.deps.log('warn', `[web] request handler threw: ${errMsg(err)}`);
+    try {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    } catch {
+      /* socket already gone */
+    }
   }
 
   private listSessions(): Array<{
@@ -585,7 +953,12 @@ export class WebTerminalServer {
 
   // --- SSE output stream --------------------------------------------------
 
-  private handleStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  private handleStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
     const sessionId = url.searchParams.get('session') ?? '';
     const managed = this.deps.sessionManager.getSession(sessionId);
     if (!managed) {
@@ -642,7 +1015,7 @@ export class WebTerminalServer {
       bridge.removeListener('data', onData);
       bridge.removeListener('exit', onExit);
     };
-    const client: SseClient = { res, sessionId, detach };
+    const client: SseClient = { res, sessionId, detach, principal };
     this.clients.add(client);
 
     req.on('close', () => {
@@ -1024,7 +1397,12 @@ export class WebTerminalServer {
    * browser resends `Last-Event-ID` on every automatic reconnect, so a phone
    * that lost signal picks up exactly where it stopped.
    */
-  private handleEventStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  private handleEventStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -1065,7 +1443,7 @@ export class WebTerminalServer {
     heartbeat.unref();
 
     const detach = (): void => clearInterval(heartbeat);
-    const client: EventClient = { res, detach };
+    const client: EventClient = { res, detach, principal };
     this.eventClients.add(client);
 
     req.on('close', () => {
@@ -1107,11 +1485,19 @@ export class WebTerminalServer {
   }
 
   /**
-   * Exchange a pairing code for the web token. Correct code → `{token}` and the
-   * code is immediately invalidated (single use). Wrong/expired → 403; a wrong
-   * code decrements the attempt budget and burns the code when it hits zero.
+   * Exchange a pairing code for THIS DEVICE'S OWN credential. Correct code →
+   * `{deviceId, deviceSecret, token}` and the code is immediately invalidated
+   * (single use). Wrong/expired → 403; a wrong code decrements the attempt
+   * budget and burns the code when it hits zero.
+   *
+   * Before M3 this handed back the server-wide bearer token, which meant every
+   * paired device shared one secret and losing a phone meant rotating everyone.
+   * The wire keeps a `token` field carrying the composed `deviceId.secret`
+   * because that is the string the client presents as its Bearer — one value to
+   * store, and the pairing screen keeps working unchanged — but it is now a
+   * per-device credential, not the operator's.
    */
-  private handlePair(res: http.ServerResponse, url: URL): void {
+  private async handlePair(res: http.ServerResponse, url: URL, requestHost: string): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -1133,10 +1519,7 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'too many attempts' });
     }
 
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(this.pairCode);
-    const match = a.length === b.length && crypto.timingSafeEqual(a, b);
-    if (!match) {
+    if (!timingSafeEquals(supplied, this.pairCode)) {
       this.pairAttempts -= 1;
       if (this.pairAttempts <= 0) this.pairCode = '';
       return this.json(res, 403, {
@@ -1145,32 +1528,136 @@ export class WebTerminalServer {
       });
     }
 
-    // Success: hand over the token exactly once, then burn the code.
-    const token = this.token;
+    // The code is right. Now the transport: a device credential is durable and
+    // never expires, so it must not be handed over in the clear to something
+    // off-machine. Checked HERE and not only at pairStart because the operator
+    // may have restarted the server with `--expose` since the code was minted.
+    // The code is NOT burned — the operator should be able to fix the transport
+    // and use the code they already read out, and a refusal reveals nothing.
+    const refusal = this.mintRefusal(requestHost);
+    if (refusal) return this.json(res, 403, { error: 'insecure-transport', detail: refusal });
+
+    const devices = this.deps.devices;
+    if (!devices) {
+      // No identity core wired (a daemon that failed to build one). Falling
+      // back to the shared token keeps pairing possible instead of bricking it,
+      // but it is a real downgrade — per-device revocation does not exist on
+      // this server — so say so out loud rather than degrading silently.
+      this.deps.log('warn', '[web] pairing without a device store — issuing the shared operator token');
+      this.burnPairCode();
+      return this.json(res, 200, { token: this.token });
+    }
+
+    let minted: { deviceId: string; deviceSecret: string };
+    try {
+      minted = await devices.mint({ name: this.pendingDeviceName });
+    } catch (err) {
+      // The roster could not be persisted. Do NOT burn the code and do NOT
+      // fall back to the shared token: a credential the daemon cannot
+      // remember is one the operator can never revoke.
+      this.deps.log('error', `[web] device mint failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'pairing failed' });
+    }
+
+    // Success: hand the credential over exactly once, then burn the code.
+    this.burnPairCode();
+    return this.json(res, 200, {
+      deviceId: minted.deviceId,
+      deviceSecret: minted.deviceSecret,
+      token: `${minted.deviceId}${DEVICE_CREDENTIAL_SEP}${minted.deviceSecret}`,
+    });
+  }
+
+  /** Consume the active pairing code (single use) and its pending name. */
+  private burnPairCode(): void {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
-    return this.json(res, 200, { token });
+    this.pendingDeviceName = undefined;
   }
 
   // --- helpers ------------------------------------------------------------
 
   /**
-   * Authenticate an /api/* request against the per-start web token (timing-safe).
-   * `allowQuery` is true ONLY for the SSE stream, which must accept `?token=`
-   * because EventSource cannot set headers; every other endpoint is Bearer-only.
+   * Authenticate an `/api/*` request. Two credential forms, one gate:
+   *
+   *   `Bearer <token>`             the OPERATOR (CLI, GUI, `--status` URLs)
+   *   `Bearer <deviceId>.<secret>` a paired DEVICE
+   *
+   * The operator token is tried first and always timing-safe, so a device
+   * credential that happens to contain a dot cannot be probed against it.
+   * Device lookup is BY ID — the store compares one hash, never a linear scan
+   * over the roster (§2).
+   *
+   * `allowQuery` is true ONLY for the two SSE routes, which must accept
+   * `?token=` because EventSource cannot set headers. That exception is for the
+   * OPERATOR TOKEN ALONE: a device secret is durable and never expires, and a
+   * query string is the one place a credential is guaranteed to be written down
+   * (history, proxy logs, Referer). So a device credential presented in the
+   * query authenticates nothing, on any route.
    */
-  private isAuthed(req: http.IncomingMessage, url: URL, allowQuery: boolean): boolean {
-    if (!this.token) return false;
+  private async authenticate(req: http.IncomingMessage, url: URL, allowQuery: boolean): Promise<AuthOutcome> {
+    if (!this.token) return { ok: false, reason: 'unknown' };
     const header = req.headers['authorization'];
-    const fromHeader = typeof header === 'string' && header.startsWith('Bearer ')
-      ? header.slice('Bearer '.length)
-      : null;
+    const fromHeader =
+      typeof header === 'string' && header.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
     const fromQuery = allowQuery ? url.searchParams.get('token') : null;
-    const supplied = fromHeader ?? fromQuery ?? '';
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(this.token);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
+
+    if (timingSafeEquals(fromHeader ?? fromQuery ?? '', this.token)) {
+      return { ok: true, principal: { kind: 'operator' } };
+    }
+
+    const devices = this.deps.devices;
+    // Header only — see above. `null` here is "no Bearer header at all".
+    const cut = fromHeader ? fromHeader.indexOf(DEVICE_CREDENTIAL_SEP) : -1;
+    if (!devices || cut <= 0) {
+      // No usable header credential. On the SSE routes a device may instead
+      // present a stream TICKET (B3) — the narrow, expiring capability that
+      // exists precisely because EventSource cannot send a header. Checked last
+      // so it can never shadow a real credential, and never on a non-SSE route.
+      const viaTicket = allowQuery ? this.resolveStreamTicket(url.searchParams.get('ticket')) : null;
+      if (viaTicket && viaTicket.kind === 'device') {
+        this.touchDevice(viaTicket.deviceId);
+        return { ok: true, principal: viaTicket };
+      }
+      return { ok: false, reason: 'unknown' };
+    }
+    const deviceId = fromHeader!.slice(0, cut);
+    const secret = fromHeader!.slice(cut + 1);
+    // A credential with NOTHING after the separator is malformed, and refusing
+    // it here is parsing, not comparison: this branch reads only the bytes the
+    // caller sent, never anything stored, so it cannot leak a stored secret's
+    // length or content. The constant-time property §2 asks for lives one layer
+    // down, where the store derives a fixed-length key from an input of ANY
+    // length and reaches the same `timingSafeEqual` every time. Passing a
+    // secret-less credential through instead would buy nothing and would hand
+    // an unauthenticated caller a free KDF derivation per request.
+    if (!secret) return { ok: false, reason: 'unknown' };
+
+    let result: DeviceAuthResult;
+    try {
+      result = await devices.resolve(deviceId, secret);
+    } catch (err) {
+      // A store that cannot answer is not an authorization. Fail closed, and
+      // never turn an auth failure into a 500 on the route behind it.
+      this.deps.log('warn', `[web] device auth failed: ${errMsg(err)}`);
+      return { ok: false, reason: 'unknown' };
+    }
+    if (!result.ok) return { ok: false, reason: result.reason };
+    this.touchDevice(result.deviceId);
+    return {
+      ok: true,
+      principal: { kind: 'device', deviceId: result.deviceId, ...(result.name ? { name: result.name } : {}) },
+    };
+  }
+
+  /** Report a device's activity to the roster. Bookkeeping — never fatal. */
+  private touchDevice(deviceId: string): void {
+    try {
+      this.deps.devices?.touch?.(deviceId);
+    } catch (err) {
+      this.deps.log('warn', `[web] device touch failed: ${errMsg(err)}`);
+    }
   }
 
   /**
@@ -1347,6 +1834,24 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
     ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
   };
+}
+
+/**
+ * Compare two secrets without leaking WHERE they differ. The length check is a
+ * timingSafeEqual precondition (it throws on a mismatch), so credential length
+ * remains observable — as it was before M3, and as it is for every bearer
+ * scheme that does not pad.
+ */
+function timingSafeEquals(supplied: string, expected: string): boolean {
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Addresses/names that never leave the machine. */
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || h === '127.0.0.1' || h.startsWith('127.');
 }
 
 function readIfExists(p: string): Buffer | null {
