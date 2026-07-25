@@ -204,6 +204,47 @@ describe('PushSender — failure handling', () => {
   });
 });
 
+describe('PushSender — a broken pipeline is visible', () => {
+  it('★ reports a terminal failure instead of swallowing it', async () => {
+    // Handling only 200 and 410 left a misconfigured relay secret completely
+    // silent — the only symptom would be a user noticing notifications that
+    // never arrive, which is the least debuggable signal there is.
+    const h = makeSender([401], [device('d1').target]);
+    h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+
+    expect(h.logs.some((l) => l.includes('relay answered 401'))).toBe(true);
+    expect(h.logs.some((l) => l.includes('1/1 notification(s) were not delivered'))).toBe(true);
+    // Never the payload.
+    expect(h.logs.join(String.fromCharCode(10))).not.toContain('title');
+  });
+
+  it('reports a relay that never answers', async () => {
+    const h = makeSender(['throw'], [device('d1').target]);
+    h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+    expect(h.logs.some((l) => l.includes('no response from the relay'))).toBe(true);
+  });
+
+  it('logs a steady outage once, not once per notification', async () => {
+    const h = makeSender([500], [device('d1').target]);
+    for (let i = 0; i < 4; i++) h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+    // The per-status line appears once; the per-send summary still counts each.
+    expect(h.logs.filter((l) => l.includes('relay answered 500'))).toHaveLength(1);
+    expect(h.logs.filter((l) => l.includes('were not delivered')).length).toBeGreaterThan(1);
+  });
+
+  it('says so when the relay recovers', async () => {
+    const h = makeSender([500, 500, 200], [device('d1').target]);
+    h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+    h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+    expect(h.logs.some((l) => l.includes('relay is answering again'))).toBe(true);
+  });
+});
+
 describe('PushSender — queue', () => {
   it('★ drops OLDEST past the cap, because the newest is the one still worth answering', async () => {
     const h = makeSender([200], [device('d1').target]);

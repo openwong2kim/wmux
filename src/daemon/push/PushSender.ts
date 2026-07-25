@@ -74,6 +74,10 @@ export interface PushSendOutcome {
   delivered: number;
   /** Devices whose token Apple reported dead; already forgotten. */
   pruned: string[];
+  /** Neither delivered nor pruned — a relay or transport problem. */
+  failed: number;
+  /** The last terminal status seen, or null when the relay never answered. */
+  lastStatus: number | null;
 }
 
 export class PushSender {
@@ -89,6 +93,8 @@ export class PushSender {
    */
   private drainPromise: Promise<void> | null = null;
   private dropped = 0;
+  /** Last terminal failure status, so a steady outage logs once, not per send. */
+  private lastFailureStatus: number | null | undefined = undefined;
 
   constructor(deps: PushSenderDeps) {
     this.deps = deps;
@@ -160,7 +166,13 @@ export class PushSender {
   }
 
   private async send(item: QueuedPush): Promise<PushSendOutcome> {
-    const outcome: PushSendOutcome = { attempted: 0, delivered: 0, pruned: [] };
+    const outcome: PushSendOutcome = {
+      attempted: 0,
+      delivered: 0,
+      pruned: [],
+      failed: 0,
+      lastStatus: null,
+    };
     const targets = this.deps.targets();
     const ts = this.now();
 
@@ -193,14 +205,55 @@ export class PushSender {
 
       if (status === 200) {
         outcome.delivered += 1;
+        if (this.lastFailureStatus !== undefined) {
+          this.deps.log?.('info', '[push] relay is answering again');
+          this.lastFailureStatus = undefined;
+        }
       } else if (status === 410) {
         // Apple's word that this token is gone. Continuing to send to it is
         // exactly the traffic that gets a provider throttled.
         this.deps.forgetPush(target.deviceId);
         outcome.pruned.push(target.deviceId);
+      } else {
+        // EVERY other terminal outcome is reported. Handling only 200 and 410
+        // left a misconfigured relay secret, a persistent 5xx, or a network
+        // failure that survived the retry completely silent — the only symptom
+        // would be a user noticing notifications that never arrive, which is
+        // the least debuggable signal there is. The status is a number from the
+        // relay; the payload is never mentioned.
+        outcome.failed += 1;
+        outcome.lastStatus = status;
+        this.noteFailure(target.deviceId, status);
       }
     }
+    if (outcome.failed > 0) {
+      this.deps.log?.(
+        'warn',
+        `[push] ${outcome.failed}/${outcome.attempted} notification(s) were not delivered` +
+          `${outcome.lastStatus === null ? ' (no response)' : ` (last status ${outcome.lastStatus})`}`,
+      );
+    }
     return outcome;
+  }
+
+  /**
+   * Remember the last terminal failure, and log a distinct one only when it
+   * CHANGES.
+   *
+   * A relay that is down fails identically for every notification, and one line
+   * per attempt would bury the change that matters — a 401 turning into a 200,
+   * or a 500 turning into a 429. The per-send summary above still counts them
+   * all.
+   */
+  private noteFailure(deviceId: string, status: number | null): void {
+    if (status === this.lastFailureStatus) return;
+    this.lastFailureStatus = status;
+    this.deps.log?.(
+      'warn',
+      status === null
+        ? `[push] no response from the relay for ${deviceId} (after one retry)`
+        : `[push] relay answered ${status} for ${deviceId}`,
+    );
   }
 
   /**

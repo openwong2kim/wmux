@@ -520,8 +520,18 @@ export class DeviceStore {
   forgetPush(deviceId: string): boolean {
     const record = this.devices.get(deviceId);
     if (!record?.push) return false;
+    const previous = record.push;
     delete record.push;
-    this.persist();
+    if (!this.persist()) {
+      // Same failure shape as a revoke that could not be written: reporting
+      // success here would mean the dead token reappears on the next start and
+      // gets sent again — which is precisely the traffic this method exists to
+      // stop, and the kind that gets a provider throttled. Roll back so the
+      // in-memory view matches the disk rather than silently diverging.
+      record.push = previous;
+      this.log('error', `[web] could not persist the dead-token removal for ${deviceId}`);
+      return false;
+    }
     this.log('info', `[web] dropped a dead push registration for ${deviceId}`);
     return true;
   }

@@ -651,6 +651,20 @@ describe('DeviceStore — push registration', () => {
     expect(s.registerPush('no-such-device', { apnsToken: TOKEN, publicKey: KEY }).reason).toBe('not-found');
   });
 
+  it('★ a dead-token removal that cannot be written reports failure', async () => {
+    // Returning success would mean the dead token reappears on the next start
+    // and gets sent again — precisely the traffic this exists to stop, and the
+    // kind that gets a provider throttled.
+    const s = store();
+    const dev = await s.mint({ name: 'Phone' });
+    s.registerPush(dev.deviceId, { apnsToken: TOKEN, publicKey: KEY });
+    breakWrites();
+
+    expect(s.forgetPush(dev.deviceId)).toBe(false);
+    // Rolled back, so memory matches the disk rather than silently diverging.
+    expect(s.pushTargets()).toHaveLength(1);
+  });
+
   it('drops a registration Apple reported dead', async () => {
     const s = store();
     const d = await s.mint({ name: 'Phone' });
