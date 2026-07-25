@@ -324,6 +324,9 @@ function getBootIdSync(): string {
 }
 const PID_FILE = path.join(wmuxDir, 'daemon.pid');
 const LOCK_FILE = path.join(wmuxDir, 'daemon.lock');
+// Issue #546 — "I am booting, do not kill me" marker. Lives only for the span
+// between lock acquisition and the pipe file being written. See acquireLock().
+const BOOT_MARKER_FILE = path.join(wmuxDir, 'daemon-booting');
 
 // === Logging (console + durable file) ===
 // The daemon is spawned with stdio:'ignore' (see src/main/daemon/launcher.ts),
@@ -762,7 +765,44 @@ async function acquireLock(): Promise<boolean> {
 
   // Write PID file (separate from lock for backward compat)
   fs.writeFileSync(PID_FILE, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+  // Issue #546 — boot-progress marker. The window between this line and
+  // `daemon-pipe` being written is the whole problem: we are alive and own the
+  // lock, but we cannot answer a ping (no pipe yet), and cold recovery of a
+  // large session set runs ~19-23 s. The launcher's reuse path used to read
+  // that silence as "wedged" and SIGKILL us after ~1.9 s. This marker is the
+  // reuse-path equivalent of the spawn path's `isChildAlive` (#537 / #543).
+  //
+  //   acquireLock()            recoverSessions()          "Daemon ready"
+  //        │                    (~19-23 s, no pipe)             │
+  //        ├── daemon.pid ──────────────────────────────────────┤
+  //        ├── daemon-booting ──────────────────────────────────┤ (unlinked)
+  //        │                                                    ├── daemon-pipe
+  //        └───────────── launcher must NOT kill in here ───────┘
+  //
+  // Written once, never re-touched: the launcher trusts it on existence + PID
+  // liveness, not freshness. A freshness gate would re-create the very bug —
+  // recovery is a long await chain, so a busy event loop can delay a periodic
+  // touch and a healthy daemon would read as stale. Elapsed time is bounded on
+  // the launcher side by DAEMON_READY_HARD_CEILING_MS instead. A marker
+  // orphaned by a hard crash is self-invalidating: its PID is dead.
+  try {
+    fs.writeFileSync(BOOT_MARKER_FILE, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+  } catch (err) {
+    // Non-fatal: without the marker the launcher just falls back to the old
+    // escalated-reping-then-kill behavior. Never block boot on it.
+    log('warn', 'Failed to write boot marker:', err);
+  }
   return true;
+}
+
+/** Issue #546 — drop the boot-progress marker once we can answer pings, and on
+ *  every teardown path. Idempotent; never throws. */
+function clearBootMarker(): void {
+  try {
+    if (fs.existsSync(BOOT_MARKER_FILE)) fs.unlinkSync(BOOT_MARKER_FILE);
+  } catch {
+    // ignore
+  }
 }
 
 function releaseLock(): void {
@@ -783,6 +823,7 @@ function releaseLock(): void {
   } catch {
     // ignore
   }
+  clearBootMarker();
 }
 
 // === Session recovery ===
@@ -2806,6 +2847,8 @@ function registerRpcHandlers(
       setTimeout(() => {
         void pipeServer.stop().catch(() => { /* best effort */ }).finally(() => {
           clearTimeout(forceExit);
+          // Issue #545 — last line before control leaves us. See logExitHandoff.
+          logExitHandoff('rpc.shutdown');
           process.exit(0);
         });
       }, 50);
@@ -3507,7 +3550,30 @@ async function shutdown(
     // after returning so the ack flushes back to the client first.
     return { stateSaved };
   }
+  logExitHandoff('shutdown');
   process.exit(0);
+}
+
+/**
+ * Issue #545 — stamp the moment control leaves our code for `process.exit(0)`.
+ *
+ * The report was "the daemon lingers ~5 s in the process table after acking
+ * shutdown". Measured on the bundled daemon under both node and Electron, at 10
+ * and 35 live ConPTY sessions, the gap is 7-12 ms, so it did not reproduce. If
+ * it recurs in the field, this line is what tells the two candidate stories
+ * apart: a late timestamp means OUR path was slow, an on-time timestamp with a
+ * late process-table disappearance means the OS/native teardown held the
+ * process after we asked it to die.
+ *
+ * Deliberately not "fixed" with a hard `TerminateProcess` self-kill: that would
+ * bound the exit but truncate any disk write still in flight (channel snapshot,
+ * principal state), trading a real data-loss risk on every shutdown against a
+ * latency symptom we cannot reproduce. No JS timer can bound a stalled
+ * `process.exit` either — the loop is already gone — so the honest fix is the
+ * datum, not a guess.
+ */
+function logExitHandoff(via: string): void {
+  log('info', `[shutdown.phase] exit via=${via} at=${Date.now()} — calling process.exit(0)`);
 }
 
 // === Main entry point ===
@@ -4138,6 +4204,10 @@ async function main(): Promise<void> {
     log('warn', 'Failed to write pipe name file:', err);
   }
   markDaemonBoot('pipe-file-written');
+  // Issue #546 — we can answer pings from here on, so the "still booting" grace
+  // the launcher grants us is no longer needed. Dropped AFTER the pipe file so
+  // the two states never both look false to a launcher reading mid-write.
+  clearBootMarker();
 
   // doShutdown is hoisted ahead of `setCallbacks` so the idle-shutdown
   // callback can route through the same termination path used by

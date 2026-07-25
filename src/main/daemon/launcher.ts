@@ -305,6 +305,89 @@ export async function tryEscalatedReping(
 }
 
 /**
+ * Issue #546 — parse the daemon's boot-progress marker (`daemon-booting`,
+ * written by the daemon's acquireLock()). True only when it names EXACTLY the
+ * PID we already verified as a live wmux daemon. Missing / unparseable / a
+ * different PID all read false.
+ *
+ * PID equality is the whole safety argument: the caller reaches this only after
+ * image+cmdline verification of `expectedPid`, so a marker naming that PID
+ * cannot be a crashed predecessor's leftover (that marker would name a dead
+ * PID, and a dead PID never gets here).
+ */
+export function parseBootMarker(raw: string | null, expectedPid: number): boolean {
+  if (raw === null) return false;
+  const parsed = parseInt(raw.trim(), 10);
+  return Number.isFinite(parsed) && parsed === expectedPid;
+}
+
+/** Poll cadence while waiting out a cold-recovering daemon (#546). */
+export const BOOT_WAIT_POLL_MS = 500;
+
+export type RecoveringWaitOutcome =
+  /** A ping answered — the daemon finished booting. Reuse it, do not kill. */
+  | 'alive'
+  /** The marker no longer names our PID: the daemon either just became ready
+   *  (it unlinks the marker right after writing its pipe file) or it died.
+   *  Caller runs one final escalated re-ping to tell those apart. */
+  | 'gone'
+  /** Still marked as booting past the ceiling — treat as genuinely hung. */
+  | 'ceiling';
+
+export interface RecoveringWaitDeps {
+  ping: (timeoutMs: number) => Promise<boolean>;
+  readMarker: () => string | null;
+  expectedPid: number;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  ceilingMs: number;
+  onWaiting?: (elapsedMs: number) => void;
+}
+
+/**
+ * Issue #546 — wait out a daemon that is alive and provably still booting,
+ * instead of SIGKILLing it for failing a ping.
+ *
+ * The daemon writes `daemon.pid` at lock acquisition but its `daemon-pipe` file
+ * only after `recoverSessions` completes (~19-23 s for 30-35 sessions). In that
+ * window it cannot answer any ping. The reuse path used to grant it
+ * `tryEscalatedReping` (~1.9 s) and then kill it, which restarts the same
+ * recovery and can thrash the respawn budget into local mode with duplicate
+ * sessions — the #537 symptom. #543 fixed only the spawn path, which proves
+ * progress via `isChildAlive`; the reuse path has no child handle, so it reads
+ * the marker instead.
+ *
+ *   ping ok ─────────────────────────────────► 'alive'  (reuse, no kill)
+ *   marker still ours ──► sleep 500ms ──► loop
+ *   marker gone/other ──────────────────────► 'gone'    (caller re-pings once)
+ *   elapsed > ceiling ──────────────────────► 'ceiling' (fall through to kill)
+ *
+ * Ping is checked BEFORE the marker each iteration so the daemon becoming ready
+ * mid-wait resolves as 'alive' rather than racing its own marker deletion.
+ *
+ * Every effect is injected (`ping` / `readMarker` / `sleep` / `now`), the same
+ * seam `tryEscalatedReping` uses, so the decision is unit-testable with no live
+ * daemon and no real clock.
+ */
+export async function waitOutRecoveringDaemon(
+  deps: RecoveringWaitDeps,
+): Promise<RecoveringWaitOutcome> {
+  const start = deps.now();
+  let notified = false;
+  for (;;) {
+    if (await deps.ping(1000)) return 'alive';
+    if (!parseBootMarker(deps.readMarker(), deps.expectedPid)) return 'gone';
+    const elapsed = deps.now() - start;
+    if (elapsed >= deps.ceilingMs) return 'ceiling';
+    if (!notified) {
+      notified = true;
+      deps.onWaiting?.(elapsed);
+    }
+    await deps.sleep(BOOT_WAIT_POLL_MS);
+  }
+}
+
+/**
  * Recovery decision shared by the two "process probe was blocked" branches of
  * ensureDaemon — image-lookup-failure and command-line-lookup-failure. On
  * fleets running aggressive anti-virus, tasklist.exe / PowerShell
@@ -687,6 +770,56 @@ function readPipeNameFromFile(wmuxDir: string): string | null {
   }
 }
 
+/**
+ * Issue #545 — is the daemon control pipe gone (nothing listening)?
+ *
+ * Second, `tasklist`-independent proof that a shutdown ran to completion, for
+ * the B′ replacement death poll. On a box where tasklist is slow or AV-blocked,
+ * `checkProcessLiveness` can only ever return `unknown` (never `dead`, by
+ * design), so the poll burns its whole 5 s budget and dead-ends even though the
+ * daemon exited cleanly ~10 ms after its ack.
+ *
+ * Fail-closed on purpose: only an authoritative "nothing is listening"
+ * (ENOENT / ECONNREFUSED) returns true. A successful connect means a server is
+ * still there, and a TIMEOUT means we learned nothing — both report false, so a
+ * flaky probe can only cost us the old wait, never authorize a bad spawn.
+ *
+ * The socket is destroyed the instant it connects so this probe can never be
+ * the connection that holds a dying pipe server open (the same hazard step 2's
+ * `disconnectClient` exists to avoid).
+ */
+export function isDaemonPipeGone(timeoutMs = 500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const pipeName = readPipeNameFromFile(getWmuxDir()) || getDaemonPipeName();
+    let settled = false;
+    const finish = (gone: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(gone);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref();
+
+    const socket = net.connect(pipeName);
+    socket.on('connect', () => finish(false));
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      finish(err.code === 'ENOENT' || err.code === 'ECONNREFUSED');
+    });
+  });
+}
+
+/** Issue #546 — raw read of the daemon's boot-progress marker. Absent file (the
+ *  overwhelmingly common case: the daemon is past boot) reads as null. */
+function readBootMarker(wmuxDir: string): string | null {
+  try {
+    return fs.readFileSync(path.join(wmuxDir, 'daemon-booting'), 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureDaemon(): Promise<DaemonInfo> {
   markBoot('daemon-ensure-start');
   const wmuxDir = getWmuxDir();
@@ -902,6 +1035,57 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
                 );
                 return { pid: existingPid, authToken: token, pipeName, spawned: false };
               }
+              // Issue #546 — the escalated re-ping (~1.9 s) is far too short for
+              // a daemon that is cold-recovering a big session set (~19-23 s for
+              // 30-35 sessions, no pipe open the whole time). Before the
+              // DESTRUCTIVE kill, check whether it is provably still booting and
+              // wait it out if so. Gated on the marker existing, so the ordinary
+              // wedged-daemon path below adds ZERO latency.
+              if (parseBootMarker(readBootMarker(wmuxDir), existingPid)) {
+                const outcome = await waitOutRecoveringDaemon({
+                  ping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+                  readMarker: () => readBootMarker(wmuxDir),
+                  expectedPid: existingPid,
+                  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+                  now: () => Date.now(),
+                  ceilingMs: DAEMON_READY_HARD_CEILING_MS,
+                  onWaiting: () => {
+                    console.log(
+                      `[launcher] Daemon (PID ${existingPid}) is still cold-recovering (boot marker present) — waiting up to ` +
+                        `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s instead of killing it (#546)`,
+                    );
+                  },
+                });
+                if (outcome === 'alive') {
+                  console.log(
+                    `[launcher] Daemon (PID ${existingPid}) finished recovery and answered — reusing, no kill`,
+                  );
+                  return { pid: existingPid, authToken: token, pipeName, spawned: false };
+                }
+                if (outcome === 'gone') {
+                  // The marker was dropped: either the daemon just became ready
+                  // (it unlinks the marker immediately after writing its pipe
+                  // file, so a ping can lag it by a hair) or it died. One more
+                  // escalated re-ping tells those apart before we escalate.
+                  const readyNow = await tryEscalatedReping(
+                    (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+                    [500, 1000],
+                    200,
+                    (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+                  );
+                  if (readyNow) {
+                    console.log(
+                      `[launcher] Daemon (PID ${existingPid}) became ready as its boot marker cleared — reusing, no kill`,
+                    );
+                    return { pid: existingPid, authToken: token, pipeName, spawned: false };
+                  }
+                } else {
+                  console.warn(
+                    `[launcher] Daemon (PID ${existingPid}) still claimed to be booting after ` +
+                      `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s — treating as hung (#546)`,
+                  );
+                }
+              }
             }
             // (a) Verified wmux daemon → kill before respawning.
             console.warn(
@@ -945,7 +1129,9 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
   // 3. Clean stale files before spawning — prevents new daemon from seeing
   //    zombie lock/pipe state left by a crashed predecessor.
   console.log('[launcher] No running daemon found. Cleaning stale files...');
-  const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe'];
+  // 'daemon-booting' (#546) joins the list: a marker left by a daemon that
+  // crashed mid-recovery must not outlive it into the fresh spawn.
+  const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe', 'daemon-booting'];
   for (const name of staleFiles) {
     try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
   }
