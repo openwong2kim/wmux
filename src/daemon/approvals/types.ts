@@ -100,7 +100,26 @@ export type ApprovalResolveFailure =
   | 'prompt-gone';
 
 export type ApprovalResolveResult =
-  | { ok: true; request: ApprovalRequest }
+  | {
+      ok: true;
+      request: ApprovalRequest;
+      /**
+       * Whether the resolved record reached DISK.
+       *
+       * `ok` and `durable` answer different questions and must not be collapsed.
+       * `ok` means the keystroke was written into the PTY — that already
+       * happened and cannot be undone, which is why a failed disk write does
+       * not fail the call. `durable` false means the record of it did not
+       * survive: the agent got its answer, but a daemon restart reloads the
+       * request as pending, invalidates it, and the decision and who made it
+       * are gone from the history.
+       *
+       * Surfaced rather than only logged so a caller can tell the operator the
+       * answer landed but will not be remembered, instead of the daemon knowing
+       * that privately.
+       */
+      durable: boolean;
+    }
   | {
       ok: false;
       reason: ApprovalResolveFailure;

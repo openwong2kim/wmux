@@ -608,6 +608,35 @@ describe('looksLikeApprovalPrompt', () => {
   });
 });
 
+describe('resolve durability', () => {
+  it('reports durable:true on the normal path', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+    expect(res).toMatchObject({ ok: true, durable: true });
+  });
+
+  it('still resolves, but says so, when the write cannot land', async () => {
+    // A wmuxDir that is a FILE: every write under it fails at mkdir. Chosen over
+    // making the state file a directory, which atomicWriteJSON survives — it
+    // renames the existing target aside before writing.
+    const notADir = path.join(tmpDir, 'blocked');
+    fs.writeFileSync(notADir, 'not a directory', 'utf8');
+    const h = makeRegistry({ wmuxDir: notADir });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    // ok:true is not a lie — the keystroke IS in the terminal, and the caller
+    // must not retry. What failed is the record of it.
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.durable).toBe(false);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+});
+
 describe('resolvedBy sanitation', () => {
   it('strips control characters and bounds the length', () => {
     // Persisted per record, interpolated into a daemon log line, and echoed to

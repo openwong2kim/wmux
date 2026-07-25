@@ -130,7 +130,7 @@ function makeApprovals() {
   const records: ApprovalRequest[] = [];
   const resolveCalls: Array<{ id: string; decision: string; resolvedBy: string }> = [];
   const box: { result: ApprovalResolveResult; listThrows: boolean } = {
-    result: { ok: true, request: mkApproval({ state: 'resolved', decision: 'approve', resolvedBy: 'web' }) },
+    result: { ok: true, durable: true, request: mkApproval({ state: 'resolved', decision: 'approve', resolvedBy: 'web' }) },
     listThrows: false,
   };
   const approvals: ApprovalRegistryApi = {
@@ -1194,7 +1194,9 @@ describe('WebTerminalServer', () => {
 
     const ok = await postApproval(token, 'ap-ro', { decision: 'approve' });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ state: 'resolved' });
+    // `durable` rides along so a client can say the answer landed but will not
+    // be remembered, instead of that staying inside the daemon's log.
+    expect(await ok.json()).toEqual({ state: 'resolved', durable: true });
     // The caller supplied a DECISION, never bytes; the registry picks those.
     // `resolvedBy` names WHO answered — here the operator token, not the
     // surface. It used to be the constant 'web' for every caller alike.

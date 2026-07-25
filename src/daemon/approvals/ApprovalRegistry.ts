@@ -349,9 +349,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       );
       return {
         events: [{ type: 'resolve' as ApprovalEventType, request: copyRequest(record) }],
-        result: { ok: true, request: copyRequest(record) } as ApprovalResolveResult,
+        // `durable` is stamped by the finalize below; the body cannot know it.
+        result: { ok: true, request: copyRequest(record), durable: true } as ApprovalResolveResult,
       };
-    });
+    },
+    // The bytes are in the PTY either way, so a failed write does not fail the
+    // call — it changes what we can honestly claim about it.
+    (result, durable) => (result.ok ? { ...result, durable } : result));
   }
 
   // ── Internals ────────────────────────────────────────────────────────────
@@ -365,17 +369,25 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     body: () => ApprovalEvent[] | { events?: ApprovalEvent[]; result: R } | Promise<
       ApprovalEvent[] | { events?: ApprovalEvent[]; result: R }
     >,
+    /**
+     * Last look at the result, once the write outcome is known. The body cannot
+     * know it — the persist happens after the body returns — so a caller that
+     * needs to report durability folds it in here.
+     */
+    finalize?: (result: R, durable: boolean) => R,
   ): Promise<R> {
     const run = this.chain.then(async () => {
       const out = await body();
       const events = Array.isArray(out) ? out : (out.events ?? []);
       const result = Array.isArray(out) ? (undefined as unknown as R) : out.result;
+      // No events means nothing changed, so nothing had to be written.
+      let durable = true;
       if (events.length > 0) {
         this.requests = trimHistory(this.requests);
-        await this.persist();
+        durable = await this.persist();
         for (const event of events) this.emit(event);
       }
-      return result;
+      return finalize ? finalize(result, durable) : result;
     });
     // Keep the chain alive across a rejection (deckDecisionStore does the same):
     // one throwing mutation must not wedge every later one.
@@ -414,12 +426,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 
-  private async persist(): Promise<void> {
+  /** True when the write landed. Callers decide what a false means. */
+  private async persist(): Promise<boolean> {
     const state: ApprovalPersistedState = { version: 1, requests: this.requests };
     const ok = await saveApprovalState(this.deps.wmuxDir, state);
     if (!ok) {
       this.deps.log?.('warn', '[approvals] could not persist approvals.json');
     }
+    return ok;
   }
 
   private emit(event: ApprovalEvent): void {

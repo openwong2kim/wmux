@@ -1220,7 +1220,14 @@ export class WebTerminalServer {
       approvals
         .resolve({ id, decision, resolvedBy: describePrincipal(principal) })
         .then((result) => {
-          if (result.ok) return this.json(res, 200, { state: result.request.state });
+          if (result.ok) {
+            // 200 with `durable:false` rather than an error: the keystroke IS in
+            // the terminal, so the answer landed and the caller must not retry.
+            // What did not land is the record of it — after a restart the
+            // history will not show this decision or who made it. The client
+            // says so instead of the daemon knowing it privately.
+            return this.json(res, 200, { state: result.request.state, durable: result.durable });
+          }
           switch (result.reason) {
             // Someone else got there first — hand back WHO, so the loser's UI
             // can say so instead of showing a bare conflict.
