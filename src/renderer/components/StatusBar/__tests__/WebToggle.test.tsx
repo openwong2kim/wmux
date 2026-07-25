@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   primaryWebUrl,
   splitLinkedLine,
+  webQrPayload,
   webBindLabel,
   WebPopoverBody,
   type WebPopoverBodyProps,
@@ -32,6 +33,7 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     busy: false,
     copied: null,
     deviceName: '',
+    qr: null,
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
     onToggleTailscale: vi.fn(),
@@ -70,6 +72,38 @@ describe('splitLinkedLine', () => {
   it('stops the URL at a comma or paren, which these lines use as punctuation', () => {
     expect(splitLinkedLine('see https://a.b/c) now').url).toBe('https://a.b/c');
     expect(splitLinkedLine('see https://a.b/c, now').url).toBe('https://a.b/c');
+  });
+});
+
+describe('webQrPayload', () => {
+  it('carries the address AND the code, so the phone types nothing', () => {
+    expect(
+      webQrPayload({
+        running: true,
+        urls: ['https://box.tail1234.ts.net/?token=t'],
+        pairCode: 'ABC123',
+      }),
+    ).toBe('https://box.tail1234.ts.net/pair?code=ABC123');
+  });
+
+  it('is empty without a code — a QR that still needs typing is a half-measure', () => {
+    expect(
+      webQrPayload({ running: true, urls: ['https://box.tail1234.ts.net/?token=t'] }),
+    ).toBe('');
+  });
+
+  it('is empty when no address is reachable', () => {
+    expect(webQrPayload({ running: true, urls: [], pairCode: 'ABC123' })).toBe('');
+  });
+
+  it('percent-encodes the code rather than trusting it', () => {
+    expect(
+      webQrPayload({
+        running: true,
+        urls: ['https://box.tail1234.ts.net/?token=t'],
+        pairCode: 'A B&C',
+      }),
+    ).toBe('https://box.tail1234.ts.net/pair?code=A%20B%26C');
   });
 });
 
@@ -180,6 +214,26 @@ describe('WebPopoverBody — on state', () => {
     // A spent code lands back on the name field, which IS the way back: the
     // next device needs a name anyway, and minting from there gives it one.
     expect(html).toContain('web.showPairCode');
+  });
+
+  it('★ the QR replaces the address text, and copy stays reachable', () => {
+    const html = renderBody({
+      info: runningInfo,
+      qr: { d: 'M0 0h1v1h-1z', size: 21 },
+    });
+    expect(html).toContain('<svg');
+    expect(html).toContain('viewBox="0 0 21 21"');
+    // The address as text is redundant once a scan carries it AND the code, and
+    // this popover is a fixed 288px box — so it is replaced, not stacked on.
+    expect(html).not.toContain('/pair</span>');
+    // A phone that will not scan still needs the link.
+    expect(html).toContain('web.copyLink');
+  });
+
+  it('falls back to the address text when there is no QR', () => {
+    const html = renderBody({ info: runningInfo, qr: null });
+    expect(html).not.toContain('<svg');
+    expect(html).toContain('/pair');
   });
 
   it('★ withholds the code until a device has been named', () => {

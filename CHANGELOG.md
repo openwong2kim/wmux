@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Devices are named before they are paired, from the desktop.** Pairing from the app produced a roster of entries all called "Unnamed device", which makes the one thing the roster is for — revoking a single lost phone — impossible six months later. The pairing code is now shown only after you name the device, and the name is asked for on the desktop, where there is a keyboard, rather than on the phone. Existing paired devices are unaffected, and pairing from the CLI already worked this way.
 
+- **Pair a phone by scanning a QR code, with nothing to type.** The popover now shows a QR next to the pairing code, and it carries the address and the code together, so a scan finishes the pairing. The address was always the miserable part on a phone — a raw tailnet hostname gets no autocomplete and no search suggestion — so a QR that only opened the pairing screen and still wanted six characters typed would have removed the easy half. The plaintext code stays on screen for a phone that will not scan. The code is stripped from the phone's address bar the moment it is read, so it does not sit in browser history; it is single-use and expires in ten minutes either way.
+
 ## [3.35.0] — 2026-07-25
 
 ### Security
