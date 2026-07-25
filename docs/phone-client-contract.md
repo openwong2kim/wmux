@@ -288,14 +288,34 @@ If the extension does not run, the lock screen shows a fixed placeholder
 
 ---
 
+### Registering
+
+```
+POST /api/push-registration      (device credential, never the operator token)
+  body: {apnsToken, publicKey}
+  → 200 {ok: true}
+  → 400 {error: 'bad-token' | 'bad-key'}
+  → 403 {error: 'push-is-for-devices'}
+  → 409 {error: 'revoked' | 'not-found' | 'persist-failed'}
+  → 503 {error: 'push-unavailable'}
+```
+
+`apnsToken` is lowercase hex; `publicKey` is base64 of the 32 raw bytes of your
+X25519 public key. Register on every launch — APNs rotates tokens, and a
+registration replaces the previous one wholesale rather than merging, so a
+regenerated key pair never leaves the daemon sealing to a key you no longer
+hold.
+
+A `410` from Apple makes the daemon forget your registration, so a reinstalled
+app must register again before it hears anything.
+
 ## 8. What is not built yet
 
-- **The daemon-side push sender.** Device records exist; nothing composes an
-  envelope and posts it to the relay. This is the next server-side piece.
 - **`session:critical` is notify-only** and is not suitable for a remote approve
   button — see issue #605.
-- **`daemon.web.status` does not return `allowedHosts`**, so `--status` cannot
-  print the tailnet URL.
+- **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
+  `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
+  error, just nothing sent.
 
 ---
 

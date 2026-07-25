@@ -48,6 +48,7 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
@@ -3895,6 +3896,38 @@ async function main(): Promise<void> {
   // recovered session is a new PTY running a new agent process, so a remembered
   // approval would press a key into a program that never asked the question.
   approvalRegistry = createApprovalRegistry(sessionManager);
+
+  // Push. Inert unless a relay is configured, which is the normal state until
+  // the relay is deployed — an unconfigured install must not log a failure per
+  // notification. `WMUX_PUSH=0` turns it off outright.
+  //
+  // Subscribed to the registry rather than called from the hook path: the
+  // bridge runs on a 2s budget inside the agent's process and must never wait
+  // on us, and `notify` is fire-and-forget by construction.
+  const pushSender = new PushSender({
+    ...(process.env.WMUX_PUSH_RELAY_URL ? { relayUrl: process.env.WMUX_PUSH_RELAY_URL } : {}),
+    ...(process.env.WMUX_PUSH_RELAY_SECRET ? { relaySecret: process.env.WMUX_PUSH_RELAY_SECRET } : {}),
+    targets: () => getDeviceStore().pushTargets(),
+    forgetPush: (deviceId) => getDeviceStore().forgetPush(deviceId),
+    log: (level, msg) => log(level, msg),
+  });
+  approvalRegistry.onEvent((event) => {
+    // Only a NEW request is worth a phone buzzing. A resolve or an expire is
+    // the thing the notification was asking for, already handled.
+    if (event.type !== 'create') return;
+    const r = event.request;
+    pushSender.notify(
+      {
+        title: 'Approval needed',
+        body: r.question ?? 'A pane is waiting on an answer.',
+        approvalId: r.id,
+        sessionId: r.sessionId,
+      },
+      // One pending request per pane, so a re-prompt should replace the old
+      // banner rather than stack under it.
+      { collapseId: `ap-${r.sessionId}`.slice(0, 64) },
+    );
+  });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
