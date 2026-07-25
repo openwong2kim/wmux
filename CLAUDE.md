@@ -137,12 +137,14 @@ wording or symbol renames.
   "open a PR" and the like always refer to `skflowne/fmux` unless the owner
   explicitly says upstream. Never open an issue or PR against
   `openwong2kim/wmux` — access there is read-only tracking.
-  `gh` resolves a bare command against `origin`, i.e. upstream, and the
-  numbering collides silently: `gh pr view 14` returns upstream wmux's PR 14,
-  a different and unrelated change. So **pass `--repo skflowne/fmux`
-  explicitly** to `gh issue`, `gh pr`, and `gh api`. Per-clone (like `tagOpt`,
-  not versioned), `gh repo set-default skflowne/fmux` makes the bare form
-  resolve to the fork; treat it as a safety net, not a substitute for the flag.
+- **Every clone must run `gh repo set-default skflowne/fmux`** — per-clone
+  config like `tagOpt` above, so it cannot be versioned into the repo. Without
+  it `gh` resolves a bare command against `origin`, i.e. upstream, and the
+  numbering collides silently: `gh pr view 14` returns upstream wmux's PR 14, a
+  different and unrelated change, with nothing to signal the wrong repository.
+  With it set, bare `gh` commands are correct and need no `--repo`. Confirm with
+  `gh repo set-default --view`; only in a clone where you have not confirmed it
+  should you pass `--repo skflowne/fmux` explicitly.
 - Forge Mux versioning restarts at **1.0.0**, and the fork's `v*` tag
   namespace belongs to fmux releases only. The inherited wmux tags
   (`v1.0.1`–`v3.31.0`) were purged from the fork remote and the local
