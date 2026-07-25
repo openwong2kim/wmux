@@ -338,6 +338,30 @@ jobs:
           # shellcheck disable=SC2086
           gh release upload "$RELEASE_TAG" $FILES --clobber
 
+      # Publish the darwin side-car manifest the in-app AutoUpdater pins against
+      # (same role as the Windows update-manifest.json, separate file so the two
+      # legs never race or clobber each other). The ZIP referenced here is the
+      # signed+notarized+stapled bundle Squirrel.Mac installs.
+      - name: Write and upload the darwin update manifest
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          ZIP=$(find out/make -type f -name '*darwin-arm64*.zip' | head -n 1)
+          if [ -z "$ZIP" ]; then echo "No darwin-arm64 zip found — skipping manifest"; exit 0; fi
+          FILE=$(basename "$ZIP")
+          SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
+          MANIFEST="$RUNNER_TEMP/update-manifest-darwin-arm64.json"
+          printf '{"version":"%s","file":"%s","sha256":"%s","url":"https://github.com/openwong2kim/wmux/releases/download/%s/%s"}' \
+            "$VERSION" "$FILE" "$SHA" "$RELEASE_TAG" "$FILE" > "$MANIFEST"
+          cat "$MANIFEST"
+          gh release upload "$RELEASE_TAG" "$MANIFEST" --clobber
+
       - name: Clean up temporary keychain
         if: always() && env.APPLE_CERT_P12_BASE64 != ''
         shell: bash

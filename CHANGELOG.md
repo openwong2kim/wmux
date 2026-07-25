@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-app auto-update now works on macOS (Apple Silicon) (#609).** Settings → "Check for updates" did nothing on a Mac: the whole updater was gated to Windows, so the only way to move to a new version was to notice a release, download the DMG, and drag it over the old app. macOS (arm64) now follows the same flow Windows has: wmux polls for a newer release, downloads it, pins its SHA-256 against a manifest published by the release pipeline, and installs it on restart — sessions survive, because the daemon keeps running through the swap. Nothing is installed unless the download's hash matches the manifest exactly; on any mismatch or transport error the update is refused outright and the failure is shown rather than silently retried. A build that isn't code-signed (a locally-made one) can't self-update at all, and now says so with a link to the DMG instead of failing silently. Windows behavior, its release assets, and its manifest are all untouched; Linux and Intel Macs still have no in-app updater and are unaffected.
+
+### Fixed
+
+- **"Check for updates" no longer spins forever on a platform without an in-app updater (#609).** On Linux (and, before this release, on macOS) pressing the button left the Settings row stuck on "Checking for updates…" indefinitely, because the answer came back as a direct reply the panel wasn't reading. It now settles on "Up to date" like it always should have.
+
 ## [3.34.0] — 2026-07-25
 
 ### Added
