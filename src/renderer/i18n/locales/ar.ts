@@ -80,6 +80,7 @@ export const ar = {
   'terminal.copied': 'تم النسخ!',
   'terminal.copyFailed': 'فشل النسخ — تم الاحتفاظ بالتحديد',
   'terminal.bookmarkAdded': 'تمت إضافة الإشارة المرجعية',
+  'terminal.scrollJogTooltip': 'اسحب للتمرير — كلما ابتعدت عن المنتصف زادت السرعة',
 
   // Context menu
   'contextMenu.copy': 'نسخ',

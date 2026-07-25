@@ -80,6 +80,7 @@ export const de = {
   'terminal.copied': 'Kopiert!',
   'terminal.copyFailed': 'Kopieren fehlgeschlagen — Auswahl bleibt',
   'terminal.bookmarkAdded': 'Lesezeichen hinzugefügt',
+  'terminal.scrollJogTooltip': 'Zum Scrollen ziehen — weiter von der Mitte scrollt schneller',
 
   // Context menu
   'contextMenu.copy': 'Kopieren',

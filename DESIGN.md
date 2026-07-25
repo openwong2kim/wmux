@@ -171,6 +171,14 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 - Toolbar buttons are text-first, boxless until hover; hover shows a soft
   raised chip (not a color change alone). AI-directed actions (fan-out,
   broadcast) stay neutral at rest.
+- **Terminal panes carry a scroll affordance at their right edge, and which one
+  is state-dependent** (`src/renderer/terminal/scrollAffordance.ts`): the 6px
+  Monaco scrollbar while xterm owns a real scroll range, and a **jog control**
+  (`altScrollJog.ts`) on the alternate buffer, where a full-screen program owns
+  scrolling and no protocol reports its position. The jog is a ribbed 10px grip
+  on a short centred rail — deliberately not slider-shaped, since it claims a
+  rate, not a position. Neutral at rest, `--accent-blue` on hover/drag
+  (interactive, never a fill). Panes with nothing to scroll show neither.
 - No emoji glyphs in chrome; use monochrome glyphs/icons only.
 - Status dot vocabulary: amber = running · green = ok/idle-complete · gray =
   idle · red = needs input (with wash).

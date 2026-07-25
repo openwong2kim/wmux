@@ -26,6 +26,8 @@ import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
+import { bindScrollAffordance } from '../terminal/scrollAffordance';
+import { attachAltScrollJog } from '../terminal/altScrollJog';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1136,6 +1138,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // terminal.textarea exists once open() has run (above).
     terminal.textarea?.addEventListener('focus', onTextareaFocus);
 
+    // fmux#13 — pick the scroll affordance from live buffer state: the Monaco
+    // scrollbar when xterm owns a real scroll range, the jog control when a
+    // full-screen TUI owns scrolling instead. terminal.element exists once
+    // open() has run, and xterm gives it `position: relative` so the jog rail
+    // can anchor to it.
+    const altScrollJog = terminal.element
+      ? attachAltScrollJog(terminal, terminal.element)
+      : null;
+    const scrollAffordance = bindScrollAffordance(terminal, (mode) => {
+      altScrollJog?.setEnabled(mode === 'jog');
+    });
+
     // Only fit immediately if the container is actually visible (non-zero size).
     // If the workspace starts hidden (display:none), skip the initial fit so we
     // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
@@ -1976,6 +1990,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
             if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
+            // The jog rail is sized in pixels from the pane height, which a
+            // resize always changes — and re-measuring it shares none of
+            // fit()'s hazards, so it must happen above the selection guard.
+            // Below it, resizing a pane with a live selection would leave the
+            // rail at its old height until some later, unguarded resize.
+            altScrollJog?.refresh();
+
             // Selection-preservation guard: xterm's SelectionService clears
             // the active selection on any rowsChanged event from fit().
             // While the user is dragging out a selection (or while a
@@ -2022,6 +2043,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
+      scrollAffordance.dispose();
+      altScrollJog?.dispose();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
       deadInputWatchdog.dispose();

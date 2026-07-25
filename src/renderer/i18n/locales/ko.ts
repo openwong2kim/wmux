@@ -190,6 +190,7 @@ export const ko = {
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.bookmarkAdded': '북마크 추가됨',
+  'terminal.scrollJogTooltip': '드래그해서 스크롤 — 가운데에서 멀수록 빠르게 스크롤됩니다',
   'terminal.imeInputRecovered': '한글 입력기에 키 입력이 갇혀 있어 자동으로 복구했습니다',
 
   // Context menu

@@ -80,6 +80,7 @@ export const vi = {
   'terminal.copied': 'Đã sao chép!',
   'terminal.copyFailed': 'Sao chép thất bại — giữ vùng chọn',
   'terminal.bookmarkAdded': 'Đã thêm dấu trang',
+  'terminal.scrollJogTooltip': 'Kéo để cuộn — càng xa tâm càng cuộn nhanh',
 
   // Context menu
   'contextMenu.copy': 'Sao chép',

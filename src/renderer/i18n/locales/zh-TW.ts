@@ -80,6 +80,7 @@ export const zhTW = {
   'terminal.copied': '已複製!',
   'terminal.copyFailed': '複製失敗 — 保留選取範圍',
   'terminal.bookmarkAdded': '已新增書籤',
+  'terminal.scrollJogTooltip': '拖曳以捲動 — 距中心越遠捲動越快',
 
   // Context menu
   'contextMenu.copy': '複製',

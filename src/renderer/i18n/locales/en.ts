@@ -249,6 +249,7 @@ export const en = {
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
   'terminal.openPathFailed': "Couldn't open — showing folder",
   'terminal.bookmarkAdded': 'Bookmark added',
+  'terminal.scrollJogTooltip': 'Drag to scroll — further from centre scrolls faster',
   'terminal.imeInputRecovered': 'Keyboard input was stuck in the IME and has been recovered automatically',
 
   // Context menu

@@ -80,6 +80,7 @@ export const ptBR = {
   'terminal.copied': 'Copiado!',
   'terminal.copyFailed': 'Falha ao copiar — seleção mantida',
   'terminal.bookmarkAdded': 'Marcador adicionado',
+  'terminal.scrollJogTooltip': 'Arraste para rolar — quanto mais longe do centro, mais rápido',
 
   // Context menu
   'contextMenu.copy': 'Copiar',

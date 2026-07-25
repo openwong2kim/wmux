@@ -80,6 +80,7 @@ export const id = {
   'terminal.copied': 'Tersalin!',
   'terminal.copyFailed': 'Gagal menyalin — pilihan dipertahankan',
   'terminal.bookmarkAdded': 'Markah ditambahkan',
+  'terminal.scrollJogTooltip': 'Seret untuk menggulir — makin jauh dari tengah makin cepat',
 
   // Context menu
   'contextMenu.copy': 'Salin',

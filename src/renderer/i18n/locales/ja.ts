@@ -82,6 +82,7 @@ export const ja = {
   'terminal.openPathBlocked': '実行ファイルをブロック — 親フォルダを開きました',
   'terminal.openPathFailed': '開けません — フォルダを表示',
   'terminal.bookmarkAdded': 'ブックマークを追加',
+  'terminal.scrollJogTooltip': 'ドラッグしてスクロール — 中心から離れるほど速くスクロールします',
 
   // Context menu
   'contextMenu.copy': 'コピー',

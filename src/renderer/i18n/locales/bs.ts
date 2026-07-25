@@ -80,6 +80,7 @@ export const bs = {
   'terminal.copied': 'Kopirano!',
   'terminal.copyFailed': 'Kopiranje neuspjelo — selekcija sačuvana',
   'terminal.bookmarkAdded': 'Knjiška oznaka dodana',
+  'terminal.scrollJogTooltip': 'Povucite za pomicanje — dalje od sredine pomiče brže',
 
   // Context menu
   'contextMenu.copy': 'Kopiraj',

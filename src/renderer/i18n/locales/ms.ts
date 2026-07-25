@@ -80,6 +80,7 @@ export const ms = {
   'terminal.copied': 'Disalin!',
   'terminal.copyFailed': 'Gagal menyalin — pilihan dikekalkan',
   'terminal.bookmarkAdded': 'Penanda buku ditambah',
+  'terminal.scrollJogTooltip': 'Seret untuk menatal — makin jauh dari tengah makin laju',
 
   // Context menu
   'contextMenu.copy': 'Salin',

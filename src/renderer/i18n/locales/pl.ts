@@ -80,6 +80,7 @@ export const pl = {
   'terminal.copied': 'Skopiowano!',
   'terminal.copyFailed': 'Kopiowanie nie powiodło się — zaznaczenie zachowane',
   'terminal.bookmarkAdded': 'Dodano zakładkę',
+  'terminal.scrollJogTooltip': 'Przeciągnij, aby przewijać — dalej od środka przewija szybciej',
 
   // Context menu
   'contextMenu.copy': 'Kopiuj',
