@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`wmux web --expose` now says out loud that the connection is unencrypted (#607, partial).** The old warning told you the access token was "the only thing gating it" and to treat the URL as a secret — true, but it skipped the sharper point: over plain HTTP on all interfaces, anyone who can sniff the network (open Wi‑Fi, ARP spoofing, a compromised switch) can read the token *and* the full scrollback off the wire, no URL required. The exposed-bind report now states exactly that and points at `tailscale serve` for an HTTPS front. Wording only — native TLS stays tracked in #607.
+
 ## [3.34.0] — 2026-07-25
 
 ### Added
