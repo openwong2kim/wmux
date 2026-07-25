@@ -1112,8 +1112,13 @@ export class WebTerminalServer {
       return this.json(res, 500, { error: 'approvals unavailable' });
     }
     // Both halves keep the registry's own names and order (recentlyResolved is
-    // newest-first and already bounded there), so the HTTP shape and the
-    // `daemon.approvals.list` RPC shape are the same thing spelled once.
+    // newest-first and already bounded there), so the two shapes agree today.
+    // They are NOT one serializer: this goes through `approvalWire`, a
+    // field-by-field allowlist, while `daemon.approvals.list` returns the
+    // registry's records unfiltered. That is fine while the pipe stays
+    // daemon-internal, but it means adding a field to ApprovalRequest puts it
+    // on the pipe and not here — deliberately, since the allowlist exists so
+    // registry internals cannot reach the network by default.
     return this.json(res, 200, {
       pending: listed.pending.map(approvalWire),
       recentlyResolved: listed.recentlyResolved.map(approvalWire),

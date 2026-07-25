@@ -91,9 +91,18 @@ const CURSOR_OPTION_ROW =
  * refusing a real prompt costs the operator a walk to the desktop, while
  * pressing into a prompt that has already gone costs a stray digit in an agent's
  * composer — or, if the pane moved on to something else entirely, a keystroke
- * delivered to a program nobody meant to talk to. So the check demands positive
- * evidence of the exact thing the keystroke acts on (a highlighted numbered
- * option) rather than merely "the screen looks busy".
+ * delivered to a program nobody meant to talk to. So the check demands an
+ * option row rather than merely "the screen looks busy".
+ *
+ * Be precise about what that buys, because the bias is not symmetric in both
+ * directions: this answers "is something option-row-shaped on screen", NOT "is
+ * the prompt on screen". A quoted markdown list, a diff hunk, or another CLI's
+ * own help output satisfies it — the acceptance harness proved that by passing
+ * a bare `echo`. Containment comes from upstream, not from here: a request only
+ * exists because a hook fired for that pane, and the request expires when the
+ * pane finishes or dies. Tightening the pattern would trade that bounded false
+ * positive for false negatives that make approving unusable, and the real
+ * cursor glyph only passes at the current width.
  *
  * What this REJECTS on purpose:
  *   - a bare numbered list with no cursor. Agents print numbered lists

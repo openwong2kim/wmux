@@ -122,6 +122,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // brand-new agent process. Pressing a remembered approval into it would
     // deliver a keystroke to a program that never asked the question. So the
     // recovery rule is unconditional — expire them all, keep them as history.
+    //
+    // Keep it unconditional. A "the PTY survived, keep the pending" optimisation
+    // would look harmless and would quietly remove the guarantee two other things
+    // lean on: that a create lost to a crash before its write landed is harmless
+    // (the survivor set is emptied anyway), and that no remembered keystroke can
+    // ever reach a process that did not ask the question.
     const loaded = loadApprovalState(deps.wmuxDir);
     let invalidated = 0;
     this.requests = trimHistory(
