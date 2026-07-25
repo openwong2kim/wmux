@@ -444,8 +444,16 @@ select option {
    that the `::-webkit-scrollbar` rules above target. Net effect: the terminal had
    NO visible scrollbar while every other panel showed a persistent one (scrollback
    itself worked fine). Force the scrollbar always-visible and paint the slider to
-   match the theme so it's consistent with the rest of the UI. */
-.xterm .xterm-scrollable-element > .scrollbar {
+   match the theme so it's consistent with the rest of the UI.
+
+   fmux#13: these overrides are gated on `.fmux-scroll-native`, set by
+   scrollAffordance.ts only while xterm owns a real scroll range. Monaco uses the
+   same `invisible` class for "hidden because idle" and "hidden because there is
+   nothing to scroll", so an ungated override also pinned the dead full-track
+   slider on screen for every alternate-buffer pane (any full-screen TUI). Panes
+   with no xterm scroll range now fall back to Monaco's own hidden state and get
+   the jog control below instead. */
+.xterm.fmux-scroll-native .xterm-scrollable-element > .scrollbar {
   /* Monaco sets an INLINE `visibility: hidden` on the scrollbar when idle (the
      real auto-hide mechanism — opacity alone was a red herring). Force it. */
   visibility: visible !important;
@@ -455,19 +463,70 @@ select option {
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   width: 6px !important;
 }
-.xterm .xterm-scrollable-element > .scrollbar.invisible {
+.xterm.fmux-scroll-native .xterm-scrollable-element > .scrollbar.invisible {
   opacity: 1 !important;
   pointer-events: auto !important;
 }
-.xterm .xterm-scrollable-element > .scrollbar > .slider {
+.xterm.fmux-scroll-native .xterm-scrollable-element > .scrollbar > .slider {
   /* Same colour as the rest of the UI's scrollbar (the ::-webkit-scrollbar above).
      The real bug was the inline visibility:hidden, NOT the colour. */
   visibility: visible !important;
   background: var(--bg-surface) !important;
   border-radius: 3px;
 }
-.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {
+.xterm.fmux-scroll-native .xterm-scrollable-element > .scrollbar > .slider:hover {
   background: var(--bg-overlay) !important;
+}
+
+/* fmux#13 — alternate-buffer jog control (altScrollJog.ts). Deliberately NOT
+   shaped like a scrollbar: nothing here can know the hosted app's content
+   height or scroll offset, so the control claims no position. It rests at the
+   centre of its rail, displacement sets scroll rate, release springs back.
+   Neutral at rest; steel-blue on interaction per the DESIGN.md two-accent
+   grammar (navigation, never a fill). */
+.fmux-jog-rail {
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+  z-index: 9;
+  cursor: grab;
+}
+.fmux-jog-grip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 22px;
+  margin-left: -5px;
+  margin-top: -11px;
+  border-radius: 5px;
+  background: var(--bg-overlay);
+  cursor: grab;
+  touch-action: none;
+  transition: background 120ms ease;
+  /* Three grip ribs — reads as "drag me", not "you are here". */
+  background-image: linear-gradient(
+    to bottom,
+    transparent 5px,
+    var(--text-muted) 5px, var(--text-muted) 6px,
+    transparent 6px, transparent 10px,
+    var(--text-muted) 10px, var(--text-muted) 11px,
+    transparent 11px, transparent 15px,
+    var(--text-muted) 15px, var(--text-muted) 16px,
+    transparent 16px
+  );
+}
+.fmux-jog-grip:hover {
+  background-color: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-overlay));
+}
+.fmux-jog-grip.is-dragging {
+  background-color: color-mix(in srgb, var(--accent-blue) 34%, var(--bg-overlay));
+  cursor: grabbing;
+  transition: none;
 }
 
 /* Notification ring pulse on inactive panes with unread notifications.
