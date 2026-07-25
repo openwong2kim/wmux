@@ -33,6 +33,20 @@ points per screen, no washes), typography, and aesthetic direction are
 defined there. Do not deviate without explicit user approval.
 In QA/design-review mode, flag any code that doesn't match DESIGN.md.
 
+## Debugging the running app
+
+Renderer bugs that depend on real layout or real terminal state cannot be
+reproduced in vitest/jsdom — xterm sizes its scrollbar from live render
+dimensions and buffer line counts, so a unit test can only assert the logic you
+already believe. Read the running app instead: every launch opens a CDP port
+(random, 18800-18899), and `docs/internal/debugging-live-renderer.md` covers
+finding the instance, evaluating in the renderer, reaching the xterm `Terminal`
+instances through the React fiber, and the traps (alternate-buffer writes,
+hidden zero-height panes, Monaco pointer capture).
+
+Confirm a root cause against live state before changing code whenever the
+symptom is layout- or terminal-state dependent.
+
 ## Versioning & release (owner decision, 2026-07-05)
 
 - **PRs never bump the version.** `package.json` stays at the last released
