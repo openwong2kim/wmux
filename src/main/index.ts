@@ -1563,6 +1563,21 @@ app.on('window-all-closed', () => {
   // Actual quit is triggered from the tray "Quit" menu item.
 });
 
+// Squirrel.Mac's quitAndInstall() emits 'before-quit-for-update' and then
+// closes every window BEFORE any 'before-quit' fires — with isQuitting still
+// false, the hide-to-tray close intercept above would cancel that close and
+// stall the update restart forever. Flip the flag here so windows close
+// through. The renderer session save already ran in AutoUpdater.performInstall,
+// and the detached daemon keeps every session alive across the relaunch; the
+// broker is stopped explicitly since the full before-quit teardown is skipped
+// on this path.
+// (EventEmitter cast: the event is real but missing from this Electron
+// version's typed app-event union.)
+(app as unknown as NodeJS.EventEmitter).on('before-quit-for-update', () => {
+  isQuitting = true;
+  mcpBrokerSupervisor.stop();
+});
+
 app.on('before-quit', async (e) => {
   if (isQuitting) return; // second pass — let quit proceed
   e.preventDefault();

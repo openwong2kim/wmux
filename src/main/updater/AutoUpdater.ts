@@ -6,6 +6,9 @@
  *
  * Electron 내장 autoUpdater(Squirrel의 .NET HttpWebRequest)는
  * GitHub의 다중 302 redirect + TLS 1.2에서 실패하므로 사용하지 않음.
+ * On macOS the detection + SHA-256 verification still run through net/manifest,
+ * and only the final install hands off to the built-in autoUpdater (Squirrel.Mac)
+ * via a loopback feed serving the already-verified ZIP — see performInstall.
  */
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
@@ -15,25 +18,32 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
 import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
+import { LocalUpdateFeed } from './LocalUpdateFeed';
 
 const REPO = 'openwong2kim/wmux';
-const UPDATE_SERVER = `https://update.electronjs.org/${REPO}/win32/${app.getVersion()}`;
-// CI publishes update-manifest.json (version + setupExe + sha256 + url) as a
-// release asset; the "latest" alias always points at the newest release. The
-// updater pins the Setup.exe SHA-256 against this before installing.
-const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/update-manifest.json`;
+// update.electronjs.org keys releases by platform-arch. Only the two arches we
+// actually publish installers for are ever requested (see isUpdaterSupported).
+const isDarwin = process.platform === 'darwin';
+const UPDATE_PLATFORM = isDarwin ? 'darwin-arm64' : 'win32';
+const UPDATE_SERVER = `https://update.electronjs.org/${REPO}/${UPDATE_PLATFORM}/${app.getVersion()}`;
+// CI publishes a per-platform manifest (version + setupExe|file + sha256 + url)
+// as a release asset; the "latest" alias always points at the newest release.
+// The updater pins the artifact's SHA-256 against this before installing.
+const MANIFEST_FILE = isDarwin ? 'update-manifest-darwin-arm64.json' : 'update-manifest.json';
+const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/${MANIFEST_FILE}`;
 
 // 업데이트 자동 확인 간격 (30분)
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
-// In-app auto-update is Windows-only today. The update-server URL (line above),
-// the temp installer filename, and the launch verb in this class are all
-// Squirrel.Windows-shaped: macOS gains a signed-ZIP self-update path in a later
-// phase, and Linux updates via the system package manager (no in-app updater).
-// Gate every network/install action on this constant so a macOS/Linux client can
-// NEVER fetch a manifest, download, or launch a Windows `.Setup.exe` — not even
-// once all three OSes share a single GitHub release's assets.
-const isUpdaterSupported = process.platform === 'win32';
+// In-app auto-update runs on Windows (Squirrel.Windows `.Setup.exe`) and on
+// Apple Silicon macOS (Squirrel.Mac, signed+notarized ZIP). Everything else —
+// Intel macOS (no build is produced) and Linux (users update via their package
+// manager) — has no in-app updater. Gate every network/install action on this
+// constant so an unsupported client can NEVER fetch a manifest, download, or
+// launch an installer meant for another platform, even though all OSes share a
+// single GitHub release's assets.
+const isUpdaterSupported =
+  process.platform === 'win32' || (isDarwin && process.arch === 'arm64');
 
 interface UpdateInfo {
   name: string;
@@ -108,8 +118,8 @@ export class AutoUpdater {
    *   polls pass false, so they only ever download and surface the button.
    */
   private async check(oneShot = false): Promise<void> {
-    // Defense in depth: never poll the win32-only update feed off Windows, even
-    // if a caller invokes check() directly.
+    // Defense in depth: never poll the update feed on an unsupported platform,
+    // even if a caller invokes check() directly.
     if (!isUpdaterSupported) return;
     if (!this.enabled) return;
     // Record the one-shot intent BEFORE the isChecking guard: if a background
@@ -125,7 +135,12 @@ export class AutoUpdater {
       if (update) {
         const isNewVersion = this.pendingUpdate?.name !== update.name;
         this.pendingUpdate = update;
-        if (isNewVersion) this.downloadedPath = null; // a newer update supersedes any prior download
+        if (isNewVersion && this.downloadedPath) {
+          // A newer update supersedes any prior download — drop the stale
+          // artifact from disk too, or every release leaves one behind in temp.
+          void unlink(this.downloadedPath).catch(() => { /* best-effort cleanup */ });
+          this.downloadedPath = null;
+        }
         this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
           status: 'available',
           releaseName: update.name,
@@ -182,6 +197,18 @@ export class AutoUpdater {
       tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
         this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
       });
+      if (this.pendingUpdate?.name !== pending.name) {
+        // A newer release superseded this download mid-flight (check() replaced
+        // pendingUpdate). Committing it would let a one-shot install restart the
+        // app into the OLD version — discard and fetch the current one instead.
+        console.log(`[AutoUpdater] download of ${pending.name} superseded by ${this.pendingUpdate?.name ?? 'none'} — discarding`);
+        await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
+        tempPath = null;
+        // Re-dispatch AFTER the finally below clears isDownloading — calling
+        // synchronously here would let finally clobber the new run's guard.
+        queueMicrotask(() => void this.downloadUpdate());
+        return;
+      }
       this.downloadedPath = tempPath;
       console.log('[AutoUpdater] Update downloaded + verified (sha256 match) — ready to install');
       this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
@@ -285,13 +312,22 @@ export class AutoUpdater {
         reject(new Error(`download url not allowed: ${manifest.url}`));
         return;
       }
-      const dest = join(app.getPath('temp'), `wmux-update-${manifest.version}-${process.pid}.Setup.exe`);
+      // Keep the manifest's artifact name (sanitized) so the temp file carries
+      // the right extension on every platform (.Setup.exe on Windows, .zip on
+      // macOS) instead of a hardcoded Windows one.
+      const safeName = manifest.fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+      const dest = join(app.getPath('temp'), `wmux-update-${manifest.version}-${process.pid}-${safeName}`);
       const hash = createHash('sha256');
       const out = createWriteStream(dest);
       let settled = false;
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
+        // The caller only learns the temp path on resolve, so a failed or
+        // sha-mismatched partial download must be removed HERE or it stays on
+        // disk forever (and a tampered artifact would linger in temp). Wait for
+        // 'close' — unlinking while the handle is still open fails on Windows.
+        out.once('close', () => { void unlink(dest).catch(() => { /* best-effort */ }); });
         out.destroy();
         reject(err);
       };
@@ -364,14 +400,16 @@ export class AutoUpdater {
   }
 
   /**
-   * Launch the LOCAL, already-verified installer and quit so Squirrel installs
-   * against a dead instance. Shared by the explicit "Restart to install" button
-   * (UPDATE_INSTALL) and the one-shot user-triggered check.
+   * Install the LOCAL, already-verified artifact. On Windows: launch the
+   * Setup.exe and quit so Squirrel installs against a dead instance. On macOS:
+   * hand the verified ZIP to Squirrel.Mac through a loopback feed and let it
+   * swap the bundle atomically on quit. Shared by the explicit "Restart to
+   * install" button (UPDATE_INSTALL) and the one-shot user-triggered check.
    */
   private async performInstall(): Promise<void> {
     if (!isUpdaterSupported) {
-      // No in-app installer on this platform — never download/launch a
-      // Windows .Setup.exe on macOS/Linux. The win32 install path below is
+      // No in-app installer on this platform — never download/launch an
+      // installer built for another OS. The install paths below are
       // unreachable here.
       console.log(`[AutoUpdater] install ignored on ${process.platform} — no in-app installer for this platform.`);
       return;
@@ -402,6 +440,11 @@ export class AutoUpdater {
       }
     }
 
+    if (isDarwin) {
+      await this.installDarwin(tempPath);
+      return;
+    }
+
     // Download + SHA-256 verify happened during detection (downloadUpdate); we
     // never launch an unverified artifact.
     const openErr = await shell.openPath(tempPath);
@@ -421,6 +464,64 @@ export class AutoUpdater {
     // the install completes.
     console.log('[AutoUpdater] Installer launched — quitting so Squirrel can install (sessions persist in the daemon)');
     app.quit();
+  }
+
+  /**
+   * macOS install: Squirrel.Mac refuses `file://` feeds, so serve the verified
+   * ZIP from 127.0.0.1 under a random token path and point the built-in
+   * autoUpdater at it. Squirrel stages the new bundle and swaps it atomically
+   * during quitAndInstall; the daemon is detached, so sessions survive the
+   * relaunch exactly like on Windows.
+   *
+   * Fail-closed: any Squirrel error (most commonly "code signature" on a local
+   * unsigned build) tears the feed down, clears the install guard, and surfaces
+   * UPDATE_ERROR instead of leaving the UI stuck mid-install.
+   */
+  private async installDarwin(zipPath: string): Promise<void> {
+    const feed = new LocalUpdateFeed();
+    const cleanup = () => { void feed.stop(); };
+    const failInstall = (message: string) => {
+      cleanup();
+      this.isInstalling = false; // let the user retry
+      console.error('[AutoUpdater] macOS install failed (fail-closed):', message);
+      this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message });
+    };
+
+    try {
+      const { feedUrl } = await feed.start(zipPath);
+      autoUpdater.removeAllListeners('update-downloaded');
+      autoUpdater.removeAllListeners('error');
+      autoUpdater.on('update-downloaded', () => {
+        console.log('[AutoUpdater] Squirrel.Mac staged the verified update — restarting to install (sessions persist in the daemon)');
+        cleanup();
+        // Squirrel has its own staged copy now — drop our temp ZIP so it does
+        // not survive the relaunch and pile up release after release.
+        void unlink(zipPath).catch(() => { /* best-effort cleanup */ });
+        this.downloadedPath = null;
+        autoUpdater.quitAndInstall();
+      });
+      autoUpdater.on('error', (err: Error) => {
+        failInstall(this.describeDarwinInstallError(err));
+      });
+      autoUpdater.setFeedURL({ url: feedUrl, serverType: 'json' });
+      autoUpdater.checkForUpdates();
+    } catch (err) {
+      // setFeedURL throws synchronously on an unsigned/ad-hoc-signed build.
+      failInstall(this.describeDarwinInstallError(err));
+    }
+  }
+
+  /**
+   * Squirrel.Mac hard-requires a Developer ID signature; a locally-made
+   * unsigned build can never self-update. Say so instead of leaking a raw
+   * "Could not get code signature" string the user cannot act on.
+   */
+  private describeDarwinInstallError(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    if (/code sign/i.test(raw)) {
+      return `This build is not code-signed, so it cannot update itself. Download the latest DMG from https://github.com/${REPO}/releases and install it manually. (${raw})`;
+    }
+    return `Update could not be installed: ${raw}`;
   }
 
   private sendToRenderer(channel: string, data: Record<string, unknown>): void {
