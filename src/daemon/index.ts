@@ -48,6 +48,8 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
@@ -64,6 +66,55 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+
+// M2 — approval registry. Module-scoped for the same reason as the two above:
+// the hook ingest creates requests, the daemon.approvals.* RPCs read and
+// resolve them, and the web server (started either by registerRpcHandlers or by
+// the boot restore) subscribes to its events — three call sites in three
+// functions, one registry. Constructed in main() BEFORE any of them, because
+// both webTerminalServer construction paths need it available.
+let approvalRegistry: ApprovalRegistry | null = null;
+
+/**
+ * Build the registry. Split out of main() only so the two dependencies that
+ * need a live sessionManager can be closures over it.
+ *
+ * `readScreenTail` runs the SAME headless-terminal parse `daemon.readSessionText`
+ * uses, with `scrollback: 0` so it returns the VISIBLE grid and nothing else.
+ * The raw ring is PTY bytes and a TUI redraws in place, so ANSI-stripping the
+ * ring would describe a screen that never existed — the parse is the only
+ * honest answer to "what is on screen right now", and this is the check that
+ * stands between a phone tap and a keystroke in someone's terminal. It is
+ * human-frequency (one per approval) and shares the concurrency-1 snapshot
+ * queue, so the cost is bounded; a parse that fails or times out returns null,
+ * which the registry treats as no evidence and refuses.
+ */
+function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
+  return new ApprovalRegistry({
+    wmuxDir,
+    readScreenTail: async (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      const outcome = await generateTextSnapshot({
+        // Same dims backstop as daemon.readSessionText: a recovered session may
+        // not have real dims yet, and a 0-wide headless terminal fails soft.
+        cols: managed.meta.cols ?? 80,
+        rows: managed.meta.rows ?? 24,
+        scrollback: 0,
+        initial: managed.ringBuffer.readAll(),
+      });
+      if (!outcome.ok) return null;
+      return outcome.rows.map((r) => r.text);
+    },
+    writeToSession: (sessionId, data) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return false;
+      managed.ptyProcess.write(data);
+      return true;
+    },
+    log: (level, message) => log(level, message),
+  });
+}
 
 /**
  * In-flight boot restore (#596). Every operator-driven web RPC waits on it, so
@@ -117,6 +168,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         sessionManager,
         assetsDir: resolveWebAssetsDir(),
         log: (level, msg) => log(level, msg),
+        // M2 — /api/approvals answers 503 without this. Safe at both
+        // construction sites: main() builds the registry before it registers
+        // RPC handlers and before it kicks off this restore.
+        ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
       });
     }
     const info = await webTerminalServer.start({
@@ -1766,6 +1821,9 @@ function registerRpcHandlers(
       sessionManager,
       assetsDir: resolveWebAssetsDir(),
       log: (level, msg) => log(level, msg),
+      // M2 — see the restore path: the approval routes need the registry, and
+      // it exists by the time either site runs.
+      ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
     });
   }
   const webServer = webTerminalServer;
@@ -1938,6 +1996,10 @@ function registerRpcHandlers(
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),
+      // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
+      // approval request. Wired here, on the daemon-internal path, because this
+      // is where provenance and the dedup decision are both already known.
+      ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
     });
   }
   const ingest = hookIngest;
@@ -1947,6 +2009,39 @@ function registerRpcHandlers(
   // the card has to poll the daemon instead. Read-only and non-destructive; see
   // HookIngest.health for the two time bases in the payload.
   pipeServer.onRpc('daemon.hooks.health', async () => ingest.health());
+
+  // M2 — daemon.approvals.*. Same class of token-only string method as
+  // daemon.web.* / daemon.hooks.*: deliberately NOT in the RpcMethod union or
+  // methodCapabilityMap, so they add no gen-api-reference surface. These are the
+  // seam the desktop/deck UI will use later; M2 ships only the daemon + web
+  // halves.
+  //
+  // The registry is optional at this point only for defensive reasons (main()
+  // constructs it before we run). With no registry the honest answers are an
+  // empty list and a 'not-found' resolve — never a thrown RPC, because both
+  // callers have to turn this into a status code.
+  pipeServer.onRpc('daemon.approvals.list', async () =>
+    approvalRegistry?.list() ?? { pending: [], recentlyResolved: [] });
+
+  pipeServer.onRpc('daemon.approvals.resolve', async (params) => {
+    const p = params as unknown as {
+      id?: unknown;
+      decision?: unknown;
+      resolvedBy?: unknown;
+    };
+    const id = typeof p.id === 'string' ? p.id : '';
+    // Anything that is not exactly one of the two decisions is refused rather
+    // than defaulted: guessing between "approve" and "deny" on a pipe client's
+    // typo is not a recoverable mistake.
+    const decision: ApprovalDecision | null =
+      p.decision === 'approve' || p.decision === 'deny' ? p.decision : null;
+    if (!id || !decision) {
+      return { ok: false, reason: 'not-found' };
+    }
+    const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
+    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
+    return approvalRegistry.resolve({ id, decision, resolvedBy });
+  });
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
   // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
@@ -3700,6 +3795,14 @@ async function main(): Promise<void> {
   sessionManager.setInvoluntaryExitClassifier((exitCode) =>
     isShutdownKillExit(exitCode, { platform: process.platform, shuttingDown }),
   );
+  // M2 — approvals. Constructed HERE, before recoverSessions and before either
+  // path that can build the web server, for two reasons: every consumer reads
+  // the module-scoped handle rather than taking it as a parameter, and the
+  // constructor's load INVALIDATES every pending request that survived to disk.
+  // That invalidation has to happen before recovery re-spawns the panes — a
+  // recovered session is a new PTY running a new agent process, so a remembered
+  // approval would press a key into a program that never asked the question.
+  approvalRegistry = createApprovalRegistry(sessionManager);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event

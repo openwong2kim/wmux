@@ -52,6 +52,8 @@ import { ENV_KEYS } from '../../shared/constants';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
+import type { ApprovalHookSink } from '../approvals/types';
+import { extractAskUserQuestion } from '../approvals/askUserQuestion';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -151,6 +153,16 @@ export interface HookIngestDeps {
   now?: () => number;
   /** Dedup-window override, for tests. */
   dedupWindowMs?: number;
+  /**
+   * M2 — the approval registry, driven from the daemon-INTERNAL emission path
+   * rather than off the wire. This is the point where hook-vs-detector
+   * provenance and the dedup decision are both already known, so gating on
+   * `source:'hook'` + `decision:'emit'` is a local read instead of something a
+   * downstream consumer has to re-derive (and could get wrong).
+   *
+   * Optional: only the daemon supplies it, and no hook behaviour depends on it.
+   */
+  approvals?: ApprovalHookSink;
 }
 
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
@@ -396,8 +408,15 @@ export class HookIngest {
 
     const startedAt = this.now();
     let sessionId: string | null = null;
+    // Hoisted out of the resolve call so the M2 approval path can read the
+    // RESOLVED session's workspace off its env. The envelope's own
+    // `workspaceId` is authenticated but not trusted — the cwd resolution tier
+    // never validates it — and a request tagged with the wrong workspace would
+    // group under the wrong heading on a phone.
+    let sessions: HookIngestSession[] = [];
     try {
-      sessionId = resolveSessionIdForSignal(signal, this.deps.listLiveSessions());
+      sessions = this.deps.listLiveSessions();
+      sessionId = resolveSessionIdForSignal(signal, sessions);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] session resolution failed: ${String(err)}`);
       this.floodMeter.record({ degraded: true, fetchMs: this.now() - startedAt });
@@ -466,6 +485,14 @@ export class HookIngest {
     // under main's 3s leading-edge window), and main derives its labels from
     // `signal.payload` where that logic already lives.
     if (isMetadataKind(signal.kind)) {
+      // M2: a fresh session on this pane means the question the PREVIOUS
+      // session asked will never be answered — the same reasoning that makes
+      // session_start clear main's stale pendingQuestion label applies to a
+      // pending approval, except here the stale record would let someone press
+      // a key into a conversation that no longer exists.
+      if (signal.kind === 'agent.session_start') {
+        this.deps.approvals?.expireForSession(sessionId, 'session-start');
+      }
       return this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',
@@ -485,6 +512,7 @@ export class HookIngest {
     }
 
     const decision = this.router.recordHook(signal, sessionId, this.now());
+    this.driveApprovals(signal, sessionId, decision, sessions);
     const { status, message } = eventShapeFor(signal.kind);
     // Broadcast on BOTH decisions. 'dedup' is not a drop: the detector already
     // fanned out this turn, and a forensic consumer still wants to see that the
@@ -498,6 +526,57 @@ export class HookIngest {
       hookKind: signal.kind,
       decision,
       signal,
+    });
+  }
+
+  /**
+   * M2 — drive the approval registry off an emit-class hook signal.
+   *
+   *   awaiting_input, decision 'emit' → create a request (superseding any
+   *                                     pending one on the same pane)
+   *   agent.stop                      → expire whatever was pending
+   *
+   * Why `decision:'emit'` only: a 'dedup' awaiting_input is the SAME turn
+   * boundary the detector already reported, not a second question. Creating on
+   * it would mint a duplicate request for one prompt and — through the
+   * supersede rule — immediately kill the record a phone might already be
+   * looking at. A genuine re-prompt arrives as a fresh emit and supersedes
+   * properly.
+   *
+   * Why stop expires on ANY decision: a dedup'd stop is still a turn that
+   * ended, so the question is moot either way. `agent.subagent_stop`
+   * deliberately does NOT expire — a subagent finishing says nothing about the
+   * main agent's prompt still sitting on screen.
+   *
+   * Detector-sourced awaiting_input never reaches here at all (this is the hook
+   * path), which is the CommanderEventCoalescer bar enforced structurally: a
+   * regex match is a suspicion, and this registry writes bytes into terminals.
+   */
+  private driveApprovals(
+    signal: AgentSignal,
+    sessionId: string,
+    decision: 'emit' | 'dedup',
+    sessions: HookIngestSession[],
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return;
+    if (signal.kind === 'agent.stop') {
+      approvals.expireForSession(sessionId, 'turn-ended');
+      return;
+    }
+    if (signal.kind !== 'agent.awaiting_input' || decision !== 'emit') return;
+    const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
+    // A4 — carry WHAT is being asked. Extraction happens here because this is
+    // the envelope-aware layer; the registry never learns hook payload shapes.
+    // Total and non-throwing (see extractAskUserQuestion): an unusable payload
+    // yields absent fields, never a skipped request.
+    const asked = extractAskUserQuestion(signal.payload);
+    approvals.noteHookAwaitingInput({
+      sessionId,
+      agent: signal.agent,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(asked.question ? { question: asked.question } : {}),
+      ...(asked.options ? { options: asked.options } : {}),
     });
   }
 
@@ -557,6 +636,10 @@ export class HookIngest {
    */
   dropPty(sessionId: string): void {
     this.router.dropPty(sessionId);
+    // M2: the pane is gone, so there is no PTY left to press. Without this a
+    // phone would keep listing a request whose only possible outcome is a
+    // 'prompt-gone' refusal — and a reused session id could inherit it.
+    this.deps.approvals?.expireForSession(sessionId, 'pane-gone');
   }
 
   dispose(): void {

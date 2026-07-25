@@ -4,6 +4,11 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSessionManager } from '../DaemonSessionManager';
+// Types only — the registry implementation, its persistence and its
+// headless-terminal dependency chain stay out of this module. The web server is
+// a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
+// constructs a request, and it never decides what bytes a decision means.
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS } from '../../shared/constants';
 
 /**
@@ -24,8 +29,23 @@ import { ENV_KEYS } from '../../shared/constants';
  *   - Nothing listens until `daemon.web.start` is invoked (default unchanged).
  *   - A FRESH random web token is minted per start; the daemon master token
  *     never touches the network. Every `/api/*` call is checked timing-safe.
- *   - Input is impossible unless the server was started with `allowInput`
- *     (execute-impossible stays the default — the operator opts in explicitly).
+ *   - FREE-FORM input is impossible unless the server was started with
+ *     `allowInput` (execute-impossible stays the default — the operator opts in
+ *     explicitly). The ONE carve-out is `POST /api/approvals/:id`, which works
+ *     on a read-only server; see that handler for why a scoped approval is a
+ *     strictly narrower grant than `--allow-input`.
+ *
+ * Route table (everything under `/api/` is Bearer-gated unless noted):
+ *   GET  /                     app shell (unauthenticated, no secrets)
+ *   GET  /api/pair?code=       the ONLY unauthenticated API route
+ *   GET  /api/config           allowInput flag
+ *   GET  /api/sessions         pane list
+ *   GET  /api/stream?session=  SSE pane bytes (`?token=` allowed — EventSource)
+ *   GET  /api/events           attention + approval channel; SSE (`?token=`
+ *                              allowed) or JSON backlog (Bearer only)
+ *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   GET  /api/approvals        pending + recently resolved approval requests
+ *   POST /api/approvals/:id    resolve one — ALLOWED on a read-only server
  */
 
 export interface WebTerminalStartOptions {
@@ -70,6 +90,12 @@ interface WebTerminalServerDeps {
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
+   * The daemon's approval registry. Optional: a daemon that has not wired one
+   * (or a unit test that does not care) still serves every other route, and the
+   * approval routes answer 503 rather than pretending the surface exists.
+   */
+  approvals?: ApprovalRegistryApi;
+  /**
    * Directory holding the built frontend assets (terminal.html, manifest,
    * sw.js, icons). Resolved by the caller relative to the daemon bundle so it
    * works in both dev (`dist/daemon-web`) and packaged
@@ -110,6 +136,16 @@ const PAIR_CODE_LEN = 6;
 const ATTENTION_CAP = 100;
 /** Attention entries older than this are dropped even if the cap allows them. */
 const ATTENTION_TTL_MS = 30 * 60 * 1000;
+/** A decision body is two fields; anything larger is not one of ours. */
+const MAX_JSON_BODY_BYTES = 8 * 1024;
+/**
+ * Who the registry records as having answered, for anything resolved over
+ * HTTP. Names the SURFACE, not a person: the web token is one shared secret
+ * held by whoever paired a device, so claiming a user identity here would be a
+ * fabrication. It exists so the loser of a race sees "answered from the web"
+ * rather than a bare 409.
+ */
+const APPROVAL_RESOLVED_BY = 'web';
 
 interface SseClient {
   res: http.ServerResponse;
@@ -124,6 +160,17 @@ interface EventClient {
 }
 
 /**
+ * What a recorded event IS, and the SSE event name it goes out under.
+ *
+ * `approval` joins the two attention kinds rather than opening a channel of its
+ * own: it is the same question ("this pane needs a human") reaching the same
+ * clients, and it must inherit the id/replay machinery — an approval raised
+ * while the phone was in a tunnel is exactly the event that must survive the
+ * reconnect.
+ */
+type EventKind = 'critical' | 'notify' | 'approval';
+
+/**
  * One recorded attention event. `payload` is the flattened wire object
  * (`{sessionId, ...event}`) exactly as it goes out live, so a replay and a live
  * delivery are byte-identical apart from framing.
@@ -131,7 +178,7 @@ interface EventClient {
 interface AttentionEntry {
   id: number;
   at: number;
-  kind: 'critical' | 'notify';
+  kind: EventKind;
   payload: Record<string, unknown>;
 }
 
@@ -184,6 +231,13 @@ export class WebTerminalServer {
     this.broadcastEvent('critical', payload);
   private readonly onSessionNotification = (payload: { sessionId: string; event?: unknown }): void =>
     this.broadcastEvent('notify', payload);
+  private readonly onApprovalEvent = (e: ApprovalEvent): void => this.publishApproval(e);
+  /**
+   * The registry hands back an unsubscribe closure rather than taking off() —
+   * so unlike the sessionManager listeners this one is held, not re-derived.
+   * Non-null exactly while the server is running.
+   */
+  private approvalUnsub: (() => void) | null = null;
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
@@ -267,6 +321,9 @@ export class WebTerminalServer {
     // rotate cleanly.
     this.deps.sessionManager.on('session:critical', this.onSessionCritical);
     this.deps.sessionManager.on('session:notification', this.onSessionNotification);
+    // Approval lifecycle rides the same channel; same attach point, same
+    // restart hygiene (unsubscribed in stop(), so a restart never doubles up).
+    this.approvalUnsub = this.deps.approvals?.onEvent(this.onApprovalEvent) ?? null;
 
     // Record the ACTUAL bound port so status()/urls report it even when the
     // caller requested port 0 (ephemeral — used by the unit tests for a
@@ -307,6 +364,8 @@ export class WebTerminalServer {
 
     this.deps.sessionManager.off('session:critical', this.onSessionCritical);
     this.deps.sessionManager.off('session:notification', this.onSessionNotification);
+    this.approvalUnsub?.();
+    this.approvalUnsub = null;
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
@@ -486,6 +545,12 @@ export class WebTerminalServer {
       if (req.method === 'POST' && p === '/api/input') {
         return this.handleInput(req, res, url);
       }
+      if (req.method === 'GET' && p === '/api/approvals') {
+        return this.handleApprovalsList(res);
+      }
+      if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
+        return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length));
+      }
       return this.json(res, 404, { error: 'not found' });
     }
 
@@ -628,6 +693,210 @@ export class WebTerminalServer {
     });
   }
 
+  // --- approvals (M2) -----------------------------------------------------
+
+  /**
+   * `GET /api/approvals` — what a client needs the moment it connects: the
+   * requests still waiting on a human, plus the recently settled tail.
+   *
+   * The settled tail is not decoration. Two people can be looking at the same
+   * pending approval on two devices; the loser of that race gets a 409, and
+   * without the settled record there is nothing to render but an error code.
+   */
+  private handleApprovalsList(res: http.ServerResponse): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
+    try {
+      listed = approvals.list();
+    } catch (err) {
+      this.deps.log('warn', `[web] approvals list failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'approvals unavailable' });
+    }
+    // Both halves keep the registry's own names and order (recentlyResolved is
+    // newest-first and already bounded there), so the HTTP shape and the
+    // `daemon.approvals.list` RPC shape are the same thing spelled once.
+    return this.json(res, 200, {
+      pending: listed.pending.map(approvalWire),
+      recentlyResolved: listed.recentlyResolved.map(approvalWire),
+    });
+  }
+
+  /**
+   * `POST /api/approvals/:id` — answer one request.
+   *
+   * ┌───────────────────────────────────────────────────────────────────────┐
+   * │ THIS ROUTE WORKS ON A READ-ONLY SERVER. THAT IS DELIBERATE.           │
+   * └───────────────────────────────────────────────────────────────────────┘
+   * Every other write path (`POST /api/input`) is 403 without `--allow-input`,
+   * and that stays true — this carve-out widens NOTHING else. The reason it is
+   * safe, and the reason the whole milestone exists:
+   *
+   *   - `--allow-input` grants ARBITRARY bytes to ANY pane at ANY time. This
+   *     grants ONE answer to ONE request the DAEMON already decided to raise,
+   *     from a hook-sourced `agent.awaiting_input` — the operator cannot invent
+   *     a request, only respond to one.
+   *   - The bytes are not the caller's. The caller sends `approve`/`deny`; the
+   *     registry picks the keystrokes from its own per-agent map and re-reads
+   *     the pane to confirm the prompt is still on screen before writing. A
+   *     request that has expired, been superseded, or lost its prompt refuses.
+   *   - Requiring `--allow-input` here would mean the answer to "my agent is
+   *     blocked and I am not at my desk" is "you should have granted a fully
+   *     writable terminal to the network in advance", which is a worse posture
+   *     than the narrow grant it is trying to avoid.
+   *
+   * Still gated by the Bearer token like everything else, and the token is not
+   * ambient authority (no cookie), so a hostile page cannot forge this POST.
+   */
+  private handleApprovalResolve(req: http.IncomingMessage, res: http.ServerResponse, rawId: string): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      // Malformed percent-escape — no such request, by definition.
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+
+    this.readJsonBody(req, res, (body) => {
+      const decision = (body as { decision?: unknown } | null)?.decision;
+      if (decision !== 'approve' && decision !== 'deny') {
+        return this.json(res, 400, { error: "decision must be 'approve' or 'deny'" });
+      }
+      approvals
+        .resolve({ id, decision, resolvedBy: APPROVAL_RESOLVED_BY })
+        .then((result) => {
+          if (result.ok) return this.json(res, 200, { state: result.request.state });
+          switch (result.reason) {
+            // Someone else got there first — hand back WHO, so the loser's UI
+            // can say so instead of showing a bare conflict.
+            case 'already-resolved':
+              return this.json(res, 409, { error: 'already-resolved', resolvedBy: result.resolvedBy });
+            // Gone: the request outlived its usefulness (timed out, replaced by
+            // a newer prompt, or the prompt left the screen). 410, not 404 —
+            // it existed, and the client should stop showing it. The registry
+            // reports 'expired' for a supersede too, so the precise state rides
+            // along when it knows it: "someone re-prompted" and "it timed out"
+            // are the same status but not the same sentence to a human.
+            case 'expired':
+            case 'prompt-gone':
+              return this.json(res, 410, {
+                error: result.reason,
+                ...(result.request ? { state: result.request.state } : {}),
+              });
+            // The daemon has no keystroke map for this agent, so it refuses to
+            // guess bytes. Not the caller's fault: 501, not 4xx.
+            case 'unsupported-agent':
+              return this.json(res, 501, { error: 'unsupported-agent' });
+            case 'not-found':
+              return this.json(res, 404, { error: 'not-found' });
+            default: {
+              // A reason this surface does not know how to map. Never silently
+              // report success — say the server does not understand its own
+              // registry and log it.
+              const reason = String(result.reason);
+              this.deps.log('warn', `[web] approval resolve returned unknown reason: ${reason}`);
+              return this.json(res, 500, { error: reason });
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          this.deps.log('warn', `[web] approval resolve threw: ${errMsg(err)}`);
+          try {
+            this.json(res, 500, { error: `resolve failed: ${errMsg(err)}` });
+          } catch {
+            /* socket already gone */
+          }
+        });
+    });
+  }
+
+  /**
+   * Read a small JSON body. On a body that is too large or not JSON, this
+   * answers the request itself and never calls back — so a caller can treat the
+   * callback as "a parsed body arrived". An empty body parses as `null`, which
+   * the caller rejects as a missing decision.
+   */
+  private readJsonBody(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    onBody: (body: unknown) => void,
+  ): void {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let aborted = false;
+    req.on('data', (chunk: Buffer) => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > MAX_JSON_BODY_BYTES) {
+        aborted = true;
+        this.json(res, 413, { error: 'payload too large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (!raw) return onBody(null);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw, (key, value) => {
+          // Prototype pollution guard (mirrors config.ts / webStateStore).
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+          return value;
+        });
+      } catch {
+        return this.json(res, 400, { error: 'invalid JSON body' });
+      }
+      onBody(parsed);
+    });
+    req.on('error', () => {
+      aborted = true;
+    });
+  }
+
+  /**
+   * Republish a registry lifecycle transition onto the attention channel.
+   *
+   * The CONTENT fields — `screenTail`, `question`, `options` — are deliberately
+   * NOT on the wire here: a tail is a screenful of pane output, and this payload
+   * is fanned out to every client AND kept in the replay window for the whole
+   * TTL. Clients fetch `/api/approvals` on connect and on any `approval` event
+   * for the full record: the event is the nudge, the route is the truth.
+   *
+   * CONSEQUENCE A UI MUST RESPECT: never render an approve/deny control from an
+   * `approval` event alone. `approve` is encoded as "press the first option",
+   * which is a safe word for a consent-shaped prompt and a dangerous one for
+   * "which file should I delete?" — so the buttons belong to the route's record,
+   * which carries the question, or to nothing at all.
+   */
+  private publishApproval(e: ApprovalEvent): void {
+    if (!e || typeof e !== 'object' || !e.request) return;
+    const r = e.request;
+    this.publish('approval', {
+      sessionId: r.sessionId,
+      // NOT `id`: the envelope's own `id` is the replay cursor, and identity
+      // fields are stamped last precisely so a payload cannot shadow them.
+      approvalId: r.id,
+      phase: e.type,
+      state: r.state,
+      agent: r.agent,
+      // The record's own `kind` ('awaiting_input') is NOT copied: the backlog
+      // route stamps the ENVELOPE kind onto that name, so carrying both would
+      // mean `kind` said different things on the two shapes of the same event.
+      createdAt: r.createdAt,
+      ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+      ...(r.decision ? { decision: r.decision } : {}),
+      ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+      ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+    });
+  }
+
   // --- fleet-wide event tee -----------------------------------------------
 
   /**
@@ -644,20 +913,17 @@ export class WebTerminalServer {
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
-    const entry: AttentionEntry = {
-      id: ++this.attentionSeq,
-      at: this.now(),
-      kind,
-      payload: { sessionId: payload.sessionId, ...event },
-    };
-    this.attentionLog.push(entry);
-    this.evictAttention();
+    const entry = this.publish(kind, { sessionId: payload.sessionId, ...event });
 
-    const body = this.attentionWireBody(entry);
     // BACK-COMPAT (remove after one release): attention still rides the pane
     // streams so a cached PWA frontend that predates `/api/events` keeps
     // working. The extra `id`/`epoch` fields are ignored by old clients; new
     // ones dedup on them, so the double delivery is harmless.
+    //
+    // Approvals deliberately do NOT get this second copy: no frontend older
+    // than the approval channel can act on one, so it would be pure noise on
+    // every pane stream.
+    const body = this.attentionWireBody(entry);
     for (const client of this.clients) {
       try {
         writeSse(client.res, kind, body);
@@ -665,6 +931,21 @@ export class WebTerminalServer {
         /* client stream broken — its own 'close' handler cleans up */
       }
     }
+  }
+
+  /**
+   * Record one event in the replay window and fan it out to `/api/events`.
+   *
+   * Every kind shares ONE id space and ONE log: a client's cursor is a single
+   * number, so an approval and a notification cannot be interleaved in a way
+   * that makes a resume ambiguous.
+   */
+  private publish(kind: EventKind, payload: Record<string, unknown>): AttentionEntry {
+    const entry: AttentionEntry = { id: ++this.attentionSeq, at: this.now(), kind, payload };
+    this.attentionLog.push(entry);
+    this.evictAttention();
+
+    const body = this.attentionWireBody(entry);
     for (const client of this.eventClients) {
       try {
         writeSse(client.res, kind, body, this.sseId(entry.id));
@@ -672,6 +953,7 @@ export class WebTerminalServer {
         /* client stream broken — its own 'close' handler cleans up */
       }
     }
+    return entry;
   }
 
   /** Drop entries past the cap (oldest first) and anything past the TTL. */
@@ -1029,6 +1311,42 @@ function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';
   return workspace ? { workspace } : {};
+}
+
+/**
+ * The projection of an approval record that reaches a browser.
+ *
+ * Field-by-field on purpose, exactly like `workspaceLabelOf`: the registry is
+ * daemon-internal and free to grow fields (resolved keystrokes, pane env, the
+ * hook envelope it was built from), and none of those should reach the network
+ * because someone added them upstream. What is here is what a human needs to
+ * decide: which pane, which agent, what was asked, what was on screen, and how
+ * it ended.
+ *
+ * `question` / `options` are AGENT-AUTHORED TEXT (extracted from the
+ * AskUserQuestion tool_input), the same trust class as `screenTail`: safe to
+ * transport, never safe to render unescaped, and `options` is not a closed set
+ * anything security-relevant may key on — the keystroke map, not this list,
+ * decides what a decision sends.
+ */
+function approvalWire(r: ApprovalRequest): Record<string, unknown> {
+  return {
+    id: r.id,
+    sessionId: r.sessionId,
+    agent: r.agent,
+    kind: r.kind,
+    state: r.state,
+    createdAt: r.createdAt,
+    ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+    // Presence-checked, not truthiness-checked: an empty question or an empty
+    // options list is a fact the registry recorded, not a missing field.
+    ...(typeof r.question === 'string' ? { question: r.question } : {}),
+    ...(Array.isArray(r.options) ? { options: r.options } : {}),
+    ...(r.screenTail ? { screenTail: r.screenTail } : {}),
+    ...(r.decision ? { decision: r.decision } : {}),
+    ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+    ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+  };
 }
 
 function readIfExists(p: string): Buffer | null {
