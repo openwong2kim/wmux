@@ -104,6 +104,10 @@ interface Script {
   /** stateSaved carried on a successful ack (undefined = pre-B′ daemon). */
   stateSaved?: boolean;
   cancelled?: boolean | (() => boolean);
+  /** #545 — pipe-gone answers, consumed in order (last value sticks). Default
+   *  false everywhere, i.e. exactly the pre-#545 liveness-only behavior, so
+   *  every existing case in this file keeps asserting what it always did. */
+  pipeGone?: boolean[];
 }
 
 function makeDeps(script: Script) {
@@ -114,6 +118,7 @@ function makeDeps(script: Script) {
     kills: 0,
     sleeps: [] as number[],
     logs: [] as string[],
+    pipeProbes: 0,
   };
   let killed = false;
   const deps: ReplacementDeps = {
@@ -125,6 +130,12 @@ function makeDeps(script: Script) {
     },
     isClientConnected: () => script.connectedAfterShutdownFail ?? false,
     disconnectClient: async () => { calls.disconnects++; },
+    isPipeGone: async () => {
+      calls.pipeProbes++;
+      const seq = script.pipeGone;
+      if (!seq || seq.length === 0) return false;
+      return seq[Math.min(calls.pipeProbes - 1, seq.length - 1)];
+    },
     checkLiveness: () => {
       calls.livenessChecks++;
       if (killed && script.deadAfterKill) return 'dead';

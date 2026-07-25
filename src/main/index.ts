@@ -86,7 +86,7 @@ import { DaemonNotificationRouter } from './notification/DaemonNotificationRoute
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
-import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness } from './daemon/launcher';
+import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
@@ -1229,6 +1229,10 @@ app.on('ready', async () => {
       },
       checkLiveness: checkProcessLiveness,
       killVerifiedPid: (pid) => killVerifiedDaemonPid(pid, { definitiveOnly: true }),
+      // #545 — tasklist-independent confirmation that the old daemon finished
+      // shutting down, so an AV-blocked process probe can't turn a clean
+      // shutdown into a 5 s burn plus dead-end.
+      isPipeGone: () => isDaemonPipeGone(),
       // dispose() fires on every quit; only a tray "Shut down completely"
       // may kill a freshly spawned replacement daemon (detach Quit wants
       // it left alive with the recovered sessions).

@@ -7,6 +7,8 @@ import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
+import type { WebTerminalInfo } from './web/WebTerminalServer';
+import { loadWebState, saveWebState, clearWebState } from './web/webStateStore';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
@@ -51,7 +53,8 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
-// registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives.
+// registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
+// OR restoreWebServer() replays an operator's earlier "yes, serve this" (#596).
 // Module-scoped so the shutdown() path can tear it down too.
 let webTerminalServer: WebTerminalServer | null = null;
 
@@ -61,6 +64,93 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+
+/**
+ * In-flight boot restore (#596). Every operator-driven web RPC waits on it, so
+ * a `daemon.web.start` that lands during boot can never interleave with the
+ * restore's own bind — the last writer would otherwise be whichever finished
+ * last, and the operator's fresh options could lose to the persisted ones.
+ * Never rejects (restoreWebServer swallows), so awaiting it is always safe.
+ */
+let webRestore: Promise<void> | null = null;
+
+/**
+ * Record the running server's exact shape so the next daemon can reproduce it
+ * (#596). Best-effort by design: the operator's start already succeeded, so a
+ * write failure degrades to "will not come back on its own" and is logged —
+ * never surfaced as a failed start.
+ */
+function persistWebState(info: WebTerminalInfo, allowedHosts: string[]): void {
+  if (!info.running || !info.token) return;
+  const ok = saveWebState(wmuxDir, {
+    version: 1,
+    enabled: true,
+    port: info.port ?? 7681,
+    host: info.host ?? '127.0.0.1',
+    allowInput: info.allowInput === true,
+    allowedHosts,
+    token: info.token,
+  });
+  if (!ok) {
+    log('warn', '[web] could not persist web state — the server will NOT restart with the daemon');
+  }
+}
+
+/**
+ * Replay the operator's explicit "serve this" across a daemon restart (#596).
+ *
+ * Sessions already survive a restart; before this the server that serves them
+ * did not, so a crash / reboot / updater restart killed phone access silently
+ * and only a human at the desktop could revive it. With no state file nothing
+ * happens — the lazy-init default is untouched.
+ *
+ * Runs AFTER the control pipe is listening so a slow or failing bind can never
+ * delay the daemon's primary job, and never throws for the same reason.
+ */
+async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<void> {
+  const state = loadWebState(wmuxDir);
+  if (!state.enabled) return;
+
+  try {
+    if (!webTerminalServer) {
+      webTerminalServer = new WebTerminalServer({
+        sessionManager,
+        assetsDir: resolveWebAssetsDir(),
+        log: (level, msg) => log(level, msg),
+      });
+    }
+    const info = await webTerminalServer.start({
+      port: state.port,
+      host: state.host,
+      allowInput: state.allowInput,
+      allowedHosts: state.allowedHosts,
+      // The whole point: the phone's stored token keeps working, so a browser
+      // left open reconnects on its own (EventSource retries) with no human.
+      token: state.token,
+    });
+    // The bind may have landed on a different port than requested only when
+    // asked for 0, which never happens here — but re-persist anyway so the
+    // record always mirrors reality.
+    persistWebState(info, state.allowedHosts);
+    // A restore that puts a WRITABLE terminal back on every network interface
+    // happens with nobody at the desktop, so it is logged at warn: the operator
+    // asked for exactly this, but "it came back on its own" should be findable
+    // in the log without knowing to look for it.
+    const exposed = info.host === '0.0.0.0' || info.host === '::';
+    log(
+      exposed && info.allowInput ? 'warn' : 'info',
+      `[web] restored on ${info.host}:${info.port} (input ${info.allowInput ? 'ENABLED' : 'read-only'}, ${exposed ? 'ALL interfaces' : 'loopback'}) — replaying the operator's earlier \`wmux web\`. Turn it off with \`wmux web --stop\`.`,
+    );
+  } catch (err) {
+    // EADDRINUSE (a stale holder of the port), a missing assets dir, anything:
+    // log loudly and leave it down. The operator can retry with `wmux web`.
+    log(
+      'error',
+      `[web] could not restore the web server on ${state.host}:${state.port} — phone access stays down until you run \`wmux web\` again:`,
+      err,
+    );
+  }
+}
 
 /**
  * Resolve the built frontend assets dir (dist/daemon-web) for BOTH dev and
@@ -242,6 +332,9 @@ function getBootIdSync(): string {
 }
 const PID_FILE = path.join(wmuxDir, 'daemon.pid');
 const LOCK_FILE = path.join(wmuxDir, 'daemon.lock');
+// Issue #546 — "I am booting, do not kill me" marker. Lives only for the span
+// between lock acquisition and the pipe file being written. See acquireLock().
+const BOOT_MARKER_FILE = path.join(wmuxDir, 'daemon-booting');
 
 // === Logging (console + durable file) ===
 // The daemon is spawned with stdio:'ignore' (see src/main/daemon/launcher.ts),
@@ -680,7 +773,44 @@ async function acquireLock(): Promise<boolean> {
 
   // Write PID file (separate from lock for backward compat)
   fs.writeFileSync(PID_FILE, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+  // Issue #546 — boot-progress marker. The window between this line and
+  // `daemon-pipe` being written is the whole problem: we are alive and own the
+  // lock, but we cannot answer a ping (no pipe yet), and cold recovery of a
+  // large session set runs ~19-23 s. The launcher's reuse path used to read
+  // that silence as "wedged" and SIGKILL us after ~1.9 s. This marker is the
+  // reuse-path equivalent of the spawn path's `isChildAlive` (#537 / #543).
+  //
+  //   acquireLock()            recoverSessions()          "Daemon ready"
+  //        │                    (~19-23 s, no pipe)             │
+  //        ├── daemon.pid ──────────────────────────────────────┤
+  //        ├── daemon-booting ──────────────────────────────────┤ (unlinked)
+  //        │                                                    ├── daemon-pipe
+  //        └───────────── launcher must NOT kill in here ───────┘
+  //
+  // Written once, never re-touched: the launcher trusts it on existence + PID
+  // liveness, not freshness. A freshness gate would re-create the very bug —
+  // recovery is a long await chain, so a busy event loop can delay a periodic
+  // touch and a healthy daemon would read as stale. Elapsed time is bounded on
+  // the launcher side by DAEMON_READY_HARD_CEILING_MS instead. A marker
+  // orphaned by a hard crash is self-invalidating: its PID is dead.
+  try {
+    fs.writeFileSync(BOOT_MARKER_FILE, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+  } catch (err) {
+    // Non-fatal: without the marker the launcher just falls back to the old
+    // escalated-reping-then-kill behavior. Never block boot on it.
+    log('warn', 'Failed to write boot marker:', err);
+  }
   return true;
+}
+
+/** Issue #546 — drop the boot-progress marker once we can answer pings, and on
+ *  every teardown path. Idempotent; never throws. */
+function clearBootMarker(): void {
+  try {
+    if (fs.existsSync(BOOT_MARKER_FILE)) fs.unlinkSync(BOOT_MARKER_FILE);
+  } catch {
+    // ignore
+  }
 }
 
 function releaseLock(): void {
@@ -701,6 +831,7 @@ function releaseLock(): void {
   } catch {
     // ignore
   }
+  clearBootMarker();
 }
 
 // === Session recovery ===
@@ -1638,8 +1769,20 @@ function registerRpcHandlers(
     });
   }
   const webServer = webTerminalServer;
+  // Serialize every operator web RPC behind the boot restore (#596). `await
+  // null` is a no-op, so this costs nothing once the restore has settled.
+  const afterRestore = async (): Promise<void> => {
+    if (webRestore) await webRestore;
+  };
   pipeServer.onRpc('daemon.web.start', async (params) => {
-    const p = params as { port?: number; host?: string; allowInput?: boolean; allowedHosts?: unknown };
+    await afterRestore();
+    const p = params as {
+      port?: number;
+      host?: string;
+      allowInput?: boolean;
+      allowedHosts?: unknown;
+      newToken?: boolean;
+    };
     const port =
       typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
     // Safe default: bind loopback only. Network exposure is an explicit
@@ -1651,13 +1794,39 @@ function registerRpcHandlers(
     const allowedHosts = Array.isArray(p.allowedHosts)
       ? p.allowedHosts.filter((h): h is string => typeof h === 'string')
       : [];
-    return webServer.start({ port, host, allowInput, allowedHosts });
+    // #596: carry the previous token forward so a re-start (adding
+    // --allow-host, flipping --allow-input) does not lock out a phone that
+    // already paired. The token comes from OUR 0600 state file, never from
+    // these params — a pipe client must not get to choose it. `--new-token`
+    // is the deliberate rotation escape hatch (revoke every paired device).
+    const previous = loadWebState(wmuxDir);
+    const token = p.newToken === true ? undefined : previous.token || undefined;
+    const info = await webServer.start({ port, host, allowInput, allowedHosts, token });
+    persistWebState(info, allowedHosts);
+    return info;
   });
-  pipeServer.onRpc('daemon.web.stop', async () => webServer.stop());
-  pipeServer.onRpc('daemon.web.status', async () => webServer.status());
+  pipeServer.onRpc('daemon.web.stop', async () => {
+    // Operator-initiated stop = "do not bring this back", and it revokes the
+    // token with it. Distinct from the stop() inside shutdown(), which is a
+    // teardown of a server the operator still wants and therefore leaves the
+    // persisted state alone.
+    await afterRestore();
+    clearWebState(wmuxDir);
+    return webServer.stop();
+  });
+  pipeServer.onRpc('daemon.web.status', async () => {
+    // Without this a status() called during boot would report `running:false`
+    // for a server that is about to come back, and the GUI popover would latch
+    // that stale answer.
+    await afterRestore();
+    return webServer.status();
+  });
   // Operator-initiated pairing-code refresh — the escape hatch when a code has
   // been used or has expired and another device still needs to pair.
-  pipeServer.onRpc('daemon.web.pairRefresh', async () => webServer.refreshPairCode());
+  pipeServer.onRpc('daemon.web.pairRefresh', async () => {
+    await afterRestore();
+    return webServer.refreshPairCode();
+  });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
   // External pipe clients are blocked upstream by the 'wmux.internal'
@@ -2727,6 +2896,8 @@ function registerRpcHandlers(
       setTimeout(() => {
         void pipeServer.stop().catch(() => { /* best effort */ }).finally(() => {
           clearTimeout(forceExit);
+          // Issue #545 — last line before control leaves us. See logExitHandoff.
+          logExitHandoff('rpc.shutdown');
           process.exit(0);
         });
       }, 50);
@@ -3285,6 +3456,11 @@ async function shutdown(
   // port on exit anyway; this just makes a graceful shutdown clean.
   if (webTerminalServer) {
     try {
+      // Let an in-flight boot restore (#596) finish first. Stopping mid-bind
+      // would find `server === null`, no-op, and then the restore would bring a
+      // listener up that nothing owns. Never rejects, and the bind is local, so
+      // this cannot outlast the hard shutdown timeout below.
+      if (webRestore) await webRestore;
       await webTerminalServer.stop();
     } catch {
       /* ignore — never block shutdown on the optional web server */
@@ -3441,7 +3617,30 @@ async function shutdown(
     // after returning so the ack flushes back to the client first.
     return { stateSaved };
   }
+  logExitHandoff('shutdown');
   process.exit(0);
+}
+
+/**
+ * Issue #545 — stamp the moment control leaves our code for `process.exit(0)`.
+ *
+ * The report was "the daemon lingers ~5 s in the process table after acking
+ * shutdown". Measured on the bundled daemon under both node and Electron, at 10
+ * and 35 live ConPTY sessions, the gap is 7-12 ms, so it did not reproduce. If
+ * it recurs in the field, this line is what tells the two candidate stories
+ * apart: a late timestamp means OUR path was slow, an on-time timestamp with a
+ * late process-table disappearance means the OS/native teardown held the
+ * process after we asked it to die.
+ *
+ * Deliberately not "fixed" with a hard `TerminateProcess` self-kill: that would
+ * bound the exit but truncate any disk write still in flight (channel snapshot,
+ * principal state), trading a real data-loss risk on every shutdown against a
+ * latency symptom we cannot reproduce. No JS timer can bound a stalled
+ * `process.exit` either — the loop is already gone — so the honest fix is the
+ * datum, not a guess.
+ */
+function logExitHandoff(via: string): void {
+  log('info', `[shutdown.phase] exit via=${via} at=${Date.now()} — calling process.exit(0)`);
 }
 
 // === Main entry point ===
@@ -4048,6 +4247,16 @@ async function main(): Promise<void> {
   // 6b. X1 workspace-context watchers (git HEAD fs.watch + PID-tree ports)
   disposeContextWatchers = wireContextWatchers(sessionManager, pipeServer);
 
+  // 7a. #596 — bring `wmux web` back if the operator had it on. Kicked off
+  // BEFORE the control pipe starts listening, so `webRestore` is already
+  // non-null for every RPC that can arrive: an operator `daemon.web.start`
+  // racing the restore would otherwise double-bind, or let the restore stomp
+  // the fresh options with the persisted ones. Not awaited — a slow or failing
+  // bind must not delay the daemon's primary job. No state file → no-op, so
+  // "nothing listens until asked" is unchanged for anyone who never ran
+  // `wmux web`.
+  webRestore = restoreWebServer(sessionManager);
+
   // 7. Start control pipe
   markDaemonBoot('pre-pipe-start');
   await pipeServer.start();
@@ -4062,6 +4271,10 @@ async function main(): Promise<void> {
     log('warn', 'Failed to write pipe name file:', err);
   }
   markDaemonBoot('pipe-file-written');
+  // Issue #546 — we can answer pings from here on, so the "still booting" grace
+  // the launcher grants us is no longer needed. Dropped AFTER the pipe file so
+  // the two states never both look false to a launcher reading mid-write.
+  clearBootMarker();
 
   // doShutdown is hoisted ahead of `setCallbacks` so the idle-shutdown
   // callback can route through the same termination path used by

@@ -45,11 +45,17 @@ const xtermJs = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'lib', 'x
 const xtermCss = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
 const appCss = read(join(frontendDir, 'styles.css'));
 const appJs = read(join(frontendDir, 'app.js'));
+// Inlined AHEAD of app.js: it publishes `wmuxAttentionFormat` on the global,
+// which app.js calls at notification time. Kept a separate file (rather than a
+// function inside app.js) so the unit tests can evaluate the formatting rule
+// without a DOM.
+const attentionFormatJs = read(join(frontendDir, 'attentionFormat.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
 html = inject(html, '/*__APP_CSS__*/', appCss);
 html = inject(html, '/*__XTERM_JS__*/', xtermJs);
+html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });

@@ -9,7 +9,7 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
-/* global Terminal */ // provided by the inlined __XTERM_JS__ bundle
+/* global Terminal, wmuxAttentionFormat */ // provided by the inlined bundles
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
@@ -80,6 +80,7 @@
 
   var term = null;               // the 1-up terminal (null while split view owns the stage)
   var es = null;                 // the 1-up SSE stream
+  var attnEs = null;             // the page-lifetime attention stream (/api/events)
   var tiles = [];                // split-view tiles, each with its OWN stream + terminal
   var allowInput = false;
   var currentSession = null;
@@ -174,9 +175,43 @@
     });
   }
 
+  // A stream error carries no status: EventSource exposes only `onerror`, and
+  // it retries forever either way. So "the daemon is restarting" and "this
+  // token has been revoked" look identical from here, and the second one would
+  // sit on "reconnecting…" until someone walked to the desktop — the exact
+  // failure this app exists to avoid. Probe ONE authenticated route to tell
+  // them apart; api() already routes a 401 to the token/pairing screen.
+  //
+  // Rate-limited because four split tiles all retry independently: at most one
+  // probe in flight, and at most one per AUTH_PROBE_MS across all of them.
+  var AUTH_PROBE_MS = 5000;
+  var authProbeAt = 0;
+  var authProbing = false;
+  function diagnoseStreamError() {
+    if (authProbing || Date.now() - authProbeAt < AUTH_PROBE_MS) return;
+    authProbing = true;
+    authProbeAt = Date.now();
+    // Snapshot the token the probe is actually asking about, and send it by
+    // hand rather than through api(). Re-authenticating (auth form or pairing)
+    // while this request is in flight would otherwise let the OLD token's 401
+    // tear down the session that just came up — the verdict only applies while
+    // `token` is still the one we asked with.
+    var probed = token;
+    var done = function () { authProbing = false; };
+    fetch('/api/config', { headers: { Authorization: 'Bearer ' + probed } }).then(function (r) {
+      done();
+      if (r.status === 401 && token === probed) requireToken(true);
+      // Anything else: a genuine outage, or a stale verdict about a token we
+      // no longer use — the "reconnecting…" the caller set is the right answer.
+    }, done);
+  }
+
   /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
   function requireToken(stale) {
     if (es) { es.close(); es = null; }
+    // The attention stream carries the same rejected token; drop it so the next
+    // successful init opens a fresh one (with the stored cursor, so nothing is lost).
+    if (attnEs) { attnEs.close(); attnEs = null; }
     // Split tiles hold their OWN streams carrying the stale token; left alive,
     // buildGrid() would happily reuse the dead tiles after re-auth. Tear the
     // grid down so the next successful init starts clean.
@@ -193,7 +228,7 @@
       'auth',
       stale ? 'Access token rejected' : 'Access token required',
       stale
-        ? 'The stored token is no longer valid. Tokens rotate every time the server restarts.'
+        ? 'The stored token is no longer valid — the server was stopped, or a new token was issued. A pairing code is the quickest way back in.'
         : 'Paste the token printed by wmux web, or open the full URL that includes it.'
     );
     if (authInput) { authInput.value = ''; setTimeout(function () { authInput.focus(); }, 50); }
@@ -684,21 +719,108 @@
     document.title = criticalCount > 0 ? '● ' + BASE_TITLE : BASE_TITLE;
   }
 
+  // Attention events are delivered twice on purpose (the pane stream keeps the
+  // old tee for one release, /api/events is the durable channel), and the
+  // durable channel replays on every reconnect — so the same event can arrive
+  // several times. `epoch:id` is the identity that makes that safe. The seen set
+  // is bounded by a FIFO of its own keys: an unbounded one is a slow leak on a
+  // phone that stays open for days.
+  var SEEN_CAP = 200;
+  var seenAttention = {};
+  var seenOrder = [];
+  var CURSOR_KEY = 'wmux-web-attn-cursor';
+  var lastAttentionCursor = '';
+  try { lastAttentionCursor = sessionStorage.getItem(CURSOR_KEY) || ''; } catch (e) { /* private mode */ }
+
+  function markSeen(key) {
+    seenAttention[key] = true;
+    seenOrder.push(key);
+    while (seenOrder.length > SEEN_CAP) delete seenAttention[seenOrder.shift()];
+  }
+  function rememberCursor(key) {
+    lastAttentionCursor = key;
+    // EventSource's own Last-Event-ID covers reconnects within this page; the
+    // stored cursor is what survives a RELOAD (it goes out as ?since=).
+    try { sessionStorage.setItem(CURSOR_KEY, key); } catch (e) { /* private mode */ }
+  }
+
+  // A `reset` frame means the server could not place our cursor (fresh client,
+  // or the daemon restarted), so what follows is a full window rather than
+  // "what you missed". Rendering a banner per event would bury the screen in
+  // alerts the user may have already dealt with, so replayed events only light
+  // up their fleet chips and collapse into one summary line.
+  var replaying = false;
+  var replayCount = 0;
+  var replayTimer = null;
+  // The last id the server had when it told us to resync. Once we have replayed
+  // up to it the backlog is provably over, so the very next event is LIVE.
+  var replayUntilId = 0;
+
+  function endReplay() {
+    if (replayTimer) clearTimeout(replayTimer);
+    replayTimer = null;
+    replayUntilId = 0;
+    replaying = false;
+    if (replayCount > 0) {
+      pushNotif({
+        kind: 'notify',
+        slim: false,
+        sessionId: null,
+        sessionName: 'Tap a highlighted pane to catch up.',
+        title: replayCount + ' event' + (replayCount === 1 ? '' : 's') + ' while you were away',
+        sub: ''
+      });
+    }
+    replayCount = 0;
+  }
+  function beginReplay(headId) {
+    replaying = true;
+    replayCount = 0;
+    replayUntilId = typeof headId === 'number' && headId > 0 ? headId : 0;
+    armReplayEnd();
+  }
+  // Fallback for a server that sent no headId: the backlog can span several
+  // network chunks, so its end is not an event we are told about — it is a
+  // short quiet period after the last one. With a headId we close the window
+  // exactly, so a live event arriving inside 200ms keeps its banner.
+  function armReplayEnd() {
+    if (replayTimer) clearTimeout(replayTimer);
+    replayTimer = setTimeout(endReplay, 200);
+  }
+
   function handleAttention(kind, raw) {
     var data;
     try { data = JSON.parse(raw); } catch (e) { return; }
     if (!data || !data.sessionId) return;
+
+    // Events with no id come from a server that predates the attention log —
+    // there is nothing to dedup on, so they pass straight through (back-compat).
+    if (data.epoch && typeof data.id === 'number') {
+      var key = data.epoch + ':' + data.id;
+      if (seenAttention[key]) return;
+      markSeen(key);
+      rememberCursor(key);
+    }
+
     var sid = data.sessionId;
     var s = sessions.filter(function (x) { return x.id === sid; })[0];
     var name = s ? sessionName(s) : sid;
 
-    var title, sub;
-    if (kind === 'critical') {
-      title = 'Approval needed';
-      sub = data.action || 'A pane is waiting on you.';
-    } else {
-      title = data.message || 'Notification';
-      sub = '';
+    var f = wmuxAttentionFormat.formatAttention(kind, data);
+    var title = f.title;
+    var sub = f.sub;
+
+    if (replaying) {
+      if (sid !== currentSession) { attn[sid] = true; renderFleet(); }
+      replayCount += 1;
+      if (replayUntilId && typeof data.id === 'number' && data.id >= replayUntilId) {
+        // That was the last event the backlog could contain — close the window
+        // now so the next one is treated as live (banner + vibration intact).
+        endReplay();
+      } else {
+        armReplayEnd();
+      }
+      return;
     }
 
     // Mark the chip unless it is the pane already in view.
@@ -797,6 +919,46 @@
     return src;
   }
 
+  /**
+   * The durable attention channel — ONE per page, for the page's whole life.
+   *
+   * Pane streams come and go with every tap, and attention events that landed
+   * while none was open used to be gone for good (#598). This stream is opened
+   * once (after the first session list, so a replayed event can resolve a pane
+   * name), never re-opened on a pane switch, and carries ids: the browser
+   * resends the last one as Last-Event-ID on its automatic retry, so a phone
+   * that lost signal resumes exactly where it stopped. `?since=` covers the
+   * other case — a full page reload, where the browser has no id to resend.
+   */
+  function openAttentionStream() {
+    if (attnEs) return;
+    var path = '/api/events';
+    if (lastAttentionCursor) path += '?since=' + encodeURIComponent(lastAttentionCursor);
+    attnEs = new EventSource(streamUrl(path));
+    attnEs.addEventListener('reset', function (e) {
+      var head = 0;
+      try { head = JSON.parse(e.data).headId; } catch (err) { head = 0; }
+      beginReplay(typeof head === 'number' ? head : 0);
+    });
+    attnEs.addEventListener('critical', function (e) { handleAttention('critical', e.data); });
+    attnEs.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
+    // Left to EventSource's own retry, which resends Last-Event-ID for us.
+    // MERGE FOLLOW-UP: #596 adds a 401 probe (diagnoseStreamError) for a stream
+    // that fails because the token rotated; this stream should use it too once
+    // both branches are on main.
+    attnEs.onerror = function () {
+      // readyState CONNECTING (0) means the browser is retrying by itself and
+      // will resend Last-Event-ID — leave it alone. CLOSED (2) means it gave up
+      // (a non-200, e.g. a 401 after the token rotated) and will NEVER retry;
+      // the handle must be released or the `if (attnEs) return` guard above
+      // blocks every future open and the channel is dead for the page's life.
+      if (attnEs && attnEs.readyState === 2) {
+        attnEs.close();
+        attnEs = null;
+      }
+    };
+  }
+
   function connect(sessionId) {
     if (es) { es.close(); es = null; }
     currentSession = sessionId;
@@ -820,7 +982,7 @@
       data: function (bytes) { if (term) term.write(bytes); },
       exit: function () { setConn('ended', 'ended'); },
       open: function () { setConn('live', 'live'); },
-      error: function () { setConn('reconnect', 'reconnecting…'); }
+      error: function () { setConn('reconnect', 'reconnecting…'); diagnoseStreamError(); }
     });
   }
 
@@ -957,7 +1119,10 @@
         if (tile.sessionId === currentSession) setConn('ended', 'ended');
       },
       open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); },
-      error: function () { if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…'); }
+      error: function () {
+        if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…');
+        diagnoseStreamError();
+      }
     });
     tiles.push(tile);
     return tile;
@@ -1087,6 +1252,9 @@
       renderSheet();
       renderFleet();
       startFleetPolling();
+      // After the fleet is known, so a replayed event can be labelled with its
+      // pane's name instead of a raw session id.
+      openAttentionStream();
       if (!sessions.length) {
         switcherEl.disabled = true;
         updateSwitcher(null);
