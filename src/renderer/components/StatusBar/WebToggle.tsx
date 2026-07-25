@@ -53,6 +53,28 @@ export function primaryWebUrl(info: WebTerminalInfo): string {
   return info.urls && info.urls.length > 0 ? info.urls[0] : '';
 }
 
+/**
+ * Split a transport-error line into text and the one URL it may contain.
+ *
+ * `describeTailscaleProblem` writes for a terminal, where an operator can
+ * select a URL and paste it. In a popover that is a dead end: the whole point
+ * of the line is "go install this", and making the reader retype
+ * `https://tailscale.com/download` by hand is the worst possible last step.
+ *
+ * Deliberately narrow — first URL only, no markdown, no rich text. The strings
+ * are ours, not user input, and a general linkifier here would be a parser
+ * nobody asked for.
+ */
+export function splitLinkedLine(line: string): { before: string; url: string; after: string } {
+  const m = /https?:\/\/[^\s,)]+/.exec(line);
+  if (!m) return { before: line, url: '', after: '' };
+  return {
+    before: line.slice(0, m.index),
+    url: m[0],
+    after: line.slice(m.index + m[0].length),
+  };
+}
+
 /** `host:port` bind label, tolerant of a partial info. */
 export function webBindLabel(info: WebTerminalInfo): string {
   if (!info.host && !info.port) return '';
@@ -99,6 +121,8 @@ export interface WebPopoverBodyProps {
   onCopyPairUrl: () => void;
   onCopyPairCode: () => void;
   onOpenUrl: () => void;
+  /** Open an external link (install page) in the OS browser. */
+  onOpenLink: (url: string) => void;
   onNewPairCode: () => void;
   onDeviceNameChange: (value: string) => void;
   /** Name the device, then mint its code (`daemon.web.pairStart`). */
@@ -131,6 +155,7 @@ export function WebPopoverBody({
   onCopyPairUrl,
   onCopyPairCode,
   onOpenUrl,
+  onOpenLink,
   onNewPairCode,
   onDeviceNameChange,
   onStartPairing,
@@ -189,11 +214,24 @@ export function WebPopoverBody({
         ) : null}
         {info.transportError ? (
           <div className="flex flex-col gap-1 rounded-[5px] bg-[var(--bg-surface)] px-2 py-1.5">
-            {info.transportError.lines.map((line, i) => (
-              <span key={i} className="text-[10px] leading-snug text-[var(--text-sub)]">
-                {line}
-              </span>
-            ))}
+            {info.transportError.lines.map((line, i) => {
+              const { before, url, after } = splitLinkedLine(line);
+              return (
+                <span key={i} className="text-[10px] leading-snug text-[var(--text-sub)]">
+                  {before}
+                  {url ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenLink(url)}
+                      className={`text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+                    >
+                      {url}
+                    </button>
+                  ) : null}
+                  {after}
+                </span>
+              );
+            })}
           </div>
         ) : null}
         <p className="text-[10px] leading-snug text-[var(--text-sub)]">
@@ -599,6 +637,19 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     }
   }, [deviceName, info.pendingDeviceName]);
 
+  /**
+   * Send an install link to the OS browser.
+   *
+   * Never navigates this window: the renderer is the app, and a navigation
+   * away from it is a broken app rather than a browser tab. `http(s)` only —
+   * the strings are ours today, but a URL scheme is exactly the kind of thing
+   * that stops being trustworthy the moment someone widens the source.
+   */
+  const handleOpenLink = useCallback((url: string) => {
+    if (!/^https?:\/\//i.test(url)) return;
+    void window.electronAPI?.shell?.openExternal?.(url);
+  }, []);
+
   const handleStartPairing = useCallback(async () => {
     const a = webApi();
     const name = deviceName.trim();
@@ -702,6 +753,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             onCopyPairUrl={handleCopyPairUrl}
             onCopyPairCode={handleCopyPairCode}
             onOpenUrl={handleOpenUrl}
+            onOpenLink={handleOpenLink}
             onNewPairCode={handleNewPairCode}
             deviceName={deviceName}
             onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}

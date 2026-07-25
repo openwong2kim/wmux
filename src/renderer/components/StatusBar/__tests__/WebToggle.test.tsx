@@ -12,6 +12,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   primaryWebUrl,
+  splitLinkedLine,
   webBindLabel,
   WebPopoverBody,
   type WebPopoverBodyProps,
@@ -36,6 +37,7 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     onToggleTailscale: vi.fn(),
     onDeviceNameChange: vi.fn(),
     onStartPairing: vi.fn(),
+    onOpenLink: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
     onCopyUrl: vi.fn(),
@@ -47,6 +49,29 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
   };
   return renderToStaticMarkup(createElement(WebPopoverBody, { ...base, ...overrides }));
 }
+
+describe('splitLinkedLine', () => {
+  it('splits out the one URL and keeps the text either side', () => {
+    expect(splitLinkedLine('  • Install it from https://tailscale.com/download, then run x.')).toEqual({
+      before: '  • Install it from ',
+      url: 'https://tailscale.com/download',
+      after: ', then run x.',
+    });
+  });
+
+  it('leaves a plain line alone', () => {
+    expect(splitLinkedLine('Error: tailscale is not on PATH.')).toEqual({
+      before: 'Error: tailscale is not on PATH.',
+      url: '',
+      after: '',
+    });
+  });
+
+  it('stops the URL at a comma or paren, which these lines use as punctuation', () => {
+    expect(splitLinkedLine('see https://a.b/c) now').url).toBe('https://a.b/c');
+    expect(splitLinkedLine('see https://a.b/c, now').url).toBe('https://a.b/c');
+  });
+});
 
 describe('WebToggle pure helpers', () => {
   it('primaryWebUrl returns the first URL or empty string', () => {
@@ -229,6 +254,26 @@ describe('WebPopoverBody — on state', () => {
       },
     });
     expect(html).toContain('tailscale is not installed');
+  });
+
+  it('★ makes the install link clickable instead of something to retype', () => {
+    // describeTailscaleProblem writes for a terminal, where a URL can be
+    // selected and pasted. In a popover the whole point of the line is "go
+    // install this", so leaving it as dead text is the worst last step.
+    const html = renderBody({
+      info: {
+        running: false,
+        transportError: {
+          reason: 'not-installed',
+          lines: ['  • Install it from https://tailscale.com/download, then run `tailscale up`.'],
+        },
+      },
+    });
+    expect(html).toContain('<button');
+    expect(html).toContain('https://tailscale.com/download');
+    // The text around it survives — the trailing instruction matters as much
+    // as the link.
+    expect(html).toContain('then run');
   });
 
   it('★ a refusal REPLACES the pairing code rather than sitting beside it', () => {

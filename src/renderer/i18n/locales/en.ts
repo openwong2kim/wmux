@@ -296,7 +296,10 @@ export const en = {
   'web.headline': 'Serve panes to a browser',
   'web.allowInput': 'Allow input',
   'web.expose': 'Expose to network',
-  'web.tailscale': 'HTTPS over my tailnet (needed to pair a phone)',
+  // "tailnet" means nothing to someone who has not used Tailscale, and this
+  // checkbox is the first place most people will meet the word. Name the
+  // outcome (HTTPS, which is what makes pairing possible) and the requirement.
+  'web.tailscale': 'Serve over HTTPS (needs Tailscale) — required to pair a phone',
   'web.exposeNoPairing':
     'Watch-only: panes are readable on the LAN with the token, but a phone cannot pair over plain HTTP.',
   'web.refusalInsecure': 'Pairing is off while the server is exposed on the network.',
