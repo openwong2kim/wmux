@@ -277,10 +277,13 @@ describe('WebPopoverBody — on state', () => {
   });
 
   it('★ a refusal REPLACES the pairing code rather than sitting beside it', () => {
+    // The code is left LIVE on purpose. Blanking it would test that a missing
+    // code renders nothing, which is not the invariant — the invariant is that
+    // a refusal wins over a code that does exist, because that is the state a
+    // server on a plaintext bind is actually in (start() always mints one).
     const html = renderBody({
       info: {
         ...runningInfo,
-        pairCode: undefined,
         pairRefusal: { reason: 'insecure-transport', detail: 'plaintext bind' },
       },
     });
@@ -288,7 +291,11 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('web.refusalInsecureFix');
     // A code shown next to "pairing is unavailable" is still a code someone
     // will read onto a phone. The whole fix is that it is not there.
-    expect(html).not.toContain('ABC123');
+    //
+    // Asserted against the FIXTURE's code (482913). An earlier version checked
+    // for 'ABC123', which this fixture never contains — so it passed no matter
+    // what the component rendered, leaving the regression it names unguarded.
+    expect(html).not.toContain('482913');
     expect(html).not.toContain('web.newPairCode');
   });
 

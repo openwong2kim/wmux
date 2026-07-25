@@ -95,9 +95,10 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // `--tailscale`: the HTTPS front door is registered BEFORE the server starts
   // (so the Host allowlist carries the MagicDNS name from the first boot) and
   // rolled back if the start fails. Both live in startWebTransport.
+  const tailscale = hasFlag(args, '--tailscale');
   const start = await startWebTransport({
     port,
-    tailscale: hasFlag(args, '--tailscale'),
+    tailscale,
     ...(explicitHost !== undefined ? { explicitHost } : {}),
     expose: hasFlag(args, '--expose'),
     allowedHosts,
@@ -108,6 +109,13 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         allowInput,
         allowedHosts: hosts,
         newToken,
+        // Forwarded so the daemon persists which transport this is. Without it
+        // a `--tailscale` server comes back from a restart reporting plain
+        // transport, and the GUI checkbox reads unchecked over a tailnet server
+        // — the operator's next Stop → Start then drops them onto loopback.
+        // The GUI path already did this; the CLI path is where a phone gets
+        // paired most often, so it mattered more here.
+        tailscale,
       });
       return { failed: getResultError(res) !== undefined, value: res };
     },

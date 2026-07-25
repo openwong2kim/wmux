@@ -97,6 +97,15 @@ export interface WebTerminalInfo {
    */
   transportError?: { reason: string; lines: string[] };
   /**
+   * Why naming-and-minting a code failed, on an otherwise healthy server.
+   *
+   * Separate from `error` deliberately: that field means "the daemon could not
+   * be reached at all", and a consumer reading it as such would misreport a
+   * running server as offline. This one always arrives alongside
+   * `running: true`.
+   */
+  pairStartError?: string;
+  /**
    * Set ONLY by the main-process handler when it could not reach the daemon
    * (no control pipe, or the RPC threw/timed out). Absent on a normal reply.
    */

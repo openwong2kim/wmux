@@ -256,7 +256,9 @@ export function registerWebHandlers(
         failure = (err as Error)?.message ?? String(err);
       }
       const info = await call('daemon.web.status', {});
-      if (failure) return { ...withFront(info), error: failure };
+      // NOT `error`: that field means "the daemon is unreachable", and this
+      // reply carries a running server.
+      if (failure) return { ...withFront(info), pairStartError: failure };
       // A fresh code is the last moment before a camera is pointed at it.
       if (info.running && advertisesFront(info)) {
         frontState = await checkWebFront({

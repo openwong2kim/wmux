@@ -405,6 +405,15 @@ export function WebPopoverBody({
             >
               {t('web.showPairCode')}
             </button>
+            {/* A refused mint used to leave this panel looking untouched: no
+                code appeared and nothing said why. The button guards the empty
+                name, so what lands here is the server refusing for its own
+                reason, which the operator cannot guess. */}
+            {info.pairStartError ? (
+              <span className="text-[10px] leading-snug text-[var(--accent-red)]">
+                {info.pairStartError}
+              </span>
+            ) : null}
           </>
         )}
       </div>
