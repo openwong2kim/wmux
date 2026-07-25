@@ -1,0 +1,27 @@
+{
+  // The relay is a Cloudflare Worker, not part of the Electron app, the daemon,
+  // or the CLI: it targets the WebWorker global scope (WebCrypto, fetch, btoa)
+  // and must never pull in @types/node, whose globals would let node-only code
+  // typecheck here and then fail at the edge. Consequently it is NOT covered by
+  // the repo's root `tsc --noEmit`; check it with
+  //   node ./node_modules/typescript/bin/tsc --noEmit -p relay/tsconfig.json
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "WebWorker"],
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  // Tests are excluded on purpose: they run under Node with vitest globals,
+  // whose types conflict with the WebWorker lib. The root vitest run covers
+  // them (see the `relay/__tests__` entry in vitest.config.ts).
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,31 @@
+name = "wmux-push-relay"
+main = "src/index.ts"
+compatibility_date = "2026-07-25"
+
+# No KV, no D1, no R2, no Durable Objects, no queues. The relay's only state is
+# the cached APNs provider JWT held in isolate memory. If you find yourself
+# adding a binding here, re-read the blindness claim in src/index.ts first.
+
+[vars]
+# Not a secret — it only selects which Apple host to talk to.
+APNS_ENV = "production"
+
+[observability]
+enabled = true
+
+# Secrets (never in this file — set with `wrangler secret put <NAME>`):
+#   APNS_KEY_P8    contents of AuthKey_XXXXXXXXXX.p8
+#   APNS_KEY_ID    the 10-character Key ID
+#   APNS_TEAM_ID   the 10-character Team ID
+#   APNS_TOPIC     the iOS app's bundle identifier
+
+# `wrangler deploy --env sandbox` publishes a second worker that talks to
+# Apple's sandbox host, for TestFlight/debug builds. Its secrets are separate.
+[env.sandbox]
+name = "wmux-push-relay-sandbox"
+
+[env.sandbox.vars]
+APNS_ENV = "sandbox"
+
+[env.sandbox.observability]
+enabled = true
