@@ -7,6 +7,8 @@ import {
   getPath,
   detectThrottled,
   hasFailure,
+  historyLine,
+  BOOL_GATES,
   GATES,
   SCHEMA_VERSION,
 } from '../perf-compare.mjs';
@@ -259,5 +261,85 @@ describe('detectThrottled', () => {
     const cur = makeResult({ throttled: true });
     const results = compareResults(cur, base);
     expect(verdictFor(results, 'echoP95Ms').status).toBe('PASS');
+  });
+});
+
+describe('historyLine — the trend record (#602)', () => {
+  const meta = { commit: 'abc1234', mode: 'ci', appVersion: '3.33.0' };
+  const record = (overrides) => JSON.parse(historyLine(makeResult(overrides), meta));
+
+  // The invariant that keeps #602 from recurring. The hiddenFlood gates shipped
+  // with no trend fields because the field list was a hand-copied second list;
+  // now it is derived, and this fails the moment the two drift apart again.
+  it('records a field for every gated metric', () => {
+    const rec = record();
+    for (const g of [...GATES, ...BOOL_GATES]) {
+      expect(Object.hasOwn(rec, g.key), `no trend field for gate ${g.label}`).toBe(true);
+    }
+  });
+
+  // Pins that the record IS the gate tables rather than a list that merely
+  // happens to agree with them today — a hand-added field breaks this first.
+  it('is the run identity followed by the two gate tables, in their order', () => {
+    expect(Object.keys(record())).toEqual([
+      'ts', 'commit', 'mode', 'appVersion',
+      ...GATES.map((g) => g.key),
+      ...BOOL_GATES.map((g) => g.key),
+    ]);
+  });
+
+  // Field names are the series identity for lines already accumulated. Renaming
+  // a gate key silently forks the series, so pin the pre-#602 names explicitly.
+  it('keeps the field names the pre-#602 lines already use', () => {
+    const rec = record();
+    for (const name of [
+      'coldFirstPtyDataMs', 'echoP95Ms', 'frameP95Ms', 'frame8P95Ms',
+      'ramIdleBytes', 'ram8Bytes',
+      'frameBudgetP95Ms_N4', 'frameBudgetP95Ms_N8', 'frameBudgetP95Ms_N16',
+      'imePass', 'webglContextLossPass',
+    ]) {
+      expect(Object.hasOwn(rec, name), `dropped legacy trend field ${name}`).toBe(true);
+    }
+  });
+
+  it('records the four hiddenFlood values that were missing entirely', () => {
+    const rec = record({
+      hiddenFloodEchoN4: 21.6, hiddenFloodFrameDeltaN4: 15.7,
+      hiddenFloodEchoN8: 29.4, hiddenFloodFrameDeltaN8: 15.8,
+    });
+    expect(rec.hiddenFloodEchoP95Ms_N4).toBe(21.6);
+    expect(rec.hiddenFloodFrameDeltaP95Ms_N4).toBe(15.7);
+    expect(rec.hiddenFloodEchoP95Ms_N8).toBe(29.4);
+    expect(rec.hiddenFloodFrameDeltaP95Ms_N8).toBe(15.8);
+  });
+
+  it('carries the run identity so a line can be traced back to its commit', () => {
+    const rec = record();
+    expect(rec.commit).toBe('abc1234');
+    expect(rec.mode).toBe('ci');
+    expect(rec.appVersion).toBe('3.33.0');
+    expect(Number.isFinite(Date.parse(rec.ts))).toBe(true);
+  });
+
+  it('records a metric the run never produced as null, not as a missing field', () => {
+    // A skipped scenario must still occupy its column — an absent key would read
+    // as "this gate did not exist yet" to anyone plotting the series.
+    const cur = makeResult();
+    delete cur.scenarios.ram;
+    const rec = JSON.parse(historyLine(cur, meta));
+    expect(rec.ramIdleBytes).toBeNull();
+    expect(rec.ram8Bytes).toBeNull();
+  });
+
+  it('records the boolean gates as pass / fail / skipped', () => {
+    const withIme = (ime) => {
+      const cur = makeResult();
+      if (ime !== undefined) cur.scenarios.ime = ime;
+      return JSON.parse(historyLine(cur, meta));
+    };
+    expect(withIme({ pass: true }).imePass).toBe(true);
+    expect(withIme({ pass: false }).imePass).toBe(false);
+    // makeResult() has no ime scenario at all — skipped, not failed.
+    expect(withIme(undefined).imePass).toBeNull();
   });
 });
