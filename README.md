@@ -8,6 +8,7 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
+[![Website](https://img.shields.io/badge/wmux.app-E8A33D?label=&labelColor=151517)](https://www.wmux.app)
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Latest release](https://img.shields.io/github/v/release/openwong2kim/wmux?color=2ea44f&label=release)](https://github.com/openwong2kim/wmux/releases/latest)
@@ -31,8 +32,8 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 </p>
 
 <p align="center">
-<img alt="The orchestrator spawns a Claude agent and tasks it to survey a repo" src="docs/orchestrate-subagent.gif" width="820" />
-<br><sub><b>Orchestrate real agents, not just chat.</b> The orchestrator spins up a worker, points a Claude agent at a repo to survey it, and drives the fleet toward the goal.</sub>
+<img alt="The orchestrator hands a task to an idle pane and relays the answer back" src="docs/orchestrate-subagent.gif" width="900" />
+<br><sub><b>Orchestrate real agents, not just chat.</b> The orchestrator picks an idle pane, hands it the task, and relays the answer back — while the Git dock and the diff stay open next to it.</sub>
 </p>
 
 <table>
@@ -78,13 +79,17 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 winget install openwong2kim.wmux
 ```
 
-<sub>or `choco install wmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) for offline install — a SmartScreen prompt appears because the installer isn't Authenticode-signed yet; winget/choco bypass it ([why?](#install-help))</sub>
+<sub>or `choco install wmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) for offline install — the installer is signed with a SignPath *test* certificate for now, so SmartScreen still shows an unknown publisher; winget/choco skip the prompt ([why?](#install-help))</sub>
 
 **macOS** (Apple Silicon)
 
-<sub>[**Download the .dmg**](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. On first launch the `wmux` CLI installs itself onto your PATH. If Gatekeeper warns, right-click the app → **Open** ([more](#install-help)).</sub>
+<sub>[**Download the .dmg**](https://github.com/openwong2kim/wmux/releases/latest) — Developer ID signed, notarized and stapled, so it opens without a Gatekeeper detour — and drag wmux to Applications. On first launch the `wmux` CLI installs itself onto your PATH.</sub>
+
+<sub>Both platforms update themselves in place: wmux checks for a new release every 30 minutes and verifies the download against a published SHA-256 before installing (Windows x64 and macOS arm64).</sub>
 
 **Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
+
+<sub>Prefer a tour first? [**wmux.app**](https://www.wmux.app) walks through the same features with screenshots.</sub>
 
 ---
 
@@ -100,7 +105,7 @@ winget install openwong2kim.wmux
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
-| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **84 tools** (browser, terminal, panes, channels, A2A) register themselves, scoped to the workspace that called them. |
 
 ---
 
@@ -117,7 +122,9 @@ winget install openwong2kim.wmux
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
 - 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
-- 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
+- 📱 **`wmux web`** — your live panes in a phone browser (PWA-installable), read-only and loopback-only by default; input and network exposure are explicit, warned-about opt-ins
+- ⬆️ **In-app auto-update** on Windows and macOS (arm64) — checked every 30 minutes, SHA-256 verified against a published manifest before it installs
+- 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
 
 > 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`, `channel_post`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes` / `wmux channel post`) to orchestrate panes programmatically.
 
@@ -208,7 +215,9 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Is wmux a tmux port?** No — tmux was the inspiration, not the base. wmux is a native **workspace multiplexer** on Electron (ConPTY on Windows, forkpty on macOS): tmux-*style* split panes, prefix keys, and session persistence, but it also multiplexes agents, git worktrees, a browser, and channels. No WSL / Cygwin / MSYS2.
 
-**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). Intel builds aren't produced right now; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
+**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). It is Developer ID signed, notarized and stapled, so Gatekeeper lets it through on first launch. Intel builds aren't produced right now; open an issue if you need one.
+
+**Can I reach my panes from my phone?** Yes — `wmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and `--expose` are explicit opt-ins, and even read-only shows a pane's full scrollback to whoever can reach the port, so keep it behind Tailscale rather than the open internet.
 
 **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
 
@@ -216,7 +225,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Feels heavy, or a workspace switch is slow?** See [docs/performance.md](docs/performance.md) — what runs while a pane is hidden, the daemon's `config.json` knobs, and how to self-diagnose with `wmux doctor`.
 
-**"Windows protected your PC" warning?** The installer isn't Authenticode-signed yet (free signing via [SignPath.io](https://signpath.io/) / [SignPath Foundation](https://signpath.org/) is being set up), so SmartScreen flags an unknown publisher. It's safe — click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
+**"Windows protected your PC" warning?** The release pipeline already signs `Setup.exe` through [SignPath](https://signpath.io/), but with a *test* certificate while the [SignPath Foundation](https://signpath.org/) OSS certificate is pending — Windows does not trust it, so SmartScreen still reports an unknown publisher. It's safe: click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
 
 **Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, use winget/choco, or build from source ([#200](https://github.com/openwong2kim/wmux/issues/200)).
 
