@@ -104,6 +104,7 @@
     "immer": "^11.1.4",
     "node-pty": "^1.1.0",
     "playwright-core": "^1.58.2",
+    "qrcode-generator": "2.0.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-resizable-panels": "^4.7.3",

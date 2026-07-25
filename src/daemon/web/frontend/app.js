@@ -1554,6 +1554,21 @@
   // stored) — the operator explicitly navigated here to key in a code.
   if (location.pathname === '/pair') {
     showPairing();
+    // A scanned QR arrives as /pair?code=ABC123. Strip the code from the
+    // address bar FIRST, before anything can fail: a code left parked in
+    // history is the one write-down surface still open after the server's
+    // Referrer-Policy: no-referrer, and it stays live for ten minutes if the
+    // visitor closes the tab instead of finishing.
+    var scanned = pairQuery.readPairCode(location.search);
+    var cleaned = pairQuery.urlWithoutCode(location.pathname, location.search);
+    if (cleaned && history.replaceState) {
+      try { history.replaceState(null, '', cleaned); } catch (e) { /* non-fatal */ }
+    }
+    // Junk lands on the manual form rather than burning one of five attempts.
+    if (scanned && codeInput && pairForm) {
+      codeInput.value = scanned;
+      pairForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    }
   } else {
     init();
   }

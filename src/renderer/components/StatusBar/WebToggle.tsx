@@ -1,10 +1,12 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from 'react';
+import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconBrowser } from '../icons';
@@ -75,6 +77,29 @@ export function splitLinkedLine(line: string): { before: string; url: string; af
   };
 }
 
+/**
+ * What the QR encodes: the pair address with the code already in it.
+ *
+ * Empty when there is nothing worth scanning — no reachable address, or no
+ * live code. A QR that resolves to a pairing screen the operator then has to
+ * type into is a half-measure; the entire value here is that the phone types
+ * NOTHING.
+ *
+ * On putting a credential in a URL: this repo's rule (WebTerminalServer, the
+ * `authenticate` comment) forbids DURABLE credentials in query strings, and
+ * built `StreamTicket` to satisfy it — "the narrow thing a URL can safely
+ * carry: it grants opening a stream, it expires in two minutes, it is bound to
+ * one device." A pairing code is strictly narrower: single use, ten minutes,
+ * five attempts. This is that rule applied, not an exception to it. The `/pair`
+ * page strips the code from the address bar on load, and `Referrer-Policy:
+ * no-referrer` is already set server-side.
+ */
+export function webQrPayload(info: WebTerminalInfo): string {
+  const pairUrl = webPairUrl(info);
+  if (!pairUrl || !info.pairCode) return '';
+  return `${pairUrl}?code=${encodeURIComponent(info.pairCode)}`;
+}
+
 /** `host:port` bind label, tolerant of a partial info. */
 export function webBindLabel(info: WebTerminalInfo): string {
   if (!info.host && !info.port) return '';
@@ -109,6 +134,13 @@ export interface WebPopoverBodyProps {
   tailscale: boolean;
   /** What the next paired device will be called. Required before a code shows. */
   deviceName: string;
+  /**
+   * Pre-encoded QR for the pair-with-code URL, or null when there is nothing
+   * to scan. Computed by the PARENT: encoding here would mean a hook, and this
+   * component is rendered through renderToStaticMarkup in tests precisely
+   * because it has none.
+   */
+  qr: QrPath | null;
   busy: boolean;
   /** Which value was just copied, so only that button flips to "Copied". */
   copied: CopyTarget;
@@ -160,6 +192,7 @@ export function WebPopoverBody({
   onDeviceNameChange,
   onStartPairing,
   deviceName,
+  qr,
   t,
 }: WebPopoverBodyProps) {
   if (!info.running) {
@@ -333,7 +366,37 @@ export function WebPopoverBody({
           <span className="text-[10px] leading-snug text-[var(--text-sub)]">
             {t('web.pairHint')}
           </span>
-          {pairUrl ? (
+          {/* The QR replaces the pair-URL text row rather than stacking on it:
+              once a scan carries the address AND the code, the address as text
+              is redundant, and this popover is a fixed 288px box. Copy stays
+              reachable for a phone that will not scan. */}
+          {qr ? (
+            <div className="flex items-center gap-2">
+              <svg
+                viewBox={`0 0 ${qr.size} ${qr.size}`}
+                width={116}
+                height={116}
+                shapeRendering="crispEdges"
+                role="img"
+                aria-label={t('web.qrAlt')}
+                className="shrink-0 rounded-[5px] bg-white p-1"
+              >
+                <path d={qr.d} fill="#000" />
+              </svg>
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+                  {t('web.qrHint')}
+                </span>
+                <button
+                  type="button"
+                  onClick={onCopyPairUrl}
+                  className={`self-start rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+                >
+                  {copied === 'pairUrl' ? t('web.copied') : t('web.copyLink')}
+                </button>
+              </div>
+            </div>
+          ) : pairUrl ? (
             <div className="flex items-center gap-1.5">
               <span className="flex-1 min-w-0 truncate font-mono text-[11px] text-[var(--text-sub)] select-all">
                 {pairUrl}
@@ -682,6 +745,12 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     else void copyValue('url', url);
   }, [copyValue, info]);
 
+  // Keyed on the payload string, not on `info`: the popover re-renders every
+  // 10s from the status poll and again on every copy click, but the thing being
+  // encoded changes only when a human mints a code.
+  const qrPayload = webQrPayload(info);
+  const qr = useMemo(() => buildQrPath(qrPayload), [qrPayload]);
+
   // The web bridge is absent entirely (e.g. under a stripped test harness) —
   // render nothing rather than a dead control.
   if (!api) return null;
@@ -767,6 +836,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             deviceName={deviceName}
             onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
             onStartPairing={handleStartPairing}
+            qr={qr}
             t={t}
           />
         </div>

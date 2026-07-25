@@ -62,12 +62,18 @@ const appJs = read(join(frontendDir, 'app.js'));
 // function inside app.js) so the unit tests can evaluate the formatting rule
 // without a DOM.
 const attentionFormatJs = read(join(frontendDir, 'attentionFormat.js'));
+// Same reason, same shape: it publishes `pairQuery` on the global and app.js
+// reads it when /pair loads. Separate so the parsing — which decides whether a
+// scanned code is auto-submitted or lands on the manual form — is unit-tested
+// against the exact bytes the phone runs.
+const pairQueryJs = read(join(frontendDir, 'pairQuery.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
 html = inject(html, '/*__APP_CSS__*/', appCss);
 html = inject(html, '/*__XTERM_JS__*/', xtermJs);
 html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
+html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -116,10 +122,13 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines three scripts (xterm, attentionFormat, app) and one style
-// block (xterm css + our css). A count that moved means index.html grew or lost
-// a block and nobody re-read this gate; refuse rather than guess which.
-if (blocks.scripts.length !== 3) fail(`expected 3 inline <script> blocks, found ${blocks.scripts.length}`);
+// The page inlines four scripts (xterm, attentionFormat, pairQuery, app) and
+// one style block (xterm css + our css). A count that moved means index.html
+// grew or lost a block and nobody re-read this gate; refuse rather than guess
+// which. Raised 3 → 4 when pairQuery.js was added for QR pairing: the policy
+// itself is derived from the served bytes, so an extra block is hashed like the
+// others — the count is here to make the change deliberate, not to cap it.
+if (blocks.scripts.length !== 4) fail(`expected 4 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(
