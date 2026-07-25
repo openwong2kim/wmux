@@ -48,6 +48,7 @@ import {
   formatScreenTail,
   loadApprovalState,
   saveApprovalState,
+  sanitizeResolvedBy,
   trimHistory,
   type ApprovalPersistedState,
 } from './approvalStore';
@@ -71,32 +72,6 @@ import type {
  */
 function copyRequest(r: ApprovalRequest): ApprovalRequest {
   return { ...r, ...(r.options ? { options: [...r.options] } : {}) };
-}
-
-/** Longest `resolvedBy` we will persist. Room for a device name plus a UUID. */
-export const RESOLVED_BY_MAX = 128;
-
-/**
- * Bound and clean the "who answered this" label.
- *
- * Applied HERE rather than at each caller because this is the chokepoint every
- * path funnels through, and the two callers got it wrong in opposite
- * directions: the HTTP route passed a hardcoded constant and threw the
- * authenticated principal away, while `daemon.approvals.resolve` accepted any
- * string a pipe client sent, with no cap and no control-character strip. The
- * string is persisted per record in approvals.json, interpolated into a daemon
- * log line, and handed back to the loser of a race in a 409 body — so an
- * unbounded one is file growth, log injection, and a response payload at once.
- * `question` and `options` are already sanitized on the way in; this closes the
- * last field that was not.
- */
-export function sanitizeResolvedBy(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  const cleaned = raw
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned.length > RESOLVED_BY_MAX ? cleaned.slice(0, RESOLVED_BY_MAX) : cleaned;
 }
 
 export interface ApprovalRegistryDeps {
@@ -353,7 +328,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       record.screenTail = formatScreenTail(rows);
       this.deps.log?.(
         'info',
-        `[approvals] ${params.decision} ${record.id} on ${record.sessionId} by ${params.resolvedBy || 'unknown'}`,
+        // The SANITIZED value, not the raw param. Sanitizing only what gets
+        // stored left the log line taking a CR/LF straight from the caller,
+        // which is the forged-log-line injection sanitizeResolvedBy exists to
+        // prevent — the field was clean on disk and dirty in the log.
+        `[approvals] ${params.decision} ${record.id} on ${record.sessionId} by ${record.resolvedBy || 'unknown'}`,
       );
       return {
         events: [{ type: 'resolve' as ApprovalEventType, request: copyRequest(record) }],
@@ -442,3 +421,5 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 }
+
+export { RESOLVED_BY_MAX, sanitizeResolvedBy } from './approvalStore';

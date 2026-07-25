@@ -87,14 +87,21 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
     state,
   };
   if (typeof o['workspaceId'] === 'string' && o['workspaceId']) out.workspaceId = o['workspaceId'];
-  if (typeof o['resolvedBy'] === 'string') out.resolvedBy = o['resolvedBy'];
+  // Bounded on the way in for the same reason `question`/`options` are, below:
+  // this is plain JSON on disk. Doing it only for the fields the extractor
+  // happens to touch left the two that a resolve writes — the label and the
+  // captured screen — able to come back unbounded and carry control characters
+  // into a log line and an HTTP response.
+  if (typeof o['resolvedBy'] === 'string') out.resolvedBy = sanitizeResolvedBy(o['resolvedBy']);
   if (typeof o['resolvedAt'] === 'number' && Number.isFinite(o['resolvedAt'])) {
     out.resolvedAt = o['resolvedAt'];
   }
   if (typeof o['decision'] === 'string' && DECISIONS.has(o['decision'])) {
     out.decision = o['decision'] as ApprovalDecision;
   }
-  if (typeof o['screenTail'] === 'string') out.screenTail = o['screenTail'];
+  if (typeof o['screenTail'] === 'string') {
+    out.screenTail = formatScreenTail(o['screenTail'].split(/\r?\n/));
+  }
   // A4: re-sanitize on the way IN, not just on the way out of the extractor.
   // This file is plain JSON on disk — a hand-edit, or a record written by a
   // build with looser caps, must not put an unbounded or control-char-bearing
@@ -174,6 +181,33 @@ export function trimHistory(requests: readonly ApprovalRequest[]): ApprovalReque
 }
 
 /** Bound a captured pane tail so a record can never carry a screenful of noise. */
+/** Longest `resolvedBy` we will persist. Room for a device name plus a UUID. */
+export const RESOLVED_BY_MAX = 128;
+
+/**
+ * Bound and clean the "who answered this" label.
+ *
+ * Applied HERE rather than at each caller because this is the chokepoint every
+ * path funnels through, and the two callers got it wrong in opposite
+ * directions: the HTTP route passed a hardcoded constant and threw the
+ * authenticated principal away, while `daemon.approvals.resolve` accepted any
+ * string a pipe client sent, with no cap and no control-character strip. The
+ * string is persisted per record in approvals.json, interpolated into a daemon
+ * log line, and handed back to the loser of a race in a 409 body — so an
+ * unbounded one is file growth, log injection, and a response payload at once.
+ * `question` and `options` are already sanitized on the way in; this closes the
+ * last field that was not.
+ */
+export function sanitizeResolvedBy(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const cleaned = raw
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > RESOLVED_BY_MAX ? cleaned.slice(0, RESOLVED_BY_MAX) : cleaned;
+}
+
 export function formatScreenTail(rows: readonly string[]): string {
   return rows
     .slice(-SCREEN_TAIL_ROWS)

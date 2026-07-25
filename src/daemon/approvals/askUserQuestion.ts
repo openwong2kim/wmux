@@ -32,6 +32,16 @@ export const MAX_OPTION_LABEL_CHARS = 80;
 /** Claude's own permission prompts offer 2-3 options; 8 is slack, not a target. */
 export const MAX_OPTIONS = 8;
 
+/**
+ * How many raw array entries we will even LOOK at while collecting labels.
+ *
+ * Separate from MAX_OPTIONS because the two bound different things: that one
+ * caps what we keep, this one caps the work. A payload whose entries are all
+ * unusable never reaches the MAX_OPTIONS break, so without this the loop runs
+ * to the end of an array chosen by whoever wrote the payload.
+ */
+export const MAX_INSPECTED_OPTIONS = 64;
+
 // C0 controls, DEL, and C1 controls — the same class activitySummary strips.
 // Written with hex escapes so the source file stays pure ASCII: a literal
 // control byte embedded in a source file is invisible in review and easy for a
@@ -95,7 +105,12 @@ function readOptionLabels(source: Record<string, unknown>): string[] {
   const raw = readArray(source, 'options');
   if (!raw) return [];
   const labels: string[] = [];
-  for (const entry of raw) {
+  // Bound the entries INSPECTED, not just the labels accepted. Breaking only on
+  // `labels.length` meant an array of a million nulls yielded nothing and was
+  // walked in full, on the daemon's event loop, driven by a hook payload the
+  // agent authors. `MAX_INSPECTED_OPTIONS` gives a malformed-but-honest payload
+  // some slack while keeping the work constant.
+  for (const entry of raw.slice(0, MAX_INSPECTED_OPTIONS)) {
     if (labels.length >= MAX_OPTIONS) break;
     const label = typeof entry === 'string'
       ? clean(entry, MAX_OPTION_LABEL_CHARS)
@@ -153,7 +168,9 @@ export function sanitizeQuestion(value: unknown): string | undefined {
 export function sanitizeOptions(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const labels: string[] = [];
-  for (const entry of value) {
+  // Same inspected-entry cap as readOptionLabels: this one reads a file on disk,
+  // which a hand-edit can make just as large.
+  for (const entry of value.slice(0, MAX_INSPECTED_OPTIONS)) {
     if (labels.length >= MAX_OPTIONS) break;
     const label = clean(typeof entry === 'string' ? entry : '', MAX_OPTION_LABEL_CHARS);
     if (label) labels.push(label);

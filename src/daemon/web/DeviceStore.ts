@@ -261,7 +261,7 @@ export class DeviceStore {
   constructor(opts: DeviceStoreOptions) {
     this.filePath = getDeviceStatePath(opts.wmuxDir);
     this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? (() => {});
+    this.log = opts.log ?? ((): void => undefined);
     this.audit = new DeviceAuditLog(opts.wmuxDir, this.now, (level, msg) => this.log(level, msg));
     for (const record of loadDeviceState(this.filePath, this.log).devices) {
       this.devices.set(record.deviceId, record);
@@ -672,6 +672,7 @@ function sha256(input: Buffer): Buffer {
 function sanitizeName(name: unknown): string {
   const raw = typeof name === 'string' ? name : '';
   const cleaned = raw
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -687,7 +688,7 @@ function sanitizeName(name: unknown): string {
  */
 export function loadDeviceState(
   filePath: string,
-  log: (level: 'info' | 'warn' | 'error', msg: string) => void = () => {},
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void = (): void => undefined,
 ): DevicePersistedState {
   let raw: string;
   try {

@@ -8,7 +8,12 @@ import {
   sanitizeResolvedBy,
   type ApprovalRegistryDeps,
 } from '../ApprovalRegistry';
-import { getApprovalStatePath, RESOLVED_HISTORY_CAP } from '../approvalStore';
+import {
+  getApprovalStatePath,
+  RESOLVED_HISTORY_CAP,
+  SCREEN_TAIL_ROWS,
+  SCREEN_TAIL_ROW_CHARS,
+} from '../approvalStore';
 import { keystrokesForAgent, looksLikeApprovalPrompt } from '../approvalKeystrokes';
 import { MAX_OPTIONS, MAX_OPTION_LABEL_CHARS, MAX_QUESTION_CHARS } from '../askUserQuestion';
 import type { ApprovalEvent } from '../types';
@@ -636,5 +641,64 @@ describe('resolvedBy sanitation', () => {
     expect(stored.length).toBeLessThanOrEqual(RESOLVED_BY_MAX);
     expect(stored.includes(String.fromCharCode(0x0d))).toBe(false);
     expect(stored.includes(String.fromCharCode(0x0a))).toBe(false);
+  });
+it('logs the SANITIZED label, not the raw parameter', async () => {
+    // Sanitizing only what gets STORED left the log line taking a CR/LF
+    // straight from the caller — clean on disk, forged in the log, which is
+    // the injection the sanitizer exists to prevent.
+    const lines: string[] = [];
+    const { registry: reg } = makeRegistry({
+      log: (_level: string, message: string) => { lines.push(message); },
+    });
+    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude' });
+    const id = reg.list().pending[0].id;
+
+    const LF = String.fromCharCode(0x0a);
+    await reg.resolve({
+      id,
+      decision: 'approve',
+      resolvedBy: 'deck' + LF + '[approvals] approve FORGED on p9 by nobody',
+    });
+
+    const resolveLine = lines.find((l: string) => l.includes('[approvals] approve'));
+    expect(resolveLine).toBeDefined();
+    expect((resolveLine ?? "").includes(LF)).toBe(false);
+    expect(resolveLine).toContain('deck [approvals] approve FORGED');
+  });
+
+  it('bounds a persisted label and screen tail on the way back IN', async () => {
+    // approvals.json is plain JSON on disk. Sanitizing only on write left a
+    // hand-edited record able to come back unbounded.
+    const dir = tmpDir;
+    const huge = 'z'.repeat(10_000);
+    fs.writeFileSync(
+      getApprovalStatePath(dir),
+      JSON.stringify({
+        version: 1,
+        requests: [
+          {
+            id: 'r1',
+            sessionId: 'p1',
+            agent: 'claude',
+            kind: 'awaiting_input',
+            createdAt: 1,
+            state: 'resolved',
+            resolvedBy: huge,
+            screenTail: Array.from({ length: 500 }, () => huge).join('\n'),
+          },
+        ],
+      }),
+      'utf8',
+    );
+
+    const { registry: reg } = makeRegistry();
+    const record = reg.list().recentlyResolved[0];
+    const resolvedBy = record.resolvedBy ?? '';
+    const screenTail = record.screenTail ?? '';
+    expect(resolvedBy.length).toBeLessThanOrEqual(RESOLVED_BY_MAX);
+    expect(screenTail.split('\n')).toHaveLength(SCREEN_TAIL_ROWS);
+    for (const row of screenTail.split('\n')) {
+      expect(row.length).toBeLessThanOrEqual(SCREEN_TAIL_ROW_CHARS);
+    }
   });
 });

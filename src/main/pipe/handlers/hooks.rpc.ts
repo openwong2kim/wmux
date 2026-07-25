@@ -423,7 +423,22 @@ export function registerHooksRpc(
     //     relay on purpose: the Settings hook-health card must keep counting
     //     signals that main merely passes through.
     const relayed = await relayHookSignalToDaemon(getDaemonClient?.() ?? null, signal);
-    if (relayed) return relayed;
+    if (relayed) {
+      // Feed the OTHER half of the split counter too. `recordSignal` runs above
+      // the relay so pass-through signals still count as "the plugin is alive",
+      // but `recordWorkspaceMatch` only ran in the fallback below — so with a
+      // healthy daemon (the normal path) `total` climbed while the match rate
+      // froze at whatever it was before, which is exactly the conflation the
+      // split was introduced to prevent. The daemon already decided this; its
+      // verdict is in the response.
+      //
+      // Only the two outcomes that ARE a resolution answer. 'invalid-envelope'
+      // and 'internal-error' say nothing about whether a workspace owned the
+      // cwd, and scoring them either way would bias the rate.
+      if (relayed.ok) meter.recordWorkspaceMatch(true);
+      else if (relayed.reason === 'no-workspace-match') meter.recordWorkspaceMatch(false);
+      return relayed;
+    }
 
     // 3. Resolve signal → ptyId. Env-first (workspaceId/surfaceId from
     //    WMUX_* env vars that wmux PTYManager injects into the shell)
