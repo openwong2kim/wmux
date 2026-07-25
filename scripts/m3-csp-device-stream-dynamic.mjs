@@ -978,7 +978,14 @@ async function scenarioBrowserRenew(control, sessionId, browserCtl) {
 
     const roster = await control.rpc('daemon.web.deviceList', {});
     const deviceC = (roster?.devices ?? []).find((d) => d.name === 'harness-browser-C') ?? null;
-    const storedCredential = await page.evaluate(() => sessionStorage.getItem('wmux-web-token') ?? '');
+    // localStorage is where the credential lives now — see app.js for why (the
+    // manifest start_url carries no token, so a home-screen launch must find it
+    // without a URL). sessionStorage is read only as the migration fallback the
+    // page itself implements.
+    const storedCredential = await page.evaluate(
+      () => localStorage.getItem('wmux-web-token')
+        ?? sessionStorage.getItem('wmux-web-token')
+        ?? '');
     const paired = !!deviceC && storedCredential.startsWith(`${deviceC.deviceId}.`);
 
     const ticketReqsBefore = apiRequests.filter((r) => r.path === '/api/stream-ticket').length;

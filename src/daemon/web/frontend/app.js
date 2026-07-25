@@ -14,9 +14,40 @@
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
 
+  // Credential storage is localStorage, NOT sessionStorage, and the reason is
+  // the home screen. The manifest's start_url is "./", so launching the
+  // installed app loads the page with no `?token=` in the URL — it has to find
+  // the credential itself or it renders a shell that 401s on every call. iOS
+  // evicts an installed PWA's sessionStorage routinely, which made that the
+  // normal case rather than an edge one: add to home screen, come back later,
+  // dead app. The token cannot ride start_url instead, because the manifest is
+  // served unauthenticated and would hand the secret to anyone who fetches it.
+  //
+  // What this costs: the credential outlives the tab, on a device the operator
+  // deliberately paired. That is the intended lifetime — `wmux web --stop` and
+  // `--new-token` revoke it server-side, and a per-device credential can be
+  // revoked on its own, which is the whole point of pairing one.
+  var TOKEN_KEY = 'wmux-web-token';
+  function readStoredToken() {
+    try {
+      var v = localStorage.getItem(TOKEN_KEY);
+      if (v) return v;
+      // One-time migration: a browser that paired before this change still has
+      // its token in sessionStorage, and silently signing it out would look
+      // like the bug this fixes.
+      var legacy = sessionStorage.getItem(TOKEN_KEY);
+      if (legacy) { localStorage.setItem(TOKEN_KEY, legacy); return legacy; }
+    } catch (e) { /* private mode — fall through to whatever the URL carries */ }
+    return '';
+  }
+  function storeToken(value) {
+    if (!value) return;
+    try { localStorage.setItem(TOKEN_KEY, value); } catch (e) { /* private mode */ }
+  }
+
   var params = new URLSearchParams(location.search);
-  var token = params.get('token') || sessionStorage.getItem('wmux-web-token') || '';
-  if (token) sessionStorage.setItem('wmux-web-token', token);
+  var token = params.get('token') || readStoredToken() || '';
+  storeToken(token);
   // Keep the token out of the visible URL / history once we have stored it.
   if (params.get('token') && window.history && history.replaceState) {
     params.delete('token');
@@ -1393,7 +1424,7 @@
       var t = (authInput.value || '').trim();
       if (!t) return;
       token = t;
-      sessionStorage.setItem('wmux-web-token', token);
+      storeToken(token);
       init();
     });
   }
@@ -1426,7 +1457,7 @@
         return r.json().then(function (body) { return { status: r.status, body: body }; });
       }).then(function (res) {
         if (res.status === 200 && res.body && res.body.token) {
-          sessionStorage.setItem('wmux-web-token', res.body.token);
+          storeToken(res.body.token);
           // Land on the app root with the token already stored.
           location.replace('/');
           return;
@@ -1436,6 +1467,13 @@
         else if (res.body && res.body.error === 'too many attempts') msg = 'Too many attempts — the code is locked.';
         else if (res.body && typeof res.body.attemptsLeft === 'number') {
           msg = 'Wrong code — ' + res.body.attemptsLeft + ' attempt' + (res.body.attemptsLeft === 1 ? '' : 's') + ' left.';
+        } else if (res.body && typeof res.body.detail === 'string' && res.body.detail) {
+          // The server refuses some pairings on purpose — minting a durable
+          // device secret over a plaintext bind, most of all — and sends back
+          // the way out with it. Dropping that on the floor turns a refusal
+          // that explains itself into a dead end, which is exactly what it
+          // looked like in dogfooding.
+          msg = res.body.detail;
         }
         if (pairErr) pairErr.textContent = msg;
       }).catch(function () {
