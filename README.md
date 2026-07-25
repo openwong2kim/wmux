@@ -6,7 +6,7 @@
 
 Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and a **real browser your agents drive**. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
 
-<img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
+<img width="924" alt="wmux — the workspace multiplexer for AI coding agents, on Windows and macOS" src="docs/banner.png" />
 
 [![Website](https://img.shields.io/badge/wmux.app-E8A33D?label=&labelColor=151517)](https://www.wmux.app)
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
