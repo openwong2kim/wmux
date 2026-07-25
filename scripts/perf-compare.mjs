@@ -500,30 +500,36 @@ function readJson(file) {
   return JSON.parse(raw);
 }
 
-function historyLine(current, meta) {
-  const v = (p) => {
+// One trend field per gated metric, DERIVED from the gate tables rather than
+// hand-listed. The field names were always the gate keys reading the gate
+// paths — but as a hand-copied second list it could drift, and it did: the four
+// hiddenFlood gates landed with no trend fields, so the noisiest gated family
+// had no trend record for as long as it had existed (#602). Deriving removes
+// the copy. A gate cannot be added without its trend field now, because they
+// are the same list.
+//
+// The record is therefore exactly the two gate tables, in their order, behind
+// the run's identity fields — which is also the shape the pre-#602 lines
+// already have. A test pins that shape, so a field hand-added here to "just add
+// one more" reintroduces the second list loudly rather than quietly.
+export function historyLine(current, meta) {
+  const num = (p) => {
     const x = getPath(current, p);
     return typeof x === 'number' && Number.isFinite(x) ? x : null;
   };
+  // Tri-state, mirroring compareBoolGates: true when it passed, false when the
+  // scenario ran and did not, null when the scenario never ran (--skip-ime).
+  const bool = (g) =>
+    getPath(current, g.path) === true ? true
+      : getPath(current, g.scenarioPath) != null ? false
+        : null;
   return JSON.stringify({
     ts: new Date().toISOString(),
     commit: meta?.commit ?? null,
     mode: meta?.mode ?? null,
     appVersion: meta?.appVersion ?? null,
-    coldFirstPtyDataMs: v('scenarios.coldStart.median.firstPtyDataMs'),
-    echoP95Ms: v('scenarios.inputLatency.echoMs.p95'),
-    frameP95Ms: v('scenarios.inputLatency.frameMs.p95'),
-    frame8P95Ms: v('scenarios.inputLatency8.frameMs.p95'),
-    ramIdleBytes: v('scenarios.ram.idle1Pane.workingSetBytes'),
-    ram8Bytes: v('scenarios.ram.panes8.workingSetBytes'),
-    // W2 trend fields (additive — older readers ignore unknown keys).
-    frameBudgetP95Ms_N4: v('scenarios.frameBudget.N4.frameDeltaMs.p95'),
-    frameBudgetP95Ms_N8: v('scenarios.frameBudget.N8.frameDeltaMs.p95'),
-    frameBudgetP95Ms_N16: v('scenarios.frameBudget.N16.frameDeltaMs.p95'),
-    imePass: getPath(current, 'scenarios.ime.pass') === true ? true
-      : getPath(current, 'scenarios.ime') != null ? false : null,
-    webglContextLossPass: getPath(current, 'scenarios.webglContextLoss.pass') === true ? true
-      : getPath(current, 'scenarios.webglContextLoss') != null ? false : null,
+    ...Object.fromEntries(GATES.map((g) => [g.key, num(g.path)])),
+    ...Object.fromEntries(BOOL_GATES.map((g) => [g.key, bool(g)])),
   });
 }
 
