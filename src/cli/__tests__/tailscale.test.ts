@@ -5,6 +5,7 @@ import {
   classifyStatusError,
   decideTailscaleBinding,
   describeTailscaleProblem,
+  errText,
   ensureTailscaleServe,
   parseTailnetIdentity,
   removeTailscaleServe,
@@ -237,10 +238,56 @@ describe('describeTailscaleProblem', () => {
     expect(lines[lines.length - 1]).toContain('no serve configuration was left behind');
   });
 
-  it('quotes only the first line of what tailscale said', () => {
-    const lines = describeTailscaleProblem('serve-failed', 'boom\nstack trace\nmore');
-    expect(lines.some((l) => l.includes('tailscale said: boom'))).toBe(true);
-    expect(lines.some((l) => l.includes('stack trace'))).toBe(false);
+  it('quotes what tailscale said, minus the exec wrapper line', () => {
+    // Dogfooding: `tailscale serve` failed with "Serve is not enabled on your
+    // tailnet" plus a one-click URL to enable it — and only the first line was
+    // printed, which is the exec wrapper naming the command. The operator was
+    // left with a failure and no next step while the answer sat one line below.
+    const detail = [
+      'Command failed: C:\\Program Files\\Tailscale\\tailscale.exe serve --bg --https=443',
+      'Serve is not enabled on your tailnet.',
+      'To enable, visit:',
+      'https://login.tailscale.com/f/serve?node=abc123',
+    ].join('\n');
+    const lines = describeTailscaleProblem('serve-failed', detail);
+    const text = lines.join('\n');
+    expect(text).toContain('Serve is not enabled on your tailnet.');
+    expect(text).toContain('https://login.tailscale.com/f/serve?node=abc123');
+    // the wrapper names the command we just ran and helps nobody
+    expect(text).not.toContain('Command failed:');
+    // the rollback statement must still be the last thing they read
+    expect(lines[lines.length - 1]).toContain('no serve configuration was left behind');
+  });
+
+  it('caps a pathological stderr so it cannot bury the rollback line', () => {
+    const detail = Array.from({ length: 40 }, (_, i) => 'noise line ' + i).join('\n');
+    const lines = describeTailscaleProblem('serve-failed', detail);
+    expect(lines.filter((l) => l.includes('noise line')).length).toBeLessThanOrEqual(8);
+    expect(lines[lines.length - 1]).toContain('no serve configuration was left behind');
+  });
+});
+
+describe('errText', () => {
+  it('prefers stderr', () => {
+    const err = Object.assign(new Error('Command failed'), { stderr: 'boom', stdout: 'ignored' });
+    expect(errText(err)).toBe('boom');
+  });
+
+  it('falls back to stdout, which is where tailscale puts the useful failure', () => {
+    // Verified against the real client: `tailscale serve` writes "Serve is not
+    // enabled on your tailnet." and the URL to enable it to STDOUT, leaving
+    // stderr empty. Reading stderr only reduced the operator's output to the
+    // exec wrapper naming the command.
+    const err = Object.assign(new Error('Command failed: tailscale serve --bg'), {
+      stderr: '',
+      stdout: 'Serve is not enabled on your tailnet.\nTo enable, visit:\nhttps://login.tailscale.com/f/serve?node=abc',
+    });
+    expect(errText(err)).toContain('Serve is not enabled');
+    expect(errText(err)).toContain('login.tailscale.com/f/serve');
+  });
+
+  it('falls back to the message when the process said nothing', () => {
+    expect(errText(Object.assign(new Error('spawn ENOENT'), { stderr: '', stdout: '' }))).toBe('spawn ENOENT');
   });
 });
 

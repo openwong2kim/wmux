@@ -320,7 +320,22 @@ export function describeTailscaleProblem(problem: TailscaleProblem, detail?: str
   }
 
   if (detail) {
-    push('', `  tailscale said: ${detail.split('\n')[0].trim()}`);
+    // Print what tailscale actually said, not just the first line. The first
+    // line is the exec wrapper ("Command failed: <the command>"), and the part
+    // that helps is underneath it — "Serve is not enabled on your tailnet",
+    // followed by a one-click URL to enable it. Taking [0] threw exactly that
+    // away and left the operator with a failure and no next step, which is
+    // what dogfooding hit. Capped so a pathological stderr cannot bury the
+    // rollback line below.
+    const said = detail
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !/^Command failed:/i.test(l))
+      .slice(0, 8);
+    if (said.length > 0) {
+      push('', '  tailscale said:');
+      for (const line of said) push(`    ${line}`);
+    }
   }
   push('', '  wmux web was NOT started and no serve configuration was left behind.');
   return lines;
@@ -460,11 +475,22 @@ function isEnoent(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === 'ENOENT';
 }
 
-/** stderr if the process produced any, else the error's own message. */
+/**
+ * What the process actually said: stderr, else stdout, else the error's own
+ * message.
+ *
+ * stdout is in there because tailscale puts its most useful failure on it, not
+ * on stderr — "Serve is not enabled on your tailnet." followed by a one-click
+ * URL to enable it. Reading only stderr left that on the floor and reduced the
+ * operator's output to "Command failed: <the command we just ran>", which is
+ * exactly what dogfooding hit.
+ */
 export function errText(err: unknown): string {
-  const e = err as { stderr?: unknown; message?: unknown } | null;
+  const e = err as { stderr?: unknown; stdout?: unknown; message?: unknown } | null;
   const stderr = typeof e?.stderr === 'string' ? e.stderr.trim() : '';
   if (stderr) return stderr;
+  const stdout = typeof e?.stdout === 'string' ? e.stdout.trim() : '';
+  if (stdout) return stdout;
   return typeof e?.message === 'string' ? e.message : String(err);
 }
 
