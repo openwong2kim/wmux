@@ -73,6 +73,32 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
   return { ...r, ...(r.options ? { options: [...r.options] } : {}) };
 }
 
+/** Longest `resolvedBy` we will persist. Room for a device name plus a UUID. */
+export const RESOLVED_BY_MAX = 128;
+
+/**
+ * Bound and clean the "who answered this" label.
+ *
+ * Applied HERE rather than at each caller because this is the chokepoint every
+ * path funnels through, and the two callers got it wrong in opposite
+ * directions: the HTTP route passed a hardcoded constant and threw the
+ * authenticated principal away, while `daemon.approvals.resolve` accepted any
+ * string a pipe client sent, with no cap and no control-character strip. The
+ * string is persisted per record in approvals.json, interpolated into a daemon
+ * log line, and handed back to the loser of a race in a 409 body — so an
+ * unbounded one is file growth, log injection, and a response payload at once.
+ * `question` and `options` are already sanitized on the way in; this closes the
+ * last field that was not.
+ */
+export function sanitizeResolvedBy(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const cleaned = raw
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > RESOLVED_BY_MAX ? cleaned.slice(0, RESOLVED_BY_MAX) : cleaned;
+}
+
 export interface ApprovalRegistryDeps {
   /** Suffix-aware wmux data dir — where approvals.json lives. */
   wmuxDir: string;
@@ -321,7 +347,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // the two: we hold the chain.
       record.state = 'resolved';
       record.decision = params.decision;
-      record.resolvedBy = params.resolvedBy;
+      // Sanitized at the chokepoint, not at the caller — see sanitizeResolvedBy.
+      record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
       record.resolvedAt = this.now();
       record.screenTail = formatScreenTail(rows);
       this.deps.log?.(

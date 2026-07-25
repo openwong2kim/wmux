@@ -58,9 +58,25 @@ wrangler secret put APNS_KEY_P8    # paste the whole .p8 file, BEGIN/END lines i
 wrangler secret put APNS_KEY_ID    # 10 chars, shown next to the key in the portal
 wrangler secret put APNS_TEAM_ID   # 10 chars, top-right of the developer portal
 wrangler secret put APNS_TOPIC     # the app's bundle id, e.g. com.example.wmux
+wrangler secret put RELAY_SHARED_SECRET   # see below — generate with: openssl rand -base64 32
 
 npm run deploy
 ```
+
+`RELAY_SHARED_SECRET` is **required**. It is one value for the whole
+deployment, presented by every daemon as `Authorization: Bearer <secret>`, and
+the relay refuses to serve without it rather than falling open. It is not an
+account and needs no storage; what it buys is that a stranger who finds the URL
+cannot spend the project's APNs quota or point our Team ID at Apple with a
+stream of bad tokens. Apple answers that kind of traffic by throttling and
+revoking provider keys, and every user's push rides on this one deployment.
+
+**Also required before announcing the URL:** add a Cloudflare rate-limiting rule
+on `/push`, per-IP and per-path. The shared secret stops strangers; the rule is
+what stops a leaked secret from becoming unlimited spend. Do this in the
+dashboard (Security → WAF → Rate limiting rules) — it is deliberately not in
+application code, because enforcing it in the isolate means state, and state is
+what "no storage" rules out.
 
 For TestFlight and debug builds, deploy the sandbox variant as well — it targets
 `api.sandbox.push.apple.com` and carries its own copies of the four secrets:
@@ -145,14 +161,20 @@ request until the isolate recycles.
 goes stale would be rejected by the extension anyway, so asking Apple to keep
 retrying past that point only produces an alert the phone will refuse.
 
-**Rate limiting is not in the code.** The relay is deliberately unauthenticated
-— accounts would mean a user database, which is exactly what "no storage" rules
-out. A stranger who learns an APNs device token could therefore cause junk
-notifications for that one device, but cannot produce a *readable* one: the
-extension will fail to decrypt anything not sealed with the device's key, and
-the user sees nothing beyond the generic placeholder. Mitigate volume with a
-Cloudflare rate-limiting rule on `/push` (per-IP, and per-path) rather than with
-application state.
+**Two layers of abuse control, and why neither is an account.** The relay has no
+user database — that is what "no storage" rules out — but "no accounts" was
+wrongly taken to mean "no authentication". A single deployment-wide
+`RELAY_SHARED_SECRET` distinguishes wmux daemons from the rest of the internet
+while storing nothing, and it is checked *before* the body is read, so an
+unauthenticated caller cannot make the isolate buffer a byte or reach the code
+that signs with the provider key. Volume beyond that is a Cloudflare
+rate-limiting rule on `/push`, listed as a required deploy step above.
+
+What the secret does **not** protect against is another wmux user, who has it
+too. Someone who also learns an APNs device token can cause junk notifications
+for that one device — but not a *readable* one: the extension fails to decrypt
+anything not sealed with that device's key, so the user sees nothing beyond the
+generic placeholder.
 
 **Interruption level.** The relay cannot know whether a notification is an
 approval request or routine noise — it cannot read it. The extension sets

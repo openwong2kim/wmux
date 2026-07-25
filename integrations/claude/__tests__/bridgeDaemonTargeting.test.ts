@@ -118,7 +118,16 @@ describe('resolveTargets', () => {
 
   it('derives a daemon pipe name when no hint file exists', () => {
     writeDaemonToken();
-    expect(resolveTargets()[0].pipe).toMatch(/wmux-daemon/);
+    const derived = resolveTargets()[0].pipe;
+    // The derived name is platform-shaped, and asserting one shape on both is
+    // how this test passed on Windows while failing everywhere else: POSIX has
+    // no named pipes, so the daemon listens on a unix socket inside the wmux
+    // home. Mirrors `getDaemonSocketPath` in src/shared/constants.ts.
+    if (process.platform === 'win32') {
+      expect(derived).toMatch(/^\\\\\.\\pipe\\wmux-daemon-/);
+    } else {
+      expect(derived).toBe(path.join(fakeHome, '.wmux', 'daemon.sock'));
+    }
   });
 });
 
@@ -141,5 +150,51 @@ describe('shouldTryNextTarget', () => {
     expect(shouldTryNextTarget({ ok: false, error: 'timeout', retryable: false })).toBe(false);
     expect(shouldTryNextTarget({ ok: false, error: 'closed-without-response', retryable: false })).toBe(false);
     expect(shouldTryNextTarget({ ok: false, error: 'connect-error', detail: 'ECONNRESET', retryable: false })).toBe(false);
+  });
+});
+
+describe('WMUX_PIPE_NAME override', () => {
+  const OVERRIDE =
+    process.platform === 'win32'
+      ? String.raw`\\.\pipe\wmux-probe-1`
+      : '/tmp/wmux-probe-1.sock';
+
+  it('collapses the walk to exactly one explicit pipe', () => {
+    writeDaemonToken();
+    writeMainToken();
+    process.env.WMUX_PIPE_NAME = OVERRIDE;
+    try {
+      const targets = resolveTargets();
+      // One target, and NOT the real daemon: a probe that redirects the pipe
+      // must not have its signals land in the operator's live session. The pipe
+      // name is derived from the username, so a temp HOME does not isolate it —
+      // this override is the only thing that does.
+      expect(targets).toHaveLength(1);
+      expect(targets[0].pipe).toBe(OVERRIDE);
+      expect(targets[0].method).toBe('daemon.hooks.signal');
+    } finally {
+      delete process.env.WMUX_PIPE_NAME;
+    }
+  });
+
+  it('returns nothing when no token exists, even with an override', () => {
+    process.env.WMUX_PIPE_NAME = OVERRIDE;
+    try {
+      expect(resolveTargets()).toEqual([]);
+    } finally {
+      delete process.env.WMUX_PIPE_NAME;
+    }
+  });
+
+  it('an empty override is ignored, so the normal walk still happens', () => {
+    writeDaemonToken();
+    process.env.WMUX_PIPE_NAME = '';
+    try {
+      const targets = resolveTargets();
+      expect(targets.map((t) => t.name)).toEqual(['daemon']);
+      expect(targets[0].pipe).not.toBe(OVERRIDE);
+    } finally {
+      delete process.env.WMUX_PIPE_NAME;
+    }
   });
 });

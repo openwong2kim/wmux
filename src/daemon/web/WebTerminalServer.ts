@@ -237,13 +237,32 @@ const ATTENTION_TTL_MS = 30 * 60 * 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
- * Who the registry records as having answered, for anything resolved over
- * HTTP. Names the SURFACE, not a person: the web token is one shared secret
- * held by whoever paired a device, so claiming a user identity here would be a
- * fabrication. It exists so the loser of a race sees "answered from the web"
- * rather than a bare 409.
+ * Who the registry records as having answered, for anything resolved over HTTP.
+ *
+ * This used to be the constant `'web'`, on the reasoning that "the web token is
+ * one shared secret held by whoever paired a device, so claiming a user
+ * identity here would be a fabrication". That was true when every phone
+ * presented the operator's token — and M3 made it false. A device now
+ * authenticates as ITSELF, with a credential only it holds and that the
+ * operator can revoke on its own, so the id is a fact we have rather than a
+ * claim we would be inventing.
+ *
+ * Keeping the constant meant the one action in this whole surface that writes
+ * bytes into somebody's terminal was also the one place the authenticated
+ * identity was thrown away: `approvals.json`, the daemon log line, and the 409
+ * body all said `web` no matter which phone pressed the key. The roster could
+ * not answer "who approved that?" afterwards.
+ *
+ * The device NAME rides along with the id because the roster is not a permanent
+ * record — a revoked device's tombstone is eventually pruned, and the audit
+ * trail has to keep making sense after that.
  */
-const APPROVAL_RESOLVED_BY = 'web';
+function describePrincipal(principal: WebPrincipal): string {
+  if (principal.kind === 'operator') return 'operator';
+  return principal.name
+    ? `device ${principal.name} (${principal.deviceId})`
+    : `device ${principal.deviceId}`;
+}
 /**
  * Separator inside a device credential (`<deviceId>.<secret>`). A dot because
  * the operator token is a `randomUUID` and contains none, so the two forms are
@@ -739,23 +758,32 @@ export class WebTerminalServer {
    * so the bind is the only honest thing to judge. The operator token path is
    * untouched — this gate only guards NEW durable device credentials.
    */
-  private mintRefusal(requestHost?: string): string | null {
+  private mintRefusal(): string | null {
     const bind = this.opts?.host ?? '';
+    // The BIND is the only honest judge, and for a while this also accepted a
+    // request whose `Host` matched `--allow-host`. That was wrong: `Host` is
+    // written by the caller. On a wildcard bind anyone who could reach the port
+    // — and had the pair code — could send `Host: <the tailnet name>` straight
+    // to the plaintext LAN address, skip the TLS front entirely, and collect a
+    // credential that never expires. A header cannot be evidence that a
+    // connection was encrypted.
+    //
+    // Nothing legitimate is lost by dropping it. `wmux web --tailscale` binds
+    // 127.0.0.1 and lets `tailscale serve` front it (see
+    // decideTailscaleBinding), so the normal tailnet flow takes the loopback
+    // exit above and never reaches here. What now refuses is specifically
+    // `--expose` + `--allow-host`, where the port really is answering in
+    // plaintext on every interface — the case the CLI already warns about.
+    // `--allow-host` keeps its other job: the Host allowlist that blocks DNS
+    // rebinding.
     if (isLoopbackHost(bind)) return null;
-    const extras = (this.opts?.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean);
-    if (requestHost === undefined) {
-      if (extras.length > 0) return null;
-    } else if (extras.includes(requestHost.toLowerCase())) {
-      return null;
-    }
     return (
       `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
       'over plain HTTP, and a device secret never expires. Two ways forward: (1) run ' +
-      '`wmux web --tailscale` for one-command HTTPS over your tailnet — or front it yourself ' +
-      'with `tailscale serve` and restart with `wmux web --allow-host <that hostname>`; or ' +
-      '(2) pair over loopback BEFORE exposing, which keeps the handover off the wire — though ' +
-      'a plaintext bind still carries the credential on every later request, so (1) is the one ' +
-      'that actually protects it.'
+      '`wmux web --tailscale` on its own, which binds loopback and lets `tailscale serve` ' +
+      'terminate HTTPS for your tailnet; or (2) pair over loopback BEFORE exposing, which ' +
+      'keeps the handover off the wire — though a plaintext bind still carries the credential ' +
+      'on every later request, so (1) is the one that actually protects it.'
     );
   }
 
@@ -948,7 +976,7 @@ export class WebTerminalServer {
       return this.handleApprovalsList(res);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
-      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length));
+      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
     }
     return this.json(res, 404, { error: 'not found' });
   }
@@ -1166,7 +1194,12 @@ export class WebTerminalServer {
    * Still gated by the Bearer token like everything else, and the token is not
    * ambient authority (no cookie), so a hostile page cannot forge this POST.
    */
-  private handleApprovalResolve(req: http.IncomingMessage, res: http.ServerResponse, rawId: string): void {
+  private handleApprovalResolve(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
 
@@ -1185,7 +1218,7 @@ export class WebTerminalServer {
         return this.json(res, 400, { error: "decision must be 'approve' or 'deny'" });
       }
       approvals
-        .resolve({ id, decision, resolvedBy: APPROVAL_RESOLVED_BY })
+        .resolve({ id, decision, resolvedBy: describePrincipal(principal) })
         .then((result) => {
           if (result.ok) return this.json(res, 200, { state: result.request.state });
           switch (result.reason) {
@@ -1570,7 +1603,7 @@ export class WebTerminalServer {
     // may have restarted the server with `--expose` since the code was minted.
     // The code is NOT burned — the operator should be able to fix the transport
     // and use the code they already read out, and a refusal reveals nothing.
-    const refusal = this.mintRefusal(requestHost);
+    const refusal = this.mintRefusal();
     if (refusal) return this.json(res, 403, { error: 'insecure-transport', detail: refusal });
 
     const devices = this.deps.devices;

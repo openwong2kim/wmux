@@ -38,6 +38,22 @@ export interface RelayEnv {
   APNS_TEAM_ID: string;
   /** The iOS app's bundle identifier — APNs calls this the topic (secret). */
   APNS_TOPIC: string;
+  /**
+   * The shared secret every wmux daemon presents as `Authorization: Bearer …`.
+   *
+   * This is NOT an account, and it does not reintroduce the user database the
+   * "no storage" rule exists to avoid: it is ONE value for the whole
+   * deployment, set with `wrangler secret put` and shipped in the daemon's
+   * config. Without it `/push` is an open proxy to Apple holding the project's
+   * provider key — a stranger cannot read anyone's notification, but they can
+   * spend our APNs quota and hand Apple a stream of bad-token traffic from our
+   * Team ID, and Apple answers that by throttling and revoking keys. Every
+   * user's push rides on this one deployment, so that is everyone's outage.
+   *
+   * Required, deliberately: an unconfigured relay refuses rather than serving
+   * openly (see `missingConfig`).
+   */
+  RELAY_SHARED_SECRET: string;
   /** 'sandbox' routes to Apple's sandbox host. Anything else means production. */
   APNS_ENV?: string;
 }
@@ -115,8 +131,69 @@ function json(status: number, body: Record<string, unknown>, stage: 'relay' | 'a
   });
 }
 
+/**
+ * Length-independent comparison of two short ASCII secrets.
+ *
+ * Workers has no `crypto.timingSafeEqual`, and `===` on a secret leaks its
+ * prefix through response timing. Comparing the SHA-256 of each side keeps the
+ * loop fixed-length whatever the caller sends, so a wrong length costs the same
+ * as a wrong byte.
+ */
+async function secretsMatch(presented: string, expected: string): Promise<boolean> {
+  if (expected.length === 0) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(presented)),
+    crypto.subtle.digest('SHA-256', enc.encode(expected)),
+  ]);
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+function bearer(req: Request): string {
+  const header = req.headers.get('authorization') ?? '';
+  return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+}
+
+/**
+ * Read the body with the cap enforced AS IT ARRIVES.
+ *
+ * `arrayBuffer()` buffers everything first and only then lets the caller check
+ * the size, so a request with no `Content-Length` (or a chunked one) walked
+ * straight past the declared-length guard and made the isolate hold a
+ * platform-sized body before the 8 KiB rule ever ran. Returns null once the cap
+ * is passed, without waiting for the rest.
+ */
+async function readBoundedBody(req: Request, limit: number): Promise<Uint8Array | null> {
+  if (req.body === null) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
+}
+
 function missingConfig(env: RelayEnv): string | null {
-  for (const key of ['APNS_KEY_P8', 'APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_TOPIC'] as const) {
+  for (const key of ['APNS_KEY_P8', 'APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_TOPIC', 'RELAY_SHARED_SECRET'] as const) {
     const value = env[key];
     if (typeof value !== 'string' || value.length === 0) return key;
   }
@@ -189,8 +266,26 @@ async function handlePush(req: Request, env: RelayEnv, startedAt: number): Promi
     return json(413, { ok: false, reason: 'body-too-large' }, 'relay');
   }
 
-  const raw = await req.arrayBuffer();
-  if (raw.byteLength > MAX_BODY_BYTES) {
+  // Configuration is checked BEFORE the caller is judged: an unconfigured relay
+  // has no secret to compare against, and answering 401 there would tell a
+  // prober that the deployment exists but is unfinished.
+  const missing = missingConfig(env);
+  if (missing !== null) {
+    // Name the variable in the log for the operator, never in the response.
+    logEvent({ event: 'error', status: 500, reason: `missing-${missing}` });
+    return json(500, { ok: false, reason: 'relay-misconfigured' }, 'relay');
+  }
+
+  // Authenticate before reading a single byte of body. This ordering is the
+  // point: a stranger must not be able to make the isolate buffer anything, and
+  // must not reach the code that spends our APNs provider key.
+  if (!(await secretsMatch(bearer(req), env.RELAY_SHARED_SECRET))) {
+    logEvent({ event: 'reject', status: 401, reason: 'unauthorized' });
+    return json(401, { ok: false, reason: 'unauthorized' }, 'relay');
+  }
+
+  const raw = await readBoundedBody(req, MAX_BODY_BYTES);
+  if (raw === null) {
     logEvent({ event: 'reject', status: 413, reason: 'body-too-large' });
     return json(413, { ok: false, reason: 'body-too-large' }, 'relay');
   }
@@ -208,13 +303,6 @@ async function handlePush(req: Request, env: RelayEnv, startedAt: number): Promi
     // `reason` names a field, never a value — see validate.ts.
     logEvent({ event: 'reject', status: validated.error.status, reason: validated.error.reason });
     return json(validated.error.status, { ok: false, reason: validated.error.reason }, 'relay');
-  }
-
-  const missing = missingConfig(env);
-  if (missing !== null) {
-    // Name the variable in the log for the operator, never in the response.
-    logEvent({ event: 'error', status: 500, reason: `missing-${missing}` });
-    return json(500, { ok: false, reason: 'relay-misconfigured' }, 'relay');
   }
 
   const tokenProvider = getProvider(env);

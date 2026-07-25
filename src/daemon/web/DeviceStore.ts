@@ -237,6 +237,21 @@ export class DeviceStore {
   private readonly verified = new Map<string, VerifiedSecret>();
   private readonly lastSeenPersistedAt = new Map<string, number>();
   private hardenTimer: NodeJS.Timeout | null = null;
+  /**
+   * True when a revocation is blocked in memory but is NOT on disk yet.
+   *
+   * `persist()` writes the WHOLE roster, so ONE successful write makes every
+   * outstanding tombstone durable — which is why a single flag is enough and a
+   * per-device set would be redundant bookkeeping.
+   *
+   * Without this, a retry after a failed write hit the "already revoked"
+   * shortcut and answered `{ok: true}` — reporting the exact opposite of the
+   * truth in the one situation the shortcut's own comment invoked ("so a retry
+   * after a transient failure reports the truth"). An operator who is told
+   * "revoked" stops worrying about that phone; the daemon must not say it about
+   * a credential that comes back on the next start.
+   */
+  private dirtyRevocations = false;
 
   // Observability for the tests: proof that the cache elides derivations, and
   // that a wrong secret is never short-circuited before one.
@@ -336,9 +351,13 @@ export class DeviceStore {
     const record = this.devices.get(deviceId);
     if (!record) return { ok: false, reason: 'not-found' };
     if (record.revokedAt !== undefined) {
-      // Already revoked (and already persisted) — idempotent success, so a
-      // retry after a transient failure reports the truth.
       this.forgetVerified(deviceId);
+      // Idempotent — but only report success once the tombstone is DURABLE. If
+      // an earlier write failed, retry it here rather than answering `ok` for a
+      // revocation that a restart would undo.
+      if (this.dirtyRevocations && !this.persist()) {
+        return { ok: false, reason: 'persist-failed' };
+      }
       return { ok: true };
     }
 
@@ -349,12 +368,63 @@ export class DeviceStore {
     this.pruneRevoked();
 
     if (!this.persist()) {
+      this.dirtyRevocations = true;
       this.log('error', `[web] revoke of ${deviceId} could not be persisted; it is blocked in memory only`);
       return { ok: false, reason: 'persist-failed' };
     }
     this.audit.append({ event: 'revoke', deviceId, name: record.name });
     this.log('info', `[web] revoked device "${record.name}" (${deviceId})`);
     return { ok: true };
+  }
+
+  /**
+   * Revoke EVERY device still active. Backs `wmux web --new-token`, whose CLI
+   * help promises exactly this ("Mint a fresh access token, revoking every
+   * device already paired").
+   *
+   * That promise used to hold for free: before per-device credentials every
+   * phone authenticated with the operator's own token, so rotating it locked
+   * all of them out in one step. Once a device could authenticate on its own
+   * `deviceId.secret`, rotation stopped touching them and the help text became
+   * false — the operator was told the phones were revoked while every one of
+   * them stayed authorized. This method is what makes it true again.
+   *
+   * ONE persist for the whole batch, not one per device: the roster is written
+   * whole, and a per-device write would turn a 20-phone rotation into 20
+   * synchronous writes on the daemon's event loop for no added durability.
+   *
+   * Fail-closed the same way `revoke` is: `ok` means the tombstones reached
+   * disk. The devices are blocked in memory either way, so the caller can cut
+   * their streams regardless of what the disk did.
+   */
+  revokeAll(): { ok: boolean; revoked: string[]; reason?: 'persist-failed' } {
+    const at = this.now();
+    const revoked: string[] = [];
+    for (const record of this.devices.values()) {
+      if (record.revokedAt !== undefined) continue;
+      record.revokedAt = at;
+      this.forgetVerified(record.deviceId);
+      revoked.push(record.deviceId);
+    }
+    if (revoked.length === 0 && !this.dirtyRevocations) return { ok: true, revoked };
+
+    this.pruneRevoked();
+    if (!this.persist()) {
+      this.dirtyRevocations = true;
+      this.log(
+        'error',
+        `[web] revoked ${revoked.length} device(s) in memory but could not persist the roster; ` +
+          'they will come back on the next daemon start',
+      );
+      return { ok: false, revoked, reason: 'persist-failed' };
+    }
+    for (const deviceId of revoked) {
+      this.audit.append({ event: 'revoke', deviceId, reason: 'token-rotation' });
+    }
+    if (revoked.length > 0) {
+      this.log('info', `[web] revoked ${revoked.length} paired device(s) on token rotation`);
+    }
+    return { ok: true, revoked };
   }
 
   // --- authentication -------------------------------------------------------
@@ -382,15 +452,21 @@ export class DeviceStore {
   resolve(deviceId: string, secret: string): DeviceAuthResult {
     const record = this.devices.get(deviceId);
     if (!record) {
+      // No `coalesceKey`: the id matched nothing, so it is caller-chosen text
+      // and every distinct one shares a single throttling bucket. See
+      // UNKNOWN_SUBJECT_KEY — keying on it is what let a rotating id turn each
+      // request into a synchronous write.
       this.audit.append({ event: 'auth-failure', deviceId, reason: 'unknown' });
       return REJECT_UNKNOWN;
     }
+    // Past this point the id names a real record, so the bucket is bounded by
+    // the roster and per-device throttling is both safe and more useful.
     if (record.revokedAt !== undefined) {
-      this.audit.append({ event: 'auth-failure', deviceId, reason: 'revoked' });
+      this.audit.append({ event: 'auth-failure', deviceId, reason: 'revoked' }, { coalesceKey: deviceId });
       return { ok: false, reason: 'revoked' };
     }
     if (!this.verify(record, secret)) {
-      this.audit.append({ event: 'auth-failure', deviceId, reason: 'unknown' });
+      this.audit.append({ event: 'auth-failure', deviceId, reason: 'unknown' }, { coalesceKey: deviceId });
       return REJECT_UNKNOWN;
     }
     return { ok: true, deviceId, name: record.name };
@@ -536,10 +612,14 @@ export class DeviceStore {
       if (!fs.existsSync(this.filePath)) {
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         secureWriteTokenFile(this.filePath, payload);
+        // The whole roster just landed, so every outstanding tombstone is
+        // durable — see `dirtyRevocations`.
+        this.dirtyRevocations = false;
         return true;
       }
       fs.writeFileSync(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, this.filePath);
+      this.dirtyRevocations = false;
       this.scheduleHarden();
       return true;
     } catch (err) {

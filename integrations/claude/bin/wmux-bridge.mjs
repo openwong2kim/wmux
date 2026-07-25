@@ -143,6 +143,26 @@ function readTokenFile(tokenPath) {
 // could only produce an `unauthorized` round-trip. WMUX_HOOKS_TO_MAIN=1 drops
 // the daemon target entirely (kill switch: byte-for-byte the pre-M1 routing).
 function resolveTargets() {
+  // WMUX_PIPE_NAME collapses the walk to ONE explicit pipe, matching the codex
+  // and opencode bridges (which have had it all along — this one did not, which
+  // meant no harness could exercise this bridge without aiming it at the real
+  // daemon. A dogfood run bound the production pipe because of exactly that:
+  // a temp HOME isolates the data directory but the pipe name is derived from
+  // the USERNAME, so it is global per user and a temp HOME does nothing).
+  //
+  // The point is that it must NOT leak onto the real daemon, so this returns a
+  // single target rather than prepending one.
+  //
+  // Not a security widening: a same-user process can already read the auth
+  // token off disk, so redirecting the pipe grants nothing it did not have.
+  const pipeOverride = process.env.WMUX_PIPE_NAME;
+  if (typeof pipeOverride === 'string' && pipeOverride.length > 0) {
+    const token = readTokenFile(getDaemonAuthTokenPath()) || readTokenFile(getAuthTokenPath());
+    if (!token) return [];
+    // Addressed as the daemon, because that is what M1 made the bridge talk to
+    // and what a probe needs to observe.
+    return [{ name: 'daemon', pipe: pipeOverride, token, method: 'daemon.hooks.signal' }];
+  }
   const targets = [];
   if (process.env.WMUX_HOOKS_TO_MAIN !== '1') {
     const token = readTokenFile(getDaemonAuthTokenPath());

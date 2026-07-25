@@ -1887,6 +1887,30 @@ function registerRpcHandlers(
     // is the deliberate rotation escape hatch (revoke every paired device).
     const previous = loadWebState(wmuxDir);
     const token = p.newToken === true ? undefined : previous.token || undefined;
+    if (p.newToken === true) {
+      // Rotation has to take the PAIRED DEVICES with it, not just the operator
+      // token. Before per-device credentials that was automatic — every phone
+      // held the operator token — but a device now authenticates on its own
+      // `deviceId.secret`, which a new operator token does not touch. Without
+      // this the CLI's own help ("revoking every device already paired") would
+      // be false and the operator would stop worrying about a phone that still
+      // works.
+      //
+      // Roster FIRST, then cut the streams: an established SSE never
+      // re-authenticates, so revoking alone would leave a revoked phone
+      // watching panes on the connection it already holds.
+      const revocation = getDeviceStore().revokeAll();
+      for (const deviceId of revocation.revoked) webServer.disconnectDevice(deviceId);
+      if (!revocation.ok) {
+        // Fail the rotation rather than report a half-done one. The devices are
+        // blocked in this process, but a restart would bring them back and the
+        // operator would never know.
+        throw new Error(
+          'the operator token was not rotated: the device roster could not be written, ' +
+            'so the paired devices could not be durably revoked',
+        );
+      }
+    }
     const info = await webServer.start({ port, host, allowInput, allowedHosts, token });
     persistWebState(info, allowedHosts);
     return info;
@@ -2102,6 +2126,10 @@ function registerRpcHandlers(
     if (!id || !decision) {
       return { ok: false, reason: 'not-found' };
     }
+    // Bounded and stripped by the registry (sanitizeResolvedBy) — this field is
+    // persisted, logged, and echoed back to a racing client, so an authenticated
+    // pipe client must not be able to send an unbounded or control-character
+    // string through it.
     const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
     if (!approvalRegistry) return { ok: false, reason: 'not-found' };
     return approvalRegistry.resolve({ id, decision, resolvedBy });

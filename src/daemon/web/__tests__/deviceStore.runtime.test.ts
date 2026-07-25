@@ -3,7 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DeviceStore, UNNAMED_DEVICE, coerceDeviceState, getDeviceStatePath } from '../DeviceStore';
-import { DeviceAuditLog, DEVICE_AUDIT_MAX_BYTES, getDeviceAuditPath } from '../deviceAudit';
+import {
+  DeviceAuditLog,
+  DEVICE_AUDIT_MAX_BYTES,
+  AUTH_FAILURE_COALESCE_MS,
+  getDeviceAuditPath,
+} from '../deviceAudit';
 
 // Disk-IO → `.runtime.test.ts` so it runs serially (vitest.runtime.config sets
 // fileParallelism:false) and the tmp+rename dance never races another file.
@@ -404,17 +409,30 @@ describe('device audit log', () => {
   it('coalesces repeated failures so a retry loop cannot spam the disk', () => {
     let clock = 1_000;
     const audit = new DeviceAuditLog(dir, () => clock);
+    const key = (deviceId: string) => ({ coalesceKey: deviceId });
 
-    expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' })).toBe(true);
+    expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' }, key('d1'))).toBe(true);
     for (let i = 0; i < 50; i++) {
-      expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' })).toBe(false);
+      expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' }, key('d1'))).toBe(false);
     }
-    // A different device is its own key, and is not suppressed by the first.
-    expect(audit.append({ event: 'auth-failure', deviceId: 'd2', reason: 'unknown' })).toBe(true);
+    // A different KNOWN device is its own key, and is not suppressed by the
+    // first — two rostered devices failing is two distinct facts.
+    expect(audit.append({ event: 'auth-failure', deviceId: 'd2', reason: 'unknown' }, key('d2'))).toBe(true);
 
     clock += 2_001;
-    expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' })).toBe(true);
+    expect(audit.append({ event: 'auth-failure', deviceId: 'd1', reason: 'unknown' }, key('d1'))).toBe(true);
     expect(audit.read()).toHaveLength(3);
+  });
+
+  it('shares one bucket when the caller cannot vouch for the id', () => {
+    const audit = new DeviceAuditLog(dir, () => 1_000);
+    // No coalesceKey — the ids named nothing in the roster, so they are just
+    // text the caller sent and must not each buy their own disk write.
+    expect(audit.append({ event: 'auth-failure', deviceId: 'bogus-1', reason: 'unknown' })).toBe(true);
+    for (let i = 2; i < 200; i++) {
+      expect(audit.append({ event: 'auth-failure', deviceId: `bogus-${i}`, reason: 'unknown' })).toBe(false);
+    }
+    expect(audit.read()).toHaveLength(1);
   });
 
   it('never coalesces pair or revoke — every one is a distinct fact', () => {
@@ -453,5 +471,122 @@ describe('device audit log', () => {
     // The audit is a record OF the pairing, not a precondition for it.
     const d = await s.mint({ name: 'Phone' });
     expect(s.resolve(d.deviceId, d.deviceSecret)).toMatchObject({ ok: true });
+  });
+});
+
+describe('DeviceStore — revocation durability', () => {
+  it('a retry after a failed write does not report success', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    breakWrites();
+
+    // First attempt: blocked in memory, honest about the disk.
+    expect(s.revoke(d.deviceId)).toEqual({ ok: false, reason: 'persist-failed' });
+    expect(s.resolve(d.deviceId, d.deviceSecret)).toMatchObject({ ok: false, reason: 'revoked' });
+
+    // The retry used to take the "already revoked" shortcut and answer ok:true
+    // about a tombstone that only existed in memory.
+    expect(s.revoke(d.deviceId)).toEqual({ ok: false, reason: 'persist-failed' });
+
+    // Once the disk works again the retry both writes and reports the truth.
+    fs.rmSync(getDeviceStatePath(dir), { recursive: true, force: true });
+    expect(s.revoke(d.deviceId)).toEqual({ ok: true });
+    expect(new DeviceStore({ wmuxDir: dir }).resolve(d.deviceId, d.deviceSecret)).toMatchObject({
+      ok: false,
+      reason: 'revoked',
+    });
+  });
+});
+
+describe('DeviceStore — revokeAll (token rotation)', () => {
+  it('revokes every active device and survives a restart', async () => {
+    const s = store();
+    const a = await s.mint({ name: 'Phone' });
+    const b = await s.mint({ name: 'Tablet' });
+
+    const out = s.revokeAll();
+    expect(out.ok).toBe(true);
+    expect(out.revoked.sort()).toEqual([a.deviceId, b.deviceId].sort());
+
+    // Durable, not just in-memory: a fresh store reads the tombstones back.
+    const reloaded = new DeviceStore({ wmuxDir: dir });
+    expect(reloaded.resolve(a.deviceId, a.deviceSecret)).toMatchObject({ reason: 'revoked' });
+    expect(reloaded.resolve(b.deviceId, b.deviceSecret)).toMatchObject({ reason: 'revoked' });
+  });
+
+  it('is idempotent and reports nothing to revoke on an empty roster', () => {
+    const s = store();
+    expect(s.revokeAll()).toEqual({ ok: true, revoked: [] });
+  });
+
+  it('fails closed when the roster cannot be written', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    breakWrites();
+
+    const out = s.revokeAll();
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('persist-failed');
+    // Blocked here and now regardless of the disk — the caller still cuts the
+    // streams, and the RPC turns `ok:false` into a failed rotation.
+    expect(s.resolve(d.deviceId, d.deviceSecret)).toMatchObject({ reason: 'revoked' });
+  });
+});
+
+describe('DeviceStore — audit write amplification', () => {
+  it('a rotating device id cannot drive one disk write per request', () => {
+    let clock = 1_000;
+    const s = store({ now: () => clock });
+    const audit = getDeviceAuditPath(dir);
+
+    // 500 requests, a fresh unguessable id each time, all inside one coalescing
+    // window. Keying the throttle on the presented id gave each its own bucket,
+    // so every one of these was a synchronous appendFileSync on the daemon's
+    // event loop.
+    for (let i = 0; i < 500; i++) {
+      clock += 1; // still far inside AUTH_FAILURE_COALESCE_MS
+      expect(s.resolve(`bogus-${i}`, 'nope')).toMatchObject({ ok: false, reason: 'unknown' });
+    }
+
+    const lines = fs.existsSync(audit)
+      ? fs.readFileSync(audit, 'utf8').split('\n').filter(Boolean).length
+      : 0;
+    expect(lines).toBe(1);
+  });
+
+  it('still records a rotating id once per window, so the attempt is visible', () => {
+    let clock = 1_000;
+    const s = store({ now: () => clock });
+    s.resolve('bogus-a', 'nope');
+    clock += AUTH_FAILURE_COALESCE_MS + 1;
+    s.resolve('bogus-b', 'nope');
+
+    const lines = fs
+      .readFileSync(getDeviceAuditPath(dir), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.event === 'auth-failure' && l.reason === 'unknown')).toBe(true);
+  });
+
+  it('a known device keeps its own bucket, so hammering one id is still visible', async () => {
+    let clock = 1_000;
+    const s = store({ now: () => clock });
+    const a = await s.mint({ name: 'Phone' });
+    const b = await s.mint({ name: 'Tablet' });
+    const before = fs.readFileSync(getDeviceAuditPath(dir), 'utf8').split('\n').filter(Boolean).length;
+
+    // Two DIFFERENT known devices failing in the same window are two distinct
+    // facts; they must not collapse into each other.
+    clock += 1;
+    expect(s.resolve(a.deviceId, 'wrong')).toMatchObject({ ok: false, reason: 'unknown' });
+    clock += 1;
+    expect(s.resolve(b.deviceId, 'wrong')).toMatchObject({ ok: false, reason: 'unknown' });
+
+    const after = fs.readFileSync(getDeviceAuditPath(dir), 'utf8').split('\n').filter(Boolean);
+    expect(after.length - before).toBe(2);
+    const failures = after.slice(before).map((l) => JSON.parse(l));
+    expect(failures.map((f) => f.deviceId).sort()).toEqual([a.deviceId, b.deviceId].sort());
   });
 });

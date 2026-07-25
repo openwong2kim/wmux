@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { ApprovalRegistry, type ApprovalRegistryDeps } from '../ApprovalRegistry';
+import {
+  ApprovalRegistry,
+  RESOLVED_BY_MAX,
+  sanitizeResolvedBy,
+  type ApprovalRegistryDeps,
+} from '../ApprovalRegistry';
 import { getApprovalStatePath, RESOLVED_HISTORY_CAP } from '../approvalStore';
 import { keystrokesForAgent, looksLikeApprovalPrompt } from '../approvalKeystrokes';
 import { MAX_OPTIONS, MAX_OPTION_LABEL_CHARS, MAX_QUESTION_CHARS } from '../askUserQuestion';
@@ -595,5 +600,41 @@ describe('looksLikeApprovalPrompt', () => {
   it('rejects a cursor with no option behind it', () => {
     expect(looksLikeApprovalPrompt(['❯ '])).toBe(false);
     expect(looksLikeApprovalPrompt(['❯ 1.'])).toBe(false);
+  });
+});
+
+describe('resolvedBy sanitation', () => {
+  it('strips control characters and bounds the length', () => {
+    // Persisted per record, interpolated into a daemon log line, and echoed to
+    // the loser of a race — so a newline is log injection and an unbounded
+    // string is file growth.
+    const LF = String.fromCharCode(0x0a);
+    const CR = String.fromCharCode(0x0d);
+    const NUL = String.fromCharCode(0x00);
+    expect(sanitizeResolvedBy(`deck${LF}FAKE LOG LINE`)).toBe('deck FAKE LOG LINE');
+    expect(sanitizeResolvedBy(`a${CR}${LF}b${NUL}c`)).toBe('a b c');
+    expect(sanitizeResolvedBy('  spaced   out  ')).toBe('spaced out');
+    expect(sanitizeResolvedBy('x'.repeat(5_000))).toHaveLength(RESOLVED_BY_MAX);
+    expect(sanitizeResolvedBy(undefined)).toBe('');
+    expect(sanitizeResolvedBy({ evil: true })).toBe('');
+  });
+
+  it('applies at the chokepoint, so no caller can bypass it', async () => {
+    const { registry: reg } = makeRegistry();
+    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude' });
+    const id = reg.list().pending[0].id;
+
+    const out = await reg.resolve({
+      id,
+      decision: 'approve',
+      resolvedBy:
+        'deck' + String.fromCharCode(0x0d) + String.fromCharCode(0x0a) + 'y'.repeat(5_000),
+    });
+
+    expect(out.ok).toBe(true);
+    const stored = reg.list().recentlyResolved[0].resolvedBy ?? '';
+    expect(stored.length).toBeLessThanOrEqual(RESOLVED_BY_MAX);
+    expect(stored.includes(String.fromCharCode(0x0d))).toBe(false);
+    expect(stored.includes(String.fromCharCode(0x0a))).toBe(false);
   });
 });

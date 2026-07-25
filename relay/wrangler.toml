@@ -18,6 +18,9 @@ enabled = true
 #   APNS_KEY_ID    the 10-character Key ID
 #   APNS_TEAM_ID   the 10-character Team ID
 #   APNS_TOPIC     the iOS app's bundle identifier
+#   RELAY_SHARED_SECRET  the one value every wmux daemon presents as a Bearer
+#                        token. Required — without it the relay refuses to
+#                        serve rather than becoming an open proxy to Apple.
 
 # `wrangler deploy --env sandbox` publishes a second worker that talks to
 # Apple's sandbox host, for TestFlight/debug builds. Its secrets are separate.

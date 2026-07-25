@@ -3,6 +3,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import worker, { resetRelayStateForTests, type RelayEnv } from '../src/index';
 
 const TOKEN = 'a'.repeat(64);
+/** The one deployment-wide secret every wmux daemon presents. */
+const SHARED_SECRET = 'relay-shared-secret-for-tests';
 /** Stands in for a sealed pushEnvelope blob. Must come back out untouched. */
 const CIPHERTEXT = Buffer.from('SEALED-ENVELOPE-DO-NOT-LOG').toString('base64');
 
@@ -25,6 +27,7 @@ beforeAll(async () => {
     APNS_KEY_ID: 'ABCD123456',
     APNS_TEAM_ID: 'TEAM123456',
     APNS_TOPIC: 'com.wmux.app',
+    RELAY_SHARED_SECRET: SHARED_SECRET,
   };
 });
 
@@ -52,6 +55,12 @@ function push(body: unknown, init: RequestInit = {}): Promise<Response> {
       method: 'POST',
       body: typeof body === 'string' ? body : JSON.stringify(body),
       ...init,
+      // Authenticated by default so every existing case still exercises the
+      // path it was written for; the auth cases below override it explicitly.
+      headers: {
+        authorization: `Bearer ${SHARED_SECRET}`,
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+      },
     }),
     env,
   );
@@ -180,7 +189,11 @@ describe('forwarding to APNs', () => {
   it('switches to the sandbox host', async () => {
     const calls = stubApns([{ status: 200 }]);
     await worker.fetch(
-      new Request('https://relay.example/push', { method: 'POST', body: JSON.stringify(validBody()) }),
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body: JSON.stringify(validBody()),
+        headers: { authorization: `Bearer ${SHARED_SECRET}` },
+      }),
       { ...env, APNS_ENV: 'sandbox' },
     );
     expect(calls[0].url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN}`);
@@ -345,5 +358,87 @@ describe('the blindness claim', () => {
     stubApns([{ status: 410, body: JSON.stringify({ reason: 'Unregistered' }) }]);
     const res = await push(validBody());
     expect(await res.text()).not.toContain(CIPHERTEXT);
+  });
+});
+
+describe('shared-secret gate', () => {
+  it('refuses an unauthenticated push without touching APNs', async () => {
+    const calls = stubApns([{ status: 200 }]);
+    const res = await worker.fetch(
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body: JSON.stringify(validBody()),
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ ok: false, reason: 'unauthorized' });
+    // The whole point: a stranger never reaches the code that spends our
+    // provider key.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a wrong secret, and a right-prefix guess is no closer', async () => {
+    const calls = stubApns([{ status: 200 }]);
+    for (const guess of ['', 'wrong', SHARED_SECRET.slice(0, -1), `${SHARED_SECRET}x`]) {
+      const res = await push(validBody(), { headers: { authorization: `Bearer ${guess}` } });
+      expect(res.status).toBe(401);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses to serve at all when the secret is not configured', async () => {
+    const calls = stubApns([{ status: 200 }]);
+    const { RELAY_SHARED_SECRET: _omitted, ...unconfigured } = env;
+    const res = await worker.fetch(
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body: JSON.stringify(validBody()),
+        headers: { authorization: 'Bearer anything' },
+      }),
+      unconfigured as RelayEnv,
+    );
+    // An unconfigured relay must not fall open.
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ ok: false, reason: 'relay-misconfigured' });
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('body cap', () => {
+  it('stops reading a chunked body once it passes the cap', async () => {
+    const calls = stubApns([{ status: 200 }]);
+    let produced = 0;
+    let cancelled = false;
+    // No Content-Length: this is the shape that walked past the declared-length
+    // guard and made arrayBuffer() buffer everything before the cap was applied.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        produced += 1;
+        if (produced > 10_000) return controller.close();
+        controller.enqueue(new Uint8Array(4096));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const res = await worker.fetch(
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body,
+        headers: { authorization: `Bearer ${SHARED_SECRET}` },
+        // @ts-expect-error — undici needs this for a streaming request body.
+        duplex: 'half',
+      }),
+      env,
+    );
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ ok: false, reason: 'body-too-large' });
+    expect(cancelled).toBe(true);
+    // Aborted early rather than after draining the whole stream.
+    expect(produced).toBeLessThan(20);
+    expect(calls).toHaveLength(0);
   });
 });

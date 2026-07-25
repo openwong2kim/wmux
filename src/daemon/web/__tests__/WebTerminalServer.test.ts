@@ -1149,7 +1149,9 @@ describe('WebTerminalServer', () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ state: 'resolved' });
     // The caller supplied a DECISION, never bytes; the registry picks those.
-    expect(resolveCalls).toEqual([{ id: 'ap-ro', decision: 'approve', resolvedBy: 'web' }]);
+    // `resolvedBy` names WHO answered — here the operator token, not the
+    // surface. It used to be the constant 'web' for every caller alike.
+    expect(resolveCalls).toEqual([{ id: 'ap-ro', decision: 'approve', resolvedBy: 'operator' }]);
 
     // …and the carve-out is exactly one route wide. Free-form input is still
     // refused on this very same server.
@@ -1472,7 +1474,13 @@ describe('WebTerminalServer', () => {
     // to do it on a read-only server exactly as the operator can.
     const resolved = await postApproval(token, 'ap-dev', { decision: 'approve' });
     expect(resolved.status).toBe(200);
-    expect(resolveCalls).toEqual([{ id: 'ap-dev', decision: 'approve', resolvedBy: 'web' }]);
+    // ★ The record names the DEVICE that pressed the key. This is the one
+    // action in the whole surface that writes bytes into somebody's terminal,
+    // and it used to be attributed to the constant 'web' — so after the fact
+    // the roster could not say which paired phone did it.
+    expect(resolveCalls).toEqual([
+      { id: 'ap-dev', decision: 'approve', resolvedBy: 'device Phone (dev-1)' },
+    ]);
 
     // Every authenticated device request is reported to the roster, so
     // `lastSeenAt` reflects use rather than only the pairing moment.
@@ -1595,10 +1603,9 @@ describe('WebTerminalServer', () => {
     okPane.ac.abort();
   });
 
-  it('★ refuses to mint over a plaintext --expose bind, and allows it behind an allow-host front', async () => {
-    // A real non-loopback bind: the gate reads the bind, and on 0.0.0.0 the
-    // Host header is caller-chosen and proves nothing about where the request
-    // came from — so loopback-addressed pairing is refused here too.
+  it('★ refuses to mint over a plaintext bind, and --allow-host does NOT buy an exception', async () => {
+    // A real non-loopback bind: the gate reads the BIND, because that is the
+    // only thing about the transport the daemon actually knows.
     const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
     const port = info.port as number;
 
@@ -1608,7 +1615,6 @@ describe('WebTerminalServer', () => {
       // Actionable: it names BOTH ways out, not just the refusal — HTTPS in
       // one command, or pair before exposing.
       expect(refusedUpFront.error).toContain('wmux web --tailscale');
-      expect(refusedUpFront.error).toContain('--allow-host');
       expect(refusedUpFront.error).toContain('pair over loopback');
       // …and does not oversell the second one: on a plaintext bind the
       // credential still crosses the wire on every request afterwards.
@@ -1623,21 +1629,37 @@ describe('WebTerminalServer', () => {
     expect(JSON.parse(denied.body).error).toBe('insecure-transport');
     expect(deviceMintCalls).toEqual([]);
     expect(server.status().pairCode).toBe(code);
+  });
 
-    // Behind a TLS front the operator named, minting is allowed.
-    await server.stop();
+  it('★ a forged Host cannot talk a plaintext bind into minting a credential', async () => {
+    // This used to work. `--allow-host` named the TLS front, and a request whose
+    // Host matched was allowed to mint — but Host is written by the caller, so
+    // anyone who could reach the plaintext port (and had the pair code) sent
+    // `Host: machine.tail-net.ts.net` straight to the LAN address, skipped the
+    // TLS front, and walked off with a credential that never expires.
     const fronted = await server.start({
       port: 0,
       host: '0.0.0.0',
       allowInput: false,
       allowedHosts: ['machine.tail-net.ts.net'],
     });
+
+    // Refused up front now: --allow-host is a DNS-rebinding allowlist, not
+    // evidence that this particular connection was encrypted.
     const started = server.startPairing({ name: 'Phone' });
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    const ok = await getWithHost(fronted.port as number, `/api/pair?code=${started.code}`, 'machine.tail-net.ts.net');
-    expect(ok.status).toBe(200);
-    expect(JSON.parse(ok.body).deviceId).toBe('dev-1');
+    expect(started.ok).toBe(false);
+
+    // …and the same is true at redemption, sending the exact header an attacker
+    // would forge. Nothing is minted.
+    const code = server.status().pairCode as string;
+    const forged = await getWithHost(
+      fronted.port as number,
+      `/api/pair?code=${code}`,
+      'machine.tail-net.ts.net',
+    );
+    expect(forged.status).toBe(403);
+    expect(JSON.parse(forged.body).error).toBe('insecure-transport');
+    expect(deviceMintCalls).toEqual([]);
   });
 
   it('mints on a loopback bind without an allow-host front', async () => {
