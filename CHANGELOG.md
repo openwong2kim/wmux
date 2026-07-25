@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.35.1] — 2026-07-26
+
 ### Fixed
 
 - **The app's `web` popover can now actually connect a phone.** It offered two options and neither worked: the default served only to this machine, so the address it showed was meaningless on a phone, and "Expose to network" reached the phone but then refused to pair, because a device credential never expires and is not handed out over plain HTTP. Worse, the popover advertised a fresh pairing code every ten seconds in exactly that state — you read six characters onto a phone and only the redemption told you it was never going to work. There is now a "Serve over HTTPS (needs Tailscale)" option that sets up the same one-command Tailscale front `wmux web --tailscale` uses, and when pairing cannot succeed the popover says why and what to do instead of showing a code. If Tailscale is missing or logged out, the popover says which of those it is and links straight to the install page rather than leaving you a URL to retype. Ticking it unticks "Expose to network" and the reverse: `tailscale serve` proxies to this machine only, so a wildcard bind alongside it is a second and weaker way in, not an addition. "Expose to network" now also says plainly that it serves panes for watching but cannot pair a phone.
