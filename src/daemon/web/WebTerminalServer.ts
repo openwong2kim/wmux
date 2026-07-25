@@ -187,6 +187,8 @@ export class WebTerminalServer {
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
+  /** Full CSP for the HTML page, with per-build inline-script hashes. */
+  private htmlCsp = '';
   private manifest: Buffer | null = null;
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
@@ -417,7 +419,12 @@ export class WebTerminalServer {
     // Static, unauthenticated app shell (no secrets live in these). `/pair`
     // is the same SPA shell — the frontend renders the pairing screen for it.
     if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
-      return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8');
+      return this.serveStatic(
+        res,
+        this.terminalHtml,
+        'text/html; charset=utf-8',
+        this.htmlCsp ? { 'Content-Security-Policy': this.htmlCsp } : {},
+      );
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
       return this.serveStatic(res, this.manifest, 'application/manifest+json; charset=utf-8');
@@ -962,6 +969,7 @@ export class WebTerminalServer {
     this.manifest = readIfExists(path.join(dir, 'manifest.webmanifest'));
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
+    this.htmlCsp = this.terminalHtml ? buildHtmlCsp(this.terminalHtml.toString('utf8')) : '';
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
     }
@@ -969,6 +977,41 @@ export class WebTerminalServer {
 }
 
 // === module helpers =========================================================
+
+/**
+ * The full Content-Security-Policy for the terminal page (#608).
+ *
+ * The build inlines every script into terminal.html, so the policy carries a
+ * `sha256-` hash per inline `<script>` block instead of `'unsafe-inline'`.
+ * Hashes are computed here, from the exact bytes being served, rather than in
+ * `build-daemon-web.mjs` — the two can then never drift apart. The directive
+ * that matters most is `connect-src 'self'`: even if a future regression
+ * reintroduced an XSS, the injected script could not send the token anywhere.
+ *
+ * `style-src` keeps `'unsafe-inline'`: xterm.js manages styles dynamically and
+ * a style injection cannot exfiltrate the token. `worker-src 'self'` admits the
+ * service worker, which `default-src 'none'` would otherwise block.
+ */
+export function buildHtmlCsp(html: string): string {
+  const hashes: string[] = [];
+  const re = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    if (!m[1]) continue; // e.g. <script src=...></script> — covered by 'self'
+    hashes.push(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+  }
+  return [
+    "default-src 'none'",
+    `script-src 'self'${hashes.length ? ` ${hashes.join(' ')}` : ''}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "manifest-src 'self'",
+    "worker-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ');
+}
 
 /**
  * One SSE frame. `id` is optional and emitted only on the attention stream —
