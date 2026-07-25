@@ -11,6 +11,7 @@ import {
 // reimplemented here: the steps a second copy drops are the rollbacks, and
 // those only run on failure paths nobody exercises by hand.
 import {
+  checkWebFront,
   describeTailscaleProblem,
   startWebTransport,
   stopWebTransport,
@@ -74,11 +75,62 @@ export function registerWebHandlers(
     }
   };
 
+  /**
+   * Last answer from `checkWebFront`, or null before anything asked.
+   *
+   * Verifying costs a process spawn, and the popover re-reads status every 10
+   * seconds while it is open — checking on every poll would spawn tailscale six
+   * times a minute for a fact that changes when a human does something. So the
+   * shell-out runs on deliberate events only (see `verifyFront` below) and the
+   * ANSWER is applied to every reply afterwards, including the cheap polls.
+   *
+   * The residual stale window is "the front died while the popover sat open and
+   * untouched", where nothing is being scanned anyway.
+   */
+  let frontState: 'ours' | 'gone' | 'unknown' | null = null;
+
+  /**
+   * Fold what we know about the front into a daemon reply.
+   *
+   * The daemon replays a persisted `allowedHosts` across a restart and puts
+   * `https://<magicdns>/…` first in `urls` — it has no way to know the serve
+   * behind that name is gone. Left alone, the popover would render a QR for an
+   * address that answers nothing, and the failure would land on the phone.
+   */
+  const withFront = (info: WebTerminalInfo): WebTerminalInfo => {
+    if (!info.running || info.tailscale !== true || frontState !== 'gone') return info;
+    return {
+      ...info,
+      // Drop the fronted URLs: an https address with no serve behind it is
+      // worse than no address, because it looks like the working one.
+      urls: (info.urls ?? []).filter((u) => !u.startsWith('https://')),
+      allowedHosts: [],
+      // Do not overwrite a refusal the daemon already made — the bind is a
+      // harder fact than our tailscale probe.
+      pairRefusal: info.pairRefusal ?? {
+        reason: 'no-front',
+        detail:
+          'the tailscale serve front this server was started behind is no longer configured, ' +
+          'so its https address reaches nothing. Start wmux web again with the tailnet option.',
+      },
+    };
+  };
+
   ipcMain.removeHandler(IPC.WEB_STATUS);
   ipcMain.handle(
     IPC.WEB_STATUS,
-    wrapHandler(IPC.WEB_STATUS, async (): Promise<WebTerminalInfo> => {
-      return call('daemon.web.status', {});
+    wrapHandler(IPC.WEB_STATUS, async (_event, input: unknown): Promise<WebTerminalInfo> => {
+      const args = input && typeof input === 'object' ? (input as { verifyFront?: boolean }) : {};
+      const info = await call('daemon.web.status', {});
+      // Deliberate events only: the popover opening, the tailnet toggle going
+      // on, a new pairing code being minted. Never the 10s poll.
+      if (args.verifyFront === true && info.running && info.tailscale === true) {
+        frontState = await checkWebFront({
+          webPort: info.port ?? WEB_DEFAULT_PORT,
+          ...(exec ? { exec } : {}),
+        });
+      }
+      return withFront(info);
     }),
   );
 
@@ -136,6 +188,9 @@ export function registerWebHandlers(
                   },
           };
         }
+        // We just registered it (or deliberately did not), so this is known
+        // without asking tailscale again.
+        frontState = tailscale ? 'ours' : null;
         return start.value;
       },
     ),
@@ -145,7 +200,17 @@ export function registerWebHandlers(
   ipcMain.handle(
     IPC.WEB_PAIR_REFRESH,
     wrapHandler(IPC.WEB_PAIR_REFRESH, async (): Promise<WebTerminalInfo> => {
-      return call('daemon.web.pairRefresh', {});
+      const info = await call('daemon.web.pairRefresh', {});
+      // Minting a code is a deliberate "I am about to pair a phone" moment, and
+      // it is the last chance to notice the front died before the operator
+      // points a camera at a QR. Cheap here: it happens once per human action.
+      if (info.running && info.tailscale === true) {
+        frontState = await checkWebFront({
+          webPort: info.port ?? WEB_DEFAULT_PORT,
+          ...(exec ? { exec } : {}),
+        });
+      }
+      return withFront(info);
     }),
   );
 

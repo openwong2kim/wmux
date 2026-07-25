@@ -1130,7 +1130,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // reported as `{ running:false, error }`), so callers read `.error` instead of
 // try/catch. Extends the electronAPI literal in place (mirrors .lanlink above).
 (electronAPI as Record<string, unknown>).web = {
-  status: () => ipcRenderer.invoke(IPC.WEB_STATUS) as Promise<WebTerminalInfo>,
+  status: (args?: { verifyFront?: boolean }) =>
+    ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,

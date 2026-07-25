@@ -103,8 +103,17 @@ declare global {
        * callers read `.error` rather than try/catch.
        */
       web?: {
-        /** Read the current server state (running/port/host/viewers/pair code). */
-        status: () => Promise<WebTerminalInfo>;
+        /**
+         * Read the current server state (running/port/host/viewers/pair code).
+         *
+         * `verifyFront` additionally asks tailscale whether the HTTPS front is
+         * still configured. Pass it on DELIBERATE moments only — the popover
+         * opening, the tailnet toggle going on — never on the 10s poll, which
+         * would spawn a tailscale process six times a minute. The answer is
+         * cached and applied to every later reply, so the polls still show a
+         * front that was found missing.
+         */
+        status: (args?: { verifyFront?: boolean }) => Promise<WebTerminalInfo>;
         /** Start the server. `allowInput`/`expose` default false (read-only + loopback). */
         start: (args: WebStartArgs) => Promise<WebTerminalInfo>;
         /** Stop the server. Resolves the post-stop state (`running:false`). */

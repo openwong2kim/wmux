@@ -540,6 +540,39 @@ export function classifyServeError(text: string): TailscaleProblem {
 //   │             nothing: 502)    │         └──────────────────────────────┘
 //   └──────────────────────────────┘
 
+/**
+ * Is the HTTPS front we registered still in place?
+ *
+ * `ours` — the serve config points at our loopback web port.
+ * `gone` — nothing is serving, or something else took the slot. Either way the
+ *          `https://<magicdns>` address we advertise no longer reaches us.
+ * `unknown` — tailscale could not be asked. Distinct from `gone` on purpose:
+ *          "I cannot tell" must not be rendered as "it is broken", or a laptop
+ *          with a briefly-busy tailscaled would tell the operator their setup
+ *          fell apart.
+ *
+ * Read-only. It never registers, removes, or repairs anything — the caller
+ * decides what to do about the answer.
+ */
+export async function checkWebFront(opts: {
+  webPort: number;
+  servePort?: number;
+  exec?: TailscaleExec;
+}): Promise<'ours' | 'gone' | 'unknown'> {
+  const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
+  const servePort = opts.servePort ?? DEFAULT_SERVE_PORT;
+  let stdout: string;
+  try {
+    stdout = (await runTailscale(exec, ['serve', 'status', '--json'])).stdout;
+  } catch {
+    return 'unknown';
+  }
+  const ownership = classifyServeConfig(stdout, { servePort, webPort: opts.webPort });
+  if (ownership === 'ours') return 'ours';
+  if (ownership === 'unreadable') return 'unknown';
+  return 'gone';
+}
+
 /** What a transport start did, including the caller's own server result. */
 export type WebTransportStart<T> =
   | {

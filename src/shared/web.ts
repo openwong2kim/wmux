@@ -42,6 +42,12 @@ export interface WebTerminalInfo {
    */
   deviceCredentials?: boolean;
   /**
+   * TLS fronts the server accepts in the `Host` header — in practice the
+   * `tailscale serve` MagicDNS name. The daemon has reported this since #616
+   * and the CLI's local copy already carried it; this mirror was missing it.
+   */
+  allowedHosts?: string[];
+  /**
    * Why pairing cannot succeed right now, or absent when it can.
    *
    * Carries a `reason` the UI switches on and a `detail` for logs and tooltips,
@@ -90,9 +96,16 @@ export interface WebTerminalInfo {
  *
  * `insecure-transport` — the server is bound off-loopback over plain HTTP. A
  * device credential never expires, so it is not handed across a cleartext wire
- * (see WebTerminalServer.mintRefusal).
+ * (see WebTerminalServer.mintRefusal). Decided by the DAEMON, which knows the
+ * bind.
+ *
+ * `no-front` — the server is on loopback behind a `tailscale serve` front that
+ * has since gone away, so the `https://…` address it advertises reaches
+ * nothing. Decided by the MAIN process, which is the only side that can ask
+ * tailscale. The daemon replays a persisted `allowedHosts` across a restart
+ * and cannot tell whether the front behind it still exists.
  */
-export type PairRefusalReason = 'insecure-transport';
+export type PairRefusalReason = 'insecure-transport' | 'no-front';
 
 export interface PairRefusal {
   reason: PairRefusalReason;

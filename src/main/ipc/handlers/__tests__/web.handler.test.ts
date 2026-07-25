@@ -26,7 +26,12 @@ import * as electron from 'electron';
 import { registerWebHandlers } from '../web.handler';
 import { IPC } from '../../../../shared/constants';
 import type { DaemonClient } from '../../../DaemonClient';
-import { WEB_DEFAULT_PORT, WEB_EXPOSE_HOST, WEB_LOOPBACK_HOST } from '../../../../shared/web';
+import {
+  WEB_DEFAULT_PORT,
+  WEB_EXPOSE_HOST,
+  WEB_LOOPBACK_HOST,
+  type WebTerminalInfo,
+} from '../../../../shared/web';
 import type { TailscaleExec } from '../../../../cli/tailscale';
 
 const handlers = (electron as unknown as {
@@ -109,6 +114,135 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: [],
       tailscale: false,
+    });
+  });
+
+  describe('front verification', () => {
+    /** A tailscale whose serve slot is empty, counting how often it is asked. */
+    function absentFront() {
+      let probes = 0;
+      const exec: TailscaleExec = async (_cmd, args) => {
+        if (args[0] === 'serve' && args[1] === 'status') {
+          probes += 1;
+          return { stdout: '{}', stderr: '' };
+        }
+        return { stdout: '', stderr: '' };
+      };
+      return { exec, probes: () => probes };
+    }
+
+    const runningOnTailnet = {
+      running: true,
+      port: 7681,
+      tailscale: true,
+      urls: ['https://box.tail1234.ts.net/?token=t', 'http://127.0.0.1:7681/?token=t'],
+      allowedHosts: ['box.tail1234.ts.net'],
+      pairCode: 'ABC123',
+    };
+
+    it('★ a vanished front stops the https address being advertised', async () => {
+      const { exec } = absentFront();
+      installConnected(runningOnTailnet, exec);
+
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+
+      // The daemon replays a persisted allowedHosts across a restart and cannot
+      // tell the serve behind it is gone. Left alone the popover would render a
+      // QR for an address that answers nothing, and the phone would take the
+      // blame for a desktop-side problem.
+      expect(res.urls).toEqual(['http://127.0.0.1:7681/?token=t']);
+      expect(res.allowedHosts).toEqual([]);
+      expect(res.pairRefusal?.reason).toBe('no-front');
+    });
+
+    it('★ the 10s poll never spawns tailscale, but still shows what was found', async () => {
+      const { exec, probes } = absentFront();
+      installConnected(runningOnTailnet, exec);
+
+      await getHandler(IPC.WEB_STATUS)(fakeEvent, { verifyFront: true });
+      expect(probes()).toBe(1);
+
+      // Three polls, as the open popover would issue them.
+      const poll1 = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {})) as WebTerminalInfo;
+      await getHandler(IPC.WEB_STATUS)(fakeEvent, {});
+      const poll3 = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {})) as WebTerminalInfo;
+
+      // Still one probe: checking per poll would spawn tailscale six times a
+      // minute for a fact that only changes when a human does something.
+      expect(probes()).toBe(1);
+      // …and the answer persists, so the operator is not shown a dead address
+      // again just because the cheap path ran.
+      expect(poll1.pairRefusal?.reason).toBe('no-front');
+      expect(poll3.urls).toEqual(['http://127.0.0.1:7681/?token=t']);
+    });
+
+    it('leaves a live front completely alone', async () => {
+      const exec: TailscaleExec = async (_cmd, args) => {
+        if (args[0] === 'serve' && args[1] === 'status') {
+          return {
+            stdout: JSON.stringify({
+              TCP: { '443': { HTTPS: true } },
+              Web: {
+                'box.tail1234.ts.net:443': {
+                  Handlers: { '/': { Proxy: 'http://127.0.0.1:7681' } },
+                },
+              },
+            }),
+            stderr: '',
+          };
+        }
+        return { stdout: '', stderr: '' };
+      };
+      installConnected(runningOnTailnet, exec);
+
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+      expect(res.urls).toEqual(runningOnTailnet.urls);
+      expect(res.pairRefusal).toBeUndefined();
+    });
+
+    it('★ "cannot ask tailscale" is not reported as "the front is broken"', async () => {
+      const exec: TailscaleExec = async () => {
+        throw new Error('tailscaled is busy');
+      };
+      installConnected(runningOnTailnet, exec);
+
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+
+      // A briefly unavailable tailscaled must not tell the operator their setup
+      // fell apart. Unknown leaves the advertised address exactly as it was.
+      expect(res.urls).toEqual(runningOnTailnet.urls);
+      expect(res.pairRefusal).toBeUndefined();
+    });
+
+    it('does not probe at all for a server that is not on the tailnet', async () => {
+      const { exec, probes } = absentFront();
+      installConnected({ running: true, port: 7681, tailscale: false }, exec);
+      await getHandler(IPC.WEB_STATUS)(fakeEvent, { verifyFront: true });
+      expect(probes()).toBe(0);
+    });
+
+    it('a bind-level refusal outranks the front probe', async () => {
+      const { exec } = absentFront();
+      installConnected(
+        {
+          ...runningOnTailnet,
+          pairCode: undefined,
+          pairRefusal: { reason: 'insecure-transport', detail: 'plaintext bind' },
+        },
+        exec,
+      );
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+      // The bind is a harder fact than a tailscale probe, and it is the one
+      // that actually blocks minting.
+      expect(res.pairRefusal?.reason).toBe('insecure-transport');
     });
   });
 
