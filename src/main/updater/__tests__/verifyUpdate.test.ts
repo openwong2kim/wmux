@@ -89,4 +89,36 @@ describe('validateManifest', () => {
     expect(validateManifest(null, '2.14.1').ok).toBe(false);
     expect(validateManifest('nope', '2.14.1').ok).toBe(false);
   });
+
+  // The Windows manifest names the artifact `setupExe`, the darwin one `file`;
+  // both normalize to `fileName` so downloadAndVerify is platform-agnostic.
+  it('normalizes the Windows setupExe field to fileName', () => {
+    const r = validateManifest(validManifest(), '2.14.1');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.manifest.fileName).toBe('wmux-2.14.1.Setup.exe');
+  });
+
+  it('accepts a darwin manifest that names the artifact with `file`', () => {
+    const { setupExe: _setupExe, ...rest } = validManifest();
+    const r = validateManifest(
+      { ...rest, file: 'wmux-darwin-arm64-2.14.1.zip' },
+      '2.14.1',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.manifest.fileName).toBe('wmux-darwin-arm64-2.14.1.zip');
+  });
+
+  it('rejects a manifest that names no artifact at all', () => {
+    const { setupExe: _setupExe, ...rest } = validManifest();
+    expect(validateManifest(rest, '2.14.1').ok).toBe(false);
+  });
+
+  it('still applies every other check to a darwin (`file`) manifest', () => {
+    const { setupExe: _setupExe, ...rest } = validManifest();
+    const darwin = (over: Record<string, unknown> = {}) =>
+      ({ ...rest, file: 'wmux-darwin-arm64-2.14.1.zip', ...over });
+    expect(validateManifest(darwin({ url: 'https://evil.com/x.zip' }), '2.14.1').ok).toBe(false);
+    expect(validateManifest(darwin({ sha256: 'deadbeef' }), '2.14.1').ok).toBe(false);
+    expect(validateManifest(darwin(), '2.99.0').ok).toBe(false);
+  });
 });
