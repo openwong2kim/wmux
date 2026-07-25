@@ -1458,10 +1458,30 @@ export class WebTerminalServer {
    * Everything a cursor has not seen yet. A cursor from another epoch (or none
    * at all) cannot be positioned in this id space, so the caller is told to
    * resync and handed the whole current window.
+   *
+   * A MATCHING epoch is not on its own enough, and that was the gap. The log
+   * evicts — 100 entries, 30 minutes — while ids never rewind, so a cursor can
+   * be perfectly valid and still sit below everything still held. Answering
+   * `reset:false` there hands back the retained tail and lets the client treat
+   * it as contiguous with what it last saw: the events in between are gone, the
+   * client is never told, and on a phone that reconnects after a long sleep
+   * that silently swallows the attention events this whole channel exists to
+   * deliver. `reset` is the only signal that continuity broke, so it has to
+   * fire whenever it did — not only when the epoch changed.
    */
   private replayFrom(cursor: AttentionCursor | null): { reset: boolean; entries: AttentionEntry[] } {
     this.evictAttention();
     if (!cursor || cursor.epoch !== this.attentionEpoch) {
+      return { reset: true, entries: this.attentionLog.slice() };
+    }
+    const oldest = this.attentionLog.length > 0 ? this.attentionLog[0].id : null;
+    // With entries held, continuity survives only if the cursor's NEXT id is one
+    // we still have. With none held, it survives only if nothing was issued
+    // after the cursor — an empty log is "quiet", not "lost", until it isn't.
+    const gap = oldest === null ? cursor.id < this.headId() : cursor.id < oldest - 1;
+    // A cursor above every id we ever issued cannot be positioned either; it did
+    // not come from us in this epoch.
+    if (gap || cursor.id > this.headId()) {
       return { reset: true, entries: this.attentionLog.slice() };
     }
     return { reset: false, entries: this.attentionLog.filter((e) => e.id > cursor.id) };

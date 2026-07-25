@@ -855,6 +855,53 @@ describe('WebTerminalServer', () => {
     expect(caughtUp.events).toEqual([]);
   });
 
+  it('★ a cursor below the retained window is a RESET, not a silent gap', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    // The phone saw event 1, then slept. 300 events happened; the log keeps the
+    // newest 100, so 2..200 are gone forever.
+    emitNotify('s9', 'seen');
+    const first = await backlog(token);
+    const cursor = `${first.epoch}:1`;
+    for (let i = 0; i < 300; i++) emitNotify('s9', `burst-${i}`);
+
+    const out = await backlog(token, cursor);
+    // Same epoch, so this used to answer reset:false and hand back the tail —
+    // and the client would treat that tail as contiguous with event 1, never
+    // learning that 2..200 existed at all.
+    expect(out.reset).toBe(true);
+    expect(out.events.length).toBeLessThanOrEqual(100);
+    expect(out.headId).toBe(301);
+
+    // A cursor still INSIDE the window is unaffected: no false resyncs.
+    const oldestHeld = out.events[0].id as number;
+    const inside = await backlog(token, `${first.epoch}:${oldestHeld}`);
+    expect(inside.reset).toBe(false);
+
+    // The exact boundary — the cursor sits one below the oldest held entry, so
+    // the very next event it needs is one we still have. Continuity holds.
+    const boundary = await backlog(token, `${first.epoch}:${oldestHeld - 1}`);
+    expect(boundary.reset).toBe(false);
+    expect(boundary.events[0].id).toBe(oldestHeld);
+  });
+
+  it('an empty window is quiet, not lost, until something was actually missed', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s10', 'one');
+    const seen = await backlog(token);
+
+    // Caught up with an empty tail: nothing was missed, so no resync.
+    const quiet = await backlog(token, `${seen.epoch}:1`);
+    expect(quiet.reset).toBe(false);
+    expect(quiet.events).toEqual([]);
+
+    // A cursor that cannot have come from us in this epoch.
+    const future = await backlog(token, `${seen.epoch}:999`);
+    expect(future.reset).toBe(true);
+  });
+
   it('evicts the oldest entries past the cap while ids stay monotonic', async () => {
     const info = await startRO();
     const token = info.token as string;
