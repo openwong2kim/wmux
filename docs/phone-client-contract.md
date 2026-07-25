@@ -258,15 +258,28 @@ Notifications are sealed **on the machine that sends them**, before they reach
 the relay the project operates. The relay cannot read them; the Notification
 Service Extension decrypts on-device and rewrites the alert.
 
-Byte-exact format, Swift skeleton, and known-answer test vectors:
-`src/shared/push/pushEnvelope.ts`. Implement the extension against the vectors —
-they let you prove compatibility without a device.
+**The app owns the key.** At registration the phone generates an X25519 key
+pair, keeps the private half in the Keychain, and registers only the 32-byte
+public half. The daemon stores a public key and nothing secret, so the device
+roster stays worthless to anyone who reads it — which is the property the whole
+credential design rests on. Each notification also carries a fresh ephemeral
+sender key, so a daemon compromised later cannot decrypt notifications captured
+earlier.
+
+(The original design derived one AES key from the pairing secret. That was not
+buildable: `DeviceStore` never persists that secret, by design.)
+
+Byte-exact format, a CryptoKit skeleton, and a known-answer vector:
+`src/shared/push/pushEnvelope.ts`. Implement the extension against the vector —
+it proves compatibility without a device, and its X25519 keys are RFC 7748 §6.1's
+published pair, so a key-handling bug shows up against the spec rather than
+against our own output.
 
 The five things that break compatibility silently, all spelled out in that file:
-HKDF with a **zero-length salt** and the fixed info string; the timestamp
-interpolated into the AAD as an **integer, not a float**; standard base64 **with**
-padding (not base64url); a 12-byte nonce; and a byte-for-byte, case-sensitive
-`deviceId`.
+HKDF with a **zero-length salt** and `info = "wmux:push:v1" || epk || spk` in
+that order; the timestamp interpolated into the AAD as an **integer, not a
+float**; standard base64 **with** padding (not base64url); a 12-byte nonce; and a
+byte-for-byte, case-sensitive `deviceId`.
 
 Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 

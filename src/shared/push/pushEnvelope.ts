@@ -1,192 +1,165 @@
 /**
- * pushEnvelope — the end-to-end encrypted payload that travels daemon → relay →
- * APNs → iOS Notification Service Extension (roadmap M5, contract M5b).
+ * The sealed push envelope — the format the daemon writes and the iOS
+ * Notification Service Extension reads.
  *
- * The relay and Apple both handle this envelope, and neither can read it: the
- * only plaintext they see is the routing metadata (`deviceId`, `ts`) that the
- * envelope binds as AES-GCM additional authenticated data. This module is the
- * single definition of that format so the Node sender and the Swift receiver
- * cannot drift.
+ * The relay that carries it is operated by this project and cannot read any of
+ * it: the only plaintext it ever sees is routing metadata (an APNs device
+ * token, a size, a timestamp). This file is the single definition of the
+ * format so the Node sender and the Swift receiver cannot drift.
  *
- * Pure module by design: it does no I/O, holds no device records, and is NOT
- * wired into the daemon here (PushSender is deferred until M3's DeviceStore
- * lands). It takes the raw per-device pairing secret and gives back an envelope.
+ * ── WHY PUBLIC KEY, AND NOT A SHARED SECRET ────────────────────────────────
+ * The original design derived one AES key from the device's pairing secret.
+ * That could not be built: `DeviceStore` deliberately never persists that
+ * secret — `devices.json` holds a scrypt hash and a salt, and the in-memory
+ * cache holds a SHA-256 digest — so the daemon has nothing to derive from at
+ * send time. Keeping a copy just for push would have turned the roster into a
+ * file worth stealing, which is exactly the property the M3 design is built
+ * around (it is why its ACL hardening can be deferred at all).
  *
- * ---------------------------------------------------------------------------
- * WIRE FORMAT (v1)
- * ---------------------------------------------------------------------------
+ * So the phone generates an X25519 key pair, keeps the private half in the
+ * Keychain, and registers only the public half. The daemon stores a public key,
+ * which is not a secret, and the roster stays worthless to anyone who reads it.
+ * Each notification also gets a fresh ephemeral sender key, so compromising the
+ * daemon later does not decrypt notifications captured earlier.
+ *
+ * ── WIRE FORMAT ────────────────────────────────────────────────────────────
+ *
  *   {
- *     "v": 1,
- *     "deviceId": "<pairing device id, ASCII>",
- *     "ts": 1753420800000,        // integer, Unix epoch MILLISECONDS
+ *     "v":   1,
+ *     "deviceId": "…",           // the device this was sealed for
+ *     "ts":  1753420800000,      // integer, Unix epoch MILLISECONDS
+ *     "epk": "<base64, 32 bytes>",  // ephemeral X25519 public key
  *     "iv":  "<base64, 12 bytes>",
- *     "ct":  "<base64, AES-256-GCM ciphertext>",
+ *     "ct":  "<base64>",
  *     "tag": "<base64, 16 bytes>"
  *   }
  *
- * Cryptography:
- *   key   = HKDF-SHA256(ikm = deviceSecret, salt = <empty>, info = "wmux:push:v1", L = 32)
- *   nonce = 12 random bytes, fresh per envelope (never reused with the same key)
- *   aad   = UTF-8("wmux:push:v1|" + deviceId + "|" + ts)
- *   ct,tag = AES-256-GCM(key, nonce, aad, plaintext = UTF-8(JSON.stringify(payload)))
+ * ── CRYPTO ─────────────────────────────────────────────────────────────────
  *
- * ---------------------------------------------------------------------------
- * HOW SWIFT REPRODUCES THIS (Notification Service Extension, CryptoKit)
- * ---------------------------------------------------------------------------
- * Every byte below is load-bearing. The five things that break byte-for-byte
- * parity are called out as WARNINGs — read them before writing the extension.
+ *   shared = X25519(ephemeral_private, device_public)
+ *   key    = HKDF-SHA256(ikm = shared, salt = "", info = INFO || epk || spk, 32)
+ *   aad    = UTF-8("wmux:push:v1|" + deviceId + "|" + ts)
+ *   ct,tag = AES-256-GCM(key, iv, aad, plaintext = UTF-8(JSON.stringify(payload)))
+ *
+ * where INFO is UTF-8("wmux:push:v1"), `epk` is the 32 raw bytes of the
+ * ephemeral public key and `spk` the 32 raw bytes of the device's registered
+ * public key. Binding both keys into the KDF is what stops a key derived here
+ * from being meaningful in any other context.
+ *
+ * ── HOW SWIFT REPRODUCES THIS (Notification Service Extension) ─────────────
  *
  *   import CryptoKit
- *   import Foundation
  *
- *   // 0. Unwrap the opaque blob the relay put in the APNs payload. The relay
- *   //    never sees the envelope's fields — it forwards one base64 string
- *   //    under the "wmux" key (see encodePushEnvelopeForRelay).
- *   guard let blob = request.content.userInfo["wmux"] as? String,
- *         let envJSON = Data(base64Encoded: blob) else { throw … }
- *   let env = try JSONDecoder().decode(PushEnvelopeDTO.self, from: envJSON)
+ *   // 0. The private key generated at registration, from the Keychain.
+ *   let priv = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: keychainBytes)
+ *   let spk  = priv.publicKey.rawRepresentation          // the 32 bytes you registered
  *
- *   // 1. Derive the push key. HKDF-SHA256, ZERO-LENGTH salt, fixed info string,
- *   //    32-byte output. `deviceSecretBytes` is the RAW secret from pairing.
- *   let pushKey = HKDF<SHA256>.deriveKey(
- *       inputKeyMaterial: SymmetricKey(data: deviceSecretBytes),
- *       salt: Data(),                            // zero-length, see WARNING 1
- *       info: Data("wmux:push:v1".utf8),         // exactly 12 ASCII bytes
- *       outputByteCount: 32
- *   )
+ *   // 1. Agree, using the ephemeral key from the envelope.
+ *   let epkData = Data(base64Encoded: env.epk)!
+ *   let epk     = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: epkData)
+ *   let shared  = try priv.sharedSecretFromKeyAgreement(with: epk)
  *
- *   // 2. Rebuild the AAD. Plain UTF-8 string concatenation — NOT JSON.
- *   let aad = Data("wmux:push:v1|\(deviceId)|\(tsMillis)".utf8)   // see WARNING 2
+ *   // 2. Derive. `salt` is EMPTY; `sharedInfo` is the info string then both keys.
+ *   var info = Data("wmux:push:v1".utf8)
+ *   info.append(epkData)
+ *   info.append(spk)
+ *   let key = shared.hkdfDerivedSymmetricKey(
+ *       using: SHA256.self, salt: Data(), sharedInfo: info, outputByteCount: 32)
  *
- *   // 3. Open the sealed box. Standard base64 WITH padding — see WARNING 3.
- *   guard let ivData  = Data(base64Encoded: env.iv),
- *         let ctData  = Data(base64Encoded: env.ct),
- *         let tagData = Data(base64Encoded: env.tag) else { throw … }
- *   let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: ivData),
- *                                   ciphertext: ctData,
- *                                   tag: tagData)
- *   let plaintext = try AES.GCM.open(box, using: pushKey, authenticating: aad)
- *   let payload = try JSONDecoder().decode(PushPayload.self, from: plaintext)
+ *   // 3. Open. The AAD must be built with `ts` as an INTEGER.
+ *   let aad = Data("wmux:push:v1|\(env.deviceId)|\(env.ts)".utf8)
+ *   let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: Data(base64Encoded: env.iv)!),
+ *                                   ciphertext: Data(base64Encoded: env.ct)!,
+ *                                   tag: Data(base64Encoded: env.tag)!)
+ *   let plaintext = try AES.GCM.open(box, using: key, authenticating: aad)
  *
- *   // 4. Enforce freshness on the Swift side too (the daemon already does):
- *   //    reject when tsMillis is older than PUSH_MAX_AGE_MS (300_000) or more
- *   //    than PUSH_MAX_FUTURE_SKEW_MS (60_000) in the future.
+ *   // 4. Reject when `ts` is older than PUSH_MAX_AGE_MS (300_000) or more than
+ *   //    PUSH_MAX_FUTURE_SKEW_MS (60_000) ahead, and when `deviceId` is not
+ *   //    this device's.
  *
- * WARNING 1 — salt. The salt is a zero-length byte string, not "absent" and not
- *   a random value. RFC 5869 substitutes HashLen zero bytes when no salt is
- *   given, and HMAC-SHA256 pads any key shorter than its 64-byte block with
- *   zeros, so `Data()` and `Data(repeating: 0, count: 32)` derive the identical
- *   key. Verified against Node's `hkdfSync` — either form is correct.
+ * ── FIVE WAYS TO BREAK THIS SILENTLY ───────────────────────────────────────
  *
- * WARNING 2 — the timestamp inside the AAD. `ts` MUST be interpolated as a
- *   decimal integer with no grouping, no sign, no fraction. Decode it into an
- *   `Int64`, never a `Double`: `JSONSerialization` yields `NSNumber` for JSON
- *   numbers, and interpolating a `Double` produces "1.7534208e+12" or
- *   "1753420800000.0", either of which changes the AAD bytes and fails
- *   authentication with an error that looks like a key problem. Use
- *   `Int64` (or `Decodable` into `Int64`) and `String(tsMillis)`.
+ * 1. **HKDF salt.** It is ZERO LENGTH, not 32 zero bytes. Those happen to agree
+ *    here — HMAC-SHA256 pads any key shorter than its 64-byte block with zeros,
+ *    so `Data()` and `Data(repeating: 0, count: 32)` derive the same key — but
+ *    do not rely on the coincidence.
+ * 2. **The timestamp in the AAD.** `ts` MUST be interpolated as an integer.
+ *    Swift's default `String(describing:)` of a `Double` yields "1.7534208e+12",
+ *    which authenticates nothing. Decode it as `Int64`.
+ * 3. **Base64 is standard, WITH padding** — not base64url. Do not translate
+ *    "-_" and do not strip "=". This module rejects non-canonical encodings on
+ *    the way in, so what Swift receives is always canonical.
+ * 4. **`epk` and `spk` go into `sharedInfo` in that order**, raw bytes, no
+ *    separator. Swapping them derives a different key and fails authentication
+ *    with no other symptom.
+ * 5. **`deviceId` is compared byte-for-byte, case-sensitively.** It is a UUID
+ *    from the daemon; do not normalize it.
  *
- * WARNING 3 — base64 variant. Standard RFC 4648 §4 alphabet ("+/") WITH "="
- *   padding, produced by Node's `Buffer#toString('base64')` and consumed by
- *   Swift's `Data(base64Encoded:)` with default options. It is NOT base64url;
- *   do not translate "-_" and do not strip padding. This module rejects
- *   non-canonical encodings on the way in, so what Swift receives is always the
- *   canonical padded form.
+ * Neither JSON key order nor the payload's own key order affects anything: the
+ * only order-sensitive bytes are the AAD string and the `sharedInfo` above.
  *
- * WARNING 4 — JSON key order is irrelevant. Neither the envelope's key order
- *   nor the plaintext payload's key order affects decryption: the only
- *   order-sensitive bytes are the AAD string built in step 2. Do not attempt to
- *   canonicalize JSON on either side.
- *
- * WARNING 5 — deviceId is compared byte-for-byte, case-sensitively, and must
- *   be the same string the pairing record stored. It may not contain "|"
- *   (enforced by DEVICE_ID_PATTERN when sealing) so the AAD cannot be made
- *   ambiguous by a crafted id.
- *
- * KNOWN-ANSWER TEST VECTOR — hardcode this in the Swift unit tests. It is
- * asserted by `pushEnvelope.test.ts`, so if the format ever changes, both
- * suites fail together instead of silently disagreeing.
- *
- *   deviceSecret (hex, 32 bytes)
- *     000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
- *   derived push key (hex, 32 bytes)
- *     88aee925fdcdc9fb5f87a55895a0cd5928229585208723a5e249526dfb437add
- *   deviceId  "dev-kat-0001"
- *   ts        1753420800000
- *   iv (b64)  "AQIDBAUGBwgJCgsM"                     (hex 0102030405060708090a0b0c)
- *   payload   {"title":"Approval needed","body":"rm -rf ./build","approvalId":"ap_1"}
- *   aad       "wmux:push:v1|dev-kat-0001|1753420800000"   (39 ASCII bytes)
- *   ct  (b64) "VwO5KiVWzFM7fSpkP9KEX1rMoi0Vk4OVmBacMffQ1np9k+13BeKVngmpFzq+QFIuIEkzGgCzlAXpuk9yRU12cgeZb5seVoA="
- *   tag (b64) "m9eu9MzvCyHwmNnA3idz5Q=="
- *
- * A Swift extension that reproduces `derived push key` and then opens that
- * `ct`/`tag` with that `aad` is byte-for-byte compatible with this module.
+ * ── KNOWN-ANSWER TEST VECTOR ───────────────────────────────────────────────
+ * Hardcode this in the Swift unit tests. `pushEnvelope.test.ts` asserts it, so
+ * if the format ever changes both sides fail at once instead of in the field.
+ * See `PUSH_KAT` at the bottom of this file for the exact values.
  */
+import {
+  createCipheriv,
+  createDecipheriv,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+  type KeyObject,
+} from 'node:crypto';
 
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
-
-/** Envelope format version. Bump only for a breaking wire change. */
 export const PUSH_ENVELOPE_VERSION = 1 as const;
 
-/** HKDF `info` string. Fixed forever for v1 — changing it rotates every key. */
+/** HKDF info prefix. The ephemeral and static public keys follow it. */
 export const PUSH_HKDF_INFO = 'wmux:push:v1';
 
-/** First field of the AAD string; domain-separates from any other AAD we sign. */
 export const PUSH_AAD_PREFIX = 'wmux:push:v1';
-
-/** Field separator inside the AAD. deviceId may not contain it. */
 export const PUSH_AAD_SEPARATOR = '|';
 
 export const PUSH_KEY_BYTES = 32; // AES-256
 export const PUSH_IV_BYTES = 12; // 96-bit GCM nonce (the only size CryptoKit accepts without ceremony)
 export const PUSH_TAG_BYTES = 16; // 128-bit GCM tag
-
-/** Shortest pairing secret we will derive from. M3 is expected to mint 32 bytes. */
-export const PUSH_MIN_SECRET_BYTES = 16;
+/** X25519 public and private keys are both 32 raw bytes. */
+export const PUSH_X25519_KEY_BYTES = 32;
 
 /**
  * Plaintext cap, derived from the 4096-byte APNs payload limit by walking the
- * whole inflation chain at worst case (128-char deviceId):
- *
- *   plaintext 1800 → ct 1800 → base64(ct) 2400 → envelope JSON ~2633
- *     → base64(envelope) 3512 → APNs body ~3616   (≈480 bytes of headroom)
- *
- * We throw rather than truncate — the caller decides what to shorten.
+ * JSON and base64 expansion backwards and leaving room for the aps dictionary.
  */
 export const PUSH_MAX_PLAINTEXT_BYTES = 1800;
 
-/** Envelopes older than this are refused at open time. */
+/** A notification delivered after this cannot be decrypted; Apple stops retrying too. */
 export const PUSH_MAX_AGE_MS = 5 * 60 * 1000;
 
 /** Tolerance for a sender clock that runs ahead of the receiver. */
 export const PUSH_MAX_FUTURE_SKEW_MS = 60 * 1000;
 
-/**
- * Accepted deviceId shape. Deliberately excludes the AAD separator and any
- * whitespace so the AAD string can never be made ambiguous.
- */
 export const DEVICE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Canonical base64 (RFC 4648 §4) with padding. */
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export type PushEnvelopeErrorCode =
-  | 'bad-secret'
+  | 'bad-key'
   | 'bad-device-id'
+  | 'bad-timestamp'
   | 'bad-payload'
   | 'payload-too-large'
   | 'bad-shape'
-  | 'bad-version'
-  | 'bad-base64'
   | 'device-mismatch'
   | 'stale'
   | 'future'
   | 'auth-failed';
 
-/** Every rejection path throws this, so callers can branch without string matching. */
 export class PushEnvelopeError extends Error {
   readonly code: PushEnvelopeErrorCode;
-
   constructor(code: PushEnvelopeErrorCode, message: string) {
     super(message);
     this.name = 'PushEnvelopeError';
@@ -195,10 +168,8 @@ export class PushEnvelopeError extends Error {
 }
 
 /**
- * What the daemon encrypts. `title`/`body` are what the extension renders;
- * the ids let the notification deep-link into the right card.
- * Unknown extra fields survive the round trip so M6 can add fields without a
- * format bump.
+ * What the extension renders. `title`/`body` are required; anything else rides
+ * along so M6 can add fields without a format change.
  */
 export interface PushPayload {
   title: string;
@@ -208,42 +179,94 @@ export interface PushPayload {
   [key: string]: unknown;
 }
 
-/** The JSON object handed to the relay as `ciphertext`'s container. */
+/** The JSON object the relay carries as one opaque `ciphertext` string. */
 export interface PushEnvelope {
   v: typeof PUSH_ENVELOPE_VERSION;
   deviceId: string;
   ts: number;
+  /** Ephemeral X25519 public key, base64, 32 bytes. */
+  epk: string;
   iv: string;
   ct: string;
   tag: string;
 }
 
+// ── key handling ───────────────────────────────────────────────────────────
+
 /**
- * HKDF-SHA256 with an empty salt and a fixed info string. Exported so a caller
- * can cache the key per device, and so the Swift parity test has something to
- * compare against.
+ * Turn the 32 raw bytes a device registered into a key object.
+ *
+ * Raw is the representation on both sides of the wire: it is what CryptoKit's
+ * `rawRepresentation` gives and takes, and carrying SPKI/DER instead would mean
+ * the phone had to build ASN.1 to register.
  */
-export function derivePushKey(deviceSecret: Uint8Array): Buffer {
-  if (!(deviceSecret instanceof Uint8Array) || deviceSecret.length < PUSH_MIN_SECRET_BYTES) {
+export function publicKeyFromRaw(raw: Uint8Array): KeyObject {
+  if (!(raw instanceof Uint8Array) || raw.length !== PUSH_X25519_KEY_BYTES) {
     throw new PushEnvelopeError(
-      'bad-secret',
-      `device secret must be at least ${PUSH_MIN_SECRET_BYTES} raw bytes`,
+      'bad-key',
+      `x25519 public key must be ${PUSH_X25519_KEY_BYTES} raw bytes`,
     );
   }
-  const derived = hkdfSync(
-    'sha256',
-    deviceSecret,
-    new Uint8Array(0), // zero-length salt — see WARNING 1 in the header
-    Buffer.from(PUSH_HKDF_INFO, 'utf8'),
-    PUSH_KEY_BYTES,
-  );
-  return Buffer.from(derived);
+  try {
+    return createPublicKey({
+      key: { kty: 'OKP', crv: 'X25519', x: Buffer.from(raw).toString('base64url') },
+      format: 'jwk',
+    });
+  } catch (err) {
+    throw new PushEnvelopeError('bad-key', `not a valid x25519 public key: ${String(err)}`);
+  }
+}
+
+/** The receiving half, for tests and for anything that opens an envelope. */
+export function privateKeyFromRaw(raw: Uint8Array): KeyObject {
+  if (!(raw instanceof Uint8Array) || raw.length !== PUSH_X25519_KEY_BYTES) {
+    throw new PushEnvelopeError(
+      'bad-key',
+      `x25519 private key must be ${PUSH_X25519_KEY_BYTES} raw bytes`,
+    );
+  }
+  try {
+    // The public half is derivable, but the JWK import wants it spelled out, so
+    // round-trip through a temporary key object to get it.
+    const tmp = createPrivateKey({
+      key: Buffer.concat([
+        Buffer.from('302e020100300506032b656e04220420', 'hex'), // PKCS#8 prefix for X25519
+        Buffer.from(raw),
+      ]),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    return tmp;
+  } catch (err) {
+    throw new PushEnvelopeError('bad-key', `not a valid x25519 private key: ${String(err)}`);
+  }
+}
+
+/** The 32 raw bytes of a public key, in the form the phone registers. */
+export function rawFromPublicKey(key: KeyObject): Buffer {
+  const jwk = key.export({ format: 'jwk' }) as { x?: string };
+  if (typeof jwk.x !== 'string') {
+    throw new PushEnvelopeError('bad-key', 'key object is not an x25519 public key');
+  }
+  return Buffer.from(jwk.x, 'base64url');
 }
 
 /**
- * The exact AAD bytes both sides must agree on. Exported because it is the
- * single most likely thing for the Swift port to get wrong.
+ * HKDF-SHA256 over the ECDH output, binding both public keys.
+ *
+ * Exported so the Swift parity test has something to compare against, and so a
+ * caller can see exactly what goes into the KDF rather than trusting prose.
  */
+export function derivePushKey(shared: Uint8Array, epkRaw: Uint8Array, spkRaw: Uint8Array): Buffer {
+  const info = Buffer.concat([
+    Buffer.from(PUSH_HKDF_INFO, 'utf8'),
+    Buffer.from(epkRaw),
+    Buffer.from(spkRaw),
+  ]);
+  return Buffer.from(hkdfSync('sha256', shared, new Uint8Array(0), info, PUSH_KEY_BYTES));
+}
+
+/** `wmux:push:v1|<deviceId>|<ts>` as UTF-8. `ts` is an integer, never a float. */
 export function buildPushAad(deviceId: string, ts: number): Buffer {
   assertDeviceId(deviceId);
   assertTimestamp(ts);
@@ -253,23 +276,29 @@ export function buildPushAad(deviceId: string, ts: number): Buffer {
   );
 }
 
+// ── seal ───────────────────────────────────────────────────────────────────
+
 export interface SealPushOptions {
-  /** Raw per-device pairing secret (M3 mints it). Not base64 text. */
-  deviceSecret: Uint8Array;
+  /** The device's registered X25519 public key, 32 raw bytes. */
+  devicePublicKey: Uint8Array;
   deviceId: string;
   payload: PushPayload;
   /** Defaults to `Date.now()`. Tests and known-answer vectors pin it. */
   ts?: number;
   /**
-   * Nonce override. ONLY for tests and test vectors — reusing a nonce with the
-   * same key destroys GCM's security.
+   * Nonce override. ONLY for tests and vectors — reusing a nonce with the same
+   * key destroys GCM's security.
    */
   iv?: Uint8Array;
+  /**
+   * Ephemeral private key override. ONLY for vectors. In production this is
+   * generated fresh per envelope, which is what gives forward secrecy.
+   */
+  ephemeralPrivateKey?: Uint8Array;
 }
 
-/** Encrypt a payload into a v1 envelope. */
 export function sealPushEnvelope(opts: SealPushOptions): PushEnvelope {
-  const { deviceSecret, deviceId, payload } = opts;
+  const { devicePublicKey, deviceId, payload } = opts;
   assertDeviceId(deviceId);
 
   const ts = opts.ts ?? Date.now();
@@ -295,7 +324,25 @@ export function sealPushEnvelope(opts: SealPushOptions): PushEnvelope {
     throw new PushEnvelopeError('bad-shape', `iv must be ${PUSH_IV_BYTES} bytes`);
   }
 
-  const key = derivePushKey(deviceSecret);
+  const spk = publicKeyFromRaw(devicePublicKey);
+  const spkRaw = Buffer.from(devicePublicKey);
+
+  const ephemeral = opts.ephemeralPrivateKey
+    ? privateKeyFromRaw(opts.ephemeralPrivateKey)
+    : generateKeyPairSync('x25519').privateKey;
+  const epkRaw = rawFromPublicKey(createPublicKey(ephemeral));
+
+  let shared: Buffer;
+  try {
+    shared = diffieHellman({ privateKey: ephemeral, publicKey: spk });
+  } catch (err) {
+    // Node refuses a low-order peer key rather than returning an all-zero
+    // shared secret, so a junk registration fails here instead of producing an
+    // envelope only a matching junk key could open.
+    throw new PushEnvelopeError('bad-key', `key agreement failed: ${String(err)}`);
+  }
+
+  const key = derivePushKey(shared, epkRaw, spkRaw);
   const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: PUSH_TAG_BYTES });
   cipher.setAAD(buildPushAad(deviceId, ts));
   const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
@@ -305,29 +352,32 @@ export function sealPushEnvelope(opts: SealPushOptions): PushEnvelope {
     v: PUSH_ENVELOPE_VERSION,
     deviceId,
     ts,
+    epk: epkRaw.toString('base64'),
     iv: iv.toString('base64'),
     ct: ct.toString('base64'),
     tag: tag.toString('base64'),
   };
 }
 
+// ── open ───────────────────────────────────────────────────────────────────
+
 export interface OpenPushOptions {
-  deviceSecret: Uint8Array;
+  /** The device's own X25519 private key, 32 raw bytes. */
+  devicePrivateKey: Uint8Array;
   /** The receiver's own device id. A mismatch is rejected before any crypto. */
   deviceId: string;
   envelope: unknown;
-  /** Defaults to `Date.now()`. */
   now?: number;
   maxAgeMs?: number;
   maxFutureSkewMs?: number;
 }
 
 /**
- * Verify and decrypt. Throws `PushEnvelopeError` on every rejection path;
- * a tampered byte anywhere in iv/ct/tag/deviceId/ts surfaces as `auth-failed`.
+ * Verify and decrypt. Throws `PushEnvelopeError` on every rejection path; a
+ * tampered byte anywhere in epk/iv/ct/tag/deviceId/ts surfaces as `auth-failed`.
  */
 export function openPushEnvelope(opts: OpenPushOptions): PushPayload {
-  const { deviceSecret, deviceId, envelope } = opts;
+  const { devicePrivateKey, deviceId, envelope } = opts;
   assertDeviceId(deviceId);
 
   if (!isPushEnvelope(envelope)) {
@@ -349,11 +399,22 @@ export function openPushEnvelope(opts: OpenPushOptions): PushPayload {
     throw new PushEnvelopeError('future', `envelope ts is more than ${maxFuture}ms in the future`);
   }
 
+  const epkRaw = decodeStrictBase64(envelope.epk, 'epk', PUSH_X25519_KEY_BYTES);
   const iv = decodeStrictBase64(envelope.iv, 'iv', PUSH_IV_BYTES);
   const tag = decodeStrictBase64(envelope.tag, 'tag', PUSH_TAG_BYTES);
   const ct = decodeStrictBase64(envelope.ct, 'ct');
 
-  const key = derivePushKey(deviceSecret);
+  const priv = privateKeyFromRaw(devicePrivateKey);
+  const spkRaw = rawFromPublicKey(createPublicKey(priv));
+
+  let shared: Buffer;
+  try {
+    shared = diffieHellman({ privateKey: priv, publicKey: publicKeyFromRaw(epkRaw) });
+  } catch {
+    throw new PushEnvelopeError('auth-failed', 'envelope failed authentication');
+  }
+
+  const key = derivePushKey(shared, epkRaw, spkRaw);
   const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: PUSH_TAG_BYTES });
   decipher.setAAD(buildPushAad(deviceId, envelope.ts));
   decipher.setAuthTag(tag);
@@ -381,6 +442,8 @@ export function openPushEnvelope(opts: OpenPushOptions): PushPayload {
   }
   return payload;
 }
+
+// ── relay transport ────────────────────────────────────────────────────────
 
 /**
  * The relay's `ciphertext` field: base64 of the envelope JSON, as one opaque
@@ -411,46 +474,82 @@ export function decodePushEnvelopeFromRelay(blob: string): PushEnvelope | null {
 export function isPushEnvelope(value: unknown): value is PushEnvelope {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const env = value as Record<string, unknown>;
-  if (env.v !== PUSH_ENVELOPE_VERSION) return false;
-  if (typeof env.deviceId !== 'string' || !DEVICE_ID_PATTERN.test(env.deviceId)) return false;
-  if (!isIntegerTimestamp(env.ts)) return false;
-  return typeof env.iv === 'string' && typeof env.ct === 'string' && typeof env.tag === 'string';
+  return (
+    env.v === PUSH_ENVELOPE_VERSION &&
+    typeof env.deviceId === 'string' &&
+    DEVICE_ID_PATTERN.test(env.deviceId) &&
+    isIntegerTimestamp(env.ts) &&
+    typeof env.epk === 'string' &&
+    typeof env.iv === 'string' &&
+    typeof env.ct === 'string' &&
+    typeof env.tag === 'string'
+  );
 }
+
+// ── helpers ────────────────────────────────────────────────────────────────
 
 function assertDeviceId(deviceId: unknown): asserts deviceId is string {
   if (typeof deviceId !== 'string' || !DEVICE_ID_PATTERN.test(deviceId)) {
-    throw new PushEnvelopeError(
-      'bad-device-id',
-      'deviceId must match ' + String(DEVICE_ID_PATTERN),
-    );
+    throw new PushEnvelopeError('bad-device-id', 'deviceId is missing or malformed');
   }
 }
 
 function assertTimestamp(ts: unknown): asserts ts is number {
   if (!isIntegerTimestamp(ts)) {
-    throw new PushEnvelopeError('bad-shape', 'ts must be a non-negative integer (epoch ms)');
+    throw new PushEnvelopeError('bad-timestamp', 'ts must be a non-negative integer (epoch ms)');
   }
 }
 
 function isIntegerTimestamp(ts: unknown): ts is number {
-  return typeof ts === 'number' && Number.isSafeInteger(ts) && ts >= 0;
+  return typeof ts === 'number' && Number.isInteger(ts) && ts >= 0;
 }
 
 /**
- * Decode base64 and refuse anything non-canonical. Node's Buffer decoder
- * silently skips junk characters, which would let two different strings decode
- * to the same bytes; we round-trip to prove the input was the canonical form.
+ * Decode base64 and refuse anything non-canonical. `Buffer.from(…, 'base64')`
+ * silently ignores junk, so a tampered field would otherwise decode to
+ * something shorter and fail later with a confusing error.
  */
 function decodeStrictBase64(value: string, field: string, expectedBytes?: number): Buffer {
   if (!BASE64_PATTERN.test(value)) {
-    throw new PushEnvelopeError('bad-base64', `${field} is not canonical base64`);
+    throw new PushEnvelopeError('bad-shape', `${field} is not canonical base64`);
   }
   const buf = Buffer.from(value, 'base64');
   if (buf.toString('base64') !== value) {
-    throw new PushEnvelopeError('bad-base64', `${field} is not canonical base64`);
+    throw new PushEnvelopeError('bad-shape', `${field} is not canonical base64`);
   }
   if (expectedBytes !== undefined && buf.length !== expectedBytes) {
-    throw new PushEnvelopeError('bad-shape', `${field} must decode to ${expectedBytes} bytes`);
+    throw new PushEnvelopeError('bad-shape', `${field} must be ${expectedBytes} bytes`);
   }
   return buf;
 }
+
+/**
+ * The known-answer vector. Hardcode these values in the Swift tests: if this
+ * file and the extension ever disagree, both sides fail here rather than in the
+ * field, where the only symptom is a notification that silently stays generic.
+ *
+ * Every value is fixed, including the ephemeral key, so the output is
+ * deterministic. Production never pins the ephemeral key.
+ */
+export const PUSH_KAT = {
+  /**
+   * The two X25519 private keys are RFC 7748 §6.1's published pair, so their
+   * public keys are checkable against the spec instead of against this file.
+   * `pushEnvelope.test.ts` asserts that too — it is what proves the raw-bytes
+   * key handling here is right and not merely self-consistent.
+   */
+  devicePrivateKey: 'dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=',
+  devicePublicKey: 'hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=',
+  /** Pinned so the vector is deterministic. Production never pins this. */
+  ephemeralPrivateKey: 'XasIfmJKikt54X+Lg4AO5m87sSkmGLb9HC+LJ/+I4Os=',
+
+  deviceId: '00000000-0000-4000-8000-000000000001',
+  ts: 1753420800000,
+  payload: { title: 'wmux', body: 'Approve deploy?' },
+
+  /** The envelope those inputs must produce, field for field. */
+  epk: '3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=',
+  iv: 'AQIDBAUGBwgJCgsM',
+  ct: 'eSBqMces8mYavMVQvUXTk5FhnGhcdOFcJ0meYy6ZakFn0XDrrVfKjsY=',
+  tag: 'H9uo26R+wV513Zq+V0CJcQ==',
+} as const;
