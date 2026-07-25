@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sameFileReason } from './perf-paths.mjs';
 
 export const SCHEMA_VERSION = 1;
 
@@ -378,6 +379,32 @@ export function hasFailure(results) {
   return results.some((r) => r.status === 'FAIL');
 }
 
+/**
+ * The comparison half of the gate: both gate tables judged against an
+ * already-parsed baseline. Pure.
+ *
+ * `recordOnly` here covers ONLY the schema-mismatch case. Whether a baseline
+ * was supplied and could be read is the caller's business, and deliberately so:
+ * a baseline file whose contents parse to `null` is NOT a record-only run —
+ * numeric gates have nothing to compare against, but the baseline-independent
+ * boolean gates still enforce, which is what this gate has always done.
+ */
+export function evaluateRun(current, baseline) {
+  let usable = baseline ?? null;
+  let recordOnly = false;
+  let recordReason = '';
+  if (usable && usable.schemaVersion !== current.schemaVersion) {
+    recordOnly = true;
+    recordReason = `schemaVersion mismatch (baseline ${usable.schemaVersion} vs current ${current.schemaVersion}) — record-only run`;
+    usable = null;
+  }
+  const results = [
+    ...compareResults(current, usable, GATES),
+    ...compareBoolGates(current, BOOL_GATES),
+  ];
+  return { recordOnly, recordReason, results, baseline: usable };
+}
+
 // --- formatting -------------------------------------------------------------
 
 function pad(s, n) {
@@ -483,21 +510,21 @@ export function renderMarkdown(results, meta, extraNotes = []) {
 // --- CLI --------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { current: null, baseline: null, summary: null, appendHistory: null };
+  const args = {
+    current: null, baseline: null, summary: null, appendHistory: null,
+    confirmRetry: null, confirmBench: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--current') args.current = argv[++i];
     else if (a === '--baseline') args.baseline = argv[++i];
     else if (a === '--summary') args.summary = argv[++i];
     else if (a === '--append-history') args.appendHistory = argv[++i];
+    else if (a === '--confirm-retry') args.confirmRetry = argv[++i];
+    else if (a === '--confirm-bench') args.confirmBench = argv[++i];
     else if (a === '--help' || a === '-h') args.help = true;
   }
   return args;
-}
-
-function readJson(file) {
-  const raw = fs.readFileSync(file, 'utf8');
-  return JSON.parse(raw);
 }
 
 // One trend field per gated metric, DERIVED from the gate tables rather than
@@ -548,13 +575,21 @@ function usage() {
   return [
     'Usage:',
     '  node scripts/perf-compare.mjs --current <path> --baseline <path> \\',
-    '       [--summary <md-path>] [--append-history <ndjson-path>]',
+    '       [--summary <md-path>] [--append-history <ndjson-path>] \\',
+    '       [--confirm-retry <json-path>] [--confirm-bench <path>]',
     '',
-    'Exit codes: 0 pass / record-only, 1 gate failure, 2 usage or current-file IO error.',
+    '--confirm-retry turns a red into a question: the bench legs behind the',
+    'failing metrics are measured once more into that file, and the failure only',
+    'stands if it reproduces (#570). The original --current file is never',
+    'touched, and the history line is written from it before any re-run.',
+    '--confirm-bench overrides which bench script the re-run invokes.',
+    '',
+    'Exit codes: 0 pass / record-only / a red that did not reproduce, 1 gate',
+    'failure, 2 usage or current-file IO error.',
   ].join('\n');
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     process.stdout.write(usage() + '\n');
@@ -565,40 +600,62 @@ function main() {
     return 2;
   }
 
-  // The CURRENT file is mandatory and any IO/parse error on it is a usage error.
+  // No output may name an input. Writing the summary over the result file used
+  // to corrupt it and still exit with the gate's verdict, and it would also
+  // defeat the confirmation re-run's promise to keep the original sample: the
+  // "before" bytes it restores would already be the summary. Refused as the
+  // usage error it is, before anything is read or written.
+  for (const [outFlag, outPath] of [
+    ['--summary', args.summary],
+    ['--append-history', args.appendHistory],
+    ['--confirm-retry', args.confirmRetry],
+  ]) {
+    if (!outPath) continue;
+    for (const [inFlag, inPath] of [['--current', args.current], ['--baseline', args.baseline]]) {
+      const why = sameFileReason(outPath, inPath);
+      if (why) {
+        process.stderr.write(`error: ${outFlag} would write over ${inFlag} '${inPath}' (${why})\n`);
+        return 2;
+      }
+    }
+  }
+
+  // The CURRENT file is mandatory and any IO/parse error on it is a usage
+  // error. Its raw bytes are kept: they are the "before" image the confirmation
+  // re-run restores from, and capturing them here rather than later means no
+  // output written in between can be mistaken for the original.
   let current;
+  let currentBytes;
   try {
-    current = readJson(args.current);
+    currentBytes = fs.readFileSync(args.current);
+    current = JSON.parse(currentBytes.toString('utf8'));
   } catch (err) {
     process.stderr.write(`error: cannot read current file '${args.current}': ${err.message}\n`);
+    return 2;
+  }
+  if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+    // Valid JSON that is not a result object. Every gate would read as SKIP and
+    // the run would pass green on a corrupt file, so refuse it by name.
+    process.stderr.write(`error: current file '${args.current}' is not a result object\n`);
     return 2;
   }
 
   const meta = current.meta ?? {};
   const extraNotes = [];
 
-  // Baseline missing / unreadable → record-only bootstrap path.
+  // Baseline missing / unreadable → record-only bootstrap path. Which of the
+  // two it was is only a message; evaluateRun decides the verdict.
   let baseline = null;
-  let recordOnly = false;
-  let recordReason = '';
+  let baselineBytes = null;
+  let ioRecordReason = null;
   if (!args.baseline) {
-    recordOnly = true;
-    recordReason = 'no --baseline supplied — record-only run';
+    ioRecordReason = 'no --baseline supplied — record-only run';
   } else {
     try {
-      baseline = readJson(args.baseline);
+      baselineBytes = fs.readFileSync(args.baseline);
+      baseline = JSON.parse(baselineBytes.toString('utf8'));
     } catch {
-      recordOnly = true;
-      recordReason = 'no baseline — record-only run';
-    }
-    if (baseline) {
-      const baseSchema = baseline.schemaVersion;
-      const curSchema = current.schemaVersion;
-      if (baseSchema !== curSchema) {
-        recordOnly = true;
-        recordReason = `schemaVersion mismatch (baseline ${baseSchema} vs current ${curSchema}) — record-only run`;
-        baseline = null;
-      }
+      ioRecordReason = 'no baseline — record-only run';
     }
   }
 
@@ -611,14 +668,16 @@ function main() {
   }
 
   // Compare against baseline (null baseline → everything NEW/SKIP, never FAIL).
-  const results = compareResults(current, baseline, GATES);
-  // W2 boolean consistency gates (baseline-independent). Displayed always; they
-  // only enforce (nonzero exit) once NOT record-only — i.e. once the owner has
-  // blessed a baseline file, which is the same "gate goes live after bless"
-  // signal the numeric gates use (design §3). This keeps the first landings
-  // record-only so the job doesn't fail before a baseline exists.
-  const boolResults = compareBoolGates(current, BOOL_GATES);
-  const allResults = [...results, ...boolResults];
+  // The W2 boolean consistency gates ride along in the same list: they are
+  // displayed always but only enforce (nonzero exit) once NOT record-only —
+  // i.e. once the owner has blessed a baseline file, which is the same "gate
+  // goes live after bless" signal the numeric gates use (design §3). This keeps
+  // the first landings record-only so the job doesn't fail before a baseline
+  // exists.
+  const evaluated = evaluateRun(current, baseline);
+  const recordOnly = ioRecordReason != null || evaluated.recordOnly;
+  const recordReason = ioRecordReason ?? evaluated.recordReason;
+  const allResults = evaluated.results;
 
   // Human-readable table to stdout.
   if (recordOnly) {
@@ -656,7 +715,37 @@ function main() {
 
   if (recordOnly) return 0;
   // Numeric OR boolean gate failure fails the job.
-  return hasFailure(allResults) ? 1 : 0;
+  if (!hasFailure(allResults)) return 0;
+
+  // Confirmation re-run (#570). Deliberately in this process rather than a
+  // second CI step: the confirmation is handed the very objects this gate
+  // judged, so there is no window in which the files could change underneath
+  // it and no handshake that could describe a different run than the one that
+  // went red. The history line above has already been written from the
+  // ORIGINAL sample, which is the contract — the re-run never becomes the
+  // published measurement.
+  if (args.confirmRetry) {
+    const { confirmGate } = await import('./perf-confirm.mjs');
+    const { cleared } = confirmGate({
+      current,
+      baseline: evaluated.baseline,
+      results: allResults,
+      // The bytes as they were BEFORE this process wrote anything, so what the
+      // re-run is checked against — and restored from — is the run's own
+      // sample and not something written in between.
+      currentJson: args.current,
+      currentBytes,
+      baselineJson: args.baseline,
+      baselineBytes,
+      retryJson: args.confirmRetry,
+      benchScript: args.confirmBench,
+      summaryPath: args.summary,
+    });
+    // Fail closed by construction: confirmGate returns cleared only on an
+    // explicit second PASS of every failing gate.
+    if (cleared) return 0;
+  }
+  return 1;
 }
 
 // Guard the CLI entry so importing this module (vitest) does not run main().
@@ -671,6 +760,15 @@ if (process.argv[1]) {
     invokedUrl === selfUrl ||
     fileURLToPath(invokedUrl).toLowerCase() === fileURLToPath(selfUrl).toLowerCase();
   if (samePath) {
-    process.exit(main());
+    // main() is async only because the confirmation re-run (#570) is imported
+    // on demand; an unexpected throw must still be a nonzero exit, never an
+    // unhandled rejection that some runner reports as success.
+    main().then(
+      (code) => process.exit(code),
+      (err) => {
+        process.stderr.write(`error: ${err?.stack || err}\n`);
+        process.exit(2);
+      },
+    );
   }
 }
