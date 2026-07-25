@@ -10,6 +10,8 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS } from '../../shared/constants';
+import { capSnapshot } from './snapshotWindow';
+import { startSseHeartbeat } from './sseHeartbeat';
 
 /**
  * wmux web — a read-only-by-default browser terminal served BY THE DAEMON.
@@ -197,8 +199,6 @@ interface WebTerminalServerDeps {
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
 const MAX_INPUT_BYTES = 64 * 1024;
-/** SSE heartbeat — keeps the connection alive through idle proxies. */
-const HEARTBEAT_MS = 25_000;
 /** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
@@ -973,11 +973,20 @@ export class WebTerminalServer {
       ...this.securityHeaders(),
     });
 
-    // Initial paint: the exact bytes SessionPipe flushes to the GUI on attach.
-    const meta = { cols: managed.meta.cols, rows: managed.meta.rows };
+    // Initial paint: the bytes SessionPipe flushes to the GUI on attach, capped
+    // to a window — the ring is 8 MB by default and up to 64 MB, and base64
+    // inflates it by a third, which a phone reconnecting at every tunnel would
+    // pull each time. The truncation rides `meta` rather than a new event name,
+    // so a cached frontend that predates it is unaffected.
+    const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    const meta = {
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      truncated: snapshot.truncated,
+      omittedBytes: snapshot.omittedBytes,
+    };
     writeSse(res, 'meta', JSON.stringify(meta));
-    const snapshot = managed.ringBuffer.readAll();
-    writeSse(res, 'snapshot', snapshot.toString('base64'));
+    writeSse(res, 'snapshot', snapshot.bytes.toString('base64'));
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
     // not disturb the GUI's SessionPipe. maxListeners is relaxed because each
@@ -1001,17 +1010,10 @@ export class WebTerminalServer {
     bridge.on('data', onData);
     bridge.on('exit', onExit);
 
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': ping\n\n');
-      } catch {
-        /* ignore */
-      }
-    }, HEARTBEAT_MS);
-    heartbeat.unref();
+    const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
-      clearInterval(heartbeat);
+      stopHeartbeat();
       bridge.removeListener('data', onData);
       bridge.removeListener('exit', onExit);
     };
@@ -1433,16 +1435,7 @@ export class WebTerminalServer {
       }
     }
 
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': ping\n\n');
-      } catch {
-        /* ignore */
-      }
-    }, HEARTBEAT_MS);
-    heartbeat.unref();
-
-    const detach = (): void => clearInterval(heartbeat);
+    const detach = startSseHeartbeat(res);
     const client: EventClient = { res, detach, principal };
     this.eventClients.add(client);
 
