@@ -77,6 +77,7 @@ function makeDevices() {
   const resolveCalls: Array<{ deviceId: string; secret: string }> = [];
   const mintCalls: Array<{ name?: string }> = [];
   const touchCalls: string[] = [];
+  const pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }> = [];
   const box = { mintThrows: false };
   let seq = 0;
   const devices: WebDeviceResolver = {
@@ -102,12 +103,22 @@ function makeDevices() {
     touch(deviceId) {
       touchCalls.push(deviceId);
     },
+    registerPush(deviceId, input) {
+      pushRegistrations.push({ deviceId, ...input });
+      const rec = roster.get(deviceId);
+      if (!rec) return { ok: false, reason: 'not-found' };
+      if (rec.revoked) return { ok: false, reason: 'revoked' };
+      if (!/^[0-9a-f]{64,200}$/.test(input.apnsToken)) return { ok: false, reason: 'bad-token' };
+      if (Buffer.from(input.publicKey, 'base64').length !== 32) return { ok: false, reason: 'bad-key' };
+      return { ok: true };
+    },
   };
   return {
     devices,
     deviceRoster: roster,
     deviceResolveCalls: resolveCalls,
     deviceMintCalls: mintCalls,
+    pushRegistrations,
     deviceTouchCalls: touchCalls,
     deviceBox: box,
   };
@@ -181,6 +192,7 @@ describe('WebTerminalServer', () => {
   let approvalBox: { result: ApprovalResolveResult; listThrows: boolean };
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
   let deviceMintCalls: Array<{ name?: string }>;
+  let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let deviceTouchCalls: string[];
   let deviceBox: { mintThrows: boolean };
 
@@ -196,6 +208,7 @@ describe('WebTerminalServer', () => {
     approvalBox = deps.approvalBox;
     deviceRoster = deps.deviceRoster;
     deviceMintCalls = deps.deviceMintCalls;
+    pushRegistrations = deps.pushRegistrations;
     deviceTouchCalls = deps.deviceTouchCalls;
     deviceBox = deps.deviceBox;
     server = new WebTerminalServer({
@@ -1507,6 +1520,48 @@ describe('WebTerminalServer', () => {
     const second = await pairDevice('Tablet');
     expect(second.deviceId).not.toBe(paired.deviceId);
     expect(second.deviceSecret).not.toBe(paired.deviceSecret);
+  });
+
+  it('★ a device registers where to push to it; the operator token cannot', async () => {
+    const info = await startRO();
+    const { token } = await pairDevice('Phone');
+    const apnsToken = 'a'.repeat(64);
+    const publicKey = Buffer.alloc(32, 3).toString('base64');
+    const post = (auth: string, body: unknown) =>
+      fetch(`${base()}/api/push-registration`, {
+        method: 'POST',
+        headers: { ...bearer(auth), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const ok = await post(token, { apnsToken, publicKey });
+    expect(ok.status).toBe(200);
+    expect(pushRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', apnsToken, publicKey });
+
+    // The operator token names no device, so there is nothing to register it
+    // against — 403 beats inventing an association.
+    const asOperator = await post(info.token as string, { apnsToken, publicKey });
+    expect(asOperator.status).toBe(403);
+    expect((await asOperator.json()).error).toBe('push-is-for-devices');
+  });
+
+  it('rejects a malformed token or key with 400', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const post = (body: unknown) =>
+      fetch(`${base()}/api/push-registration`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const badToken = await post({ apnsToken: 'nope', publicKey: Buffer.alloc(32).toString('base64') });
+    expect(badToken.status).toBe(400);
+    expect((await badToken.json()).error).toBe('bad-token');
+
+    const badKey = await post({ apnsToken: 'a'.repeat(64), publicKey: 'nope' });
+    expect(badKey.status).toBe(400);
+    expect((await badKey.json()).error).toBe('bad-key');
   });
 
   it('★ authenticates the routes a phone actually uses with a device credential', async () => {

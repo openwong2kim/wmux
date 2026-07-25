@@ -171,10 +171,40 @@ const VERIFIED_CACHE_CAP = 64;
 const DEVICE_NAME_MAX = 64;
 
 /**
+ * APNs device tokens are 32 bytes of hex today; Apple reserves the right to
+ * grow them. Same bound the relay applies, so a token this store accepts cannot
+ * be one the relay refuses.
+ */
+const APNS_TOKEN_PATTERN = /^[0-9a-f]{64,200}$/;
+
+/** X25519 public key size. Mirrors PUSH_X25519_KEY_BYTES in pushEnvelope. */
+const PUSH_PUBLIC_KEY_BYTES = 32;
+
+/**
  * Label for a device paired without a name. Exported so the server and any
  * roster UI can recognise it rather than hard-coding the same string.
  */
 export const UNNAMED_DEVICE = 'Unnamed device';
+
+/**
+ * What a device registers so the daemon can push to it. NEITHER FIELD IS A
+ * SECRET, which is the whole reason push works this way.
+ *
+ * The APNs token is a routing handle Apple hands out and rotates; the public key
+ * is the public half of a pair whose private half never leaves the phone's
+ * Keychain. So adding these keeps the header's claim intact — someone who reads
+ * `devices.json` still gains nothing usable, and the deferred ACL hardening
+ * stays defensible. Storing a shared push secret here instead would have voided
+ * both.
+ */
+export interface DevicePushRegistration {
+  /** APNs device token, lowercase hex. Rotates; a re-register replaces it. */
+  apnsToken: string;
+  /** X25519 public key, base64 of 32 raw bytes. */
+  publicKey: string;
+  /** When the device last told us these. */
+  registeredAt: number;
+}
 
 interface DeviceRecord {
   deviceId: string;
@@ -187,6 +217,7 @@ interface DeviceRecord {
   createdAt: number;
   lastSeenAt: number;
   revokedAt?: number;
+  push?: DevicePushRegistration;
 }
 
 export interface DevicePersistedState {
@@ -425,6 +456,74 @@ export class DeviceStore {
       this.log('info', `[web] revoked ${revoked.length} paired device(s) on token rotation`);
     }
     return { ok: true, revoked };
+  }
+
+  /**
+   * Record where to push to this device, and the key to seal for it.
+   *
+   * Replaces wholesale rather than merging: APNs rotates tokens and the app may
+   * regenerate its key pair (a Keychain reset, a reinstall), and a half-updated
+   * registration would seal to a key the phone no longer holds — a notification
+   * that arrives and cannot be read, which looks exactly like a bug in the
+   * extension.
+   *
+   * Refuses on an unknown or revoked device: a revoked phone must not be able to
+   * keep itself reachable.
+   */
+  registerPush(
+    deviceId: string,
+    input: { apnsToken: string; publicKey: string },
+  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'bad-token' | 'bad-key' | 'persist-failed' } {
+    const record = this.devices.get(deviceId);
+    if (!record) return { ok: false, reason: 'not-found' };
+    if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked' };
+
+    const apnsToken = typeof input?.apnsToken === 'string' ? input.apnsToken.trim().toLowerCase() : '';
+    if (!APNS_TOKEN_PATTERN.test(apnsToken)) return { ok: false, reason: 'bad-token' };
+
+    const publicKey = typeof input?.publicKey === 'string' ? input.publicKey.trim() : '';
+    if (!isBase64Bytes(publicKey, PUSH_PUBLIC_KEY_BYTES)) return { ok: false, reason: 'bad-key' };
+
+    const previous = record.push;
+    record.push = { apnsToken, publicKey, registeredAt: this.now() };
+    if (!this.persist()) {
+      // Roll back rather than push to a token that a restart forgets: the app
+      // would believe it is registered and silently receive nothing.
+      if (previous) record.push = previous;
+      else delete record.push;
+      return { ok: false, reason: 'persist-failed' };
+    }
+    this.log('info', `[web] push registration updated for "${record.name}" (${deviceId})`);
+    return { ok: true };
+  }
+
+  /**
+   * Every device that can currently be pushed to. Revoked devices are excluded
+   * here rather than filtered by the caller — a revocation that still reached a
+   * phone would be the same failure as one that left its stream open.
+   */
+  pushTargets(): Array<{ deviceId: string; name: string; push: DevicePushRegistration }> {
+    const out: Array<{ deviceId: string; name: string; push: DevicePushRegistration }> = [];
+    for (const record of this.devices.values()) {
+      if (record.revokedAt !== undefined || !record.push) continue;
+      out.push({ deviceId: record.deviceId, name: record.name, push: { ...record.push } });
+    }
+    return out;
+  }
+
+  /**
+   * Drop a registration whose APNs token Apple reported as dead (a 410).
+   *
+   * Keeping it would mean re-sending to a token Apple has already told us is
+   * gone, which is exactly the traffic that gets a provider throttled.
+   */
+  forgetPush(deviceId: string): boolean {
+    const record = this.devices.get(deviceId);
+    if (!record?.push) return false;
+    delete record.push;
+    this.persist();
+    this.log('info', `[web] dropped a dead push registration for ${deviceId}`);
+    return true;
   }
 
   // --- authentication -------------------------------------------------------
@@ -770,6 +869,12 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
         ? o['lastSeenAt']
         : createdAt,
   };
+  // A malformed push block is DROPPED, not defaulted: the device simply stops
+  // being pushable until it re-registers, which it does on every launch. The
+  // alternative — keeping a half-read registration — would seal to a key the
+  // phone may not hold and deliver a notification it cannot open.
+  const push = coercePush(o['push']);
+  if (push) record.push = push;
   // Any truthy finite revokedAt keeps the device refused. A malformed one is
   // treated as REVOKED rather than active: fail-closed is the only safe read of
   // "this record may have been revoked".
@@ -780,6 +885,21 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
         : createdAt;
   }
   return record;
+}
+
+function coercePush(raw: unknown): DevicePushRegistration | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const apnsToken = typeof o['apnsToken'] === 'string' ? o['apnsToken'].toLowerCase() : '';
+  const publicKey = typeof o['publicKey'] === 'string' ? o['publicKey'] : '';
+  if (!APNS_TOKEN_PATTERN.test(apnsToken) || !isBase64Bytes(publicKey, PUSH_PUBLIC_KEY_BYTES)) {
+    return null;
+  }
+  const registeredAt =
+    typeof o['registeredAt'] === 'number' && Number.isFinite(o['registeredAt'])
+      ? o['registeredAt']
+      : 0;
+  return { apnsToken, publicKey, registeredAt };
 }
 
 function coerceKdf(raw: unknown): DeviceKdfParams | null {
@@ -799,6 +919,14 @@ function coerceKdf(raw: unknown): DeviceKdfParams | null {
 
 function positiveInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+/** Canonical base64 decoding to exactly `bytes` bytes. */
+function isBase64Bytes(value: string, bytes: number): boolean {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false;
+  const buf = Buffer.from(value, 'base64');
+  // Re-encode: `Buffer.from` ignores junk, so length alone is not enough.
+  return buf.length === bytes && buf.toString('base64') === value;
 }
 
 function isHex(value: string): boolean {

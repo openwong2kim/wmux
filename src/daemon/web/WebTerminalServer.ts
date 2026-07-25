@@ -164,6 +164,15 @@ export interface WebDeviceResolver {
    * that is worth writing down.
    */
   touch?(deviceId: string): void;
+  /**
+   * Record where to push to this device and the key to seal for it. Optional
+   * for the same reason `touch` is: a server without push is still a working
+   * server, and the route answers 503 rather than pretending.
+   */
+  registerPush?(
+    deviceId: string,
+    input: { apnsToken: string; publicKey: string },
+  ): { ok: boolean; reason?: string };
 }
 
 /**
@@ -979,6 +988,9 @@ export class WebTerminalServer {
       }
       return this.json(res, 200, issued);
     }
+    if (req.method === 'POST' && p === '/api/push-registration') {
+      return this.handlePushRegistration(req, res, principal);
+    }
     if (req.method === 'POST' && p === '/api/input') {
       return this.handleInput(req, res, url);
     }
@@ -1145,6 +1157,53 @@ export class WebTerminalServer {
   }
 
   // --- approvals (M2) -----------------------------------------------------
+
+  /**
+   * `POST /api/push-registration` — where to reach this device, and the key to
+   * seal for it.
+   *
+   * DEVICE ONLY. The operator token names no device, so there is nothing to
+   * register it against; answering 403 is more useful than inventing one.
+   *
+   * Neither field is a secret — an APNs routing handle and the public half of a
+   * pair whose private half never leaves the phone's Keychain — which is what
+   * lets this be stored in the roster without turning it into a file worth
+   * stealing. See DevicePushRegistration.
+   */
+  private handlePushRegistration(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    principal: WebPrincipal,
+  ): void {
+    if (principal.kind !== 'device') {
+      return this.json(res, 403, {
+        error: 'push-is-for-devices',
+        detail: 'register with the credential of the device that will receive the notifications',
+      });
+    }
+    const devices = this.deps.devices;
+    if (!devices?.registerPush) {
+      return this.json(res, 503, { error: 'push-unavailable' });
+    }
+    this.readJsonBody(req, res, (body) => {
+      const b = (body ?? {}) as { apnsToken?: unknown; publicKey?: unknown };
+      const apnsToken = typeof b.apnsToken === 'string' ? b.apnsToken : '';
+      const publicKey = typeof b.publicKey === 'string' ? b.publicKey : '';
+      let result: { ok: boolean; reason?: string };
+      try {
+        result = devices.registerPush!(principal.deviceId, { apnsToken, publicKey });
+      } catch (err) {
+        this.deps.log('warn', `[web] push registration threw: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'push-registration-failed' });
+      }
+      if (result.ok) return this.json(res, 200, { ok: true });
+      // `bad-token` / `bad-key` are the caller's fault; the rest are ours or the
+      // operator's, and a device that was revoked mid-flight should hear that
+      // rather than a generic 400.
+      const status = result.reason === 'bad-token' || result.reason === 'bad-key' ? 400 : 409;
+      return this.json(res, status, { error: result.reason ?? 'push-registration-failed' });
+    });
+  }
 
   /**
    * `GET /api/approvals` — what a client needs the moment it connects: the

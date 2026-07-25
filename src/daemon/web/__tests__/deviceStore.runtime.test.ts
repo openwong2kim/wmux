@@ -590,3 +590,94 @@ describe('DeviceStore — audit write amplification', () => {
     expect(failures.map((f) => f.deviceId).sort()).toEqual([a.deviceId, b.deviceId].sort());
   });
 });
+
+describe('DeviceStore — push registration', () => {
+  const TOKEN = 'a'.repeat(64);
+  const KEY = Buffer.from(
+    '8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a',
+    'hex',
+  ).toString('base64');
+
+  it('registers, survives a restart, and lists as a push target', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+
+    expect(s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: KEY })).toEqual({ ok: true });
+    expect(s.pushTargets()).toEqual([
+      { deviceId: d.deviceId, name: 'Phone', push: expect.objectContaining({ apnsToken: TOKEN, publicKey: KEY }) },
+    ]);
+
+    // The whole point is surviving a restart — push exists for a phone that is
+    // NOT currently connected.
+    const reloaded = new DeviceStore({ wmuxDir: dir });
+    expect(reloaded.pushTargets().map((t) => t.deviceId)).toEqual([d.deviceId]);
+  });
+
+  it('replaces wholesale, because a half-updated registration seals to a dead key', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    const KEY2 = Buffer.alloc(32, 7).toString('base64');
+    s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: KEY });
+    s.registerPush(d.deviceId, { apnsToken: 'b'.repeat(64), publicKey: KEY2 });
+
+    const [target] = s.pushTargets();
+    expect(target.push.apnsToken).toBe('b'.repeat(64));
+    expect(target.push.publicKey).toBe(KEY2);
+  });
+
+  it('refuses a revoked device — it must not keep itself reachable', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: KEY });
+    s.revoke(d.deviceId);
+
+    expect(s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: KEY })).toEqual({
+      ok: false,
+      reason: 'revoked',
+    });
+    // …and it drops out of the target list without the caller filtering.
+    expect(s.pushTargets()).toEqual([]);
+  });
+
+  it('validates both fields', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    expect(s.registerPush(d.deviceId, { apnsToken: 'nope', publicKey: KEY }).reason).toBe('bad-token');
+    expect(s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: 'nope' }).reason).toBe('bad-key');
+    // A 31-byte key is the shape a truncation bug produces.
+    expect(
+      s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: Buffer.alloc(31).toString('base64') }).reason,
+    ).toBe('bad-key');
+    expect(s.registerPush('no-such-device', { apnsToken: TOKEN, publicKey: KEY }).reason).toBe('not-found');
+  });
+
+  it('drops a registration Apple reported dead', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Phone' });
+    s.registerPush(d.deviceId, { apnsToken: TOKEN, publicKey: KEY });
+    expect(s.forgetPush(d.deviceId)).toBe(true);
+    expect(s.pushTargets()).toEqual([]);
+    expect(new DeviceStore({ wmuxDir: dir }).pushTargets()).toEqual([]);
+  });
+
+  it('a malformed persisted push block is dropped, not half-read', () => {
+    const path = getDeviceStatePath(dir);
+    fs.writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        devices: [{
+          deviceId: 'd1', name: 'X', secretHash: 'ab', salt: 'cd',
+          kdf: { algo: 'scrypt', N: 4096, r: 8, p: 1, keylen: 32 },
+          createdAt: 1, lastSeenAt: 1,
+          push: { apnsToken: TOKEN, publicKey: 'not-a-key' },
+        }],
+      }),
+      'utf8',
+    );
+    const s = new DeviceStore({ wmuxDir: dir });
+    // The device survives; only the unusable registration is gone.
+    expect(s.list().map((d) => d.deviceId)).toEqual(['d1']);
+    expect(s.pushTargets()).toEqual([]);
+  });
+});
