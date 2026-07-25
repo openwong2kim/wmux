@@ -4,7 +4,15 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSessionManager } from '../DaemonSessionManager';
+// Types only — the registry implementation, its persistence and its
+// headless-terminal dependency chain stay out of this module. The web server is
+// a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
+// constructs a request, and it never decides what bytes a decision means.
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS } from '../../shared/constants';
+import { capSnapshot } from './snapshotWindow';
+import { startSseHeartbeat } from './sseHeartbeat';
+import { buildWebCsp } from './webCsp';
 
 /**
  * wmux web — a read-only-by-default browser terminal served BY THE DAEMON.
@@ -22,10 +30,35 @@ import { ENV_KEYS } from '../../shared/constants';
  *
  * Security posture:
  *   - Nothing listens until `daemon.web.start` is invoked (default unchanged).
- *   - A FRESH random web token is minted per start; the daemon master token
- *     never touches the network. Every `/api/*` call is checked timing-safe.
- *   - Input is impossible unless the server was started with `allowInput`
- *     (execute-impossible stays the default — the operator opts in explicitly).
+ *   - TWO credential forms, both checked timing-safe on every `/api/*` call:
+ *     the OPERATOR token (minted per start, carried across restarts by #596,
+ *     used by the CLI/GUI and the advertised URLs) and a per-DEVICE credential
+ *     (`<deviceId>.<secret>`, minted by pairing, individually revocable). The
+ *     daemon master token never touches the network in either case.
+ *   - Only the operator token may ride in `?token=`. A device secret is durable
+ *     and never expires, so it is header-only on every route including SSE. A
+ *     browser device opens a stream with `?ticket=` instead: a two-minute,
+ *     device-bound capability from `POST /api/stream-ticket` (B3).
+ *   - FREE-FORM input is impossible unless the server was started with
+ *     `allowInput` (execute-impossible stays the default — the operator opts in
+ *     explicitly). The ONE carve-out is `POST /api/approvals/:id`, which works
+ *     on a read-only server; see that handler for why a scoped approval is a
+ *     strictly narrower grant than `--allow-input`.
+ *
+ * Route table (everything under `/api/` is Bearer-gated unless noted):
+ *   GET  /                     app shell (unauthenticated, no secrets)
+ *   GET  /api/pair?code=       the ONLY unauthenticated API route; mints this
+ *                              device's own credential (refused over plaintext
+ *                              off-machine transports — see mintRefusal)
+ *   GET  /api/config           allowInput flag
+ *   GET  /api/sessions         pane list
+ *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
+ *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
+ *   GET  /api/events           attention + approval channel; SSE (`?token=`
+ *                              allowed) or JSON backlog (Bearer only)
+ *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   GET  /api/approvals        pending + recently resolved approval requests
+ *   POST /api/approvals/:id    resolve one — ALLOWED on a read-only server
  */
 
 export interface WebTerminalStartOptions {
@@ -64,11 +97,122 @@ export interface WebTerminalInfo {
   pairCode?: string;
   /** Epoch ms when the current pairing code expires. */
   pairExpiresAt?: number;
+  /**
+   * Whether per-device credentials are armed, i.e. whether a device store was
+   * wired in.
+   *
+   * False means pairing still works but hands out the SHARED token exactly as
+   * 3.34.0 shipped it — not a downgrade from that release, but not the upgrade
+   * either, and critically there is nothing to revoke one device at a time. An
+   * operator who believes revocation is available when it is not would keep a
+   * lost phone's access alive while thinking they had cut it, so this is
+   * surfaced rather than left to a daemon log nobody reads.
+   */
+  deviceCredentials?: boolean;
+  /**
+   * The TLS fronts the operator named with `--allow-host`, if any.
+   *
+   * Surfaced so `--status` and the GUI can name the address that actually works
+   * from a phone. `wmux web --tailscale` binds loopback on purpose, so without
+   * this the only thing status could report for the supported phone setup was a
+   * loopback URL — correct about the bind, useless to the operator.
+   */
+  allowedHosts?: string[];
 }
+
+/**
+ * The answer to "does this `<deviceId>.<secret>` belong to a live device?".
+ *
+ * The two failure reasons are NOT interchangeable and must not be collapsed:
+ * `revoked` is the operator's own decision and the phone should say so ("this
+ * device was removed — ask for a new pairing code"), while `unknown` is a
+ * credential this daemon has never seen (a wiped roster, a different machine,
+ * a typo). #599 shipped a 401 screen that could only guess; this is what lets
+ * it stop guessing.
+ */
+export type DeviceAuthResult =
+  | { ok: true; deviceId: string; name?: string }
+  | { ok: false; reason: 'unknown' | 'revoked' };
+
+/**
+ * Per-device credentials as far as the HTTP surface is concerned (M3).
+ *
+ * STRUCTURAL ON PURPOSE. The implementation (`DeviceStore`) owns the KDF and
+ * its parameters, the per-device salt, the roster file, the derived-key cache
+ * and the audit log — none of which this module may know about, for the same
+ * reason it does not know how the approval registry picks keystrokes. What the
+ * web server needs is exactly two verbs: turn a presented credential into an
+ * identity, and mint one for a device the operator just named.
+ *
+ * `resolve` MUST NOT throw: an unreadable roster is an auth failure, never a
+ * 500 on a route that would otherwise have answered. It may be async because a
+ * password KDF has to be — a synchronous scrypt on the request path would stall
+ * the daemon's whole event loop once per call.
+ *
+ * NO EXPIRY. A device credential lives until it is revoked; there is no TTL and
+ * no refresh (contract §7). Revocation is the whole mechanism, which is why it
+ * has to be immediate — see `disconnectDevice`.
+ */
+export interface WebDeviceResolver {
+  resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
+  mint(params: { name?: string }): Promise<{ deviceId: string; deviceSecret: string }>;
+  /**
+   * Record a successful auth. Optional because it is bookkeeping, not
+   * authorization: a store that does not track `lastSeenAt` is still a valid
+   * resolver, and a roster row with a stale timestamp is a cosmetic loss.
+   * Called on every authenticated device request — the store decides how often
+   * that is worth writing down.
+   */
+  touch?(deviceId: string): void;
+  /**
+   * Record where to push to this device and the key to seal for it. Optional
+   * for the same reason `touch` is: a server without push is still a working
+   * server, and the route answers 503 rather than pretending.
+   */
+  registerPush?(
+    deviceId: string,
+    input: { apnsToken: string; publicKey: string },
+  ): { ok: boolean; reason?: string };
+}
+
+/**
+ * WHO is making this request. Tagged onto every SSE client so a revoke can find
+ * that device's live streams and end them, instead of leaving a torn-down
+ * device watching panes until it happens to reconnect.
+ */
+export type WebPrincipal =
+  | { kind: 'operator' }
+  | { kind: 'device'; deviceId: string; name?: string };
+
+/** Authenticated identity, or why the credential was refused. */
+type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 'unknown' | 'revoked' };
+
+/**
+ * What `daemon.web.pairStart` answers. A discriminated union rather than
+ * `{ok, code?, error?}` so a caller cannot read `code` off a refusal — but
+ * still structurally assignable to that looser shape if the RPC layer declares
+ * one. `error` is operator-facing copy: it says what to do, not just "no".
+ */
+export type WebPairStartResult =
+  | { ok: true; code: string; expiresAt: number }
+  | { ok: false; error: string };
 
 interface WebTerminalServerDeps {
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
+  /**
+   * Per-device credential store (M3). Optional, like `approvals`: a daemon that
+   * could not build one still serves every route on the operator token, and
+   * `/api/pair` degrades to the pre-M3 shared-token response with a warning
+   * rather than leaving the operator unable to pair anything at all.
+   */
+  devices?: WebDeviceResolver;
+  /**
+   * The daemon's approval registry. Optional: a daemon that has not wired one
+   * (or a unit test that does not care) still serves every other route, and the
+   * approval routes answer 503 rather than pretending the surface exists.
+   */
+  approvals?: ApprovalRegistryApi;
   /**
    * Directory holding the built frontend assets (terminal.html, manifest,
    * sw.js, icons). Resolved by the caller relative to the daemon bundle so it
@@ -86,8 +230,6 @@ interface WebTerminalServerDeps {
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
 const MAX_INPUT_BYTES = 64 * 1024;
-/** SSE heartbeat — keeps the connection alive through idle proxies. */
-const HEARTBEAT_MS = 25_000;
 /** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
@@ -110,18 +252,99 @@ const PAIR_CODE_LEN = 6;
 const ATTENTION_CAP = 100;
 /** Attention entries older than this are dropped even if the cap allows them. */
 const ATTENTION_TTL_MS = 30 * 60 * 1000;
+/** A decision body is two fields; anything larger is not one of ours. */
+const MAX_JSON_BODY_BYTES = 8 * 1024;
+/**
+ * Who the registry records as having answered, for anything resolved over HTTP.
+ *
+ * This used to be the constant `'web'`, on the reasoning that "the web token is
+ * one shared secret held by whoever paired a device, so claiming a user
+ * identity here would be a fabrication". That was true when every phone
+ * presented the operator's token — and M3 made it false. A device now
+ * authenticates as ITSELF, with a credential only it holds and that the
+ * operator can revoke on its own, so the id is a fact we have rather than a
+ * claim we would be inventing.
+ *
+ * Keeping the constant meant the one action in this whole surface that writes
+ * bytes into somebody's terminal was also the one place the authenticated
+ * identity was thrown away: `approvals.json`, the daemon log line, and the 409
+ * body all said `web` no matter which phone pressed the key. The roster could
+ * not answer "who approved that?" afterwards.
+ *
+ * The device NAME rides along with the id because the roster is not a permanent
+ * record — a revoked device's tombstone is eventually pruned, and the audit
+ * trail has to keep making sense after that.
+ */
+function describePrincipal(principal: WebPrincipal): string {
+  if (principal.kind === 'operator') return 'operator';
+  return principal.name
+    ? `device ${principal.name} (${principal.deviceId})`
+    : `device ${principal.deviceId}`;
+}
+/**
+ * Separator inside a device credential (`<deviceId>.<secret>`). A dot because
+ * the operator token is a `randomUUID` and contains none, so the two forms are
+ * distinguishable without ever having to guess which one was presented.
+ */
+const DEVICE_CREDENTIAL_SEP = '.';
+/**
+ * Stream-ticket lifetime (B3).
+ *
+ * Long enough to open a stream and to survive the browser's own retry, short
+ * enough that a ticket recovered from a proxy log or a Referer is worthless by
+ * the time anyone reads it. Deliberately NOT the credential's lifetime: the
+ * credential never expires, the ticket almost immediately does.
+ */
+const STREAM_TICKET_TTL_MS = 120_000;
+/** 256 bits of CSPRNG — the reason a plain Map lookup is safe (see resolveStreamTicket). */
+const STREAM_TICKET_BYTES = 32;
+/**
+ * Outstanding tickets held across all devices. Expired entries are pruned
+ * first; the cap only bounds memory if an authenticated device asks for
+ * tickets in a loop, which no client of ours does.
+ */
+const MAX_STREAM_TICKETS = 512;
 
 interface SseClient {
   res: http.ServerResponse;
   sessionId: string;
   detach: () => void;
+  /** Whose stream this is, so a revoke can end exactly that device's. */
+  principal: WebPrincipal;
+}
+
+/**
+ * A short-lived capability to OPEN a stream, and nothing else (B3).
+ *
+ * It exists because `EventSource` cannot set headers, and a device credential
+ * is durable — putting one in a query string would write a permanent secret
+ * into history, proxy logs and Referer headers. A ticket is the narrow thing a
+ * URL can safely carry: it grants opening a stream, it expires in two minutes,
+ * it is bound to one device, and revoking that device destroys it.
+ */
+interface StreamTicket {
+  deviceId: string;
+  name?: string;
+  expiresAt: number;
 }
 
 /** A live `/api/events` subscriber (fleet-wide attention only, no pane bytes). */
 interface EventClient {
   res: http.ServerResponse;
   detach: () => void;
+  principal: WebPrincipal;
 }
+
+/**
+ * What a recorded event IS, and the SSE event name it goes out under.
+ *
+ * `approval` joins the two attention kinds rather than opening a channel of its
+ * own: it is the same question ("this pane needs a human") reaching the same
+ * clients, and it must inherit the id/replay machinery — an approval raised
+ * while the phone was in a tunnel is exactly the event that must survive the
+ * reconnect.
+ */
+type EventKind = 'critical' | 'notify' | 'approval';
 
 /**
  * One recorded attention event. `payload` is the flattened wire object
@@ -131,7 +354,7 @@ interface EventClient {
 interface AttentionEntry {
   id: number;
   at: number;
-  kind: 'critical' | 'notify';
+  kind: EventKind;
   payload: Record<string, unknown>;
 }
 
@@ -178,20 +401,48 @@ export class WebTerminalServer {
   private allowedHosts = new Set<string>();
   /** When the current pairing code was minted (throttles regeneration). */
   private pairRegeneratedAt = 0;
+  /**
+   * The name the operator gave the device they are pairing RIGHT NOW (§3:
+   * naming happens before the code is minted, because a roster of UUIDs cannot
+   * be operated). Survives an automatic code regeneration — a burned code does
+   * not change who the operator was trying to pair — and is cleared the moment
+   * a code is successfully redeemed, so the next device cannot inherit it.
+   */
+  private pendingDeviceName: string | undefined;
+  /**
+   * Outstanding stream tickets, keyed by the ticket itself (B3).
+   *
+   * In memory only and cleared on stop(): a ticket is a capability to open a
+   * stream against THIS running server, so there is nothing to carry across a
+   * restart — the client asks for another one, which costs it one request.
+   */
+  private readonly streamTickets = new Map<string, StreamTicket>();
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
   private readonly onSessionCritical = (payload: { sessionId: string; event?: unknown }): void =>
     this.broadcastEvent('critical', payload);
   private readonly onSessionNotification = (payload: { sessionId: string; event?: unknown }): void =>
     this.broadcastEvent('notify', payload);
+  private readonly onApprovalEvent = (e: ApprovalEvent): void => this.publishApproval(e);
+  /**
+   * The registry hands back an unsubscribe closure rather than taking off() —
+   * so unlike the sessionManager listeners this one is held, not re-derived.
+   * Non-null exactly while the server is running.
+   */
+  private approvalUnsub: (() => void) | null = null;
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
   /** Full CSP for the HTML page, with per-build inline-script hashes. */
-  private htmlCsp = '';
   private manifest: Buffer | null = null;
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
+  /**
+   * The CSP for the assets currently loaded. Initialized to the asset-less
+   * policy (`script-src 'none'`) so a request that somehow arrives before
+   * `loadAssets()` is served the locked-down header, never a permissive one.
+   */
+  private csp: string = buildWebCsp(null);
 
   constructor(private readonly deps: WebTerminalServerDeps) {}
 
@@ -216,6 +467,7 @@ export class WebTerminalServer {
     this.loadAssets();
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
+    this.pendingDeviceName = undefined;
     this.generatePairCode();
 
     const server = http.createServer((req, res) => {
@@ -223,13 +475,7 @@ export class WebTerminalServer {
       try {
         this.handle(req, res);
       } catch (err) {
-        this.deps.log('warn', `[web] request handler threw: ${errMsg(err)}`);
-        try {
-          if (!res.headersSent) res.writeHead(500);
-          res.end();
-        } catch {
-          /* socket already gone */
-        }
+        this.failRequest(res, err);
       }
     });
 
@@ -269,6 +515,9 @@ export class WebTerminalServer {
     // rotate cleanly.
     this.deps.sessionManager.on('session:critical', this.onSessionCritical);
     this.deps.sessionManager.on('session:notification', this.onSessionNotification);
+    // Approval lifecycle rides the same channel; same attach point, same
+    // restart hygiene (unsubscribed in stop(), so a restart never doubles up).
+    this.approvalUnsub = this.deps.approvals?.onEvent(this.onApprovalEvent) ?? null;
 
     // Record the ACTUAL bound port so status()/urls report it even when the
     // caller requested port 0 (ephemeral — used by the unit tests for a
@@ -309,9 +558,14 @@ export class WebTerminalServer {
 
     this.deps.sessionManager.off('session:critical', this.onSessionCritical);
     this.deps.sessionManager.off('session:notification', this.onSessionNotification);
+    this.approvalUnsub?.();
+    this.approvalUnsub = null;
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
+    this.pendingDeviceName = undefined;
+    // Capabilities against a server that is going away. Nothing to preserve.
+    this.streamTickets.clear();
 
     for (const client of this.clients) {
       try {
@@ -365,6 +619,192 @@ export class WebTerminalServer {
     return this.status();
   }
 
+  /**
+   * `daemon.web.pairStart {name}` — name the device, THEN mint its code (§3).
+   *
+   * Separate from `refreshPairCode` rather than a parameter on it because the
+   * two answer different questions. `refreshPairCode` is "the code went stale,
+   * give me another for whatever I was already doing"; this is "I am about to
+   * pair THIS device", which is the only moment a human is present to say what
+   * to call it, and the only moment the transport is worth refusing over.
+   *
+   * The transport check is deliberately made here as well as at redemption:
+   * failing at redemption alone means the operator reads a code off the GUI,
+   * walks to the phone, types it, and only then learns the server would never
+   * have minted anything.
+   */
+  startPairing(params: { name?: string } = {}): WebPairStartResult {
+    if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
+    const refusal = this.mintRefusal();
+    if (refusal) return { ok: false, error: refusal };
+    const label = typeof params.name === 'string' ? params.name.trim() : '';
+    this.generatePairCode();
+    this.pendingDeviceName = label || undefined;
+    return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
+  }
+
+  /**
+   * End every live SSE stream held by one device, right now.
+   *
+   * This is the teardown half of revocation (§5), and it is a METHOD rather
+   * than a listener on the store so the ordering is visible at the call site:
+   * `daemon.web.deviceRevoke` persists first, checks the write succeeded, and
+   * only then calls this. A device the operator believes is gone must not be
+   * watching panes until its next reconnect, and a stream that outlives the
+   * roster entry is exactly that.
+   *
+   * Returns how many connections were closed, so the RPC can report it. The
+   * operator's own streams and every other device's are untouched.
+   */
+  disconnectDevice(deviceId: string): number {
+    if (!deviceId) return 0;
+    const isTarget = (p: WebPrincipal): boolean => p.kind === 'device' && p.deviceId === deviceId;
+    // Outstanding tickets die with the device (B3). Closing the streams alone
+    // would leave a revoked phone holding a capability that reopens one for up
+    // to the ticket TTL — a revocation with a two-minute hole in it.
+    for (const [ticket, held] of [...this.streamTickets]) {
+      if (held.deviceId === deviceId) this.streamTickets.delete(ticket);
+    }
+    let closed = 0;
+    for (const client of [...this.clients]) {
+      if (!isTarget(client.principal)) continue;
+      this.clients.delete(client);
+      closed += 1;
+      try {
+        client.detach();
+        client.res.end();
+      } catch {
+        /* socket already gone — the end state we wanted either way */
+      }
+    }
+    for (const client of [...this.eventClients]) {
+      if (!isTarget(client.principal)) continue;
+      this.eventClients.delete(client);
+      closed += 1;
+      try {
+        client.detach();
+        client.res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (closed > 0) {
+      this.deps.log('info', `[web] revoked device ${deviceId}: closed ${closed} live stream(s)`);
+    }
+    return closed;
+  }
+
+  /**
+   * `POST /api/stream-ticket` — trade a device credential (header, as always)
+   * for a short-lived capability that MAY ride a query string.
+   *
+   * Devices only. The operator token already opens a stream with `?token=`, and
+   * handing the operator a second way in would grow this into a parallel auth
+   * system for no gain — the ticket exists solely because `EventSource` cannot
+   * set headers, and the native app (URLSession sets headers on a streaming
+   * request freely) will never need one either.
+   */
+  private issueStreamTicket(principal: WebPrincipal): { ticket: string; expiresAt: number } | null {
+    if (principal.kind !== 'device') return null;
+    this.pruneStreamTickets();
+    const ticket = crypto.randomBytes(STREAM_TICKET_BYTES).toString('base64url');
+    const expiresAt = Date.now() + STREAM_TICKET_TTL_MS;
+    this.streamTickets.set(ticket, {
+      deviceId: principal.deviceId,
+      ...(principal.name ? { name: principal.name } : {}),
+      expiresAt,
+    });
+    return { ticket, expiresAt };
+  }
+
+  /**
+   * Turn a presented ticket back into the device that asked for it, or `null`.
+   *
+   * A plain Map lookup, deliberately: the ticket is 256 bits of CSPRNG with a
+   * two-minute life, so the only thing a timing difference could reveal is
+   * whether a key the caller already chose exists — and finding one by guessing
+   * is 2^256 work inside a 120-second window. There is no stored secret to
+   * compare against here, which is the whole difference between a capability
+   * and a credential.
+   *
+   * NOT single-use. `EventSource` retries the SAME url on its own, so burning
+   * the ticket on first use would turn every ordinary reconnect into a
+   * permanent failure with no way for the page to notice or recover.
+   */
+  private resolveStreamTicket(raw: string | null): WebPrincipal | null {
+    if (!raw) return null;
+    const held = this.streamTickets.get(raw);
+    if (!held) return null;
+    if (Date.now() > held.expiresAt) {
+      this.streamTickets.delete(raw);
+      return null;
+    }
+    return { kind: 'device', deviceId: held.deviceId, ...(held.name ? { name: held.name } : {}) };
+  }
+
+  /** Drop expired tickets, then the oldest if the cap is still exceeded. */
+  private pruneStreamTickets(): void {
+    const now = Date.now();
+    for (const [ticket, held] of [...this.streamTickets]) {
+      if (now > held.expiresAt) this.streamTickets.delete(ticket);
+    }
+    if (this.streamTickets.size < MAX_STREAM_TICKETS) return;
+    const byAge = [...this.streamTickets].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    const excess = this.streamTickets.size - MAX_STREAM_TICKETS + 1;
+    for (let i = 0; i < excess && i < byAge.length; i++) this.streamTickets.delete(byAge[i][0]);
+  }
+
+  /**
+   * Why a durable device secret must not be minted over this transport, or
+   * `null` when it may be.
+   *
+   * The shared operator token was survivable in cleartext partly because it
+   * died on restart; #599 made it durable and M3 makes the per-device one
+   * durable too, so `--expose` without a TLS front now means handing a
+   * long-lived secret to anything on the LAN. Loopback is fine (nothing
+   * off-machine reaches it). A host the operator listed with `--allow-host` is
+   * fine, because that flag exists precisely to name the TLS front (`tailscale
+   * serve`) that forwards to us.
+   *
+   * `requestHost` is the Host of the redeeming request when there is one; with
+   * none (the operator-side pairStart) the question is only whether a front is
+   * configured at all.
+   *
+   * NOTE this refuses minting for a browser sitting at `127.0.0.1` on an
+   * exposed server too. That is not an oversight: on a `0.0.0.0` bind the Host
+   * header is caller-chosen and proves nothing about where the bytes came from,
+   * so the bind is the only honest thing to judge. The operator token path is
+   * untouched — this gate only guards NEW durable device credentials.
+   */
+  private mintRefusal(): string | null {
+    const bind = this.opts?.host ?? '';
+    // The BIND is the only honest judge, and for a while this also accepted a
+    // request whose `Host` matched `--allow-host`. That was wrong: `Host` is
+    // written by the caller. On a wildcard bind anyone who could reach the port
+    // — and had the pair code — could send `Host: <the tailnet name>` straight
+    // to the plaintext LAN address, skip the TLS front entirely, and collect a
+    // credential that never expires. A header cannot be evidence that a
+    // connection was encrypted.
+    //
+    // Nothing legitimate is lost by dropping it. `wmux web --tailscale` binds
+    // 127.0.0.1 and lets `tailscale serve` front it (see
+    // decideTailscaleBinding), so the normal tailnet flow takes the loopback
+    // exit above and never reaches here. What now refuses is specifically
+    // `--expose` + `--allow-host`, where the port really is answering in
+    // plaintext on every interface — the case the CLI already warns about.
+    // `--allow-host` keeps its other job: the Host allowlist that blocks DNS
+    // rebinding.
+    if (isLoopbackHost(bind)) return null;
+    return (
+      `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
+      'over plain HTTP, and a device secret never expires. Two ways forward: (1) run ' +
+      '`wmux web --tailscale` on its own, which binds loopback and lets `tailscale serve` ' +
+      'terminate HTTPS for your tailnet; or (2) pair over loopback BEFORE exposing, which ' +
+      'keeps the handover off the wire — though a plaintext bind still carries the credential ' +
+      'on every later request, so (1) is the one that actually protects it.'
+    );
+  }
+
   status(): WebTerminalInfo {
     if (!this.server || !this.opts) return { running: false };
     const pair = this.activePairCode();
@@ -378,6 +818,8 @@ export class WebTerminalServer {
       clients: this.clients.size,
       pairCode: pair.code,
       pairExpiresAt: pair.expiresAt,
+      deviceCredentials: !!this.deps.devices,
+      allowedHosts: this.frontedHosts(),
     };
   }
 
@@ -419,15 +861,24 @@ export class WebTerminalServer {
     // Static, unauthenticated app shell (no secrets live in these). `/pair`
     // is the same SPA shell — the frontend renders the pairing screen for it.
     if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
-      return this.serveStatic(
-        res,
-        this.terminalHtml,
-        'text/html; charset=utf-8',
-        this.htmlCsp ? { 'Content-Security-Policy': this.htmlCsp } : {},
-      );
+      // The whole app is inlined into this one file and it is rebuilt on every
+      // release, so a stale copy is not a slightly-old page — it is the old
+      // client talking to a new daemon. With no Cache-Control and no validator
+      // a browser is free to heuristically cache it, which during dogfooding
+      // meant a phone kept running a build that had already been fixed, with
+      // nothing on either side to say so. `no-store` because there is nothing
+      // worth revalidating: the payload is either current or wrong.
+      return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8', {
+        'Cache-Control': 'no-store',
+        ...(this.csp ? { 'Content-Security-Policy': this.csp } : {}),
+      });
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
-      return this.serveStatic(res, this.manifest, 'application/manifest+json; charset=utf-8');
+      // Same reasoning as the shell: a cached manifest pins an installed app's
+      // name, icons and start_url to whatever it first saw.
+      return this.serveStatic(res, this.manifest, 'application/manifest+json; charset=utf-8', {
+        'Cache-Control': 'no-cache',
+      });
     }
     if (req.method === 'GET' && p === '/sw.js') {
       // A service worker may only control the scope it is served from; keep it
@@ -455,49 +906,112 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      return this.handlePair(res, url);
+      this.handlePair(res, url, hostname).catch((err: unknown) => this.failRequest(res, err));
+      return;
     }
 
-    // Everything under /api/* is token-gated. Only the SSE stream may carry the
-    // token in the query string (EventSource cannot set headers); every other
-    // endpoint requires an Authorization: Bearer header, keeping the token out
-    // of query strings and URL/proxy logs.
     if (p.startsWith('/api/')) {
-      // `/api/events` answers in two shapes on one route: an EventSource (which
-      // cannot set headers, so it gets the same `?token=` exception as
-      // `/api/stream`) and a plain JSON backlog fetch (Bearer only, like every
-      // other endpoint). The Accept header decides which, and therefore also
-      // which auth rule applies.
-      const wantsEventStream =
-        req.method === 'GET' &&
-        p === '/api/events' &&
-        String(req.headers.accept ?? '').includes('text/event-stream');
-      const isStream = (req.method === 'GET' && p === '/api/stream') || wantsEventStream;
-      if (!this.isAuthed(req, url, isStream)) {
-        return this.json(res, 401, { error: 'unauthorized' });
-      }
-      if (req.method === 'GET' && p === '/api/config') {
-        return this.json(res, 200, { allowInput: this.opts?.allowInput === true });
-      }
-      if (req.method === 'GET' && p === '/api/sessions') {
-        return this.json(res, 200, { sessions: this.listSessions() });
-      }
-      if (req.method === 'GET' && p === '/api/stream') {
-        return this.handleStream(req, res, url);
-      }
-      if (req.method === 'GET' && p === '/api/events') {
-        return wantsEventStream
-          ? this.handleEventStream(req, res, url)
-          : this.handleEventBacklog(res, url);
-      }
-      if (req.method === 'POST' && p === '/api/input') {
-        return this.handleInput(req, res, url);
-      }
-      return this.json(res, 404, { error: 'not found' });
+      // Verifying a device credential means running a KDF, which is async by
+      // construction, so the whole /api/* branch sits behind one await. The
+      // route table itself is unchanged — see handleApi.
+      this.handleApi(req, res, url, p).catch((err: unknown) => this.failRequest(res, err));
+      return;
     }
 
     res.writeHead(404);
     res.end();
+  }
+
+  /**
+   * Everything under `/api/*`: authenticate, then route.
+   *
+   * Both credential forms are accepted here (operator token, device
+   * credential), and the ROUTES do not care which — a paired phone can list
+   * panes, watch a stream and answer an approval exactly as the operator can.
+   * What differs is only what a revoke can take away, which is why the
+   * principal is carried into the two SSE handlers and nowhere else.
+   */
+  private async handleApi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    p: string,
+  ): Promise<void> {
+    // `/api/events` answers in two shapes on one route: an EventSource (which
+    // cannot set headers, so it gets the same `?token=` exception as
+    // `/api/stream`) and a plain JSON backlog fetch (Bearer only, like every
+    // other endpoint). The Accept header decides which, and therefore also
+    // which auth rule applies.
+    const wantsEventStream =
+      req.method === 'GET' &&
+      p === '/api/events' &&
+      String(req.headers.accept ?? '').includes('text/event-stream');
+    const isStream = (req.method === 'GET' && p === '/api/stream') || wantsEventStream;
+    const auth = await this.authenticate(req, url, isStream);
+    if (!auth.ok) {
+      // The reason is the point: #599's 401 screen had to guess between "the
+      // server restarted" and "you were thrown out", and guessed wrong either
+      // way. `revoked` is the operator's decision and deserves its own copy.
+      //
+      // IT IS COPY, NOT A CLAIM. `revoked` comes from a deviceId lookup alone —
+      // the store answers it WITHOUT verifying the secret, deliberately, so a
+      // revoked phone reconnecting in a loop cannot force a KDF derivation per
+      // retry. So this field says "a credential naming this device was
+      // presented", not "the holder proved they are that device". Never let
+      // anything but wording key on it.
+      return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
+    }
+    const principal = auth.principal;
+    if (req.method === 'GET' && p === '/api/config') {
+      return this.json(res, 200, { allowInput: this.opts?.allowInput === true });
+    }
+    if (req.method === 'GET' && p === '/api/sessions') {
+      return this.json(res, 200, { sessions: this.listSessions() });
+    }
+    if (req.method === 'GET' && p === '/api/stream') {
+      return this.handleStream(req, res, url, principal);
+    }
+    if (req.method === 'GET' && p === '/api/events') {
+      return wantsEventStream
+        ? this.handleEventStream(req, res, url, principal)
+        : this.handleEventBacklog(res, url);
+    }
+    if (req.method === 'POST' && p === '/api/stream-ticket') {
+      const issued = this.issueStreamTicket(principal);
+      if (!issued) {
+        return this.json(res, 403, {
+          error: 'tickets-are-for-devices',
+          detail:
+            'stream tickets exist so a paired device can open an EventSource, which cannot set headers. ' +
+            'The operator token opens a stream with ?token= directly.',
+        });
+      }
+      return this.json(res, 200, issued);
+    }
+    if (req.method === 'POST' && p === '/api/push-registration') {
+      return this.handlePushRegistration(req, res, principal);
+    }
+    if (req.method === 'POST' && p === '/api/input') {
+      return this.handleInput(req, res, url);
+    }
+    if (req.method === 'GET' && p === '/api/approvals') {
+      return this.handleApprovalsList(res);
+    }
+    if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
+      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
+    }
+    return this.json(res, 404, { error: 'not found' });
+  }
+
+  /** Last-resort 500 for a handler that threw or rejected. */
+  private failRequest(res: http.ServerResponse, err: unknown): void {
+    this.deps.log('warn', `[web] request handler threw: ${errMsg(err)}`);
+    try {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    } catch {
+      /* socket already gone */
+    }
   }
 
   private listSessions(): Array<{
@@ -527,7 +1041,12 @@ export class WebTerminalServer {
 
   // --- SSE output stream --------------------------------------------------
 
-  private handleStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  private handleStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
     const sessionId = url.searchParams.get('session') ?? '';
     const managed = this.deps.sessionManager.getSession(sessionId);
     if (!managed) {
@@ -542,11 +1061,20 @@ export class WebTerminalServer {
       ...this.securityHeaders(),
     });
 
-    // Initial paint: the exact bytes SessionPipe flushes to the GUI on attach.
-    const meta = { cols: managed.meta.cols, rows: managed.meta.rows };
+    // Initial paint: the bytes SessionPipe flushes to the GUI on attach, capped
+    // to a window — the ring is 8 MB by default and up to 64 MB, and base64
+    // inflates it by a third, which a phone reconnecting at every tunnel would
+    // pull each time. The truncation rides `meta` rather than a new event name,
+    // so a cached frontend that predates it is unaffected.
+    const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    const meta = {
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      truncated: snapshot.truncated,
+      omittedBytes: snapshot.omittedBytes,
+    };
     writeSse(res, 'meta', JSON.stringify(meta));
-    const snapshot = managed.ringBuffer.readAll();
-    writeSse(res, 'snapshot', snapshot.toString('base64'));
+    writeSse(res, 'snapshot', snapshot.bytes.toString('base64'));
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
     // not disturb the GUI's SessionPipe. maxListeners is relaxed because each
@@ -570,21 +1098,14 @@ export class WebTerminalServer {
     bridge.on('data', onData);
     bridge.on('exit', onExit);
 
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': ping\n\n');
-      } catch {
-        /* ignore */
-      }
-    }, HEARTBEAT_MS);
-    heartbeat.unref();
+    const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
-      clearInterval(heartbeat);
+      stopHeartbeat();
       bridge.removeListener('data', onData);
       bridge.removeListener('exit', onExit);
     };
-    const client: SseClient = { res, sessionId, detach };
+    const client: SseClient = { res, sessionId, detach, principal };
     this.clients.add(client);
 
     req.on('close', () => {
@@ -635,6 +1156,274 @@ export class WebTerminalServer {
     });
   }
 
+  // --- approvals (M2) -----------------------------------------------------
+
+  /**
+   * `POST /api/push-registration` — where to reach this device, and the key to
+   * seal for it.
+   *
+   * DEVICE ONLY. The operator token names no device, so there is nothing to
+   * register it against; answering 403 is more useful than inventing one.
+   *
+   * Neither field is a secret — an APNs routing handle and the public half of a
+   * pair whose private half never leaves the phone's Keychain — which is what
+   * lets this be stored in the roster without turning it into a file worth
+   * stealing. See DevicePushRegistration.
+   */
+  private handlePushRegistration(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    principal: WebPrincipal,
+  ): void {
+    if (principal.kind !== 'device') {
+      return this.json(res, 403, {
+        error: 'push-is-for-devices',
+        detail: 'register with the credential of the device that will receive the notifications',
+      });
+    }
+    const devices = this.deps.devices;
+    if (!devices?.registerPush) {
+      return this.json(res, 503, { error: 'push-unavailable' });
+    }
+    this.readJsonBody(req, res, (body) => {
+      const b = (body ?? {}) as { apnsToken?: unknown; publicKey?: unknown };
+      const apnsToken = typeof b.apnsToken === 'string' ? b.apnsToken : '';
+      const publicKey = typeof b.publicKey === 'string' ? b.publicKey : '';
+      let result: { ok: boolean; reason?: string };
+      try {
+        result = devices.registerPush!(principal.deviceId, { apnsToken, publicKey });
+      } catch (err) {
+        this.deps.log('warn', `[web] push registration threw: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'push-registration-failed' });
+      }
+      if (result.ok) return this.json(res, 200, { ok: true });
+      // `bad-token` / `bad-key` are the caller's fault; the rest are ours or the
+      // operator's, and a device that was revoked mid-flight should hear that
+      // rather than a generic 400.
+      const status = result.reason === 'bad-token' || result.reason === 'bad-key' ? 400 : 409;
+      return this.json(res, status, { error: result.reason ?? 'push-registration-failed' });
+    });
+  }
+
+  /**
+   * `GET /api/approvals` — what a client needs the moment it connects: the
+   * requests still waiting on a human, plus the recently settled tail.
+   *
+   * The settled tail is not decoration. Two people can be looking at the same
+   * pending approval on two devices; the loser of that race gets a 409, and
+   * without the settled record there is nothing to render but an error code.
+   */
+  private handleApprovalsList(res: http.ServerResponse): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
+    try {
+      listed = approvals.list();
+    } catch (err) {
+      this.deps.log('warn', `[web] approvals list failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'approvals unavailable' });
+    }
+    // Both halves keep the registry's own names and order (recentlyResolved is
+    // newest-first and already bounded there), so the two shapes agree today.
+    // They are NOT one serializer: this goes through `approvalWire`, a
+    // field-by-field allowlist, while `daemon.approvals.list` returns the
+    // registry's records unfiltered. That is fine while the pipe stays
+    // daemon-internal, but it means adding a field to ApprovalRequest puts it
+    // on the pipe and not here — deliberately, since the allowlist exists so
+    // registry internals cannot reach the network by default.
+    return this.json(res, 200, {
+      pending: listed.pending.map(approvalWire),
+      recentlyResolved: listed.recentlyResolved.map(approvalWire),
+    });
+  }
+
+  /**
+   * `POST /api/approvals/:id` — answer one request.
+   *
+   * ┌───────────────────────────────────────────────────────────────────────┐
+   * │ THIS ROUTE WORKS ON A READ-ONLY SERVER. THAT IS DELIBERATE.           │
+   * └───────────────────────────────────────────────────────────────────────┘
+   * Every other write path (`POST /api/input`) is 403 without `--allow-input`,
+   * and that stays true — this carve-out widens NOTHING else. The reason it is
+   * safe, and the reason the whole milestone exists:
+   *
+   *   - `--allow-input` grants ARBITRARY bytes to ANY pane at ANY time. This
+   *     grants ONE answer to ONE request the DAEMON already decided to raise,
+   *     from a hook-sourced `agent.awaiting_input` — the operator cannot invent
+   *     a request, only respond to one.
+   *   - The bytes are not the caller's. The caller sends `approve`/`deny`; the
+   *     registry picks the keystrokes from its own per-agent map and re-reads
+   *     the pane to confirm the prompt is still on screen before writing. A
+   *     request that has expired, been superseded, or lost its prompt refuses.
+   *   - Requiring `--allow-input` here would mean the answer to "my agent is
+   *     blocked and I am not at my desk" is "you should have granted a fully
+   *     writable terminal to the network in advance", which is a worse posture
+   *     than the narrow grant it is trying to avoid.
+   *
+   * Still gated by the Bearer token like everything else, and the token is not
+   * ambient authority (no cookie), so a hostile page cannot forge this POST.
+   */
+  private handleApprovalResolve(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      // Malformed percent-escape — no such request, by definition.
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+
+    this.readJsonBody(req, res, (body) => {
+      const decision = (body as { decision?: unknown } | null)?.decision;
+      if (decision !== 'approve' && decision !== 'deny') {
+        return this.json(res, 400, { error: "decision must be 'approve' or 'deny'" });
+      }
+      approvals
+        .resolve({ id, decision, resolvedBy: describePrincipal(principal) })
+        .then((result) => {
+          if (result.ok) {
+            // 200 with `durable:false` rather than an error: the keystroke IS in
+            // the terminal, so the answer landed and the caller must not retry.
+            // What did not land is the record of it — after a restart the
+            // history will not show this decision or who made it. The client
+            // says so instead of the daemon knowing it privately.
+            return this.json(res, 200, { state: result.request.state, durable: result.durable });
+          }
+          switch (result.reason) {
+            // Someone else got there first — hand back WHO, so the loser's UI
+            // can say so instead of showing a bare conflict.
+            case 'already-resolved':
+              return this.json(res, 409, { error: 'already-resolved', resolvedBy: result.resolvedBy });
+            // Gone: the request outlived its usefulness (timed out, replaced by
+            // a newer prompt, or the prompt left the screen). 410, not 404 —
+            // it existed, and the client should stop showing it. The registry
+            // reports 'expired' for a supersede too, so the precise state rides
+            // along when it knows it: "someone re-prompted" and "it timed out"
+            // are the same status but not the same sentence to a human.
+            case 'expired':
+            case 'prompt-gone':
+              return this.json(res, 410, {
+                error: result.reason,
+                ...(result.request ? { state: result.request.state } : {}),
+              });
+            // The daemon has no keystroke map for this agent, so it refuses to
+            // guess bytes. Not the caller's fault: 501, not 4xx.
+            case 'unsupported-agent':
+              return this.json(res, 501, { error: 'unsupported-agent' });
+            case 'not-found':
+              return this.json(res, 404, { error: 'not-found' });
+            default: {
+              // A reason this surface does not know how to map. Never silently
+              // report success — say the server does not understand its own
+              // registry and log it.
+              const reason = String(result.reason);
+              this.deps.log('warn', `[web] approval resolve returned unknown reason: ${reason}`);
+              return this.json(res, 500, { error: reason });
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          this.deps.log('warn', `[web] approval resolve threw: ${errMsg(err)}`);
+          try {
+            this.json(res, 500, { error: `resolve failed: ${errMsg(err)}` });
+          } catch {
+            /* socket already gone */
+          }
+        });
+    });
+  }
+
+  /**
+   * Read a small JSON body. On a body that is too large or not JSON, this
+   * answers the request itself and never calls back — so a caller can treat the
+   * callback as "a parsed body arrived". An empty body parses as `null`, which
+   * the caller rejects as a missing decision.
+   */
+  private readJsonBody(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    onBody: (body: unknown) => void,
+  ): void {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let aborted = false;
+    req.on('data', (chunk: Buffer) => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > MAX_JSON_BODY_BYTES) {
+        aborted = true;
+        this.json(res, 413, { error: 'payload too large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (!raw) return onBody(null);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw, (key, value) => {
+          // Prototype pollution guard (mirrors config.ts / webStateStore).
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+          return value;
+        });
+      } catch {
+        return this.json(res, 400, { error: 'invalid JSON body' });
+      }
+      onBody(parsed);
+    });
+    req.on('error', () => {
+      aborted = true;
+    });
+  }
+
+  /**
+   * Republish a registry lifecycle transition onto the attention channel.
+   *
+   * The CONTENT fields — `screenTail`, `question`, `options` — are deliberately
+   * NOT on the wire here: a tail is a screenful of pane output, and this payload
+   * is fanned out to every client AND kept in the replay window for the whole
+   * TTL. Clients fetch `/api/approvals` on connect and on any `approval` event
+   * for the full record: the event is the nudge, the route is the truth.
+   *
+   * CONSEQUENCE A UI MUST RESPECT: never render an approve/deny control from an
+   * `approval` event alone. `approve` is encoded as "press the first option",
+   * which is a safe word for a consent-shaped prompt and a dangerous one for
+   * "which file should I delete?" — so the buttons belong to the route's record,
+   * which carries the question, or to nothing at all.
+   */
+  private publishApproval(e: ApprovalEvent): void {
+    if (!e || typeof e !== 'object' || !e.request) return;
+    const r = e.request;
+    this.publish('approval', {
+      sessionId: r.sessionId,
+      // NOT `id`: the envelope's own `id` is the replay cursor, and identity
+      // fields are stamped last precisely so a payload cannot shadow them.
+      approvalId: r.id,
+      phase: e.type,
+      state: r.state,
+      agent: r.agent,
+      // The record's own `kind` ('awaiting_input') is NOT copied: the backlog
+      // route stamps the ENVELOPE kind onto that name, so carrying both would
+      // mean `kind` said different things on the two shapes of the same event.
+      createdAt: r.createdAt,
+      ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+      ...(r.decision ? { decision: r.decision } : {}),
+      ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+      ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+    });
+  }
+
   // --- fleet-wide event tee -----------------------------------------------
 
   /**
@@ -651,20 +1440,17 @@ export class WebTerminalServer {
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
-    const entry: AttentionEntry = {
-      id: ++this.attentionSeq,
-      at: this.now(),
-      kind,
-      payload: { sessionId: payload.sessionId, ...event },
-    };
-    this.attentionLog.push(entry);
-    this.evictAttention();
+    const entry = this.publish(kind, { sessionId: payload.sessionId, ...event });
 
-    const body = this.attentionWireBody(entry);
     // BACK-COMPAT (remove after one release): attention still rides the pane
     // streams so a cached PWA frontend that predates `/api/events` keeps
     // working. The extra `id`/`epoch` fields are ignored by old clients; new
     // ones dedup on them, so the double delivery is harmless.
+    //
+    // Approvals deliberately do NOT get this second copy: no frontend older
+    // than the approval channel can act on one, so it would be pure noise on
+    // every pane stream.
+    const body = this.attentionWireBody(entry);
     for (const client of this.clients) {
       try {
         writeSse(client.res, kind, body);
@@ -672,6 +1458,21 @@ export class WebTerminalServer {
         /* client stream broken — its own 'close' handler cleans up */
       }
     }
+  }
+
+  /**
+   * Record one event in the replay window and fan it out to `/api/events`.
+   *
+   * Every kind shares ONE id space and ONE log: a client's cursor is a single
+   * number, so an approval and a notification cannot be interleaved in a way
+   * that makes a resume ambiguous.
+   */
+  private publish(kind: EventKind, payload: Record<string, unknown>): AttentionEntry {
+    const entry: AttentionEntry = { id: ++this.attentionSeq, at: this.now(), kind, payload };
+    this.attentionLog.push(entry);
+    this.evictAttention();
+
+    const body = this.attentionWireBody(entry);
     for (const client of this.eventClients) {
       try {
         writeSse(client.res, kind, body, this.sseId(entry.id));
@@ -679,6 +1480,7 @@ export class WebTerminalServer {
         /* client stream broken — its own 'close' handler cleans up */
       }
     }
+    return entry;
   }
 
   /** Drop entries past the cap (oldest first) and anything past the TTL. */
@@ -732,10 +1534,30 @@ export class WebTerminalServer {
    * Everything a cursor has not seen yet. A cursor from another epoch (or none
    * at all) cannot be positioned in this id space, so the caller is told to
    * resync and handed the whole current window.
+   *
+   * A MATCHING epoch is not on its own enough, and that was the gap. The log
+   * evicts — 100 entries, 30 minutes — while ids never rewind, so a cursor can
+   * be perfectly valid and still sit below everything still held. Answering
+   * `reset:false` there hands back the retained tail and lets the client treat
+   * it as contiguous with what it last saw: the events in between are gone, the
+   * client is never told, and on a phone that reconnects after a long sleep
+   * that silently swallows the attention events this whole channel exists to
+   * deliver. `reset` is the only signal that continuity broke, so it has to
+   * fire whenever it did — not only when the epoch changed.
    */
   private replayFrom(cursor: AttentionCursor | null): { reset: boolean; entries: AttentionEntry[] } {
     this.evictAttention();
     if (!cursor || cursor.epoch !== this.attentionEpoch) {
+      return { reset: true, entries: this.attentionLog.slice() };
+    }
+    const oldest = this.attentionLog.length > 0 ? this.attentionLog[0].id : null;
+    // With entries held, continuity survives only if the cursor's NEXT id is one
+    // we still have. With none held, it survives only if nothing was issued
+    // after the cursor — an empty log is "quiet", not "lost", until it isn't.
+    const gap = oldest === null ? cursor.id < this.headId() : cursor.id < oldest - 1;
+    // A cursor above every id we ever issued cannot be positioned either; it did
+    // not come from us in this epoch.
+    if (gap || cursor.id > this.headId()) {
       return { reset: true, entries: this.attentionLog.slice() };
     }
     return { reset: false, entries: this.attentionLog.filter((e) => e.id > cursor.id) };
@@ -749,7 +1571,12 @@ export class WebTerminalServer {
    * browser resends `Last-Event-ID` on every automatic reconnect, so a phone
    * that lost signal picks up exactly where it stopped.
    */
-  private handleEventStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  private handleEventStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -780,17 +1607,8 @@ export class WebTerminalServer {
       }
     }
 
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': ping\n\n');
-      } catch {
-        /* ignore */
-      }
-    }, HEARTBEAT_MS);
-    heartbeat.unref();
-
-    const detach = (): void => clearInterval(heartbeat);
-    const client: EventClient = { res, detach };
+    const detach = startSseHeartbeat(res);
+    const client: EventClient = { res, detach, principal };
     this.eventClients.add(client);
 
     req.on('close', () => {
@@ -832,11 +1650,19 @@ export class WebTerminalServer {
   }
 
   /**
-   * Exchange a pairing code for the web token. Correct code → `{token}` and the
-   * code is immediately invalidated (single use). Wrong/expired → 403; a wrong
-   * code decrements the attempt budget and burns the code when it hits zero.
+   * Exchange a pairing code for THIS DEVICE'S OWN credential. Correct code →
+   * `{deviceId, deviceSecret, token}` and the code is immediately invalidated
+   * (single use). Wrong/expired → 403; a wrong code decrements the attempt
+   * budget and burns the code when it hits zero.
+   *
+   * Before M3 this handed back the server-wide bearer token, which meant every
+   * paired device shared one secret and losing a phone meant rotating everyone.
+   * The wire keeps a `token` field carrying the composed `deviceId.secret`
+   * because that is the string the client presents as its Bearer — one value to
+   * store, and the pairing screen keeps working unchanged — but it is now a
+   * per-device credential, not the operator's.
    */
-  private handlePair(res: http.ServerResponse, url: URL): void {
+  private async handlePair(res: http.ServerResponse, url: URL, requestHost: string): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -858,10 +1684,7 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'too many attempts' });
     }
 
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(this.pairCode);
-    const match = a.length === b.length && crypto.timingSafeEqual(a, b);
-    if (!match) {
+    if (!timingSafeEquals(supplied, this.pairCode)) {
       this.pairAttempts -= 1;
       if (this.pairAttempts <= 0) this.pairCode = '';
       return this.json(res, 403, {
@@ -870,32 +1693,136 @@ export class WebTerminalServer {
       });
     }
 
-    // Success: hand over the token exactly once, then burn the code.
-    const token = this.token;
+    // The code is right. Now the transport: a device credential is durable and
+    // never expires, so it must not be handed over in the clear to something
+    // off-machine. Checked HERE and not only at pairStart because the operator
+    // may have restarted the server with `--expose` since the code was minted.
+    // The code is NOT burned — the operator should be able to fix the transport
+    // and use the code they already read out, and a refusal reveals nothing.
+    const refusal = this.mintRefusal();
+    if (refusal) return this.json(res, 403, { error: 'insecure-transport', detail: refusal });
+
+    const devices = this.deps.devices;
+    if (!devices) {
+      // No identity core wired (a daemon that failed to build one). Falling
+      // back to the shared token keeps pairing possible instead of bricking it,
+      // but it is a real downgrade — per-device revocation does not exist on
+      // this server — so say so out loud rather than degrading silently.
+      this.deps.log('warn', '[web] pairing without a device store — issuing the shared operator token');
+      this.burnPairCode();
+      return this.json(res, 200, { token: this.token });
+    }
+
+    let minted: { deviceId: string; deviceSecret: string };
+    try {
+      minted = await devices.mint({ name: this.pendingDeviceName });
+    } catch (err) {
+      // The roster could not be persisted. Do NOT burn the code and do NOT
+      // fall back to the shared token: a credential the daemon cannot
+      // remember is one the operator can never revoke.
+      this.deps.log('error', `[web] device mint failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'pairing failed' });
+    }
+
+    // Success: hand the credential over exactly once, then burn the code.
+    this.burnPairCode();
+    return this.json(res, 200, {
+      deviceId: minted.deviceId,
+      deviceSecret: minted.deviceSecret,
+      token: `${minted.deviceId}${DEVICE_CREDENTIAL_SEP}${minted.deviceSecret}`,
+    });
+  }
+
+  /** Consume the active pairing code (single use) and its pending name. */
+  private burnPairCode(): void {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
-    return this.json(res, 200, { token });
+    this.pendingDeviceName = undefined;
   }
 
   // --- helpers ------------------------------------------------------------
 
   /**
-   * Authenticate an /api/* request against the per-start web token (timing-safe).
-   * `allowQuery` is true ONLY for the SSE stream, which must accept `?token=`
-   * because EventSource cannot set headers; every other endpoint is Bearer-only.
+   * Authenticate an `/api/*` request. Two credential forms, one gate:
+   *
+   *   `Bearer <token>`             the OPERATOR (CLI, GUI, `--status` URLs)
+   *   `Bearer <deviceId>.<secret>` a paired DEVICE
+   *
+   * The operator token is tried first and always timing-safe, so a device
+   * credential that happens to contain a dot cannot be probed against it.
+   * Device lookup is BY ID — the store compares one hash, never a linear scan
+   * over the roster (§2).
+   *
+   * `allowQuery` is true ONLY for the two SSE routes, which must accept
+   * `?token=` because EventSource cannot set headers. That exception is for the
+   * OPERATOR TOKEN ALONE: a device secret is durable and never expires, and a
+   * query string is the one place a credential is guaranteed to be written down
+   * (history, proxy logs, Referer). So a device credential presented in the
+   * query authenticates nothing, on any route.
    */
-  private isAuthed(req: http.IncomingMessage, url: URL, allowQuery: boolean): boolean {
-    if (!this.token) return false;
+  private async authenticate(req: http.IncomingMessage, url: URL, allowQuery: boolean): Promise<AuthOutcome> {
+    if (!this.token) return { ok: false, reason: 'unknown' };
     const header = req.headers['authorization'];
-    const fromHeader = typeof header === 'string' && header.startsWith('Bearer ')
-      ? header.slice('Bearer '.length)
-      : null;
+    const fromHeader =
+      typeof header === 'string' && header.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
     const fromQuery = allowQuery ? url.searchParams.get('token') : null;
-    const supplied = fromHeader ?? fromQuery ?? '';
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(this.token);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
+
+    if (timingSafeEquals(fromHeader ?? fromQuery ?? '', this.token)) {
+      return { ok: true, principal: { kind: 'operator' } };
+    }
+
+    const devices = this.deps.devices;
+    // Header only — see above. `null` here is "no Bearer header at all".
+    const cut = fromHeader ? fromHeader.indexOf(DEVICE_CREDENTIAL_SEP) : -1;
+    if (!devices || cut <= 0) {
+      // No usable header credential. On the SSE routes a device may instead
+      // present a stream TICKET (B3) — the narrow, expiring capability that
+      // exists precisely because EventSource cannot send a header. Checked last
+      // so it can never shadow a real credential, and never on a non-SSE route.
+      const viaTicket = allowQuery ? this.resolveStreamTicket(url.searchParams.get('ticket')) : null;
+      if (viaTicket && viaTicket.kind === 'device') {
+        this.touchDevice(viaTicket.deviceId);
+        return { ok: true, principal: viaTicket };
+      }
+      return { ok: false, reason: 'unknown' };
+    }
+    const deviceId = fromHeader!.slice(0, cut);
+    const secret = fromHeader!.slice(cut + 1);
+    // A credential with NOTHING after the separator is malformed, and refusing
+    // it here is parsing, not comparison: this branch reads only the bytes the
+    // caller sent, never anything stored, so it cannot leak a stored secret's
+    // length or content. The constant-time property §2 asks for lives one layer
+    // down, where the store derives a fixed-length key from an input of ANY
+    // length and reaches the same `timingSafeEqual` every time. Passing a
+    // secret-less credential through instead would buy nothing and would hand
+    // an unauthenticated caller a free KDF derivation per request.
+    if (!secret) return { ok: false, reason: 'unknown' };
+
+    let result: DeviceAuthResult;
+    try {
+      result = await devices.resolve(deviceId, secret);
+    } catch (err) {
+      // A store that cannot answer is not an authorization. Fail closed, and
+      // never turn an auth failure into a 500 on the route behind it.
+      this.deps.log('warn', `[web] device auth failed: ${errMsg(err)}`);
+      return { ok: false, reason: 'unknown' };
+    }
+    if (!result.ok) return { ok: false, reason: result.reason };
+    this.touchDevice(result.deviceId);
+    return {
+      ok: true,
+      principal: { kind: 'device', deviceId: result.deviceId, ...(result.name ? { name: result.name } : {}) },
+    };
+  }
+
+  /** Report a device's activity to the roster. Bookkeeping — never fatal. */
+  private touchDevice(deviceId: string): void {
+    try {
+      this.deps.devices?.touch?.(deviceId);
+    } catch (err) {
+      this.deps.log('warn', `[web] device touch failed: ${errMsg(err)}`);
+    }
   }
 
   /**
@@ -905,13 +1832,23 @@ export class WebTerminalServer {
    *     terminal and redress clicks into a pane (worse with `--allow-input`);
    *   - `nosniff`, so nothing is re-interpreted as an executable type;
    *   - `no-referrer`, which also keeps the SSE URL's `?token=` (the one route
-   *     that must carry it) out of any outbound Referer.
+   *     that must carry it) out of any outbound Referer;
+   *   - the full CSP, which used to be `frame-ancestors 'none'` alone. That was
+   *     defensible only while the credential an XSS could steal expired at the
+   *     next restart; M3 made credentials durable, so `script-src` pinned to the
+   *     inlined bundle's hashes is now part of what makes them safe to hand out.
+   *     See webCsp.ts for how the hashes are derived and why `style-src` is the
+   *     one directive that is not hash-pinned.
    */
   private securityHeaders(): Record<string, string> {
     return {
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
+      // Baseline only. The full policy — script hashes and all — rides the HTML
+      // response, which is the only thing that executes; #612 made that call
+      // and it is the right one, because the alternative puts ~250 bytes of
+      // hashes on every JSON reply, and a phone typing pays that per keystroke.
       'Content-Security-Policy': "frame-ancestors 'none'",
     };
   }
@@ -952,15 +1889,39 @@ export class WebTerminalServer {
     const { host, port } = this.opts;
     const token = this.token;
     const suffix = `:${port}/?token=${token}`;
+    // A named TLS front comes FIRST, because it is the address that actually
+    // works from a phone. `wmux web --tailscale` binds loopback and lets
+    // `tailscale serve` terminate HTTPS, so without this the only thing
+    // `--status` could print for that setup was `http://127.0.0.1:<port>`,
+    // which is useless on the device the whole feature exists for.
+    //
+    // No port: a front is named because it terminates TLS on 443. An operator
+    // who fronted on another port writes it into `--allow-host` themselves and
+    // it rides through verbatim.
+    const fronted = this.frontedHosts().map((h) => `https://${h}/?token=${token}`);
     // When bound to all interfaces, enumerate concrete reachable addresses so
     // the operator can pick their tailnet IP; otherwise report the bind host.
     if (host === '0.0.0.0' || host === '::') {
       const addrs = collectIpv4();
       const urls = addrs.map((a) => `http://${a}${suffix}`);
       urls.push(`http://127.0.0.1${suffix}`);
-      return urls;
+      return [...fronted, ...urls];
     }
-    return [`http://${urlAuthority(host)}${suffix}`];
+    return [...fronted, `http://${urlAuthority(host)}${suffix}`];
+  }
+
+  /**
+   * The TLS fronts the operator named with `--allow-host`, normalized the same
+   * way the Host gate normalizes them so the two cannot disagree.
+   *
+   * Only the operator-supplied extras — never the loopback names and local IPs
+   * the server adds to `allowedHosts` for the rebinding check, which are not
+   * fronts and would each produce an `https://` URL that answers nothing.
+   */
+  private frontedHosts(): string[] {
+    return (this.opts?.allowedHosts ?? [])
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
   }
 
   private loadAssets(): void {
@@ -969,7 +1930,18 @@ export class WebTerminalServer {
     this.manifest = readIfExists(path.join(dir, 'manifest.webmanifest'));
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
-    this.htmlCsp = this.terminalHtml ? buildHtmlCsp(this.terminalHtml.toString('utf8')) : '';
+    // Derived from the page we just loaded, once per start rather than per
+    // request: hashing 583 KB on the way out of every response would be a real
+    // cost for a header that cannot change while the process runs.
+    //
+    // This supersedes #612's buildHtmlCsp, which computed the same policy but
+    // hashed the file's raw bytes. The HTML parser rewrites CRLF to LF before
+    // the tokenizer runs, so a page built from a Windows checkout — where the
+    // frontend sources carry CRLF — produced hashes matching nothing the
+    // browser would compute, and every inline block was refused: a blank
+    // terminal. Verified in a real browser both ways; buildWebCsp normalizes
+    // first.
+    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null);
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
     }
@@ -978,40 +1950,6 @@ export class WebTerminalServer {
 
 // === module helpers =========================================================
 
-/**
- * The full Content-Security-Policy for the terminal page (#608).
- *
- * The build inlines every script into terminal.html, so the policy carries a
- * `sha256-` hash per inline `<script>` block instead of `'unsafe-inline'`.
- * Hashes are computed here, from the exact bytes being served, rather than in
- * `build-daemon-web.mjs` — the two can then never drift apart. The directive
- * that matters most is `connect-src 'self'`: even if a future regression
- * reintroduced an XSS, the injected script could not send the token anywhere.
- *
- * `style-src` keeps `'unsafe-inline'`: xterm.js manages styles dynamically and
- * a style injection cannot exfiltrate the token. `worker-src 'self'` admits the
- * service worker, which `default-src 'none'` would otherwise block.
- */
-export function buildHtmlCsp(html: string): string {
-  const hashes: string[] = [];
-  const re = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
-  for (let m = re.exec(html); m; m = re.exec(html)) {
-    if (!m[1]) continue; // e.g. <script src=...></script> — covered by 'self'
-    hashes.push(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
-  }
-  return [
-    "default-src 'none'",
-    `script-src 'self'${hashes.length ? ` ${hashes.join(' ')}` : ''}`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    "connect-src 'self'",
-    "manifest-src 'self'",
-    "worker-src 'self'",
-    "frame-ancestors 'none'",
-    "base-uri 'none'",
-    "form-action 'self'",
-  ].join('; ');
-}
 
 /**
  * One SSE frame. `id` is optional and emitted only on the attention stream —
@@ -1072,6 +2010,60 @@ function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';
   return workspace ? { workspace } : {};
+}
+
+/**
+ * The projection of an approval record that reaches a browser.
+ *
+ * Field-by-field on purpose, exactly like `workspaceLabelOf`: the registry is
+ * daemon-internal and free to grow fields (resolved keystrokes, pane env, the
+ * hook envelope it was built from), and none of those should reach the network
+ * because someone added them upstream. What is here is what a human needs to
+ * decide: which pane, which agent, what was asked, what was on screen, and how
+ * it ended.
+ *
+ * `question` / `options` are AGENT-AUTHORED TEXT (extracted from the
+ * AskUserQuestion tool_input), the same trust class as `screenTail`: safe to
+ * transport, never safe to render unescaped, and `options` is not a closed set
+ * anything security-relevant may key on — the keystroke map, not this list,
+ * decides what a decision sends.
+ */
+function approvalWire(r: ApprovalRequest): Record<string, unknown> {
+  return {
+    id: r.id,
+    sessionId: r.sessionId,
+    agent: r.agent,
+    kind: r.kind,
+    state: r.state,
+    createdAt: r.createdAt,
+    ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+    // Presence-checked, not truthiness-checked: an empty question or an empty
+    // options list is a fact the registry recorded, not a missing field.
+    ...(typeof r.question === 'string' ? { question: r.question } : {}),
+    ...(Array.isArray(r.options) ? { options: r.options } : {}),
+    ...(r.screenTail ? { screenTail: r.screenTail } : {}),
+    ...(r.decision ? { decision: r.decision } : {}),
+    ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+    ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+  };
+}
+
+/**
+ * Compare two secrets without leaking WHERE they differ. The length check is a
+ * timingSafeEqual precondition (it throws on a mismatch), so credential length
+ * remains observable — as it was before M3, and as it is for every bearer
+ * scheme that does not pad.
+ */
+function timingSafeEquals(supplied: string, expected: string): boolean {
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Addresses/names that never leave the machine. */
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || h === '127.0.0.1' || h.startsWith('127.');
 }
 
 function readIfExists(p: string): Buffer | null {

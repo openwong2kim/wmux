@@ -47,6 +47,12 @@ import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
+import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { PushSender } from './push/PushSender';
+import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { DeviceStore } from './web/DeviceStore';
+import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
+import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
@@ -56,6 +62,81 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 // OR restoreWebServer() replays an operator's earlier "yes, serve this" (#596).
 // Module-scoped so the shutdown() path can tear it down too.
 let webTerminalServer: WebTerminalServer | null = null;
+
+// M1 — hook ingest. Owns the ONE HookSignalRouter ledger in this process, so
+// both the hook RPC (registerRpcHandlers) and the detector broadcast site
+// (wireEvents) arbitrate against the same dedup state. Module-scoped because
+// those two live in separate functions; registerRpcHandlers runs first and
+// constructs it.
+let hookIngest: HookIngest | null = null;
+
+// M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
+// as the servers above: both WebTerminalServer construction paths inject it, and
+// the daemon.web.device* RPCs operate on the same roster. Built lazily by
+// getDeviceStore() rather than at import time, because the constructor reads
+// devices.json off disk and module init must stay free of IO.
+let deviceStore: DeviceStore | null = null;
+
+/**
+ * The one device roster in this process. A second instance would be a second
+ * in-memory view of the same file: a revoke applied to one would leave the
+ * other still authenticating that device until the next restart.
+ */
+function getDeviceStore(): DeviceStore {
+  if (!deviceStore) {
+    deviceStore = new DeviceStore({ wmuxDir, log: (level, msg) => log(level, msg) });
+  }
+  return deviceStore;
+}
+
+// M2 — approval registry. Module-scoped for the same reason as the two above:
+// the hook ingest creates requests, the daemon.approvals.* RPCs read and
+// resolve them, and the web server (started either by registerRpcHandlers or by
+// the boot restore) subscribes to its events — three call sites in three
+// functions, one registry. Constructed in main() BEFORE any of them, because
+// both webTerminalServer construction paths need it available.
+let approvalRegistry: ApprovalRegistry | null = null;
+
+/**
+ * Build the registry. Split out of main() only so the two dependencies that
+ * need a live sessionManager can be closures over it.
+ *
+ * `readScreenTail` runs the SAME headless-terminal parse `daemon.readSessionText`
+ * uses, with `scrollback: 0` so it returns the VISIBLE grid and nothing else.
+ * The raw ring is PTY bytes and a TUI redraws in place, so ANSI-stripping the
+ * ring would describe a screen that never existed — the parse is the only
+ * honest answer to "what is on screen right now", and this is the check that
+ * stands between a phone tap and a keystroke in someone's terminal. It is
+ * human-frequency (one per approval) and shares the concurrency-1 snapshot
+ * queue, so the cost is bounded; a parse that fails or times out returns null,
+ * which the registry treats as no evidence and refuses.
+ */
+function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
+  return new ApprovalRegistry({
+    wmuxDir,
+    readScreenTail: async (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      const outcome = await generateTextSnapshot({
+        // Same dims backstop as daemon.readSessionText: a recovered session may
+        // not have real dims yet, and a 0-wide headless terminal fails soft.
+        cols: managed.meta.cols ?? 80,
+        rows: managed.meta.rows ?? 24,
+        scrollback: 0,
+        initial: managed.ringBuffer.readAll(),
+      });
+      if (!outcome.ok) return null;
+      return outcome.rows.map((r) => r.text);
+    },
+    writeToSession: (sessionId, data) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return false;
+      managed.ptyProcess.write(data);
+      return true;
+    },
+    log: (level, message) => log(level, message),
+  });
+}
 
 /**
  * In-flight boot restore (#596). Every operator-driven web RPC waits on it, so
@@ -109,6 +190,15 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         sessionManager,
         assetsDir: resolveWebAssetsDir(),
         log: (level, msg) => log(level, msg),
+        // M3 — without this, /pair degrades to handing out the shared operator
+        // token and nothing is individually revocable. Injected at BOTH
+        // construction sites: a restored server serves paired phones on their
+        // own credentials, exactly like one the operator just started.
+        devices: getDeviceStore(),
+        // M2 — /api/approvals answers 503 without this. Safe at both
+        // construction sites: main() builds the registry before it registers
+        // RPC handlers and before it kicks off this restore.
+        ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
       });
     }
     const info = await webTerminalServer.start({
@@ -1758,6 +1848,11 @@ function registerRpcHandlers(
       sessionManager,
       assetsDir: resolveWebAssetsDir(),
       log: (level, msg) => log(level, msg),
+      // M3 — see the restore path for why the roster is injected at both sites.
+      devices: getDeviceStore(),
+      // M2 — see the restore path: the approval routes need the registry, and
+      // it exists by the time either site runs.
+      ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
     });
   }
   const webServer = webTerminalServer;
@@ -1793,6 +1888,30 @@ function registerRpcHandlers(
     // is the deliberate rotation escape hatch (revoke every paired device).
     const previous = loadWebState(wmuxDir);
     const token = p.newToken === true ? undefined : previous.token || undefined;
+    if (p.newToken === true) {
+      // Rotation has to take the PAIRED DEVICES with it, not just the operator
+      // token. Before per-device credentials that was automatic — every phone
+      // held the operator token — but a device now authenticates on its own
+      // `deviceId.secret`, which a new operator token does not touch. Without
+      // this the CLI's own help ("revoking every device already paired") would
+      // be false and the operator would stop worrying about a phone that still
+      // works.
+      //
+      // Roster FIRST, then cut the streams: an established SSE never
+      // re-authenticates, so revoking alone would leave a revoked phone
+      // watching panes on the connection it already holds.
+      const revocation = getDeviceStore().revokeAll();
+      for (const deviceId of revocation.revoked) webServer.disconnectDevice(deviceId);
+      if (!revocation.ok) {
+        // Fail the rotation rather than report a half-done one. The devices are
+        // blocked in this process, but a restart would bring them back and the
+        // operator would never know.
+        throw new Error(
+          'the operator token was not rotated: the device roster could not be written, ' +
+            'so the paired devices could not be durably revoked',
+        );
+      }
+    }
     const info = await webServer.start({ port, host, allowInput, allowedHosts, token });
     persistWebState(info, allowedHosts);
     return info;
@@ -1820,6 +1939,42 @@ function registerRpcHandlers(
     return webServer.refreshPairCode();
   });
 
+  // M3 — per-device credentials. Same class of token-only string method as the
+  // rest of daemon.web.*: deliberately NOT in the RpcMethod union or
+  // methodCapabilityMap, so they add no gen-api-reference surface. These three
+  // are the whole operator surface for the roster — the GUI Settings UI is
+  // M6-adjacent and out of scope; these RPCs are the seam it will call.
+  //
+  // All three wait on the boot restore for the reason the comment above gives:
+  // an operator RPC that lands mid-restore must not race the restore's own bind.
+  pipeServer.onRpc('daemon.web.pairStart', async (params) => {
+    await afterRestore();
+    const name = typeof params['name'] === 'string' ? params['name'].trim() : '';
+    // Naming is REQUIRED here rather than defaulted, and this is the layer that
+    // enforces it: the operator is present at exactly this moment, and a roster
+    // of unnamed devices cannot be operated — "which of these three do I
+    // revoke" has no answer six months later. The server tolerates an absent
+    // name (it has to; the pre-M3 pairing path still exists), so the
+    // requirement lives at the operator seam.
+    if (!name) return { ok: false, error: 'a device name is required to pair' };
+    return webServer.startPairing({ name });
+  });
+
+  pipeServer.onRpc('daemon.web.deviceList', async () => {
+    await afterRestore();
+    return { devices: getDeviceStore().list() };
+  });
+
+  pipeServer.onRpc('daemon.web.deviceRevoke', async (params) => {
+    await afterRestore();
+    const deviceId = typeof params['deviceId'] === 'string' ? params['deviceId'] : '';
+    // Ordering lives in revokeDeviceAndDisconnect (persist first, then cut the
+    // live streams — and cut them even when the write failed, because an
+    // established SSE never re-authenticates). Extracted so the three branches
+    // are unit-testable without a daemon; see its tests.
+    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer);
+  });
+
   // X8 supervision control — renderer-only surface (main IPC → daemon).
   // External pipe clients are blocked upstream by the 'wmux.internal'
   // capability gate; nobody but the user re-arms a tripped runaway guard.
@@ -1840,10 +1995,16 @@ function registerRpcHandlers(
   // permission-mode transition, exactly like lastDetectedAgent (X6 ②). The
   // SIGKILL-survival rule is the whole point: the binding must be on disk before
   // a reboot, and a reboot fires no exit hook.
-  pipeServer.onRpc('daemon.setResumeBinding', async (params) => {
-    const p = params as unknown as DaemonSetResumeBindingParams;
-    const managed = sessionManager.getSession(p.id);
-    if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
+  //
+  // Extracted from the RPC body so the daemon-side hook ingest (M1) can make
+  // the SAME capture as a plain local call: after M1 the bridge reaches the
+  // daemon directly and main never sees the signal, so this must not stay
+  // reachable only over the wire. Returns false when there is nothing to
+  // apply (dead session / empty binding) — the callers report it differently.
+  const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
+    const managed = sessionManager.getSession(id);
+    if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
+    const p = { id, resumeBinding };
     // Resume-chip edge trigger: a hook reaching this RPC proves claude is
     // running in the pane RIGHT NOW — attach the process watch (no-op while a
     // live watch exists, so hook storms cost nothing). Runs before the
@@ -1856,7 +2017,7 @@ function registerRpcHandlers(
     // not replace the durable exact id. The spool ingest already does this; mirror
     // it on the live path so a reboot can't resume the wrong conversation.
     if (prev && typeof p.resumeBinding.ts === 'number' && p.resumeBinding.ts < prev.ts) {
-      return { ok: true };
+      return true;
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
     // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
@@ -1865,7 +2026,7 @@ function registerRpcHandlers(
     // then `--resume <wrong id>`.
     if (prev && prev.transcriptPath && !p.resumeBinding.transcriptPath
         && prev.sessionId !== p.resumeBinding.sessionId) {
-      return { ok: true };
+      return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
@@ -1896,7 +2057,83 @@ function registerRpcHandlers(
     if (durableChange) {
       stateWriter.saveImmediate(buildState(sessionManager));
     }
-    return { ok: true };
+    return true;
+  };
+
+  pipeServer.onRpc('daemon.setResumeBinding', async (params) => {
+    const p = params as unknown as DaemonSetResumeBindingParams;
+    return { ok: applyResumeBinding(p.id, p.resumeBinding) };
+  });
+
+  // M1 — daemon.hooks.signal. The hook bridge's daemon-first target: the
+  // daemon is the always-on process, so a Stop signal lands here with the GUI
+  // closed, and hook-vs-detector dedup becomes local to one process instead of
+  // a cross-process race. Token-only string method in the same class as
+  // daemon.web.* / daemon.serializeSession — deliberately NOT in the RpcMethod
+  // union or methodCapabilityMap, so it adds no gen-api-reference surface.
+  //
+  // Params are the existing AgentSignal envelope, response the existing
+  // HookSignalResponse — both validated inside HookIngest, which never throws
+  // (the bridge runs on a 2s budget inside the agent's process and treats an
+  // RPC error as a fatal hook).
+  if (!hookIngest) {
+    hookIngest = new HookIngest({
+      listLiveSessions: () => sessionManager.listLiveSessions(),
+      emitAgentEvent: (sessionId, data) => {
+        const event: DaemonEvent = { type: 'agent.event', sessionId, data };
+        pipeServer.broadcast(event);
+      },
+      applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
+      log: (level, message) => log(level, message),
+      // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
+      // approval request. Wired here, on the daemon-internal path, because this
+      // is where provenance and the dedup decision are both already known.
+      ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+    });
+  }
+  const ingest = hookIngest;
+  pipeServer.onRpc('daemon.hooks.signal', async (params) => ingest.handle(params));
+  // A2 — signal-health readout for the Settings "Plugin signal health" card.
+  // Main's own meter goes dark once the bridge targets the daemon directly, so
+  // the card has to poll the daemon instead. Read-only and non-destructive; see
+  // HookIngest.health for the two time bases in the payload.
+  pipeServer.onRpc('daemon.hooks.health', async () => ingest.health());
+
+  // M2 — daemon.approvals.*. Same class of token-only string method as
+  // daemon.web.* / daemon.hooks.*: deliberately NOT in the RpcMethod union or
+  // methodCapabilityMap, so they add no gen-api-reference surface. These are the
+  // seam the desktop/deck UI will use later; M2 ships only the daemon + web
+  // halves.
+  //
+  // The registry is optional at this point only for defensive reasons (main()
+  // constructs it before we run). With no registry the honest answers are an
+  // empty list and a 'not-found' resolve — never a thrown RPC, because both
+  // callers have to turn this into a status code.
+  pipeServer.onRpc('daemon.approvals.list', async () =>
+    approvalRegistry?.list() ?? { pending: [], recentlyResolved: [] });
+
+  pipeServer.onRpc('daemon.approvals.resolve', async (params) => {
+    const p = params as unknown as {
+      id?: unknown;
+      decision?: unknown;
+      resolvedBy?: unknown;
+    };
+    const id = typeof p.id === 'string' ? p.id : '';
+    // Anything that is not exactly one of the two decisions is refused rather
+    // than defaulted: guessing between "approve" and "deny" on a pipe client's
+    // typo is not a recoverable mistake.
+    const decision: ApprovalDecision | null =
+      p.decision === 'approve' || p.decision === 'deny' ? p.decision : null;
+    if (!id || !decision) {
+      return { ok: false, reason: 'not-found' };
+    }
+    // Bounded and stripped by the registry (sanitizeResolvedBy) — this field is
+    // persisted, logged, and echoed back to a racing client, so an authenticated
+    // pipe client must not be able to send an unbounded or control-character
+    // string through it.
+    const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
+    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
+    return approvalRegistry.resolve({ id, decision, resolvedBy });
   });
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
@@ -2888,6 +3125,10 @@ function wireEvents(
     log('info', `[lifecycle] session:died id=${payload.id} reason=${payload.reason ?? 'pty-exit'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} liveTotal=${sessionManager.listSessions().length}`);
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop a stale resume hint
     recoveredResumeBindings.delete(payload.id); // X6 ③: ...and its exact binding (id reuse, CodeRabbit)
+    // M1: drop the dedup ledger + hook authority for the dead pane. Without
+    // this the ledger accrues dead-id entries over a long daemon lifetime, and
+    // a reused id would inherit a hook veto that suppresses its detector.
+    hookIngest?.dropPty(payload.id);
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -3131,10 +3372,18 @@ function wireEvents(
       // which has no hooks (the setResumeBinding arm never fires for it).
       if (managed) agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
     }
+    // M1: the daemon owns hook-vs-detector arbitration now — the hook lands
+    // here, not in main, so main can no longer run it and reads the outcome
+    // off the payload instead (see HookIngest.arbitrateDetector for the
+    // semantics, which are a straight port of main's DaemonNotificationRouter).
+    // Before registerRpcHandlers has run there is no ingest and nothing to
+    // arbitrate against; the bare tag is the legacy always-emit behavior.
+    const arbitration: HookArbitration =
+      hookIngest?.arbitrateDetector(payload.sessionId, payload.event) ?? { source: 'detector' };
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,
-      data: payload.event,
+      data: { ...payload.event, ...arbitration },
     };
     pipeServer.broadcast(event);
   });
@@ -3219,6 +3468,7 @@ function wireEvents(
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
+    hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
@@ -3404,6 +3654,11 @@ async function shutdown(
       /* ignore — never block shutdown on the optional web server */
     }
   }
+
+  // Stop the hook flood logger. Its timer is unref'd so it never held the
+  // process open; clearing it just keeps a shutdown from logging one last
+  // rolling summary on the way out.
+  hookIngest?.dispose();
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.
@@ -3633,6 +3888,46 @@ async function main(): Promise<void> {
   sessionManager.setInvoluntaryExitClassifier((exitCode) =>
     isShutdownKillExit(exitCode, { platform: process.platform, shuttingDown }),
   );
+  // M2 — approvals. Constructed HERE, before recoverSessions and before either
+  // path that can build the web server, for two reasons: every consumer reads
+  // the module-scoped handle rather than taking it as a parameter, and the
+  // constructor's load INVALIDATES every pending request that survived to disk.
+  // That invalidation has to happen before recovery re-spawns the panes — a
+  // recovered session is a new PTY running a new agent process, so a remembered
+  // approval would press a key into a program that never asked the question.
+  approvalRegistry = createApprovalRegistry(sessionManager);
+
+  // Push. Inert unless a relay is configured, which is the normal state until
+  // the relay is deployed — an unconfigured install must not log a failure per
+  // notification. `WMUX_PUSH=0` turns it off outright.
+  //
+  // Subscribed to the registry rather than called from the hook path: the
+  // bridge runs on a 2s budget inside the agent's process and must never wait
+  // on us, and `notify` is fire-and-forget by construction.
+  const pushSender = new PushSender({
+    ...(process.env.WMUX_PUSH_RELAY_URL ? { relayUrl: process.env.WMUX_PUSH_RELAY_URL } : {}),
+    ...(process.env.WMUX_PUSH_RELAY_SECRET ? { relaySecret: process.env.WMUX_PUSH_RELAY_SECRET } : {}),
+    targets: () => getDeviceStore().pushTargets(),
+    forgetPush: (deviceId) => getDeviceStore().forgetPush(deviceId),
+    log: (level, msg) => log(level, msg),
+  });
+  approvalRegistry.onEvent((event) => {
+    // Only a NEW request is worth a phone buzzing. A resolve or an expire is
+    // the thing the notification was asking for, already handled.
+    if (event.type !== 'create') return;
+    const r = event.request;
+    pushSender.notify(
+      {
+        title: 'Approval needed',
+        body: r.question ?? 'A pane is waiting on an answer.',
+        approvalId: r.id,
+        sessionId: r.sessionId,
+      },
+      // One pending request per pane, so a re-prompt should replace the old
+      // banner rather than stack under it.
+      { collapseId: `ap-${r.sessionId}`.slice(0, 64) },
+    );
+  });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event

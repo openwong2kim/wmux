@@ -1,0 +1,19 @@
+{
+  "name": "wmux-push-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless, blind APNs forwarder for wmux daemons (Cloudflare Worker)",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:sandbox": "wrangler deploy --env sandbox",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.0.0"
+  }
+}

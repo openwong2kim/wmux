@@ -42,6 +42,7 @@ The exact contract. Look things up here; do not read top to bottom.
 Background and design rationale — why the substrate is shaped the way it is.
 
 - [`PROTOCOL.md`](./PROTOCOL.md) — the substrate contract: PaneMetadata semantics, the event-bus model, the named-pipe security model, the identity model, and daemon lifecycle.
+- [`phone-client-contract.md`](./phone-client-contract.md) — everything a phone client implements against `wmux web`: pairing, per-device credentials, stream tickets, the attention cursor, the approvals API, and the sealed push envelope.
 - [`internal/m0-design.md`](./internal/m0-design.md) — the transaction-aware MetadataStore design (optimistic concurrency, snapshot envelope).
 - [`internal/path-D-inventory.md`](./internal/path-D-inventory.md) — the workspace-identity resolution paths and the non-deterministic fallback being removed.
 - [`internal/scrollback-restore-design.md`](./internal/scrollback-restore-design.md) — terminal scrollback persistence and restore.

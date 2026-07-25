@@ -35,6 +35,13 @@ export interface WebTerminalInfo {
   pairCode?: string;
   pairExpiresAt?: number;
   /**
+   * Whether per-device credentials are armed (M3). False means pairing hands
+   * out the shared token as 3.34.0 shipped it and there is nothing to revoke
+   * one device at a time — an operator must never believe revocation is
+   * available when it is not, so every status surface says so out loud.
+   */
+  deviceCredentials?: boolean;
+  /**
    * Set ONLY by the main-process handler when it could not reach the daemon
    * (no control pipe, or the RPC threw/timed out). Absent on a normal reply.
    */

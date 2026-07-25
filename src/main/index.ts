@@ -1100,7 +1100,18 @@ app.on('ready', async () => {
       // and this router translates them into the same renderer-facing
       // IPC signals PTYBridge produces in local mode.
       daemonNotificationRouter?.stop();
-      daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow, () => hookSignalRouter);
+      // M1: onClaudeTurnEnd rides along because a hook signal may now reach the
+      // daemon without ever passing through registerHooksRpc — the router is the
+      // only place left that sees the turn end. (`now` / `getMirror` keep their
+      // defaults.)
+      daemonNotificationRouter = new DaemonNotificationRouter(
+        client,
+        () => mainWindow,
+        () => hookSignalRouter,
+        undefined,
+        undefined,
+        onClaudeTurnEnd,
+      );
       daemonNotificationRouter.start();
       // LanLink PR-2 — mount the remote-inbox cursor-pull bridge. On every
       // (re)connect it pulls the daemon's durable inbox from its retained cursor

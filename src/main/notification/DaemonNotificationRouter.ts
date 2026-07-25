@@ -7,7 +7,17 @@ import { dispatchNotification } from './dispatchNotification';
 import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { eventBus } from '../events/EventBus';
-import { findWorkspaceIdForPty, STALE_TRUST_MS } from '../pipe/handlers/hooks.rpc';
+import {
+  findWorkspaceIdForPty,
+  STALE_TRUST_MS,
+  ACTIVITY_THROTTLE_MS,
+  activityFromSignalPayload,
+  buildTurnBoundaryMetadata,
+  createLeadingEdgeThrottle,
+  readStopMessage,
+} from '../pipe/handlers/hooks.rpc';
+import type { AgentSignal } from '../../shared/hooks/signal-types';
+import type { AgentLastMessage } from '../../shared/events';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { agentDisplayToSlug } from '../pty/AgentDetector';
@@ -21,6 +31,77 @@ interface AgentEventPayload {
   agent: string;
   status: AgentStatus;
   message: string;
+  /**
+   * M1: which emitter produced this event, stamped by the daemon once hook
+   * ingest moved there. Its presence means the daemon ALREADY arbitrated
+   * hook-vs-detector against its own ledger, so main must not re-run its own
+   * (see arbitratedSource). Absent on events from a pre-M1 daemon.
+   */
+  source?: 'hook' | 'detector';
+  /** Original AgentSignal kind, only on `source:'hook'` events. */
+  hookKind?: string;
+  /**
+   * The daemon's arbitration verdict for this turn (emit-class statuses only):
+   *   'emit'     — fan out the notification and the lifecycle tee
+   *   'dedup'    — the other source already covered the turn: tee only, no toast
+   *   'veto'     — hook-governed pane, detector-sourced: status dot only
+   *   'activity' — a per-tool-call ping (PostToolUse): Fleet View activity line
+   *                only, never a toast and never a lifecycle tee
+   * Absent when the daemon could not arbitrate (unknown agent), which means
+   * the pre-ledger always-emit behavior.
+   */
+  decision?: 'emit' | 'dedup' | 'veto' | 'activity';
+  /**
+   * The validated envelope the daemon ingested, present on hook-sourced events
+   * only. Main replays off it the side effects its own `hooks.signal` handler
+   * used to run from its copy of the signal — Fleet View activity line, turn
+   * boundary metadata, the lifecycle tee's `lastMessage`, and the M2 turn-end
+   * probe — so a bridge that reaches the daemon directly loses none of them.
+   */
+  signal?: AgentSignal;
+}
+
+/**
+ * Read the daemon's arbitration stamp off a `session:agent` payload.
+ *
+ * Returns null for a pre-M1 daemon (no `source` field), which keeps the
+ * legacy behavior: main runs the hook-authority veto and writes the detector
+ * ledger itself. A stamped event means arbitration already happened in the
+ * daemon — one process, one ledger — and main is only the presentation layer.
+ */
+function arbitratedSource(ev: AgentEventPayload): 'hook' | 'detector' | null {
+  return ev.source === 'hook' || ev.source === 'detector' ? ev.source : null;
+}
+
+/**
+ * The daemon's verdict, defaulted to 'emit'. A stamped event with no decision
+ * is one the daemon could not arbitrate (unknown agent display name), and the
+ * behavior main assumed before any ledger existed was to always emit.
+ */
+function arbitratedDecision(ev: AgentEventPayload): 'emit' | 'dedup' | 'veto' | 'activity' {
+  return ev.decision === 'dedup' || ev.decision === 'veto' || ev.decision === 'activity'
+    ? ev.decision
+    : 'emit';
+}
+
+/** Lifecycle kinds a `session:agent` event may carry. */
+type AgentLifecycleKind = 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input';
+
+/**
+ * Kind for the lifecycle tee. A hook-sourced event carries the ORIGINAL signal
+ * kind, which is the only way `agent.subagent_stop` survives the trip (the
+ * detector's status vocabulary cannot express it); anything else falls back to
+ * the status mapping the detector path has always used.
+ */
+function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
+  if (
+    ev.hookKind === 'agent.stop'
+    || ev.hookKind === 'agent.subagent_stop'
+    || ev.hookKind === 'agent.awaiting_input'
+  ) {
+    return ev.hookKind;
+  }
+  return ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
 }
 
 interface CriticalEventPayload {
@@ -88,6 +169,12 @@ export class DaemonNotificationRouter {
    */
   private lastAgentNameByPty = new Map<string, string>();
   private workspaceCache: { value: WorkspaceListEntry[]; ts: number } | null = null;
+  /**
+   * Fleet View activity rate limit for the hook-activity replay. Same window as
+   * the local handler's (ACTIVITY_THROTTLE_MS) so a pane's activity line is
+   * throttled identically whichever path serves it. Cleared wholesale in stop().
+   */
+  private activityThrottle = createLeadingEdgeThrottle(ACTIVITY_THROTTLE_MS);
 
   constructor(
     private daemonClient: DaemonClient,
@@ -104,6 +191,11 @@ export class DaemonNotificationRouter {
     // before the cached round-trip so a resolvable ptyId never touches the
     // renderer. Injected (default the singleton) for testability.
     private getMirror: () => Pick<WorkspaceMirror, 'peek'> = getWorkspaceMirror,
+    // M1: fired once per hook-sourced claude `agent.stop` that the daemon
+    // arbitrated, carrying the workspace that owns the pane. Same callback
+    // main passes to registerHooksRpc — after M1 the signal may never reach
+    // that handler, so this is the daemon-path twin of its M2 usage probe.
+    private onClaudeTurnEnd?: (workspaceId: string) => void,
   ) {}
 
   /**
@@ -179,11 +271,25 @@ export class DaemonNotificationRouter {
    *
    * No throw path — daemon notification flow is best-effort and a tee
    * failure must never break the toast/sidebar update.
+   *
+   * `arbitrated` (M1) carries the daemon's own `source` + verdict when it
+   * stamped one. For those events the ledger is NOT written here: the daemon
+   * already ran `recordHook`/`recordDetector` against its ledger, so a second
+   * write in main would dedup the NEXT signal of the same kind against a
+   * decision that was already made.
    */
   private async emitDetectorLifecycle(
     ptyId: string,
     agentName: string,
-    kind: 'agent.stop' | 'agent.awaiting_input' = 'agent.stop',
+    kind: AgentLifecycleKind = 'agent.stop',
+    arbitrated: {
+      source: 'hook' | 'detector';
+      decision: 'emit' | 'dedup';
+      /** Transcript tail for a turn-end wake; hook-sourced `agent.stop` only. */
+      lastMessage?: AgentLastMessage | null;
+      /** The ingested envelope, for side effects keyed on the original kind. */
+      signal?: AgentSignal | null;
+    } | null = null,
   ): Promise<void> {
     try {
       const slug = agentDisplayToSlug(agentName);
@@ -192,9 +298,11 @@ export class DaemonNotificationRouter {
       // recordDetector is cheap (in-memory Map ops); it must precede the
       // ~50-200ms workspace.list round-trip to match local-mode semantics.
       const hookRouter = this.getHookRouter?.() ?? null;
-      const decision = hookRouter
-        ? hookRouter.recordDetector(slug, kind, ptyId)
-        : 'emit';
+      const decision = arbitrated
+        ? arbitrated.decision
+        : hookRouter
+          ? hookRouter.recordDetector(slug, kind, ptyId)
+          : 'emit';
       // Now do the workspace lookup. If it fails or returns null we drop
       // the event entirely (event without scope = wrong subscriber routing)
       // but the ledger write already happened — a subsequent hook for the
@@ -206,10 +314,24 @@ export class DaemonNotificationRouter {
         workspaceId,
         ptyId,
         kind,
-        source: 'detector',
+        source: arbitrated?.source ?? 'detector',
         agent: slug,
         decision,
+        // Attach the pane's closing words to a turn-end wake. Without this the
+        // orchestrator receives "pane stopped" and nothing else, so its only way
+        // to tell "finished" from "blocked on a question" is to read the
+        // rendered terminal — where an agent's printed proposal is
+        // indistinguishable from text pending in its input box.
+        ...(arbitrated?.lastMessage ? { lastMessage: arbitrated.lastMessage } : {}),
       });
+      // M1 replay — M2 usage probe. A claude turn just ended in this workspace,
+      // so the usage number for its bound account may have moved. Fires on BOTH
+      // emit and dedup (the turn genuinely ended regardless of which source won
+      // the toast), matching the local handler's gate exactly.
+      const endedSignal = arbitrated?.signal;
+      if (endedSignal && endedSignal.kind === 'agent.stop' && endedSignal.agent === 'claude') {
+        this.onClaudeTurnEnd?.(workspaceId);
+      }
     } catch (err) {
       console.warn('[DaemonNotificationRouter] emitDetectorLifecycle error:', err);
     }
@@ -535,6 +657,56 @@ export class DaemonNotificationRouter {
         const win = this.getWindow();
         const ev = payload.event as AgentEventPayload;
         if (!ev || typeof ev !== 'object') return;
+
+        // M1 replay — the metadata-only hook kinds (`decision:'activity'`).
+        // None of them are emit-class: no toast, no lifecycle tee, no dedup
+        // ledger, only the metadata funnel the renderer already consumes. Main's
+        // own handler did this off its copy of the signal; once the bridge
+        // reaches the daemon directly this is the only path left, so it replays
+        // off the envelope the daemon ships. Handled BEFORE the status broadcast
+        // below and returning early so a tool-heavy turn produces ONE throttled
+        // IPC message per window rather than an unthrottled agentStatus
+        // broadcast per tool call — that flood is exactly what
+        // ACTIVITY_THROTTLE_MS exists to prevent.
+        //
+        // Two kinds land here and they are NOT interchangeable, so dispatch on
+        // the kind rather than letting the activity summarizer stand in for both.
+        if (arbitratedSource(ev) && arbitratedDecision(ev) === 'activity') {
+          // hookKind is the daemon's own label; the envelope's kind is the
+          // fallback for an event that ships one but not the other.
+          const metadataKind = ev.hookKind ?? ev.signal?.kind;
+          if (metadataKind === 'agent.session_start') {
+            // A CLEAR, not an activity line — exact parity with main's local
+            // session_start handling: a fresh session on this ptyId must inherit
+            // neither the previous session's tool label nor its unanswered
+            // question. Two properties the activity path cannot provide:
+            //   - NEVER throttled. A dropped clear leaves a dead session's label
+            //     on a live pane, and a session start is rare enough that it can
+            //     never contribute to the flood the throttle guards against.
+            //   - clears pendingQuestion, which no summarized string expresses.
+            // It also does not STAMP the window: the throttle keeps running off
+            // the previous session's last tool call, so a new session's first
+            // activity line can wait out the remainder of that window. The gap
+            // shows an EMPTY line (this clear just ran), never a stale one, so
+            // the cost is a sub-3s delay on the first label and the benefit is
+            // one fewer moving part in the shared throttle.
+            broadcastMetadataUpdate(win, {
+              ptyId: payload.sessionId,
+              activity: '',
+              pendingQuestion: '',
+            });
+          } else if (ev.signal && this.activityThrottle.allow(payload.sessionId)) {
+            // agent.activity, or a kind this build does not know yet: the
+            // throttled Fleet View line. Unknown kinds are safe here — the
+            // branch can only ever write the activity metadata field.
+            broadcastMetadataUpdate(win, {
+              ptyId: payload.sessionId,
+              activity: activityFromSignalPayload(ev.signal.payload),
+            });
+          }
+          return;
+        }
+
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
           agentStatus: ev.status,
@@ -573,29 +745,75 @@ export class DaemonNotificationRouter {
           // blocked on a real approval prompt completely silent for the
           // full authority TTL (up to 30 minutes) — worse than any bug
           // this PR set out to fix.
+          //
+          // M1: SKIP the veto entirely for a daemon-ARBITRATED event. The
+          // daemon stamps `source` once it owns hook ingest, meaning it already
+          // weighed hook against detector for this turn and forwarded only the
+          // winner. Re-running the veto here would suppress the very signal the
+          // hook produced (the pane is hook-governed BECAUSE of it), turning
+          // every hook completion silent.
           const slug = agentDisplayToSlug(ev.agent);
           const hookRouter = this.getHookRouter?.() ?? null;
-          if (ev.status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(payload.sessionId, slug)) {
+          const arbitrated = arbitratedSource(ev);
+          const decision = arbitratedDecision(ev);
+          if (arbitrated) {
+            // 'veto' is the daemon having applied the rule this block used to
+            // apply locally: a detector event on a hook-governed pane. The
+            // status dot (broadcast above) stays live; nothing else fires.
+            if (decision === 'veto') return;
+          } else if (
+            ev.status !== 'awaiting_input'
+            && slug
+            && hookRouter?.isGovernedFor(payload.sessionId, slug)
+          ) {
             return;
+          }
+
+          const kind = lifecycleKindFor(ev);
+
+          // M1 replay — turn-boundary metadata (activity clear + pendingQuestion
+          // + completion status) and the transcript tail. Hook-sourced events
+          // only: `ev.signal` rides exclusively on those, and a detector event
+          // never produced these side effects in main either. The tail is read
+          // ONCE here and reused for the lifecycle tee below, mirroring the
+          // local handler's single read. See buildTurnBoundaryMetadata.
+          const hookSignal = arbitrated ? ev.signal ?? null : null;
+          const stopMessage = hookSignal ? readStopMessage(hookSignal) : null;
+          const boundary = hookSignal
+            ? buildTurnBoundaryMetadata(hookSignal.kind, stopMessage)
+            : null;
+          if (boundary) {
+            broadcastMetadataUpdate(win, { ptyId: payload.sessionId, ...boundary });
           }
 
           const title = `${ev.agent}: ${ev.message}`;
           const body = ev.status === 'awaiting_input'
             ? 'Awaiting input'
             : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
-          dispatchNotification(
-            win,
-            payload.sessionId,
-            // Daemon-mode twin of PTYBridge's detector path: text-only signal,
-            // so anything that isn't an approval prompt is 'agent-turn' (#516).
-            {
-              type: 'agent',
-              title,
-              body,
-              category: ev.status === 'awaiting_input' ? 'approval' : 'agent-turn',
-            },
-            { ptyId: payload.sessionId },
-          );
+          // 'dedup' means the other source already fanned out this turn, so the
+          // tee below still records it but no second toast fires — the same
+          // rule main's own hooks.signal handler applies to its dedup verdict.
+          if (!(arbitrated && decision === 'dedup')) {
+            dispatchNotification(
+              win,
+              payload.sessionId,
+              // Daemon-mode twin of PTYBridge's detector path: text-only signal,
+              // so anything that isn't an approval prompt is 'agent-turn' (#516).
+              // A hook-sourced event knows more — only the hook can tell a
+              // subagent turn from a main-agent one — so it keeps the 'subagent'
+              // category main's own hook handler assigns, which is what the
+              // renderer's per-category mute reads.
+              {
+                type: 'agent',
+                title,
+                body,
+                category: kind === 'agent.subagent_stop'
+                  ? 'subagent'
+                  : ev.status === 'awaiting_input' ? 'approval' : 'agent-turn',
+              },
+              { ptyId: payload.sessionId },
+            );
+          }
 
           // Tee to EventBus for external observers (orchestrator clients via
           // `wmux_events_poll`). The local-mode mirror of this lives in
@@ -611,8 +829,22 @@ export class DaemonNotificationRouter {
           // can distinguish "turn ended, next instruction please" from
           // "agent paused mid-turn for a y/N answer". Parity with the
           // local-mode PTYBridge.onEvent path added in the same patch.
-          const kind = ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
-          void this.emitDetectorLifecycle(payload.sessionId, ev.agent, kind);
+          // M1: `arbitrated` carries the daemon's source + verdict through to
+          // the tee, so the event reads `source:'hook'`/`decision:'dedup'` and
+          // main's ledger is left alone.
+          void this.emitDetectorLifecycle(
+            payload.sessionId,
+            ev.agent,
+            kind,
+            arbitrated
+              ? {
+                source: arbitrated,
+                decision: decision === 'dedup' ? 'dedup' : 'emit',
+                lastMessage: stopMessage,
+                signal: hookSignal,
+              }
+              : null,
+          );
         }
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:agent error:', err);
@@ -884,6 +1116,7 @@ export class DaemonNotificationRouter {
     this.cleanups.length = 0;
     this.lastAgentEventAt.clear();
     this.lastAgentNameByPty.clear();
+    this.activityThrottle.clear();
     this.workspaceCache = null;
   }
 }

@@ -13,6 +13,10 @@ export default defineConfig({
       // without dragging the rest of the repo. Tests for the
       // shared/signal-types boundary live next to the source.
       'integrations/**/__tests__/**/*.test.{ts,tsx}',
+      // The APNs push relay is a separate Cloudflare Worker deployment (see
+      // relay/README.md) but its tests run with the rest of the suite so a
+      // change to the shared push envelope cannot break it unnoticed.
+      'relay/__tests__/**/*.test.ts',
     ],
     environment: 'node',
   },

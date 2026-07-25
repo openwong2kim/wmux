@@ -63,6 +63,10 @@ WEB ACCESS (browser / PWA over Tailscale)
         [--expose]                  Bind all interfaces (0.0.0.0) for phone
                                     access. Off by default (loopback only).
         [--host <addr>]             Explicit bind address (overrides --expose)
+        [--tailscale]               One-shot tailnet setup: start 'tailscale
+                                    serve' (HTTPS) in front of a loopback bind
+                                    and accept the MagicDNS name. Removed again
+                                    by --stop
         [--allow-input]             Enable keyboard input (off by default)
         [--allow-host <h1,h2>]      Extra Host headers to accept, for a reverse
                                     proxy in front (e.g. a 'tailscale serve'

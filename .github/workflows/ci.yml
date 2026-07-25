@@ -24,5 +24,12 @@ jobs:
       - name: Type check
         run: node_modules/.bin/tsc --noEmit
 
+      # The push relay is a separate Cloudflare Worker deployment with its own
+      # tsconfig (WebWorker libs, no @types/node — node-only code must not
+      # typecheck here and then fail at the edge), so the root project's
+      # `tsc --noEmit` above never sees it.
+      - name: Type check push relay
+        run: node_modules/.bin/tsc --noEmit -p relay/tsconfig.json
+
       - name: Test
         run: npm test
