@@ -75,11 +75,14 @@ export interface WebPopoverBodyProps {
   info: WebTerminalInfo;
   allowInput: boolean;
   expose: boolean;
+  /** Put the server behind a `tailscale serve` HTTPS front. */
+  tailscale: boolean;
   busy: boolean;
   /** Which value was just copied, so only that button flips to "Copied". */
   copied: CopyTarget;
   onToggleAllowInput: () => void;
   onToggleExpose: () => void;
+  onToggleTailscale: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyUrl: () => void;
@@ -103,10 +106,12 @@ export function WebPopoverBody({
   info,
   allowInput,
   expose,
+  tailscale,
   busy,
   copied,
   onToggleAllowInput,
   onToggleExpose,
+  onToggleTailscale,
   onStart,
   onStop,
   onCopyUrl,
@@ -136,6 +141,19 @@ export function WebPopoverBody({
           />
           {t('web.allowInput')}
         </label>
+        {/* The only transport a phone can actually pair over. Listed FIRST
+            because it is the one most operators opening this popover want:
+            a device credential never expires, so it is not handed out over
+            plaintext, which rules the LAN option out for pairing entirely. */}
+        <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={tailscale}
+            onChange={onToggleTailscale}
+            className="accent-[var(--accent)]"
+          />
+          {t('web.tailscale')}
+        </label>
         <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
           <input
             type="checkbox"
@@ -145,6 +163,23 @@ export function WebPopoverBody({
           />
           {t('web.expose')}
         </label>
+        {/* Say what --expose actually buys now. Since #616 it can serve panes
+            to the LAN but cannot pair a phone, and a checkbox that silently
+            means "watch only" is how someone ends up stuck at a 403. */}
+        {expose ? (
+          <p className="text-[10px] leading-snug text-[var(--text-sub)]">
+            {t('web.exposeNoPairing')}
+          </p>
+        ) : null}
+        {info.transportError ? (
+          <div className="flex flex-col gap-1 rounded-[5px] bg-[var(--bg-surface)] px-2 py-1.5">
+            {info.transportError.lines.map((line, i) => (
+              <span key={i} className="text-[10px] leading-snug text-[var(--text-sub)]">
+                {line}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <p className="text-[10px] leading-snug text-[var(--text-sub)]">
           {t('web.scrollbackWarning')}
         </p>
@@ -213,7 +248,26 @@ export function WebPopoverBody({
         <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
           {t('web.onPhone')}
         </span>
-        {info.pairCode ? (
+        {info.pairRefusal ? (
+          // The whole point of the refusal: this replaces the code rather than
+          // sitting beside it. A code shown next to "pairing is unavailable" is
+          // still a code someone will try to type into a phone.
+          <>
+            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+              {info.pairRefusal.reason === 'no-front'
+                ? t('web.refusalNoFront')
+                : t('web.refusalInsecure')}
+            </span>
+            <span
+              title={info.pairRefusal.detail}
+              className="text-[10px] leading-snug text-[var(--text-muted)]"
+            >
+              {info.pairRefusal.reason === 'no-front'
+                ? t('web.refusalNoFrontFix')
+                : t('web.refusalInsecureFix')}
+            </span>
+          </>
+        ) : info.pairCode ? (
           <>
           <span className="text-[10px] leading-snug text-[var(--text-sub)]">
             {t('web.pairHint')}
@@ -305,6 +359,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
+  const [tailscale, setTailscale] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -316,12 +371,21 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
 
   const api = webApi();
 
-  const refresh = useCallback(async () => {
+  /**
+   * `verifyFront` asks the main process to shell out to tailscale. Pass it only
+   * on deliberate moments — never from the 10s poll, which would spawn a
+   * process six times a minute for a fact that changes when a human acts.
+   */
+  const refresh = useCallback(async (verifyFront = false) => {
     const a = webApi();
     if (!a) return;
     try {
-      const next = await a.status();
+      const next = await a.status(verifyFront ? { verifyFront: true } : undefined);
       setInfo(next);
+      // Seed the transport checkbox from what is actually running, so a daemon
+      // restart cannot leave the box unchecked over a tailnet server — the
+      // operator's next Stop → Start would silently drop them onto loopback.
+      if (next.running) setTailscale(next.tailscale === true);
     } catch {
       // Handler resolves rather than rejects; a rejection here means the bridge
       // is missing entirely — leave the last known state untouched.
@@ -334,10 +398,11 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     void refresh();
   }, [refresh]);
 
-  // Poll every 10s while the popover is open; also refresh immediately on open.
+  // Poll every 10s while the popover is open. The refresh ON OPEN verifies the
+  // tailnet front (a deliberate act by the operator); the polls after it do not.
   useEffect(() => {
     if (!open) return;
-    void refresh();
+    void refresh(true);
     const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [open, refresh]);
@@ -402,13 +467,31 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     if (!a) return;
     setBusy(true);
     try {
-      const args: WebStartArgs = { allowInput, expose };
+      const args: WebStartArgs = { allowInput, expose, tailscale };
       const next = await a.start(args);
       setInfo(next);
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose]);
+  }, [allowInput, expose, tailscale]);
+
+  // The two transports are alternatives, not additions: `tailscale serve`
+  // proxies loopback, so a wildcard bind alongside it is a second, weaker way
+  // in. Enforced here as well as main-side so the checkboxes never show a
+  // combination the handler would silently rewrite.
+  const handleToggleTailscale = useCallback(() => {
+    setTailscale((v) => {
+      if (!v) setExpose(false);
+      return !v;
+    });
+  }, []);
+
+  const handleToggleExpose = useCallback(() => {
+    setExpose((v) => {
+      if (!v) setTailscale(false);
+      return !v;
+    });
+  }, []);
 
   const handleStop = useCallback(async () => {
     const a = webApi();
@@ -536,10 +619,12 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             info={info}
             allowInput={allowInput}
             expose={expose}
+            tailscale={tailscale}
             busy={busy}
             copied={copied}
             onToggleAllowInput={() => setAllowInput((v) => !v)}
-            onToggleExpose={() => setExpose((v) => !v)}
+            onToggleExpose={handleToggleExpose}
+            onToggleTailscale={handleToggleTailscale}
             onStart={handleStart}
             onStop={handleStop}
             onCopyUrl={handleCopyUrl}

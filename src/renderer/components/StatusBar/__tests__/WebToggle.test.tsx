@@ -27,10 +27,12 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     info: { running: false },
     allowInput: false,
     expose: false,
+    tailscale: false,
     busy: false,
     copied: null,
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
+    onToggleTailscale: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
     onCopyUrl: vi.fn(),
@@ -153,5 +155,60 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('web.onPhone');
     // The phone address must not carry the token — that is the point of the code.
     expect(html).toContain('/pair');
+  });
+
+  it('offers the tailnet transport before the server is started', () => {
+    const html = renderBody({ info: { running: false } });
+    expect(html).toContain('web.tailscale');
+    expect(html).toContain('web.expose');
+  });
+
+  it('says what Expose does NOT buy, but only once it is ticked', () => {
+    expect(renderBody({ info: { running: false }, expose: false })).not.toContain(
+      'web.exposeNoPairing',
+    );
+    // Since #616 a plaintext bind serves panes but cannot pair a phone. A
+    // checkbox that silently means "watch only" is how someone hits a 403.
+    expect(renderBody({ info: { running: false }, expose: true })).toContain(
+      'web.exposeNoPairing',
+    );
+  });
+
+  it('surfaces a failed transport start instead of failing silently', () => {
+    const html = renderBody({
+      info: {
+        running: false,
+        transportError: { reason: 'not-installed', lines: ['tailscale is not installed'] },
+      },
+    });
+    expect(html).toContain('tailscale is not installed');
+  });
+
+  it('★ a refusal REPLACES the pairing code rather than sitting beside it', () => {
+    const html = renderBody({
+      info: {
+        ...runningInfo,
+        pairCode: undefined,
+        pairRefusal: { reason: 'insecure-transport', detail: 'plaintext bind' },
+      },
+    });
+    expect(html).toContain('web.refusalInsecure');
+    expect(html).toContain('web.refusalInsecureFix');
+    // A code shown next to "pairing is unavailable" is still a code someone
+    // will read onto a phone. The whole fix is that it is not there.
+    expect(html).not.toContain('ABC123');
+    expect(html).not.toContain('web.newPairCode');
+  });
+
+  it('★ a vanished tailnet front gets its own reason, not the plaintext one', () => {
+    const html = renderBody({
+      info: {
+        ...runningInfo,
+        pairCode: undefined,
+        pairRefusal: { reason: 'no-front', detail: 'serve config missing' },
+      },
+    });
+    expect(html).toContain('web.refusalNoFront');
+    expect(html).not.toContain('web.refusalInsecure');
   });
 });

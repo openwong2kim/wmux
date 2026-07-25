@@ -296,6 +296,13 @@ export const en = {
   'web.headline': 'Serve panes to a browser',
   'web.allowInput': 'Allow input',
   'web.expose': 'Expose to network',
+  'web.tailscale': 'HTTPS over my tailnet (needed to pair a phone)',
+  'web.exposeNoPairing':
+    'Watch-only: panes are readable on the LAN with the token, but a phone cannot pair over plain HTTP.',
+  'web.refusalInsecure': 'Pairing is off while the server is exposed on the network.',
+  'web.refusalInsecureFix': 'Restart with the tailnet option, or pair before exposing.',
+  'web.refusalNoFront': 'The tailnet HTTPS front is gone, so its address reaches nothing.',
+  'web.refusalNoFrontFix': 'Stop and start again with the tailnet option to put it back.',
   'web.start': 'Start',
   'web.stop': 'Stop',
   'web.starting': 'Starting…',
