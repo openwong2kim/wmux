@@ -1990,6 +1990,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
             if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
+            // The jog rail is sized in pixels from the pane height, which a
+            // resize always changes — and re-measuring it shares none of
+            // fit()'s hazards, so it must happen above the selection guard.
+            // Below it, resizing a pane with a live selection would leave the
+            // rail at its old height until some later, unguarded resize.
+            altScrollJog?.refresh();
+
             // Selection-preservation guard: xterm's SelectionService clears
             // the active selection on any rowsChanged event from fit().
             // While the user is dragging out a selection (or while a
@@ -2013,12 +2020,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               const targetYDisp = Math.max(0, newYBase - distFromBottom);
               term.scrollToLine(targetYDisp);
             }
-
-            // The jog rail is sized in pixels from the pane height, which a fit
-            // can change without changing rows — so nothing else reports it.
-            // scrollAffordance needs no poke here: it re-evaluates on the
-            // onResize a fit fires.
-            altScrollJog?.refresh();
 
             const { cols, rows } = term;
             const currentPtyId = ptyIdRef.current;

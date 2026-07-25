@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm';
+import { t } from '../i18n';
 
 // fmux#13 — scroll control for panes on the alternate buffer.
 //
@@ -53,22 +54,40 @@ export interface AltScrollJog {
   dispose(): void;
 }
 
-function emitScrollEvent(terminal: Terminal, direction: -1 | 1): void {
+/**
+ * Where a synthetic wheel should claim to have happened, or null if the pane
+ * cannot currently take one. Resolved once per frame rather than per event: it
+ * forces layout, and every event in a frame reports the same point anyway.
+ */
+function resolveReportPoint(
+  terminal: Terminal,
+): { element: HTMLElement; clientX: number; clientY: number } | null {
   const element = terminal.element;
   const screen = element?.querySelector('.xterm-screen') as HTMLElement | null;
-  if (!element || !screen) return;
+  if (!element || !screen) return null;
   const rect = screen.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return;
-  // xterm resolves the report's cell from these coordinates and drops the event
-  // if they fall outside the screen element. The rail sits over the right edge,
-  // so report from the screen's centre instead — that is the content region a
-  // TUI expects a wheel over, and it keeps the report inside the grid.
-  element.dispatchEvent(
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  // xterm resolves the report's cell from these coordinates, clamping anything
+  // outside the grid onto its last row/column. The rail sits over the right
+  // edge, so report from the screen's centre instead — that is the content
+  // region a TUI expects a wheel over, and it needs no clamping.
+  return {
+    element,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  };
+}
+
+function emitScrollEvent(
+  point: { element: HTMLElement; clientX: number; clientY: number },
+  direction: -1 | 1,
+): void {
+  point.element.dispatchEvent(
     new WheelEvent('wheel', {
       deltaY: direction,
       deltaMode: WheelEvent.DOM_DELTA_LINE,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2,
+      clientX: point.clientX,
+      clientY: point.clientY,
       bubbles: true,
       cancelable: true,
     }),
@@ -92,7 +111,7 @@ export function attachAltScrollJog(terminal: Terminal, host: HTMLElement): AltSc
   rail.setAttribute('aria-hidden', 'true');
   const grip = document.createElement('div');
   grip.className = 'fmux-jog-grip';
-  grip.title = 'Drag to scroll — further from centre scrolls faster';
+  grip.title = t('terminal.scrollJogTooltip');
   rail.appendChild(grip);
 
   const measure = (): void => {
@@ -140,7 +159,10 @@ export function attachAltScrollJog(terminal: Terminal, host: HTMLElement): AltSc
       if (count > 0) {
         eventCredit -= count;
         const direction = normalized < 0 ? -1 : 1;
-        for (let i = 0; i < count; i++) emitScrollEvent(terminal, direction);
+        const point = resolveReportPoint(terminal);
+        if (point) {
+          for (let i = 0; i < count; i++) emitScrollEvent(point, direction);
+        }
       }
     } else {
       eventCredit = 0;
@@ -175,8 +197,10 @@ export function attachAltScrollJog(terminal: Terminal, host: HTMLElement): AltSc
     try {
       grip.setPointerCapture(event.pointerId);
     } catch {
-      // capture is an optimisation (keeps the drag alive outside the grip);
-      // the pointerup/pointercancel handlers still end the drag without it.
+      // Capture is what routes pointerup back to the grip once the pointer
+      // leaves its 10x22px box, so without it the grip-bound handlers below can
+      // no longer end the drag on their own — that is what the window-level
+      // pointerup/pointercancel listeners are for. See onLostPointerCapture.
     }
     grip.classList.add('is-dragging');
     const railRect = rail.getBoundingClientRect();
@@ -197,10 +221,21 @@ export function attachAltScrollJog(terminal: Terminal, host: HTMLElement): AltSc
     paint();
   };
 
+  // Losing capture without a pointerup (the pointer is stolen by a native
+  // drag/menu, or the grip is detached mid-drag) would otherwise leave
+  // `dragging` true, and tick() re-arms unconditionally — the loop would keep
+  // pumping scroll into the hosted app with nothing left to stop it.
+  const onLostPointerCapture = (): void => endDrag();
+
   grip.addEventListener('pointerdown', onPointerDown);
   grip.addEventListener('pointermove', onPointerMove);
   grip.addEventListener('pointerup', endDrag);
   grip.addEventListener('pointercancel', endDrag);
+  grip.addEventListener('lostpointercapture', onLostPointerCapture);
+  // Backstop for the no-capture case: a release anywhere ends the drag.
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  window.addEventListener('blur', endDrag);
 
   return {
     refresh: measure,
@@ -224,6 +259,10 @@ export function attachAltScrollJog(terminal: Terminal, host: HTMLElement): AltSc
       grip.removeEventListener('pointermove', onPointerMove);
       grip.removeEventListener('pointerup', endDrag);
       grip.removeEventListener('pointercancel', endDrag);
+      grip.removeEventListener('lostpointercapture', onLostPointerCapture);
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+      window.removeEventListener('blur', endDrag);
       rail.remove();
     },
   };

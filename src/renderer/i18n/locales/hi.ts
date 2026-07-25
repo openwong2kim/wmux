@@ -80,6 +80,7 @@ export const hi = {
   'terminal.copied': 'कॉपी हो गया!',
   'terminal.copyFailed': 'कॉपी विफल — चयन बरकरार',
   'terminal.bookmarkAdded': 'बुकमार्क जोड़ा गया',
+  'terminal.scrollJogTooltip': 'स्क्रॉल करने के लिए खींचें — केंद्र से जितना दूर, उतना तेज़',
 
   // Context menu
   'contextMenu.copy': 'कॉपी',

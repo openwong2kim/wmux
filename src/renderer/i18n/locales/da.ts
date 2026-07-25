@@ -80,6 +80,7 @@ export const da = {
   'terminal.copied': 'Kopieret!',
   'terminal.copyFailed': 'Kopiering mislykkedes — valg bevaret',
   'terminal.bookmarkAdded': 'Bogmærke tilføjet',
+  'terminal.scrollJogTooltip': 'Træk for at rulle — længere fra midten ruller hurtigere',
 
   // Context menu
   'contextMenu.copy': 'Kopier',

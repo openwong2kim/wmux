@@ -80,6 +80,7 @@ export const fr = {
   'terminal.copied': 'Copié !',
   'terminal.copyFailed': 'Échec de la copie — sélection conservée',
   'terminal.bookmarkAdded': 'Signet ajouté',
+  'terminal.scrollJogTooltip': 'Faites glisser pour défiler — plus loin du centre, plus vite',
 
   // Context menu
   'contextMenu.copy': 'Copier',

@@ -80,6 +80,7 @@ export const th = {
   'terminal.copied': 'คัดลอกแล้ว!',
   'terminal.copyFailed': 'การคัดลอกล้มเหลว — เก็บการเลือกไว้',
   'terminal.bookmarkAdded': 'เพิ่มบุ๊กมาร์กแล้ว',
+  'terminal.scrollJogTooltip': 'ลากเพื่อเลื่อน — ยิ่งห่างจากกึ่งกลางยิ่งเลื่อนเร็ว',
 
   // Context menu
   'contextMenu.copy': 'คัดลอก',

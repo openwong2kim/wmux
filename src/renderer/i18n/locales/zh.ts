@@ -82,6 +82,7 @@ export const zh = {
   'terminal.openPathBlocked': '已阻止可执行文件 — 仅打开父文件夹',
   'terminal.openPathFailed': '无法打开 — 显示文件夹位置',
   'terminal.bookmarkAdded': '已添加书签',
+  'terminal.scrollJogTooltip': '拖动以滚动 — 距中心越远滚动越快',
 
   // Context menu
   'contextMenu.copy': '复制',

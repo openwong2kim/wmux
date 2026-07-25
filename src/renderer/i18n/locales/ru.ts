@@ -80,6 +80,7 @@ export const ru = {
   'terminal.copied': 'Скопировано!',
   'terminal.copyFailed': 'Сбой копирования — выделение сохранено',
   'terminal.bookmarkAdded': 'Закладка добавлена',
+  'terminal.scrollJogTooltip': 'Потяните для прокрутки — дальше от центра — быстрее',
 
   // Context menu
   'contextMenu.copy': 'Копировать',

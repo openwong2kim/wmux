@@ -80,6 +80,7 @@ export const uk = {
   'terminal.copied': 'Скопійовано!',
   'terminal.copyFailed': 'Не вдалося скопіювати — виділення збережено',
   'terminal.bookmarkAdded': 'Закладку додано',
+  'terminal.scrollJogTooltip': 'Потягніть для прокручування — далі від центру — швидше',
 
   // Context menu
   'contextMenu.copy': 'Копіювати',

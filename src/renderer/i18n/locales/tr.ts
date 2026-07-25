@@ -80,6 +80,7 @@ export const tr = {
   'terminal.copied': 'Kopyalandı!',
   'terminal.copyFailed': 'Kopyalama başarısız — seçim korundu',
   'terminal.bookmarkAdded': 'Yer imi eklendi',
+  'terminal.scrollJogTooltip': 'Kaydırmak için sürükleyin — merkezden uzaklaştıkça hızlanır',
 
   // Context menu
   'contextMenu.copy': 'Kopyala',

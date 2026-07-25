@@ -493,7 +493,11 @@ select option {
   border-radius: 5px;
   background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
   z-index: 9;
-  cursor: grab;
+  /* The rail is a backdrop, not a target: only the grip does anything. Left
+     hittable it would swallow clicks meant for the terminal and, because
+     nothing cancels them, xterm would turn each one into a phantom mouse
+     report to the hosted app. */
+  pointer-events: none;
 }
 .fmux-jog-grip {
   position: absolute;
@@ -506,6 +510,7 @@ select option {
   border-radius: 5px;
   background: var(--bg-overlay);
   cursor: grab;
+  pointer-events: auto;
   touch-action: none;
   transition: background 120ms ease;
   /* Three grip ribs — reads as "drag me", not "you are here". */

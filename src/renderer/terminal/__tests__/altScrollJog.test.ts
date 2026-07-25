@@ -229,9 +229,45 @@ describe('altScrollJog', () => {
       ({ left: 0, top: 110, width: 10, height: 180, right: 10, bottom: 290, x: 0, y: 110, toJSON: () => ({}) }) as DOMRect;
     grip.dispatchEvent(pointer('pointerdown', 200));
     grip.dispatchEvent(pointer('pointermove', 200 + HALF_TRAVEL));
-    // One very long frame (dt is clamped to 100ms) would otherwise emit ~11.
-    flushFrames(1, 5000);
+    // The first frame after pointerdown always has dt 0 (lastFrameTime is
+    // seeded there), so it can never accrue credit — the cap only binds from
+    // the second frame on. Two long frames each clamp dt to 100ms, which at
+    // MAX_EVENTS_PER_SEC 110 is ~11 events' worth of credit apiece.
+    flushFrames(2, 5000);
+    expect(wheelEvents.length).toBeGreaterThan(0);
     expect(wheelEvents.length).toBeLessThanOrEqual(6);
+    jog.dispose();
+  });
+
+  it('ends the drag when pointer capture is lost without a pointerup', () => {
+    const { host } = makeHost();
+    listen(host);
+    const jog = attachAltScrollJog(makeTerminal(host), host);
+    jog.setEnabled(true);
+    dragAndRun(host, HALF_TRAVEL, 4);
+    expect(wheelEvents.length).toBeGreaterThan(0);
+
+    // Capture stolen (native drag/menu) — no pointerup ever reaches the grip.
+    gripOf(host).dispatchEvent(new Event('lostpointercapture'));
+    wheelEvents = [];
+    flushFrames(20);
+    expect(wheelEvents).toHaveLength(0);
+    jog.dispose();
+  });
+
+  it('ends the drag on a release that never reaches the grip', () => {
+    const { host } = makeHost();
+    listen(host);
+    const jog = attachAltScrollJog(makeTerminal(host), host);
+    jog.setEnabled(true);
+    dragAndRun(host, HALF_TRAVEL, 4);
+    expect(wheelEvents.length).toBeGreaterThan(0);
+
+    // Without capture the release lands on whatever is under the pointer.
+    window.dispatchEvent(pointer('pointerup', 900));
+    wheelEvents = [];
+    flushFrames(20);
+    expect(wheelEvents).toHaveLength(0);
     jog.dispose();
   });
 
