@@ -11,6 +11,8 @@ import {
   getDaemonAuthTokenPath,
   getLegacyDaemonAuthTokenPath,
 } from '../../shared/constants';
+import { waitFor } from '../../test-utils/waitFor';
+
 
 // Helper: generate unique pipe name for each test to avoid conflicts
 function testPipeName(suffix: string): string {
@@ -258,10 +260,7 @@ describe('DaemonPipeServer', () => {
       c1.on('connect', onConn);
       c2.on('connect', onConn);
     });
-    // Server-side socket registration runs inside the listener callback,
-    // give it a tick to land in connectedSockets.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(server.getConnectionCount()).toBe(2);
+    await waitFor(() => server.getConnectionCount() === 2);
     // While a client is still connected, the disconnect anchor must remain
     // untouched (otherwise the idle window would start during active use).
     expect(server.getLastDisconnectAt()).toBeNull();
@@ -271,15 +270,13 @@ describe('DaemonPipeServer', () => {
     const c2Closed = new Promise<void>((r) => c2.on('close', () => r()));
     c1.destroy();
     await c1Closed;
-    await new Promise((r) => setTimeout(r, 30));
+    await waitFor(() => server.getConnectionCount() === 1);
     // One socket still alive — counter dropped to 1, anchor still null.
-    expect(server.getConnectionCount()).toBe(1);
     expect(server.getLastDisconnectAt()).toBeNull();
 
     c2.destroy();
     await c2Closed;
-    await new Promise((r) => setTimeout(r, 30));
-    expect(server.getConnectionCount()).toBe(0);
+    await waitFor(() => server.getConnectionCount() === 0);
     const anchor = server.getLastDisconnectAt();
     expect(anchor).not.toBeNull();
     expect(anchor!).toBeGreaterThanOrEqual(before);
@@ -300,9 +297,10 @@ describe('DaemonPipeServer', () => {
     const liveClosed = new Promise<void>((resolve) => liveClient.on('close', () => resolve()));
 
     // Wait briefly for connection to be registered.
-    await new Promise<void>((resolve) => {
-      liveClient.on('connect', () => setTimeout(resolve, 50));
-    });
+    // rotateToken() only destroys sockets the SERVER has registered, so wait
+    // for that rather than for the client's own connect event plus a guess.
+    await new Promise<void>((resolve) => liveClient.on('connect', () => resolve()));
+    await waitFor(() => server.getConnectionCount() === 1);
 
     const oldToken = 'test-token-123';
     const newToken = server.rotateToken();
@@ -565,10 +563,9 @@ describe('SessionPipe', () => {
     // Verify client received PTY output
     expect(clientOutput.toString()).toContain('pty output');
 
-    // Verify PTY received client input (small delay for async)
-    await new Promise((r) => setTimeout(r, 50));
-    const allInput = Buffer.concat(inputReceived).toString();
-    expect(allInput).toBe('user input');
+    // Verify PTY received client input.
+    await waitFor(() => Buffer.concat(inputReceived).toString() === 'user input');
+    expect(Buffer.concat(inputReceived).toString()).toBe('user input');
   });
 
   it('should report isConnected correctly', async () => {
@@ -584,16 +581,18 @@ describe('SessionPipe', () => {
     await new Promise<void>((resolve) => {
       client.on('connect', () => {
         client.write(SESSION_AUTH_TOKEN + '\n');
-        // Small delay to allow server to process auth + connection
-        setTimeout(resolve, 100);
+        resolve();
       });
     });
+    // The server processes the auth line asynchronously; wait for the flag the
+    // assertion reads rather than for a fixed span.
+    await waitFor(() => sessionPipe.isConnected);
 
     expect(sessionPipe.isConnected).toBe(true);
 
     // Disconnect
     client.destroy();
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    await waitFor(() => !sessionPipe.isConnected);
 
     expect(sessionPipe.isConnected).toBe(false);
   });

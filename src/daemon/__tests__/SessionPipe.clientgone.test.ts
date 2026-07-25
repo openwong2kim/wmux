@@ -3,19 +3,11 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { SessionPipe } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
+import { waitFor } from '../../test-utils/waitFor';
 
 // ── helpers ─────────────────────────────────────────────────────────
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(pred: () => boolean, deadlineMs: number): Promise<void> {
-  const start = Date.now();
-  for (;;) {
-    if (pred()) return;
-    if (Date.now() - start > deadlineMs) throw new Error('waitFor: deadline exceeded');
-    await sleep(5);
-  }
-}
 
 function uniqueSessionId(tag: string): string {
   return `clientgone-${tag}-${crypto.randomUUID().slice(0, 8)}`;

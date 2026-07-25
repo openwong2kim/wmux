@@ -11,19 +11,11 @@ import {
 } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import { generateSnapshot } from '../HeadlessSnapshot';
+import { waitFor } from '../../test-utils/waitFor';
 
 // ── helpers ─────────────────────────────────────────────────────────
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(pred: () => boolean, deadlineMs: number): Promise<void> {
-  const start = Date.now();
-  for (;;) {
-    if (pred()) return;
-    if (Date.now() - start > deadlineMs) throw new Error('waitFor: deadline exceeded');
-    await sleep(5);
-  }
-}
 
 /** Unique per-test session id so named pipes / unix sockets never collide. */
 function uniqueSessionId(tag: string): string {
