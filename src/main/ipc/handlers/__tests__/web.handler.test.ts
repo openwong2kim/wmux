@@ -220,11 +220,43 @@ describe('web.handler — forwarding', () => {
       expect(res.pairRefusal).toBeUndefined();
     });
 
-    it('does not probe at all for a server that is not on the tailnet', async () => {
+    it('does not probe a server that advertises no front at all', async () => {
       const { exec, probes } = absentFront();
-      installConnected({ running: true, port: 7681, tailscale: false }, exec);
+      installConnected({ running: true, port: 7681, allowedHosts: [], tailscale: false }, exec);
       await getHandler(IPC.WEB_STATUS)(fakeEvent, { verifyFront: true });
       expect(probes()).toBe(0);
+    });
+
+    it('★ REGRESSION: a front from before the tailscale flag existed is still checked', async () => {
+      // Found by dogfooding, not by this suite. A web-state.json written before
+      // the `tailscale` field existed replays its allowedHosts and parses as
+      // `tailscale: false`, and the CLI's `--allow-host` path never sets the
+      // flag either. Both still put https://<name>/ first in `urls`.
+      //
+      // Gating the probe on the FLAG therefore left the dead address on screen
+      // — confirmed against a real tailnet, where the advertised URL answered
+      // nothing. The honest question is "are we advertising a front?", which is
+      // what allowedHosts says.
+      const { exec, probes } = absentFront();
+      installConnected(
+        {
+          running: true,
+          port: 7681,
+          tailscale: false,
+          urls: ['https://box.tail1234.ts.net/?token=t', 'http://127.0.0.1:7681/?token=t'],
+          allowedHosts: ['box.tail1234.ts.net'],
+          pairCode: 'ABC123',
+        },
+        exec,
+      );
+
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+
+      expect(probes()).toBe(1);
+      expect(res.urls).toEqual(['http://127.0.0.1:7681/?token=t']);
+      expect(res.pairRefusal?.reason).toBe('no-front');
     });
 
     it('a bind-level refusal outranks the front probe', async () => {

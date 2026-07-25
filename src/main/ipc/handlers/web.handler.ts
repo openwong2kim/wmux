@@ -97,8 +97,22 @@ export function registerWebHandlers(
    * behind that name is gone. Left alone, the popover would render a QR for an
    * address that answers nothing, and the failure would land on the phone.
    */
+  /**
+   * Does this reply advertise a fronted (https) address?
+   *
+   * Keyed on `allowedHosts`, NOT on the `tailscale` flag. Dogfooding caught the
+   * difference: a `web-state.json` written before that flag existed replays its
+   * allowedHosts and gets `tailscale: false`, and the CLI's `--allow-host` path
+   * never sets the flag either. Both still put `https://<name>/` first in
+   * `urls`. Gating on the flag left exactly the dead address this is here to
+   * catch — verified against a real tailnet, where the advertised URL answered
+   * nothing.
+   */
+  const advertisesFront = (info: WebTerminalInfo): boolean =>
+    (info.allowedHosts ?? []).length > 0;
+
   const withFront = (info: WebTerminalInfo): WebTerminalInfo => {
-    if (!info.running || info.tailscale !== true || frontState !== 'gone') return info;
+    if (!info.running || !advertisesFront(info) || frontState !== 'gone') return info;
     return {
       ...info,
       // Drop the fronted URLs: an https address with no serve behind it is
@@ -124,7 +138,7 @@ export function registerWebHandlers(
       const info = await call('daemon.web.status', {});
       // Deliberate events only: the popover opening, the tailnet toggle going
       // on, a new pairing code being minted. Never the 10s poll.
-      if (args.verifyFront === true && info.running && info.tailscale === true) {
+      if (args.verifyFront === true && info.running && advertisesFront(info)) {
         frontState = await checkWebFront({
           webPort: info.port ?? WEB_DEFAULT_PORT,
           ...(exec ? { exec } : {}),
@@ -204,7 +218,7 @@ export function registerWebHandlers(
       // Minting a code is a deliberate "I am about to pair a phone" moment, and
       // it is the last chance to notice the front died before the operator
       // points a camera at a QR. Cheap here: it happens once per human action.
-      if (info.running && info.tailscale === true) {
+      if (info.running && advertisesFront(info)) {
         frontState = await checkWebFront({
           webPort: info.port ?? WEB_DEFAULT_PORT,
           ...(exec ? { exec } : {}),
