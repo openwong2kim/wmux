@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.35.0] — 2026-07-25
+
 ### Security
 
 - **The `wmux web` page now ships a full Content-Security-Policy (#608).** The page previously carried only frame protection. It now declares a strict policy — every inline script is allowed by its exact hash (no `'unsafe-inline'`), and `connect-src 'self'` means that even if a rendering bug ever reintroduced an XSS, the injected script could execute but could not send the access token anywhere. The hashes are computed by the daemon from the exact page bytes it serves, so the policy can never drift out of sync with a build. Purely defense-in-depth: there is no known XSS today, and nothing changes for a working session.
