@@ -575,9 +575,26 @@ async function scenarioHeaderEverywhere(sessionId, expected) {
   paneSse.close?.();
   eventSse.close?.();
 
-  const mismatched = probes.filter((p) => p.csp !== expected);
-  const evidence = { expectedHeader: expected, probes, mismatched };
-  record('S3 csp-on-every-response', mismatched.length === 0 && probes.length === 10, evidence);
+  // Placement, not blanket coverage. The full policy — hashes and all — rides
+  // the HTML response, because that is the only thing that executes. Every
+  // other response carries the baseline, so a response can never be POLICYLESS,
+  // but it does not pay ~250 bytes of script hashes it has no use for; a phone
+  // typing would pay that per keystroke. (This asserted "identical everywhere"
+  // until the #612 merge, where main's narrower placement won on that cost.)
+  const BASELINE = "frame-ancestors 'none'";
+  const html = probes.find((x) => x.label === 'GET / (html)');
+  const others = probes.filter((x) => x !== html);
+  const htmlOk = !!html && html.csp === expected;
+  const othersOk = others.every((x) => x.csp === BASELINE);
+  const wrong = others.filter((x) => x.csp !== BASELINE);
+  const evidence = {
+    expectedHtmlHeader: expected,
+    expectedElsewhere: BASELINE,
+    htmlCarriesFullPolicy: htmlOk,
+    probes,
+    wrongElsewhere: wrong,
+  };
+  record('S3 csp-placement-html-full-baseline-elsewhere', htmlOk && othersOk && probes.length === 10, evidence);
 }
 
 /** Pair one named device and hand back its credential. */
