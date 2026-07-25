@@ -296,6 +296,16 @@ export const en = {
   'web.headline': 'Serve panes to a browser',
   'web.allowInput': 'Allow input',
   'web.expose': 'Expose to network',
+  // "tailnet" means nothing to someone who has not used Tailscale, and this
+  // checkbox is the first place most people will meet the word. Name the
+  // outcome (HTTPS, which is what makes pairing possible) and the requirement.
+  'web.tailscale': 'Serve over HTTPS (needs Tailscale) — required to pair a phone',
+  'web.exposeNoPairing':
+    'Watch-only: panes are readable on the LAN with the token, but a phone cannot pair over plain HTTP.',
+  'web.refusalInsecure': 'Pairing is off while the server is exposed on the network.',
+  'web.refusalInsecureFix': 'Restart with the tailnet option, or pair before exposing.',
+  'web.refusalNoFront': 'The tailnet HTTPS front is gone, so its address reaches nothing.',
+  'web.refusalNoFrontFix': 'Stop and start again with the tailnet option to put it back.',
   'web.start': 'Start',
   'web.stop': 'Stop',
   'web.starting': 'Starting…',
@@ -313,6 +323,10 @@ export const en = {
   'web.openHere': 'Open on this machine',
   'web.onPhone': 'On your phone',
   'web.pairHint': 'Open this address, then enter the code:',
+  'web.nameHint': 'Name this device so you can revoke it later:',
+  'web.namePlaceholder': 'e.g. my iPhone',
+  'web.showPairCode': 'Show pairing code',
+  'web.pairingAs': 'Pairing as “{name}”',
   'web.pairCode': 'Pairing code',
   'web.pairValidity': 'valid 10 min · single use',
   'web.pairSpent': 'The code was used or expired.',

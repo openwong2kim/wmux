@@ -1707,6 +1707,49 @@ describe('WebTerminalServer', () => {
     okPane.ac.abort();
   });
 
+  /**
+   * The pairing code as the WIRE sees it.
+   *
+   * `start()` always mints one (:481), but `status()` withholds it whenever
+   * `mintRefusal()` fires, so the operator is never handed a code that is
+   * guaranteed to 403. Tests that exercise the refusal at redemption still need
+   * the real value, and reaching past the operator surface is the honest way to
+   * say "this is not what a human would see."
+   */
+  function livePairCode(s: WebTerminalServer): string {
+    return (s as unknown as { pairCode: string }).pairCode;
+  }
+
+  it('★ status withholds the pairing code on a bind that can never redeem it', async () => {
+    // The bug this closes: status() regenerates a code lazily and used to do it
+    // without asking whether the server could mint a credential at all. On an
+    // exposed bind the GUI showed a fresh 6-char code every poll, the operator
+    // read one onto a phone, and only the redemption said 403.
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    expect(info.running).toBe(true);
+
+    const status = server.status();
+    expect(status.pairRefusal?.reason).toBe('insecure-transport');
+    // The detail is operator prose for logs and tooltips — it must still name
+    // both ways out, because it is what a support question gets answered with.
+    expect(status.pairRefusal?.detail).toContain('wmux web --tailscale');
+    // No code, and no expiry for a code that does not exist.
+    expect(status.pairCode).toBeUndefined();
+    expect(status.pairExpiresAt).toBeUndefined();
+  });
+
+  it('★ status advertises a pairing code normally on loopback', async () => {
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    expect(info.running).toBe(true);
+
+    const status = server.status();
+    // The refusal is absent, not merely falsy-but-present: the renderer keys
+    // its whole pairing block on this field being undefined.
+    expect(status.pairRefusal).toBeUndefined();
+    expect(status.pairCode).toMatch(/^[A-Z0-9]{6}$/);
+    expect(typeof status.pairExpiresAt).toBe('number');
+  });
+
   it('★ refuses to mint over a plaintext bind, and --allow-host does NOT buy an exception', async () => {
     // A real non-loopback bind: the gate reads the BIND, because that is the
     // only thing about the transport the daemon actually knows.
@@ -1727,12 +1770,17 @@ describe('WebTerminalServer', () => {
 
     // And redemption refuses too, since the operator may have re-exposed the
     // server after minting a code. The code is NOT burned by the refusal.
-    const code = server.status().pairCode as string;
+    //
+    // Read straight off the instance rather than through status(): a code is
+    // still minted on start(), but status() deliberately withholds it on a bind
+    // that could never redeem it. This test is about the WIRE refusal, so it
+    // needs the live code the wire would see, not the operator-facing view.
+    const code = livePairCode(server);
     const denied = await getWithHost(port, `/api/pair?code=${code}`, `127.0.0.1:${port}`);
     expect(denied.status).toBe(403);
     expect(JSON.parse(denied.body).error).toBe('insecure-transport');
     expect(deviceMintCalls).toEqual([]);
-    expect(server.status().pairCode).toBe(code);
+    expect(livePairCode(server)).toBe(code);
   });
 
   it('★ a forged Host cannot talk a plaintext bind into minting a credential', async () => {
@@ -1754,8 +1802,9 @@ describe('WebTerminalServer', () => {
     expect(started.ok).toBe(false);
 
     // …and the same is true at redemption, sending the exact header an attacker
-    // would forge. Nothing is minted.
-    const code = server.status().pairCode as string;
+    // would forge. Nothing is minted. (See livePairCode — status() withholds the
+    // code here, but the wire still has one to refuse.)
+    const code = livePairCode(server);
     const forged = await getWithHost(
       fronted.port as number,
       `/api/pair?code=${code}`,

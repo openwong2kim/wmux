@@ -10,6 +10,7 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS } from '../../shared/constants';
+import type { PairRefusal } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
@@ -73,6 +74,15 @@ export interface WebTerminalStartOptions {
    */
   allowedHosts?: string[];
   /**
+   * Whether the caller put a `tailscale serve` front in place before starting.
+   *
+   * Recorded and reported, never acted on: registering and tearing down the
+   * serve belongs to whoever owns the machine's tailscale state (the CLI, or
+   * the desktop main process), not to a daemon that may be restarted by an
+   * updater with nobody watching.
+   */
+  tailscale?: boolean;
+  /**
    * Reuse this bearer token instead of minting a fresh one (#596).
    *
    * Set ONLY by the daemon's own restore/start path, from the 0600
@@ -109,6 +119,17 @@ export interface WebTerminalInfo {
    * surfaced rather than left to a daemon log nobody reads.
    */
   deviceCredentials?: boolean;
+  /**
+   * Why pairing cannot succeed right now, or absent when it can. Set together
+   * with WITHHOLDING `pairCode` — see status().
+   *
+   * The type is imported rather than restated: this interface is already a
+   * hand-kept mirror of the one in shared/web.ts, and a fourth copy of the
+   * refusal shape is a fourth thing to forget.
+   */
+  pairRefusal?: PairRefusal;
+  /** Which transport this server was started on. Reported, never acted on. */
+  tailscale?: boolean;
   /**
    * The TLS fronts the operator named with `--allow-host`, if any.
    *
@@ -807,6 +828,27 @@ export class WebTerminalServer {
 
   status(): WebTerminalInfo {
     if (!this.server || !this.opts) return { running: false };
+    // Ask BEFORE minting. `activePairCode` regenerates lazily, so on a server
+    // that cannot mint a credential it would hand the operator a fresh code
+    // every poll — each one guaranteed to answer 403 when a phone redeems it.
+    // Reading the code off a screen onto a phone and only then learning it was
+    // never going to work is the bug this closes.
+    const refusal = this.pairRefusal();
+    if (refusal) {
+      return {
+        running: true,
+        port: this.opts.port,
+        host: this.opts.host,
+        allowInput: this.opts.allowInput,
+        token: this.token,
+        urls: this.buildUrls(),
+        clients: this.clients.size,
+        deviceCredentials: !!this.deps.devices,
+        allowedHosts: this.frontedHosts(),
+        tailscale: this.opts.tailscale === true,
+        pairRefusal: refusal,
+      };
+    }
     const pair = this.activePairCode();
     return {
       running: true,
@@ -820,7 +862,28 @@ export class WebTerminalServer {
       pairExpiresAt: pair.expiresAt,
       deviceCredentials: !!this.deps.devices,
       allowedHosts: this.frontedHosts(),
+      tailscale: this.opts.tailscale === true,
+      // Only meaningful alongside a live code: `activePairCode` can regenerate
+      // lazily, and a regenerated code has no name behind it even if the one it
+      // replaced did.
+      ...(pair.code && this.pendingDeviceName
+        ? { pendingDeviceName: this.pendingDeviceName }
+        : {}),
     };
+  }
+
+  /**
+   * The status-surface form of `mintRefusal`: a reason the UI can switch on,
+   * plus the operator prose for logs and tooltips.
+   *
+   * Deliberately derived from `mintRefusal` rather than re-deriving the
+   * predicate. Two copies of "can this server mint a credential?" would drift,
+   * and the copy that drifts is the one that decides what the operator is
+   * shown, not the one that decides what the wire allows.
+   */
+  private pairRefusal(): PairRefusal | undefined {
+    const detail = this.mintRefusal();
+    return detail ? { reason: 'insecure-transport', detail } : undefined;
   }
 
   /**
@@ -1646,6 +1709,12 @@ export class WebTerminalServer {
     this.pairCode = code;
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
+    // Deliberately does NOT clear `pendingDeviceName`. A replacement minted
+    // after a burned attempt budget is still the same operator pairing the same
+    // device, so the name has to survive it — see the test that burns five
+    // attempts and expects the mint to carry the original name. The name is
+    // consumed on REDEMPTION instead (burnPairCode), which is the moment it
+    // actually became a device.
     this.pairRegeneratedAt = Date.now();
   }
 

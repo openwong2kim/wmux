@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The app's `web` popover can now actually connect a phone.** It offered two options and neither worked: the default served only to this machine, so the address it showed was meaningless on a phone, and "Expose to network" reached the phone but then refused to pair, because a device credential never expires and is not handed out over plain HTTP. Worse, the popover advertised a fresh pairing code every ten seconds in exactly that state — you read six characters onto a phone and only the redemption told you it was never going to work. There is now a "Serve over HTTPS (needs Tailscale)" option that sets up the same one-command Tailscale front `wmux web --tailscale` uses, and when pairing cannot succeed the popover says why and what to do instead of showing a code. If Tailscale is missing or logged out, the popover says which of those it is and links straight to the install page rather than leaving you a URL to retype. Ticking it unticks "Expose to network" and the reverse: `tailscale serve` proxies to this machine only, so a wildcard bind alongside it is a second and weaker way in, not an addition. "Expose to network" now also says plainly that it serves panes for watching but cannot pair a phone.
+
+- **A tailnet address is no longer advertised after its front disappears.** The server remembers the HTTPS name it was started behind and puts it back after a restart, but nothing checked whether `tailscale serve` was still configured — so a `tailscale serve reset`, a logout, or a tailnet switch left the app showing an `https://` address that reached nothing. It is verified now at the moments a human is about to use it (opening the popover, turning the option on, minting a code) and dropped with an explanation when it is gone. Deliberately not checked on the background refresh: that would start a Tailscale process six times a minute for something that only changes when someone acts.
+
+### Added
+
+- **Devices are named before they are paired, from the desktop.** Pairing from the app produced a roster of entries all called "Unnamed device", which makes the one thing the roster is for — revoking a single lost phone — impossible six months later. The pairing code is now shown only after you name the device, and the name is asked for on the desktop, where there is a keyboard, rather than on the phone. Existing paired devices are unaffected, and pairing from the CLI already worked this way.
+
 ## [3.35.0] — 2026-07-25
 
 ### Security

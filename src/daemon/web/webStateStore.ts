@@ -32,6 +32,15 @@ export interface WebPersistedState {
   allowInput: boolean;
   allowedHosts: string[];
   /**
+   * Whether the operator asked for a `tailscale serve` front.
+   *
+   * The daemon never acts on this — the main process owns the serve. It is
+   * recorded so a restored server can report which transport it is actually
+   * running, which is the only way the GUI checkbox can come back checked.
+   * Absent in files written before this field existed, so it reads as false.
+   */
+  tailscale: boolean;
+  /**
    * The web bearer token to reuse on restore.
    *
    * Persisted because rotating it would produce a server that is up but
@@ -59,6 +68,7 @@ export const WEB_STATE_DISABLED: Readonly<WebPersistedState> = Object.freeze({
   host: '127.0.0.1',
   allowInput: false,
   allowedHosts: [] as string[],
+  tailscale: false,
   token: '',
 });
 
@@ -123,6 +133,7 @@ export function coerceWebState(parsed: unknown): WebPersistedState {
     host,
     allowInput: o['allowInput'] === true,
     allowedHosts,
+    tailscale: o['tailscale'] === true,
     token,
   };
 }

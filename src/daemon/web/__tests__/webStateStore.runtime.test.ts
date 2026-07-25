@@ -35,6 +35,7 @@ const enabled = (over: Partial<WebPersistedState> = {}): WebPersistedState => ({
   host: '0.0.0.0',
   allowInput: true,
   allowedHosts: ['box.tail-scale.ts.net'],
+  tailscale: false,
   token: 'tok-abc',
   ...over,
 });

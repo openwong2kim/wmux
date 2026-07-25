@@ -32,6 +32,14 @@ import {
 /** Poll cadence while the popover is open (owner spec). */
 const POLL_INTERVAL_MS = 10_000;
 
+/**
+ * Cap on the device name.
+ *
+ * The popover is a fixed 288px box, so an unbounded name is a layout bug, and
+ * the roster reads better with labels a human scans than with sentences.
+ */
+export const DEVICE_NAME_MAX = 32;
+
 type WebApi = NonNullable<Window['electronAPI']['web']>;
 
 function webApi(): WebApi | undefined {
@@ -43,6 +51,28 @@ function webApi(): WebApi | undefined {
 /** The first URL to surface (selectable/copyable). Empty string when none. */
 export function primaryWebUrl(info: WebTerminalInfo): string {
   return info.urls && info.urls.length > 0 ? info.urls[0] : '';
+}
+
+/**
+ * Split a transport-error line into text and the one URL it may contain.
+ *
+ * `describeTailscaleProblem` writes for a terminal, where an operator can
+ * select a URL and paste it. In a popover that is a dead end: the whole point
+ * of the line is "go install this", and making the reader retype
+ * `https://tailscale.com/download` by hand is the worst possible last step.
+ *
+ * Deliberately narrow — first URL only, no markdown, no rich text. The strings
+ * are ours, not user input, and a general linkifier here would be a parser
+ * nobody asked for.
+ */
+export function splitLinkedLine(line: string): { before: string; url: string; after: string } {
+  const m = /https?:\/\/[^\s,)]+/.exec(line);
+  if (!m) return { before: line, url: '', after: '' };
+  return {
+    before: line.slice(0, m.index),
+    url: m[0],
+    after: line.slice(m.index + m[0].length),
+  };
 }
 
 /** `host:port` bind label, tolerant of a partial info. */
@@ -75,18 +105,28 @@ export interface WebPopoverBodyProps {
   info: WebTerminalInfo;
   allowInput: boolean;
   expose: boolean;
+  /** Put the server behind a `tailscale serve` HTTPS front. */
+  tailscale: boolean;
+  /** What the next paired device will be called. Required before a code shows. */
+  deviceName: string;
   busy: boolean;
   /** Which value was just copied, so only that button flips to "Copied". */
   copied: CopyTarget;
   onToggleAllowInput: () => void;
   onToggleExpose: () => void;
+  onToggleTailscale: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyUrl: () => void;
   onCopyPairUrl: () => void;
   onCopyPairCode: () => void;
   onOpenUrl: () => void;
+  /** Open an external link (install page) in the OS browser. */
+  onOpenLink: (url: string) => void;
   onNewPairCode: () => void;
+  onDeviceNameChange: (value: string) => void;
+  /** Name the device, then mint its code (`daemon.web.pairStart`). */
+  onStartPairing: () => void;
   t: (key: string) => string;
 }
 
@@ -103,17 +143,23 @@ export function WebPopoverBody({
   info,
   allowInput,
   expose,
+  tailscale,
   busy,
   copied,
   onToggleAllowInput,
   onToggleExpose,
+  onToggleTailscale,
   onStart,
   onStop,
   onCopyUrl,
   onCopyPairUrl,
   onCopyPairCode,
   onOpenUrl,
+  onOpenLink,
   onNewPairCode,
+  onDeviceNameChange,
+  onStartPairing,
+  deviceName,
   t,
 }: WebPopoverBodyProps) {
   if (!info.running) {
@@ -136,6 +182,19 @@ export function WebPopoverBody({
           />
           {t('web.allowInput')}
         </label>
+        {/* The only transport a phone can actually pair over. Listed FIRST
+            because it is the one most operators opening this popover want:
+            a device credential never expires, so it is not handed out over
+            plaintext, which rules the LAN option out for pairing entirely. */}
+        <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={tailscale}
+            onChange={onToggleTailscale}
+            className="accent-[var(--accent)]"
+          />
+          {t('web.tailscale')}
+        </label>
         <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
           <input
             type="checkbox"
@@ -145,6 +204,36 @@ export function WebPopoverBody({
           />
           {t('web.expose')}
         </label>
+        {/* Say what --expose actually buys now. Since #616 it can serve panes
+            to the LAN but cannot pair a phone, and a checkbox that silently
+            means "watch only" is how someone ends up stuck at a 403. */}
+        {expose ? (
+          <p className="text-[10px] leading-snug text-[var(--text-sub)]">
+            {t('web.exposeNoPairing')}
+          </p>
+        ) : null}
+        {info.transportError ? (
+          <div className="flex flex-col gap-1 rounded-[5px] bg-[var(--bg-surface)] px-2 py-1.5">
+            {info.transportError.lines.map((line, i) => {
+              const { before, url, after } = splitLinkedLine(line);
+              return (
+                <span key={i} className="text-[10px] leading-snug text-[var(--text-sub)]">
+                  {before}
+                  {url ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenLink(url)}
+                      className={`text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+                    >
+                      {url}
+                    </button>
+                  ) : null}
+                  {after}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
         <p className="text-[10px] leading-snug text-[var(--text-sub)]">
           {t('web.scrollbackWarning')}
         </p>
@@ -213,8 +302,34 @@ export function WebPopoverBody({
         <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
           {t('web.onPhone')}
         </span>
-        {info.pairCode ? (
+        {info.pairRefusal ? (
+          // The whole point of the refusal: this replaces the code rather than
+          // sitting beside it. A code shown next to "pairing is unavailable" is
+          // still a code someone will try to type into a phone.
           <>
+            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+              {info.pairRefusal.reason === 'no-front'
+                ? t('web.refusalNoFront')
+                : t('web.refusalInsecure')}
+            </span>
+            <span
+              title={info.pairRefusal.detail}
+              className="text-[10px] leading-snug text-[var(--text-muted)]"
+            >
+              {info.pairRefusal.reason === 'no-front'
+                ? t('web.refusalNoFrontFix')
+                : t('web.refusalInsecureFix')}
+            </span>
+          </>
+        ) : info.pairCode && info.pendingDeviceName ? (
+          <>
+          {/* Which device this code will register. The operator typed it a
+              moment ago, but the code outlives that moment by ten minutes and
+              a mis-labelled roster is only discovered when someone needs to
+              revoke one entry out of eight. */}
+          <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+            {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
+          </span>
           <span className="text-[10px] leading-snug text-[var(--text-sub)]">
             {t('web.pairHint')}
           </span>
@@ -244,24 +359,61 @@ export function WebPopoverBody({
               {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
             </button>
           </div>
-          <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
-          </>
-        ) : (
-          // A code is single-use and time-limited. Without this the section
-          // would simply vanish once it is spent, stranding the operator with
-          // no way to pair another device short of restarting the server.
-          <>
-            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-              {t('web.pairSpent')}
-            </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
+            {/* Still reachable while a code is live: the operator may believe
+                this one was seen. It re-mints under the SAME name, so replacing
+                a code never silently costs the device its label. */}
             <button
               type="button"
               onClick={onNewPairCode}
               disabled={busy}
-              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
+              className={`ml-auto shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
             >
               {t('web.newPairCode')}
             </button>
+          </div>
+          </>
+        ) : (
+          // Name first, code second. A code exists from the moment the server
+          // starts, but redeeming an unnamed one produces the "Unnamed device"
+          // rows that make a roster unoperable — the live roster on this
+          // machine is 5 of 8. The name is taken HERE, on the desktop, because
+          // this is the only moment a human is present to give one; the phone
+          // still types nothing but the code.
+          <>
+            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+              {t('web.nameHint')}
+            </span>
+            <input
+              type="text"
+              value={deviceName}
+              onChange={(e) => onDeviceNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && deviceName.trim() && !busy) onStartPairing();
+              }}
+              placeholder={t('web.namePlaceholder')}
+              maxLength={DEVICE_NAME_MAX}
+              aria-label={t('web.nameHint')}
+              className={`w-full rounded-[6px] bg-[var(--bg-base)] px-2 py-1 text-[11px] text-[var(--text-main)] placeholder:text-[var(--text-muted)] ${FOCUS_RING}`}
+            />
+            <button
+              type="button"
+              onClick={onStartPairing}
+              disabled={busy || deviceName.trim().length === 0}
+              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${FOCUS_RING}`}
+            >
+              {t('web.showPairCode')}
+            </button>
+            {/* A refused mint used to leave this panel looking untouched: no
+                code appeared and nothing said why. The button guards the empty
+                name, so what lands here is the server refusing for its own
+                reason, which the operator cannot guess. */}
+            {info.pairStartError ? (
+              <span className="text-[10px] leading-snug text-[var(--accent-red)]">
+                {info.pairStartError}
+              </span>
+            ) : null}
           </>
         )}
       </div>
@@ -305,6 +457,8 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
+  const [tailscale, setTailscale] = useState(false);
+  const [deviceName, setDeviceName] = useState('');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -316,12 +470,21 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
 
   const api = webApi();
 
-  const refresh = useCallback(async () => {
+  /**
+   * `verifyFront` asks the main process to shell out to tailscale. Pass it only
+   * on deliberate moments — never from the 10s poll, which would spawn a
+   * process six times a minute for a fact that changes when a human acts.
+   */
+  const refresh = useCallback(async (verifyFront = false) => {
     const a = webApi();
     if (!a) return;
     try {
-      const next = await a.status();
+      const next = await a.status(verifyFront ? { verifyFront: true } : undefined);
       setInfo(next);
+      // Seed the transport checkbox from what is actually running, so a daemon
+      // restart cannot leave the box unchecked over a tailnet server — the
+      // operator's next Stop → Start would silently drop them onto loopback.
+      if (next.running) setTailscale(next.tailscale === true);
     } catch {
       // Handler resolves rather than rejects; a rejection here means the bridge
       // is missing entirely — leave the last known state untouched.
@@ -334,10 +497,11 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     void refresh();
   }, [refresh]);
 
-  // Poll every 10s while the popover is open; also refresh immediately on open.
+  // Poll every 10s while the popover is open. The refresh ON OPEN verifies the
+  // tailnet front (a deliberate act by the operator); the polls after it do not.
   useEffect(() => {
     if (!open) return;
-    void refresh();
+    void refresh(true);
     const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [open, refresh]);
@@ -402,13 +566,31 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     if (!a) return;
     setBusy(true);
     try {
-      const args: WebStartArgs = { allowInput, expose };
+      const args: WebStartArgs = { allowInput, expose, tailscale };
       const next = await a.start(args);
       setInfo(next);
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose]);
+  }, [allowInput, expose, tailscale]);
+
+  // The two transports are alternatives, not additions: `tailscale serve`
+  // proxies loopback, so a wildcard bind alongside it is a second, weaker way
+  // in. Enforced here as well as main-side so the checkboxes never show a
+  // combination the handler would silently rewrite.
+  const handleToggleTailscale = useCallback(() => {
+    setTailscale((v) => {
+      if (!v) setExpose(false);
+      return !v;
+    });
+  }, []);
+
+  const handleToggleExpose = useCallback(() => {
+    setExpose((v) => {
+      if (!v) setTailscale(false);
+      return !v;
+    });
+  }, []);
 
   const handleStop = useCallback(async () => {
     const a = webApi();
@@ -446,16 +628,48 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     [copyValue, info],
   );
 
+  /**
+   * "New code" now goes through pairStart too, carrying the name the operator
+   * already gave. Routing it through the nameless pairRefresh would quietly
+   * register the NEXT device unnamed — the same hole the name field closes.
+   */
   const handleNewPairCode = useCallback(async () => {
     const a = webApi();
-    if (!a?.pairRefresh) return;
+    if (!a) return;
+    const name = (info.pendingDeviceName ?? deviceName).trim();
     setBusy(true);
     try {
-      setInfo(await a.pairRefresh());
+      if (name && a.pairStart) setInfo(await a.pairStart(name));
+      else if (a.pairRefresh) setInfo(await a.pairRefresh());
     } finally {
       setBusy(false);
     }
+  }, [deviceName, info.pendingDeviceName]);
+
+  /**
+   * Send an install link to the OS browser.
+   *
+   * Never navigates this window: the renderer is the app, and a navigation
+   * away from it is a broken app rather than a browser tab. `http(s)` only —
+   * the strings are ours today, but a URL scheme is exactly the kind of thing
+   * that stops being trustworthy the moment someone widens the source.
+   */
+  const handleOpenLink = useCallback((url: string) => {
+    if (!/^https?:\/\//i.test(url)) return;
+    void window.electronAPI?.shell?.openExternal?.(url);
   }, []);
+
+  const handleStartPairing = useCallback(async () => {
+    const a = webApi();
+    const name = deviceName.trim();
+    if (!a?.pairStart || !name) return;
+    setBusy(true);
+    try {
+      setInfo(await a.pairStart(name));
+    } finally {
+      setBusy(false);
+    }
+  }, [deviceName]);
 
   // The URL is the one value that is directly actionable on this machine, so
   // clicking it opens the browser instead of leaving the operator to copy and
@@ -536,17 +750,23 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             info={info}
             allowInput={allowInput}
             expose={expose}
+            tailscale={tailscale}
             busy={busy}
             copied={copied}
             onToggleAllowInput={() => setAllowInput((v) => !v)}
-            onToggleExpose={() => setExpose((v) => !v)}
+            onToggleExpose={handleToggleExpose}
+            onToggleTailscale={handleToggleTailscale}
             onStart={handleStart}
             onStop={handleStop}
             onCopyUrl={handleCopyUrl}
             onCopyPairUrl={handleCopyPairUrl}
             onCopyPairCode={handleCopyPairCode}
             onOpenUrl={handleOpenUrl}
+            onOpenLink={handleOpenLink}
             onNewPairCode={handleNewPairCode}
+            deviceName={deviceName}
+            onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
+            onStartPairing={handleStartPairing}
             t={t}
           />
         </div>
