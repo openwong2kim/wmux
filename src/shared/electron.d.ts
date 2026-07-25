@@ -124,6 +124,16 @@ declare global {
          * short of restarting the server.
          */
         pairRefresh: () => Promise<WebTerminalInfo>;
+        /**
+         * Name a device, then mint the code that will register it.
+         *
+         * The name is taken on the DESKTOP, before the code is shown, because
+         * that is the only moment a human is present to say what to call it.
+         * The daemon refuses a blank name here: a roster of "Unnamed device"
+         * rows cannot be operated — "which of these three do I revoke?" has no
+         * answer six months later.
+         */
+        pairStart: (name: string) => Promise<WebTerminalInfo>;
       };
     };
     clipboardAPI: {

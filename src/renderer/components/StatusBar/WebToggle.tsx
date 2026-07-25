@@ -32,6 +32,14 @@ import {
 /** Poll cadence while the popover is open (owner spec). */
 const POLL_INTERVAL_MS = 10_000;
 
+/**
+ * Cap on the device name.
+ *
+ * The popover is a fixed 288px box, so an unbounded name is a layout bug, and
+ * the roster reads better with labels a human scans than with sentences.
+ */
+export const DEVICE_NAME_MAX = 32;
+
 type WebApi = NonNullable<Window['electronAPI']['web']>;
 
 function webApi(): WebApi | undefined {
@@ -77,6 +85,8 @@ export interface WebPopoverBodyProps {
   expose: boolean;
   /** Put the server behind a `tailscale serve` HTTPS front. */
   tailscale: boolean;
+  /** What the next paired device will be called. Required before a code shows. */
+  deviceName: string;
   busy: boolean;
   /** Which value was just copied, so only that button flips to "Copied". */
   copied: CopyTarget;
@@ -90,6 +100,9 @@ export interface WebPopoverBodyProps {
   onCopyPairCode: () => void;
   onOpenUrl: () => void;
   onNewPairCode: () => void;
+  onDeviceNameChange: (value: string) => void;
+  /** Name the device, then mint its code (`daemon.web.pairStart`). */
+  onStartPairing: () => void;
   t: (key: string) => string;
 }
 
@@ -119,6 +132,9 @@ export function WebPopoverBody({
   onCopyPairCode,
   onOpenUrl,
   onNewPairCode,
+  onDeviceNameChange,
+  onStartPairing,
+  deviceName,
   t,
 }: WebPopoverBodyProps) {
   if (!info.running) {
@@ -267,8 +283,15 @@ export function WebPopoverBody({
                 : t('web.refusalInsecureFix')}
             </span>
           </>
-        ) : info.pairCode ? (
+        ) : info.pairCode && info.pendingDeviceName ? (
           <>
+          {/* Which device this code will register. The operator typed it a
+              moment ago, but the code outlives that moment by ten minutes and
+              a mis-labelled roster is only discovered when someone needs to
+              revoke one entry out of eight. */}
+          <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+            {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
+          </span>
           <span className="text-[10px] leading-snug text-[var(--text-sub)]">
             {t('web.pairHint')}
           </span>
@@ -298,23 +321,51 @@ export function WebPopoverBody({
               {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
             </button>
           </div>
-          <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
-          </>
-        ) : (
-          // A code is single-use and time-limited. Without this the section
-          // would simply vanish once it is spent, stranding the operator with
-          // no way to pair another device short of restarting the server.
-          <>
-            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-              {t('web.pairSpent')}
-            </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
+            {/* Still reachable while a code is live: the operator may believe
+                this one was seen. It re-mints under the SAME name, so replacing
+                a code never silently costs the device its label. */}
             <button
               type="button"
               onClick={onNewPairCode}
               disabled={busy}
-              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
+              className={`ml-auto shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
             >
               {t('web.newPairCode')}
+            </button>
+          </div>
+          </>
+        ) : (
+          // Name first, code second. A code exists from the moment the server
+          // starts, but redeeming an unnamed one produces the "Unnamed device"
+          // rows that make a roster unoperable — the live roster on this
+          // machine is 5 of 8. The name is taken HERE, on the desktop, because
+          // this is the only moment a human is present to give one; the phone
+          // still types nothing but the code.
+          <>
+            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+              {t('web.nameHint')}
+            </span>
+            <input
+              type="text"
+              value={deviceName}
+              onChange={(e) => onDeviceNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && deviceName.trim() && !busy) onStartPairing();
+              }}
+              placeholder={t('web.namePlaceholder')}
+              maxLength={DEVICE_NAME_MAX}
+              aria-label={t('web.nameHint')}
+              className={`w-full rounded-[6px] bg-[var(--bg-base)] px-2 py-1 text-[11px] text-[var(--text-main)] placeholder:text-[var(--text-muted)] ${FOCUS_RING}`}
+            />
+            <button
+              type="button"
+              onClick={onStartPairing}
+              disabled={busy || deviceName.trim().length === 0}
+              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${FOCUS_RING}`}
+            >
+              {t('web.showPairCode')}
             </button>
           </>
         )}
@@ -360,6 +411,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
   const [tailscale, setTailscale] = useState(false);
+  const [deviceName, setDeviceName] = useState('');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -529,16 +581,35 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     [copyValue, info],
   );
 
+  /**
+   * "New code" now goes through pairStart too, carrying the name the operator
+   * already gave. Routing it through the nameless pairRefresh would quietly
+   * register the NEXT device unnamed — the same hole the name field closes.
+   */
   const handleNewPairCode = useCallback(async () => {
     const a = webApi();
-    if (!a?.pairRefresh) return;
+    if (!a) return;
+    const name = (info.pendingDeviceName ?? deviceName).trim();
     setBusy(true);
     try {
-      setInfo(await a.pairRefresh());
+      if (name && a.pairStart) setInfo(await a.pairStart(name));
+      else if (a.pairRefresh) setInfo(await a.pairRefresh());
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [deviceName, info.pendingDeviceName]);
+
+  const handleStartPairing = useCallback(async () => {
+    const a = webApi();
+    const name = deviceName.trim();
+    if (!a?.pairStart || !name) return;
+    setBusy(true);
+    try {
+      setInfo(await a.pairStart(name));
+    } finally {
+      setBusy(false);
+    }
+  }, [deviceName]);
 
   // The URL is the one value that is directly actionable on this machine, so
   // clicking it opens the browser instead of leaving the operator to copy and
@@ -632,6 +703,9 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             onCopyPairCode={handleCopyPairCode}
             onOpenUrl={handleOpenUrl}
             onNewPairCode={handleNewPairCode}
+            deviceName={deviceName}
+            onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
+            onStartPairing={handleStartPairing}
             t={t}
           />
         </div>

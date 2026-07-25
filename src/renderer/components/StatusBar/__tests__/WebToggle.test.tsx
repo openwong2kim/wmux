@@ -30,9 +30,12 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     tailscale: false,
     busy: false,
     copied: null,
+    deviceName: '',
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
     onToggleTailscale: vi.fn(),
+    onDeviceNameChange: vi.fn(),
+    onStartPairing: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
     onCopyUrl: vi.fn(),
@@ -96,6 +99,9 @@ describe('WebPopoverBody — on state', () => {
     clients: 2,
     urls: ['http://127.0.0.1:7681/'],
     pairCode: '482913',
+    // A code only reaches the operator once a device has been named. An
+    // unnamed one is withheld on purpose — see the naming tests below.
+    pendingDeviceName: 'my iPhone',
     allowInput: false,
   };
 
@@ -146,7 +152,48 @@ describe('WebPopoverBody — on state', () => {
   it('offers a way back when the pairing code is spent, instead of hiding the section', () => {
     const html = renderBody({ info: { ...runningInfo, pairCode: undefined } });
     expect(html).toContain('web.onPhone');
-    expect(html).toContain('web.newPairCode');
+    // A spent code lands back on the name field, which IS the way back: the
+    // next device needs a name anyway, and minting from there gives it one.
+    expect(html).toContain('web.showPairCode');
+  });
+
+  it('★ withholds the code until a device has been named', () => {
+    // A code exists from the moment the server starts. Showing that one is how
+    // a roster fills with "Unnamed device" rows nobody can tell apart, which
+    // makes revoking a single device impossible.
+    const html = renderBody({
+      info: { ...runningInfo, pendingDeviceName: undefined },
+      deviceName: '',
+    });
+    expect(html).not.toContain('482913');
+    expect(html).toContain('web.nameHint');
+    expect(html).toContain('web.showPairCode');
+  });
+
+  it('names the device the code will register, next to the code', () => {
+    // The shared identity translator returns the KEY, which carries no
+    // `{name}` placeholder, so interpolation would silently no-op. This one
+    // case needs a translator shaped like the real string to test at all.
+    const html = renderBody({
+      info: runningInfo,
+      t: (key: string) => (key === 'web.pairingAs' ? 'Pairing as {name}' : key),
+    });
+    expect(html).toContain('482913');
+    // The code outlives the moment the name was typed by ten minutes, and a
+    // mis-labelled roster is only discovered when one entry of eight must go.
+    expect(html).toContain('Pairing as my iPhone');
+  });
+
+  it('cannot mint without a name', () => {
+    const empty = renderBody({ info: { ...runningInfo, pendingDeviceName: undefined }, deviceName: '   ' });
+    expect(empty).toContain('disabled=""');
+    const named = renderBody({
+      info: { ...runningInfo, pendingDeviceName: undefined },
+      deviceName: 'phone',
+    });
+    // Same button, now reachable.
+    expect(named).toContain('web.showPairCode');
+    expect(named.split('disabled=""').length).toBeLessThan(empty.split('disabled=""').length);
   });
 
   it('offers both connection paths: an openable URL and a token-free pair address', () => {

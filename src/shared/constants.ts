@@ -425,6 +425,8 @@ export const IPC = {
   WEB_START: 'web:start',
   WEB_STOP: 'web:stop',
   WEB_PAIR_REFRESH: 'web:pairRefresh',
+  /** Name a device, THEN mint its code. The daemon refuses a blank name. */
+  WEB_PAIR_START: 'web:pairStart',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

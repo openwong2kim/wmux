@@ -74,6 +74,18 @@ export interface WebTerminalInfo {
    */
   tailscale?: boolean;
   /**
+   * The name the CURRENT pairing code will register its device under, or absent
+   * when the live code was minted without one.
+   *
+   * Reported so the popover can be stateless about it. A code exists from the
+   * moment the server starts, but a code minted by `start()` has no name behind
+   * it — redeeming that one produces the "Unnamed device" rows that make a
+   * roster unoperable ("which of these three do I revoke?"). The GUI shows the
+   * code only when this is set, so naming cannot be skipped by reopening the
+   * popover.
+   */
+  pendingDeviceName?: string;
+  /**
    * Why the transport could not be brought up, when a start asked for one it
    * could not get (tailscale absent, logged out, someone else serving on :443).
    *

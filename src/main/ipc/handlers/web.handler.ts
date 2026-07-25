@@ -228,6 +228,46 @@ export function registerWebHandlers(
     }),
   );
 
+  ipcMain.removeHandler(IPC.WEB_PAIR_START);
+  ipcMain.handle(
+    IPC.WEB_PAIR_START,
+    wrapHandler(IPC.WEB_PAIR_START, async (_event, input: unknown): Promise<WebTerminalInfo> => {
+      const name =
+        input && typeof input === 'object' ? String((input as { name?: unknown }).name ?? '') : '';
+      const dc = getDaemonClient();
+      if (!dc || !dc.isConnected) {
+        return {
+          running: false,
+          error: 'wmux web runs inside the background daemon, which is not running.',
+        };
+      }
+      // `daemon.web.pairStart` answers {ok,code,expiresAt} or {ok:false,error},
+      // NOT a WebTerminalInfo — it is the roster seam, shared with the CLI. The
+      // popover only ever renders WebTerminalInfo, so read the fresh status
+      // rather than hand-assemble one and let the two drift.
+      let failure: string | undefined;
+      try {
+        const res = (await dc.rpc('daemon.web.pairStart', { name })) as {
+          ok?: boolean;
+          error?: string;
+        };
+        if (res?.ok !== true) failure = res?.error ?? 'pairing could not be started';
+      } catch (err) {
+        failure = (err as Error)?.message ?? String(err);
+      }
+      const info = await call('daemon.web.status', {});
+      if (failure) return { ...withFront(info), error: failure };
+      // A fresh code is the last moment before a camera is pointed at it.
+      if (info.running && advertisesFront(info)) {
+        frontState = await checkWebFront({
+          webPort: info.port ?? WEB_DEFAULT_PORT,
+          ...(exec ? { exec } : {}),
+        });
+      }
+      return withFront(info);
+    }),
+  );
+
   ipcMain.removeHandler(IPC.WEB_STOP);
   ipcMain.handle(
     IPC.WEB_STOP,
@@ -253,5 +293,6 @@ export function registerWebHandlers(
     ipcMain.removeHandler(IPC.WEB_START);
     ipcMain.removeHandler(IPC.WEB_STOP);
     ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
+    ipcMain.removeHandler(IPC.WEB_PAIR_START);
   };
 }

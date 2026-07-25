@@ -863,6 +863,12 @@ export class WebTerminalServer {
       deviceCredentials: !!this.deps.devices,
       allowedHosts: this.frontedHosts(),
       tailscale: this.opts.tailscale === true,
+      // Only meaningful alongside a live code: `activePairCode` can regenerate
+      // lazily, and a regenerated code has no name behind it even if the one it
+      // replaced did.
+      ...(pair.code && this.pendingDeviceName
+        ? { pendingDeviceName: this.pendingDeviceName }
+        : {}),
     };
   }
 
@@ -1703,6 +1709,12 @@ export class WebTerminalServer {
     this.pairCode = code;
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
+    // Deliberately does NOT clear `pendingDeviceName`. A replacement minted
+    // after a burned attempt budget is still the same operator pairing the same
+    // device, so the name has to survive it — see the test that burns five
+    // attempts and expects the mint to carry the original name. The name is
+    // consumed on REDEMPTION instead (burnPairCode), which is the moment it
+    // actually became a device.
     this.pairRegeneratedAt = Date.now();
   }
 
