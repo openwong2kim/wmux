@@ -27,6 +27,8 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
+  // Mutable so a test can bump the offered release mid-run (supersede paths).
+  const feed = { version: NEW_VERSION };
   const requestUrls: string[] = [];
   const ipcHandlers = new Map<string, (...a: unknown[]) => unknown>();
   const openPath = vi.fn(async (_p: string) => '');
@@ -41,9 +43,9 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
       end() {
         Promise.resolve().then(() => {
           if (url.includes('update.electronjs.org')) {
-            respondJson(cbs, { name: NEW_VERSION, notes: 'notes', url: DL_URL });
+            respondJson(cbs, { name: feed.version, notes: 'notes', url: DL_URL });
           } else if (url.includes('update-manifest.json')) {
-            respondJson(cbs, { version: NEW_VERSION, setupExe: `wmux-${NEW_VERSION}.Setup.exe`, sha256: sha, url: DL_URL });
+            respondJson(cbs, { version: feed.version, setupExe: `wmux-${feed.version}.Setup.exe`, sha256: sha, url: DL_URL });
           } else {
             respondBody(cbs, INSTALLER_BODY);
           }
@@ -79,10 +81,22 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   };
 
   // Mock fs so no real installer file is written; capture the streamed bytes.
+  // `once('close')` fires synchronously on destroy so the fail-path cleanup
+  // (unlink of a partial/mismatched download) runs inside the test.
   vi.doMock('node:fs', () => ({
-    createWriteStream: () => ({ write: vi.fn(), end: (cb?: () => void) => cb && cb(), destroy: vi.fn(), on: () => undefined }),
+    createWriteStream: () => {
+      const closeCbs: Array<() => void> = [];
+      return {
+        write: vi.fn(),
+        end: (cb?: () => void) => cb && cb(),
+        destroy: () => { for (const cb of closeCbs.splice(0)) cb(); },
+        on: () => undefined,
+        once: (ev: string, cb: () => void) => { if (ev === 'close') closeCbs.push(cb); },
+      };
+    },
   }));
-  vi.doMock('node:fs/promises', () => ({ unlink: vi.fn(async () => undefined) }));
+  const unlinkMock = vi.fn(async (_path: string) => undefined);
+  vi.doMock('node:fs/promises', () => ({ unlink: unlinkMock }));
 
   // #502: UPDATE_INSTALL now calls app.quit() after a successful launch so
   // Squirrel never installs against a live instance — the mock must provide it.
@@ -101,7 +115,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock };
 }
 
 /** Flush queued microtasks so the chained net responses (feed→manifest→download) settle. */
@@ -270,5 +284,43 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
     expect(openPath).not.toHaveBeenCalled();
     expect(quit).not.toHaveBeenCalled();
+  });
+
+  it('removes the partial temp file when verification fails (no tampered artifact left in temp)', async () => {
+    const BAD_SHA = 'a'.repeat(64);
+    const { AutoUpdater, unlinkMock, win } = await loadWin32({ sha: BAD_SHA });
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    await backgroundCheck(updater);
+    await flush();
+
+    // The sha-mismatched download must be unlinked — both by the stream's
+    // fail-path cleanup and the caller's catch (idempotent best-effort).
+    expect(unlinkMock).toHaveBeenCalled();
+    expect(String(unlinkMock.mock.calls[0][0])).toContain('wmux-update-');
+  });
+
+  it('a newer release supersedes a downloaded one: old artifact unlinked, new one downloaded', async () => {
+    const { AutoUpdater, feed, sent, unlinkMock, win } = await loadWin32();
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    // First poll downloads + verifies 9.9.10.
+    await backgroundCheck(updater);
+    await flush();
+    expect(sent.map((s) => `${s.channel}:${s.data.status}`)).toContain(`${IPC.UPDATE_AVAILABLE}:downloaded`);
+    const downloadsBefore = sent.filter((s) => s.channel === IPC.UPDATE_AVAILABLE && s.data.status === 'downloaded').length;
+
+    // A newer release appears before the user restarted.
+    feed.version = '9.9.11';
+    await backgroundCheck(updater);
+    await flush();
+
+    // The stale 9.9.10 artifact is deleted (not left to pile up in temp) and
+    // the new version goes through the full download+verify cycle again.
+    expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(`wmux-update-${NEW_VERSION}`))).toBe(true);
+    const downloadsAfter = sent.filter((s) => s.channel === IPC.UPDATE_AVAILABLE && s.data.status === 'downloaded').length;
+    expect(downloadsAfter).toBe(downloadsBefore + 1);
   });
 });

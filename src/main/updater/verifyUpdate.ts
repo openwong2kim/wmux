@@ -17,7 +17,12 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 
 export interface UpdateManifest {
   version: string;
-  setupExe: string;
+  /**
+   * Artifact file name, normalized across platforms: the Windows manifest
+   * publishes it as `setupExe` (unchanged, for backward compatibility with
+   * already-shipped clients), the darwin manifest as `file`.
+   */
+  fileName: string;
   sha256: string;
   url: string;
 }
@@ -74,13 +79,18 @@ export function sha256Hex(data: Buffer): string {
 export function validateManifest(raw: unknown, offeredVersion: string): ManifestResult {
   if (!raw || typeof raw !== 'object') return { ok: false, reason: 'manifest is not an object' };
   const o = raw as Record<string, unknown>;
+  // `setupExe` (Windows manifest) or `file` (darwin manifest) — either one names
+  // the artifact; everything else is validated identically on both platforms.
+  const fileName = typeof o.setupExe === 'string' ? o.setupExe
+    : typeof o.file === 'string' ? o.file
+      : null;
   if (
     typeof o.version !== 'string' ||
-    typeof o.setupExe !== 'string' ||
+    fileName === null ||
     typeof o.sha256 !== 'string' ||
     typeof o.url !== 'string'
   ) {
-    return { ok: false, reason: 'manifest missing required string fields (version/setupExe/sha256/url)' };
+    return { ok: false, reason: 'manifest missing required string fields (version/setupExe|file/sha256/url)' };
   }
   if (!/^[a-f0-9]{64}$/i.test(o.sha256.trim())) {
     return { ok: false, reason: 'sha256 is not a 64-char hex digest' };
@@ -93,6 +103,6 @@ export function validateManifest(raw: unknown, offeredVersion: string): Manifest
   }
   return {
     ok: true,
-    manifest: { version: o.version, setupExe: o.setupExe, sha256: o.sha256.trim(), url: o.url },
+    manifest: { version: o.version, fileName, sha256: o.sha256.trim(), url: o.url },
   };
 }

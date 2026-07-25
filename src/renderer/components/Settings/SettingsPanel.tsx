@@ -1776,7 +1776,13 @@ function UpdateStatus() {
   const handleCheck = async () => {
     setState('checking');
     const result = await ipcInvoke(() => window.electronAPI.updater.checkForUpdates());
-    if (!result.ok) setState('error');
+    if (!result.ok) { setState('error'); return; }
+    // On an unsupported platform (or in dev) the handler answers 'not-available'
+    // directly and no UPDATE_NOT_AVAILABLE event ever follows — without this the
+    // widget would sit in 'checking' forever.
+    if ((result.data as { status?: string } | undefined)?.status === 'not-available') {
+      setState('not-available');
+    }
   };
 
   const handleInstall = () => {
