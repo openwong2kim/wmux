@@ -135,6 +135,21 @@
     });
   }
 
+  // Tap the terminal to type.
+  //
+  // iOS only raises the soft keyboard for a focus that happens INSIDE a user
+  // gesture. The programmatic term.focus() on session switch is enough on a
+  // desktop browser — which is why every test passed — but on a phone it
+  // raises nothing, so the pane looked read-only even with input enabled.
+  // Attaching to the host (not to xterm's own helper textarea, which sits
+  // offscreen and never receives the tap) puts the focus call inside the
+  // gesture where iOS wants it.
+  function focusFromGesture(t) {
+    if (!allowInput || !t) return;
+    try { t.focus(); } catch (e) { /* torn down mid-tap */ }
+  }
+  if (termHost) termHost.addEventListener('click', function () { focusFromGesture(term); });
+
   function ensureTerm(cols, rows) {
     if (!term) {
       term = newTerm(cols, rows);
@@ -386,7 +401,21 @@
         body: data,
         headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
         keepalive: true
-      }).catch(function () { /* transient */ });
+      }).then(function (r) {
+        // fetch RESOLVES on 401 and 403, so a .catch() alone sees neither.
+        // Without this, a stale token or a read-only server made typing do
+        // nothing at all and say nothing at all — the keyboard came up, the
+        // characters went nowhere, and the page looked broken rather than
+        // locked. Dogfooding on a phone is where that showed up.
+        if (r.status === 401) {
+          return readReason(r).then(function (reason) { requireToken(true, reason); });
+        }
+        if (r.status === 403) {
+          allowInput = false;   // stop firing at a door the server has shut
+          setConn('error', 'read-only');
+          return;
+        }
+      }).catch(function () { /* genuinely transient — the stream reconnect reports it */ });
     });
   }
 
@@ -1232,6 +1261,9 @@
     var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false };
     tile.term = newTerm(s.cols, s.rows);
     tile.term.open(host);
+    // Same reason as the single-pane host: on iOS the keyboard only comes up
+    // for a focus made inside a user gesture.
+    host.addEventListener('click', function () { focusFromGesture(tile.term); });
     if (allowInput) {
       // Typing into a tile targets THAT tile's pane — and tapping it already
       // made it the focused one, so "input goes to the focused tile" holds.

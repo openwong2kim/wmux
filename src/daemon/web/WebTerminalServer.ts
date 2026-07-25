@@ -813,10 +813,23 @@ export class WebTerminalServer {
     // Static, unauthenticated app shell (no secrets live in these). `/pair`
     // is the same SPA shell — the frontend renders the pairing screen for it.
     if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
-      return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8');
+      // The whole app is inlined into this one file and it is rebuilt on every
+      // release, so a stale copy is not a slightly-old page — it is the old
+      // client talking to a new daemon. With no Cache-Control and no validator
+      // a browser is free to heuristically cache it, which during dogfooding
+      // meant a phone kept running a build that had already been fixed, with
+      // nothing on either side to say so. `no-store` because there is nothing
+      // worth revalidating: the payload is either current or wrong.
+      return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8', {
+        'Cache-Control': 'no-store',
+      });
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
-      return this.serveStatic(res, this.manifest, 'application/manifest+json; charset=utf-8');
+      // Same reasoning as the shell: a cached manifest pins an installed app's
+      // name, icons and start_url to whatever it first saw.
+      return this.serveStatic(res, this.manifest, 'application/manifest+json; charset=utf-8', {
+        'Cache-Control': 'no-cache',
+      });
     }
     if (req.method === 'GET' && p === '/sw.js') {
       // A service worker may only control the scope it is served from; keep it
