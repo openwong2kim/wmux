@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The first-run wizard now offers to enable the Claude Code statusline.** `wmux setup-statusline` — which shows model, context usage, and 5h/7d rate limits under Claude Code's input box — existed only as a CLI command, so app-only users never discovered it. The onboarding wizard now shows an opt-in "Enable statusline" step (macOS and Windows) when Claude Code is detected and at least one settings file can accept the install. It stays strictly opt-in: nothing installs at boot, an already-installed statusline shows nothing, and a user-authored statusline is never overwritten.
+
 - **In-app auto-update now works on macOS (Apple Silicon) (#609).** Settings → "Check for updates" did nothing on a Mac: the whole updater was gated to Windows, so the only way to move to a new version was to notice a release, download the DMG, and drag it over the old app. macOS (arm64) now follows the same flow Windows has: wmux polls for a newer release, downloads it, pins its SHA-256 against a manifest published by the release pipeline, and installs it on restart — sessions survive, because the daemon keeps running through the swap. Nothing is installed unless the download's hash matches the manifest exactly; on any mismatch or transport error the update is refused outright and the failure is shown rather than silently retried. A build that isn't code-signed (a locally-made one) can't self-update at all, and now says so with a link to the DMG instead of failing silently. Windows behavior, its release assets, and its manifest are all untouched; Linux and Intel Macs still have no in-app updater and are unaffected.
 
 ### Fixed

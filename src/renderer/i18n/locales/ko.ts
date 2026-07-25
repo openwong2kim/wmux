@@ -559,6 +559,14 @@ export const ko = {
   'firstRunWizard.alreadyCompleted': '{date}에 완료되었습니다',
   'firstRunWizard.fallbackPressEnter': '계속하려면 Enter를 누르세요',
   'firstRunWizard.fallbackButton': '계속',
+  'firstRunWizard.statuslineHeading': 'Claude Code 상태줄 (권장)',
+  'firstRunWizard.statuslineDescription':
+    'Claude Code 입력창 아래에 모델·컨텍스트 사용량·사용 한도를 표시합니다. 직접 설정한 상태줄이 있으면 절대 덮어쓰지 않습니다.',
+  'firstRunWizard.statuslineEnableButton': '상태줄 켜기',
+  'firstRunWizard.statuslineInstalling': '설치 중…',
+  'firstRunWizard.statuslineInstalled': '상태줄 켜짐',
+  'firstRunWizard.statuslineInstalledHint': '새 Claude Code 세션부터 자동으로 표시됩니다.',
+  'firstRunWizard.statuslineError': '설치에 실패했습니다. 다시 시도하거나 터미널에서 `wmux setup-statusline`을 실행하세요.',
 
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
   'firstRunWizard.error.PERM.problem': '~/.claude.json에 쓸 수 없습니다.',

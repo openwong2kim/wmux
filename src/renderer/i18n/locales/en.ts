@@ -720,6 +720,14 @@ export const en = {
   'firstRunWizard.alreadyCompleted': 'Already completed on {date}',
   'firstRunWizard.fallbackPressEnter': 'Press Enter to continue',
   'firstRunWizard.fallbackButton': 'Continue',
+  'firstRunWizard.statuslineHeading': 'Claude Code statusline (recommended)',
+  'firstRunWizard.statuslineDescription':
+    'Show model, context usage, and rate limits under Claude Code\'s input box. Your own statusline, if any, is never overwritten.',
+  'firstRunWizard.statuslineEnableButton': 'Enable statusline',
+  'firstRunWizard.statuslineInstalling': 'Installing…',
+  'firstRunWizard.statuslineInstalled': 'Statusline enabled',
+  'firstRunWizard.statuslineInstalledHint': 'New Claude Code sessions will show it automatically.',
+  'firstRunWizard.statuslineError': 'Install failed. You can retry, or run `wmux setup-statusline` from a terminal.',
 
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
   'firstRunWizard.error.PERM.problem': 'wmux could not write to ~/.claude.json.',
