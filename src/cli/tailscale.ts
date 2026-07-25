@@ -514,3 +514,151 @@ export function classifyServeError(text: string): TailscaleProblem {
   }
   return 'serve-failed';
 }
+
+// === transport orchestration ================================================
+//
+// Everything above is a primitive. What follows is the ORDER those primitives
+// have to run in, which is the part that actually breaks.
+//
+// It used to live inline in `handleWeb`, which was fine while the CLI was the
+// only caller. The GUI needs the identical sequence, and the steps that would
+// get dropped in a second copy are the two rollbacks — the ones that only run
+// on a failure path nobody exercises by hand. So the sequence lives here once,
+// and callers hand it a `startServer` / `stopServer` callback rather than a
+// checklist to remember.
+//
+//   START                                    STOP
+//   ┌──────────────────────────────┐         ┌──────────────────────────────┐
+//   │ 1. decideTailscaleBinding    │         │ 1. readPort()  ← BEFORE stop │
+//   │ 2. ensureTailscaleServe      │         │    (afterwards the server is │
+//   │ 3. allowedHosts += magicDns  │         │     gone and there is no way │
+//   │ 4. startServer()             │         │     to tell our serve from   │
+//   │    ├ ok   → done             │         │     the operator's own)      │
+//   │    └ FAIL → removeTailscale- │         │ 2. stopServer()              │
+//   │             Serve  (else a   │         │ 3. removeTailscaleServe      │
+//   │             proxy fronts     │         │    ONLY when the stop worked │
+//   │             nothing: 502)    │         └──────────────────────────────┘
+//   └──────────────────────────────┘
+
+/** What a transport start did, including the caller's own server result. */
+export type WebTransportStart<T> =
+  | {
+      ok: true;
+      /** The bind the server was started on. */
+      host: string;
+      /** `allowedHosts` as passed to the server, MagicDNS appended when fronted. */
+      allowedHosts: string[];
+      /** Present only when a tailnet front was registered. */
+      tailnet?: TailnetServe;
+      /** Non-fatal notes the caller should surface (wildcard-bind warning). */
+      warnings: string[];
+      /** Whatever `startServer` returned. */
+      value: T;
+      /** True when the server start failed and the serve registration was rolled back. */
+      rolledBack: boolean;
+    }
+  | { ok: false; kind: 'binding'; error: string }
+  | { ok: false; kind: 'serve'; problem: TailscaleProblem; detail?: string };
+
+/**
+ * Start `wmux web`, optionally behind a `tailscale serve` HTTPS front.
+ *
+ * `startServer` reports `failed` rather than throwing so that a transport
+ * rollback is driven by the same value the caller inspects — a callback that
+ * threw would skip the rollback and strand a serve pointing at nothing.
+ */
+export async function startWebTransport<T>(opts: {
+  port: number;
+  /** Register (and roll back) a tailnet front. False reproduces the plain path exactly. */
+  tailscale: boolean;
+  explicitHost?: string;
+  expose: boolean;
+  /** Operator-supplied Host allowlist. Not mutated — a copy is returned. */
+  allowedHosts?: string[];
+  servePort?: number;
+  exec?: TailscaleExec;
+  startServer: (args: { host: string; allowedHosts: string[] }) => Promise<{ failed: boolean; value: T }>;
+}): Promise<WebTransportStart<T>> {
+  const allowedHosts = [...(opts.allowedHosts ?? [])];
+
+  // No tailnet front: this must stay byte-for-byte the old behaviour, so it
+  // touches nothing tailscale-related and cannot roll anything back.
+  if (!opts.tailscale) {
+    const host = opts.explicitHost ?? (opts.expose ? '0.0.0.0' : '127.0.0.1');
+    const started = await opts.startServer({ host, allowedHosts });
+    return { ok: true, host, allowedHosts, warnings: [], value: started.value, rolledBack: false };
+  }
+
+  const binding = decideTailscaleBinding({ explicitHost: opts.explicitHost, expose: opts.expose });
+  if (!binding.ok) return { ok: false, kind: 'binding', error: binding.error };
+
+  const serve = await ensureTailscaleServe({
+    webPort: opts.port,
+    ...(opts.servePort !== undefined ? { servePort: opts.servePort } : {}),
+    ...(opts.exec ? { exec: opts.exec } : {}),
+  });
+  if (!serve.ok) {
+    return { ok: false, kind: 'serve', problem: serve.problem, ...(serve.detail ? { detail: serve.detail } : {}) };
+  }
+
+  // The allowlist has to carry the MagicDNS name from the first boot, or the
+  // very first request through the front is refused by the rebinding guard.
+  if (!allowedHosts.some((h) => h.toLowerCase() === serve.magicDns)) allowedHosts.push(serve.magicDns);
+
+  const started = await opts.startServer({ host: binding.host, allowedHosts });
+  if (started.failed) {
+    await removeTailscaleServe({
+      webPort: opts.port,
+      servePort: serve.servePort,
+      ...(opts.exec ? { exec: opts.exec } : {}),
+    });
+    return {
+      ok: true,
+      host: binding.host,
+      allowedHosts,
+      warnings: binding.warnings,
+      value: started.value,
+      rolledBack: true,
+    };
+  }
+
+  return {
+    ok: true,
+    host: binding.host,
+    allowedHosts,
+    tailnet: { magicDns: serve.magicDns, servePort: serve.servePort, url: serve.url },
+    warnings: binding.warnings,
+    value: started.value,
+    rolledBack: false,
+  };
+}
+
+/**
+ * Stop `wmux web` and tear down the front it was running behind.
+ *
+ * Safe to call when no tailnet front was ever registered: `removeTailscaleServe`
+ * classifies first and reports `nothing` / `not-ours` / `unavailable` without
+ * touching anything it did not create.
+ */
+export async function stopWebTransport<T>(opts: {
+  servePort?: number;
+  exec?: TailscaleExec;
+  /** Read the running server's port. Called BEFORE the stop, deliberately. */
+  readPort: () => Promise<number | undefined>;
+  stopServer: () => Promise<{ failed: boolean; value: T }>;
+}): Promise<{ value: T; serveRemoved: boolean; reason: ServeRemoval | 'skipped' }> {
+  const priorPort = await opts.readPort();
+  const stopped = await opts.stopServer();
+
+  // A failed stop leaves a server running that still needs its front door.
+  if (stopped.failed || priorPort === undefined) {
+    return { value: stopped.value, serveRemoved: false, reason: 'skipped' };
+  }
+
+  const removal = await removeTailscaleServe({
+    webPort: priorPort,
+    ...(opts.servePort !== undefined ? { servePort: opts.servePort } : {}),
+    ...(opts.exec ? { exec: opts.exec } : {}),
+  });
+  return { value: stopped.value, serveRemoved: removal.removed, reason: removal.reason };
+}

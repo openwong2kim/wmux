@@ -9,6 +9,8 @@ import {
   ensureTailscaleServe,
   parseTailnetIdentity,
   removeTailscaleServe,
+  startWebTransport,
+  stopWebTransport,
   tailscaleCandidates,
   type TailscaleExec,
   type TailscaleProblem,
@@ -476,5 +478,256 @@ describe('tailscaleCandidates', () => {
     } else {
       expect(candidates).toEqual(['tailscale']);
     }
+  });
+});
+
+/**
+ * The ORDER the primitives run in — the part that used to live bare inside
+ * `handleWeb` and had no coverage at all. Every test below records tailscale
+ * argv and the server callbacks into ONE timeline, because the bugs these guard
+ * against are all "right calls, wrong sequence".
+ */
+describe('startWebTransport / stopWebTransport ordering', () => {
+  /**
+   * One timeline for tailscale argv + server callbacks.
+   *
+   * The fake is STATEFUL on purpose: `serve status` reports an empty slot
+   * before registration and our own config after it. A fake that always
+   * answered "empty" would let the rollback assertion pass vacuously, because
+   * `removeTailscaleServe` classifies before it removes and would report
+   * `nothing` rather than issuing `serve off`.
+   */
+  function timeline() {
+    const events: string[] = [];
+    let registeredServe = false;
+    const exec: TailscaleExec = async (_cmd, args) => {
+      if (args[0] === 'status') {
+        events.push('tailscale:status');
+        return { stdout: STATUS_RUNNING, stderr: '' };
+      }
+      if (args[0] === 'serve' && args[1] === 'status') {
+        events.push('tailscale:serve-status');
+        return { stdout: registeredServe ? serveOurs() : '{}', stderr: '' };
+      }
+      if (args[0] === 'serve' && args.includes('off')) {
+        registeredServe = false;
+        events.push('tailscale:serve-off');
+        return { stdout: '', stderr: '' };
+      }
+      registeredServe = true;
+      events.push('tailscale:serve-on');
+      return { stdout: '', stderr: '' };
+    };
+    return { events, exec };
+  }
+
+  it('registers the front BEFORE starting the server', async () => {
+    const { events, exec } = timeline();
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      expose: false,
+      exec,
+      startServer: async ({ host, allowedHosts }) => {
+        events.push(`start:${host}:${allowedHosts.join(',')}`);
+        return { failed: false, value: 'ok' };
+      },
+    });
+
+    expect(out.ok).toBe(true);
+    // The serve must be up first, or the very first request through the front
+    // is refused by the Host-header rebinding guard.
+    expect(events.indexOf('tailscale:serve-on')).toBeLessThan(
+      events.findIndex((e) => e.startsWith('start:')),
+    );
+    // And the MagicDNS name must already be in the allowlist at start time.
+    expect(events.find((e) => e.startsWith('start:'))).toBe(
+      'start:127.0.0.1:laptop.tail1234.ts.net',
+    );
+  });
+
+  it('rolls the serve back when the server fails to start', async () => {
+    const { events, exec } = timeline();
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      expose: false,
+      exec,
+      startServer: async () => {
+        events.push('start:FAILED');
+        return { failed: true, value: 'boom' };
+      },
+    });
+
+    // Without this a proxy fronts a server that is not there: a permanent 502
+    // the operator has to clean up by hand.
+    expect(events).toContain('tailscale:serve-off');
+    expect(events.indexOf('start:FAILED')).toBeLessThan(events.indexOf('tailscale:serve-off'));
+    expect(out.ok && out.rolledBack).toBe(true);
+  });
+
+  it('does NOT roll back a serve when the server started fine', async () => {
+    const { events, exec } = timeline();
+    await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      expose: false,
+      exec,
+      startServer: async () => ({ failed: false, value: 'ok' }),
+    });
+    expect(events).not.toContain('tailscale:serve-off');
+  });
+
+  it('REGRESSION: tailscale:false touches nothing tailscale-related', async () => {
+    const { events, exec } = timeline();
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: false,
+      expose: false,
+      exec,
+      startServer: async ({ host, allowedHosts }) => {
+        events.push(`start:${host}:${allowedHosts.join(',')}`);
+        return { failed: false, value: 'ok' };
+      },
+    });
+    // This is the path every existing `wmux web` invocation takes. It must be
+    // byte-for-byte what it was before the extraction.
+    expect(events).toEqual(['start:127.0.0.1:']);
+    expect(out.ok && out.tailnet).toBeUndefined();
+  });
+
+  it('REGRESSION: tailscale:false + expose still binds the wildcard', async () => {
+    const { events, exec } = timeline();
+    await startWebTransport({
+      port: WEB_PORT,
+      tailscale: false,
+      expose: true,
+      exec,
+      startServer: async ({ host }) => {
+        events.push(`start:${host}`);
+        return { failed: false, value: 'ok' };
+      },
+    });
+    expect(events).toEqual(['start:0.0.0.0']);
+  });
+
+  it('refuses a pinned non-loopback bind before touching tailscale', async () => {
+    const { events, exec } = timeline();
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      explicitHost: '192.168.1.5',
+      expose: false,
+      exec,
+      startServer: async () => {
+        events.push('start:SHOULD-NOT-HAPPEN');
+        return { failed: false, value: 'ok' };
+      },
+    });
+    expect(out.ok).toBe(false);
+    // Nothing was registered, so there is nothing to roll back.
+    expect(events).toEqual([]);
+  });
+
+  it('never starts the server when the serve registration fails', async () => {
+    const events: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      if (args[0] === 'status') throw enoent();
+      events.push(`tailscale:${args.join(' ')}`);
+      return { stdout: '', stderr: '' };
+    };
+    const out = await startWebTransport({
+      port: WEB_PORT,
+      tailscale: true,
+      expose: false,
+      exec,
+      startServer: async () => {
+        events.push('start:SHOULD-NOT-HAPPEN');
+        return { failed: false, value: 'ok' };
+      },
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok && out.kind === 'serve') expect(out.problem).toBe('not-installed');
+    expect(events).toEqual([]);
+  });
+
+  it('reads the port BEFORE stopping the server', async () => {
+    const events: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      if (args[0] === 'serve' && args[1] === 'status') {
+        events.push('tailscale:serve-status');
+        return { stdout: serveOurs(), stderr: '' };
+      }
+      events.push('tailscale:serve-off');
+      return { stdout: '', stderr: '' };
+    };
+
+    const out = await stopWebTransport({
+      exec,
+      readPort: async () => {
+        events.push('readPort');
+        return WEB_PORT;
+      },
+      stopServer: async () => {
+        events.push('stopServer');
+        return { failed: false, value: 'stopped' };
+      },
+    });
+
+    // Read first: once the server is gone there is no way left to tell a serve
+    // config we created from one the operator set up themselves.
+    expect(events.indexOf('readPort')).toBeLessThan(events.indexOf('stopServer'));
+    expect(events.indexOf('stopServer')).toBeLessThan(events.indexOf('tailscale:serve-off'));
+    expect(out.serveRemoved).toBe(true);
+  });
+
+  it('leaves the front alone when the stop failed', async () => {
+    const events: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      events.push(`tailscale:${args.join(' ')}`);
+      return { stdout: serveOurs(), stderr: '' };
+    };
+    const out = await stopWebTransport({
+      exec,
+      readPort: async () => WEB_PORT,
+      stopServer: async () => ({ failed: true, value: 'nope' }),
+    });
+    // A failed stop leaves a running server that still needs its front door.
+    expect(events).toEqual([]);
+    expect(out.serveRemoved).toBe(false);
+    expect(out.reason).toBe('skipped');
+  });
+
+  it('leaves a foreign serve config alone on stop', async () => {
+    const foreign = JSON.stringify({
+      TCP: { '443': { HTTPS: true } },
+      Web: {
+        'laptop.tail1234.ts.net:443': {
+          Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } },
+        },
+      },
+    });
+    const { exec, calls } = fakeExec((args) =>
+      args[0] === 'serve' && args[1] === 'status' ? { stdout: foreign } : {},
+    );
+    const out = await stopWebTransport({
+      exec,
+      readPort: async () => WEB_PORT,
+      stopServer: async () => ({ failed: false, value: 'stopped' }),
+    });
+    expect(out.serveRemoved).toBe(false);
+    expect(out.reason).toBe('not-ours');
+    expect(deregistered(calls)).toBe(false);
+  });
+
+  it('skips removal entirely when nothing was running', async () => {
+    const { exec, calls } = fakeExec(() => ({}));
+    const out = await stopWebTransport({
+      exec,
+      readPort: async () => undefined,
+      stopServer: async () => ({ failed: false, value: 'stopped' }),
+    });
+    expect(out.reason).toBe('skipped');
+    expect(calls).toEqual([]);
   });
 });

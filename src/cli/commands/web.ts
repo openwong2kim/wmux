@@ -1,10 +1,9 @@
 import { sendDaemonStringRequest } from '../client';
 import { printResult, ensureOk, parseFlag, hasFlag, getResultError } from '../utils';
 import {
-  decideTailscaleBinding,
   describeTailscaleProblem,
-  ensureTailscaleServe,
-  removeTailscaleServe,
+  startWebTransport,
+  stopWebTransport,
   type TailnetServe,
 } from '../tailscale';
 import type { RpcResponse } from '../../shared/rpc';
@@ -44,26 +43,25 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     return report(response, jsonMode, 'status');
   }
   if (hasFlag(args, '--stop')) {
-    // Learn the port BEFORE stopping: without it there is no way to tell a
-    // serve config we created from one the operator set up themselves, and the
-    // rule is that we only ever remove our own.
-    const priorPort = webPortOf(await sendDaemonStringRequest('daemon.web.status', {}));
-    const response = await sendDaemonStringRequest('daemon.web.stop', {});
-    // Only tear the proxy down once the server is actually gone — a failed stop
-    // leaves a running server that would otherwise lose its front door.
-    const removal =
-      priorPort !== undefined && getResultError(response) === undefined
-        ? await removeTailscaleServe({ webPort: priorPort })
-        : null;
+    // The read-before-stop ordering and the "only remove our own" rule now live
+    // in stopWebTransport, so the GUI cannot get a different answer than this.
+    const stop = await stopWebTransport({
+      readPort: async () => webPortOf(await sendDaemonStringRequest('daemon.web.status', {})),
+      stopServer: async () => {
+        const res = await sendDaemonStringRequest('daemon.web.stop', {});
+        return { failed: getResultError(res) !== undefined, value: res };
+      },
+    });
+    const response = stop.value;
     if (jsonMode) {
-      if (removal?.removed && response.ok && isRecord(response.result)) {
+      if (stop.serveRemoved && response.ok && isRecord(response.result)) {
         return printResult({ ...response, result: { ...response.result, tailscaleServeRemoved: true } });
       }
       return printResult(response);
     }
     ensureOk(response);
     console.log('wmux web stopped.');
-    if (removal?.removed) console.log('`tailscale serve` configuration removed.');
+    if (stop.serveRemoved) console.log('`tailscale serve` configuration removed.');
     return;
   }
 
@@ -78,7 +76,6 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // else loopback-only (safe default — nothing off-machine can reach it).
   // `--tailscale` narrows this further — see decideTailscaleBinding.
   const explicitHost = parseFlag(args, '--host');
-  let host = explicitHost ?? (hasFlag(args, '--expose') ? EXPOSE_HOST : LOOPBACK_HOST);
   const allowInput = hasFlag(args, '--allow-input');
   // Extra Host-header names the server should accept (comma-separated). A
   // reverse proxy in front of the loopback bind forwards the browser's Host
@@ -93,41 +90,34 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // way back to the old behaviour, i.e. revoke every device that has the token.
   const newToken = hasFlag(args, '--new-token');
 
-  // `--tailscale`: register the HTTPS front door BEFORE the server starts, so
-  // the Host-header allowlist can carry the MagicDNS name from the first boot
-  // and the operator never has to restart to add it.
-  let tailnet: TailnetServe | undefined;
-  if (hasFlag(args, '--tailscale')) {
-    const binding = decideTailscaleBinding({ explicitHost, expose: hasFlag(args, '--expose') });
-    if (!binding.ok) {
-      console.error(`Error: ${binding.error}`);
-      process.exit(1);
-    }
-    host = binding.host;
-    for (const warning of binding.warnings) console.warn(warning);
-
-    const serve = await ensureTailscaleServe({ webPort: port });
-    if (!serve.ok) {
-      for (const line of describeTailscaleProblem(serve.problem, serve.detail)) console.error(line);
-      process.exit(1);
-    }
-    tailnet = { magicDns: serve.magicDns, servePort: serve.servePort, url: serve.url };
-    if (!allowedHosts.some((h) => h.toLowerCase() === serve.magicDns)) allowedHosts.push(serve.magicDns);
-  }
-
-  const response = await sendDaemonStringRequest('daemon.web.start', {
+  // `--tailscale`: the HTTPS front door is registered BEFORE the server starts
+  // (so the Host allowlist carries the MagicDNS name from the first boot) and
+  // rolled back if the start fails. Both live in startWebTransport.
+  const start = await startWebTransport({
     port,
-    host,
-    allowInput,
+    tailscale: hasFlag(args, '--tailscale'),
+    ...(explicitHost !== undefined ? { explicitHost } : {}),
+    expose: hasFlag(args, '--expose'),
     allowedHosts,
-    newToken,
+    startServer: async ({ host, allowedHosts: hosts }) => {
+      const res = await sendDaemonStringRequest('daemon.web.start', {
+        port,
+        host,
+        allowInput,
+        allowedHosts: hosts,
+        newToken,
+      });
+      return { failed: getResultError(res) !== undefined, value: res };
+    },
   });
-  // Never leave a half-configured serve behind: a proxy in front of a server
-  // that failed to start is a 502 the operator has to clean up by hand.
-  if (tailnet && getResultError(response) !== undefined) {
-    await removeTailscaleServe({ webPort: port, servePort: tailnet.servePort });
+
+  if (!start.ok) {
+    if (start.kind === 'binding') console.error(`Error: ${start.error}`);
+    else for (const line of describeTailscaleProblem(start.problem, start.detail)) console.error(line);
+    process.exit(1);
   }
-  return report(response, jsonMode, 'start', tailnet);
+  for (const warning of start.warnings) console.warn(warning);
+  return report(start.value, jsonMode, 'start', start.tailnet);
 }
 
 /** The port a running web server reports, or undefined when it is not running. */
