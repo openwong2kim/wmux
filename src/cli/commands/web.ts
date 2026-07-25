@@ -60,12 +60,17 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     .split(',')
     .map((h) => h.trim())
     .filter(Boolean);
+  // #596: the token now survives a restart, so re-running `wmux web` to change
+  // options no longer locks out a paired phone. `--new-token` is the explicit
+  // way back to the old behaviour, i.e. revoke every device that has the token.
+  const newToken = hasFlag(args, '--new-token');
 
   const response = await sendDaemonStringRequest('daemon.web.start', {
     port,
     host,
     allowInput,
     allowedHosts,
+    newToken,
   });
   return report(response, jsonMode, 'start');
 }
@@ -151,6 +156,9 @@ function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'statu
   }
   console.log('  PWA: iOS "Add to Home Screen" works over HTTP; Android install');
   console.log('  and offline caching need HTTPS (front it with `tailscale serve`).');
-  console.log('  Stop with `wmux web --stop`.');
+  console.log('');
+  console.log('  This stays on across daemon restarts (crash, reboot, update) and the');
+  console.log('  token above keeps working, so a phone left open reconnects by itself.');
+  console.log('  Stop with `wmux web --stop` — that also revokes the token.');
   console.log('');
 }
