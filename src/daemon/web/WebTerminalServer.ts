@@ -74,6 +74,15 @@ export interface WebTerminalStartOptions {
    */
   allowedHosts?: string[];
   /**
+   * Whether the caller put a `tailscale serve` front in place before starting.
+   *
+   * Recorded and reported, never acted on: registering and tearing down the
+   * serve belongs to whoever owns the machine's tailscale state (the CLI, or
+   * the desktop main process), not to a daemon that may be restarted by an
+   * updater with nobody watching.
+   */
+  tailscale?: boolean;
+  /**
    * Reuse this bearer token instead of minting a fresh one (#596).
    *
    * Set ONLY by the daemon's own restore/start path, from the 0600
@@ -119,6 +128,8 @@ export interface WebTerminalInfo {
    * refusal shape is a fourth thing to forget.
    */
   pairRefusal?: PairRefusal;
+  /** Which transport this server was started on. Reported, never acted on. */
+  tailscale?: boolean;
   /**
    * The TLS fronts the operator named with `--allow-host`, if any.
    *
@@ -834,6 +845,7 @@ export class WebTerminalServer {
         clients: this.clients.size,
         deviceCredentials: !!this.deps.devices,
         allowedHosts: this.frontedHosts(),
+        tailscale: this.opts.tailscale === true,
         pairRefusal: refusal,
       };
     }
@@ -850,6 +862,7 @@ export class WebTerminalServer {
       pairExpiresAt: pair.expiresAt,
       deviceCredentials: !!this.deps.devices,
       allowedHosts: this.frontedHosts(),
+      tailscale: this.opts.tailscale === true,
     };
   }
 

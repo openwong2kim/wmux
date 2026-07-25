@@ -58,6 +58,27 @@ export interface WebTerminalInfo {
    */
   pairRefusal?: PairRefusal;
   /**
+   * Whether this server was started behind a `tailscale serve` front.
+   *
+   * The daemon does not act on it — the main process owns the serve. It is
+   * persisted and replayed so the popover can seed its checkbox from what is
+   * actually running. Without it a daemon restart brought the server back on
+   * the tailnet while the checkbox read `false`, and the operator's next
+   * Stop → Start silently dropped them onto loopback.
+   */
+  tailscale?: boolean;
+  /**
+   * Why the transport could not be brought up, when a start asked for one it
+   * could not get (tailscale absent, logged out, someone else serving on :443).
+   *
+   * Set by the MAIN process, never the daemon — the daemon is not involved in a
+   * start that failed before it was called. Same split as `pairRefusal`: a
+   * `reason` the UI switches on to pick translated copy, plus `lines` that
+   * quote what tailscale actually said. The quoted text stays English because
+   * it is tailscale's own stderr; translating a quote would misrepresent it.
+   */
+  transportError?: { reason: string; lines: string[] };
+  /**
    * Set ONLY by the main-process handler when it could not reach the daemon
    * (no control pipe, or the RPC threw/timed out). Absent on a normal reply.
    */
@@ -85,6 +106,16 @@ export interface WebStartArgs {
   allowInput?: boolean;
   /** Bind all interfaces instead of loopback (default false). */
   expose?: boolean;
+  /**
+   * Put the server behind a `tailscale serve` HTTPS front.
+   *
+   * This field stops at the MAIN process — it is the main process that runs the
+   * serve registration, exactly as the CLI does, and the daemon only ever
+   * receives the resulting `allowedHosts`. Mutually exclusive with `expose`:
+   * `tailscale serve` proxies loopback, so a wildcard bind is a different
+   * (and weaker) transport, not an addition to this one.
+   */
+  tailscale?: boolean;
 }
 
 /**

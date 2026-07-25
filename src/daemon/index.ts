@@ -153,7 +153,7 @@ let webRestore: Promise<void> | null = null;
  * write failure degrades to "will not come back on its own" and is logged —
  * never surfaced as a failed start.
  */
-function persistWebState(info: WebTerminalInfo, allowedHosts: string[]): void {
+function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscale: boolean): void {
   if (!info.running || !info.token) return;
   const ok = saveWebState(wmuxDir, {
     version: 1,
@@ -162,6 +162,7 @@ function persistWebState(info: WebTerminalInfo, allowedHosts: string[]): void {
     host: info.host ?? '127.0.0.1',
     allowInput: info.allowInput === true,
     allowedHosts,
+    tailscale,
     token: info.token,
   });
   if (!ok) {
@@ -206,6 +207,12 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       host: state.host,
       allowInput: state.allowInput,
       allowedHosts: state.allowedHosts,
+      // Replayed, not re-established: the serve registration lives with the
+      // main process and tailscaled keeps it across reboots on its own. All
+      // this does is let the restored server say which transport it is on, so
+      // the popover checkbox comes back matching reality. Whether the front is
+      // STILL there is a separate question the status path has to ask.
+      tailscale: state.tailscale,
       // The whole point: the phone's stored token keeps working, so a browser
       // left open reconnects on its own (EventSource retries) with no human.
       token: state.token,
@@ -213,7 +220,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
     // The bind may have landed on a different port than requested only when
     // asked for 0, which never happens here — but re-persist anyway so the
     // record always mirrors reality.
-    persistWebState(info, state.allowedHosts);
+    persistWebState(info, state.allowedHosts, state.tailscale);
     // A restore that puts a WRITABLE terminal back on every network interface
     // happens with nobody at the desktop, so it is logged at warn: the operator
     // asked for exactly this, but "it came back on its own" should be findable
@@ -1869,6 +1876,7 @@ function registerRpcHandlers(
       allowInput?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
+      tailscale?: boolean;
     };
     const port =
       typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
@@ -1912,8 +1920,9 @@ function registerRpcHandlers(
         );
       }
     }
-    const info = await webServer.start({ port, host, allowInput, allowedHosts, token });
-    persistWebState(info, allowedHosts);
+    const tailscale = p.tailscale === true;
+    const info = await webServer.start({ port, host, allowInput, allowedHosts, tailscale, token });
+    persistWebState(info, allowedHosts, tailscale);
     return info;
   });
   pipeServer.onRpc('daemon.web.stop', async () => {
