@@ -162,11 +162,68 @@ export interface ReplacementDeps {
   isClientConnected: () => boolean;
   disconnectClient: () => Promise<void>;
   checkLiveness: (pid: number) => ProcessLiveness;
+  /**
+   * Issue #545 — probe-independent evidence that the old daemon finished
+   * shutting down: its control pipe no longer accepts connections. Wired to a
+   * short connect against the daemon pipe that is destroyed the instant it
+   * succeeds, so the probe itself can never hold a dying server open. A connect
+   * that SUCCEEDS or times out must report false (fail-closed); only an
+   * authoritative "nothing is listening" (ENOENT / ECONNREFUSED) is true.
+   */
+  isPipeGone: () => Promise<boolean>;
   /** Verified SIGKILL against an explicit pid (definitiveOnly mode). */
   killVerifiedPid: (pid: number) => boolean;
   sleep: (ms: number) => Promise<void>;
   isCancelled: () => boolean;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
+}
+
+/**
+ * Issue #545 — has the old daemon finished shutting down?
+ *
+ * `tasklist` is the only death signal today, and by deliberate design
+ * (`processLiveness`, Defect-1 / split-brain) a probe that fails or times out
+ * returns `unknown`, NEVER `dead`. On a box where tasklist is slow or
+ * AV-blocked, EVERY poll returns `unknown`, so a daemon that acked cleanly and
+ * exited 10 ms later still burns the full 5 s budget, then fails the
+ * `definitiveOnly` kill (its image lookup is null for the same reason), and the
+ * whole replacement dead-ends. That matches the reported "dead=false after
+ * graceful poll 5s, every run" far better than an actually-lingering process
+ * does — measured post-ack exit is 7-12 ms (node and Electron, 10 and 35
+ * sessions).
+ *
+ * So accept a second, independent proof:
+ *
+ *   liveness === 'dead'                       ─► confirmed (authoritative)
+ *   liveness === 'unknown' && acked && pipeGone ─► confirmed (shutdown completed)
+ *   anything else                             ─► not confirmed (keep polling)
+ *
+ * Two preconditions, both load-bearing:
+ *
+ *  - `acked`: without an ack we never learned the daemon committed to dying, so
+ *    a pipe that merely looks gone must not authorize spawning over it.
+ *  - `liveness !== 'alive'`: a process the probe POSITIVELY sees running has not
+ *    finished exiting, whatever its pipe says — it is mid-shutdown. Only
+ *    `unknown` (we learned nothing) gets rescued by the pipe signal. Spawning a
+ *    second daemon next to a confirmed-live one is the split-brain hazard this
+ *    whole file exists to prevent, and the existing SIGKILL escalation already
+ *    covers a daemon that genuinely lingers.
+ *
+ * NAMING: this proves "shutdown() ran to completion", not "the process left the
+ * process table" — `pipeServer.stop()` happens before the exit. That is still
+ * exactly what the caller needs, because by then `releaseLock()` has run and
+ * `disposeAll()` has killed the PTYs, so the lock and the pipe name are free
+ * for a fresh daemon. Named for what it proves so it is never reused as a
+ * liveness oracle.
+ */
+export function confirmShutdownComplete(input: {
+  liveness: ProcessLiveness;
+  acked: boolean;
+  pipeGone: boolean;
+}): boolean {
+  if (input.liveness === 'dead') return true;
+  if (input.liveness === 'alive') return false;
+  return input.acked && input.pipeGone;
 }
 
 /**
@@ -222,10 +279,26 @@ export async function runDaemonReplacement(deps: ReplacementDeps): Promise<Repla
 
   // Step 3 — confirm process death against the CAPTURED pid.
   const attempts = Math.max(1, Math.ceil(REPLACEMENT_DEATH_POLL_BUDGET_MS / REPLACEMENT_DEATH_POLL_INTERVAL_MS));
-  let dead = deps.checkLiveness(deps.oldPid) === 'dead';
+  // #545 — two independent signals, either of which confirms. `isPipeGone` is
+  // best-effort: a probe that throws must read as "not gone" (fail-closed), so
+  // a broken probe can only ever cost us the old 5 s wait, never a bad spawn.
+  const pipeGone = async (): Promise<boolean> => {
+    try {
+      return await deps.isPipeGone();
+    } catch {
+      return false;
+    }
+  };
+  const confirm = async (): Promise<boolean> =>
+    confirmShutdownComplete({
+      liveness: deps.checkLiveness(deps.oldPid),
+      acked,
+      pipeGone: await pipeGone(),
+    });
+  let dead = await confirm();
   for (let i = 0; i < attempts && !dead; i++) {
     await deps.sleep(REPLACEMENT_DEATH_POLL_INTERVAL_MS);
-    dead = deps.checkLiveness(deps.oldPid) === 'dead';
+    dead = await confirm();
   }
 
   if (!dead) {
@@ -244,7 +317,7 @@ export async function runDaemonReplacement(deps: ReplacementDeps): Promise<Repla
     if (killed) {
       for (let i = 0; i < 4 && !dead; i++) {
         await deps.sleep(REPLACEMENT_DEATH_POLL_INTERVAL_MS);
-        dead = deps.checkLiveness(deps.oldPid) === 'dead';
+        dead = await confirm();
       }
     }
     if (!dead) {

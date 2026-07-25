@@ -61,6 +61,12 @@ export interface DaemonReplacementHooks {
   /** Verified SIGKILL against an explicit pid (definitiveOnly mode). */
   killVerifiedPid: (pid: number) => boolean;
   /**
+   * #545 — "is the daemon control pipe gone?" Second, tasklist-independent
+   * proof that shutdown ran to completion. Optional: absent means the old
+   * liveness-only behavior (existing tests / callers unaffected).
+   */
+  isPipeGone?: () => Promise<boolean>;
+  /**
    * True when the user asked for "Shut down wmux completely". dispose()
    * fires on EVERY quit (before-quit calls it unconditionally, ahead of the
    * detach-vs-teardown branch), so a dispose observed mid-replacement must
@@ -329,6 +335,8 @@ export class DaemonRespawnController {
       disconnectClient: () => oldClient.disconnect(),
       checkLiveness: rep.checkLiveness,
       killVerifiedPid: rep.killVerifiedPid,
+      // Absent hook → always "not gone", i.e. exactly the pre-#545 behavior.
+      isPipeGone: rep.isPipeGone ?? (async () => false),
       sleep,
       isCancelled: () => this.disposed,
       log: (level, msg) => { this.deps.logger[level](msg); },

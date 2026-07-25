@@ -170,6 +170,8 @@ let drainDelayMs: number | null = null;
 /** One-shot diagnostic latch — see the retention branch in writeTerminalOutput. */
 let retentionEngagedLogged = false;
 
+/** Monotonic-ish clock for the interactive window. Falls back to Date.now() in
+ *  environments without `performance` (jsdom-less unit tests). */
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
@@ -190,6 +192,9 @@ function withinInteractiveWindow(terminal: SchedulableTerminal): boolean {
   return t !== undefined && now() - t < INTERACTIVE_WINDOW_MS;
 }
 
+/** Arm the shared drain timer, keeping the EARLIEST pending deadline. One timer
+ *  serves every queued terminal, so a later request must never push out a drain
+ *  that was already due sooner. */
 function scheduleDrain(delayMs: number): void {
   if (drainTimer !== null) {
     // Keep the earlier deadline; only reschedule when the new request is sooner.
@@ -200,6 +205,10 @@ function scheduleDrain(delayMs: number): void {
   drainDelayMs = delayMs;
 }
 
+/** Fetch this terminal's queue entry, creating an empty one on first write.
+ *  `onWritten` is re-bound on every call because the latest registration belongs
+ *  to the current mount — a stale closure from a previous mount would notify a
+ *  component that is already gone. */
 function getOrCreateEntry(
   terminal: SchedulableTerminal,
   options: WriteOptions,
@@ -214,6 +223,10 @@ function getOrCreateEntry(
   return entry;
 }
 
+/** Drop already-consumed chunks so a long-lived queue doesn't grow without
+ *  bound. Fully drained → reset outright; otherwise splice only once the
+ *  consumed prefix passes COMPACT_THRESHOLD, so a steady stream pays the
+ *  O(n) splice rarely instead of on every drain. */
 function compactConsumedChunks(entry: QueueEntry): void {
   if (entry.chunkIndex === entry.chunks.length) {
     entry.chunks.length = 0;
@@ -246,6 +259,8 @@ function takeQueuedChunk(entry: QueueEntry, limit: number): string {
   return data;
 }
 
+/** True when this entry still holds unconsumed output. Reads the cursor rather
+ *  than `chunks.length` because consumed chunks linger until compaction. */
 function hasQueuedChunks(entry: QueueEntry): boolean {
   return entry.chunkIndex < entry.chunks.length;
 }
@@ -276,6 +291,10 @@ function isUndrainable(entry: QueueEntry): boolean {
   return entry.retained || entry.heldForSync;
 }
 
+/** True when some drainable entry justifies the fast drain cadence — either an
+ *  explicitly promoted (visible/focused) terminal or one whose backlog has grown
+ *  past LARGE_BACKLOG_CHARS. Undrainable entries are skipped on purpose: an
+ *  entry that will not be written must not speed up the timer it can't consume. */
 function hasPriorityBacklog(): boolean {
   for (const entry of queue.values()) {
     if (isUndrainable(entry)) continue; // never drained — must not drive the cadence
@@ -311,6 +330,22 @@ function takeNextEntry(): QueueEntry | null {
   return fallback;
 }
 
+/**
+ * The drain tick: hand bounded chunks to xterm under both a write-count budget
+ * and a wall-clock budget, then re-arm if work remains.
+ *
+ *   scheduleDrain(delay) ──► drainQueuedOutput()
+ *                              │
+ *                              ├─ takeNextEntry() ──► writeQueuedChunk()
+ *                              │        ▲                    │
+ *                              │        └── round-robin ─────┘
+ *                              │
+ *                              └─ work left? ──► scheduleDrain(next cadence)
+ *
+ * Two budgets, because either alone leaks: the write count bounds a queue of
+ * many small chunks, the elapsed check bounds a few pathologically large ones.
+ * Whichever trips first yields the main thread back to input and paint.
+ */
 function drainQueuedOutput(): void {
   drainTimer = null;
   drainDelayMs = null;
