@@ -68,10 +68,10 @@ Boundary strengths already in place (no action needed):
 
 | ID | Severity | Finding | Location | Status |
 |---|---|---|---|---|
-| W1 | **Medium** | `--expose` sends the token + full scrollback in cleartext over HTTP; warning understates sniffing risk | `WebTerminalServer.ts:131` (no TLS), `web.ts:96-109` (warning) | ⏳ Open (Tier A wording shipped; TLS is follow-up) |
+| W1 | **Medium** | `--expose` sends the token + full scrollback in cleartext over HTTP; warning understates sniffing risk | `WebTerminalServer.ts:131` (no TLS), `web.ts:96-109` (warning) | ⏳ Open — [#607](https://github.com/openwong2kim/wmux/issues/607) (Tier A wording NOT yet shipped — doc overstated; TLS is follow-up) |
 | W2 | **Medium** | No frame protection → authenticated localhost page is clickjackable (worse with `--allow-input`) | `WebTerminalServer.ts:517` (`serveStatic`) | ✅ Resolved — `securityHeaders()` on every response |
 | W3 | **Low-Med** | No `Host` header validation → DNS rebinding can reach unauthenticated `/api/pair` and burn it (pairing DoS) | `WebTerminalServer.ts:238` | ✅ Resolved — Host allowlist checked before routing |
-| W4 | **Low** | No `Content-Security-Policy`; an XSS (future regression) would exfiltrate the token freely | `index.html` / `serveStatic` | ⏳ Open (`frame-ancestors 'none'` only; full policy is follow-up) |
+| W4 | **Low** | No `Content-Security-Policy`; an XSS (future regression) would exfiltrate the token freely | `index.html` / `serveStatic` | ✅ Resolved — [#608](https://github.com/openwong2kim/wmux/issues/608): full policy on `GET /` with per-build inline-script hashes, `connect-src 'self'` |
 | W5 | **Low** | Pairing code is generated once per start; after burn/expiry it is gone until restart → permanent pairing DoS | `WebTerminalServer.ts:123,449` | ✅ Resolved — cooldown-limited regeneration |
 | W6 | **Info** | `timingSafeEqual` short-circuits on length; `nosniff` absent; SSE token in URL (unavoidable, contained) | `WebTerminalServer.ts:512-514`, `:528` | ✅ No action needed (nosniff shipped with W2) |
 
@@ -287,9 +287,9 @@ regen-on-demand option) rather than none; or, after N wrong attempts from one fa
 
 | Phase | Items | Effort | Risk reduced | Status |
 |---|---|---|---|---|
-| **P1 — ship now** | W2 (frame + nosniff + referrer) + W1 Tier A (wording) | ~1 h | Clickjacking; operator misuse of `--expose` | ✅ Shipped in this PR |
+| **P1 — ship now** | W2 (frame + nosniff + referrer) + W1 Tier A (wording) | ~1 h | Clickjacking; operator misuse of `--expose` | ◐ W2 shipped only; W1 Tier A tracked in [#607](https://github.com/openwong2kim/wmux/issues/607) |
 | **P2 — next PR** | W3 (Host allowlist) + W5 (pairing regen/rate-limit) | ~3 h | DNS-rebinding DoS; pairing DoS | ✅ Shipped in this PR |
-| **P3 — hardening** | W4 (full hashed CSP via build script) | ~0.5 day | Containment under future XSS | ⏳ Follow-up |
+| **P3 — hardening** | W4 (full hashed CSP; hashes computed server-side from the served bytes, not in the build script) | ~0.5 day | Containment under future XSS | ✅ Shipped ([#608](https://github.com/openwong2kim/wmux/issues/608)) |
 | **P4 — optional** | W1 Tier C (native TLS or `tailscale serve` wrapper) | larger | Removes cleartext risk instead of warning | ⏳ Follow-up |
 
 P1 + P2 (both shipped) bring the web surface up to the same localhost-service baseline

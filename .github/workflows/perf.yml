@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    # The history append commit only touches bench/history.ndjson; ignoring it
-    # (and docs) here prevents the commit from re-triggering this workflow.
+    # The trend line is published to the `bench-history` branch, so no CI commit
+    # lands on main and nothing here can re-trigger this workflow (#602).
     paths-ignore:
-      - 'bench/history.ndjson'
       - '**/*.md'
   pull_request:
     paths:
@@ -56,13 +55,16 @@ jobs:
       - name: Run perf bench
         run: node scripts/perf-bench.mjs --mode ci --json out/perf-current.json
 
-      # On push to main we also append a trend line to bench/history.ndjson in
-      # the same compare invocation. Compute the extra flag once.
+      # On push to main the same compare invocation also writes this run's trend
+      # line. It goes to a fresh single-line file, not to the accumulated trend:
+      # the trend lives on the `bench-history` branch and is only ever read and
+      # extended by the publish step below, so the build tree never carries a
+      # stale copy of it. Compute the extra flag once.
       - name: Compute history flag
         id: histflag
         run: |
           if ($env:GITHUB_EVENT_NAME -eq 'push') {
-            "value=--append-history bench/history.ndjson" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "value=--append-history out/perf-history-line.ndjson" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
             "value=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
@@ -87,31 +89,117 @@ jobs:
           name: perf-${{ github.run_id }}
           path: |
             out/perf-current.json
+            out/perf-history-line.ndjson
             perf-summary.md
           if-no-files-found: ignore
 
-      # Persist the trend line on main. paths-ignore above prevents this commit
-      # from re-triggering the workflow.
-      - name: Commit perf history
-        if: github.event_name == 'push'
+      # Publish the trend line to the unprotected `bench-history` branch. It is
+      # deliberately NOT on main: this bot cannot push to a protected branch, and
+      # the resulting rejection was silent for six weeks (#602).
+      #
+      # `!cancelled()` rather than `success()`: a run that failed the gate is
+      # exactly the data point a noise investigation needs (#570), and the old
+      # step's plain `if:` skipped every red run. A *cancelled* run is excluded —
+      # its measurement may be half-finished and is not worth publishing.
+      - name: Publish perf history
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        shell: pwsh
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bench/history.ndjson
-          $changed = (git status --porcelain bench/history.ndjson)
-          if ([string]::IsNullOrWhiteSpace($changed)) {
-            Write-Host "No perf history change to commit."
-          } else {
-            git commit -m "chore(bench): append perf history [perf-history]"
-            # Retry the rebase+push: another main push may have advanced the
-            # ref while the bench ran. History is best-effort trend data —
-            # exhausting retries must not fail the perf gate itself.
-            $pushed = $false
-            for ($i = 0; $i -lt 3 -and -not $pushed; $i++) {
-              git pull --rebase origin main
-              git push
-              if ($LASTEXITCODE -eq 0) { $pushed = $true } else { Start-Sleep -Seconds 5 }
-            }
-            if (-not $pushed) { Write-Host "::warning::perf history push failed after 3 attempts (non-fatal)" }
+          $lineFile = 'out/perf-history-line.ndjson'
+          if (-not (Test-Path $lineFile)) {
+            Write-Host 'No trend line produced (the run never reached the compare step) — nothing to publish.'
             exit 0
           }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The existing trend is read back through PowerShell as text before
+          # being rewritten, so pin the decode rather than inherit the runner's
+          # code page. Every field written today is ASCII; this is what keeps a
+          # future non-ASCII one from being mangled in transit.
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+
+          $branch = 'bench-history'
+          $file = 'history.ndjson'
+          $scratch = Join-Path $env:RUNNER_TEMP 'perf-history.ndjson'
+          # Scratch index for write-tree — never the repo's own index.
+          $env:GIT_INDEX_FILE = Join-Path $env:RUNNER_TEMP 'perf-history.index'
+
+          # The commit is assembled with plumbing instead of a checkout: the
+          # working tree holds the packaged app, and swapping branches in it to
+          # append one line would be slow and needlessly destructive.
+          $pushed = $false
+          for ($attempt = 1; $attempt -le 3 -and -not $pushed; $attempt++) {
+            # A missing branch is the bootstrap path, not an error — the first
+            # run after this lands creates it with one parentless commit.
+            #
+            # A fetch that fails for some *other* reason lands here too, and
+            # cannot do harm: it produces a parentless commit, and pushing one of
+            # those at an existing branch is not a fast-forward, so the server
+            # rejects it and the next attempt re-reads. Nothing here ever forces,
+            # which is what makes "could not read the tip" unable to erase it.
+            $parent = $null
+            git fetch --no-tags --depth=1 origin $branch 2>$null
+            if ($LASTEXITCODE -eq 0) { $parent = (git rev-parse FETCH_HEAD).Trim() }
+
+            $existing = @()
+            if ($parent) {
+              $fromBranch = @(git cat-file -p "${parent}:${file}")
+              if ($LASTEXITCODE -ne 0) {
+                # The branch is there but its trend file did not read. Treating
+                # that as "no trend yet" would replace the whole series with this
+                # one line, so refuse: retry, and fail loudly rather than truncate.
+                Write-Host "Could not read $file from '$branch' — refusing to overwrite the trend."
+                if ($attempt -lt 3) { Start-Sleep -Seconds 5 }
+                continue
+              }
+              $existing = $fromBranch
+            }
+            $all = $existing + @(Get-Content $lineFile)
+            # WriteAllText, not Set-Content: LF and no BOM on either PowerShell
+            # edition, matching the lines perf-compare.mjs itself writes.
+            [System.IO.File]::WriteAllText($scratch, ($all -join "`n") + "`n")
+
+            # --no-filters: store the bytes just written, with no CRLF/attribute
+            # conversion applied on the way in. The trend file is LF by contract.
+            $blob = (git hash-object -w --no-filters $scratch).Trim()
+            # Build the tree through a scratch index rather than `git mktree`:
+            # --cacheinfo takes the path as an argument, so nothing can smuggle
+            # the CR of a Windows line ending into the filename the way piping
+            # an entry to mktree's stdin does.
+            Remove-Item $env:GIT_INDEX_FILE -Force -ErrorAction SilentlyContinue
+            git update-index --add --cacheinfo "100644,$blob,$file"
+            $tree = (git write-tree).Trim()
+            # The first commit says what the branch is for — it is the only thing
+            # someone landing on a branch holding one bare .ndjson file can read.
+            $subject = if ($parent) {
+              'chore(bench): append perf history [perf-history]'
+            } else {
+              'chore(bench): start the perf trend — one line per push to main, see bench/README.md [perf-history]'
+            }
+            $commitArgs = @('commit-tree', $tree, '-m', $subject)
+            if ($parent) { $commitArgs += @('-p', $parent) }
+            $commit = (git @commitArgs).Trim()
+
+            # Fast-forward by construction — the parent IS the tip just read. A
+            # concurrent main push moves the tip and this is rejected, so the
+            # retry re-reads and re-appends onto the new tip.
+            git push origin "${commit}:refs/heads/$branch"
+            if ($LASTEXITCODE -eq 0) {
+              $pushed = $true
+              Write-Host "Published the trend line to '$branch' ($commit). Trend length: $($all.Count)."
+            } elseif ($attempt -lt 3) {
+              Write-Host "Push rejected (attempt $attempt) — re-reading the tip and retrying."
+              Start-Sleep -Seconds 5
+            }
+          }
+
+          if (-not $pushed) {
+            $msg = "The perf trend line was NOT published to '$branch' after 3 attempts. The trend is what distinguishes a real regression from CI noise, and losing it quietly is how six weeks of it disappeared (#602)."
+            Write-Host "::error::$msg"
+            '> [!CAUTION]' | Add-Content $env:GITHUB_STEP_SUMMARY
+            "> $msg It survives in this run's uploaded artifact and can still be appended by hand." | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+          # Loud, never fatal: a lost trend line must not fail the perf gate.
+          exit 0

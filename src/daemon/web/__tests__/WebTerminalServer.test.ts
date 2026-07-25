@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
@@ -492,6 +494,43 @@ describe('WebTerminalServer', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
+  // W4 (#608): the HTML page carries the FULL policy — per-build inline-script
+  // hashes instead of 'unsafe-inline', and connect-src 'self' so a future XSS
+  // regression could execute but never exfiltrate the token.
+  it('serves GET / with a full CSP: script hashes + connect-src self', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-csp-'));
+    fs.writeFileSync(
+      path.join(dir, 'terminal.html'),
+      '<html><head><script>var a=1;</script></head><body><script>var b=2;</script></body></html>',
+    );
+    const deps = makeDeps();
+    const csps = new WebTerminalServer({
+      sessionManager: deps.sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: dir,
+    });
+    try {
+      const info = await csps.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      const res = await fetch(`http://127.0.0.1:${info.port}/`);
+      expect(res.status).toBe(200);
+      const csp = res.headers.get('content-security-policy') ?? '';
+      expect(csp).toContain("default-src 'none'");
+      expect(csp).toContain("connect-src 'self'");
+      expect(csp).toContain("frame-ancestors 'none'");
+      // One hash per inline <script> block, no 'unsafe-inline' for scripts.
+      expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
+      expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+      // JSON/API responses keep the minimal baseline policy (no hashes needed).
+      const api = await fetch(`http://127.0.0.1:${info.port}/api/config`, {
+        headers: { Authorization: `Bearer ${info.token}` },
+      });
+      expect(api.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    } finally {
+      if (csps.isRunning) await csps.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   /** Raw request so we can set Host (undici forbids overriding it on fetch()). */

@@ -396,6 +396,7 @@ export class WebTerminalServer {
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
+  /** Full CSP for the HTML page, with per-build inline-script hashes. */
   private manifest: Buffer | null = null;
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
@@ -822,6 +823,7 @@ export class WebTerminalServer {
       // worth revalidating: the payload is either current or wrong.
       return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8', {
         'Cache-Control': 'no-store',
+        ...(this.csp ? { 'Content-Security-Policy': this.csp } : {}),
       });
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
@@ -1714,7 +1716,11 @@ export class WebTerminalServer {
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': this.csp,
+      // Baseline only. The full policy — script hashes and all — rides the HTML
+      // response, which is the only thing that executes; #612 made that call
+      // and it is the right one, because the alternative puts ~250 bytes of
+      // hashes on every JSON reply, and a phone typing pays that per keystroke.
+      'Content-Security-Policy': "frame-ancestors 'none'",
     };
   }
 
@@ -1772,8 +1778,16 @@ export class WebTerminalServer {
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
     // Derived from the page we just loaded, once per start rather than per
-    // request: hashing 583 KB on the way out of every JSON reply would be a
-    // real cost for a header that cannot change while the process runs.
+    // request: hashing 583 KB on the way out of every response would be a real
+    // cost for a header that cannot change while the process runs.
+    //
+    // This supersedes #612's buildHtmlCsp, which computed the same policy but
+    // hashed the file's raw bytes. The HTML parser rewrites CRLF to LF before
+    // the tokenizer runs, so a page built from a Windows checkout — where the
+    // frontend sources carry CRLF — produced hashes matching nothing the
+    // browser would compute, and every inline block was refused: a blank
+    // terminal. Verified in a real browser both ways; buildWebCsp normalizes
+    // first.
     this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null);
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
@@ -1782,6 +1796,7 @@ export class WebTerminalServer {
 }
 
 // === module helpers =========================================================
+
 
 /**
  * One SSE frame. `id` is optional and emitted only on the attention stream —

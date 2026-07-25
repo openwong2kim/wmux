@@ -243,8 +243,9 @@ function report(
     console.log('      restart with `wmux web --allow-host <your-magicdns-name>` so the');
     console.log('      proxied Host header is accepted.');
   } else if (exposed) {
-    console.log('  ⚠ Reachable on ALL network interfaces (0.0.0.0). The access token is');
-    console.log('    the only thing gating it — treat the URL below as a secret.');
+    console.log('  ⚠ UNENCRYPTED. Anyone on this network who can sniff traffic (open Wi-Fi,');
+    console.log('    ARP spoofing, compromised switch) can read the access token and the');
+    console.log('    full scrollback. Use `tailscale serve` (HTTPS) or wait for native TLS.');
   }
   if (tailnet) {
     console.log('');
