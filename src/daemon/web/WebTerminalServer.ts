@@ -10,6 +10,7 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS } from '../../shared/constants';
+import type { PairRefusal } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
@@ -109,6 +110,15 @@ export interface WebTerminalInfo {
    * surfaced rather than left to a daemon log nobody reads.
    */
   deviceCredentials?: boolean;
+  /**
+   * Why pairing cannot succeed right now, or absent when it can. Set together
+   * with WITHHOLDING `pairCode` — see status().
+   *
+   * The type is imported rather than restated: this interface is already a
+   * hand-kept mirror of the one in shared/web.ts, and a fourth copy of the
+   * refusal shape is a fourth thing to forget.
+   */
+  pairRefusal?: PairRefusal;
   /**
    * The TLS fronts the operator named with `--allow-host`, if any.
    *
@@ -807,6 +817,26 @@ export class WebTerminalServer {
 
   status(): WebTerminalInfo {
     if (!this.server || !this.opts) return { running: false };
+    // Ask BEFORE minting. `activePairCode` regenerates lazily, so on a server
+    // that cannot mint a credential it would hand the operator a fresh code
+    // every poll — each one guaranteed to answer 403 when a phone redeems it.
+    // Reading the code off a screen onto a phone and only then learning it was
+    // never going to work is the bug this closes.
+    const refusal = this.pairRefusal();
+    if (refusal) {
+      return {
+        running: true,
+        port: this.opts.port,
+        host: this.opts.host,
+        allowInput: this.opts.allowInput,
+        token: this.token,
+        urls: this.buildUrls(),
+        clients: this.clients.size,
+        deviceCredentials: !!this.deps.devices,
+        allowedHosts: this.frontedHosts(),
+        pairRefusal: refusal,
+      };
+    }
     const pair = this.activePairCode();
     return {
       running: true,
@@ -821,6 +851,20 @@ export class WebTerminalServer {
       deviceCredentials: !!this.deps.devices,
       allowedHosts: this.frontedHosts(),
     };
+  }
+
+  /**
+   * The status-surface form of `mintRefusal`: a reason the UI can switch on,
+   * plus the operator prose for logs and tooltips.
+   *
+   * Deliberately derived from `mintRefusal` rather than re-deriving the
+   * predicate. Two copies of "can this server mint a credential?" would drift,
+   * and the copy that drifts is the one that decides what the operator is
+   * shown, not the one that decides what the wire allows.
+   */
+  private pairRefusal(): PairRefusal | undefined {
+    const detail = this.mintRefusal();
+    return detail ? { reason: 'insecure-transport', detail } : undefined;
   }
 
   /**

@@ -42,10 +42,41 @@ export interface WebTerminalInfo {
    */
   deviceCredentials?: boolean;
   /**
+   * Why pairing cannot succeed right now, or absent when it can.
+   *
+   * Carries a `reason` the UI switches on and a `detail` for logs and tooltips,
+   * mirroring the shape `/api/pair` already answers a refused redemption with
+   * (`{ error: 'insecure-transport', detail }`). The daemon's prose must never
+   * be rendered directly — every string the popover shows goes through `t()`,
+   * and a daemon-authored English sentence would be the one line that cannot
+   * be translated.
+   *
+   * When this is set the server also withholds `pairCode`: a code that can
+   * only ever be answered with a 403 is worse than no code, because the
+   * operator reads it onto a phone before discovering it was never going to
+   * work.
+   */
+  pairRefusal?: PairRefusal;
+  /**
    * Set ONLY by the main-process handler when it could not reach the daemon
    * (no control pipe, or the RPC threw/timed out). Absent on a normal reply.
    */
   error?: string;
+}
+
+/**
+ * Why a pairing attempt would be refused.
+ *
+ * `insecure-transport` — the server is bound off-loopback over plain HTTP. A
+ * device credential never expires, so it is not handed across a cleartext wire
+ * (see WebTerminalServer.mintRefusal).
+ */
+export type PairRefusalReason = 'insecure-transport';
+
+export interface PairRefusal {
+  reason: PairRefusalReason;
+  /** Operator-readable specifics. For logs and tooltips, never for the UI copy. */
+  detail: string;
 }
 
 /** Renderer → main start request. `expose` maps to the 0.0.0.0 bind. */

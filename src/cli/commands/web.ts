@@ -21,6 +21,8 @@ interface WebInfo {
   urls?: string[];
   clients?: number;
   pairCode?: string;
+  /** Present instead of `pairCode` when this bind could never redeem one. */
+  pairRefusal?: { reason: string; detail: string };
   pairExpiresAt?: number;
   /** False when the device roster is unavailable — pairing falls back to the shared token. */
   deviceCredentials?: boolean;
@@ -283,6 +285,13 @@ function report(
     console.log('  Pair from phone (no token typing):');
     console.log(`    open  ${pairOrigin}/pair`);
     console.log(`    enter code  ${info.pairCode}   (valid 10 min, single use)`);
+  } else if (info.pairRefusal) {
+    // The server withholds the code when it could never be redeemed. Say why
+    // instead of silently dropping the whole section — an absent pairing block
+    // reads as "this build has no pairing", not as "this bind cannot pair".
+    console.log('');
+    console.log('  Pairing unavailable:');
+    for (const line of info.pairRefusal.detail.split('\n')) console.log(`    ${line}`);
   }
   console.log('');
   if (!info.allowInput) {
