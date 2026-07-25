@@ -709,6 +709,76 @@ async function scenarioDeviceTicketStreams(control, sessionId, device) {
   return { ticket, paneStream, eventStream };
 }
 
+/**
+ * S8 — token rotation revokes EVERY paired device.
+ *
+ * `wmux web --new-token` has always advertised "revoking every device already
+ * paired", and before per-device credentials that held for free: every phone
+ * presented the operator's token, so rotating it locked all of them out. Once a
+ * device authenticated on its own `deviceId.secret`, rotation stopped touching
+ * them — the operator was told the phones were revoked while every one of them
+ * kept working. Nothing in the unit tests could see it, because the promise
+ * lives in the CLI help and the bug lived in the wiring between two components
+ * that were each individually correct.
+ *
+ * Proved here against the real daemon: two live devices, one RPC, and then the
+ * three things that have to be true at once — the roster says revoked, the
+ * credential is refused, and the stream that was already open is cut. An
+ * established SSE never re-authenticates, so the last one is the only proof
+ * that matters to a phone already watching a pane.
+ */
+async function scenarioRotationRevokesDevices(control, sessionId) {
+  const deviceC = await pairDevice(control, 'harness-phone-C-rotate');
+  const deviceD = await pairDevice(control, 'harness-phone-D-rotate');
+
+  const ticketC = (await httpRequest('POST', '/api/stream-ticket', { auth: deviceC.credential, body: {} })).json;
+  const paneC = await SseClient.open(
+    `/api/stream?session=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(ticketC.ticket)}`,
+  );
+  await paneC.waitFor((f) => f.event === 'snapshot');
+
+  const beforeC = await httpRequest('GET', '/api/sessions', { auth: deviceC.credential });
+  const beforeD = await httpRequest('GET', '/api/sessions', { auth: deviceD.credential });
+  const tokenBefore = operatorToken;
+
+  const rotateAt = Date.now();
+  const rotated = await control.rpc('daemon.web.start', {
+    port: WEB_PORT,
+    host: WEB_HOST,
+    allowInput: true,
+    newToken: true,
+  });
+  const paneCEnded = await paneC.waitForEnd(5_000);
+
+  const afterC = await httpRequest('GET', '/api/sessions', { auth: deviceC.credential });
+  const afterD = await httpRequest('GET', '/api/sessions', { auth: deviceD.credential });
+  const roster = await control.rpc('daemon.web.deviceList', {});
+  const rosterC = (roster?.devices ?? []).find((d) => d.deviceId === deviceC.deviceId);
+  const rosterD = (roster?.devices ?? []).find((d) => d.deviceId === deviceD.deviceId);
+
+  const evidence = {
+    tokenRotated: typeof rotated?.token === 'string' && rotated.token !== tokenBefore,
+    before: { c: beforeC.status, d: beforeD.status },
+    after: { c: afterC.status, d: afterD.status },
+    afterReasons: { c: afterC.json?.reason, d: afterD.json?.reason },
+    rosterRevokedAt: { c: rosterC?.revokedAt ?? null, d: rosterD?.revokedAt ?? null },
+    paneCEnded,
+    teardownMs: paneC.endedAt ? paneC.endedAt - rotateAt : null,
+  };
+
+  const pass =
+    evidence.tokenRotated &&
+    beforeC.status === 200 && beforeD.status === 200 &&
+    afterC.status === 401 && afterD.status === 401 &&
+    afterC.json?.reason === 'revoked' && afterD.json?.reason === 'revoked' &&
+    typeof rosterC?.revokedAt === 'number' && typeof rosterD?.revokedAt === 'number' &&
+    paneCEnded === true;
+
+  if (typeof rotated?.token === 'string') operatorToken = rotated.token;
+  paneC.close?.();
+  record('S8 rotation-revokes-every-paired-device', pass, evidence);
+}
+
 /** S5 — revoke A; A dies everywhere, B does not notice. */
 async function scenarioRevoke(control, sessionId, deviceA, streamsA, deviceB) {
   const ticketB = (await httpRequest('POST', '/api/stream-ticket', { auth: deviceB.credential, body: {} })).json;
@@ -1208,6 +1278,11 @@ try {
     // token and drops every ticket the earlier scenarios were holding.
     await scenarioBrowserRenew(control, sessionId, browserCtl);
   }
+
+  // LAST: rotation invalidates every device and the operator token, so any
+  // scenario after this one would be running against credentials it no
+  // longer holds.
+  await scenarioRotationRevokesDevices(control, sessionId);
 
   const failures = report.filter((r) => r.pass === false);
   const skipped = report.filter((r) => r.pass === null);

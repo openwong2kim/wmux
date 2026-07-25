@@ -50,7 +50,10 @@
  *   S3c deny. ESC, not '1' — the pane must show no digit.
  *
  *   S4  double-resolve. The second POST on a resolved id → 409 with
- *       resolvedBy:'web'.
+ *       resolvedBy naming the caller — 'operator' here, since the harness
+ *       authenticates with the operator token. It used to be the constant
+ *       'web' for every caller alike, which meant the roster could not say
+ *       WHICH paired phone pressed a key into a terminal.
  *
  *   S5  supersede. A second awaiting_input on the same session → the old record
  *       leaves `pending` in state 'superseded'; resolving the OLD id → 410.
@@ -701,7 +704,7 @@ async function scenarioApprove(control, sessionId) {
       echoedDigit &&
       resolved?.state === 'resolved' &&
       resolved?.decision === 'approve' &&
-      resolved?.resolvedBy === 'web' &&
+      resolved?.resolvedBy === 'operator' &&
       typeof resolved?.screenTail === 'string' && resolved.screenTail.length > 0 &&
       (after.json?.pending ?? []).every((r) => r.id !== hit.id) &&
       configRes.json?.allowInput === false &&
@@ -790,7 +793,7 @@ async function scenarioDeny(control, sessionId) {
       post.status === 200 &&
       post.json?.state === 'resolved' &&
       resolved?.decision === 'deny' &&
-      resolved?.resolvedBy === 'web' &&
+      resolved?.resolvedBy === 'operator' &&
       evidence.digitEchoedInPane === false;
     record('S3c deny-writes-escape-not-a-digit', pass, evidence);
   } finally {
@@ -807,7 +810,7 @@ async function scenarioDoubleResolve(resolvedId) {
   const post = await httpRequest('POST', `/api/approvals/${encodeURIComponent(resolvedId)}`, {
     body: { decision: 'approve' },
   });
-  const pass = post.status === 409 && post.json?.error === 'already-resolved' && post.json?.resolvedBy === 'web';
+  const pass = post.status === 409 && post.json?.error === 'already-resolved' && post.json?.resolvedBy === 'operator';
   record('S4 double-resolve-409', pass, { requestId: resolvedId, status: post.status, body: post.json });
 }
 
