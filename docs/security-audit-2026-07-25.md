@@ -36,9 +36,11 @@ gives it reach into every privileged IPC handler. This is the single shortest
 path around every other defense. It is technically inside the SECURITY.md §3
 same-user disclaimer, but it materially widens that opening and is fixable.
 
-**Recommended priority:** P0 (CDP) buys the most defense for the least effort.
-P1 is consistency fixes (path confinement on `git`/`gh` handlers, SHA-pinned
-CI actions, `env:` interpolation in `release.yml`). P2 is optional hardening.
+**Recommended priority:** P0 (CDP) buys the most defense, but not for the least
+effort — see the correction in §2. P1 is consistency fixes (path confinement on
+`git`/`gh` handlers, SHA-pinned CI actions, `env:` interpolation in
+`release.yml`) and is where the cheap wins actually are. P2 is optional
+hardening.
 
 ---
 
@@ -46,7 +48,7 @@ CI actions, `env:` interpolation in `release.yml`). P2 is optional hardening.
 
 | ID | Severity | Title | Effort (CC) |
 |----|----------|-------|-------------|
-| F1 | MEDIUM | CDP remote-debugging port on by default — [#613](https://github.com/openwong2kim/wmux/issues/613) | ~1h (preferred: pipe transport) |
+| F1 | MEDIUM | CDP remote-debugging port on by default — [#613](https://github.com/openwong2kim/wmux/issues/613) | needs design — see §2 correction |
 | F2 | MEDIUM | `git`/`gh` execFile calls accept unconfined `repoPath` — [#615](https://github.com/openwong2kim/wmux/issues/615) | ~2h |
 | F4 | LOW | CI workflows use tag-pinned (not SHA-pinned) actions — [#615](https://github.com/openwong2kim/wmux/issues/615) | ~15min |
 | F5 | LOW | `release.yml` interpolates step outputs into PowerShell `run:` — [#615](https://github.com/openwong2kim/wmux/issues/615) | ~20min |
@@ -98,18 +100,43 @@ runs through the same IPC surface that CDP exposes for free.
 
 **Recommendation (in priority order):**
 
+> **Correction (2026-07-25, after the audit was published).** The original
+> version of this section recommended option A — switching to
+> `--remote-debugging-pipe` — at ~1h, on the claim that Playwright's
+> `connectOverCDP` supports pipe transport. **That claim is wrong and option A
+> is withdrawn.** Two independent blockers:
+>
+> 1. **Playwright cannot attach over a pipe.** `ConnectOverCDPOptions` in
+>    playwright-core 1.58.2 exposes `endpointURL`, `headers`, `isLocal`,
+>    `logger`, `slowMo`, `timeout` — no transport hook.
+>    `--remote-debugging-pipe` speaks CDP over fd 3/4, which
+>    `connectOverCDP(endpointURL)` has no way to reach. Every call site is
+>    HTTP or WebSocket: `PlaywrightEngine.ts:283`
+>    (`connectOverCDP('http://localhost:<port>')`), `PlaywrightEngine.ts:791`
+>    (`/json` fetch), `WebviewCdpManager.ts:176`
+>    (`ws://127.0.0.1:<port>/devtools/page/...`), `WebviewCdpManager.ts:179`.
+> 2. **The port is public API.** `docs/api/reference.md:135-144` documents
+>    `browser.cdp.info`, `browser.cdp.target`, `browser.type.cdp`,
+>    `browser.click.cdp`, `browser.press.cdp`, and
+>    `src/main/pipe/handlers/browser.rpc.ts:587` returns `cdpPort` to callers.
+>    External MCP consumers attach to that port by contract. Removing it is a
+>    breaking change and forces a `gen-api-reference.mjs` regeneration.
+
 | Option | Effort (CC) | Trade-off |
 |--------|-------------|-----------|
-| **A. Switch to `--remote-debugging-pipe`** | ~1h | Eliminates the port entirely. CDP runs over a pipe fd instead. Playwright's `connectOverCDP` supports pipe transport; update `PlaywrightEngine.ts:791` and `WebviewCdpManager.ts:179` accordingly. Chromium's recommended posture. |
-| **B. Default off, opt-in via `--enable-cdp`** | ~30min | Users who do not use browser automation get protection by default; the rest flip a flag. Smallest diff. |
-| **C. CDP handshake token** | ~2h | Intercept `/json/list` to require a token. Keeps the port, adds auth. More surface to maintain. |
+| ~~A. Switch to `--remote-debugging-pipe`~~ | — | **Withdrawn.** Playwright cannot attach over a pipe, and `cdpPort` is a documented RPC return value. See the correction above. |
+| **B. Default off, opt-in via `--enable-cdp`** | ~30min | Keeps the port mechanism, so Playwright and the `browser.cdp.*` contract are untouched — only the default flips, and `WMUX_DISABLE_CDP=true` already proves the opt-out path works. Cost: `browser_*` MCP tools stop working out of the box, so anyone using browser automation has to flip a flag. That user-visible regression is the real decision here, not the engineering effort. |
+| **C. CDP handshake token** | ~4-6h (was estimated ~2h) | Front the CDP port with a proxy that checks a token and relays. `connectOverCDP` accepts a `headers` option, so the Playwright side is feasible — but `WebviewCdpManager`'s direct `ws://` connection at `:176` has to be routed through the proxy too, and the proxy becomes a component that has to stay alive for the lifetime of the app. Earlier ~2h estimate assumed only `/json/list` needed intercepting; it does not. |
 
-**Recommend A.** Removes the surface instead of guarding it.
+**Recommend B**, with the caveat that it is a product decision as much as a
+security one — it turns browser automation into opt-in. If that regression is
+unacceptable, C is the fallback at meaningfully higher cost. Owner decision
+required before either is started.
 
-**Verification:** confirm Playwright browser automation still works after the
-switch (`src/mcp/playwright/PlaywrightEngine.ts:283`'s `connectOverCDP`). Add
-a test that asserts no `--remote-debugging-port` switch is appended when the
-opt-out path is taken.
+**Verification (option B):** add a test asserting no `--remote-debugging-port`
+switch is appended unless the opt-in is present, and confirm that with the flag
+set, `src/mcp/playwright/PlaywrightEngine.ts:283`'s `connectOverCDP` still
+attaches.
 
 ---
 
@@ -387,7 +414,7 @@ for completeness.
 
 | Item | Current state | Completion criteria |
 |------|---------------|---------------------|
-| **F1 — CDP remote-debugging port on by default** | MEDIUM. Loopback only, no remote path, no priv esc beyond same-user, but lowers the same-user bar from "filesystem access" to "loopback socket access." Preferred fix: switch to `--remote-debugging-pipe`. Tracked in [#613](https://github.com/openwong2kim/wmux/issues/613). | Option A (`--remote-debugging-pipe`), B (default off / `--enable-cdp` opt-in), or C (handshake token) — see §2. ~1h. |
+| **F1 — CDP remote-debugging port on by default** | MEDIUM. Loopback only, no remote path, no priv esc beyond same-user, but lowers the same-user bar from "filesystem access" to "loopback socket access." Tracked in [#613](https://github.com/openwong2kim/wmux/issues/613). | Option B (default off / `--enable-cdp` opt-in, ~30min) or C (token proxy, ~4-6h). Option A (pipe transport) is withdrawn — see the correction in §2. Owner decision required: B makes browser automation opt-in. |
 | Authenticode signing not yet enforced | Mitigated by SHA-256 side-car. SignPath wiring present in `release.yml:52-84`. | Acquire cert → activate SignPath step. Track via issue #200. |
 | Asar integrity validation disabled | Intentional — `postPackage` repacks asar for `node-pty`, changing the hash (`SECURITY.md §1.4`). | Either extract `node-pty` to unpacked natives or split it out, then re-enable the fuse. Larger refactor. |
 | Claude credential plaintext on Win/Linux | Inherited from Claude Code's own storage. macOS uses Keychain. | Add one line to `SECURITY.md` documenting the inheritance so users running wmux on Win/Linux are aware. wmux-side encryption would not protect what Claude Code already wrote plaintext. |
@@ -398,9 +425,11 @@ for completeness.
 ## 9. Verification checklist (post-remediation)
 
 - [ ] `npm run lint && npm run test:parallel` passes.
-- [ ] F1 (pipe transport): Playwright browser automation still works
-      (`src/mcp/playwright/PlaywrightEngine.ts:283`). Add a regression test
-      asserting no `--remote-debugging-port` switch is appended.
+- [ ] F1 (option B): no `--remote-debugging-port` switch is appended unless the
+      opt-in is present, and with the flag set Playwright still attaches
+      (`src/mcp/playwright/PlaywrightEngine.ts:283`). The `browser.cdp.*` RPCs
+      in `docs/api/reference.md:135-144` must keep returning a usable
+      `cdpPort` whenever CDP is enabled.
 - [ ] F2: Existing `worktree`/`diff` handler tests pass; add rejection cases
       for arbitrary paths (`~/.ssh/`, `/etc/`, etc.).
 - [ ] F4: Open a PR with the SHA pinning change and observe that the CI
