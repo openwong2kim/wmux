@@ -48,14 +48,16 @@ export function resolveScrollAffordance(terminal: Terminal): ScrollAffordance {
 }
 
 export interface ScrollAffordanceBinding {
-  /** Re-evaluate now (e.g. after a fit that changed rows). */
-  refresh(): void;
   dispose(): void;
 }
 
 /**
  * Keeps `terminal.element`'s affordance classes in sync with terminal state,
  * and reports every change to `onChange`.
+ *
+ * The binding owns its own re-evaluation: everything that can change the
+ * affordance also fires one of the three events below, so call sites never
+ * poke it after a fit.
  *
  * The class is what gates the always-visible scrollbar CSS, so a pane that has
  * nothing to scroll falls back to Monaco's own (correct) hidden state instead
@@ -92,7 +94,6 @@ export function bindScrollAffordance(
   apply();
 
   return {
-    refresh: apply,
     dispose(): void {
       if (disposed) return;
       disposed = true;

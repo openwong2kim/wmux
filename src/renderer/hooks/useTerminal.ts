@@ -2014,9 +2014,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               term.scrollToLine(targetYDisp);
             }
 
-            // A fit changes rows (and so whether a scroll range exists) and the
-            // pane height the jog rail is sized from.
-            scrollAffordance.refresh();
+            // The jog rail is sized in pixels from the pane height, which a fit
+            // can change without changing rows — so nothing else reports it.
+            // scrollAffordance needs no poke here: it re-evaluates on the
+            // onResize a fit fires.
             altScrollJog?.refresh();
 
             const { cols, rows } = term;
