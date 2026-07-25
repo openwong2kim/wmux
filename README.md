@@ -27,8 +27,8 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 <!-- ⭐ HERO SLOT — the animated English 4-agent orchestration clip (Claude×2 · Codex · OpenCode, role-based delegation) drops in here once re-recorded in English; promote to the top hero when ready. -->
 
 <p align="center">
-<img alt="Four agent CLIs — two Claude Code, an OpenAI Codex, and an OpenCode agent — split and orchestrated in one window" src="docs/four-models.png" width="900" />
-<br><sub><b>Four agents, four models, one window.</b> Two Claude Code panes, an OpenAI Codex, and an OpenCode agent — split into a grid and orchestrated <b>by role</b> from the side dock.</sub>
+<img alt="Four panes in one window — two Claude Code agents, an OpenAI Codex pane, and a test run — with the fleet roster in the side dock" src="docs/hero-grid.png" width="900" />
+<br><sub><b>A fleet in one window.</b> Two Claude Code agents, an OpenAI Codex pane, and a test run — split into a grid, each pane its own PTY, with the roster and the orchestrator in the side dock.</sub>
 </p>
 
 <p align="center">
@@ -53,8 +53,8 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 <br><sub><b>Ask about a hunk.</b> From any diff hunk, ask the orchestrator with the repo, file, and code fenced into the message — question and evidence together.</sub>
 </td>
 <td width="50%" valign="top">
-<img alt="One-click loop running — the orchestrator iterating toward an objective" src="docs/loop-demo.gif" />
-<br><sub><b>One-click loops.</b> Point the orchestrator at an objective — with optional per-iteration <b>steps</b> from your <code>.claude</code> skills — and it keeps working, iteration by iteration, event-woken by your agents and surviving restarts.</sub>
+<img alt="Start a loop — objective, per-iteration steps, done-when checklist, and what the loop is allowed to do" src="docs/loop-modal.png" />
+<br><sub><b>One-click loops.</b> Point the orchestrator at an objective — with optional per-iteration <b>steps</b> from your <code>.claude</code> skills and a done-when checklist — and it keeps working, event-woken by your agents and surviving restarts. It tells you up front what it may and may not do.</sub>
 </td>
 </tr>
 <tr>
@@ -63,8 +63,8 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 <br><sub><b>Channels.</b> Slack-style rooms your agents read, post, and get @-mentioned into — durable, server-verified sender, survives reboot.</sub>
 </td>
 <td width="50%" valign="top">
-<img alt="Resume pill after a reboot — restore the exact agent conversation" src="docs/resume.png" />
-<br><sub><b>Survives reboot.</b> After a quit, crash, or full OS reboot, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation.</sub>
+<img alt="Resume pill on a recovered pane after the app was quit and reopened" src="docs/resume.png" />
+<br><sub><b>Survives reboot.</b> After a quit, crash, or full OS reboot, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation, with the shell that was running still running.</sub>
 </td>
 </tr>
 </table>
