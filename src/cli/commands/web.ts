@@ -23,6 +23,8 @@ interface WebInfo {
   clients?: number;
   pairCode?: string;
   pairExpiresAt?: number;
+  /** False when the device roster is unavailable — pairing falls back to the shared token. */
+  deviceCredentials?: boolean;
 }
 
 /**
@@ -156,6 +158,33 @@ function pickPairHost(urls: string[], info: WebInfo, loopbackOnly: boolean): str
   return `${authority}:${info.port ?? DEFAULT_PORT}`;
 }
 
+/**
+ * The `--status` warning for a server running WITHOUT per-device credentials,
+ * or `null` when there is nothing to say.
+ *
+ * Printed ONLY in the false case. Announcing "per-device credentials: on" at
+ * every healthy start would be noise nobody reads; saying nothing when they are
+ * off would let an operator believe a lost phone can be cut off individually
+ * when the only lever is rotating everybody — so the silence is the defect, not
+ * the fallback itself.
+ *
+ * `undefined` is deliberately NOT a warning. A daemon predating this field
+ * cannot answer the question, and inventing a scary alarm for "old daemon" is
+ * the same class of lie as staying quiet for a real one.
+ *
+ * Extracted so the three cases are unit-testable without a daemon or a captured
+ * console — the same reason `revokeDeviceAndDisconnect` lives on its own.
+ */
+export function deviceCredentialWarning(info: Pick<WebInfo, 'deviceCredentials'>): string[] | null {
+  if (info.deviceCredentials !== false) return null;
+  return [
+    '  ⚠ Per-device credentials are OFF — the device roster could not be',
+    '    loaded, so pairing hands out the SHARED token and `wmux web` has',
+    '    nothing to revoke one device at a time. `--new-token` still',
+    '    rotates everyone at once. Check the daemon log for the reason.',
+  ];
+}
+
 function report(
   response: RpcResponse,
   jsonMode: boolean,
@@ -192,6 +221,12 @@ function report(
   console.log('    selected pane — even in read-only mode. Do not serve panes that');
   console.log('    have secrets, tokens, or private output on screen.');
   console.log('');
+
+  const roster = deviceCredentialWarning(info);
+  if (roster) {
+    for (const line of roster) console.log(line);
+    console.log('');
+  }
 
   if (tailnet) {
     console.log('  Fronted by `tailscale serve` — HTTPS, tailnet-only, no open LAN port.');

@@ -1566,9 +1566,14 @@ describe('WebTerminalServer', () => {
     const refusedUpFront = server.startPairing({ name: 'Phone' });
     expect(refusedUpFront.ok).toBe(false);
     if (!refusedUpFront.ok) {
-      // Actionable: it names the remedy, not just the refusal.
+      // Actionable: it names BOTH ways out, not just the refusal — HTTPS in
+      // one command, or pair before exposing.
+      expect(refusedUpFront.error).toContain('wmux web --tailscale');
       expect(refusedUpFront.error).toContain('--allow-host');
-      expect(refusedUpFront.error).toContain('tailscale serve');
+      expect(refusedUpFront.error).toContain('pair over loopback');
+      // …and does not oversell the second one: on a plaintext bind the
+      // credential still crosses the wire on every request afterwards.
+      expect(refusedUpFront.error).toContain('every later request');
     }
 
     // And redemption refuses too, since the operator may have re-exposed the
@@ -1618,6 +1623,36 @@ describe('WebTerminalServer', () => {
     deviceBox.mintThrows = false;
     const retried = await fetch(`${base()}/api/pair?code=${started.code}`);
     expect(retried.status).toBe(200);
+  });
+
+  it('★ status() says out loud whether per-device revocation is actually armed', async () => {
+    // Armed: a store is wired, so the operator can cut off one phone.
+    const armed = await startRO();
+    expect(armed.deviceCredentials).toBe(true);
+    expect(server.status().deviceCredentials).toBe(true);
+
+    // NOT armed: pairing still works, but it hands out the shared token and
+    // there is nothing to revoke device-by-device. An operator who believed
+    // otherwise would leave a lost phone's access alive thinking they cut it,
+    // so this must reach `wmux web --status` and the GUI — not just a log line.
+    const bare = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    try {
+      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      expect(info.deviceCredentials).toBe(false);
+      // Explicitly false, never absent: a missing field reads as "old daemon"
+      // on the GUI side and would be rendered as unknown rather than as off.
+      expect('deviceCredentials' in info).toBe(true);
+    } finally {
+      await bare.stop();
+    }
+
+    // A stopped server has no posture to report.
+    expect(await bare.stop()).toEqual({ stopped: false });
+    expect(bare.status()).toEqual({ running: false });
   });
 
   it('falls back to the shared token on a daemon that wired no device store', async () => {

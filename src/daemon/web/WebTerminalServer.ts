@@ -96,6 +96,18 @@ export interface WebTerminalInfo {
   pairCode?: string;
   /** Epoch ms when the current pairing code expires. */
   pairExpiresAt?: number;
+  /**
+   * Whether per-device credentials are armed, i.e. whether a device store was
+   * wired in.
+   *
+   * False means pairing still works but hands out the SHARED token exactly as
+   * 3.34.0 shipped it — not a downgrade from that release, but not the upgrade
+   * either, and critically there is nothing to revoke one device at a time. An
+   * operator who believes revocation is available when it is not would keep a
+   * lost phone's access alive while thinking they had cut it, so this is
+   * surfaced rather than left to a daemon log nobody reads.
+   */
+  deviceCredentials?: boolean;
 }
 
 /**
@@ -730,9 +742,12 @@ export class WebTerminalServer {
     }
     return (
       `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
-      'over plain HTTP, so the credential would cross the network in the clear and it never expires. ' +
-      'Put a TLS front in front of it (e.g. `tailscale serve`) and restart with ' +
-      '`wmux web --allow-host <that hostname>`, or pair over loopback.'
+      'over plain HTTP, and a device secret never expires. Two ways forward: (1) run ' +
+      '`wmux web --tailscale` for one-command HTTPS over your tailnet — or front it yourself ' +
+      'with `tailscale serve` and restart with `wmux web --allow-host <that hostname>`; or ' +
+      '(2) pair over loopback BEFORE exposing, which keeps the handover off the wire — though ' +
+      'a plaintext bind still carries the credential on every later request, so (1) is the one ' +
+      'that actually protects it.'
     );
   }
 
@@ -749,6 +764,7 @@ export class WebTerminalServer {
       clients: this.clients.size,
       pairCode: pair.code,
       pairExpiresAt: pair.expiresAt,
+      deviceCredentials: !!this.deps.devices,
     };
   }
 
