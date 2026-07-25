@@ -11,30 +11,8 @@ import {
   getDaemonAuthTokenPath,
   getLegacyDaemonAuthTokenPath,
 } from '../../shared/constants';
+import { waitFor } from '../../test-utils/waitFor';
 
-/**
- * Wait until `predicate` holds, polling instead of sleeping a fixed span.
- *
- * The server registers a socket inside its OWN `connection` handler, which is a
- * different event on the other side of the pipe from the client's `connect`. A
- * fixed sleep is a guess about how far apart those two land, and on a loaded
- * Windows runner the guess loses — named pipes have a longer accept path than
- * unix sockets, and the Windows leg is the slowest of the three-OS matrix. When
- * it loses, the socket is not in `connectedSockets` yet, so `rotateToken()`
- * iterates a set that does not contain it, the connection is never dropped, and
- * the test hangs until vitest kills it with a bare "timed out in 5000ms".
- *
- * Waiting for the condition itself is both sturdier and faster: no fixed cost on
- * a quick machine, and a named failure instead of an anonymous timeout on a slow
- * one.
- */
-async function waitFor(predicate: () => boolean, label: string, timeoutMs = 4000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
 
 // Helper: generate unique pipe name for each test to avoid conflicts
 function testPipeName(suffix: string): string {
@@ -282,7 +260,7 @@ describe('DaemonPipeServer', () => {
       c1.on('connect', onConn);
       c2.on('connect', onConn);
     });
-    await waitFor(() => server.getConnectionCount() === 2, 'both sockets to register');
+    await waitFor(() => server.getConnectionCount() === 2);
     // While a client is still connected, the disconnect anchor must remain
     // untouched (otherwise the idle window would start during active use).
     expect(server.getLastDisconnectAt()).toBeNull();
@@ -292,13 +270,13 @@ describe('DaemonPipeServer', () => {
     const c2Closed = new Promise<void>((r) => c2.on('close', () => r()));
     c1.destroy();
     await c1Closed;
-    await waitFor(() => server.getConnectionCount() === 1, 'the first socket to deregister');
+    await waitFor(() => server.getConnectionCount() === 1);
     // One socket still alive — counter dropped to 1, anchor still null.
     expect(server.getLastDisconnectAt()).toBeNull();
 
     c2.destroy();
     await c2Closed;
-    await waitFor(() => server.getConnectionCount() === 0, 'the last socket to deregister');
+    await waitFor(() => server.getConnectionCount() === 0);
     const anchor = server.getLastDisconnectAt();
     expect(anchor).not.toBeNull();
     expect(anchor!).toBeGreaterThanOrEqual(before);
@@ -322,7 +300,7 @@ describe('DaemonPipeServer', () => {
     // rotateToken() only destroys sockets the SERVER has registered, so wait
     // for that rather than for the client's own connect event plus a guess.
     await new Promise<void>((resolve) => liveClient.on('connect', () => resolve()));
-    await waitFor(() => server.getConnectionCount() === 1, 'the live socket to register');
+    await waitFor(() => server.getConnectionCount() === 1);
 
     const oldToken = 'test-token-123';
     const newToken = server.rotateToken();
@@ -586,10 +564,7 @@ describe('SessionPipe', () => {
     expect(clientOutput.toString()).toContain('pty output');
 
     // Verify PTY received client input.
-    await waitFor(
-      () => Buffer.concat(inputReceived).toString() === 'user input',
-      'the PTY to receive the client input',
-    );
+    await waitFor(() => Buffer.concat(inputReceived).toString() === 'user input');
     expect(Buffer.concat(inputReceived).toString()).toBe('user input');
   });
 
@@ -611,13 +586,13 @@ describe('SessionPipe', () => {
     });
     // The server processes the auth line asynchronously; wait for the flag the
     // assertion reads rather than for a fixed span.
-    await waitFor(() => sessionPipe.isConnected, 'the session pipe to authenticate');
+    await waitFor(() => sessionPipe.isConnected);
 
     expect(sessionPipe.isConnected).toBe(true);
 
     // Disconnect
     client.destroy();
-    await waitFor(() => !sessionPipe.isConnected, 'the session pipe to notice the disconnect');
+    await waitFor(() => !sessionPipe.isConnected);
 
     expect(sessionPipe.isConnected).toBe(false);
   });

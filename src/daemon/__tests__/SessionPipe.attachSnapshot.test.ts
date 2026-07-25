@@ -18,17 +18,7 @@ import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SessionPipe, FLUSH_DONE_MARKER, ATTACH_SNAPSHOT_MIN_BYTES } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(pred: () => boolean, deadlineMs: number): Promise<void> {
-  const start = Date.now();
-  for (;;) {
-    if (pred()) return;
-    if (Date.now() - start > deadlineMs) throw new Error('waitFor: deadline exceeded');
-    await sleep(5);
-  }
-}
+import { waitFor } from '../../test-utils/waitFor';
 
 function uniqueSessionId(tag: string): string {
   return `attsnap-${tag}-${crypto.randomUUID().slice(0, 8)}`;
