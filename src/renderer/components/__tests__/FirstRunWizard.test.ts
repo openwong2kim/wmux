@@ -23,6 +23,8 @@ import {
   getRegisterErrorKeys,
   ClaudeStatusBlock,
   SampleTaskBlock,
+  StatuslineBlock,
+  decideStatuslineOffer,
 } from '../FirstRunWizard';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import type { Pane } from '../../../shared/types';
@@ -370,5 +372,57 @@ describe('electronAPI.firstRun mock surface', () => {
     expect(typeof api.startSampleTask).toBe('function');
     expect(typeof api.onSampleTaskReady).toBe('function');
     expect(typeof api.onSampleTaskTimeout).toBe('function');
+  });
+});
+
+// ─── Statusline opt-in (onboarding install offer) ─────────────────────────────
+
+describe('decideStatuslineOffer', () => {
+  const status = (
+    installed: boolean,
+    states: Array<'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing'>,
+  ) => ({
+    installed,
+    outcome: { targets: states.map((state) => ({ state })) },
+  });
+
+  it('offers when not installed and a target is installable', () => {
+    expect(decideStatuslineOffer(status(false, ['none']))).toBe('offer');
+    expect(decideStatuslineOffer(status(false, ['foreign', 'missing']))).toBe('offer');
+  });
+
+  it('hides when installed, when null, or when no target can accept', () => {
+    expect(decideStatuslineOffer(null)).toBe('hidden');
+    expect(decideStatuslineOffer(status(true, ['wmux']))).toBe('hidden');
+    expect(decideStatuslineOffer(status(false, ['foreign']))).toBe('hidden');
+    expect(decideStatuslineOffer(status(false, ['corrupt', 'foreign']))).toBe('hidden');
+  });
+});
+
+describe('StatuslineBlock', () => {
+  it('renders the enable button in offer state and disables it while installing', () => {
+    const offer = renderToStaticMarkup(
+      createElement(StatuslineBlock, { state: 'offer', onInstall: () => undefined }),
+    );
+    expect(offer).toContain('first-run-wizard-statusline-offer');
+    expect(offer).toContain('first-run-wizard-statusline-install');
+    expect(offer).not.toContain('disabled');
+
+    const installing = renderToStaticMarkup(
+      createElement(StatuslineBlock, { state: 'installing', onInstall: () => undefined }),
+    );
+    expect(installing).toContain('disabled');
+  });
+
+  it('renders success and error variants', () => {
+    const installed = renderToStaticMarkup(
+      createElement(StatuslineBlock, { state: 'installed', onInstall: () => undefined }),
+    );
+    expect(installed).toContain('first-run-wizard-statusline-installed');
+
+    const error = renderToStaticMarkup(
+      createElement(StatuslineBlock, { state: 'error', onInstall: () => undefined }),
+    );
+    expect(error).toContain('first-run-wizard-statusline-error');
   });
 });

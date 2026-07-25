@@ -54,6 +54,34 @@ function firstRunBridge(): FirstRunBridge {
   return api.firstRun;
 }
 
+// Statusline bridge (preload `statuslineBridge`). Optional: older preloads may
+// not expose it, so the accessor returns null instead of throwing and the
+// wizard simply hides the statusline offer.
+interface StatuslineBridge {
+  status: () => Promise<{
+    installed: boolean;
+    outcome: {
+      scriptDest: string;
+      scriptExists: boolean;
+      targets: Array<{ label: string; settingsPath: string; state: StatuslineTargetState }>;
+    };
+  }>;
+  install: () => Promise<{
+    ok: boolean;
+    error: string | null;
+    targets: Array<{ label: string; settingsPath: string; outcome: string }>;
+  }>;
+}
+
+export type StatuslineTargetState = 'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing';
+
+function statuslineBridge(): StatuslineBridge | null {
+  const api = (window as unknown as {
+    electronAPI?: { statuslineBridge?: StatuslineBridge };
+  }).electronAPI;
+  return api?.statuslineBridge ?? null;
+}
+
 function shellOpenExternal(url: string): Promise<void> {
   const api = (window as unknown as {
     electronAPI?: { shell?: { openExternal: (u: string) => Promise<void> } };
@@ -120,6 +148,26 @@ export function formatCompletedAt(iso: string | undefined): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+/**
+ * Whether the wizard should offer the statusline install.
+ *
+ * Hidden when already installed, and when no target could accept an install
+ * (every settings.json is foreign-owned or corrupt) — offering a button that
+ * can only no-op would be noise. 'none'/'missing' targets are installable
+ * (install creates missing settings files).
+ */
+export function decideStatuslineOffer(status: {
+  installed: boolean;
+  outcome: { targets: Array<{ state: StatuslineTargetState }> };
+} | null): 'offer' | 'hidden' {
+  if (!status) return 'hidden';
+  if (status.installed) return 'hidden';
+  const installable = status.outcome.targets.some(
+    (t) => t.state === 'none' || t.state === 'missing',
+  );
+  return installable ? 'offer' : 'hidden';
+}
+
 /** i18n keys for Tier 2 error display (D10). Falls back to UNKNOWN for unrecognized codes. */
 export function getRegisterErrorKeys(code: RegisterMcpErrorCode | string): {
   problem: string;
@@ -150,6 +198,13 @@ type SampleSubState =
   | 'timeout-fallback'
   | 'error';
 
+export type StatuslineSubState =
+  | 'unknown'   // status not fetched yet (or bridge unavailable) — block hidden
+  | 'offer'     // installable, waiting for the user's click
+  | 'installing'
+  | 'installed'
+  | 'error';
+
 const PTYID_WAIT_TIMEOUT_MS = 10_000;
 
 export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
@@ -163,6 +218,8 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     { code: RegisterMcpErrorCode; message: string } | null
   >(null);
   const [sampleState, setSampleState] = useState<SampleSubState>('idle');
+  const [statuslineState, setStatuslineState] = useState<StatuslineSubState>('unknown');
+  const [statuslineError, setStatuslineError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstFocusRef = useRef<HTMLButtonElement>(null);
@@ -203,6 +260,49 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // ─── Statusline offer (opt-in; never auto-installs — owner decision 2026-07-17) ──
+  // Fetched once on mount; the block renders only when Claude is detected AND
+  // there is at least one installable settings target.
+  useEffect(() => {
+    const bridge = statuslineBridge();
+    if (!bridge) return;
+    bridge
+      .status()
+      .then((s) => {
+        if (!isMountedRef.current) return;
+        setStatuslineState(decideStatuslineOffer(s) === 'offer' ? 'offer' : 'unknown');
+      })
+      .catch(() => {
+        // Status probe failing is not worth surfacing — just keep the block hidden.
+      });
+  }, []);
+
+  const handleInstallStatusline = useCallback(async () => {
+    const bridge = statuslineBridge();
+    if (!bridge) return;
+    setStatuslineState('installing');
+    setStatuslineError(null);
+    try {
+      const outcome = await bridge.install();
+      if (!isMountedRef.current) return;
+      // ok:true still means "nothing broke", not "something was installed" —
+      // every target can be skipped (foreign/corrupt) if settings changed
+      // between the status probe and the click. Only report success when a
+      // target actually took the install.
+      const installedSomewhere = outcome.targets.some((t) => t.outcome === 'installed');
+      if (outcome.ok && installedSomewhere) {
+        setStatuslineState('installed');
+      } else {
+        setStatuslineError(outcome.error);
+        setStatuslineState('error');
+      }
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      setStatuslineError(err instanceof Error ? err.message : null);
+      setStatuslineState('error');
+    }
+  }, []);
 
   // ─── Dismiss / Escape ──────────────────────────────────────────────────────
   const dismiss = useCallback(async () => {
@@ -394,6 +494,8 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
         style={{
           width: 480,
           maxWidth: '90vw',
+          maxHeight: '90vh',
+          overflowY: 'auto',
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
           boxShadow: 'var(--shadow-modal)',
@@ -508,6 +610,15 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
                   );
                 })()}
               </div>
+            )}
+
+            {/* Statusline opt-in (only when Claude detected & installable) */}
+            {result.status.claudeFound && statuslineState !== 'unknown' && (
+              <StatuslineBlock
+                state={statuslineState}
+                errorDetail={statuslineError}
+                onInstall={() => void handleInstallStatusline()}
+              />
             )}
 
             {/* Sample task block */}
@@ -627,6 +738,80 @@ export function ClaudeStatusBlock({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+export function StatuslineBlock({
+  state,
+  errorDetail,
+  onInstall,
+}: {
+  state: StatuslineSubState;
+  errorDetail?: string | null;
+  onInstall: () => void;
+}) {
+  const t = useT();
+
+  if (state === 'installed') {
+    return (
+      <div
+        className="flex flex-col gap-1 p-3 rounded-lg"
+        style={{
+          backgroundColor: 'var(--bg-surface)',
+          border: '1px solid var(--accent-green, #a6e3a1)',
+        }}
+        data-testid="first-run-wizard-statusline-installed"
+      >
+        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
+          ✓ {t('firstRunWizard.statuslineInstalled')}
+        </p>
+        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
+          {t('firstRunWizard.statuslineInstalledHint')}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2 p-3 rounded-lg"
+      style={{ backgroundColor: 'var(--bg-surface)' }}
+      data-testid="first-run-wizard-statusline-offer"
+    >
+      <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
+        {t('firstRunWizard.statuslineHeading')}
+      </p>
+      <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
+        {t('firstRunWizard.statuslineDescription')}
+      </p>
+      {state === 'error' && (
+        <p
+          className="text-xs"
+          style={{ color: 'var(--accent-red, #f38ba8)', margin: 0 }}
+          data-testid="first-run-wizard-statusline-error"
+        >
+          {t('firstRunWizard.statuslineError')}
+          {errorDetail ? ` (${errorDetail})` : ''}
+        </p>
+      )}
+      <button
+        onClick={onInstall}
+        disabled={state === 'installing'}
+        data-testid="first-run-wizard-statusline-install"
+        className="self-start px-3 py-1 rounded text-xs font-medium"
+        style={{
+          backgroundColor: 'var(--accent)',
+          color: 'var(--bg-base)',
+          border: 'none',
+          cursor: state === 'installing' ? 'wait' : 'pointer',
+          opacity: state === 'installing' ? 0.7 : 1,
+        }}
+      >
+        {state === 'installing'
+          ? t('firstRunWizard.statuslineInstalling')
+          : t('firstRunWizard.statuslineEnableButton')}
+      </button>
     </div>
   );
 }
