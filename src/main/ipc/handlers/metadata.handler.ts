@@ -18,7 +18,7 @@ import { ghPrService } from '../../github/GhPrService';
 import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
 import { resolveWslDistro } from '../../pty/wslDistro';
 import type { PaneCommandTarget } from '../../git/paneCommand';
-import { git } from '../../git/git';
+import { resolveGitToplevel } from '../../git/git';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -267,11 +267,7 @@ export function registerMetadataHandlers(
   // per pane inside the router.
   prReviewRouter = new PrReviewRouter(
     ghPrService,
-    async (cwd, target) => {
-      const result = await git(['rev-parse', '--show-toplevel'], target ?? cwd);
-      const repoRoot = result.code === 0 ? result.stdout.trim() : '';
-      return repoRoot || null;
-    },
+    (cwd, target) => resolveGitToplevel(target ?? cwd),
     resolvePtyWorkspace,
     (e) => {
       eventBus.emit({
