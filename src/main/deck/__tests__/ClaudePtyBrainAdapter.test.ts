@@ -109,6 +109,7 @@ function makeAdapter(host: FakeHost, over: Record<string, unknown> = {}): Claude
     sessionStartTimeoutMs: 5,
     staleResumeWindowMs: 5,
     turnTimeoutMs: 500,
+    submitDelayMs: 1,
     readTranscript: () => ({ text: 'final answer', endsWithQuestion: false }),
     ...over,
   });
@@ -258,10 +259,12 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const host = makeHost();
     const adapter = makeAdapter(host);
     const turn = collect(adapter.send('summarise the fleet'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBe(2));
     const ptyId = host.created[0].id;
-    // The prompt is typed into the pty with a trailing carriage return.
-    expect(host.writes[0].data).toBe('summarise the fleet\r');
+    // The prompt and the submitting Enter are separate writes: one chunk would
+    // make the TUI's paste detection swallow the `\r` as pasted content.
+    expect(host.writes[0].data).toBe('summarise the fleet');
+    expect(host.writes[1].data).toBe('\r');
 
     deliverBrainPtyHookSignal(
       signal('agent.stop', ptyId, {
@@ -287,7 +290,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const adapter = makeAdapter(host);
     adapter.start({ resumeSessionId: 'sess-prev' });
     const turn = collect(adapter.send('hi'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     expect(host.created[0].command).toContain('--resume "sess-prev"');
     deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-prev' }));
     await turn;
@@ -304,7 +307,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     expect(host.created[0].command).toContain('--resume');
     expect(host.created[1].command).not.toContain('--resume');
     expect(host.destroyed).toContain(host.created[0].id);
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     deliverBrainPtyHookSignal(
       signal('agent.stop', host.created[1].id, { agentSessionId: 'sess-new' }),
     );
@@ -346,7 +349,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     await vi.waitFor(() =>
       expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId))).toBe(true),
     );
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
     const events = await turn;
     expect(events.some((e) => e.type === 'error')).toBe(false);
@@ -358,7 +361,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const host = makeHost();
     const adapter = makeAdapter(host, { turnTimeoutMs: 60_000 });
     const turn = collect(adapter.send('long job'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     adapter.dispose();
     // Must RESOLVE (not hang): the session manager's for-await has to unwind
     // on app quit. No turn-end is emitted for a turn that never finished.
@@ -380,7 +383,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const host = makeHost();
     const adapter = makeAdapter(host);
     const turn = collect(adapter.send('hi'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const dir = path.join(tmpDir, 'brain-profiles');
     expect(fs.readdirSync(dir).length).toBe(2); // settings + mcp config
     adapter.dispose();
@@ -408,7 +411,7 @@ describe('brainPtyHookBus', () => {
     const host = makeHost();
     const adapter = makeAdapter(host);
     const turn = collect(adapter.send('hi'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const ptyId = host.created[0].id;
     // A worker pane's signal falls through to the fleet path untouched.
     expect(deliverBrainPtyHookSignal(signal('agent.stop', 'pane-42'))).toBe(false);

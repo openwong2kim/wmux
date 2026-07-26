@@ -56,6 +56,11 @@ const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Window after spawn during which the banner is watched for a dead `--resume`.
  *  The message appears immediately or not at all. */
 const STALE_RESUME_WINDOW_MS = 4_000;
+/** Pause between the prompt write and the submitting Enter. Writing them in one
+ *  chunk makes the TUI's paste detection swallow the trailing `\r` as pasted
+ *  content — the prompt lands in the input box but never submits (dogfood
+ *  2026-07-26; the PoC proved a short gap fixes it). */
+const SUBMIT_DELAY_MS = 400;
 /** Claude Code's own wording when `--resume <id>` names a transcript it cannot
  *  find. Matched case-insensitively on the spawn banner only. */
 const STALE_RESUME_MARKER = 'no conversation found';
@@ -332,6 +337,9 @@ export interface ClaudePtyBrainAdapterDeps {
   sessionStartTimeoutMs?: number;
   turnTimeoutMs?: number;
   staleResumeWindowMs?: number;
+  /** Pause between writing the prompt and writing the submitting Enter.
+   *  Tests shrink this to keep the suite fast. */
+  submitDelayMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -677,7 +685,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     const waiter = createWaiter<AgentSignal | null>();
     this.turnStop = waiter;
     try {
-      this.deps.host.write(ptyId, `${prompt}\r`);
+      // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
+      // detection would absorb the trailing Enter as pasted content and the
+      // prompt would sit unsubmitted in the input box (see SUBMIT_DELAY_MS).
+      this.deps.host.write(ptyId, prompt);
+      await delay(this.deps.submitDelayMs ?? SUBMIT_DELAY_MS);
+      if (this._disposed) return;
+      this.deps.host.write(ptyId, '\r');
     } catch (err) {
       this.turnStop = null;
       yield { type: 'error', message: `could not reach the terminal brain: ${String(err)}` };
