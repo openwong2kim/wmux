@@ -9,4 +9,10 @@ describe('useTerminal hyperlink routing', () => {
     expect(source).toContain('activate: activateTerminalUrl');
     expect(source).toContain('new WebLinksAddon(activateTerminalUrl)');
   });
+
+  it('binds detected filesystem paths to the terminal PTY identity', () => {
+    expect(source).toContain('bindPathOpenToPty(');
+    expect(source).toContain('ptyId,');
+    expect(source).toContain('window.electronAPI.shell.openPath');
+  });
 });

@@ -1,42 +1,30 @@
 /**
- * shell.handler — `openPath` channel.
+ * shell.handler — filesystem-path trust boundary.
  *
- * Verifies that:
- *   • absolute paths are forwarded to Electron's shell.openPath
- *   • relative paths, NUL bytes, non-strings, length overflow are rejected
- *   • path.normalize is applied (so `..` collapses before isAbsolute check)
- *   • openPath returning an error string triggers showItemInFolder fallback
+ * The request is anchored to a live PTY. Main resolves that PTY's location,
+ * converts guest paths into host-accessible paths, and only then normalizes
+ * and applies the executable-extension gate.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-
-// ── Module mocks (hoisted; cannot reference outer test variables) ──────────
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionLocation } from '../../../../shared/sessionLocation';
 
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const openPath = vi.fn();
   const showItemInFolder = vi.fn();
-  const openExternal = vi.fn();
-  const ipcMain = {
-    handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
-      handlers.set(channel, fn);
-    }),
-    removeHandler: vi.fn((channel: string) => {
-      handlers.delete(channel);
-    }),
-  };
   return {
-    ipcMain,
-    shell: { openPath, showItemInFolder, openExternal },
+    ipcMain: {
+      handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn)),
+      removeHandler: vi.fn((channel: string) => handlers.delete(channel)),
+    },
+    shell: { openPath, showItemInFolder, openExternal: vi.fn() },
+    app: { isPackaged: false, getAppMetrics: vi.fn(() => []) },
     __handlers: handlers,
     __openPath: openPath,
     __showItemInFolder: showItemInFolder,
   };
 });
 
-// ShellDetector is constructed at handler registration time. Stub the
-// constructor so the test doesn't drag in pty discovery side effects.
-// Use a plain class — vi.fn().mockImplementation does not produce a real
-// constructor and would fail `new ShellDetector()`.
 vi.mock('../../../../shared/ShellDetector', () => ({
   ShellDetector: class {
     detect() {
@@ -45,29 +33,50 @@ vi.mock('../../../../shared/ShellDetector', () => ({
   },
 }));
 
+vi.mock('../../../system/SystemStatsSampler', () => ({
+  SystemStatsSampler: class {
+    sample() {
+      return Promise.resolve({});
+    }
+  },
+}));
+
 import * as electron from 'electron';
-import { registerShellHandlers } from '../shell.handler';
 import { IPC } from '../../../../shared/constants';
+import { registerShellHandlers } from '../shell.handler';
 
-const handlers = (electron as unknown as { __handlers: Map<string, (...a: unknown[]) => unknown> }).__handlers;
-const openPath = (electron as unknown as { __openPath: ReturnType<typeof vi.fn> }).__openPath;
-const showItemInFolder = (electron as unknown as { __showItemInFolder: ReturnType<typeof vi.fn> }).__showItemInFolder;
-
-function getHandler(channel: string): (...args: unknown[]) => unknown {
-  const fn = handlers.get(channel);
-  if (!fn) throw new Error(`no handler for ${channel}`);
-  return fn;
-}
-
+const mockedElectron = electron as unknown as {
+  __handlers: Map<string, (...args: unknown[]) => unknown>;
+  __openPath: ReturnType<typeof vi.fn>;
+  __showItemInFolder: ReturnType<typeof vi.fn>;
+};
+const locations = new Map<string, SessionLocation>();
 let cleanup: (() => void) | null = null;
 
+function handler(): (...args: unknown[]) => unknown {
+  const registered = mockedElectron.__handlers.get(IPC.SHELL_OPEN_PATH);
+  if (!registered) throw new Error('open-path handler is not registered');
+  return registered;
+}
+
+const fakeEvent = {} as Electron.IpcMainInvokeEvent;
+const hostLocation: SessionLocation = {
+  domain: 'host',
+  cwd: process.platform === 'win32' ? 'C:\\Users\\rizz' : '/home/rizz',
+  shell: process.platform === 'win32' ? 'pwsh.exe' : '/bin/bash',
+};
+
+async function invoke(path: unknown, ptyId = 'pty-host'): Promise<unknown> {
+  locations.set('pty-host', hostLocation);
+  return handler()(fakeEvent, { path, ptyId });
+}
+
 beforeEach(() => {
-  handlers.clear();
-  openPath.mockReset();
-  showItemInFolder.mockReset();
-  // Default: openPath succeeds (empty error string).
-  openPath.mockResolvedValue('');
-  cleanup = registerShellHandlers();
+  mockedElectron.__handlers.clear();
+  mockedElectron.__openPath.mockReset().mockResolvedValue('');
+  mockedElectron.__showItemInFolder.mockReset();
+  locations.clear();
+  cleanup = registerShellHandlers((ptyId) => locations.get(ptyId) ?? null);
 });
 
 afterEach(() => {
@@ -76,122 +85,115 @@ afterEach(() => {
 });
 
 describe('shell.handler — SHELL_OPEN_PATH', () => {
-  const fakeEvent = {} as Electron.IpcMainInvokeEvent;
+  it('forwards a normalized host path', async () => {
+    const input = process.platform === 'win32' ? 'C:\\foo\\..\\bar.txt' : '/foo/../bar.txt';
+    const expected = process.platform === 'win32' ? 'C:\\bar.txt' : '/bar.txt';
 
-  it('forwards an absolute POSIX-style path on a POSIX host', async () => {
-    if (process.platform === 'win32') return; // path.isAbsolute is OS-aware
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const result = await handler(fakeEvent, '/etc/hosts');
-    expect(openPath).toHaveBeenCalledWith('/etc/hosts');
-    expect(result).toEqual({ ok: true, error: undefined });
-    expect(showItemInFolder).not.toHaveBeenCalled();
+    await expect(invoke(input)).resolves.toEqual({ ok: true, error: undefined });
+    expect(mockedElectron.__openPath).toHaveBeenCalledWith(expected);
   });
 
-  it('forwards a Windows drive path on a Windows host', async () => {
+  it.each([
+    ['non-string', 42, /string/i],
+    ['empty', '', /length/i],
+    ['NUL', process.platform === 'win32' ? 'C:\\foo\0bar' : '/foo\0bar', /NUL/i],
+    ['oversize', `${process.platform === 'win32' ? 'C:\\' : '/'}${'a'.repeat(5000)}`, /length/i],
+    ['relative', 'relative/file.txt', /absolute/i],
+    ['URL', 'https://example.com/file.txt', /filesystem|URL/i],
+  ])('rejects %s path input', async (_name, value, error) => {
+    await expect(invoke(value)).rejects.toThrow(error as RegExp);
+    expect(mockedElectron.__openPath).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing or stale originating PTY identity explicitly', async () => {
+    await expect(
+      handler()(fakeEvent, { path: '/etc/hosts', ptyId: 'pty-stale' }),
+    ).rejects.toThrow(/PTY.*not found|stale/i);
+    expect(mockedElectron.__openPath).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed PTY identity', async () => {
+    await expect(handler()(fakeEvent, { path: '/etc/hosts', ptyId: '' })).rejects.toThrow(/PTY/i);
+    expect(mockedElectron.__openPath).not.toHaveBeenCalled();
+  });
+
+  it('converts WSL paths before normalization', async () => {
     if (process.platform !== 'win32') return;
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const result = await handler(fakeEvent, 'C:\\Users\\rizz\\file.txt');
-    expect(openPath).toHaveBeenCalledWith('C:\\Users\\rizz\\file.txt');
+    locations.set('pty-wsl', {
+      domain: 'wsl',
+      cwd: '/home/me',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    });
+
+    const result = await handler()(
+      fakeEvent,
+      { path: '/home/me/project/../safe.txt', ptyId: 'pty-wsl' },
+    );
+
+    expect(mockedElectron.__openPath).toHaveBeenCalledWith(
+      '\\\\wsl.localhost\\Ubuntu\\home\\me\\safe.txt',
+    );
     expect(result).toEqual({ ok: true, error: undefined });
   });
 
-  it('rejects a non-string argument', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    await expect(handler(fakeEvent, 42 as unknown as string)).rejects.toThrow(/string/);
-    expect(openPath).not.toHaveBeenCalled();
+  it('fails explicitly when a WSL path needs a missing distro', async () => {
+    locations.set('pty-wsl', { domain: 'wsl', cwd: '/home/me', shell: 'wsl.exe' });
+
+    await expect(
+      handler()(fakeEvent, { path: '/home/me/file.txt', ptyId: 'pty-wsl' }),
+    ).rejects.toThrow(/WSL_DISTRO_REQUIRED|distro/i);
+    expect(mockedElectron.__openPath).not.toHaveBeenCalled();
   });
 
-  it('rejects an empty string', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    await expect(handler(fakeEvent, '')).rejects.toThrow(/length/);
-    expect(openPath).not.toHaveBeenCalled();
+  it('applies the executable blocklist to the converted target', async () => {
+    if (process.platform !== 'win32') return;
+    locations.set('pty-wsl', {
+      domain: 'wsl',
+      cwd: '/home/me',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    });
+
+    const result = await handler()(
+      fakeEvent,
+      { path: '/home/me/setup.EXE', ptyId: 'pty-wsl' },
+    );
+
+    const resolved = '\\\\wsl.localhost\\Ubuntu\\home\\me\\setup.EXE';
+    expect(mockedElectron.__openPath).not.toHaveBeenCalled();
+    expect(mockedElectron.__showItemInFolder).toHaveBeenCalledWith(resolved);
+    expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
   });
 
-  it('rejects an overlong path', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const huge = (process.platform === 'win32' ? 'C:\\' : '/') + 'a'.repeat(5000);
-    await expect(handler(fakeEvent, huge)).rejects.toThrow(/length/);
-    expect(openPath).not.toHaveBeenCalled();
-  });
+  it('falls back to reveal when Electron cannot open the resolved path', async () => {
+    mockedElectron.__openPath.mockResolvedValueOnce('Failed to open path');
+    const input = process.platform === 'win32' ? 'C:\\missing.txt' : '/missing.txt';
 
-  it('rejects a path with NUL bytes', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const evil = (process.platform === 'win32' ? 'C:\\foo\0bar' : '/foo\0bar');
-    await expect(handler(fakeEvent, evil)).rejects.toThrow(/NUL/);
-    expect(openPath).not.toHaveBeenCalled();
-  });
+    const result = await invoke(input);
 
-  it('rejects a relative path', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    await expect(handler(fakeEvent, 'relative/path/file.txt')).rejects.toThrow(/absolute/);
-    expect(openPath).not.toHaveBeenCalled();
-  });
-
-  it('normalizes the path before forwarding (collapses `..`)', async () => {
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const input = process.platform === 'win32' ? 'C:\\foo\\..\\bar' : '/foo/../bar';
-    const expected = process.platform === 'win32' ? 'C:\\bar' : '/bar';
-    await handler(fakeEvent, input);
-    expect(openPath).toHaveBeenCalledWith(expected);
-  });
-
-  it('falls back to showItemInFolder when openPath returns an error', async () => {
-    openPath.mockResolvedValueOnce('Failed to open path');
-    const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const input = process.platform === 'win32' ? 'C:\\does-not-exist' : '/does-not-exist';
-    const result = await handler(fakeEvent, input);
-    expect(showItemInFolder).toHaveBeenCalledWith(input);
+    expect(mockedElectron.__showItemInFolder).toHaveBeenCalledWith(input);
     expect(result).toEqual({ ok: false, error: 'Failed to open path' });
   });
 
-  describe('executable extension blocklist', () => {
-    // Each entry: the renderer-supplied path → the normalized form main
-    // sends to showItemInFolder. Windows hosts normalize forward slashes
-    // to backslashes; POSIX hosts leave the input unchanged.
-    const expectNormalized = (input: string) =>
-      process.platform === 'win32' ? input.replace(/\//g, '\\') : input;
-
-    const blockedSamples = [
+  it('blocks all configured executable extensions case-insensitively', async () => {
+    const samples = [
       '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1',
       '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi',
       '.reg', '.lnk', '.hta', '.cpl',
     ];
-
-    for (const ext of blockedSamples) {
-      it(`blocks ${ext} extension and reveals folder`, async () => {
-        const handler = getHandler(IPC.SHELL_OPEN_PATH);
-        const input = process.platform === 'win32'
-          ? `C:\\Users\\rizz\\evil${ext}`
-          : `/home/rizz/evil${ext}`;
-        const result = await handler(fakeEvent, input);
-        expect(openPath).not.toHaveBeenCalled();
-        expect(showItemInFolder).toHaveBeenCalledWith(expectNormalized(input));
-        expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
+    for (const extension of samples) {
+      mockedElectron.__openPath.mockClear();
+      mockedElectron.__showItemInFolder.mockClear();
+      const input = process.platform === 'win32'
+        ? `C:\\Users\\rizz\\evil${extension.toUpperCase()}`
+        : `/home/rizz/evil${extension.toUpperCase()}`;
+      await expect(invoke(input)).resolves.toEqual({
+        ok: false,
+        error: 'BLOCKED_EXTENSION',
       });
+      expect(mockedElectron.__openPath).not.toHaveBeenCalled();
+      expect(mockedElectron.__showItemInFolder).toHaveBeenCalledOnce();
     }
-
-    it('matches blocked extension case-insensitively', async () => {
-      const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\foo.EXE' : '/foo.EXE';
-      const result = await handler(fakeEvent, input);
-      expect(openPath).not.toHaveBeenCalled();
-      expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
-    });
-
-    it('allows non-executable extensions', async () => {
-      const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\foo.txt' : '/foo.txt';
-      const result = await handler(fakeEvent, input);
-      expect(openPath).toHaveBeenCalledWith(input);
-      expect(result).toEqual({ ok: true, error: undefined });
-    });
-
-    it('allows extension-less paths (folders)', async () => {
-      const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\Users\\rizz' : '/home/rizz';
-      const result = await handler(fakeEvent, input);
-      expect(openPath).toHaveBeenCalledWith(input);
-      expect(result).toEqual({ ok: true, error: undefined });
-    });
   });
 });

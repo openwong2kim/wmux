@@ -17,7 +17,7 @@ import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { decodeOsc52Write } from '../utils/osc52Clipboard';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
-import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { bindPathOpenToPty, createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
@@ -893,9 +893,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // detect disjoint token shapes so a single span never claims both.
     // Main-side validation in shell.handler.openPath is the security
     // boundary; the renderer regex is only a UX filter.
+    const openPathForPty = bindPathOpenToPty(
+      ptyId,
+      window.electronAPI.shell.openPath,
+    );
     const pathLinkDisposable = terminal.registerLinkProvider(
       createPathLinkProvider(terminal, (filePath) => {
-        void window.electronAPI.shell.openPath(filePath).then((result) => {
+        void openPathForPty(filePath).then((result) => {
           // Main-side outcomes:
           //   • ok=true → opened cleanly, nothing to surface
           //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)

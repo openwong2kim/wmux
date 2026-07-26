@@ -34,6 +34,20 @@ export interface PathMatch {
   end: number;
 }
 
+/**
+ * Bind a path activator to the PTY that produced the terminal output.
+ *
+ * The path itself is untrusted text. Main uses the PTY identity to resolve the
+ * shell domain (host, WSL, MSYS) before deciding how that text maps onto a
+ * host-accessible filesystem path.
+ */
+export function bindPathOpenToPty<TResult>(
+  ptyId: string,
+  openPath: (filePath: string, ptyId: string) => TResult,
+): (filePath: string) => TResult {
+  return (filePath) => openPath(filePath, ptyId);
+}
+
 /** Trailing characters trimmed off the right edge of a candidate path. */
 const TRAILING_PUNCTUATION = /[.,:;!?)\]}>"'`]+$/;
 

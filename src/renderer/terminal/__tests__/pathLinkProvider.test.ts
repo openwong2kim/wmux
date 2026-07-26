@@ -13,7 +13,11 @@
  * provider for coordinate translation + range correctness.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { findPathMatches, createPathLinkProvider } from '../pathLinkProvider';
+import {
+  bindPathOpenToPty,
+  findPathMatches,
+  createPathLinkProvider,
+} from '../pathLinkProvider';
 
 describe('findPathMatches', () => {
   describe('Windows drive paths', () => {
@@ -277,5 +281,16 @@ describe('createPathLinkProvider', () => {
     // object is fine for the test.
     link.activate({} as unknown as MouseEvent, link.text);
     expect(openPath).toHaveBeenCalledWith('/var/log/syslog');
+  });
+});
+
+describe('bindPathOpenToPty', () => {
+  it('threads the originating PTY identity into every filesystem open request', () => {
+    const openPath = vi.fn();
+    const activate = bindPathOpenToPty('pty-origin', openPath);
+
+    activate('/home/me/project/readme.md');
+
+    expect(openPath).toHaveBeenCalledWith('/home/me/project/readme.md', 'pty-origin');
   });
 });

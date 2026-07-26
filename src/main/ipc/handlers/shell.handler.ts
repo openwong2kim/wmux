@@ -5,6 +5,10 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
 import { SystemStatsSampler } from '../../system/SystemStatsSampler';
+import {
+  toHostAccessiblePath,
+  type SessionLocation,
+} from '../../../shared/sessionLocation';
 
 // Hard cap on the path string the renderer can send. Long enough for
 // Windows long-path (\\?\ prefix + ~32k) callers but small enough that a
@@ -27,7 +31,18 @@ const BLOCKED_EXTENSIONS = new Set<string>([
   '.reg', '.lnk', '.hta', '.cpl',
 ]);
 
-export function registerShellHandlers(): () => void {
+export type SessionLocationResolver = (
+  ptyId: string,
+) => SessionLocation | null | Promise<SessionLocation | null>;
+
+interface OpenPathRequest {
+  path: unknown;
+  ptyId: unknown;
+}
+
+export function registerShellHandlers(
+  resolveSessionLocation: SessionLocationResolver = () => null,
+): () => void {
   const detector = new ShellDetector();
   const systemStats = new SystemStatsSampler();
 
@@ -57,7 +72,14 @@ export function registerShellHandlers(): () => void {
   // app, permission denied) we fall back to showItemInFolder so the user
   // can still locate the target.
   ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
-  ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (_event: Electron.IpcMainInvokeEvent, rawPath: string) => {
+  ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (
+    _event: Electron.IpcMainInvokeEvent,
+    request: OpenPathRequest,
+  ) => {
+    if (!request || typeof request !== 'object') {
+      throw new Error('filesystem open request must be an object');
+    }
+    const { path: rawPath, ptyId } = request;
     if (typeof rawPath !== 'string') {
       throw new Error('path must be a string');
     }
@@ -67,11 +89,30 @@ export function registerShellHandlers(): () => void {
     if (rawPath.includes('\0')) {
       throw new Error('path must not contain NUL bytes');
     }
+    if (/^[A-Za-z][A-Za-z\d+.-]*:\/\//.test(rawPath)) {
+      throw new Error('URLs are not allowed in the filesystem path route');
+    }
+    if (typeof ptyId !== 'string' || ptyId.length === 0) {
+      throw new Error('originating PTY identity is required');
+    }
+
+    const location = await resolveSessionLocation(ptyId);
+    if (!location) {
+      throw new Error(`originating PTY not found or stale: ${ptyId}`);
+    }
+    // Guest-to-host conversion MUST precede normalization, absolute-path
+    // validation, and extension checks. A POSIX WSL/MSYS path is not absolute
+    // according to node:path on Windows, and the executable suffix belongs to
+    // the resolved target rather than the raw terminal token.
+    const converted = toHostAccessiblePath(location, rawPath);
+    if (!converted.ok) {
+      throw new Error(`cannot resolve path for originating PTY: ${converted.error}`);
+    }
     // Normalize first so '..' segments collapse to a real on-disk path
     // before the absolute-path check; otherwise a payload like
     // 'C:\\foo\\..\\..\\..\\Windows\\System32\\calc.exe' would pass the
     // raw isAbsolute test while still escaping the user-clicked location.
-    const normalized = path.normalize(rawPath);
+    const normalized = path.normalize(converted.path);
     if (!path.isAbsolute(normalized)) {
       throw new Error('path must be absolute');
     }
