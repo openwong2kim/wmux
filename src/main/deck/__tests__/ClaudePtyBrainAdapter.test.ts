@@ -250,6 +250,22 @@ describe('buildBrainSettingsProfile', () => {
 });
 
 describe('buildBrainLaunchCommand', () => {
+  it('restricts the ambient setting sources to project', () => {
+    // `--settings` only ADDS a source: without this flag the operator's own
+    // ~/.claude settings (apiKeyHelper, hooks, plugins) still load into the
+    // brain. `project` keeps brains/<wsId>/CLAUDE.md (memory, not a settings
+    // source) working. Flag semantics verified against the installed CLI —
+    // see BRAIN_SETTING_SOURCES.
+    const cmd = buildBrainLaunchCommand({
+      executable: 'claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+    });
+    expect(cmd).toContain('--setting-sources "project"');
+    expect(cmd.indexOf('--setting-sources')).toBeLessThan(cmd.indexOf('--settings '));
+  });
+
   it('quotes paths, pins the MCP config strictly, and carries --resume', () => {
     const cmd = buildBrainLaunchCommand({
       executable: '/Applications/My Apps/claude',
@@ -259,7 +275,7 @@ describe('buildBrainLaunchCommand', () => {
       resumeSessionId: 'sess-9',
     });
     expect(cmd).toBe(
-      '"/Applications/My Apps/claude" --settings "/tmp/s.json" ' +
+      '"/Applications/My Apps/claude" --setting-sources "project" --settings "/tmp/s.json" ' +
       '--mcp-config "/tmp/m.json" --strict-mcp-config ' +
       '--allowedTools "mcp__wmux__pane_list" --resume "sess-9"',
     );

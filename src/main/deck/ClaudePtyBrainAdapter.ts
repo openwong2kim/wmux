@@ -258,8 +258,9 @@ export function buildBrainSettingsProfile(opts: {
     }
   }
   return {
-    // The user's own ~/.claude settings are NOT loaded (see --settings +
-    // --strict-mcp-config in buildBrainLaunchCommand): this profile is the
+    // The user's own ~/.claude settings are NOT loaded (see
+    // --setting-sources + --strict-mcp-config in buildBrainLaunchCommand):
+    // this profile is the
     // brain's whole configuration, exactly like the SDK adapter's raw mode.
     permissions: {
       deny: denied,
@@ -308,6 +309,29 @@ export function quoteArg(value: string): string {
 }
 
 /**
+ * Which of Claude Code's own settings files the spawned brain may load.
+ *
+ * `--settings <file>` only ADDS a source — the user's `~/.claude/settings.json`
+ * still loads alongside it, which would drag `apiKeyHelper` (metered auth, the
+ * exact thing scrubBrainSpawnEnv exists to prevent), the operator's own hooks,
+ * and their plugins into a brain that is supposed to be configured entirely by
+ * the generated profile. `project` is the narrowest source that keeps the
+ * per-workspace `brains/<wsId>/CLAUDE.md` story intact.
+ *
+ * Verified empirically against the installed CLI on 2026-07-27
+ * (`claude --debug hooks --debug-file …`, native install at ~/.local/bin):
+ *   - `--setting-sources <user,project,local>` is a real flag on this build.
+ *   - WITHOUT the flag the debug log lists the user-level SessionStart/Stop
+ *     hooks; WITH `--setting-sources project` it lists none of them.
+ *   - The generated `--settings` profile's own SessionStart hook fired in BOTH
+ *     runs — an explicit `--settings` file is not one of the "sources" this
+ *     flag gates, so the deny list + turn protocol survive.
+ *   - A CLAUDE.md in the cwd was still obeyed under `--setting-sources project`
+ *     (memory discovery is not a settings source), so D4 keeps working.
+ */
+const BRAIN_SETTING_SOURCES = 'project';
+
+/**
  * The launch command line. Deliberately SHORT: no `--append-system-prompt`.
  * The commander identity rides the first turn's prompt text instead (the
  * AcpBrainAdapter pattern) — it lands in the transcript, so `--resume` carries
@@ -320,7 +344,14 @@ export function buildBrainLaunchCommand(opts: {
   allowedTools?: string[];
   resumeSessionId?: string | null;
 }): string {
-  const parts = [quoteArg(opts.executable), '--settings', quoteArg(opts.settingsPath)];
+  const parts = [
+    quoteArg(opts.executable),
+    // BEFORE --settings: restrict the ambient sources, then add ours.
+    '--setting-sources',
+    quoteArg(BRAIN_SETTING_SOURCES),
+    '--settings',
+    quoteArg(opts.settingsPath),
+  ];
   if (opts.mcpConfigPath) {
     parts.push('--mcp-config', quoteArg(opts.mcpConfigPath), '--strict-mcp-config');
   }
