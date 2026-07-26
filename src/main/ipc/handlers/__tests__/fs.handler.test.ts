@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isSensitivePath, resolveAccessiblePath } from '../fs.handler';
+import { isSensitivePath, registerFsHandlers, resolveAccessiblePath } from '../fs.handler';
+import { ipcMain } from 'electron';
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -62,5 +63,51 @@ describe('fs.handler security helpers', () => {
     realpathSpy.mockRejectedValue(new Error('ENOENT'));
 
     await expect(resolveAccessiblePath(path.join(home, 'project', 'missing.txt'))).resolves.toBeNull();
+  });
+
+  it('converts a WSL path before canonicalization and security checks', async () => {
+    const guestPath = '/home/me/project/src';
+    const hostPath = path.join(home, 'converted', 'project', 'src');
+    realpathSpy.mockResolvedValue(hostPath);
+    const convert = vi.fn(() => ({ ok: true as const, path: hostPath }));
+
+    await expect(resolveAccessiblePath(
+      guestPath,
+      { domain: 'wsl', cwd: '/home/me/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      convert,
+    )).resolves.toBe(hostPath);
+
+    expect(convert).toHaveBeenCalledWith(
+      { domain: 'wsl', cwd: '/home/me/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      guestPath,
+    );
+    expect(realpathSpy).toHaveBeenCalledWith(path.resolve(hostPath));
+  });
+
+  it('fails softly when WSL conversion requires a missing distro', async () => {
+    await expect(resolveAccessiblePath(
+      '/home/me/project',
+      { domain: 'wsl', cwd: '/home/me/project', shell: 'wsl.exe' },
+    )).resolves.toBeNull();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts structured location payloads in file-tree handlers', async () => {
+    const hostPath = path.join(home, 'project');
+    realpathSpy.mockResolvedValue(hostPath);
+    vi.spyOn(fs.promises, 'readdir').mockResolvedValue([] as never);
+    registerFsHandlers();
+    const calls = vi.mocked(ipcMain.handle).mock.calls;
+    const readDir = calls.find(([channel]) => channel === 'fs:read-dir')?.[1];
+    expect(readDir).toBeTypeOf('function');
+
+    await expect(readDir!(
+      {} as Electron.IpcMainInvokeEvent,
+      {
+        path: hostPath,
+        location: { domain: 'host', cwd: hostPath, shell: 'pwsh.exe' },
+      },
+    )).resolves.toEqual([]);
+    expect(realpathSpy).toHaveBeenCalled();
   });
 });

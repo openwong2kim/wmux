@@ -109,4 +109,30 @@ describe('scanSkillCatalog — .claude/skills|commands scan', () => {
   it('nonexistent cwd and empty home fail-soft to empty list', () => {
     expect(scanSkillCatalog(join(dir, 'nope'), dir)).toEqual([]);
   });
+
+  it('discovers project skills from a converted WSL location', () => {
+    const project = join(dir, 'converted-wsl-project');
+    seed(project, 'skills', 'qa', 'WSL project skill');
+
+    const out = scanSkillCatalog(
+      { domain: 'wsl', cwd: '/home/me/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      dir,
+      {
+        toHostPath: (location, target) => {
+          expect(location.domain).toBe('wsl');
+          expect(target).toBe('/home/me/project');
+          return { ok: true, path: project };
+        },
+      },
+    );
+
+    expect(out.map((entry) => `${entry.source}:${entry.name}`)).toEqual(['project:qa']);
+  });
+
+  it('fails softly when WSL skill discovery has no distro', () => {
+    expect(scanSkillCatalog(
+      { domain: 'wsl', cwd: '/home/me/project', shell: 'wsl.exe' },
+      dir,
+    )).toEqual([]);
+  });
 });

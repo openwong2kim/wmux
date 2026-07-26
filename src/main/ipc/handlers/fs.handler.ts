@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
+import { toHostAccessiblePath, type SessionLocation } from '../../../shared/sessionLocation';
+import { isLinuxLikeCwd } from '../../../shared/wslCwd';
 import { wrapHandler } from '../wrapHandler';
 
 export interface FileEntry {
@@ -61,10 +63,45 @@ export function isSensitivePath(resolvedPath: string): boolean {
   return false;
 }
 
-export async function resolveAccessiblePath(inputPath: string): Promise<string | null> {
+interface FileLocationRequest {
+  path: string;
+  location: SessionLocation;
+}
+
+type LocationPathOperation = typeof toHostAccessiblePath;
+
+function readFileLocationRequest(raw: unknown): FileLocationRequest | null {
+  if (typeof raw === 'string') {
+    if (!raw || (process.platform === 'win32' && isLinuxLikeCwd(raw))) return null;
+    return { path: raw, location: { domain: 'host', cwd: raw, shell: '' } };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const req = raw as { path?: unknown; location?: unknown };
+  if (typeof req.path !== 'string' || !req.path) return null;
+  if (!req.location || typeof req.location !== 'object' || Array.isArray(req.location)) return null;
+  const location = req.location as Partial<SessionLocation>;
+  if (
+    (location.domain !== 'host' && location.domain !== 'wsl')
+    || typeof location.cwd !== 'string'
+    || !location.cwd
+    || typeof location.shell !== 'string'
+  ) return null;
+  if (location.domain === 'wsl' && location.distro !== undefined && typeof location.distro !== 'string') {
+    return null;
+  }
+  return { path: req.path, location: location as SessionLocation };
+}
+
+export async function resolveAccessiblePath(
+  inputPath: string,
+  location: SessionLocation = { domain: 'host', cwd: inputPath, shell: '' },
+  convert: LocationPathOperation = toHostAccessiblePath,
+): Promise<string | null> {
   if (!inputPath || typeof inputPath !== 'string') return null;
 
-  const resolved = path.resolve(inputPath);
+  const accessible = convert(location, inputPath);
+  if (!accessible.ok) return null;
+  const resolved = path.resolve(accessible.path);
   if (isSensitivePath(resolved)) return null;
 
   try {
@@ -89,8 +126,10 @@ export function closeAllWatchers(): void {
 
 export function registerFsHandlers(): () => void {
   ipcMain.removeHandler(IPC.FS_READ_DIR);
-  ipcMain.handle(IPC.FS_READ_DIR, wrapHandler(IPC.FS_READ_DIR, async (_event: Electron.IpcMainInvokeEvent, dirPath: string): Promise<FileEntry[]> => {
-    const resolved = await resolveAccessiblePath(dirPath);
+  ipcMain.handle(IPC.FS_READ_DIR, wrapHandler(IPC.FS_READ_DIR, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<FileEntry[]> => {
+    const req = readFileLocationRequest(raw);
+    if (!req) return [];
+    const resolved = await resolveAccessiblePath(req.path, req.location);
     if (!resolved) return [];
 
     try {
@@ -122,8 +161,10 @@ export function registerFsHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.FS_READ_FILE);
-  ipcMain.handle(IPC.FS_READ_FILE, wrapHandler(IPC.FS_READ_FILE, async (_event: Electron.IpcMainInvokeEvent, filePath: string): Promise<string | null> => {
-    const resolved = await resolveAccessiblePath(filePath);
+  ipcMain.handle(IPC.FS_READ_FILE, wrapHandler(IPC.FS_READ_FILE, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<string | null> => {
+    const req = readFileLocationRequest(raw);
+    if (!req) return null;
+    const resolved = await resolveAccessiblePath(req.path, req.location);
     if (!resolved) return null;
     try {
       const stat = await fs.promises.stat(resolved);
@@ -135,9 +176,14 @@ export function registerFsHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.FS_WRITE_FILE);
-  ipcMain.handle(IPC.FS_WRITE_FILE, wrapHandler(IPC.FS_WRITE_FILE, async (_event: Electron.IpcMainInvokeEvent, filePath: string, content: string): Promise<boolean> => {
+  ipcMain.handle(IPC.FS_WRITE_FILE, wrapHandler(IPC.FS_WRITE_FILE, async (_event: Electron.IpcMainInvokeEvent, raw: unknown, content: string): Promise<boolean> => {
+    const req = readFileLocationRequest(raw);
+    if (!req) return false;
+    const filePath = req.path;
     if (typeof filePath !== 'string' || typeof content !== 'string') return false;
-    const resolved = path.resolve(filePath);
+    const accessible = toHostAccessiblePath(req.location, filePath);
+    if (!accessible.ok) return false;
+    const resolved = path.resolve(accessible.path);
     if (isSensitivePath(resolved)) return false;
     // Only allow writing CLAUDE.md files (for persona injection)
     if (path.basename(resolved) !== 'CLAUDE.md') return false;
@@ -153,8 +199,10 @@ export function registerFsHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.FS_WATCH);
-  ipcMain.handle(IPC.FS_WATCH, wrapHandler(IPC.FS_WATCH, async (_event: Electron.IpcMainInvokeEvent, dirPath: string) => {
-    const resolved = await resolveAccessiblePath(dirPath);
+  ipcMain.handle(IPC.FS_WATCH, wrapHandler(IPC.FS_WATCH, async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => {
+    const req = readFileLocationRequest(raw);
+    if (!req) return false;
+    const resolved = await resolveAccessiblePath(req.path, req.location);
     if (!resolved) return false;
 
     // Clean up previous watcher for this path
@@ -177,7 +225,13 @@ export function registerFsHandlers(): () => void {
           debounceTimers.delete(resolved);
           const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
           if (win && !win.isDestroyed()) {
-            win.webContents.send(IPC.FS_CHANGED, resolved);
+            // Preserve the canonical host path expected by existing callers.
+            // WSL callers keep their guest-path identity so renderer state can
+            // match the event to the tree it requested.
+            win.webContents.send(
+              IPC.FS_CHANGED,
+              req.location.domain === 'wsl' ? req.path : resolved,
+            );
           }
         }, 500));
       });
@@ -196,8 +250,10 @@ export function registerFsHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.FS_UNWATCH);
-  ipcMain.handle(IPC.FS_UNWATCH, wrapHandler(IPC.FS_UNWATCH, async (_event: Electron.IpcMainInvokeEvent, dirPath: string) => {
-    const resolved = await resolveAccessiblePath(dirPath);
+  ipcMain.handle(IPC.FS_UNWATCH, wrapHandler(IPC.FS_UNWATCH, async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => {
+    const req = readFileLocationRequest(raw);
+    if (!req) return;
+    const resolved = await resolveAccessiblePath(req.path, req.location);
     if (!resolved) return;
     const watcher = watchers.get(resolved);
     if (watcher) {

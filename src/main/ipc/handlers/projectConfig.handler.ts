@@ -8,6 +8,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { getProjectConfigStore, type ProjectConfigState } from '../../project/ProjectConfigStore';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 
 const MAX_PATH_LEN = 4096;
 
@@ -15,12 +16,13 @@ export function registerProjectConfigHandlers(): () => void {
   ipcMain.removeHandler(IPC.PROJECT_CONFIG_GET);
   ipcMain.handle(IPC.PROJECT_CONFIG_GET, wrapHandler(IPC.PROJECT_CONFIG_GET, async (
     _event: Electron.IpcMainInvokeEvent,
-    cwd: unknown,
+    raw: unknown,
   ): Promise<ProjectConfigState> => {
-    if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > MAX_PATH_LEN) {
+    const location = readLocation(raw);
+    if (!location) {
       return { found: false };
     }
-    return getProjectConfigStore().getState(cwd);
+    return getProjectConfigStore().getState(location);
   }));
 
   ipcMain.removeHandler(IPC.PROJECT_CONFIG_SET_TRUST);
@@ -53,4 +55,25 @@ export function registerProjectConfigHandlers(): () => void {
     ipcMain.removeHandler(IPC.PROJECT_CONFIG_GET);
     ipcMain.removeHandler(IPC.PROJECT_CONFIG_SET_TRUST);
   };
+}
+
+function readLocation(raw: unknown): string | SessionLocation | null {
+  if (typeof raw === 'string') {
+    return raw.length > 0 && raw.length <= MAX_PATH_LEN ? raw : null;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const location = (raw as { location?: unknown }).location;
+  if (!location || typeof location !== 'object' || Array.isArray(location)) return null;
+  const candidate = location as Partial<SessionLocation>;
+  if (
+    (candidate.domain !== 'host' && candidate.domain !== 'wsl')
+    || typeof candidate.cwd !== 'string'
+    || candidate.cwd.length === 0
+    || candidate.cwd.length > MAX_PATH_LEN
+    || typeof candidate.shell !== 'string'
+  ) return null;
+  if (candidate.domain === 'wsl' && candidate.distro !== undefined && typeof candidate.distro !== 'string') {
+    return null;
+  }
+  return candidate as SessionLocation;
 }

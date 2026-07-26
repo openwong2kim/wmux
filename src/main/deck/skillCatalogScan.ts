@@ -12,6 +12,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { toHostAccessiblePath, type SessionLocation } from '../../shared/sessionLocation';
+import { isLinuxLikeCwd } from '../../shared/wslCwd';
 
 export interface SkillCatalogEntry {
   /** Name without leading slash — UI renders as `/${name}`. */
@@ -99,9 +101,21 @@ function scanRoot(claudeDir: string, source: 'project' | 'user', out: SkillCatal
  * Skill/command catalog for cwd. Project entries first (closer = more relevant);
  * same name: project shadows user-global (same as CLI resolution).
  */
-export function scanSkillCatalog(cwd: string, home: string = homedir()): SkillCatalogEntry[] {
+export interface SkillCatalogScanOptions {
+  toHostPath?: typeof toHostAccessiblePath;
+}
+
+export function scanSkillCatalog(
+  input: string | SessionLocation,
+  home: string = homedir(),
+  options: SkillCatalogScanOptions = {},
+): SkillCatalogEntry[] {
   const out: SkillCatalogEntry[] = [];
-  const projectRoot = cwd ? findProjectRoot(cwd, home) : null;
+  const location = normalizeLocationInput(input);
+  const converted = location
+    ? (options.toHostPath ?? toHostAccessiblePath)(location, location.cwd)
+    : null;
+  const projectRoot = converted?.ok ? findProjectRoot(converted.path, home) : null;
   if (projectRoot) scanRoot(join(projectRoot, '.claude'), 'project', out);
   scanRoot(join(home, '.claude'), 'user', out);
   // Name dedup — project wins (pushed first).
@@ -111,4 +125,16 @@ export function scanSkillCatalog(cwd: string, home: string = homedir()): SkillCa
     seen.add(e.name);
     return true;
   });
+}
+
+function normalizeLocationInput(input: string | SessionLocation): SessionLocation | null {
+  if (typeof input === 'string') {
+    if (!input || (process.platform === 'win32' && isLinuxLikeCwd(input))) return null;
+    return { domain: 'host', cwd: input, shell: '' };
+  }
+  if (!input || typeof input !== 'object') return null;
+  if (input.domain !== 'host' && input.domain !== 'wsl') return null;
+  if (typeof input.cwd !== 'string' || !input.cwd || typeof input.shell !== 'string') return null;
+  if (input.domain === 'wsl' && input.distro !== undefined && typeof input.distro !== 'string') return null;
+  return input;
 }

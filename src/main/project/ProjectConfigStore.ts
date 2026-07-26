@@ -23,6 +23,11 @@ import { createHash } from 'crypto';
 import { atomicWriteJSON, atomicReadJSON } from '../../daemon/util/atomicWrite';
 import { getWmuxHomeDir } from '../../shared/constants';
 import {
+  toHostAccessiblePath,
+  type SessionLocation,
+} from '../../shared/sessionLocation';
+import { isLinuxLikeCwd } from '../../shared/wslCwd';
+import {
   normalizeWmuxProjectConfig,
   PROJECT_CONFIG_MAX_FILE_BYTES,
   WMUX_PROJECT_CONFIG_FILENAME,
@@ -124,11 +129,14 @@ interface ConfigCacheEntry {
 export interface ProjectConfigStoreOptions {
   /** Override the trust-DB entry cap (default MAX_PROJECT_TRUST_ENTRIES). */
   entryCap?: number;
+  /** Test seam for mapping a pane location into a path Node can read. */
+  toHostPath?: typeof toHostAccessiblePath;
 }
 
 export class ProjectConfigStore {
   private readonly trustPath: string;
   private readonly entryCap: number;
+  private readonly toHostPath: typeof toHostAccessiblePath;
   private trustCache: ProjectTrustDb | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   /** Parse cache keyed by configPath; invalidated by mtime+size change. */
@@ -140,6 +148,7 @@ export class ProjectConfigStore {
       typeof options.entryCap === 'number' && options.entryCap > 0
         ? Math.floor(options.entryCap)
         : MAX_PROJECT_TRUST_ENTRIES;
+    this.toHostPath = options.toHostPath ?? toHostAccessiblePath;
   }
 
   // ── Discovery ──────────────────────────────────────────────────────────────
@@ -212,9 +221,12 @@ export class ProjectConfigStore {
 
   // ── State for the renderer ─────────────────────────────────────────────────
 
-  async getState(cwd: string): Promise<ProjectConfigState> {
-    if (typeof cwd !== 'string' || cwd.trim().length === 0) return { found: false };
-    const dir = this.findConfigDir(cwd.trim());
+  async getState(input: string | SessionLocation): Promise<ProjectConfigState> {
+    const location = normalizeLocationInput(input);
+    if (!location) return { found: false };
+    const converted = this.toHostPath(location, location.cwd);
+    if (!converted.ok) return { found: false };
+    const dir = this.findConfigDir(converted.path);
     if (dir === null) return { found: false };
     const read = this.readConfig(dir);
     if (read === null) return { found: false };
@@ -332,6 +344,19 @@ export class ProjectConfigStore {
     this.writeChain = run.catch(() => undefined);
     return run;
   }
+}
+
+function normalizeLocationInput(input: string | SessionLocation): SessionLocation | null {
+  if (typeof input === 'string') {
+    const cwd = input.trim();
+    if (!cwd || (process.platform === 'win32' && isLinuxLikeCwd(cwd))) return null;
+    return { domain: 'host', cwd, shell: '' };
+  }
+  if (!input || typeof input !== 'object') return null;
+  if (input.domain !== 'host' && input.domain !== 'wsl') return null;
+  if (typeof input.cwd !== 'string' || !input.cwd.trim() || typeof input.shell !== 'string') return null;
+  if (input.domain === 'wsl' && input.distro !== undefined && typeof input.distro !== 'string') return null;
+  return input;
 }
 
 let storeInstance: ProjectConfigStore | null = null;

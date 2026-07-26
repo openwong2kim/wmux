@@ -80,6 +80,41 @@ describe('findConfigDir — discovery walk', () => {
 });
 
 describe('getState — config + trust evaluation', () => {
+  it('discovers a WSL project through the shared host-path conversion seam', async () => {
+    const proj = path.join(tmpRoot, 'wsl-proj');
+    writeConfig(proj, VALID);
+    const store = new ProjectConfigStore(trustPath, {
+      toHostPath: (location, target) => {
+        expect(location).toEqual({
+          domain: 'wsl',
+          cwd: '/home/me/project',
+          shell: 'wsl.exe',
+          distro: 'Ubuntu',
+        });
+        expect(target).toBe('/home/me/project');
+        return { ok: true, path: proj };
+      },
+    });
+
+    const state = await store.getState({
+      domain: 'wsl',
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    });
+
+    expect(state.found).toBe(true);
+    expect(state.config?.commands).toHaveLength(1);
+  });
+
+  it('fails softly when a WSL project cannot be converted without a distro', async () => {
+    await expect(makeStore().getState({
+      domain: 'wsl',
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+    })).resolves.toEqual({ found: false });
+  });
+
   it('reports untrusted on first sight', async () => {
     const proj = path.join(tmpRoot, 'proj');
     writeConfig(proj, VALID);

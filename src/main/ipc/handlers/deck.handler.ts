@@ -1333,9 +1333,13 @@ export function registerDeckHandler(
     IPC.DECK_LOOP_SKILLS,
     wrapHandler(IPC.DECK_LOOP_SKILLS, async (
       _event: Electron.IpcMainInvokeEvent,
-      cwd: unknown,
+      raw: unknown,
     ): Promise<{ skills: SkillCatalogEntry[] }> => {
-      return { skills: scanSkillCatalog(typeof cwd === 'string' ? cwd : '') };
+      if (typeof raw === 'string') return { skills: scanSkillCatalog(raw) };
+      const location = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as { location?: unknown }).location
+        : undefined;
+      return { skills: scanSkillCatalog(location as Parameters<typeof scanSkillCatalog>[0]) };
     }),
   );
 
