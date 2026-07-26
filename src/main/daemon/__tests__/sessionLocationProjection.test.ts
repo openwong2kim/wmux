@@ -11,36 +11,13 @@ function snapshot(generation: number, revision: number, cwd: string): SessionLoc
 }
 
 describe('main daemon session location projection', () => {
-  it('rejects an older RPC response after a newer event', () => {
+  it('exposes the shared lifecycle owner through the main adapter', () => {
     const projection = new DaemonSessionLocationProjection();
-    expect(projection.accept('s1', snapshot(4, 2, '/new'))).toBe(true);
-    expect(projection.accept('s1', snapshot(4, 1, '/old'))).toBe(false);
-    expect(projection.get('s1')?.location.cwd).toBe('/new');
-  });
-
-  it('accepts lower generations after daemon replacement reset', () => {
-    const projection = new DaemonSessionLocationProjection();
-    projection.accept('s1', snapshot(100, 1, '/old-daemon'));
-    projection.reset();
-    expect(projection.accept('s1', snapshot(1, 1, '/replacement'))).toBe(true);
-  });
-
-  it('does not resurrect a retired session from an in-flight stale response', () => {
-    const projection = new DaemonSessionLocationProjection();
-    projection.accept('s1', snapshot(4, 2, '/live'));
-    projection.retire('s1', 4);
-
-    expect(projection.accept('s1', snapshot(4, 1, '/stale-response'))).toBe(false);
-    expect(projection.accept('s1', snapshot(4, 3, '/late-event'))).toBe(false);
-    expect(projection.get('s1')).toBeUndefined();
-    expect(projection.accept('s1', snapshot(5, 1, '/reused'))).toBe(true);
-  });
-
-  it('accepts reuse when death arrives before the first snapshot', () => {
-    const projection = new DaemonSessionLocationProjection();
-    projection.retire('s1', 4);
-
-    expect(projection.accept('s1', snapshot(4, 1, '/stale-create'))).toBe(false);
-    expect(projection.accept('s1', snapshot(5, 1, '/restarted'))).toBe(true);
+    const discovery = projection.beginDiscovery();
+    const lease = projection.begin('s1', discovery);
+    projection.finishDiscovery(discovery);
+    expect(lease).toBeDefined();
+    expect(projection.accept('s1', snapshot(4, 2, '/live'), lease!)).toBe(true);
+    expect(projection.get('s1')?.location.cwd).toBe('/live');
   });
 });

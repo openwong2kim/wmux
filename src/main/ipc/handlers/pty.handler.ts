@@ -50,6 +50,10 @@ import {
   type SessionLocation,
   type SessionLocationSnapshot,
 } from '../../../shared/sessionLocation';
+import type {
+  SessionLocationDiscoveryAuthority,
+  SessionLocationProjectionLease,
+} from '../../../shared/orderedSessionLocationProjection';
 import { isWslUncPath } from '../../../shared/wslCwd';
 import { DaemonSessionLocationProjection } from '../../daemonSessionLocationProjection';
 
@@ -311,15 +315,53 @@ export function registerPTYHandlers(
       win.webContents.send(IPC.LOCATION_CHANGED, ptyId, snapshot);
     }
   });
+  // registerPTYHandlers is installed only after DaemonClient authentication.
+  // A replacement daemon gets a fresh handler generation and therefore a fresh
+  // projection authority; a bare disconnect must not reset ordering by itself.
   const daemonLocations = new DaemonSessionLocationProjection();
   function acceptDaemonLocation(
     sessionId: string,
     snapshot: SessionLocationSnapshot,
+    lease: SessionLocationProjectionLease,
   ): boolean {
-    if (!daemonLocations.accept(sessionId, snapshot)) return false;
+    if (!daemonLocations.accept(sessionId, snapshot, lease)) return false;
     updatePaneLocation(sessionId, snapshot.location, false);
     updateCwd(sessionId, snapshot.location.cwd);
     return true;
+  }
+
+  function acceptDiscoveredDaemonLocation(
+    sessionId: string,
+    snapshot: SessionLocationSnapshot,
+    authority: SessionLocationDiscoveryAuthority,
+  ): boolean {
+    const lease = daemonLocations.begin(sessionId, authority);
+    return lease ? acceptDaemonLocation(sessionId, snapshot, lease) : false;
+  }
+
+  function acceptDaemonLocationEvent(
+    sessionId: string,
+    snapshot: SessionLocationSnapshot,
+  ): boolean {
+    const authority = daemonLocations.beginDiscovery();
+    try {
+      return acceptDiscoveredDaemonLocation(sessionId, snapshot, authority);
+    } finally {
+      daemonLocations.finishDiscovery(authority);
+    }
+  }
+
+  function retireDaemonLocation(
+    sessionId: string,
+    generation: number,
+  ): void {
+    const authority = daemonLocations.beginDiscovery();
+    try {
+      const lease = daemonLocations.begin(sessionId, authority);
+      if (lease) daemonLocations.retire(sessionId, generation, lease);
+    } finally {
+      daemonLocations.finishDiscovery(authority);
+    }
   }
 
   // Forward daemon flush-complete events to the renderer so useTerminal can
@@ -339,7 +381,6 @@ export function registerPTYHandlers(
   let onDaemonLocation:
     | ((payload: { sessionId: string; snapshot: SessionLocationSnapshot }) => void)
     | null = null;
-  let onDaemonDisconnected: (() => void) | null = null;
   // Daemon-mode title forwarder. The daemon detects OSC 0/2 and emits
   // session:title; we relay it to the renderer as IPC.TERMINAL_TITLE_CHANGED,
   // matching what local-mode PTYBridge does inline.
@@ -369,7 +410,7 @@ export function registerPTYHandlers(
       sessionId: string;
       snapshot: SessionLocationSnapshot;
     }) => {
-      if (!acceptDaemonLocation(payload.sessionId, payload.snapshot)) return;
+      if (!acceptDaemonLocationEvent(payload.sessionId, payload.snapshot)) return;
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(
@@ -380,8 +421,6 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('session:location', onDaemonLocation);
-    onDaemonDisconnected = () => daemonLocations.reset();
-    daemonClient.on('disconnected', onDaemonDisconnected);
 
     onDaemonTitle = (payload: { sessionId: string; title: string }) => {
       const win = getWindow?.();
@@ -517,23 +556,32 @@ export function registerPTYHandlers(
       // `exec`/`supervision` are present only for an X8 supervised leaf — the
       // daemon runs the command as the pane root and arms the PaneSupervisor.
       const sessionLocation = classifySessionLocation(shell, effectiveCwd);
-      const result = await daemonClient.rpc('daemon.createSession', {
-        id: sessionId,
-        cmd: shell,
-        cwd: effectiveCwd,
-        location: sessionLocation,
-        cols: options?.cols || 80,
-        rows: options?.rows || 24,
-        env: resolvedEnv,
-        ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
-        ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
-      });
-      const locationSnapshot = (result as {
-        locationSnapshot?: SessionLocationSnapshot;
-      }).locationSnapshot;
-      const acceptedSnapshot = locationSnapshot
-        ? acceptDaemonLocation(sessionId, locationSnapshot)
-        : false;
+      const locationDiscovery = daemonLocations.beginDiscovery();
+      let locationSnapshot: SessionLocationSnapshot | undefined;
+      let acceptedSnapshot = false;
+      let shellPid: number | undefined;
+      try {
+        const result = await daemonClient.rpc('daemon.createSession', {
+          id: sessionId,
+          cmd: shell,
+          cwd: effectiveCwd,
+          location: sessionLocation,
+          cols: options?.cols || 80,
+          rows: options?.rows || 24,
+          env: resolvedEnv,
+          ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
+          ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
+        });
+        locationSnapshot = (result as {
+          locationSnapshot?: SessionLocationSnapshot;
+        }).locationSnapshot;
+        shellPid = (result as { pid?: number }).pid;
+        acceptedSnapshot = locationSnapshot
+          ? acceptDiscoveredDaemonLocation(sessionId, locationSnapshot, locationDiscovery)
+          : false;
+      } finally {
+        daemonLocations.finishDiscovery(locationDiscovery);
+      }
       const authoritativeLocation = acceptedSnapshot && locationSnapshot
         ? locationSnapshot.location
         : daemonLocations.get(sessionId)?.location ?? sessionLocation;
@@ -594,7 +642,6 @@ export function registerPTYHandlers(
       // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
       // (the session id). The owning workspace is resolved live downstream,
       // so this never goes stale when a workspace id is re-minted.
-      const shellPid = (result as { pid?: number })?.pid;
       if (shellPid) {
         writePidMap(shellPid, sessionId);
       }
@@ -843,6 +890,12 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_DISPOSE);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
+      let locationLease = daemonLocations.lease(id);
+      if (!locationLease) {
+        const authority = daemonLocations.beginDiscovery();
+        locationLease = daemonLocations.begin(id, authority);
+        daemonLocations.finishDiscovery(authority);
+      }
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
       sessionDecoders.delete(id);
@@ -854,8 +907,7 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
-      const currentLocation = daemonLocations.get(id);
-      if (currentLocation) daemonLocations.retire(id, currentLocation.generation);
+      if (locationLease) daemonLocations.release(id, locationLease);
       removePaneLocation(id);
     }));
   } else {
@@ -869,7 +921,9 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
-      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+      const locationDiscovery = daemonLocations.beginDiscovery();
+      try {
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
         id: string;
         cmd: string;
         state: string;
@@ -903,7 +957,11 @@ export function registerPTYHandlers(
       }>;
       for (const session of sessions) {
         if (session.state !== 'dead' && session.locationSnapshot) {
-          acceptDaemonLocation(session.id, session.locationSnapshot);
+          acceptDiscoveredDaemonLocation(
+            session.id,
+            session.locationSnapshot,
+            locationDiscovery,
+          );
         }
       }
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
@@ -961,6 +1019,9 @@ export function registerPTYHandlers(
       // decision was invisible in the daemon/main logs.
       console.log(`[lifecycle] pty.list -> ${live.length} live session(s) of ${sessions.length} total`);
       return live;
+      } finally {
+        daemonLocations.finishDiscovery(locationDiscovery);
+      }
     }));
   } else {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, () => {
@@ -975,6 +1036,7 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_RECONNECT);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
+      const locationDiscovery = daemonLocations.beginDiscovery();
       try {
         const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
           id: string;
@@ -1003,7 +1065,7 @@ export function registerPTYHandlers(
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
         if (session.locationSnapshot) {
-          acceptDaemonLocation(id, session.locationSnapshot);
+          acceptDiscoveredDaemonLocation(id, session.locationSnapshot, locationDiscovery);
         }
         if (session.cwd) {
           const acceptedSnapshot = daemonLocations.get(id);
@@ -1096,6 +1158,8 @@ export function registerPTYHandlers(
         const msg = err instanceof Error ? err.message : String(err);
         console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=rpc-error transient=true err=${msg}`);
         return { success: false, error: msg, code: 'rpc-error', transient: true };
+      } finally {
+        daemonLocations.finishDiscovery(locationDiscovery);
       }
     }));
   } else {
@@ -1286,19 +1350,15 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
-      const retiredGeneration = payload.locationGeneration
-        ?? daemonLocations.get(payload.sessionId)?.generation;
-      if (retiredGeneration !== undefined) {
-        daemonLocations.retire(payload.sessionId, retiredGeneration);
+      if (payload.locationGeneration !== undefined) {
+        retireDaemonLocation(payload.sessionId, payload.locationGeneration);
       }
       removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
     onDaemonSessionDestroyed = (payload) => {
-      const retiredGeneration = payload.locationGeneration
-        ?? daemonLocations.get(payload.sessionId)?.generation;
-      if (retiredGeneration !== undefined) {
-        daemonLocations.retire(payload.sessionId, retiredGeneration);
+      if (payload.locationGeneration !== undefined) {
+        retireDaemonLocation(payload.sessionId, payload.locationGeneration);
       }
       sessionDecoders.delete(payload.sessionId);
       clearSessionDataListener(payload.sessionId);
@@ -1425,9 +1485,6 @@ export function registerPTYHandlers(
       }
       if (onDaemonLocation) {
         daemonClient.removeListener('session:location', onDaemonLocation);
-      }
-      if (onDaemonDisconnected) {
-        daemonClient.removeListener('disconnected', onDaemonDisconnected);
       }
       if (onDaemonTitle) {
         daemonClient.removeListener('session:title', onDaemonTitle);
