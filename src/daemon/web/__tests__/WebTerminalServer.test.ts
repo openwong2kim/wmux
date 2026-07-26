@@ -1265,6 +1265,23 @@ describe('WebTerminalServer', () => {
     expect('options' in body.recentlyResolved[0]).toBe(false);
   });
 
+  it('carries the risk hint onto /api/approvals and the approval event, and omits it otherwise', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    approvalRecords.push(mkApproval({ id: 'ap-risky', risk: 'critical' }));
+    approvalRecords.push(mkApproval({ id: 'ap-calm' }));
+
+    const res = await fetch(`${base()}/api/approvals`, { headers: bearer(token) });
+    const body = (await res.json()) as { pending: Array<Record<string, unknown>> };
+    expect(body.pending[0]).toMatchObject({ id: 'ap-risky', risk: 'critical' });
+    // Absent, not null: a client reads presence, and "no match" is not "safe".
+    expect('risk' in body.pending[1]).toBe(false);
+
+    emitApproval('create', mkApproval({ id: 'ap-risky', risk: 'critical' }));
+    const data = await backlog(token);
+    expect(data.events[0]).toMatchObject({ approvalId: 'ap-risky', risk: 'critical' });
+  });
+
   it('projects question/options on the settled half too, empty list included', async () => {
     const info = await startRO();
     const token = info.token as string;
@@ -1442,6 +1459,52 @@ describe('WebTerminalServer', () => {
     // The record's id is `approvalId` on the wire: `id` belongs to the replay
     // cursor, and a payload must never be able to shadow it.
     expect(data.events[0].id).toBe(1);
+  });
+
+  it('★ stamps a server-authoritative tier on every event kind', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    const rec = mkApproval({ id: 'ap-t', sessionId: 's2' });
+
+    emitApproval('create', rec); // someone is blocked → act
+    emitApproval('resolve', { ...rec, state: 'resolved', decision: 'approve' }); // echo → info
+    emitApproval('expire', { ...rec, state: 'expired' }); // echo → info
+    emitNotify('s3', 'build done'); // FYI → info
+    (sessionManager as unknown as EventEmitter).emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'rm -rf', riskLevel: 'critical' },
+    });
+
+    const data = await backlog(token);
+    expect(data.events.map((e) => [e.kind, e.tier])).toEqual([
+      ['approval', 'act'],
+      ['approval', 'info'],
+      ['approval', 'info'],
+      ['notify', 'info'],
+      ['critical', 'act'],
+    ]);
+  });
+
+  it('★ never lets a pane declare its own event non-urgent', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    // A critical signal whose payload claims it is only FYI. The tier is the
+    // server's judgement and is stamped after the payload spread.
+    (sessionManager as unknown as EventEmitter).emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'rm -rf', riskLevel: 'critical', tier: 'info' },
+    });
+
+    const data = await backlog(token);
+    expect(data.events[0].tier).toBe('act');
+
+    const out = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}`,
+      /"tier"/,
+      {},
+    );
+    expect(out.text).toContain('"tier":"act"');
+    expect(out.text).not.toContain('"tier":"info"');
   });
 
   it('★ replays a missed approval from Last-Event-ID, like any other event', async () => {

@@ -145,14 +145,31 @@ JSON backlog fetch (Bearer only).
 | Event | Data |
 | --- | --- |
 | `reset` | `{epoch, headId}` — **resync now**, discard your cursor |
-| `critical` | `{...payload, id, epoch}` |
-| `notify` | `{...payload, id, epoch}` |
-| `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, ...}` |
+| `critical` | `{...payload, tier, id, epoch}` |
+| `notify` | `{...payload, tier, id, epoch}` |
+| `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
-Identity fields (`id`, `epoch`) are stamped **last**, so a pane-supplied payload
-can never shadow them.
+Identity fields (`id`, `epoch`) — and `tier` — are stamped **last**, so a
+pane-supplied payload can never shadow them.
+
+#### `tier` — how much of a human this is asking for
+
+| Value | Meaning |
+| --- | --- |
+| `act` | someone is **blocked on a person**: an approval was raised (`phase: create`), or a critical signal fired |
+| `info` | FYI: a `notify`, or the lifecycle echo of an approval that is already over (`resolve` / `expire` / `supersede`) |
+
+Server-authoritative, so urgency is decided in one place instead of re-derived
+by each client. Map it to your own platform's notification model — the daemon
+deliberately does **not** put a platform's vocabulary on the wire (no
+`timeSensitive`, no channel ids): the wire states the fact, the client owns the
+policy.
+
+**Additive.** A client that ignores `tier` behaves exactly as before; `kind`
+still means what it always meant. Treat a missing or unrecognised value as
+`info` on a `notify` and as `act` on a `critical` — never fail a frame over it.
 
 #### The cursor, and the reset you must honour
 
@@ -172,7 +189,7 @@ The JSON shape of the same window:
 
 ```
 GET /api/events?since=<cursor>     (Bearer)
-  → 200 {epoch, headId, reset, events: [{...payload, id, kind, at}]}
+  → 200 {epoch, headId, reset, events: [{...payload, tier, id, kind, at}]}
 ```
 
 ---
@@ -292,11 +309,30 @@ POST /api/approvals/<id>     body: {decision: 'approve' | 'deny'}
 ```
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
-optionally `workspaceId`, `question`, `options`, `screenTail`, `decision`,
-`resolvedBy`, `resolvedAt`.
+optionally `workspaceId`, `question`, `options`, `risk`, `screenTail`,
+`decision`, `resolvedBy`, `resolvedAt`.
 
 `question` and `options` are the agent's own text, sanitized and capped. Render
 them — a blind Approve button is not an informed answer.
+
+### `risk` — a hint, not a gate
+
+`risk: 'critical'` is set at creation when the question or an option label
+matches the daemon's destructive-action patterns (the same list that raises the
+`critical` attention signal: `rm -rf`, `git push --force`, `DROP TABLE`,
+`terraform destroy`, …). It is also carried on the `approval` SSE payload, so a
+client can pick its alert style without waiting for the round trip.
+
+Use it to **step up**: Face ID, a second tap, a louder colour. Never to step
+down or to withhold. The patterns are regexes over agent-authored prose — they
+miss an `rm -rf` described in words, and they fire on a question *about*
+dropping a table. A misclassification must never cost a human the ability to
+answer the prompt in front of them, and `POST /api/approvals/<id>` behaves
+identically either way.
+
+Absence means "no pattern matched", **not** "safe". Only `'critical'` is emitted
+today; ignore any other value rather than guessing at it. Additive — a client
+that has never heard of the field is unaffected.
 
 ### This route works on a read-only server
 
