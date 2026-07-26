@@ -45,6 +45,74 @@ export interface RpcRequest {
 export const WMUX_CLI_CLIENT_NAME = 'wmux-cli';
 
 /**
+ * `clientName` values that must NEVER be promoted to first-party recognition
+ * through `mcp.firstPartyClients` in `~/.wmux/config.json` (issue #636).
+ * Compared case-insensitively. Enforced by `setConfiguredFirstPartyClients`
+ * (src/main/mcp/firstParty.ts); surfaced by `wmux mcp clients` so an operator
+ * sees *why* a name they observed is not configurable.
+ *
+ * Defined in shared for the same reason as WMUX_CLI_CLIENT_NAME above: the CLI
+ * and the main-process enforcer are separate builds and must agree on the exact
+ * strings without a cross-build import.
+ *
+ * Two classes qualify, and an operator hits both in good faith:
+ *   - SDK defaults. `mcp` is the Python MCP SDK's `DEFAULT_CLIENT_INFO`
+ *     (`mcp/client/session.py`, verified against mcp 1.26.0 on 2026-07-27):
+ *     every client that never sets `clientInfo` reports it, so allowlisting it
+ *     would recognise all of them at once. (The TypeScript SDK requires
+ *     `clientInfo` in the `Client` constructor — no analogous default.)
+ *   - wmux's own internal tiers. `wmux-cli` has a deliberately NARROWER
+ *     allowlist than first-party and is checked after it, so configuring it
+ *     would silently widen the CLI. `unknown` is wmux's placeholder for
+ *     envelope-less callers and appears verbatim in real trust DBs.
+ */
+export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
+  'mcp',
+  'unknown',
+  'client',
+  'default',
+  WMUX_CLI_CLIENT_NAME,
+]);
+
+/**
+ * Maximum stored length of a plugin `clientName`. `PluginTrustStore` truncates
+ * to this before persisting, so it is also the longest name an operator can
+ * ever SEE (via `wmux mcp clients` or plugin-trust.json) and therefore the
+ * longest one they can copy into `mcp.firstPartyClients`. First-party
+ * recognition clamps to the same bound so the name that is displayed is the
+ * name that matches — otherwise a longer-than-this client would be listed under
+ * a truncated name that could never be configured to match it.
+ *
+ * Lives here rather than in PluginTrustStore so the recognition path can share
+ * the bound without importing the store's filesystem machinery.
+ */
+export const MAX_PLUGIN_NAME_LEN = 256 as const;
+
+/**
+ * Render an untrusted, self-asserted client identity (name or version) for
+ * display. Strips C0/DEL control characters and clips to `maxLen`.
+ *
+ * These strings are chosen by the connecting client (§2.3) and are surfaced in
+ * daemon logs, RPC error messages, and `wmux mcp clients` — all of which land
+ * in a terminal. A name carrying escape sequences must not be able to move the
+ * cursor, recolour the screen, or forge output around itself. Anything that
+ * prints a client-supplied identity MUST go through this.
+ *
+ * Filtered by code point rather than by regex: the equivalent character class
+ * is exactly what the `no-control-regex` lint rule forbids.
+ */
+export function sanitizeClientDisplayName(value: string, maxLen = 64): string {
+  let out = '';
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) continue;
+    out += ch;
+    if (out.length >= maxLen) break;
+  }
+  return out;
+}
+
+/**
  * Per-request context surfaced to RPC handlers — populated by PipeServer
  * from RpcRequest fields. Handlers receive this as an optional second
  * argument so legacy handlers `(params) => ...` keep compiling.

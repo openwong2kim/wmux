@@ -72,6 +72,8 @@ import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
 import { ApprovalQueue } from './mcp/ApprovalQueue';
 import { resolveEnforcementMode } from './mcp/enforcementMode';
+import { setConfiguredFirstPartyClients } from './mcp/firstParty';
+import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -764,6 +766,29 @@ rpcRouter.setLegacyTrafficCounter(legacyTrafficCounter);
 const isDevEnvironment = !app.isPackaged || process.env.NODE_ENV === 'development';
 const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
 rpcRouter.setEnforcementMode(enforcementMode);
+
+// Issue #636: operator-extensible first-party client names. Read once here —
+// the same boot-time-only posture as `mcp.mode` above, so a config edit needs
+// an app restart to take effect. Refused entries are logged rather than thrown:
+// a bad name must never block boot, but it must not fail silently either, or an
+// operator waits for a recognition that will never happen.
+{
+  const configured = setConfiguredFirstPartyClients(
+    readConfiguredFirstPartyClients(),
+  );
+  if (configured.accepted.length > 0) {
+    console.log(
+      `[mcp] first-party client names extended from config: ${configured.accepted.join(', ')}`,
+    );
+  }
+  for (const r of configured.rejected) {
+    console.warn(
+      `[mcp] refused first-party client name "${r.name}": not an identifying name ` +
+        `(SDK default or wmux-internal tier). It would grant recognition to every ` +
+        `client reporting it. See docs/api/mcp-plugin-spec.md §2.4.`,
+    );
+  }
+}
 
 const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
   openPrompt: (info) => {

@@ -6,6 +6,7 @@ import type {
   RpcRequest,
   RpcResponse,
 } from '../../shared/rpc';
+import { sanitizeClientDisplayName } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
@@ -364,7 +365,7 @@ export class RpcRouter {
           /* approval queue failure must not block dispatch */
         }
       }
-      const errorMessage = renderRejectionMessage(rejection);
+      const errorMessage = renderRejectionMessage(rejection, ctx.clientName);
       return {
         id: request.id,
         ok: false,
@@ -396,8 +397,25 @@ export class RpcRouter {
  * dispatch time so external clients reading only `error` (without the
  * structured `rejection`) still see something useful. The structured
  * variant has the full per-path detail.
+ *
+ * `observedClientName` is the name the caller actually reported (RpcContext).
+ * Identity rejections echo it back (issue #636): the agent behind an MCP client
+ * does not otherwise see what its client library put in `clientInfo.name`, and
+ * without it the only way to learn the name is to read
+ * `~/.wmux/plugin-trust.json` by hand — which is what led a real agent to guess
+ * its own name wrong. It is echoed as-is and clipped; it is untrusted,
+ * self-asserted input (§2.3).
  */
-function renderRejectionMessage(r: RpcRejection): string {
+function renderRejectionMessage(
+  r: RpcRejection,
+  observedClientName?: string,
+): string {
+  // Clip and strip control characters — this string is self-asserted by the
+  // caller and lands in logs and terminal-rendered agent output.
+  const observed =
+    typeof observedClientName === 'string' && observedClientName.length > 0
+      ? ` (observed clientName: "${sanitizeClientDisplayName(observedClientName)}")`
+      : ' (no clientName reported)';
   switch (r.reason) {
     case 'capability-not-declared':
       return `${r.method}: capability "${r.capability}" was not declared by this plugin`;
@@ -407,11 +425,11 @@ function renderRejectionMessage(r: RpcRejection): string {
       return `${r.method}: ${r.rejected.length} of ${r.allowed.length + r.rejected.length} paths not covered by declared ${r.capability} globs`;
     case 'identity-status':
       if (r.status === 'denied') {
-        return `${r.method}: plugin is denied; edit ~/.wmux/plugin-trust.json to restore`;
+        return `${r.method}: plugin is denied${observed}; edit ~/.wmux/plugin-trust.json to restore`;
       }
       if (r.pendingApproval) {
         return `${r.method}: awaiting user approval (promptId=${r.pendingApproval.promptId})`;
       }
-      return `${r.method}: plugin is unconfirmed; call mcp.identify + mcp.declarePermissions first`;
+      return `${r.method}: plugin is unconfirmed${observed}; call mcp.identify + mcp.declarePermissions first, or run 'wmux mcp clients' to see how wmux identified this caller`;
   }
 }

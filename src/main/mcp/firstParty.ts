@@ -37,6 +37,7 @@
 // the curated-allowlist invariant: docs/api/mcp-plugin-spec.md §2.4.
 
 import type { RpcMethod } from '../../shared/rpc';
+import { MAX_PLUGIN_NAME_LEN, NON_IDENTIFYING_CLIENT_NAMES } from '../../shared/rpc';
 
 // Host identities that own the bundled wmux MCP server. The server reports the
 // connecting MCP client's `clientInfo.name` (see wireClientIdentityHook in
@@ -66,6 +67,86 @@ export const FIRST_PARTY_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
   'codex-mcp-client',
   'opencode',
 ]);
+
+// Names that may NEVER be promoted to first-party through config (#636). The
+// list and its rationale live in shared/rpc.ts so the CLI (`wmux mcp clients`,
+// a separate build) can explain the same refusal. Re-exported here because
+// this is the module that enforces it.
+//
+// The gate is applied in `setConfiguredFirstPartyClients` below, NOT in the
+// config reader (firstPartyConfig.ts), so no caller — loader, test helper, or
+// future Settings UI — can route around it.
+export { NON_IDENTIFYING_CLIENT_NAMES };
+
+// Operator-configured additions, applied once at boot from
+// `mcp.firstPartyClients` (firstPartyConfig.ts). Empty until then, so a
+// process that never wires this up behaves exactly as before.
+let configuredFirstPartyClients: ReadonlySet<string> = new Set<string>();
+
+export interface ConfiguredFirstPartyClientsResult {
+  /** Names now recognised in addition to the compiled defaults. */
+  accepted: string[];
+  /** Names refused, with the reason, so boot can log something actionable. */
+  rejected: { name: string; reason: 'non-identifying' }[];
+}
+
+/**
+ * Install the operator-configured first-party client names. Replaces any
+ * previous set (this is a boot-time apply, not an accumulate).
+ *
+ * This is the single authorisation gate for the config path: every name is
+ * checked against `NON_IDENTIFYING_CLIENT_NAMES` here rather than in the
+ * reader, so a future Settings UI or test helper cannot bypass the denylist by
+ * calling a different loader.
+ *
+ * Returns what was accepted and what was refused so the caller can surface it.
+ * Refusals are not errors — a bad entry must never block boot.
+ */
+export function setConfiguredFirstPartyClients(
+  names: readonly string[],
+): ConfiguredFirstPartyClientsResult {
+  const accepted: string[] = [];
+  const rejected: { name: string; reason: 'non-identifying' }[] = [];
+  const next = new Set<string>();
+  for (const raw of names) {
+    // Clamp to the trust store's bound. PluginTrustStore truncates at
+    // MAX_PLUGIN_NAME_LEN before persisting, so that is the longest name an
+    // operator can ever SEE — and therefore the longest one they can copy out
+    // of `wmux mcp clients` into config. Clamping both this and the lookup
+    // below keeps "the name you were shown is the name that matches" true;
+    // without it a client reporting a longer name is listed under a truncated
+    // one that could never be configured to match. No new impersonation
+    // surface: clientName is self-asserted anyway (spec §2.3), so a caller
+    // that wanted to match could always just send the exact string.
+    const name = typeof raw === 'string' ? clampClientName(raw.trim()) : '';
+    if (name.length === 0) continue;
+    if (NON_IDENTIFYING_CLIENT_NAMES.has(name.toLowerCase())) {
+      rejected.push({ name, reason: 'non-identifying' });
+      continue;
+    }
+    if (next.has(name)) continue;
+    next.add(name);
+    accepted.push(name);
+  }
+  configuredFirstPartyClients = next;
+  return { accepted, rejected };
+}
+
+function clampClientName(name: string): string {
+  return name.length <= MAX_PLUGIN_NAME_LEN
+    ? name
+    : name.slice(0, MAX_PLUGIN_NAME_LEN);
+}
+
+/** The operator-configured additions currently in effect (for diagnostics). */
+export function getConfiguredFirstPartyClients(): ReadonlySet<string> {
+  return configuredFirstPartyClients;
+}
+
+/** Test hook — drops all configured additions back to compiled-defaults-only. */
+export function __resetConfiguredFirstPartyClientsForTests(): void {
+  configuredFirstPartyClients = new Set<string>();
+}
 
 // The exact RPC methods the bundled MCP server (src/mcp/index.ts and its
 // src/mcp/playwright/* helpers) invokes. Kept in lockstep with that surface by
@@ -194,7 +275,16 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
  * True when `clientName` identifies the bundled first-party wmux MCP server.
  * `undefined` / unknown names are NOT first-party — envelope-less callers are
  * already handled by the enforcer's `legacy` grandfather branch.
+ *
+ * Matches the compiled defaults plus any operator-configured additions
+ * (`setConfiguredFirstPartyClients`). Exact match either way — `clientName` is
+ * already trimmed by PipeServer when it builds RpcContext.
  */
 export function isFirstPartyClient(clientName: string | undefined): boolean {
-  return typeof clientName === 'string' && FIRST_PARTY_CLIENT_NAMES.has(clientName);
+  if (typeof clientName !== 'string') return false;
+  if (FIRST_PARTY_CLIENT_NAMES.has(clientName)) return true;
+  if (configuredFirstPartyClients.size === 0) return false;
+  // Clamped on both sides — see setConfiguredFirstPartyClients. The compiled
+  // defaults above stay an exact match; they are all well under the bound.
+  return configuredFirstPartyClients.has(clampClientName(clientName));
 }

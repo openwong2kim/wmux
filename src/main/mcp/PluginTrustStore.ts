@@ -19,6 +19,7 @@ import {
 } from '../../daemon/util/atomicWrite';
 import { getPluginTrustPath, getWmuxHomeDir } from '../../shared/constants';
 import type { PluginIdentityRecord, PluginTrustStatus } from '../../shared/rpc';
+import { MAX_PLUGIN_NAME_LEN } from '../../shared/rpc';
 import {
   applyContact,
   applyDeclaration,
@@ -31,7 +32,10 @@ export const PLUGIN_TRUST_SCHEMA_VERSION = 1 as const;
 // Plugin names ride in over the wire from any client holding the wmux auth
 // token. Cap the key length so a malicious caller can't grow plugin-trust.json
 // unboundedly. 256 chars is generous for `org.tool-name@semver` patterns.
-export const MAX_PLUGIN_NAME_LEN = 256 as const;
+// Defined in shared/rpc.ts so first-party recognition can clamp to the same
+// bound without importing this module's filesystem machinery. Re-exported here
+// because this store is what actually applies it on write.
+export { MAX_PLUGIN_NAME_LEN };
 
 // DB-wide entry cap. A hostile or buggy client that re-handshakes under
 // fresh names could fragment the trust DB indefinitely; the LRU eviction

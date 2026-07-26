@@ -6,10 +6,14 @@
 // set it actually uses — including `wmux.internal` methods (surface.list,
 // company.a2a.*) that can never be declared/approved.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { PluginIdentityRecord, RpcContext, RpcMethod } from '../../../shared/rpc';
 import { check } from '../PermissionEnforcer';
-import { FIRST_PARTY_METHODS } from '../firstParty';
+import {
+  FIRST_PARTY_METHODS,
+  __resetConfiguredFirstPartyClientsForTests,
+  setConfiguredFirstPartyClients,
+} from '../firstParty';
 
 function trust(
   overrides: Partial<PluginIdentityRecord> & Pick<PluginIdentityRecord, 'name' | 'status'>,
@@ -194,5 +198,72 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
       });
       expect(out, `${method} should be allowed on a clean miss`).toEqual({ kind: 'allow' });
     }
+  });
+});
+
+describe('PermissionEnforcer.check — config-configured first-party names (#636)', () => {
+  afterEach(() => {
+    __resetConfiguredFirstPartyClientsForTests();
+  });
+
+  it('grants a configured name the SAME curated allowlist, not a wider one', () => {
+    setConfiguredFirstPartyClients(['hermes-agent']);
+    for (const method of SAMPLE_ALLOWED) {
+      expect(
+        check({
+          method,
+          params: {},
+          ctx: ctx('hermes-agent'),
+          trust: trust({ name: 'hermes-agent', status: 'unconfirmed' }),
+        }),
+        `${method} should be allowed for a configured first-party name`,
+      ).toEqual({ kind: 'allow' });
+    }
+    // The point of keeping FIRST_PARTY_METHODS compiled: config changes WHO is
+    // recognised, never WHAT they may call.
+    for (const method of ['daemon.shutdown', 'workspace.new'] as const) {
+      const out = check({
+        method,
+        params: {},
+        ctx: ctx('hermes-agent'),
+        trust: trust({ name: 'hermes-agent', status: 'unconfirmed' }),
+      });
+      expect(out.kind, `${method} must NOT be granted by config`).toBe('reject');
+    }
+  });
+
+  it('keeps the three original guards for configured names', () => {
+    setConfiguredFirstPartyClients(['hermes-agent']);
+    // Guard 1 — an explicit user `denied` still wins.
+    const denied = check({
+      method: 'browser.open',
+      params: {},
+      ctx: ctx('hermes-agent'),
+      trust: trust({ name: 'hermes-agent', status: 'denied' }),
+    });
+    expect(denied.kind).toBe('reject');
+    // Guard 2 — a failed trust lookup declines the bypass (fail-closed).
+    const unreadable = check({
+      method: 'browser.open',
+      params: {},
+      ctx: ctx('hermes-agent'),
+      trust: undefined,
+      trustLookupFailed: true,
+    });
+    expect(unreadable.kind).toBe('reject');
+  });
+
+  it('a refused non-identifying name is NOT recognised by the enforcer', () => {
+    // End-to-end version of the denylist: even if `mcp` reaches config, the
+    // enforcer must still reject it — otherwise every anonymous Python-SDK
+    // client would inherit the curated allowlist.
+    setConfiguredFirstPartyClients(['mcp']);
+    const out = check({
+      method: 'surface.list',
+      params: {},
+      ctx: ctx('mcp'),
+      trust: trust({ name: 'mcp', status: 'unconfirmed' }),
+    });
+    expect(out.kind).toBe('reject');
   });
 });
