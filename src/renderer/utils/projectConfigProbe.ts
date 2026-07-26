@@ -6,11 +6,17 @@
 import { useStore } from '../stores';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
 import type { Workspace } from '../../shared/types';
+import type { SessionLocation } from '../../shared/sessionLocation';
+import { activeSessionLocation } from './focusedSurface';
 
 /** Resolve the cwd used for discovery: live workspace cwd (X1 metadata,
  * seeded by the first pane and tracked via OSC 7) > profile startupCwd. */
 export function workspaceProbeCwd(ws: Workspace): string | undefined {
   return ws.metadata?.cwd ?? ws.profile?.startupCwd;
+}
+
+export function workspaceProbeLocation(ws: Workspace): SessionLocation | null {
+  return activeSessionLocation(ws);
 }
 
 /** Probe main for `workspaceId`'s project config and cache it in the store.
@@ -19,13 +25,13 @@ export async function probeProjectConfig(workspaceId: string): Promise<ProjectCo
   const state = useStore.getState();
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return null;
-  const cwd = workspaceProbeCwd(ws);
-  if (!cwd) {
+  const location = workspaceProbeLocation(ws);
+  if (!location) {
     state.setProjectConfig(workspaceId, null);
     return null;
   }
   try {
-    const result = await window.electronAPI.projectConfig.get(cwd);
+    const result = await window.electronAPI.projectConfig.get(location);
     // Workspace may have closed during the await — a stale transient entry is
     // harmless, but don't resurrect one for a removed workspace.
     if (!useStore.getState().workspaces.some((w) => w.id === workspaceId)) return null;

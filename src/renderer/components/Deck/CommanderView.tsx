@@ -70,6 +70,7 @@ import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
+import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -117,6 +118,7 @@ export interface CommanderViewContentProps {
   activeWorkspaceId?: string;
   /** Active pane live cwd — skill catalog scan basis for loop setup modal. */
   activePaneCwd?: string;
+  activePaneLocation?: SessionLocation;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
   fleetSlot?: React.ReactNode;
@@ -151,6 +153,7 @@ export function CommanderViewContent({
   onQuickAction,
   activeWorkspaceId,
   activePaneCwd,
+  activePaneLocation,
   fleetSlot,
   channelsUnread = 0,
   onJumpToChannels,
@@ -352,7 +355,12 @@ export function CommanderViewContent({
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
           {/* The one-click loop chip + panel (loop engineering v1) — binds to
               THIS workspace. */}
-          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
+          <DeckLoopPanel
+            t={t}
+            workspaceId={activeWorkspaceId}
+            cwd={activePaneCwd}
+            location={activePaneLocation}
+          />
           {/* Schedules chip + inline panel — new schedules bind to THIS
               workspace's orchestrator (M1.5). */}
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
@@ -834,6 +842,40 @@ export function CommanderView(): React.ReactElement {
     const surface = leaf?.surfaces.find((sf) => sf.id === leaf.activeSurfaceId);
     return surface?.cwd || ws.profile?.startupCwd || '';
   });
+  const activePaneStoredLocation = useStore((s) => {
+    const ws = s.workspaces.find((candidate) => candidate.id === s.activeWorkspaceId);
+    if (!ws) return undefined;
+    const walk = (pane: import('../../../shared/types').Pane): import('../../../shared/types').PaneLeaf | null => {
+      if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+      for (const child of pane.children) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const leaf = walk(ws.rootPane);
+    return leaf?.surfaces.find((surface) => surface.id === leaf.activeSurfaceId)?.location;
+  });
+  const activePaneShell = useStore((s) => {
+    const ws = s.workspaces.find((candidate) => candidate.id === s.activeWorkspaceId);
+    if (!ws) return '';
+    const stack = [ws.rootPane];
+    while (stack.length > 0) {
+      const pane = stack.pop()!;
+      if (pane.type === 'leaf' && pane.id === ws.activePaneId) {
+        return pane.surfaces.find((surface) => surface.id === pane.activeSurfaceId)?.shell
+          || ws.profile?.shell
+          || '';
+      }
+      if (pane.type === 'branch') stack.push(...pane.children);
+    }
+    return ws.profile?.shell || '';
+  });
+  const activePaneLocation = useMemo(
+    () => activePaneStoredLocation
+      ?? (activePaneCwd ? classifySessionLocation(activePaneShell, activePaneCwd) : undefined),
+    [activePaneCwd, activePaneShell, activePaneStoredLocation],
+  );
   const brainThread =
     useStore((s) => (activeWorkspaceId ? s.brainThreads[activeWorkspaceId] : undefined)) ??
     EMPTY_DECK_BRAIN_THREAD;
@@ -1214,6 +1256,7 @@ export function CommanderView(): React.ReactElement {
       onQuickAction={handleQuickAction}
       activeWorkspaceId={activeWorkspaceId}
       activePaneCwd={activePaneCwd}
+      activePaneLocation={activePaneLocation}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       channelsUnread={channelsUnread}
       onJumpToChannels={onJumpToChannels}

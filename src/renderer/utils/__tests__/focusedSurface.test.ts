@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { focusedTerminalPtyId } from '../focusedSurface';
+import { activeSessionLocation, focusedTerminalPtyId } from '../focusedSurface';
 import type { Workspace } from '../../../shared/types';
 
 function leaf(id: string, surfaces: any[], activeSurfaceId: string) {
@@ -36,5 +36,40 @@ describe('focusedTerminalPtyId', () => {
     expect(focusedTerminalPtyId(undefined)).toBeNull();
     const root = leaf('p1', [{ id: 's1', ptyId: '', surfaceType: 'terminal' }], 's1');
     expect(focusedTerminalPtyId(ws(root, 'p1'))).toBeNull();
+  });
+});
+
+describe('activeSessionLocation', () => {
+  it('uses the authoritative stored WSL location', () => {
+    const location = {
+      domain: 'wsl' as const,
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+    const root = leaf('p1', [{
+      id: 's1',
+      ptyId: 'pty-1',
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      location,
+    }], 's1');
+
+    expect(activeSessionLocation(ws(root, 'p1'))).toBe(location);
+  });
+
+  it('classifies a legacy surface without a persisted location', () => {
+    const root = leaf('p1', [{
+      id: 's1',
+      ptyId: 'pty-1',
+      cwd: 'C:\\dev\\fmux',
+      shell: 'pwsh.exe',
+    }], 's1');
+
+    expect(activeSessionLocation(ws(root, 'p1'))).toEqual({
+      domain: 'host',
+      cwd: 'C:\\dev\\fmux',
+      shell: 'pwsh.exe',
+    });
   });
 });

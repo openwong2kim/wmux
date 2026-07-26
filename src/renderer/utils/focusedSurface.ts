@@ -1,4 +1,5 @@
-import type { Workspace, Pane, PaneLeaf } from '../../shared/types';
+import type { Workspace, Pane, PaneLeaf, Surface } from '../../shared/types';
+import { classifySessionLocation, type SessionLocation } from '../../shared/sessionLocation';
 
 /** Find the leaf pane matching the workspace's activePaneId. */
 export function findActiveLeaf(workspace: Workspace): PaneLeaf | null {
@@ -11,6 +12,23 @@ export function findActiveLeaf(workspace: Workspace): PaneLeaf | null {
     return null;
   };
   return walk(workspace.rootPane);
+}
+
+export function sessionLocationForSurface(surface: Surface | undefined): SessionLocation | null {
+  if (!surface?.cwd) return null;
+  return surface.location ?? classifySessionLocation(surface.shell, surface.cwd);
+}
+
+/** Authoritative filesystem location for the active surface, including a
+ * classification fallback for sessions persisted before `location`. */
+export function activeSessionLocation(workspace: Workspace): SessionLocation | null {
+  const leaf = findActiveLeaf(workspace);
+  const surface = leaf?.surfaces.find((candidate) => candidate.id === leaf.activeSurfaceId);
+  const surfaceLocation = sessionLocationForSurface(surface);
+  if (surfaceLocation) return surfaceLocation;
+  const cwd = workspace.metadata?.cwd ?? workspace.profile?.startupCwd;
+  if (!cwd) return null;
+  return classifySessionLocation(workspace.profile?.shell ?? '', cwd);
 }
 
 /**

@@ -473,8 +473,8 @@ const electronAPI = {
       resume: (workspaceId: string) =>
         ipcRenderer.invoke(IPC.DECK_LOOP_RESUME, { workspaceId }) as Promise<{ ok: boolean }>,
       // Skill picker material — pane agent's skill/command catalog (read-only scan).
-      skills: (cwd: string) =>
-        ipcRenderer.invoke(IPC.DECK_LOOP_SKILLS, cwd) as Promise<{
+      skills: (location: import('../shared/sessionLocation').SessionLocation) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_SKILLS, { location }) as Promise<{
           skills: import('../main/deck/skillCatalogScan').SkillCatalogEntry[];
         }>,
     },
@@ -636,11 +636,16 @@ const electronAPI = {
     },
   },
   fs: {
-    readDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_READ_DIR, dirPath),
-    readFile: (filePath: string) => ipcRenderer.invoke(IPC.FS_READ_FILE, filePath) as Promise<string | null>,
-    writeFile: (filePath: string, content: string) => ipcRenderer.invoke(IPC.FS_WRITE_FILE, filePath, content) as Promise<boolean>,
-    watch: (dirPath: string) => ipcRenderer.invoke(IPC.FS_WATCH, dirPath),
-    unwatch: (dirPath: string) => ipcRenderer.invoke(IPC.FS_UNWATCH, dirPath),
+    readDir: (dirPath: string, location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.FS_READ_DIR, { path: dirPath, location }),
+    readFile: (filePath: string, location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.FS_READ_FILE, { path: filePath, location }) as Promise<string | null>,
+    writeFile: (filePath: string, content: string, location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.FS_WRITE_FILE, { path: filePath, location }, content) as Promise<boolean>,
+    watch: (dirPath: string, location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.FS_WATCH, { path: dirPath, location }),
+    unwatch: (dirPath: string, location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.FS_UNWATCH, { path: dirPath, location }),
     onChanged: (callback: (dirPath: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, dirPath: string) => callback(dirPath);
       ipcRenderer.on(IPC.FS_CHANGED, listener);
@@ -750,8 +755,8 @@ const electronAPI = {
   // nearest wmux.json + trust state; `setTrust` persists a user decision
   // bound to the contentHash the approval dialog displayed.
   projectConfig: {
-    get: (cwd: string) =>
-      ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
+    get: (location: import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, { location }) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
     setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true) as Promise<{ ok: boolean }>,
   },

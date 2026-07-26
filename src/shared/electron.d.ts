@@ -16,17 +16,18 @@ import type {
   RegisterMcpResult,
   SampleTaskStartPayload,
 } from './firstRun';
+import type { SessionLocation } from './sessionLocation';
 
 declare global {
   interface Window {
     electronAPI: ElectronAPI & {
       onFileDrop: (callback: (paths: string[]) => void) => () => void;
       fs?: {
-        readDir: (dirPath: string) => Promise<{ name: string; path: string; isDirectory: boolean; isSymlink: boolean }[]>;
-        readFile: (filePath: string) => Promise<string | null>;
-        writeFile: (filePath: string, content: string) => Promise<boolean>;
-        watch: (dirPath: string) => Promise<boolean>;
-        unwatch: (dirPath: string) => Promise<void>;
+        readDir: (dirPath: string, location: SessionLocation) => Promise<{ name: string; path: string; isDirectory: boolean; isSymlink: boolean }[]>;
+        readFile: (filePath: string, location: SessionLocation) => Promise<string | null>;
+        writeFile: (filePath: string, content: string, location: SessionLocation) => Promise<boolean>;
+        watch: (dirPath: string, location: SessionLocation) => Promise<boolean>;
+        unwatch: (dirPath: string, location: SessionLocation) => Promise<void>;
         onChanged: (callback: (dirPath: string) => void) => () => void;
       };
       mcp?: {

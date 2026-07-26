@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import type { SessionLocation } from '../../../shared/sessionLocation';
+import { activeSessionLocation } from '../../utils/focusedSurface';
 
 interface FileTreePanelProps {
   position: 'left' | 'right';
@@ -18,12 +20,12 @@ interface TreeNode {
   isLoading?: boolean;
 }
 
-async function readDir(dirPath: string): Promise<TreeNode[]> {
+async function readDir(dirPath: string, location: SessionLocation): Promise<TreeNode[]> {
   try {
     const api = (window as any).electronAPI?.fs;
     if (!api?.readDir) return [];
     const entries: { name: string; path: string; isDirectory: boolean; isSymlink: boolean }[] =
-      await api.readDir(dirPath);
+      await api.readDir(dirPath, location);
     return entries
       .map((e) => ({
         name: e.name,
@@ -41,11 +43,11 @@ async function readDir(dirPath: string): Promise<TreeNode[]> {
   }
 }
 
-async function readFile(filePath: string): Promise<string | null> {
+async function readFile(filePath: string, location: SessionLocation): Promise<string | null> {
   try {
     const api = (window as any).electronAPI?.fs;
     if (!api?.readFile) return null;
-    return await api.readFile(filePath);
+    return await api.readFile(filePath, location);
   } catch {
     return null;
   }
@@ -273,25 +275,12 @@ function TreeItem({
 export default function FileTreePanel({ position }: FileTreePanelProps) {
   // A1: subscribe to active ws OBJECT only (cwd/pane tree derived) — ignore background ws churn.
   const activeWorkspace = useStore(selectActiveWorkspace);
+  const location = useMemo(
+    () => activeWorkspace ? activeSessionLocation(activeWorkspace) : null,
+    [activeWorkspace],
+  );
 
-  // Resolve CWD: try workspace metadata first, then recursively find from panes
-  let cwd = activeWorkspace?.metadata?.cwd;
-  if (!cwd && activeWorkspace) {
-    const findCwd = (pane: any): string | undefined => {
-      if (pane.type === 'leaf') {
-        const surface = pane.surfaces?.find((s: any) => s.id === pane.activeSurfaceId);
-        return surface?.cwd || undefined;
-      }
-      if (pane.children) {
-        for (const child of pane.children) {
-          const found = findCwd(child);
-          if (found) return found;
-        }
-      }
-      return undefined;
-    };
-    cwd = findCwd(activeWorkspace.rootPane);
-  }
+  const cwd = location?.cwd;
 
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -307,7 +296,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
 
   // Load root directory, preserving expanded folder state on same-dir refresh
   useEffect(() => {
-    if (!cwd) {
+    if (!cwd || !location) {
       setTree([]);
       treeRef.current = [];
       prevCwdRef.current = undefined;
@@ -337,7 +326,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
     };
 
     const loadTree = () => {
-      readDir(cwd!).then((nodes) => {
+      readDir(cwd!, location).then((nodes) => {
         if (cancelled) return;
         const merged = treeRef.current.length > 0 ? mergeNodes(treeRef.current, nodes) : nodes;
         treeRef.current = merged;
@@ -352,15 +341,15 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [cwd, refreshKey]);
+  }, [cwd, location, refreshKey]);
 
   // Watch directory for real-time changes via main process fs.watch
   useEffect(() => {
-    if (!cwd) return;
+    if (!cwd || !location) return;
     const api = (window as any).electronAPI?.fs;
     if (!api?.watch) return;
 
-    api.watch(cwd);
+    api.watch(cwd, location);
     const unsub = api.onChanged?.((changedDir: string) => {
       // Compare normalized paths (main sends path.resolve'd paths)
       const normalizedCwd = cwd.replace(/\\/g, '/').toLowerCase();
@@ -371,10 +360,10 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
     });
 
     return () => {
-      api.unwatch?.(cwd);
+      api.unwatch?.(cwd, location);
       unsub?.();
     };
-  }, [cwd]);
+  }, [cwd, location]);
 
   const toggleNode = useCallback(
     async (target: TreeNode) => {
@@ -391,12 +380,13 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       target.isLoading = true;
       setTree([...treeRef.current]);
 
-      const children = await readDir(target.path);
+      if (!location) return;
+      const children = await readDir(target.path, location);
       target.children = children;
       target.isLoading = false;
       setTree([...treeRef.current]);
     },
-    [],
+    [location],
   );
 
   const addEditorSurface = useStore((s) => s.addEditorSurface);
@@ -417,10 +407,10 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
 
       const paneId = findActivePaneId(activeWorkspace.rootPane);
       if (paneId) {
-        addEditorSurface(paneId, filePath);
+        if (location) addEditorSurface(paneId, filePath, location);
       }
     },
-    [activeWorkspace, addEditorSurface],
+    [activeWorkspace, addEditorSurface, location],
   );
 
   const closePreview = useCallback(() => {

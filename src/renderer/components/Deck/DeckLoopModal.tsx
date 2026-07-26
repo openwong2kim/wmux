@@ -21,6 +21,7 @@ import type { SkillCatalogEntry } from '../../../main/deck/skillCatalogScan';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import type { AgentModeApi } from './AgentModeChip';
 import type { DeckLoopApi } from './DeckLoopPanel';
+import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
 
 const CADENCE_OPTIONS: { minutes: number; labelKey: string; fallback: string }[] = [
   { minutes: 0, labelKey: 'deck.loopCadenceOff', fallback: 'Events only' },
@@ -47,6 +48,7 @@ export function filterSkillSuggestions(
 export function DeckLoopModal({
   api,
   workspaceId,
+  location,
   cwd,
   modeApi,
   onClose,
@@ -56,6 +58,8 @@ export function DeckLoopModal({
   api: DeckLoopApi;
   workspaceId?: string;
   /** cwd for skill catalog scan (active pane) — without it only user-global entries appear. */
+  location?: SessionLocation;
+  /** Legacy/test fallback. Production callers provide `location`. */
   cwd?: string;
   /** Workspace agent-mode reader (same bridge AgentModeChip uses). Injected so
    *  the modal can PREVIEW the loop's effective authority — a loop's real caps
@@ -101,15 +105,16 @@ export function DeckLoopModal({
   // Skill catalog — one scan when modal opens (read-only, fail-soft empty list).
   useEffect(() => {
     let alive = true;
-    if (api.skills) {
-      api.skills(cwd ?? '').then((r) => {
+    const resolvedLocation = location ?? (cwd ? classifySessionLocation('', cwd) : undefined);
+    if (api.skills && resolvedLocation) {
+      api.skills(resolvedLocation).then((r) => {
         if (alive) setCatalog(r.skills);
       }).catch(() => {});
     }
     return () => {
       alive = false;
     };
-  }, [api, cwd]);
+  }, [api, cwd, location]);
 
   useEffect(() => {
     objectiveRef.current?.focus();

@@ -7,6 +7,7 @@ import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { classifySessionLocation } from '../../../shared/sessionLocation';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -15,7 +16,7 @@ export interface SurfaceSlice {
    * callers are unchanged. */
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
-  addEditorSurface: (paneId: string, filePath: string) => void;
+  addEditorSurface: (paneId: string, filePath: string, location?: SessionLocation) => void;
   /** J2 — add diff review surface. Only taskId persisted (diff content is derived).
    * Switch to existing tab if same taskId already open. No ptyId, like editor/browser. */
   addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string, ownerWorkspaceId?: string) => void;
@@ -123,7 +124,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addEditorSurface: (paneId, filePath) => set((state: StoreState) => {
+  addEditorSurface: (paneId, filePath, location) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
@@ -143,6 +144,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'editor',
       editorFilePath: filePath,
+      ...(location ? { location } : {}),
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;

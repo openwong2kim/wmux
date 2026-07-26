@@ -15,6 +15,7 @@ import { applyRoleBinding, bindingEnforcesModel, type RoleBinding } from '../../
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
+import { sessionLocationForSurface } from '../../utils/focusedSurface';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -919,6 +920,11 @@ function SplitSurfaceView({
               filePath={surface.editorFilePath || ''}
               isActive={surface.id === activeSurfaceId}
               surfaceId={surface.id}
+              location={
+                surface.location
+                ?? sessionLocationForSurface(pane.surfaces.find((candidate) => candidate.cwd))
+                ?? undefined
+              }
             />
           ) : surface.surfaceType === 'browser' ? (
             <BrowserPanel
@@ -1042,6 +1048,11 @@ function SplitSurfaceView({
             filePath={surface.editorFilePath || ''}
             isActive={surface.id === activeSurfaceId}
             surfaceId={surface.id}
+            location={
+              surface.location
+              ?? sessionLocationForSurface(pane.surfaces.find((candidate) => candidate.cwd))
+              ?? undefined
+            }
           />
         ),
       )}

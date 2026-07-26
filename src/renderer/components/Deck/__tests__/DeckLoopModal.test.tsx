@@ -79,6 +79,22 @@ describe('DeckLoopModal', () => {
     });
   }
 
+  it('passes the authoritative WSL location to skill discovery', async () => {
+    const api = fakeApi();
+    const skills = vi.fn(async () => ({ skills: CATALOG }));
+    api.skills = skills;
+    const location = {
+      domain: 'wsl' as const,
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+
+    await mount(api, { cwd: undefined, location });
+
+    expect(skills).toHaveBeenCalledWith(location);
+  });
+
   it('add steps·select skill suggestion·START payload carries steps/taskTexts', async () => {
     const api = fakeApi();
     await mount(api);
