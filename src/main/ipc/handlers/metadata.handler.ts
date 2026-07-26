@@ -15,7 +15,8 @@ import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
-import type { ActiveSessionContext, SessionLocation } from '../../../shared/sessionLocation';
+import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
+import { resolveWslDistro } from '../../pty/wslDistro';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
@@ -69,9 +70,27 @@ export function shouldPollMetadata(win: BrowserWindow): boolean {
 
 const collector = new MetadataCollector();
 
-// Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
+// Track CWD per ptyId (updated via OSC 7, prompt detection, or initial
+// registration). SOLE owner of "where is this pane right now" — see
+// getPaneCommandTarget.
 const cwdMap = new Map<string, string>();
-const paneCommandTargets = new Map<string, PaneCommandTarget>();
+
+/**
+ * The part of a pane's identity that its cwd cannot change: which interpreter
+ * the pane runs (`shell`) and, for WSL, which distribution it runs in.
+ *
+ * Issue #21 I2: the pane's `SessionLocation` is DERIVED from this plus the live
+ * `cwdMap` entry rather than stored alongside it. Holding a second copy of the
+ * cwd here is what made a pane keep reporting the original repo's branch / PR /
+ * dirty counts forever after a `cd` — the live feed (OSC 7, prompt scrape,
+ * daemon `session:cwd`) writes `cwdMap`, while the location copy was refreshed
+ * at only four registration sites. One piece of state, one writer.
+ */
+interface PaneIdentity {
+  shell: string;
+  distro?: string;
+}
+const paneIdentities = new Map<string, PaneIdentity>();
 
 // Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
 // (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
@@ -105,7 +124,7 @@ export function onCwdUpdate(listener: CwdListener): () => void {
 async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayload | null> {
   const cwd = cwdMap.get(ptyId);
   if (!cwd) return null;
-  const target = paneCommandTargets.get(ptyId);
+  const target = getPaneCommandTarget(ptyId);
   // Watcher/shell-integration branch wins; exec git only as fallback so a
   // session that predates the watcher (or a watch failure) still resolves.
   const gitBranch = branchMap.get(ptyId) ?? (target ? await collector.getGitBranch(target) : undefined) ?? '';
@@ -162,7 +181,7 @@ export async function runMetadataPollTick(
     const instance = ptyManager.get(ptyId);
     if (localPtyOwnership && !instance) {
       cwdMap.delete(ptyId);
-      paneCommandTargets.delete(ptyId);
+      paneIdentities.delete(ptyId);
       branchMap.delete(ptyId);
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
@@ -192,7 +211,7 @@ export async function runMetadataPollTick(
         ptyId,
         payload.cwd,
         payload.pr ?? null,
-        paneCommandTargets.get(ptyId),
+        getPaneCommandTarget(ptyId),
       );
     }
     const serialized = JSON.stringify(payload);
@@ -401,20 +420,64 @@ export function getCwd(ptyId: string): string | undefined {
   return cwdMap.get(ptyId);
 }
 
-export function updatePaneLocation(
-  ptyId: string,
-  location: SessionLocation,
-  activeContext?: ActiveSessionContext,
-): void {
-  paneCommandTargets.set(ptyId, { sessionId: ptyId, location, activeContext });
+/**
+ * Register a live pane's location. Only the cwd-independent part is kept (see
+ * PaneIdentity) — `location.cwd` is deliberately ignored, because `updateCwd`
+ * is the pane's cwd. Callers seed both; the create/reconnect paths call this
+ * first so the cwd feed's listeners see a complete pane.
+ *
+ * Issue #21 I1: a WSL pane created as bare `wsl.exe` has no distro anywhere in
+ * its location (nothing can be recovered from a `/home/...` cwd), and without
+ * one every consumer fails with `WSL_DISTRO_REQUIRED` for the pane's whole
+ * first session. Resolution is enumeration-only and never boots a distribution
+ * (see wslDistro.ts), so it is safe to arm here for every WSL pane; it lands
+ * asynchronously and the pane fails closed until it does.
+ */
+export function updatePaneLocation(ptyId: string, location: SessionLocation): void {
+  const distro = location.domain === 'wsl' ? location.distro : undefined;
+  paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
+  if (location.domain !== 'wsl' || distro) return;
+  void resolveWslDistro({ shell: location.shell })
+    .then((resolved) => {
+      if (!resolved) return;
+      const current = paneIdentities.get(ptyId);
+      // The pane may have been closed, or re-registered with a real distro,
+      // while the enumeration was in flight.
+      if (!current || current.shell !== location.shell || current.distro) return;
+      paneIdentities.set(ptyId, { ...current, distro: resolved });
+    })
+    .catch(() => { /* unresolved distro is a fail-closed state, not an error */ });
 }
 
 export function removePaneLocation(ptyId: string): void {
-  paneCommandTargets.delete(ptyId);
+  paneIdentities.delete(ptyId);
 }
 
+/**
+ * The pane's command target, composed from its identity and its LIVE cwd.
+ *
+ * The active-session context is derived rather than stored: an entry in
+ * `paneIdentities` exists exactly while the pane is live, and a live WSL pane
+ * has by definition already established its WSL context — which is the whole
+ * point of `preparePaneCommand`'s ACTIVE_CONTEXT_REQUIRED gate (never start a
+ * distro just to answer a background poll). Storing it separately is what left
+ * the first session of every WSL pane permanently ungated (issue #21 I1).
+ */
 export function getPaneCommandTarget(ptyId: string): PaneCommandTarget | undefined {
-  return paneCommandTargets.get(ptyId);
+  const identity = paneIdentities.get(ptyId);
+  const cwd = cwdMap.get(ptyId);
+  if (!identity || !cwd) return undefined;
+  const location = classifySessionLocation(identity.shell, cwd, identity.distro);
+  if (location.domain !== 'wsl') return { sessionId: ptyId, location };
+  return {
+    sessionId: ptyId,
+    location,
+    activeContext: {
+      sessionId: ptyId,
+      active: true,
+      ...(location.distro ? { distro: location.distro } : {}),
+    },
+  };
 }
 
 export function getBranch(ptyId: string): string | undefined {

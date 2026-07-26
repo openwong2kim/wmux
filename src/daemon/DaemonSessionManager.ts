@@ -11,7 +11,11 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell, installShellIntegration } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
 import { applyWslPromptIntegration, isWslShell } from '../shared/wslCwd';
-import { classifySessionLocation, splitWslCwd, type SessionLocation } from '../shared/sessionLocation';
+import {
+  preparePtyLocation,
+  resolveSessionLocation,
+  type SessionLocation,
+} from '../shared/sessionLocation';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
@@ -263,7 +267,13 @@ export class DaemonSessionManager extends EventEmitter {
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    const location = params.location ?? classifySessionLocation(cmd, cwd);
+    // `cwd` above is canonical (tilde-expanded, defaulted); a supplied location
+    // must not carry a stale twin of it, so it is pinned here once and this is
+    // the value both `meta.location` and the spawn positioning below read.
+    const location: SessionLocation = {
+      ...resolveSessionLocation({ shell: cmd, cwd, location: params.location }),
+      cwd,
+    };
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -381,24 +391,29 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
-    // Track B (WSL/Ubuntu cwd): when `cmd` is wsl.exe and `cwd` is a
-    // Linux-style path (or `\\wsl$\...`/`\\wsl.localhost\...` UNC), node-pty
-    // cannot use it as the spawn cwd — ConPTY/CreateProcess only resolve
-    // Windows paths. Give node-pty a safe Windows cwd (this daemon's own
-    // home) and let `wsl.exe --cd <linuxpath>` do the actual positioning
-    // instead (see wslCwd.ts). Skipped on the exec path — its spawnArgs are
-    // an already-finalized wrapper-shell invocation of the caller's command,
-    // and prepending `--cd` would corrupt that argv rather than the shell's.
+    // Track B (WSL/Ubuntu cwd): when the pane lives in a guest (`wsl.exe` with
+    // a Linux-style path or a `\\wsl$\...`/`\\wsl.localhost\...` UNC, or an
+    // MSYS `/c/...` path), node-pty cannot use that as the spawn cwd —
+    // ConPTY/CreateProcess only resolve Windows paths. `preparePtyLocation` is
+    // the ONE place that decides what node-pty gets instead (a safe Windows cwd
+    // plus `wsl.exe --cd <linuxpath>`, or the converted drive path). Skipped on
+    // the exec path — its spawnArgs are an already-finalized wrapper-shell
+    // invocation of the caller's command, and prepending `--cd` would corrupt
+    // that argv rather than the shell's.
     //
     // IMPORTANT: this only changes what node-pty spawns with. `cwd` itself
     // (used for `meta.cwd` below) is left untouched — it must stay the
-    // ORIGINAL Linux path so a recovery replay re-derives the identical
-    // split from createSession's own params.cwd, with no new persisted field.
+    // ORIGINAL guest path so a recovery replay re-derives the identical split
+    // from the persisted location, with no new persisted field. Derived from
+    // `location` rather than re-classified from (cmd, cwd): the location is
+    // what the create path classified with the shell that actually ran, and
+    // what recovery replays, so a `cmd` the daemon could not resolve back to
+    // that shell can no longer strand the pane at an unopenable cwd.
     let spawnCwd = cwd;
     if (!params.exec) {
-      const wslSplit = splitWslCwd(cmd, cwd, os.homedir());
-      spawnCwd = wslSplit.spawnCwd ?? cwd;
-      spawnArgs = [...wslSplit.prefixArgs, ...spawnArgs];
+      const prepared = preparePtyLocation(location, os.homedir());
+      spawnCwd = prepared.spawnCwd;
+      spawnArgs = [...prepared.prefixArgs, ...spawnArgs];
     }
 
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
@@ -433,7 +448,8 @@ export class DaemonSessionManager extends EventEmitter {
       pid: ptyProcess.pid,
       cmd,
       cwd,
-      location: { ...location, cwd },
+      // Already pinned to `cwd` where it was resolved — one owner, one value.
+      location,
       env,
       cols,
       rows,
@@ -540,7 +556,10 @@ export class DaemonSessionManager extends EventEmitter {
       // keeps the immediate cwd persistence cheap (no write amplification).
       if (meta.cwd === payload.cwd) return;
       meta.cwd = payload.cwd;
-      meta.location = { ...(meta.location ?? classifySessionLocation(meta.cmd, payload.cwd)), cwd: payload.cwd };
+      meta.location = {
+        ...resolveSessionLocation({ shell: meta.cmd, cwd: payload.cwd, location: meta.location }),
+        cwd: payload.cwd,
+      };
       // Forward across the daemon→main boundary so the renderer can live-update
       // the per-surface cwd (tab tooltip + "Working directories" menu). Without
       // this, daemon mode (the default path) only kept cwd in daemon-local
