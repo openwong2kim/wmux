@@ -51,7 +51,7 @@ export interface SurfaceSlice {
    */
   updateSurfaceCwd: (ptyId: string, cwd: string) => void;
   /** Apply an authoritative atomic cwd+location projection if it is newer. */
-  updateSurfaceLocation: (ptyId: string, snapshot: SessionLocationSnapshot) => void;
+  updateSurfaceLocation: (ptyId: string, snapshot: SessionLocationSnapshot) => boolean;
   /**
    * Persist the browser surface's current URL. Driven by BrowserPanel's
    * did-navigate events (user clicks, toolbar, MCP/CDP navigations alike), so
@@ -357,7 +357,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   }),
 
   updateSurfaceLocation: (ptyId, snapshot) => {
-    if (!ptyId || !rememberSessionLocation(ptyId, snapshot)) return;
+    if (!ptyId || !rememberSessionLocation(ptyId, snapshot)) return false;
     set((state: StoreState) => {
       for (const ws of state.workspaces) {
         const updateInPane = (pane: Pane): boolean => {
@@ -373,6 +373,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (updateInPane(ws.rootPane)) return;
       }
     });
+    return true;
   },
 
   updateSurfaceTitleByPty: (ptyId, title) => set((state: StoreState) => {

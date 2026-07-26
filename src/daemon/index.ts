@@ -1516,6 +1516,7 @@ function registerRpcHandlers(
       // should already handle this via PTY onExit, but this is a safety net
       const managed = sessionManager.getSession(session.id);
       if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
+        sessionManager.deactivateSessionLocation(session.id);
         managed.meta.state = 'dead';
         sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
       }
@@ -3546,6 +3547,7 @@ function wireEvents(
     sessionId: string;
     snapshot: SessionLocationSnapshot;
     reason: 'cwd' | 'enriched';
+    rollback?: () => void;
   }) => {
     // The durable record is the authority. Queue its write before publishing
     // the projection so a consumer can never observe a location that the
@@ -3558,6 +3560,7 @@ function wireEvents(
       const state = buildState(sessionManager);
       const persisted = persistLocationEnrichment(
         () => stateWriter.saveImmediate(state),
+        payload.rollback,
       );
       if (!persisted) {
         log(

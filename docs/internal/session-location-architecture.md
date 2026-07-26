@@ -65,9 +65,18 @@ not resolve or reclassify daemon-owned panes.
 
 The renderer compares generation first and revision second. It queues an event
 that arrives before surface binding, and ignores a stale RPC response that
-arrives after a newer event. Projection ordering is reset after an authenticated
-daemon replacement because the replacement may start with lower generation
-numbers.
+arrives after a newer event. Main applies the same gate before changing its
+command-target registry, so metadata consumers cannot regress even when an
+enrichment event overtakes a create, list, or reconnect response. Projection
+ordering is reset after an authenticated daemon replacement because the
+replacement may start with lower generation numbers. An accepted renderer
+snapshot also drives the owning workspace cwd and task-worktree departure state;
+stale snapshots drive none of those side effects.
+
+Late daemon enrichment is published only after a synchronous state write. If
+both the write and its single retry fail, the daemon rolls the candidate
+location and revision back before any later list response or cwd event can
+expose them.
 
 The daemon reconnect path prefers the daemon's stored `location`;
 `resolveSessionLocation` supplies the legacy `{ cmd, cwd }` fallback.

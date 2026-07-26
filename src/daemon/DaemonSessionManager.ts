@@ -640,6 +640,7 @@ export class DaemonSessionManager extends EventEmitter {
       // as 'dead' purged exactly the in-use sessions from recovery. Classified
       // exits suspend instead — recovery replays them under the same id.
       const involuntary = this.involuntaryExitClassifier(payload.exitCode, payload.signal);
+      this.locationEnricher.cancel(params.id);
       meta.state = involuntary ? 'suspended' : 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
@@ -678,15 +679,33 @@ export class DaemonSessionManager extends EventEmitter {
     this.emit('session:created', { session: { ...meta } });
     void this.locationEnricher.enrich(
       params.id,
-      () => this.sessions.get(params.id)?.meta.location,
+      () => {
+        const current = this.sessions.get(params.id);
+        if (!current || current.meta.state === 'dead' || current.meta.state === 'suspended') {
+          return undefined;
+        }
+        return current.meta.location;
+      },
       (enriched) => {
         const current = this.sessions.get(params.id);
         if (!current) return;
+        const previousLocation = current.meta.location;
+        const previousRevision = current.locationRevision;
         const snapshot = this.acceptLocation(current, enriched);
         this.emit('session:locationAccepted', {
           sessionId: params.id,
           snapshot,
           reason: 'enriched',
+          rollback: () => {
+            const latest = this.sessions.get(params.id);
+            if (
+              !latest
+              || latest.locationGeneration !== snapshot.generation
+              || latest.locationRevision !== snapshot.revision
+            ) return;
+            latest.meta.location = previousLocation;
+            latest.locationRevision = previousRevision;
+          },
         });
       },
     );
@@ -706,6 +725,10 @@ export class DaemonSessionManager extends EventEmitter {
     }
     this.sessions.delete(id);
     this.emit('session:destroyed', { id });
+  }
+
+  deactivateSessionLocation(id: string): void {
+    this.locationEnricher.cancel(id);
   }
 
   /**

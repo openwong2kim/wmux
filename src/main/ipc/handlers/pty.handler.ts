@@ -51,6 +51,7 @@ import {
   type SessionLocationSnapshot,
 } from '../../../shared/sessionLocation';
 import { isWslUncPath } from '../../../shared/wslCwd';
+import { DaemonSessionLocationProjection } from '../../daemonSessionLocationProjection';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -310,6 +311,16 @@ export function registerPTYHandlers(
       win.webContents.send(IPC.LOCATION_CHANGED, ptyId, snapshot);
     }
   });
+  const daemonLocations = new DaemonSessionLocationProjection();
+  function acceptDaemonLocation(
+    sessionId: string,
+    snapshot: SessionLocationSnapshot,
+  ): boolean {
+    if (!daemonLocations.accept(sessionId, snapshot)) return false;
+    updatePaneLocation(sessionId, snapshot.location, false);
+    updateCwd(sessionId, snapshot.location.cwd);
+    return true;
+  }
 
   // Forward daemon flush-complete events to the renderer so useTerminal can
   // decide whether to wipe its .txt-cache replay. recoveredBytes>0 means the
@@ -325,12 +336,10 @@ export function registerPTYHandlers(
   let onDaemonFlushComplete:
     | ((payload: { sessionId: string; recoveredBytes: number }) => void)
     | null = null;
-  // Daemon-mode cwd cache feed. The atomic session:location projection below
-  // is the only renderer path; this legacy string event remains main-local.
-  let onDaemonCwd: ((payload: { sessionId: string; cwd: string }) => void) | null = null;
   let onDaemonLocation:
     | ((payload: { sessionId: string; snapshot: SessionLocationSnapshot }) => void)
     | null = null;
+  let onDaemonDisconnected: (() => void) | null = null;
   // Daemon-mode title forwarder. The daemon detects OSC 0/2 and emits
   // session:title; we relay it to the renderer as IPC.TERMINAL_TITLE_CHANGED,
   // matching what local-mode PTYBridge does inline.
@@ -356,20 +365,11 @@ export function registerPTYHandlers(
     };
     daemonClient.on('session:flushComplete', onDaemonFlushComplete);
 
-    onDaemonCwd = (payload: { sessionId: string; cwd: string }) => {
-      // updateCwd IS the pane's location: getPaneCommandTarget derives the
-      // pane's SessionLocation from this live feed (issue #21 I2), so there is
-      // nothing to mirror into a second store here.
-      updateCwd(payload.sessionId, payload.cwd);
-    };
-    daemonClient.on('session:cwd', onDaemonCwd);
-
     onDaemonLocation = (payload: {
       sessionId: string;
       snapshot: SessionLocationSnapshot;
     }) => {
-      updatePaneLocation(payload.sessionId, payload.snapshot.location, false);
-      updateCwd(payload.sessionId, payload.snapshot.location.cwd);
+      if (!acceptDaemonLocation(payload.sessionId, payload.snapshot)) return;
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(
@@ -380,6 +380,8 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('session:location', onDaemonLocation);
+    onDaemonDisconnected = () => daemonLocations.reset();
+    daemonClient.on('disconnected', onDaemonDisconnected);
 
     onDaemonTitle = (payload: { sessionId: string; title: string }) => {
       const win = getWindow?.();
@@ -529,7 +531,12 @@ export function registerPTYHandlers(
       const locationSnapshot = (result as {
         locationSnapshot?: SessionLocationSnapshot;
       }).locationSnapshot;
-      const authoritativeLocation = locationSnapshot?.location ?? sessionLocation;
+      const acceptedSnapshot = locationSnapshot
+        ? acceptDaemonLocation(sessionId, locationSnapshot)
+        : false;
+      const authoritativeLocation = acceptedSnapshot && locationSnapshot
+        ? locationSnapshot.location
+        : daemonLocations.get(sessionId)?.location ?? sessionLocation;
 
       // Attach to the session (makes daemon start the SessionPipe server)
       await daemonClient.rpc('daemon.attachSession', { id: sessionId });
@@ -579,8 +586,10 @@ export function registerPTYHandlers(
       // Register the pane's identity BEFORE seeding its cwd: updateCwd fires
       // the cwd listeners (localContextWatch's git watcher), and those read the
       // pane's command target — which does not exist until the identity is in.
-      updatePaneLocation(sessionId, authoritativeLocation, false);
-      updateCwd(sessionId, authoritativeLocation.cwd);
+      if (!locationSnapshot) {
+        updatePaneLocation(sessionId, authoritativeLocation, false);
+        updateCwd(sessionId, authoritativeLocation.cwd);
+      }
 
       // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
       // (the session id). The owning workspace is resolved live downstream,
@@ -594,7 +603,9 @@ export function registerPTYHandlers(
         id: sessionId,
         shell,
         cwd: authoritativeLocation.cwd,
-        ...(locationSnapshot ? { locationSnapshot } : {}),
+        ...(daemonLocations.get(sessionId)
+          ? { locationSnapshot: daemonLocations.get(sessionId) }
+          : {}),
       };
     }));
   } else {
@@ -843,6 +854,7 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
+      daemonLocations.forget(id);
       removePaneLocation(id);
     }));
   } else {
@@ -888,6 +900,11 @@ export function registerPTYHandlers(
         // resumeBinding.
         agentProcessAlive?: boolean;
       }>;
+      for (const session of sessions) {
+        if (session.state !== 'dead' && session.locationSnapshot) {
+          acceptDaemonLocation(session.id, session.locationSnapshot);
+        }
+      }
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
       // hydration (X8). Status comes from the runtime when present (live
@@ -915,7 +932,9 @@ export function registerPTYHandlers(
           // resolution in the renderer's rebind decision.
           ...(s.createdAt ? { createdAt: s.createdAt } : {}),
           ...(s.cwd ? { cwd: s.cwd } : {}),
-          ...(s.locationSnapshot ? { locationSnapshot: s.locationSnapshot } : {}),
+          ...(daemonLocations.get(s.id)
+            ? { locationSnapshot: daemonLocations.get(s.id) }
+            : {}),
           ...(s.supervision
             ? {
                 supervision: {
@@ -982,14 +1001,20 @@ export function registerPTYHandlers(
         // recovers but regex only catches PowerShell (`PS C:\…>`) and bash (`user@host:…$`),
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
+        if (session.locationSnapshot) {
+          acceptDaemonLocation(id, session.locationSnapshot);
+        }
         if (session.cwd) {
-          const location = session.locationSnapshot?.location
+          const acceptedSnapshot = daemonLocations.get(id);
+          const location = acceptedSnapshot?.location
             ?? resolveSessionLocation({ ...session, cwd: session.cwd });
           // Identity first, then the cwd — see the create path. The pane is
           // live again from here, so its active-session context (and, for a
           // bare `wsl.exe` pane, its distro) is derived, not reconstructed.
-          updatePaneLocation(id, location, false);
-          updateCwd(id, location.cwd);
+          if (!acceptedSnapshot) {
+            updatePaneLocation(id, location, false);
+            updateCwd(id, location.cwd);
+          }
         }
 
         // Set up data forwarding BEFORE attachSession, not after. attachSession
@@ -1058,8 +1083,8 @@ export function registerPTYHandlers(
           success: true,
           id: session.id,
           shell: session.cmd,
-          ...(session.locationSnapshot
-            ? { locationSnapshot: session.locationSnapshot }
+          ...(daemonLocations.get(id)
+            ? { locationSnapshot: daemonLocations.get(id) }
             : {}),
         };
       } catch (err) {
@@ -1252,6 +1277,7 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
+      daemonLocations.forget(payload.sessionId);
       removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
@@ -1368,11 +1394,11 @@ export function registerPTYHandlers(
       if (onDaemonFlushComplete) {
         daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);
       }
-      if (onDaemonCwd) {
-        daemonClient.removeListener('session:cwd', onDaemonCwd);
-      }
       if (onDaemonLocation) {
         daemonClient.removeListener('session:location', onDaemonLocation);
+      }
+      if (onDaemonDisconnected) {
+        daemonClient.removeListener('disconnected', onDaemonDisconnected);
       }
       if (onDaemonTitle) {
         daemonClient.removeListener('session:title', onDaemonTitle);

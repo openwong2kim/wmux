@@ -13,6 +13,7 @@ import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/pa
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { resetSessionLocationProjections } from '../stores/sessionLocationProjection';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
 
 /**
  * J3 §4 — whether cwd is inside task worktree boundary (best-effort, OSC-assisted). After
@@ -23,6 +24,30 @@ function isWithinWorktree(cwd: string, worktreePath: string): boolean {
   const w = normalizeWorktreePath(worktreePath);
   if (!c || !w) return true; // Cannot judge → do not treat as departed (warning only, avoid false positives).
   return c === w || c.startsWith(w + '/');
+}
+
+export function applyAcceptedLocationProjection(
+  state: ReturnType<typeof useStore.getState>,
+  ptyId: string,
+  snapshot: SessionLocationSnapshot,
+): boolean {
+  if (!state.updateSurfaceLocation(ptyId, snapshot)) return false;
+  const cwd = snapshot.location.cwd;
+  for (const ws of state.workspaces) {
+    if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
+      state.updateWorkspaceMetadata(ws.id, { cwd });
+      break;
+    }
+  }
+  const target = resolveNotificationTarget(state, ptyId, undefined);
+  if (target) {
+    const mission = state.getMissionForPaneGroup(target.workspaceId);
+    if (mission?.worktreePath) {
+      const inside = isWithinWorktree(cwd, mission.worktreePath);
+      state.setPaneGroupDeparted(target.workspaceId, inside ? null : cwd);
+    }
+  }
+  return true;
 }
 
 // ─── Target resolution helpers (regression-locked, unchanged from pre-T8) ───
@@ -476,16 +501,28 @@ export function useNotificationListener() {
     // semantics identical. onUpdate(meta) complex path (agentStatus transitions, per-surface map,
     // port union, principal registration) can lose intermediate transitions/side effects, so
     // intentionally not coalesced.
-    const cwdCoalescer = new FrameCoalescer<string, string>((ptyId, cwd) => {
+    const updateWorkspaceCwd = (ptyId: string, cwd: string) => {
       const state = useStore.getState();
-      // Per-surface cwd + owning workspace metadata, merged once per frame.
-      state.updateSurfaceCwd(ptyId, cwd);
       for (const ws of state.workspaces) {
         if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
           state.updateWorkspaceMetadata(ws.id, { cwd });
           break;
         }
       }
+    };
+    const updateDepartedState = (ptyId: string, cwd: string) => {
+      const state = useStore.getState();
+      const target = resolveNotificationTarget(state, ptyId, undefined);
+      if (!target) return;
+      const mission = state.getMissionForPaneGroup(target.workspaceId);
+      if (!mission?.worktreePath) return;
+      const inside = isWithinWorktree(cwd, mission.worktreePath);
+      state.setPaneGroupDeparted(target.workspaceId, inside ? null : cwd);
+    };
+    const cwdCoalescer = new FrameCoalescer<string, string>((ptyId, cwd) => {
+      // Per-surface cwd + owning workspace metadata, merged once per frame.
+      useStore.getState().updateSurfaceCwd(ptyId, cwd);
+      updateWorkspaceCwd(ptyId, cwd);
     });
     const titleCoalescer = new FrameCoalescer<string, string>((ptyId, title) => {
       useStore.getState().updateSurfaceTitleByPty(ptyId, title);
@@ -535,21 +572,13 @@ export function useNotificationListener() {
       // J3 §4 — when pane cwd in task workspace leaves worktree boundary, show departed badge
       // (warning only, no block). Resolve ptyId→workspace→mission (worktreePath) then compare
       // boundary. Ignore when not a mission or unmaterialized.
-      const st = useStore.getState();
-      const target = resolveNotificationTarget(st, ptyId, undefined);
-      if (target) {
-        const mission = st.getMissionForPaneGroup(target.workspaceId);
-        if (mission?.worktreePath) {
-          const inside = isWithinWorktree(cwd, mission.worktreePath);
-          st.setPaneGroupDeparted(target.workspaceId, inside ? null : cwd);
-        }
-      }
+      updateDepartedState(ptyId, cwd);
     });
 
     const unsubLocation = window.electronAPI.notification.onLocationChanged?.(
       (ptyId, snapshot) => {
         if (!ptyId) return;
-        useStore.getState().updateSurfaceLocation(ptyId, snapshot);
+        applyAcceptedLocationProjection(useStore.getState(), ptyId, snapshot);
       },
     ) ?? (() => {});
     const unsubLocationGeneration = window.electronAPI.daemon?.onConnected?.(() => {

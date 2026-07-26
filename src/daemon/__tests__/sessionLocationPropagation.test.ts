@@ -108,6 +108,61 @@ describe('daemon session location propagation', () => {
     expect(events).not.toHaveBeenCalled();
   });
 
+  it('emits nothing when the PTY dies naturally before resolution finishes', async () => {
+    const distro = deferred<string | undefined>();
+    const manager = new DaemonSessionManager(() => distro.promise);
+    managers.push(manager);
+    const events = vi.fn();
+    manager.on('session:locationAccepted', events);
+
+    manager.createSession({
+      id: 'wsl-natural-exit',
+      cmd: 'wsl.exe',
+      cwd: '/home/me/repo',
+      location: { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe' },
+    });
+    manager.getSession('wsl-natural-exit')!.bridge.emit('exit', {
+      sessionId: 'wsl-natural-exit',
+      exitCode: 0,
+    });
+    distro.resolve('Ubuntu');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).not.toHaveBeenCalled();
+    expect(manager.getSession('wsl-natural-exit')?.meta.location)
+      .not.toHaveProperty('distro');
+  });
+
+  it('rolls an unpublished enrichment back out of later snapshots', async () => {
+    const distro = deferred<string | undefined>();
+    const manager = new DaemonSessionManager(() => distro.promise);
+    managers.push(manager);
+    const initial = manager.createSession({
+      id: 'wsl-rollback',
+      cmd: 'wsl.exe',
+      cwd: '/home/me/repo',
+      location: { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe' },
+    });
+    manager.on('session:locationAccepted', (event: {
+      reason: string;
+      rollback?: () => void;
+    }) => {
+      if (event.reason === 'enriched') event.rollback?.();
+    });
+
+    distro.resolve('Ubuntu');
+    await vi.waitFor(() => {
+      expect(manager.getLocationSnapshot('wsl-rollback')?.revision).toBe(1);
+    });
+
+    expect(initial.location).not.toHaveProperty('distro');
+    expect(manager.getSession('wsl-rollback')?.meta.location)
+      .not.toHaveProperty('distro');
+    expect(manager.getLocationSnapshot('wsl-rollback')?.location)
+      .not.toHaveProperty('distro');
+  });
+
   it('orders a reused session id after its prior generation', async () => {
     const oldResult = deferred<string | undefined>();
     const newResult = deferred<string | undefined>();
