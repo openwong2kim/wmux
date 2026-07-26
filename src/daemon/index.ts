@@ -44,7 +44,7 @@ import type { DaemonSession, DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, resumeBindingMatchesLocation } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
@@ -56,6 +56,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
+import { classifySessionLocation, locationIdentity, resolveReplayLocation } from '../shared/sessionLocation';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -503,9 +504,31 @@ function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
   return fs.existsSync(binding.transcriptPath);
 }
 
+function replayCwd(session: Pick<DaemonSession, 'id' | 'cmd' | 'cwd' | 'location'>): {
+  cwd: string;
+  location: import('../shared/sessionLocation').SessionLocation;
+  degraded: boolean;
+} {
+  const resolved = resolveReplayLocation(
+    session.cmd,
+    session.cwd,
+    os.homedir(),
+    (cwd) => fs.existsSync(cwd),
+    session.location?.domain === 'wsl' ? session.location.distro : undefined,
+  );
+  if (resolved.degraded) {
+    log(
+      'warn',
+      `[recovery] session ${session.id} cwd unavailable: ${session.cwd} -> ${resolved.location.cwd}`,
+    );
+  }
+  return { cwd: resolved.location.cwd, location: resolved.location, degraded: resolved.degraded };
+}
+
 function resumeLaunchCommand(
   session: {
     id: string;
+    cmd: string;
     exec?: { command: string };
     cwd: string;
     resumeBinding?: ResumeBinding;
@@ -514,7 +537,7 @@ function resumeLaunchCommand(
   spoolBinding?: ResumeBinding,
 ): string | undefined {
   if (!session.exec) return undefined;
-  if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
+  if (replayCwd(session).degraded) return undefined;
   // Prefer the persisted binding; fall back to a spool-captured one (the live
   // capture RPC failed, so the exact id only survived in the spool) so an exec
   // agent pane replays as `--resume <id>` instead of an ambiguous `--continue`.
@@ -678,7 +701,7 @@ function ingestResumeSpool(
     // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
     // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
     // Normalized compare so a drive-case / trailing-slash diff isn't a false miss.
-    if (normalizeResumeCwd(binding.cwd) !== normalizeResumeCwd(managed.meta.cwd)) { drop(); continue; }
+    if (!resumeBindingMatchesLocation(binding, managed.meta.cwd, managed.meta.location)) { drop(); continue; }
     const prev = managed.meta.resumeBinding;
     // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
     // wins (ts tiebreak). For the SAME conversation the spool is redundant — its
@@ -1003,8 +1026,7 @@ async function recoverSessions(
           `[recovery] session ${session.id} dump=${session.bufferDumpPath} exists=${scrollbackData !== undefined} bytes=${scrollbackData?.length ?? 0}`,
         );
 
-        // Verify cwd still exists; fall back to homedir
-        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const { cwd, location } = replayCwd(session);
 
         // ConPTY on Windows occasionally rejects the first spawn after a
         // daemon restart with ERROR_INVALID_PARAMETER (87) — a known
@@ -1030,6 +1052,7 @@ async function recoverSessions(
               id: session.id,
             cmd: session.cmd,
             cwd,
+            location,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1110,12 +1133,13 @@ async function recoverSessions(
       if (fs.existsSync(snapshotPath)) {
         try {
           const scrollbackData = fs.readFileSync(snapshotPath);
-          const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+          const { cwd, location } = replayCwd(session);
 
           const recovered = sessionManager.createSession({
             id: session.id,
             cmd: session.cmd,
             cwd,
+            location,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1156,11 +1180,12 @@ async function recoverSessions(
       // This handles cases where the daemon was killed before
       // the 30s snapshot interval fired (e.g. immediate reboot).
       try {
-        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const { cwd, location } = replayCwd(session);
         const recovered = sessionManager.createSession({
           id: session.id,
           cmd: session.cmd,
           cwd,
+          location,
           env: session.env,
           cols: session.cols,
           rows: session.rows,
@@ -1251,7 +1276,7 @@ async function recoverSessions(
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
     // the pill to the cwd-relative `--continue`.
-    if (m.resumeBinding && normalizeResumeCwd(m.resumeBinding.cwd) === normalizeResumeCwd(m.cwd) && bindingTranscriptLives(m.resumeBinding)) {
+    if (m.resumeBinding && resumeBindingMatchesLocation(m.resumeBinding, m.cwd, m.location) && bindingTranscriptLives(m.resumeBinding)) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
@@ -1311,10 +1336,12 @@ function restartSupervisedSession(
   }
 
   const meta = managed.meta;
+  const replayLocation = replayCwd(meta);
   const replay = {
     id: meta.id,
     cmd: meta.cmd,
-    cwd: fs.existsSync(meta.cwd) ? meta.cwd : os.homedir(),
+    cwd: replayLocation.cwd,
+    location: replayLocation.location,
     env: meta.env,
     cols: meta.cols,
     rows: meta.rows,
@@ -1431,6 +1458,7 @@ function registerRpcHandlers(
       id: p.id,
       cmd: p.cmd,
       cwd: p.cwd,
+      location: p.location,
       env: p.env,
       cols: p.cols,
       rows: p.rows,
@@ -2013,7 +2041,15 @@ function registerRpcHandlers(
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
     if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
-    const p = { id, resumeBinding };
+    const sessionLocation = managed.meta.location
+      ?? classifySessionLocation(managed.meta.cmd, managed.meta.cwd);
+    const p = {
+      id,
+      resumeBinding: {
+        ...resumeBinding,
+        locationIdentity: locationIdentity(sessionLocation),
+      },
+    };
     // Resume-chip edge trigger: a hook reaching this RPC proves claude is
     // running in the pane RIGHT NOW — attach the process watch (no-op while a
     // live watch exists, so hook storms cost nothing). Runs before the
@@ -2045,6 +2081,7 @@ function registerRpcHandlers(
       || prev.agent !== next.agent
       || prev.permissionMode !== next.permissionMode
       || prev.cwd !== next.cwd
+      || prev.locationIdentity !== next.locationIdentity
       // transcriptPath is the D5 liveness-probe input. A SessionStart persists a
       // binding without it (the .jsonl doesn't exist yet, F9); the first Stop
       // fills it in with the same sessionId/cwd — without this the fill is not

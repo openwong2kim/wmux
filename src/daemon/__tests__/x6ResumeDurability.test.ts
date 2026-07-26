@@ -170,7 +170,7 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 3400);
+    const body = src.slice(idx, idx + 4200);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
     // ...and the RPC must still route through it, or the wire path silently
@@ -214,7 +214,7 @@ describe('X6 ② reboot-survival durability', () => {
     // Attribute by EXACT pane id, not cwd guessing.
     expect(body).toMatch(/sessionManager\.getSession\(ptyId\)/);
     // F7: origin cwd must match the recovered pane cwd (normalized — codex P2).
-    expect(body).toMatch(/normalizeResumeCwd\(binding\.cwd\) !== normalizeResumeCwd\(managed\.meta\.cwd\)/);
+    expect(body).toMatch(/resumeBindingMatchesLocation\(binding, managed\.meta\.cwd, managed\.meta\.location\)/);
     // Never let an older spooled capture overwrite a newer live one, and skip a
     // same-conversation spool (codex P2).
     expect(body).toMatch(/prev\.ts >= binding\.ts/);

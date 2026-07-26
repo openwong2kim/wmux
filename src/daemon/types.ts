@@ -4,6 +4,7 @@ import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
+import type { SessionLocation } from '../shared/sessionLocation';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -28,6 +29,8 @@ export interface DaemonSession {
   pid: number;              // child process PID
   cmd: string;              // executed command
   cwd: string;
+  /** Domain-aware durable location. Absent in legacy records; classify from cmd+cwd on load. */
+  location?: SessionLocation;
   env: Record<string, string>;
   cols: number;
   rows: number;

@@ -6,6 +6,7 @@ import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
+import { classifySessionLocation } from '../../../shared/sessionLocation';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -304,7 +305,16 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {
           const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
-          if (surface) { surface.cwd = cwd; return true; }
+          if (surface) {
+            surface.cwd = cwd;
+            const classified = classifySessionLocation(
+              surface.shell,
+              cwd,
+              surface.location?.domain === 'wsl' ? surface.location.distro : undefined,
+            );
+            surface.location = classified;
+            return true;
+          }
           return false;
         }
         return pane.children.some(updateInPane);

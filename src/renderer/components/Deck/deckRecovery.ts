@@ -25,7 +25,7 @@ import type { Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import {
   type ResumeBinding,
-  normalizeResumeCwd,
+  resumeBindingMatchesLocation,
   permissionFlagFor,
   resumeGrammarFor,
 } from '../../../shared/agentResume';
@@ -94,7 +94,7 @@ export function buildRecoveryPanes(args: {
         const cwdMatches = !!(
           binding &&
           surface.cwd &&
-          normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(surface.cwd)
+          resumeBindingMatchesLocation(binding, surface.cwd, surface.location)
         );
         const exact = cwdMatches && binding?.agent === agent;
         // Exact-session form restores the recorded permission mode on the SAME

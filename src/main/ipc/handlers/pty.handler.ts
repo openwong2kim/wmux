@@ -39,6 +39,7 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import { classifySessionLocation } from '../../../shared/sessionLocation';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -478,6 +479,7 @@ export function registerPTYHandlers(
         id: sessionId,
         cmd: shell,
         cwd: effectiveCwd,
+        location: classifySessionLocation(shell, effectiveCwd),
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: resolvedEnv,

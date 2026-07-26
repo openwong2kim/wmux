@@ -6,10 +6,12 @@ import {
   permissionFlagFor,
   mergeResumeBinding,
   normalizeResumeCwd,
+  resumeBindingMatchesLocation,
   PERMISSION_FLAG,
   type ResumeBinding,
   type PermissionMode,
 } from '../agentResume';
+import { classifySessionLocation, locationIdentity } from '../sessionLocation';
 
 const CWD = 'D:\\wmux';
 const binding = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
@@ -18,6 +20,16 @@ const binding = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
   cwd: CWD,
   ts: 1,
   ...over,
+});
+
+describe('resumeBindingMatchesLocation', () => {
+  it('does not collide across WSL distros with identical cwd text', () => {
+    const ubuntu = classifySessionLocation('wsl.exe', '/home/me/repo', 'Ubuntu');
+    const debian = classifySessionLocation('wsl.exe', '/home/me/repo', 'Debian');
+    const captured = binding({ cwd: ubuntu.cwd, locationIdentity: locationIdentity(ubuntu) });
+    expect(resumeBindingMatchesLocation(captured, debian.cwd, debian)).toBe(false);
+    expect(resumeBindingMatchesLocation(captured, ubuntu.cwd, ubuntu)).toBe(true);
+  });
 });
 
 describe('toResumeCommand (X6)', () => {

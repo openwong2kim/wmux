@@ -11,6 +11,7 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell, installShellIntegration } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
 import { applyWslPromptIntegration, isWslShell, splitWslCwd } from '../shared/wslCwd';
+import { classifySessionLocation, type SessionLocation } from '../shared/sessionLocation';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
@@ -210,6 +211,7 @@ export class DaemonSessionManager extends EventEmitter {
      * runaway-guard 'stopped' survives reboots.
      */
     supervision?: DaemonSessionSupervision;
+    location?: SessionLocation;
   }): DaemonSession {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
@@ -261,6 +263,7 @@ export class DaemonSessionManager extends EventEmitter {
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    const location = params.location ?? classifySessionLocation(cmd, cwd);
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -430,6 +433,7 @@ export class DaemonSessionManager extends EventEmitter {
       pid: ptyProcess.pid,
       cmd,
       cwd,
+      location: { ...location, cwd },
       env,
       cols,
       rows,
@@ -536,6 +540,7 @@ export class DaemonSessionManager extends EventEmitter {
       // keeps the immediate cwd persistence cheap (no write amplification).
       if (meta.cwd === payload.cwd) return;
       meta.cwd = payload.cwd;
+      meta.location = { ...(meta.location ?? classifySessionLocation(meta.cmd, payload.cwd)), cwd: payload.cwd };
       // Forward across the daemon→main boundary so the renderer can live-update
       // the per-surface cwd (tab tooltip + "Working directories" menu). Without
       // this, daemon mode (the default path) only kept cwd in daemon-local

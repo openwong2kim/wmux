@@ -1,3 +1,5 @@
+import { locationIdentity, type SessionLocation } from './sessionLocation';
+
 /**
  * X6 — agent session resume on supervised restart/recovery.
  *
@@ -120,6 +122,17 @@ export function normalizeResumeCwd(p: string): string {
   return out;
 }
 
+export function resumeBindingMatchesLocation(
+  binding: Pick<ResumeBinding, 'cwd' | 'locationIdentity'>,
+  paneCwd: string,
+  paneLocation?: SessionLocation,
+): boolean {
+  if (binding.locationIdentity && paneLocation) {
+    return binding.locationIdentity === locationIdentity(paneLocation);
+  }
+  return normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd);
+}
+
 /**
  * X6 ③: a per-session resume binding, captured live from the claude hook and
  * persisted on the daemon session record so it survives a SIGKILL/reboot.
@@ -136,6 +149,8 @@ export interface ResumeBinding {
   sessionId: string;
   /** Origin cwd — hard cwd-match guard, since `--resume` is cwd-scoped (F7). */
   cwd: string;
+  /** Domain/distro-sensitive cwd identity. Optional for backward compatibility. */
+  locationIdentity?: string;
   /** Last-observed permission mode (F5). Restored only on explicit user intent. */
   permissionMode?: PermissionMode;
   /**
@@ -246,7 +261,9 @@ export function mergeResumeBinding(
   const sameConversation =
     prev?.agent === next.agent &&
     prev?.sessionId === next.sessionId &&
-    prev?.cwd === next.cwd;
+    prev?.cwd === next.cwd &&
+    (!prev.locationIdentity || !next.locationIdentity
+      || prev.locationIdentity === next.locationIdentity);
   if (sameConversation && !merged.permissionMode && prev?.permissionMode) merged.permissionMode = prev.permissionMode;
   if (sameConversation && !merged.transcriptPath && prev?.transcriptPath) merged.transcriptPath = prev.transcriptPath;
   return merged;

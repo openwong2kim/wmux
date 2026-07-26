@@ -20,6 +20,7 @@ import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
 // cycle, which TypeScript resolves without any runtime import.
 import type { AgentSlug } from './events';
 import type { OrchestratorRoleBindings } from './orchestratorRole';
+import { classifySessionLocation, type SessionLocation } from './sessionLocation';
 
 // Re-export for backward compatibility
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
@@ -50,6 +51,8 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
+  /** Domain-aware cwd identity; absent on legacy persisted surfaces. */
+  location?: SessionLocation;
   surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review';
   browserUrl?: string;
   browserPartition?: string;
@@ -1014,6 +1017,7 @@ export function createSurface(ptyId: string, shell: string, cwd: string): Surfac
     title: shell,
     shell,
     cwd,
+    location: classifySessionLocation(shell, cwd),
   };
 }
 
@@ -1295,4 +1299,3 @@ export function validateNavigationUrl(url: string): UrlValidationResult {
 
   return { valid: true };
 }
-
