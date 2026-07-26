@@ -94,6 +94,15 @@ export class OrderedSessionLocationProjection {
     return this.projections.get(sessionId)?.snapshot;
   }
 
+  getForDiscovery(
+    sessionId: string,
+    authority: SessionLocationDiscoveryAuthority,
+  ): SessionLocationSnapshot | undefined {
+    const discovery = this.discoveries.get(authority);
+    if (!discovery || discovery.blockedIds.has(sessionId)) return undefined;
+    return this.projections.get(sessionId)?.snapshot;
+  }
+
   snapshots(): Array<[string, SessionLocationSnapshot]> {
     const snapshots: Array<[string, SessionLocationSnapshot]> = [];
     for (const [sessionId, state] of this.projections) {

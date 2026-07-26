@@ -48,7 +48,7 @@ describe('preload session location propagation', () => {
     );
     expect(projected).toEqual({
       response: { id: 'pty-1', locationSnapshot: undefined, shell: 'pwsh.exe' },
-      accepted: false,
+      deliverable: false,
     });
     expect(projection.acceptEvent('pty-1', snapshot(1, 1))).toBe(true);
   });
@@ -63,14 +63,39 @@ describe('preload session location propagation', () => {
       request,
     )).toEqual({
       response: { id: 'closed', locationSnapshot: undefined },
-      accepted: false,
+      deliverable: false,
     });
     expect(projection.projectResponse(
       { id: 'live', locationSnapshot: snapshot(1, 1) },
       request,
     )).toEqual({
       response: { id: 'live', locationSnapshot: snapshot(1, 1) },
-      accepted: true,
+      deliverable: true,
+    });
+  });
+
+  it('replays a newer event when it overtakes a stale response before binding', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const request = projection.beginDiscovery();
+    expect(projection.acceptEvent('pty-1', snapshot(4, 2))).toBe(true);
+
+    expect(projection.projectResponse(
+      { id: 'pty-1', locationSnapshot: snapshot(4, 1) },
+      request,
+    )).toEqual({
+      response: { id: 'pty-1', locationSnapshot: snapshot(4, 2) },
+      deliverable: true,
+    });
+  });
+
+  it('replays a retained event when the response has no snapshot', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const request = projection.beginDiscovery();
+    expect(projection.acceptEvent('pty-1', snapshot(4, 2))).toBe(true);
+
+    expect(projection.projectResponse({ id: 'pty-1' }, request)).toEqual({
+      response: { id: 'pty-1', locationSnapshot: snapshot(4, 2) },
+      deliverable: true,
     });
   });
 

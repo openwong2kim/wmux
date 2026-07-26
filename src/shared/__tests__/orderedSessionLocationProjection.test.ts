@@ -86,6 +86,7 @@ describe('OrderedSessionLocationProjection', () => {
 
     projection.reset();
     expect(projection.begin('late', oldDiscovery)).toBeUndefined();
+    expect(projection.getForDiscovery('s1', oldDiscovery)).toBeUndefined();
     expect(projection.accept('s1', snapshot(1, 1), oldLease)).toBe(false);
 
     const newLease = begin(projection);
@@ -101,6 +102,7 @@ describe('OrderedSessionLocationProjection', () => {
     expect(projection.release('s1', lease)).toBe(true);
     expect(projection.retainedSize()).toBe(0);
     expect(projection.begin('s1', inFlight)).toBeUndefined();
+    expect(projection.getForDiscovery('s1', inFlight)).toBeUndefined();
     expect(projection.accept('s1', snapshot(4, 2), lease)).toBe(false);
 
     const reusedLease = begin(projection);

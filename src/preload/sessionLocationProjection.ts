@@ -34,16 +34,18 @@ export class PreloadSessionLocationProjection {
   }>(
     response: T,
     authority: SessionLocationDiscoveryAuthority,
-  ): { response: T; accepted: boolean } {
+  ): { response: T; deliverable: boolean } {
     const { id, locationSnapshot } = response;
-    if (!id || !locationSnapshot) return { response, accepted: false };
+    if (!id) return { response, deliverable: false };
 
-    const accepted = this.accept(id, locationSnapshot, authority);
+    if (locationSnapshot) this.accept(id, locationSnapshot, authority);
+    const deliverableSnapshot = this.owner.getForDiscovery(id, authority);
     return {
-      response: accepted
-        ? response
-        : { ...response, locationSnapshot: undefined },
-      accepted,
+      response: {
+        ...response,
+        locationSnapshot: deliverableSnapshot,
+      },
+      deliverable: deliverableSnapshot !== undefined,
     };
   }
 

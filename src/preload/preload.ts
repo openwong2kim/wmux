@@ -42,12 +42,12 @@ function projectLocationResponse<T extends {
   authority: SessionLocationDiscoveryAuthority,
 ): T {
   const projected = projectedLocations.projectResponse(response, authority);
-  if (projected.accepted) {
+  if (projected.deliverable) {
     ipcRenderer.emit(
       IPC.LOCATION_CHANGED,
       {} as Electron.IpcRendererEvent,
-      response.id,
-      response.locationSnapshot,
+      projected.response.id,
+      projected.response.locationSnapshot,
       true,
     );
   }
