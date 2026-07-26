@@ -483,6 +483,37 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
   });
 });
 
+// ── turn identity ───────────────────────────────────────────────────────────
+
+describe('ClaudePtyBrainAdapter — superseded turns', () => {
+  it('drops a late Stop from a timed-out turn instead of ending the next one', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { turnTimeoutMs: 20 });
+    const first = await collect(adapter.send('slow job'));
+    expect(first).toEqual([{ type: 'error', message: 'the terminal brain did not finish its turn' }]);
+    const ptyId = host.created[0].id;
+    // The timed-out turn is ESC'd — otherwise claude keeps working on a turn
+    // nobody will ever read.
+    expect(host.writes.at(-1)).toEqual({ id: ptyId, data: '\u001b' });
+
+    const second = collect(adapter.send('a new question'));
+    await vi.waitFor(() => expect(host.writes.filter((w) => w.data === 'a new question').length).toBe(1));
+    // The OLD turn's Stop finally lands. It must not resolve the new turn —
+    // that would hang the old transcript off the new request.
+    deliverBrainPtyHookSignal(
+      signal('agent.stop', ptyId, {
+        agentSessionId: 'sess-old',
+        payload: { transcript_path: '/tmp/old.jsonl' },
+      }),
+    );
+    // The new turn's own Stop is the one that ends it.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-new' }));
+    const events = await second;
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-new' });
+    adapter.dispose();
+  });
+});
+
 // ── spawn lifecycle ─────────────────────────────────────────────────────────
 
 describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {

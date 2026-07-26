@@ -61,6 +61,12 @@ const STALE_RESUME_WINDOW_MS = 4_000;
  *  content — the prompt lands in the input box but never submits (dogfood
  *  2026-07-26; the PoC proved a short gap fixes it). */
 const SUBMIT_DELAY_MS = 400;
+/** How long after a TIMED-OUT turn a Stop hook is still assumed to belong to
+ *  that dead turn rather than the next one. The adapter ESCs the TUI on
+ *  timeout, so its Stop should arrive within seconds; the window bounds the
+ *  damage if it never arrives at all (the credit would otherwise sit forever
+ *  and swallow a healthy turn's Stop). */
+const SUPERSEDED_STOP_WINDOW_MS = 60_000;
 /** Claude Code's own wording when `--resume <id>` names a transcript it cannot
  *  find. Matched case-insensitively on the spawn banner only. */
 const STALE_RESUME_MARKER = 'no conversation found';
@@ -104,11 +110,11 @@ export interface DaemonClientLike {
   connectSessionPipe(sessionId: string, opts?: { forceFresh?: boolean }): Promise<void>;
   writeToSession(sessionId: string, data: string | Buffer): boolean;
   on(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
-  off(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
   on(
     event: 'session:died' | 'session:destroyed',
     listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
   ): unknown;
+  off(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
   off(
     event: 'session:died' | 'session:destroyed',
     listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
@@ -475,6 +481,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  Stop for the same turn finds it null and is ignored — the "exactly one
    *  turn-end" half of the manager contract. */
   private turnStop: Waiter<AgentSignal | null> | null = null;
+  /** Monotonic turn counter — the identity a Stop is matched against. */
+  private turnSeq = 0;
+  /** How many TIMED-OUT turns are still owed a Stop. A timed-out turn's claude
+   *  keeps working; its late Stop would otherwise resolve the NEXT turn's
+   *  waiter and hang the old transcript off the new request. Each credit
+   *  swallows exactly one Stop. */
+  private supersededTurns = 0;
+  private supersededTimer: ReturnType<typeof setTimeout> | null = null;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -517,6 +531,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       return;
     }
     if (signal.kind !== 'agent.stop') return;
+    // A superseded (timed-out) turn's Stop arrives late and is
+    // INDISTINGUISHABLE from the current turn's — the hook carries no turn
+    // identity — so a credit banked at timeout drops exactly one Stop.
+    if (this.supersededTurns > 0) {
+      this.supersededTurns -= 1;
+      if (this.supersededTurns === 0) this.clearSupersededExpiry();
+      console.warn('[deck] dropped a late Stop from a superseded terminal-brain turn');
+      return;
+    }
     // A Stop with no waiter is a duplicate (or a stop the human triggered in
     // the embedded TUI directly) — deliberately dropped, so the open turn
     // still ends exactly once.
@@ -524,6 +547,26 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (!waiter) return;
     this.turnStop = null;
     waiter.resolve(signal);
+  }
+
+  /** Bank a Stop-swallowing credit for a turn we gave up on, and ESC the TUI
+   *  so the abandoned turn actually stops burning the brain's context. */
+  private supersedeTurn(turnId: number): void {
+    console.warn(`[deck] terminal-brain turn ${turnId} timed out — interrupting the TUI`);
+    this.supersededTurns += 1;
+    this.clearSupersededExpiry();
+    const timer = setTimeout(() => {
+      this.supersededTurns = 0;
+      this.supersededTimer = null;
+    }, SUPERSEDED_STOP_WINDOW_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.supersededTimer = timer;
+    this.interrupt();
+  }
+
+  private clearSupersededExpiry(): void {
+    if (this.supersededTimer) clearTimeout(this.supersededTimer);
+    this.supersededTimer = null;
   }
 
   // ── spawn ───────────────────────────────────────────────────────────────
@@ -878,6 +921,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       return;
     }
 
+    const turnId = ++this.turnSeq;
     const waiter = createWaiter<AgentSignal | null>();
     this.turnStop = waiter;
     try {
@@ -919,7 +963,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       return;
     }
     if (stop === 'timeout') {
-      this.turnStop = null;
+      // Only clear OUR waiter — a turn that raced ahead of this one already
+      // replaced it (it cannot, today, but the identity check keeps the
+      // invariant explicit rather than positional).
+      if (this.turnStop === waiter) this.turnStop = null;
+      this.supersedeTurn(turnId);
       yield { type: 'error', message: 'the terminal brain did not finish its turn' };
       return;
     }
@@ -967,6 +1015,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // Terminate any in-flight iterator (see the null branch in send()).
     this.turnStop?.resolve(null);
     this.turnStop = null;
+    this.clearSupersededExpiry();
     this.sessionStarted?.resolve();
     void this.killPty();
     for (const p of this.profilePaths) {
@@ -982,7 +1031,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
 /** A promise that never settles — the "no live pty" arm of the turn race. */
 function never<T>(): Promise<T> {
-  return new Promise<T>(() => {});
+  return new Promise<T>(() => {
+    /* deliberately never settles */
+  });
 }
 
 /** The user-facing wording for a brain whose terminal exited. */
