@@ -74,6 +74,60 @@ function resolveHostTranscriptPath(
   return resolved.ok ? resolved.path : null;
 }
 
+function hostTranscriptLives(hostPath: string): boolean {
+  try {
+    return fs.lstatSync(hostPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function readHostTranscriptTail(hostPath: string): Buffer | null {
+  try {
+    const st = fs.lstatSync(hostPath);
+    if (!st.isFile()) return null;
+    const safeReadFlags =
+      fs.constants.O_RDONLY
+      | (fs.constants.O_NONBLOCK ?? 0)
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    const fd = fs.openSync(hostPath, safeReadFlags);
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile()) return null;
+      const start = Math.max(0, opened.size - TAIL_BYTES);
+      const buf = Buffer.alloc(opened.size - start);
+      const read = fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.subarray(0, read);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function missingGuestPython(error: unknown, stderr?: Buffer | string): boolean {
+  const detail = [
+    error instanceof Error ? error.message : String(error),
+    stderr?.toString() ?? '',
+    (error as { stderr?: Buffer | string } | null)?.stderr?.toString() ?? '',
+  ].join('\n');
+  return /(?:execvpe\(python3\) failed|python3.*(?:not found|no such file))/i.test(detail);
+}
+
+function runHostWslFallback(
+  transcriptPath: string,
+  mode: 'probe' | 'tail',
+  context: TranscriptReadContext,
+): Buffer | null {
+  const hostPath = resolveHostTranscriptPath(transcriptPath, context);
+  if (!hostPath) return null;
+  if (mode === 'probe') {
+    return hostTranscriptLives(hostPath) ? Buffer.from('1') : null;
+  }
+  return readHostTranscriptTail(hostPath);
+}
+
 /**
  * The guest helper performs both checks at the point of use:
  * - lstat must report a regular file (symlinks/FIFOs/devices are rejected);
@@ -119,7 +173,14 @@ function runWslTranscriptOperation(
       maxBuffer: TAIL_BYTES,
       windowsHide: true,
     });
-  } catch {
+  } catch (error) {
+    // WSL guarantees the host UNC bridge, but not guest Python. Keep the
+    // timeout-bounded guest helper as the primary path; if that one dependency
+    // is absent, use the same no-follow/non-blocking host reader via
+    // \\wsl.localhost rather than discarding the exact resume binding.
+    if (missingGuestPython(error)) {
+      return runHostWslFallback(transcriptPath, mode, context);
+    }
     return null;
   }
 }
@@ -173,13 +234,18 @@ function refreshWslProbe(
     prepared.file,
     prepared.args,
     { timeout: WSL_READ_TIMEOUT_MS, maxBuffer: TAIL_BYTES, windowsHide: true },
-    (error, stdout) => {
+    (error, stdout, stderr) => {
       const current = wslProbeCache.get(key);
       if (!current) return;
       current.refreshing = false;
       // A timeout or a spawn failure is not evidence the transcript is gone;
       // keep the last known answer and try again on the next poll.
-      if (error && !stdout) return;
+      if (error && !stdout) {
+        if (!missingGuestPython(error, stderr)) return;
+        current.lives = runHostWslFallback(transcriptPath, 'probe', context)?.toString() === '1';
+        current.at = Date.now();
+        return;
+      }
       current.lives = stdout.toString() === '1';
       current.at = Date.now();
     },
@@ -230,12 +296,7 @@ export function transcriptFileLives(
     return wslTranscriptLives(transcriptPath, context, run);
   }
   const hostPath = resolveHostTranscriptPath(transcriptPath, context);
-  if (!hostPath) return false;
-  try {
-    return fs.lstatSync(hostPath).isFile();
-  } catch {
-    return false;
-  }
+  return hostPath ? hostTranscriptLives(hostPath) : false;
 }
 
 /**
@@ -322,38 +383,12 @@ export function readLastAssistantMessage(
     const result = runWslTranscriptOperation(transcriptPath, 'tail', context, run);
     if (!result) return null;
     raw = result.toString('utf8');
-  } else try {
+  } else {
     const hostPath = resolveHostTranscriptPath(transcriptPath, context);
     if (!hostPath) return null;
-    // lstat, and only a regular file: `transcript_path` arrives from a hook
-    // payload, and openSync on a FIFO blocks the MAIN process indefinitely —
-    // there is no timeout to save us, the hook's budget cannot cancel a blocked
-    // syscall, and the whole app stalls with it.
-    const st = fs.lstatSync(hostPath);
-    if (!st.isFile()) return null;
-    const safeReadFlags =
-      fs.constants.O_RDONLY
-      | (fs.constants.O_NONBLOCK ?? 0)
-      | (fs.constants.O_NOFOLLOW ?? 0);
-    const fd = fs.openSync(hostPath, safeReadFlags);
-    try {
-      // Re-check the opened descriptor: the path could have been replaced
-      // between lstat and open. O_NONBLOCK prevents a replacement FIFO from
-      // hanging even on platforms without O_NOFOLLOW.
-      const opened = fs.fstatSync(fd);
-      if (!opened.isFile()) return null;
-      const start = Math.max(0, opened.size - TAIL_BYTES);
-      const buf = Buffer.alloc(opened.size - start);
-      // Decode ONLY what was actually read. A transcript being truncated or
-      // rotated concurrently would otherwise leave zero-fill in the tail and
-      // corrupt the very last record — the one we came here for.
-      const read = fs.readSync(fd, buf, 0, buf.length, start);
-      raw = buf.subarray(0, read).toString('utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return null;
+    const result = readHostTranscriptTail(hostPath);
+    if (!result) return null;
+    raw = result.toString('utf8');
   }
 
   const lines = raw.split('\n');

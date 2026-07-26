@@ -230,6 +230,42 @@ describe('WSL transcript reads', () => {
 
   beforeEach(() => __resetTranscriptProbeCache());
 
+  it('falls back to the guarded host UNC reader when guest python is missing', () => {
+    const raw = Buffer.from(assistantText('Proceed?'));
+    const stats = { isFile: () => true, size: raw.length } as fs.Stats;
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue(stats);
+    const open = vi.spyOn(fs, 'openSync').mockReturnValue(7);
+    const fstat = vi.spyOn(fs, 'fstatSync').mockReturnValue(stats);
+    const read = vi.spyOn(fs, 'readSync').mockImplementation(
+      ((_fd: number, buffer: Buffer) => {
+        raw.copy(buffer);
+        return raw.length;
+      }) as typeof fs.readSync,
+    );
+    const close = vi.spyOn(fs, 'closeSync').mockImplementation(() => undefined);
+    const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
+      throw Object.assign(new Error('execvpe(python3) failed: No such file or directory'), {
+        stderr: Buffer.from('execvpe(python3) failed: No such file or directory'),
+      });
+    });
+    const uncPath = '\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\transcript.jsonl';
+    try {
+      expect(readLastAssistantMessage('/home/me/transcript.jsonl', context, run)).toEqual({
+        text: 'Proceed?',
+        endsWithQuestion: true,
+      });
+      expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
+      expect(lstat).toHaveBeenCalledWith(uncPath);
+      expect(open.mock.calls[0][0]).toBe(uncPath);
+    } finally {
+      lstat.mockRestore();
+      open.mockRestore();
+      fstat.mockRestore();
+      read.mockRestore();
+      close.mockRestore();
+    }
+  });
+
   it('fails softly when the bounded WSL command times out', () => {
     const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
       const err = new Error('timed out');
