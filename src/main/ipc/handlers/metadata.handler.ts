@@ -15,6 +15,8 @@ import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
+import type { ActiveSessionContext, SessionLocation } from '../../../shared/sessionLocation';
+import type { PaneCommandTarget } from '../../git/paneCommand';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -69,6 +71,7 @@ const collector = new MetadataCollector();
 
 // Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
 const cwdMap = new Map<string, string>();
+const paneCommandTargets = new Map<string, PaneCommandTarget>();
 
 // Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
 // (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
@@ -102,19 +105,20 @@ export function onCwdUpdate(listener: CwdListener): () => void {
 async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayload | null> {
   const cwd = cwdMap.get(ptyId);
   if (!cwd) return null;
+  const target = paneCommandTargets.get(ptyId);
   // Watcher/shell-integration branch wins; exec git only as fallback so a
   // session that predates the watcher (or a watch failure) still resolves.
-  const gitBranch = branchMap.get(ptyId) ?? (await collector.getGitBranch(cwd)) ?? '';
+  const gitBranch = branchMap.get(ptyId) ?? (target ? await collector.getGitBranch(target) : undefined) ?? '';
   const payload: MetadataUpdatePayload = { ptyId, cwd, gitBranch };
   const isWorktree = worktreeMap.get(ptyId);
   if (isWorktree !== undefined) payload.gitIsWorktree = isWorktree;
   const ports = portsMap.get(ptyId);
   if (ports !== undefined) payload.listeningPorts = ports;
   if (gitBranch) {
-    payload.pr = await prStatusCache.get(cwd, gitBranch);
+    payload.pr = target ? await prStatusCache.get(target, gitBranch) : null;
     // Rides the same 5 s tick behind a 15 s TTL — one git subprocess per
     // repo per TTL window (same cost discipline as the gh cache above).
-    payload.gitSync = await gitSyncStatusCache.get(cwd);
+    payload.gitSync = target ? await gitSyncStatusCache.get(target) : null;
   } else {
     payload.pr = null;
     payload.gitSync = null;
@@ -158,6 +162,7 @@ export async function runMetadataPollTick(
     const instance = ptyManager.get(ptyId);
     if (localPtyOwnership && !instance) {
       cwdMap.delete(ptyId);
+      paneCommandTargets.delete(ptyId);
       branchMap.delete(ptyId);
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
@@ -182,7 +187,14 @@ export async function runMetadataPollTick(
     // edge/watermark-triggered and never throw, so they must not gate the
     // metadata broadcast below.
     void prCiRouter?.note(ptyId, payload.pr ?? null);
-    if (payload.cwd) void prReviewRouter?.note(ptyId, payload.cwd, payload.pr ?? null);
+    if (payload.cwd) {
+      void prReviewRouter?.note(
+        ptyId,
+        payload.cwd,
+        payload.pr ?? null,
+        paneCommandTargets.get(ptyId),
+      );
+    }
     const serialized = JSON.stringify(payload);
     // First payload for a pane always sends (no cache entry); a value that
     // reverts after a change also sends (cache holds the last SENT payload).
@@ -387,6 +399,22 @@ export function removeBranch(ptyId: string): void {
 
 export function getCwd(ptyId: string): string | undefined {
   return cwdMap.get(ptyId);
+}
+
+export function updatePaneLocation(
+  ptyId: string,
+  location: SessionLocation,
+  activeContext?: ActiveSessionContext,
+): void {
+  paneCommandTargets.set(ptyId, { sessionId: ptyId, location, activeContext });
+}
+
+export function removePaneLocation(ptyId: string): void {
+  paneCommandTargets.delete(ptyId);
+}
+
+export function getPaneCommandTarget(ptyId: string): PaneCommandTarget | undefined {
+  return paneCommandTargets.get(ptyId);
 }
 
 export function getBranch(ptyId: string): string | undefined {

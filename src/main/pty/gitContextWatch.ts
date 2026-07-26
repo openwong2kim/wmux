@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { toHostAccessiblePath } from '../../shared/sessionLocation';
+import {
+  hostCommandTarget,
+  preparePaneCommand,
+  type PaneCommandTarget,
+} from '../git/paneCommand';
 
 /**
  * X1 workspace-context sidebar — git branch tracking via fs.watch.
@@ -118,7 +124,17 @@ interface SessionWatch {
 export class GitContextWatcher extends EventEmitter {
   private sessions = new Map<string, SessionWatch>();
 
-  update(sessionId: string, cwd: string): void {
+  update(sessionId: string, input: PaneCommandTarget | string): void {
+    const target = typeof input === 'string'
+      ? { ...hostCommandTarget(input), sessionId }
+      : input;
+    const cwd = this.watchPath(sessionId, target);
+    if (!cwd) {
+      const existing = this.sessions.get(sessionId);
+      if (existing) this.teardown(existing);
+      this.sessions.delete(sessionId);
+      return;
+    }
     const existing = this.sessions.get(sessionId);
     const repo = resolveRepo(cwd);
 
@@ -137,6 +153,19 @@ export class GitContextWatcher extends EventEmitter {
     this.sessions.set(sessionId, watch);
     this.arm(sessionId, watch);
     this.readAndEmit(sessionId, watch);
+  }
+
+  private watchPath(sessionId: string, target: PaneCommandTarget): string | null {
+    if (target.sessionId !== sessionId) return null;
+    if (target.location.domain === 'host') return target.location.cwd;
+    // Reuse command preparation as the active-session/distro gate. The watcher
+    // itself uses the host-accessible UNC path and does not launch a subprocess.
+    if (!preparePaneCommand(target, 'git', ['rev-parse', '--git-dir']).ok) return null;
+    const location = target.location.distro
+      ? target.location
+      : { ...target.location, distro: target.activeContext?.distro };
+    const converted = toHostAccessiblePath(location, location.cwd);
+    return converted.ok ? converted.path : null;
   }
 
   remove(sessionId: string): void {
@@ -185,7 +214,12 @@ export class GitContextWatcher extends EventEmitter {
           watch.debounce = null;
           if (!watch.repo) {
             // `.git` may have just appeared — re-resolve and re-arm.
-            this.update(sessionId, watch.cwd);
+            // The watched host path is already resolved. Re-arm it without
+            // reconstructing a WSL execution context.
+            this.update(sessionId, {
+              sessionId,
+              location: { domain: 'host', cwd: watch.cwd, shell: '' },
+            });
             return;
           }
           this.readAndEmit(sessionId, watch);

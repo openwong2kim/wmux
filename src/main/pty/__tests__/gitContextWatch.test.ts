@@ -28,6 +28,10 @@ function makeWatcher(): GitContextWatcher {
   return w;
 }
 
+function host(cwd: string, sessionId = 's1') {
+  return { sessionId, location: { domain: 'host' as const, cwd, shell: 'pwsh.exe' } };
+}
+
 afterEach(() => {
   for (const w of watchers.splice(0)) w.dispose();
   for (const dir of tmpDirs.splice(0)) {
@@ -122,7 +126,7 @@ describe('GitContextWatcher', () => {
     initFakeRepo(root, 'main');
     const watcher = makeWatcher();
     const eventP = waitForEvent<{ sessionId: string; branch: string | null; isWorktree: boolean }>(watcher, 'git');
-    watcher.update('s1', root);
+    watcher.update('s1', host(root));
     const ev = await eventP;
     expect(ev).toEqual({ sessionId: 's1', branch: 'main', isWorktree: false });
   });
@@ -132,7 +136,7 @@ describe('GitContextWatcher', () => {
     initFakeRepo(root, 'main');
     const watcher = makeWatcher();
     const firstP = waitForEvent(watcher, 'git');
-    watcher.update('s1', root);
+    watcher.update('s1', host(root));
     await firstP;
 
     const secondP = waitForEvent<{ branch: string | null }>(watcher, 'git');
@@ -147,9 +151,9 @@ describe('GitContextWatcher', () => {
     const watcher = makeWatcher();
     const events: unknown[] = [];
     watcher.on('git', (e) => events.push(e));
-    watcher.update('s1', root);
-    watcher.update('s1', root);
-    watcher.update('s1', path.join(root)); // identical cwd
+    watcher.update('s1', host(root));
+    watcher.update('s1', host(root));
+    watcher.update('s1', host(path.join(root))); // identical cwd
     await new Promise((r) => setTimeout(r, 150));
     expect(events).toHaveLength(1);
   });
@@ -160,11 +164,11 @@ describe('GitContextWatcher', () => {
     const plain = tmp();
     const watcher = makeWatcher();
     const firstP = waitForEvent(watcher, 'git');
-    watcher.update('s1', root);
+    watcher.update('s1', host(root));
     await firstP;
 
     const secondP = waitForEvent<{ branch: string | null; isWorktree: boolean }>(watcher, 'git');
-    watcher.update('s1', plain);
+    watcher.update('s1', host(plain));
     const ev = await secondP;
     expect(ev.branch).toBeNull();
     expect(ev.isWorktree).toBe(false);
@@ -173,7 +177,7 @@ describe('GitContextWatcher', () => {
   it('picks up a git init in a previously non-repo cwd without polling', async () => {
     const root = tmp();
     const watcher = makeWatcher();
-    watcher.update('s1', root);
+    watcher.update('s1', host(root));
     await new Promise((r) => setTimeout(r, 100));
 
     const eventP = waitForEvent<{ branch: string | null }>(watcher, 'git');
@@ -186,9 +190,19 @@ describe('GitContextWatcher', () => {
     const root = tmp();
     initFakeRepo(root);
     const watcher = makeWatcher();
-    watcher.update('s1', root);
+    watcher.update('s1', host(root));
     expect(watcher.size).toBe(1);
     watcher.remove('s1');
+    expect(watcher.size).toBe(0);
+  });
+
+  it('rejects a WSL watch when active session context is stale', () => {
+    const watcher = makeWatcher();
+    watcher.update('s1', {
+      sessionId: 's1',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'stale', active: true, distro: 'Ubuntu' },
+    });
     expect(watcher.size).toBe(0);
   });
 });

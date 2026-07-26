@@ -10,6 +10,8 @@ import {
   removePorts,
   updateWorktree,
   removeWorktree,
+  getPaneCommandTarget,
+  removePaneLocation,
 } from '../ipc/handlers/metadata.handler';
 import { prStatusCache } from './PrStatusCache';
 import { gitSyncStatusCache } from './GitSyncStatusCache';
@@ -42,8 +44,9 @@ export class WorkspaceContextRouter {
    */
   private refreshPr(ptyId: string, branch: string): void {
     const cwd = getCwd(ptyId);
-    if (!cwd) return;
-    void prStatusCache.get(cwd, branch).then((pr) => {
+    const target = getPaneCommandTarget(ptyId);
+    if (!cwd || !target) return;
+    void prStatusCache.get(target, branch).then((pr) => {
       if (this.branchByPty.get(ptyId) !== branch) return;
       broadcastMetadataUpdate(this.getWindow(), { ptyId, pr });
     });
@@ -65,7 +68,8 @@ export class WorkspaceContextRouter {
         // HEAD moved (branch switch, commit, reset) — the cached dirty/
         // ahead-behind is stale; drop it so the next 5 s poll refetches.
         const cwd = getCwd(payload.sessionId);
-        if (cwd) gitSyncStatusCache.invalidate(cwd);
+        const target = getPaneCommandTarget(payload.sessionId);
+        if (cwd && target) gitSyncStatusCache.invalidate(target);
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           gitBranch: branch,
@@ -107,6 +111,7 @@ export class WorkspaceContextRouter {
       removeBranch(payload.sessionId);
       removeWorktree(payload.sessionId);
       removePorts(payload.sessionId);
+      removePaneLocation(payload.sessionId);
     };
 
     this.daemonClient.on('session:git', onGit);

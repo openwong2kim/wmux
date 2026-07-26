@@ -5,6 +5,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getGitExecEnv } from '../../shared/execEnv';
+import {
+  hostCommandTarget,
+  preparePaneCommand,
+  type PaneCommandTarget,
+} from './paneCommand';
 
 const execFileAsync = promisify(execFile);
 
@@ -14,10 +19,19 @@ export interface GitResult {
   readonly code: number;
 }
 
-export async function git(args: string[], cwd: string): Promise<GitResult> {
+export function prepareGitCommand(args: string[], input: PaneCommandTarget | string) {
+  const target = typeof input === 'string' ? hostCommandTarget(input) : input;
+  return preparePaneCommand(target, 'git', args);
+}
+
+export async function git(args: string[], input: PaneCommandTarget | string): Promise<GitResult> {
   try {
-    const { stdout, stderr } = await execFileAsync('git', args, {
-      cwd,
+    const command = prepareGitCommand(args, input);
+    if (!command.ok) {
+      return { stdout: '', stderr: command.error, code: 1 };
+    }
+    const { stdout, stderr } = await execFileAsync(command.file, command.args, {
+      ...(command.cwd ? { cwd: command.cwd } : {}),
       timeout: 30000,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024,

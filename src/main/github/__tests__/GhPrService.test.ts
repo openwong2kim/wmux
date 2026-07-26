@@ -189,6 +189,41 @@ describe('GhPrService — list TTL·detail updatedAt cache', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('no pull requests');
   });
+
+  it('isolates WSL distro caches and preserves structured argv/caps', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: LIST_JSON });
+    const svc = new GhPrService(() => 0, exec);
+    const ubuntu = {
+      sessionId: 'pty-u',
+      location: { domain: 'wsl' as const, cwd: '/repo with spaces', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-u', active: true as const, distro: 'Ubuntu' },
+    };
+    const debian = {
+      sessionId: 'pty-d',
+      location: { domain: 'wsl' as const, cwd: '/repo with spaces', shell: 'wsl.exe', distro: 'Debian' },
+      activeContext: { sessionId: 'pty-d', active: true as const, distro: 'Debian' },
+    };
+    await svc.listPrs('/repo with spaces', false, ubuntu);
+    await svc.listPrs('/repo with spaces', false, debian);
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec).toHaveBeenCalledWith(
+      'wsl.exe',
+      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo with spaces', '--exec']),
+      expect.objectContaining({ timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }),
+    );
+  });
+
+  it('fails soft without invoking wsl.exe for stale pane context', async () => {
+    const exec = vi.fn();
+    const svc = new GhPrService(() => 0, exec);
+    const result = await svc.listPrs('/repo', false, {
+      sessionId: 'pty-current',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-stale', active: true, distro: 'Ubuntu' },
+    });
+    expect(result.ok).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+  });
 });
 
 describe('parseRemoteHost / isGithubHost — provider routing inputs', () => {

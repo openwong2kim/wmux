@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { PrStatus } from '../../shared/types';
-import { normalizeWorktreePath } from '../../shared/workTask';
+import {
+  paneCommandIdentity,
+  preparePaneCommand,
+  hostCommandTarget,
+  type PaneCommandTarget,
+} from '../git/paneCommand';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,8 +29,8 @@ const execFileAsync = promisify(execFile);
  * poll's `get(cwd, branch)` created — otherwise `C:\a` vs `c:/a/` miss and the
  * stale 5-min entry survives (CX8). The raw cwd is still what `fetch` runs gh in.
  */
-function cacheKey(cwd: string, branch: string): string {
-  return `${normalizeWorktreePath(cwd)}\0${branch}`;
+function cacheKey(target: PaneCommandTarget, branch: string): string {
+  return `${paneCommandIdentity(target)}\0${branch}`;
 }
 
 const TTL_MS = 5 * 60 * 1000;
@@ -91,7 +96,7 @@ export class PrStatusCache {
     private exec: (
       cmd: string,
       args: string[],
-      opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean },
+      opts: { cwd?: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
     ) => Promise<{ stdout: string }> = execFileAsync,
   ) {}
 
@@ -101,9 +106,13 @@ export class PrStatusCache {
    * absence is the contract. `branch` is only a cache-key component; gh
    * itself resolves the PR from the checkout.
    */
-  async get(cwd: string, branch: string): Promise<PrStatus | null> {
+  async get(input: PaneCommandTarget | string, branch: string): Promise<PrStatus | null> {
+    const target = typeof input === 'string' ? hostCommandTarget(input) : input;
     if (this.ghAvailable === false) return null;
-    const key = cacheKey(cwd, branch);
+    if (!preparePaneCommand(target, process.platform === 'win32' ? 'gh.exe' : 'gh', ['pr', 'view']).ok) {
+      return null;
+    }
+    const key = cacheKey(target, branch);
     const entry = this.cache.get(key);
     const now = this.now();
     if (entry) {
@@ -111,7 +120,7 @@ export class PrStatusCache {
       if (now - entry.fetchedAt < TTL_MS) return entry.value;
     }
 
-    const pending = this.fetch(cwd)
+    const pending = this.fetch(target)
       .then((value) => {
         this.cache.set(key, { value, fetchedAt: this.now(), pending: null });
         return value;
@@ -130,8 +139,9 @@ export class PrStatusCache {
   }
 
   /** Drop a single cache entry (used when the branch changes so the next poll refetches). */
-  invalidate(cwd: string, branch: string): void {
-    this.cache.delete(cacheKey(cwd, branch));
+  invalidate(input: PaneCommandTarget | string, branch: string): void {
+    const target = typeof input === 'string' ? hostCommandTarget(input) : input;
+    this.cache.delete(cacheKey(target, branch));
   }
 
   clear(): void {
@@ -146,18 +156,26 @@ export class PrStatusCache {
     }
   }
 
-  private async fetch(cwd: string): Promise<PrStatus | null> {
+  private async fetch(target: PaneCommandTarget): Promise<PrStatus | null> {
     try {
-      const { stdout } = await this.exec(
-        process.platform === 'win32' ? 'gh.exe' : 'gh',
+      const executable = process.platform === 'win32' ? 'gh.exe' : 'gh';
+      const command = preparePaneCommand(
+        target,
+        executable,
         ['pr', 'view', '--json', 'number,state,isDraft,url,statusCheckRollup'],
+      );
+      if (!command.ok) return null;
+      const { stdout } = await this.exec(
+        command.file,
+        command.args,
         {
-          cwd,
+          ...(command.cwd ? { cwd: command.cwd } : {}),
           timeout: GH_TIMEOUT_MS,
           // Force non-interactive: gh must never block the metadata poll on
           // a login prompt or pager.
           env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
           windowsHide: true,
+          maxBuffer: 4 * 1024 * 1024,
         },
       );
       this.ghAvailable = true;

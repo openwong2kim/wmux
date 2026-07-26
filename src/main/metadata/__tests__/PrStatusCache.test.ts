@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PrStatusCache, mapGhPrView } from '../PrStatusCache';
 
+const host = (cwd: string, sessionId = 'pty-host') => ({
+  sessionId,
+  location: { domain: 'host' as const, cwd, shell: 'pwsh.exe' },
+});
+
 describe('mapGhPrView', () => {
   it('maps an open PR with passing checks', () => {
     expect(mapGhPrView({
@@ -63,34 +68,44 @@ describe('PrStatusCache', () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => now, exec);
 
-    const first = await cache.get('D:\\repo', 'main');
+    const first = await cache.get(host('D:\\repo'), 'main');
     expect(first?.number).toBe(7);
     expect(exec).toHaveBeenCalledTimes(1);
 
     now = 4 * 60 * 1000;
-    await cache.get('D:\\repo', 'main');
+    await cache.get(host('D:\\repo'), 'main');
     expect(exec).toHaveBeenCalledTimes(1); // still cached
 
     now = 6 * 60 * 1000;
-    await cache.get('D:\\repo', 'main');
+    await cache.get(host('D:\\repo'), 'main');
     expect(exec).toHaveBeenCalledTimes(2); // TTL expired
   });
 
-  it('keys the cache by cwd+branch', async () => {
+  it('keys the cache by domain+distro+cwd+branch', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => 0, exec);
-    await cache.get('D:\\a', 'main');
-    await cache.get('D:\\b', 'main');
-    await cache.get('D:\\a', 'feat');
-    expect(exec).toHaveBeenCalledTimes(3);
+    await cache.get(host('/repo'), 'main');
+    await cache.get({
+      sessionId: 'pty-u',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-u', active: true, distro: 'Ubuntu' },
+    }, 'main');
+    await cache.get({
+      sessionId: 'pty-d',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Debian' },
+      activeContext: { sessionId: 'pty-d', active: true, distro: 'Debian' },
+    }, 'main');
+    await cache.get(host('/repo'), 'feat');
+    expect(exec).toHaveBeenCalledTimes(4);
   });
 
   it('coalesces concurrent callers onto one gh subprocess', async () => {
     let resolve!: (v: { stdout: string }) => void;
     const exec = vi.fn().mockReturnValue(new Promise<{ stdout: string }>((r) => { resolve = r; }));
     const cache = new PrStatusCache(() => 0, exec);
-    const p1 = cache.get('D:\\repo', 'main');
-    const p2 = cache.get('D:\\repo', 'main');
+    const target = host('D:\\repo');
+    const p1 = cache.get(target, 'main');
+    const p2 = cache.get(target, 'main');
     resolve({ stdout: PR_JSON });
     const [a, b] = await Promise.all([p1, p2]);
     expect(exec).toHaveBeenCalledTimes(1);
@@ -101,25 +116,41 @@ describe('PrStatusCache', () => {
   it('"no PR" failures resolve null quietly and are cached', async () => {
     const exec = vi.fn().mockRejectedValue(Object.assign(new Error('no pull requests found'), { code: 1 }));
     const cache = new PrStatusCache(() => 0, exec);
-    expect(await cache.get('D:\\repo', 'main')).toBeNull();
-    expect(await cache.get('D:\\repo', 'main')).toBeNull();
+    expect(await cache.get(host('D:\\repo'), 'main')).toBeNull();
+    expect(await cache.get(host('D:\\repo'), 'main')).toBeNull();
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it('gh missing (ENOENT) disables the cache permanently for this process', async () => {
     const exec = vi.fn().mockRejectedValue(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }));
     const cache = new PrStatusCache(() => 0, exec);
-    expect(await cache.get('D:\\a', 'main')).toBeNull();
-    expect(await cache.get('D:\\b', 'other')).toBeNull();
+    expect(await cache.get(host('D:\\a'), 'main')).toBeNull();
+    expect(await cache.get(host('D:\\b'), 'other')).toBeNull();
     expect(exec).toHaveBeenCalledTimes(1); // never probed again
   });
 
   it('invalidate() forces a refetch before the TTL', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => 0, exec);
-    await cache.get('D:\\repo', 'main');
-    cache.invalidate('D:\\repo', 'main');
-    await cache.get('D:\\repo', 'main');
+    const target = host('D:\\repo');
+    await cache.get(target, 'main');
+    cache.invalidate(target, 'main');
+    await cache.get(target, 'main');
     expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps timeout/output caps and passes structured WSL argv', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => 0, exec);
+    await cache.get({
+      sessionId: 'pty-u',
+      location: { domain: 'wsl', cwd: '/repo with spaces', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-u', active: true, distro: 'Ubuntu' },
+    }, 'main');
+    expect(exec).toHaveBeenCalledWith(
+      'wsl.exe',
+      expect.arrayContaining(['--cd', '/repo with spaces', '--exec', process.platform === 'win32' ? 'gh.exe' : 'gh']),
+      expect.objectContaining({ timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }),
+    );
   });
 });

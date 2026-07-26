@@ -10,6 +10,12 @@ const removePorts = vi.fn();
 const updateWorktree = vi.fn();
 const removeWorktree = vi.fn();
 const getCwd = vi.fn();
+const removePaneLocation = vi.fn();
+const target = {
+  sessionId: 'pty-1',
+  location: { domain: 'host' as const, cwd: 'D:\\repo', shell: 'pwsh.exe' },
+};
+const getPaneCommandTarget = vi.fn();
 
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
   broadcastMetadataUpdate: (...args: unknown[]) => broadcastMetadataUpdate(...args),
@@ -21,6 +27,8 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
   updateWorktree: (...args: unknown[]) => updateWorktree(...args),
   removeWorktree: (...args: unknown[]) => removeWorktree(...args),
   getCwd: (...args: unknown[]) => getCwd(...args),
+  getPaneCommandTarget: (...args: unknown[]) => getPaneCommandTarget(...args),
+  removePaneLocation: (...args: unknown[]) => removePaneLocation(...args),
 }));
 
 const prGet = vi.fn();
@@ -46,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   prGet.mockResolvedValue(null);
   getCwd.mockReturnValue('D:\\repo');
+  getPaneCommandTarget.mockReturnValue(target);
 });
 
 describe('WorkspaceContextRouter', () => {
@@ -69,7 +78,7 @@ describe('WorkspaceContextRouter', () => {
     const { client } = makeRouter();
     client.emit('session:git', { sessionId: 'pty-1', data: { branch: 'feat', isWorktree: true } });
     await flush();
-    expect(prGet).toHaveBeenCalledWith('D:\\repo', 'feat');
+    expect(prGet).toHaveBeenCalledWith(target, 'feat');
     expect(broadcastMetadataUpdate).toHaveBeenCalledWith(null, { ptyId: 'pty-1', pr });
   });
 
@@ -132,6 +141,7 @@ describe('WorkspaceContextRouter', () => {
     expect(removeBranch).toHaveBeenCalledWith('pty-1');
     expect(removeWorktree).toHaveBeenCalledWith('pty-1');
     expect(removePorts).toHaveBeenCalledWith('pty-1');
+    expect(removePaneLocation).toHaveBeenCalledWith('pty-1');
   });
 
   it('stop() detaches all listeners', () => {

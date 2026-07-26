@@ -1,8 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GitSyncStatus } from '../../shared/types';
-import { normalizeWorktreePath } from '../../shared/workTask';
 import { getGitExecEnv } from '../../shared/execEnv';
+import {
+  paneCommandIdentity,
+  preparePaneCommand,
+  hostCommandTarget,
+  type PaneCommandTarget,
+} from '../git/paneCommand';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,7 +70,7 @@ export class GitSyncStatusCache {
     private exec: (
       cmd: string,
       args: string[],
-      opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
+      opts: { cwd?: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
     ) => Promise<{ stdout: string }> = execFileAsync,
   ) {}
 
@@ -73,8 +78,10 @@ export class GitSyncStatusCache {
    * Sync status for the repo containing `cwd`. Null on every failure path —
    * quiet absence is the contract (matches PrStatusCache).
    */
-  async get(cwd: string): Promise<GitSyncStatus | null> {
-    const key = normalizeWorktreePath(cwd);
+  async get(input: PaneCommandTarget | string): Promise<GitSyncStatus | null> {
+    const target = typeof input === 'string' ? hostCommandTarget(input) : input;
+    if (!preparePaneCommand(target, 'git', ['status']).ok) return null;
+    const key = paneCommandIdentity(target);
     const entry = this.cache.get(key);
     const now = this.now();
     if (entry) {
@@ -82,7 +89,7 @@ export class GitSyncStatusCache {
       if (now - entry.fetchedAt < TTL_MS) return entry.value;
     }
 
-    const pending = this.fetch(cwd)
+    const pending = this.fetch(target)
       .then((value) => {
         this.cache.set(key, { value, fetchedAt: this.now(), pending: null });
         return value;
@@ -101,8 +108,9 @@ export class GitSyncStatusCache {
   }
 
   /** Drop one entry so the next poll refetches (branch switch, post-commit). */
-  invalidate(cwd: string): void {
-    this.cache.delete(normalizeWorktreePath(cwd));
+  invalidate(input: PaneCommandTarget | string): void {
+    const target = typeof input === 'string' ? hostCommandTarget(input) : input;
+    this.cache.delete(paneCommandIdentity(target));
   }
 
   clear(): void {
@@ -117,13 +125,19 @@ export class GitSyncStatusCache {
     }
   }
 
-  private async fetch(cwd: string): Promise<GitSyncStatus | null> {
+  private async fetch(target: PaneCommandTarget): Promise<GitSyncStatus | null> {
     try {
-      const { stdout } = await this.exec(
+      const command = preparePaneCommand(
+        target,
         'git',
         ['--no-optional-locks', 'status', '--porcelain=v2', '--branch'],
+      );
+      if (!command.ok) return null;
+      const { stdout } = await this.exec(
+        command.file,
+        command.args,
         {
-          cwd,
+          ...(command.cwd ? { cwd: command.cwd } : {}),
           timeout: GIT_TIMEOUT_MS,
           env: { ...getGitExecEnv(), GIT_OPTIONAL_LOCKS: '0', NO_COLOR: '1' },
           windowsHide: true,

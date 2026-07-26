@@ -5,6 +5,7 @@ import {
   broadcastMetadataUpdate,
   onCwdUpdate,
   getCwd,
+  getPaneCommandTarget,
   updateBranch,
   removeBranch,
   updateWorktree,
@@ -47,7 +48,9 @@ export function startLocalContextWatch(
     if (branch) {
       const cwd = getCwd(ptyId);
       if (cwd) {
-        void prStatusCache.get(cwd, branch).then((pr) => {
+        const target = getPaneCommandTarget(ptyId);
+        if (!target) return;
+        void prStatusCache.get(target, branch).then((pr) => {
           if (branchByPty.get(ptyId) !== branch) return;
           broadcastMetadataUpdate(getWindow(), { ptyId, pr });
         });
@@ -67,7 +70,8 @@ export function startLocalContextWatch(
   const unsubCwd = onCwdUpdate((ptyId, cwd) => {
     // Only track PTYs this process actually owns — daemon-mode sessions
     // never reach this module (it is mounted only when daemonClient is null).
-    gitWatcher.update(ptyId, cwd);
+    const target = getPaneCommandTarget(ptyId);
+    if (target) gitWatcher.update(ptyId, target);
   });
 
   portWatcher.start();

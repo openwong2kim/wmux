@@ -24,6 +24,7 @@
 
 import type { PrStatus } from '../../shared/types';
 import type { PrListResult, PrDetailResult } from '../github/PrProvider';
+import type { PaneCommandTarget } from '../git/paneCommand';
 import type { WorkspaceResolver } from './PrCiRouter';
 
 /** How often one pane may hit the (cached) provider. The metadata poll ticks
@@ -35,8 +36,8 @@ const SNIPPET_CAP = 140;
 
 /** The provider slice this router needs (GhPrService satisfies it). */
 export interface ReviewProvider {
-  listPrs(repoPath: string, force?: boolean): Promise<PrListResult>;
-  prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult>;
+  listPrs(repoPath: string, force?: boolean, target?: PaneCommandTarget): Promise<PrListResult>;
+  prDetail(repoPath: string, number: number, updatedAt: string, target?: PaneCommandTarget): Promise<PrDetailResult>;
 }
 
 export interface PrReviewEmit {
@@ -98,7 +99,12 @@ export class PrReviewRouter {
    * Observe one pane's poll result. No PR (or no cwd context) drops the pane's
    * state so a future PR starts fresh. Throttled per pane; never throws.
    */
-  async note(ptyId: string, cwd: string, pr: PrStatus | null): Promise<void> {
+  async note(
+    ptyId: string,
+    cwd: string,
+    pr: PrStatus | null,
+    target?: PaneCommandTarget,
+  ): Promise<void> {
     if (!pr || typeof pr.number !== 'number') {
       this.panes.delete(ptyId);
       return;
@@ -115,7 +121,7 @@ export class PrReviewRouter {
     st.lastCheck = now; // sync write BEFORE any await — overlap guard
 
     try {
-      const list = await this.provider.listPrs(cwd);
+      const list = await this.provider.listPrs(cwd, false, target);
       if (!list.ok) return;
       const summary = list.prs.find((p) => p.number === pr.number);
       if (!summary) return; // PR closed/merged out of the open list — nothing to route
@@ -136,7 +142,7 @@ export class PrReviewRouter {
           }
         }
       }
-      const detail = await this.provider.prDetail(cwd, pr.number, summary.updatedAt);
+      const detail = await this.provider.prDetail(cwd, pr.number, summary.updatedAt, target);
       if (!detail.ok) return;
       const comments = detail.detail.comments;
       let maxCreated = '';

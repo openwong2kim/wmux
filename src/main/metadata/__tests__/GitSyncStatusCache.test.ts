@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GitSyncStatusCache, parsePorcelainV2 } from '../GitSyncStatusCache';
 
+const host = (cwd: string, sessionId = 'pty-host') => ({
+  sessionId,
+  location: { domain: 'host' as const, cwd, shell: 'pwsh.exe' },
+});
+
 describe('parsePorcelainV2', () => {
   it('parses ahead/behind and counts every dirty entry kind', () => {
     const stdout = [
@@ -53,32 +58,42 @@ describe('GitSyncStatusCache', () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => now, exec);
 
-    expect(await cache.get('D:\\repo')).toEqual({ dirty: 0, ahead: 1, behind: 0, hasUpstream: true });
+    expect(await cache.get(host('D:\\repo'))).toEqual({ dirty: 0, ahead: 1, behind: 0, hasUpstream: true });
     expect(exec).toHaveBeenCalledTimes(1);
 
     now = 10_000;
-    await cache.get('D:\\repo');
+    await cache.get(host('D:\\repo'));
     expect(exec).toHaveBeenCalledTimes(1); // still cached
 
     now = 20_000;
-    await cache.get('D:\\repo');
+    await cache.get(host('D:\\repo'));
     expect(exec).toHaveBeenCalledTimes(2); // TTL expired
   });
 
-  it('normalizes the cwd key (separators/trailing slash collapse onto one entry)', async () => {
+  it('isolates cache entries by domain and distro', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
-    await cache.get('D:\\repo');
-    await cache.get('D:/repo/');
-    expect(exec).toHaveBeenCalledTimes(1);
+    await cache.get(host('/repo'));
+    await cache.get({
+      sessionId: 'pty-ubuntu',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-ubuntu', active: true, distro: 'Ubuntu' },
+    });
+    await cache.get({
+      sessionId: 'pty-debian',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Debian' },
+      activeContext: { sessionId: 'pty-debian', active: true, distro: 'Debian' },
+    });
+    expect(exec).toHaveBeenCalledTimes(3);
   });
 
   it('coalesces concurrent callers onto one git subprocess', async () => {
     let resolve!: (v: { stdout: string }) => void;
     const exec = vi.fn().mockReturnValue(new Promise<{ stdout: string }>((r) => { resolve = r; }));
     const cache = new GitSyncStatusCache(() => 0, exec);
-    const p1 = cache.get('D:\\repo');
-    const p2 = cache.get('D:\\repo');
+    const target = host('D:\\repo');
+    const p1 = cache.get(target);
+    const p2 = cache.get(target);
     resolve({ stdout: CLEAN });
     const [a, b] = await Promise.all([p1, p2]);
     expect(exec).toHaveBeenCalledTimes(1);
@@ -88,17 +103,29 @@ describe('GitSyncStatusCache', () => {
   it('failures resolve null quietly and are cached for the TTL window', async () => {
     const exec = vi.fn().mockRejectedValue(new Error('not a git repository'));
     const cache = new GitSyncStatusCache(() => 0, exec);
-    expect(await cache.get('D:\\notrepo')).toBeNull();
-    expect(await cache.get('D:\\notrepo')).toBeNull();
+    expect(await cache.get(host('D:\\notrepo'))).toBeNull();
+    expect(await cache.get(host('D:\\notrepo'))).toBeNull();
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it('invalidate() forces a refetch before the TTL', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
-    await cache.get('D:\\repo');
-    cache.invalidate('D:/repo/');
-    await cache.get('D:\\repo');
+    const target = host('D:\\repo');
+    await cache.get(target);
+    cache.invalidate(target);
+    await cache.get(target);
     expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not invoke wsl.exe without the active pane context', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
+    const cache = new GitSyncStatusCache(() => 0, exec);
+    expect(await cache.get({
+      sessionId: 'pty-current',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-stale', active: true, distro: 'Ubuntu' },
+    })).toBeNull();
+    expect(exec).not.toHaveBeenCalled();
   });
 });
