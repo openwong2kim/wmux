@@ -128,7 +128,13 @@ describe('DaemonSessionManager', () => {
     expect(session.spawnCwd).toBe(os.tmpdir());
 
     const target = path.join(os.tmpdir(), 'somewhere-else');
-    lastMockPty?.simulateData(`\u001b]7;file://localhost${target}\u0007`);
+    // Build the URL the way real shells emit it (and parseOsc7Cwd expects it):
+    // a POSIX path rides after the host verbatim, a Windows drive path becomes
+    // "/C:/Users/..." — leading slash, forward slashes. Feeding the raw
+    // backslash path parses to nothing on Windows, failing the test there
+    // while it passes everywhere else.
+    const osc7Path = target.startsWith('/') ? target : '/' + target.replace(/\\/g, '/');
+    lastMockPty?.simulateData(`\u001b]7;file://localhost${osc7Path}\u0007`);
 
     const meta = manager.getSession('osc7')?.meta;
     expect(meta?.cwd).toBe(target);
