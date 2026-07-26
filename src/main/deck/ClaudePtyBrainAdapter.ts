@@ -484,6 +484,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // (WMUX_PIPE_NAME is NOT used: the bridge maps that override to the
     // daemon's `daemon.hooks.signal` method, which main does not serve.)
     env.WMUX_HOOKS_TO_MAIN = '1';
+    // The generated hook commands run the bridge with the Electron binary
+    // (nodePath defaults to process.execPath — the packaged app ships no bare
+    // node). Hooks inherit the SESSION env, and without this flag Electron
+    // launches as a GUI app instead of executing the script: the Stop signal
+    // silently never fires and the deck stays busy forever (dogfood
+    // 2026-07-26). Harmless for the claude binary itself and for non-Electron
+    // node paths; the MCP server child sets it per-server as well.
+    env.ELECTRON_RUN_AS_NODE = '1';
     // Marks the session as a brain pty for the pane-listing filter — a brain
     // is not a worker pane and must not appear in the fleet's pane list.
     env[ENV_KEYS.BRAIN_PTY] = '1';

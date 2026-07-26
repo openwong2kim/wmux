@@ -169,6 +169,9 @@ describe('scrubBrainSpawnEnv', () => {
       // where the brain-pty lane claims the signal.
       expect(env.WMUX_HOOKS_TO_MAIN).toBe('1');
       expect(env.WMUX_BRAIN_PTY).toBe('1');
+      // Hooks inherit the session env; without this the Electron-run bridge
+      // opens as a GUI app and the Stop signal never fires.
+      expect(env.ELECTRON_RUN_AS_NODE).toBe('1');
       adapter.dispose();
       await first;
     } finally {
