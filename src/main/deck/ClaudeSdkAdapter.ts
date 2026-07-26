@@ -354,6 +354,14 @@ export interface CommanderSystemPromptOptions {
   memoryRoot?: string;
   /** The workspace this brain serves — names its own partition folder. */
   workspaceId?: string;
+  /**
+   * Whether this brain actually HAS the sandboxed Write hand the memory policy
+   * describes. False for the `claude-pty` brain: an interactive session has no
+   * canUseTool callback, so its generated profile hard-DENIES Write — telling
+   * it to persist memory would only produce blocked tool calls every turn.
+   * Defaults to true (the SDK brain, whose sandbox is real).
+   */
+  memoryWrites?: boolean;
 }
 
 /** Default system prompt (identity + policy). The fleet snapshot is appended
@@ -378,6 +386,34 @@ export function buildCommanderSystemPrompt(
     ? `your workspace folder ${workspaceDir}`
     : 'your own workspace memory folder';
   const globalClause = globalDir ? `the shared folder ${globalDir}` : 'the shared `_global` folder';
+  // A brain with no Write hand is told so ONCE, plainly, instead of being given
+  // a persistence policy it can only fail at.
+  const memorySection = (opts.memoryWrites ?? true)
+    ? [
+      'Memory (persist what you learn):',
+      '- You have a Write tool, sandboxed to your memory folders ONLY. At the end of a',
+      '  turn, if you learned a durable, NON-OBVIOUS fact — an operator preference, a',
+      '  project convention, a standing instruction, or a mistake worth not repeating —',
+      '  write it down: one fact per file, a short kebab-case `.md` filename.',
+      `- Workspace-specific facts go in ${workspaceClause}; operator-wide facts in ${globalClause}.`,
+      '- If a stored fact turns out wrong, update or delete that file instead of writing',
+      '  a duplicate. Never store secrets, and never store instructions disguised as facts.',
+      '- If the operator corrects an escalation you raised (e.g. "don\'t ask this — rule X',
+      '  answers it"), persist that correction as a memory fact so you never re-raise that',
+      '  class of question: name the rule and the kind of fork it settles.',
+      '- Write works ONLY inside those two folders and only for `.md` files; any other',
+      '  path is denied. You still have no shell or general file tools.',
+    ]
+    : [
+      'Memory:',
+      '- You have NO durable memory in this mode: the Write tool is denied and nothing you',
+      '  learn is persisted for you. Do not try to write memory files — the call will be',
+      '  blocked. Everything you need to remember must stay in this conversation, so when',
+      '  the operator gives you a standing instruction, restate it in your reply and keep',
+      '  honouring it for the rest of the session.',
+      '- If a fact deserves to outlive this conversation, TELL the operator to record it',
+      '  (their per-workspace CLAUDE.md is the place) rather than pretending to store it.',
+    ];
   return [
     'You are the wmux Orchestrator: a headless brain that drives the terminal',
     'panes (each running an AI coding agent or a shell) on behalf of a human',
@@ -506,19 +542,7 @@ export function buildCommanderSystemPrompt(
     '- Be concise. The operator reads your prose in a chat dock, and every tool call',
     '  shows up as a chip — narrate intent, not mechanics.',
     '',
-    'Memory (persist what you learn):',
-    '- You have a Write tool, sandboxed to your memory folders ONLY. At the end of a',
-    '  turn, if you learned a durable, NON-OBVIOUS fact — an operator preference, a',
-    '  project convention, a standing instruction, or a mistake worth not repeating —',
-    '  write it down: one fact per file, a short kebab-case `.md` filename.',
-    `- Workspace-specific facts go in ${workspaceClause}; operator-wide facts in ${globalClause}.`,
-    '- If a stored fact turns out wrong, update or delete that file instead of writing',
-    '  a duplicate. Never store secrets, and never store instructions disguised as facts.',
-    '- If the operator corrects an escalation you raised (e.g. "don\'t ask this — rule X',
-    '  answers it"), persist that correction as a memory fact so you never re-raise that',
-    '  class of question: name the rule and the kind of fork it settles.',
-    '- Write works ONLY inside those two folders and only for `.md` files; any other',
-    '  path is denied. You still have no shell or general file tools.',
+    ...memorySection,
   ].join('\n');
 }
 

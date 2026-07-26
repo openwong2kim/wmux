@@ -377,6 +377,11 @@ export function registerDeckHandler(
         systemPrompt: buildCommanderSystemPrompt(undefined, {
           memoryRoot: getMemoryRootDir(),
           workspaceId,
+          // The terminal brain's generated profile hard-denies Write (an
+          // interactive session has no canUseTool sandbox to route it
+          // through), so it is told memory persistence is unavailable rather
+          // than handed a write policy it can only fail at.
+          memoryWrites: vendor !== 'claude-pty',
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),

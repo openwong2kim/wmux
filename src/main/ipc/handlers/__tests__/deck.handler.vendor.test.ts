@@ -205,3 +205,21 @@ describe('deck handler — embedded terminal hydration', () => {
     expect((await listBrainPtys()).ptyIds).toEqual({});
   });
 });
+
+describe('deck handler — the commander system prompt per vendor', () => {
+  it('tells a terminal brain that memory persistence is unavailable', async () => {
+    // The pty profile hard-denies Write, so the SDK brain's "you have a
+    // sandboxed Write tool" policy would only produce blocked calls.
+    await setVendor('claude-pty');
+    await send('ws-1');
+    const prompt = adapters[0].startOptions?.systemPrompt ?? '';
+    expect(prompt).toContain('You have NO durable memory in this mode');
+    expect(prompt).not.toContain('You have a Write tool');
+  });
+
+  it('keeps the Write/memory policy for the SDK brain', async () => {
+    await send('ws-2');
+    const prompt = adapters[0].startOptions?.systemPrompt ?? '';
+    expect(prompt).toContain('You have a Write tool');
+  });
+});
