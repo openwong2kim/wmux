@@ -337,6 +337,13 @@ export function runConfirmation({
   } catch (err) {
     unconfirmable(`could not parse '${retryJson}': ${err.message}`);
   }
+  // `JSON.parse('null')` succeeds, so a file holding `null` would reach the
+  // schemaVersion read below and throw a TypeError — escaping the
+  // UnconfirmableError contract and surfacing as a crash rather than the red
+  // this gate is supposed to keep. Same guard shape as `--current` uses.
+  if (retry === null || typeof retry !== 'object' || Array.isArray(retry)) {
+    unconfirmable(`'${retryJson}' is not a result object`);
+  }
 
   // The re-run has to be the same code and the same schema, or it is answering
   // a different question than the one the gate asked.

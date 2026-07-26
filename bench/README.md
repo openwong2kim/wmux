@@ -262,7 +262,7 @@ Two further properties are load-bearing:
   file is refused rather than deleted (clearing whatever sits at a mistyped path
   would turn a typo into data loss). Its original handle stays open through the
   bench: identity is captured from that handle with the full 64-bit `dev:ino`,
-  the path must still resolve to it afterwards, and the verdict parses bytes
+  the path must still resolve to it afterward, and the verdict parses bytes
   through the original handle rather than reopening the checked name. A name
   swap is therefore detected, and keeping the original open prevents a deleted
   inode from being reused to masquerade as the same file; a filesystem that
