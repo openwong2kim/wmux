@@ -21,7 +21,7 @@ import type { SkillCatalogEntry } from '../../../main/deck/skillCatalogScan';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import type { AgentModeApi } from './AgentModeChip';
 import type { DeckLoopApi } from './DeckLoopPanel';
-import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 
 const CADENCE_OPTIONS: { minutes: number; labelKey: string; fallback: string }[] = [
   { minutes: 0, labelKey: 'deck.loopCadenceOff', fallback: 'Events only' },
@@ -49,7 +49,6 @@ export function DeckLoopModal({
   api,
   workspaceId,
   location,
-  cwd,
   modeApi,
   onClose,
   onStarted,
@@ -57,10 +56,11 @@ export function DeckLoopModal({
 }: {
   api: DeckLoopApi;
   workspaceId?: string;
-  /** cwd for skill catalog scan (active pane) — without it only user-global entries appear. */
+  /** Active pane location — the skill catalog scan basis. Without it only
+   *  user-global entries appear. There is deliberately no bare-cwd fallback:
+   *  a cwd carries no shell, so classifying one would present a WSL/MSYS path
+   *  as host-native (issue #21 AC 6). */
   location?: SessionLocation;
-  /** Legacy/test fallback. Production callers provide `location`. */
-  cwd?: string;
   /** Workspace agent-mode reader (same bridge AgentModeChip uses). Injected so
    *  the modal can PREVIEW the loop's effective authority — a loop's real caps
    *  are min(modeCeiling, tier), and the press capability lives on the mode, not
@@ -105,16 +105,15 @@ export function DeckLoopModal({
   // Skill catalog — one scan when modal opens (read-only, fail-soft empty list).
   useEffect(() => {
     let alive = true;
-    const resolvedLocation = location ?? (cwd ? classifySessionLocation('', cwd) : undefined);
-    if (api.skills && resolvedLocation) {
-      api.skills(resolvedLocation).then((r) => {
+    if (api.skills && location) {
+      api.skills(location).then((r) => {
         if (alive) setCatalog(r.skills);
       }).catch(() => {});
     }
     return () => {
       alive = false;
     };
-  }, [api, cwd, location]);
+  }, [api, location]);
 
   useEffect(() => {
     objectiveRef.current?.focus();

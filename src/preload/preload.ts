@@ -653,7 +653,14 @@ const electronAPI = {
     },
   },
   git: {
-    status: (cwd: string) => ipcRenderer.invoke(IPC.GIT_STATUS, cwd) as Promise<string>,
+    /**
+     * `target` is either a bare cwd (every pre-location caller) or a parsed
+     * `SessionLocation`. Main validates it with `parseSessionLocation`, which
+     * accepts both, so a WSL/MSYS caller can keep its domain instead of
+     * flattening to a string main would read as a host path.
+     */
+    status: (target: string | import('../shared/sessionLocation').SessionLocation) =>
+      ipcRenderer.invoke(IPC.GIT_STATUS, target) as Promise<string>,
   },
   // J2 — diff review·hunk adopt. worktreePath is task worktree, targetHeadOid is
   // target HEAD at task branch point (drift gate material).

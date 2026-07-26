@@ -27,7 +27,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { DeckLoopModal } from './DeckLoopModal';
 import type { WorkspaceLoopState, LoopTier } from '../../../main/deck/deckLoopStateStore';
-import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 
 export interface DeckLoopApi {
   get: (workspaceId: string) => Promise<{
@@ -61,15 +61,12 @@ export interface DeckLoopApi {
 export function DeckLoopPanel({
   api,
   workspaceId,
-  cwd,
   location,
   t: tProp,
 }: {
   api?: DeckLoopApi;
   /** The workspace this deck view is bound to — the loop is per-workspace. */
   workspaceId?: string;
-  /** Active pane cwd — skill catalog scan basis for modal (optional). */
-  cwd?: string;
   /** Authoritative active pane location for project skill discovery. */
   location?: SessionLocation;
   t?: (key: string) => string;
@@ -246,7 +243,7 @@ export function DeckLoopPanel({
         <DeckLoopModal
           api={resolvedApi}
           workspaceId={workspaceId}
-          location={location ?? (cwd ? classifySessionLocation('', cwd) : undefined)}
+          location={location}
           modeApi={
             (window.electronAPI as unknown as { deck?: { mode?: import('./AgentModeChip').AgentModeApi } } | undefined)
               ?.deck?.mode

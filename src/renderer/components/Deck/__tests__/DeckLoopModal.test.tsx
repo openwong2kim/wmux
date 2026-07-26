@@ -70,7 +70,7 @@ describe('DeckLoopModal', () => {
         createElement(DeckLoopModal, {
           api,
           workspaceId: 'ws-1',
-          cwd: 'D:/proj',
+          location: { domain: 'host' as const, cwd: 'D:/proj', shell: 'pwsh.exe' },
           onClose: () => {},
           onStarted: () => {},
           ...over,
@@ -90,9 +90,23 @@ describe('DeckLoopModal', () => {
       distro: 'Ubuntu',
     };
 
-    await mount(api, { cwd: undefined, location });
+    await mount(api, { location });
 
     expect(skills).toHaveBeenCalledWith(location);
+  });
+
+  // A bare cwd carries no shell, so nothing can tell a WSL `/home/me/proj`
+  // from a host path. Fabricating `{ domain: 'host' }` there is what makes
+  // Windows resolve a guest path as `C:\home\me\proj` (issue #21 AC 6), so the
+  // modal scans nothing rather than scanning the wrong domain.
+  it('never fabricates a location from a bare cwd', async () => {
+    const api = fakeApi();
+    const skills = vi.fn(async () => ({ skills: CATALOG }));
+    api.skills = skills;
+
+    await mount(api, { location: undefined, cwd: '/home/me/proj' });
+
+    expect(skills).not.toHaveBeenCalled();
   });
 
   it('add steps·select skill suggestion·START payload carries steps/taskTexts', async () => {

@@ -72,4 +72,31 @@ describe('activeSessionLocation', () => {
       shell: 'pwsh.exe',
     });
   });
+
+  it('classifies the workspace fallback with the profile shell', () => {
+    const workspace = {
+      ...ws(leaf('p1', [], ''), 'p1'),
+      metadata: { cwd: '/home/me/proj' },
+      profile: { shell: 'wsl.exe' },
+    } as Workspace;
+
+    expect(activeSessionLocation(workspace)).toEqual({
+      domain: 'wsl',
+      cwd: '/home/me/proj',
+      shell: 'wsl.exe',
+    });
+  });
+
+  // WorkspaceProfile.shell is optional. Classifying with '' would make every
+  // guest cwd look host-native, and Windows would then resolve `/home/me/proj`
+  // as `C:\home\me\proj` (issue #21 AC 6). Declining is the only honest answer.
+  it('declines rather than guessing `host` when no shell is known', () => {
+    const workspace = {
+      ...ws(leaf('p1', [], ''), 'p1'),
+      metadata: { cwd: '/home/me/proj' },
+      profile: {},
+    } as Workspace;
+
+    expect(activeSessionLocation(workspace)).toBeNull();
+  });
 });
