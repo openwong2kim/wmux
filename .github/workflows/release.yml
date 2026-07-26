@@ -113,7 +113,7 @@ jobs:
           SETUP_SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
           $version  = $env:PKG_VERSION
-          $sha256   = ($env:SETUP_SHA256).ToLower()
+          $sha256   = "$env:SETUP_SHA256".ToLower()
           $setupExe = "wmux-$version.Setup.exe"
           $url      = "https://github.com/openwong2kim/wmux/releases/download/v$version/$setupExe"
           $manifest = [ordered]@{

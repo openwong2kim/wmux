@@ -32,7 +32,7 @@ function externalActionUses(text) {
   const uses = [];
   for (const [index, line] of text.split('\n').entries()) {
     const match =
-      /^\s*(?:-\s*)?(?:uses|"uses"|'uses'):\s*([^\s#]+)(?:\s+#\s*(.*))?$/.exec(
+      /^\s*(?:-\s*)?(?:uses|"uses"|'uses'):\s*([^\s#]+)(?:\s+#\s*(.*))?\s*$/.exec(
         line,
       );
     if (!match) continue;
@@ -114,12 +114,12 @@ describe('GitHub Actions workflow security contracts', () => {
     expect(runExpressionViolations(release.name, release.text)).toEqual([]);
   });
 
-  it('detects a mutable action tag', () => {
+  it('detects a mutable action tag even with trailing whitespace', () => {
     const ci = WORKFLOWS.find(({ name }) => name === 'ci.yml');
     expect(ci).toBeDefined();
     const mutated = ci.text.replace(
       /actions\/checkout@[0-9a-f]{40} # v4/,
-      'actions/checkout@v4',
+      'actions/checkout@v4 ',
     );
     expect(mutated).not.toBe(ci.text);
     expect(actionPinViolations(ci.name, mutated).join(' | ')).toContain(
