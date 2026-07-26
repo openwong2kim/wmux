@@ -9,7 +9,7 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
-import { ENV_KEYS } from '../../shared/constants';
+import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import type { PairRefusal } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
 import {
@@ -1327,17 +1327,23 @@ export class WebTerminalServer {
     /** Short program name (`pwsh`, `bash`) — what to call a pane with no agent. */
     shell?: string;
   }> {
-    return this.deps.sessionManager.listLiveSessions().map((s) => ({
-      id: s.id,
-      cwd: s.cwd,
-      cols: s.cols,
-      rows: s.rows,
-      state: s.state,
-      agent: s.agent?.displayName ?? s.lastDetectedAgent ?? null,
-      lastActivity: s.lastActivity,
-      ...workspaceLabelOf(s.env),
-      ...shellLabelOf(s.cmd),
-    }));
+    return this.deps.sessionManager.listLiveSessions()
+      // The orchestrator brain's own TUI is not a worker pane: it must not show
+      // up in the phone's pane list (nor be attachable/approvable from there),
+      // exactly as the fleet pane listing already excludes it. Same shared
+      // predicate — env marker first, id prefix as the fallback.
+      .filter((s) => !isBrainPty({ id: s.id, env: s.env }))
+      .map((s) => ({
+        id: s.id,
+        cwd: s.cwd,
+        cols: s.cols,
+        rows: s.rows,
+        state: s.state,
+        agent: s.agent?.displayName ?? s.lastDetectedAgent ?? null,
+        lastActivity: s.lastActivity,
+        ...workspaceLabelOf(s.env),
+        ...shellLabelOf(s.cmd),
+      }));
   }
 
   // --- pane diff (read-only git) -------------------------------------------
