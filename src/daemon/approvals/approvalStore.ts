@@ -110,6 +110,10 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (question) out.question = question;
   const options = sanitizeOptions(o['options']);
   if (options) out.options = options;
+  // Closed set of one: anything else on disk is dropped rather than passed
+  // through, so a hand-edited file cannot invent a risk level a client would
+  // then have to interpret.
+  if (o['risk'] === 'critical') out.risk = 'critical';
   return out;
 }
 

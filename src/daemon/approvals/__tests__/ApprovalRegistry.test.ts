@@ -568,6 +568,65 @@ describe('A4 — the question a request is asking', () => {
   });
 });
 
+describe('risk hint — a UI step-up signal, never a gate', () => {
+  it('flags a question that names a destructive action', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', {
+      question: 'Run `rm -rf build/` to clear the output?',
+    });
+
+    expect(h.registry.list().pending[0].risk).toBe('critical');
+    expect(h.events[0].request.risk).toBe('critical');
+  });
+
+  it('flags on an OPTION label too — the danger can live in the answer, not the question', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', {
+      question: 'How should I clean up?',
+      options: ['Leave it', 'DROP TABLE sessions'],
+    });
+
+    expect(h.registry.list().pending[0].risk).toBe('critical');
+  });
+
+  it('is absent — not null, not "safe" — on an ordinary question', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', {
+      question: 'Which approach should I take?',
+      options: ['Rewrite the parser', 'Patch the existing one'],
+    });
+
+    expect('risk' in h.registry.list().pending[0]).toBe(false);
+  });
+
+  it('★ never blocks an answer — a flagged request resolves like any other', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', { question: 'git push --force to main?' });
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toHaveLength(1);
+  });
+
+  it('survives a restart, and a hand-edited value outside the closed set is dropped', async () => {
+    const first = makeRegistry();
+    await awaitingInput(first.registry, 'pty-a', 'claude', { question: 'terraform destroy prod?' });
+
+    const second = makeRegistry();
+    await settle();
+    expect(second.registry.list().recentlyResolved[0].risk).toBe('critical');
+
+    const file = getApprovalStatePath(tmpDir);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    raw.requests[0].risk = 'apocalyptic';
+    fs.writeFileSync(file, JSON.stringify(raw), 'utf-8');
+
+    const third = makeRegistry();
+    expect(third.registry.list().recentlyResolved[0].risk).toBeUndefined();
+  });
+});
+
 describe('keystroke map v1', () => {
   it('claude maps approve to the first option and deny to ESC', () => {
     expect(keystrokesForAgent('claude')).toEqual({ approve: '1', deny: '\x1b' });
