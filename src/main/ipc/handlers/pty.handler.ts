@@ -1268,6 +1268,10 @@ export function registerPTYHandlers(
     exitCode: number | null;
     locationGeneration?: number;
   }) => void) | null = null;
+  let onDaemonSessionDestroyed: ((payload: {
+    sessionId: string;
+    locationGeneration?: number;
+  }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionDied = (payload) => {
       // P1-3 ordering rule: drain buffered output before the exit marker so
@@ -1290,6 +1294,19 @@ export function registerPTYHandlers(
       removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
+    onDaemonSessionDestroyed = (payload) => {
+      const retiredGeneration = payload.locationGeneration
+        ?? daemonLocations.get(payload.sessionId)?.generation;
+      if (retiredGeneration !== undefined) {
+        daemonLocations.retire(payload.sessionId, retiredGeneration);
+      }
+      sessionDecoders.delete(payload.sessionId);
+      clearSessionDataListener(payload.sessionId);
+      daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      removePidMapByPtyId(payload.sessionId);
+      removePaneLocation(payload.sessionId);
+    };
+    daemonClient.on('session:destroyed', onDaemonSessionDestroyed);
   }
 
   // X8 — supervised restart forwarder. A SEPARATE listener from session:died on
@@ -1393,6 +1410,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
+      }
+      if (onDaemonSessionDestroyed) {
+        daemonClient.removeListener('session:destroyed', onDaemonSessionDestroyed);
       }
       if (onDaemonSessionRestarted) {
         daemonClient.removeListener('session:restarted', onDaemonSessionRestarted);

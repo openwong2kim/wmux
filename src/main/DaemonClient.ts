@@ -555,11 +555,18 @@ export class DaemonClient extends EventEmitter {
           });
           break;
         }
-        case 'session.destroyed':
+        case 'session.destroyed': {
+          const data = event.data as { locationGeneration?: number } | null;
           // pty:dispose path — distinct from session.died (natural exit).
           // Notification router treats both the same: clear agentStatus.
-          this.emit('session:destroyed', { sessionId: event.sessionId });
+          this.emit('session:destroyed', {
+            sessionId: event.sessionId,
+            ...(data?.locationGeneration !== undefined
+              ? { locationGeneration: data.locationGeneration }
+              : {}),
+          });
           break;
+        }
         case 'session.restarted': {
           // X8 — the PaneSupervisor re-created this session under the same id
           // with a fresh PTY. pty.handler re-attaches via the existing

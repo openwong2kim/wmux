@@ -717,6 +717,7 @@ export class DaemonSessionManager extends EventEmitter {
     const managed = this.sessions.get(id);
     if (!managed) return;
 
+    const locationGeneration = managed.locationGeneration;
     this.locationEnricher.cancel(id);
     managed.bridge.cleanup();
     try {
@@ -725,7 +726,7 @@ export class DaemonSessionManager extends EventEmitter {
       /* already dead */
     }
     this.sessions.delete(id);
-    this.emit('session:destroyed', { id });
+    this.emit('session:destroyed', { id, locationGeneration });
   }
 
   deactivateSessionLocation(id: string): void {

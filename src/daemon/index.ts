@@ -3378,7 +3378,10 @@ function wireEvents(
 
   // A pane the user closes while a reclassification is pending must not get a
   // ghost died event 15s later.
-  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+  sessionManager.on('session:destroyed', (payload: {
+    id: string;
+    locationGeneration: number;
+  }) => {
     const t = interruptedTimers.get(payload.id);
     if (t) {
       clearTimeout(t);
@@ -3606,14 +3609,17 @@ function wireEvents(
   // Explicit destroy (pty:dispose path): distinct from session:died (natural
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).
-  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+  sessionManager.on('session:destroyed', (payload: {
+    id: string;
+    locationGeneration: number;
+  }) => {
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
-      data: null,
+      data: { locationGeneration: payload.locationGeneration },
     };
     pipeServer.broadcast(event);
   });

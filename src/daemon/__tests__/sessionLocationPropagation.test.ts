@@ -31,6 +31,27 @@ afterEach(() => {
 });
 
 describe('daemon session location propagation', () => {
+  it('carries the exact location generation on explicit destroy', () => {
+    const manager = new DaemonSessionManager();
+    managers.push(manager);
+    const destroyed = vi.fn();
+    manager.on('session:destroyed', destroyed);
+    manager.createSession({
+      id: 'destroyed-generation',
+      cmd: 'wsl.exe',
+      cwd: '/home/me',
+      location: { domain: 'wsl', cwd: '/home/me', shell: 'wsl.exe' },
+    });
+    const generation = manager.getLocationSnapshot('destroyed-generation')!.generation;
+
+    manager.destroySession('destroyed-generation');
+
+    expect(destroyed).toHaveBeenCalledWith({
+      id: 'destroyed-generation',
+      locationGeneration: generation,
+    });
+  });
+
   it('persists the distro carried by the actual child environment without enumeration', () => {
     const resolve = vi.fn<() => Promise<string | undefined>>();
     const manager = new DaemonSessionManager(resolve);
