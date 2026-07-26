@@ -44,7 +44,10 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
-import { classifySessionLocation } from '../../../shared/sessionLocation';
+import {
+  classifySessionLocation,
+  type SessionLocation,
+} from '../../../shared/sessionLocation';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -903,7 +906,14 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
-        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number; cwd?: string }>;
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+          id: string;
+          cmd: string;
+          state: string;
+          pid?: number;
+          cwd?: string;
+          location?: SessionLocation;
+        }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           // RCA A1 — permanent failure: the daemon authoritatively reports the
