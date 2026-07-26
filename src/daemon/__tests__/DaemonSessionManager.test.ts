@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // --- Mock node-pty -----------------------------------------------------------
 
@@ -113,6 +115,38 @@ describe('DaemonSessionManager', () => {
     expect(session.rows).toBe(24);
     expect(session.pid).toBe(12345);
     expect(session.createdAt).toBeTruthy();
+  });
+
+  it('★ records spawnCwd at creation, and OSC 7 moves cwd WITHOUT moving it', () => {
+    // meta.cwd follows the pane: the shell emits OSC 7 on every `cd` and the
+    // daemon records it. But ANY process in that pane can write those bytes —
+    // it is terminal output, not a privileged call — so anything that ACTS on a
+    // pane's directory (the web diff route) must read spawnCwd instead.
+    // Without this split, a hostile process in a pane could point a remote,
+    // read-only diff at any repository on the machine.
+    const session = manager.createSession({ id: 'osc7', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(session.spawnCwd).toBe(os.tmpdir());
+
+    const target = path.join(os.tmpdir(), 'somewhere-else');
+    lastMockPty?.simulateData(`\u001b]7;file://localhost${target}\u0007`);
+
+    const meta = manager.getSession('osc7')?.meta;
+    expect(meta?.cwd).toBe(target);
+    expect(meta?.spawnCwd).toBe(os.tmpdir());
+  });
+
+  it('resolves an OMITTED cmd to the default shell — the web spawn path relies on it', () => {
+    // `wmux web`'s POST /api/sessions names no command on purpose: the default
+    // shell is decided in exactly one place (platform tables, Store aliases,
+    // $SHELL) and a second copy of that decision would drift. It used to send
+    // `cmd: ''`, which reached the same branch only because resolveShellPath
+    // treats the empty string as falsy — one line elsewhere deciding an empty
+    // command is a request rather than a default, and it spawns nothing.
+    const omitted = manager.createSession({ id: 'no-cmd', cwd: '.' });
+    expect(omitted.cmd).toBeTruthy();
+    // Same answer for the empty string, so neither caller can be broken by the
+    // other's convention.
+    expect(manager.createSession({ id: 'empty-cmd', cmd: '', cwd: '.' }).cmd).toBe(omitted.cmd);
   });
 
   // Env resolution: the daemon trusts a supplied (main-resolved) env verbatim

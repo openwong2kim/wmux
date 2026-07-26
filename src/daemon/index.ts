@@ -1587,9 +1587,11 @@ function registerRpcHandlers(
    * with the whole `WMUX_*` namespace stripped) EXCEPT when a workspace is
    * named, in which case the identity is stamped back on afterwards — and the
    * human-readable workspace NAME is copied from a live sibling pane, since the
-   * daemon has no workspace registry of its own to look it up in. An id with no
-   * live sibling still spawns: refusing would mean the daemon deciding a
-   * workspace does not exist on the strength of a list it does not own.
+   * daemon has no workspace registry of its own to look it up in. That same
+   * live-sibling lookup is what the web layer validates the id against before
+   * it ever gets here — an id no live pane is running under is refused rather
+   * than stamped into a child's environment on the caller's say-so. See
+   * `rejectWorkspaceId` in WebTerminalServer for the trade-off that buys.
    */
   sessionLifecycle = {
     create: async ({ workspaceId, cwd }) => {
@@ -1608,12 +1610,15 @@ function registerRpcHandlers(
       }
       await createSessionRpc({
         id,
-        // Empty on purpose: `createSession` resolves an unset cmd to the
-        // daemon's configured default shell, which is the single choke point
-        // for that decision (platform tables, Store aliases, $SHELL). Naming a
-        // shell here would be a second copy of it. An unset cwd falls back to
+        // `cmd` is OMITTED, not empty-string. `createSession` resolves an unset
+        // cmd to the daemon's configured default shell, which is the single
+        // choke point for that decision (platform tables, Store aliases,
+        // $SHELL); naming a shell here would be a second copy of it. `''` took
+        // the same branch today only because `resolveShellPath` happens to
+        // treat it as falsy — one line elsewhere deciding that an explicitly
+        // requested empty command is a request rather than a default, and this
+        // spawns nothing at all. Say what is meant. An unset cwd falls back to
         // the home directory the same way.
-        cmd: '',
         ...(cwd ? { cwd } : {}),
         ...(env ? { env } : {}),
       });

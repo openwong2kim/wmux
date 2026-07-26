@@ -144,8 +144,16 @@ export class DaemonSessionManager extends EventEmitter {
 
   createSession(params: {
     id: string;
-    cmd: string;
-    cwd: string;
+    /**
+     * The command to run as the pane's root process. OPTIONAL: absent means
+     * "the daemon's configured default shell", which is resolved here so that
+     * the platform tables / Store aliases / $SHELL decision lives in exactly
+     * one place. Callers that want a default must OMIT this rather than pass
+     * `''` — see resolveShellPath.
+     */
+    cmd?: string;
+    /** Absent means the home directory. */
+    cwd?: string;
     /**
      * The child environment. When provided it is treated as AUTHORITATIVE and
      * replayed verbatim — the caller (main process) has already run
@@ -400,6 +408,12 @@ export class DaemonSessionManager extends EventEmitter {
       pid: ptyProcess.pid,
       cmd,
       cwd,
+      // Same value as `cwd` right now, and deliberately a second field: `cwd`
+      // is about to start tracking OSC 7 (see the bridge's 'cwd' handler) and
+      // will diverge the first time anything in the pane changes directory.
+      // Anything that ACTS on a pane's directory must read this one, which the
+      // pane's own process has no way to influence.
+      spawnCwd: cwd,
       env,
       cols,
       rows,
@@ -505,6 +519,9 @@ export class DaemonSessionManager extends EventEmitter {
       // write (and the renderer broadcast) fire on cd, not on every prompt —
       // keeps the immediate cwd persistence cheap (no write amplification).
       if (meta.cwd === payload.cwd) return;
+      // Only `cwd`. `meta.spawnCwd` stays at the spawn value on purpose — this
+      // payload originates in terminal output, which any process in the pane
+      // can write, so it may not move a directory anything acts on.
       meta.cwd = payload.cwd;
       // Forward across the daemon→main boundary so the renderer can live-update
       // the per-surface cwd (tab tooltip + "Working directories" menu). Without
