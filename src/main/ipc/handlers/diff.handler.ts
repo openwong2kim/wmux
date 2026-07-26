@@ -4,6 +4,19 @@
 //   synthesize untracked, and return with target snapshot (§2).
 // diff:applyHunks: snapshot drift gate → dirty rejection → per-hunk probe →
 //   selected-hunk single-patch all-or-nothing apply (§3). Per-target-repo mutex.
+//
+// Session locations (issue #21 AC 1). `worktreePath` here is host-native by
+// construction, so it needs no SessionLocation on the wire:
+//   • `diff:resolveRepo` is the ONLY entry that takes a raw pane cwd, and it
+//     touches disk exclusively through `git()` — i.e. `hostCommandTarget` →
+//     `prepareLocationCommand`, the shared choke point, which refuses a host
+//     location carrying a guest cwd (UNRESOLVED_GUEST_PATH). A guest pane
+//     therefore yields `{ ok: false }` and never mints a path.
+//   • Every `worktreePath` the renderer sends back is either that
+//     `rev-parse --show-toplevel` result (workspace mode) or a fan-out task's
+//     `worktreePath`, which TaskWorktreeManager builds with `path.resolve`/
+//     `path.join` on the host. Both are Windows paths on Windows, so the
+//     direct `lstat`/`readFile` on untracked files below is safe.
 import { ipcMain } from 'electron';
 import { readFile, lstat } from 'node:fs/promises';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -11,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join, isAbsolute, normalize, dirname } from 'node:path';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { git } from '../../git/git';
+import { git, resolveGitToplevel } from '../../git/git';
 import {
   parseUnifiedDiff,
   reassemblePatch,
@@ -158,10 +171,7 @@ async function readDiff(
   // workspace mode: target repo = self (cwd toplevel). Do not map to main repo via resolveTargetRepo.
   const targetRepoPath =
     mode === 'workspace'
-      ? await (async () => {
-          const r = await git(['rev-parse', '--show-toplevel'], worktreePath);
-          return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
-        })()
+      ? await resolveGitToplevel(worktreePath)
       : await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
     return { ok: false, error: 'Target repo not found (corrupt worktree?)', code: 'no-repo' };
@@ -478,8 +488,7 @@ export function registerDiffHandlers(): () => void {
         cwd: unknown,
       ): Promise<{ ok: true; repoPath: string } | { ok: false }> => {
         if (typeof cwd !== 'string' || !cwd) return { ok: false };
-        const r = await git(['rev-parse', '--show-toplevel'], cwd);
-        const top = r.code === 0 ? r.stdout.trim() : '';
+        const top = await resolveGitToplevel(cwd);
         return top ? { ok: true, repoPath: top } : { ok: false };
       },
     ),

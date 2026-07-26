@@ -121,6 +121,11 @@ export function readStopMessage(
   origin?: { ptyId: string; location: SessionLocation },
 ): AgentLastMessage | null {
   if (origin && signal.ptyId && signal.ptyId !== origin.ptyId) return null;
+  // Short-circuit, not a second source of truth: `prepareLocationCommand` is
+  // what decides a distro-less WSL location cannot be read, and returns
+  // `WSL_DISTRO_REQUIRED` so the read resolves null anyway. Returning here
+  // keeps a turn-end signal from entering the reader at all, which is what
+  // the "rejects WSL attribution without a distro" lock pins.
   if (origin?.location.domain === 'wsl' && !origin.location.distro) return null;
   const context = origin
     ? {

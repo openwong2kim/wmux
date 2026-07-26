@@ -440,3 +440,53 @@ describe('surfaceSlice.closeSurface — surfaceActivity cleanup (Fleet activity 
     expect(state.surfaceActivity['pty-2']).toBe('✎ keep.ts');
   });
 });
+
+// An editor surface has no cwd and no shell of its own, so its location has to
+// be decided when the surface is created — the render tree used to re-derive
+// it from an arbitrary sibling terminal on every paint, in two places.
+describe('surfaceSlice.addEditorSurface — the location is owned at creation', () => {
+  it('stores the location the opener resolved', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    const location = {
+      domain: 'wsl' as const,
+      cwd: '/home/me/proj',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+
+    slice.addEditorSurface(paneId, '/home/me/proj/README.md', location);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].location).toEqual(location);
+  });
+
+  it('resolves from the pane it opens in when the opener passes none', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'wsl.exe', '/home/me/proj');
+
+    slice.addEditorSurface(paneId, '/home/me/proj/README.md');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const editor = pane.surfaces.find((s) => s.surfaceType === 'editor')!;
+    expect(editor.location).toEqual({
+      domain: 'wsl',
+      cwd: '/home/me/proj',
+      shell: 'wsl.exe',
+    });
+  });
+
+  it('leaves the location unset when the pane has no classifiable surface', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addEditorSurface(paneId, '/home/me/proj/README.md');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].location).toBeUndefined();
+  });
+});

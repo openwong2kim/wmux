@@ -47,3 +47,18 @@ export async function git(args: string[], input: PaneCommandTarget | string): Pr
     };
   }
 }
+
+type GitRunner = (
+  args: string[],
+  input: PaneCommandTarget | string,
+) => Promise<GitResult>;
+
+/** Resolve a path or live pane target to its current checkout/worktree root. */
+export async function resolveGitToplevel(
+  input: PaneCommandTarget | string,
+  run: GitRunner = git,
+): Promise<string | null> {
+  const result = await run(['rev-parse', '--show-toplevel'], input);
+  const toplevel = result.code === 0 ? result.stdout.trim() : '';
+  return toplevel || null;
+}

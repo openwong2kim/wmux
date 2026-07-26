@@ -2,6 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { TaskPrService, type PrExec, type CreatePrInput } from '../TaskPrService';
+import { PrStatusCache } from '../../metadata/PrStatusCache';
 
 const VALID_PR = 'https://github.com/acme/widget/pull/42';
 
@@ -147,6 +148,40 @@ describe('J3 §2 normal one-click PR', () => {
     const upd = daemonCalls.find((c) => c.method === 'task.mission.update');
     expect(upd?.params.prUrl).toBe(VALID_PR);
     expect(invalidate).toHaveBeenCalledWith(INPUT.worktreePath, INPUT.branch);
+  });
+
+  // CX8 end to end, against the REAL cache: the metadata poll stores under the
+  // pane's PaneCommandTarget while PR creation invalidates with the raw
+  // worktree path string. The two must resolve to one entry or the stale
+  // 5-minute PR status survives the PR that was just created.
+  it('CX8 — invalidate evicts the poll’s entry across worktree-path spellings', async () => {
+    const { exec } = makeExec(happyBehavior);
+    const ghExec = vi.fn().mockResolvedValue({
+      stdout: JSON.stringify({ number: 42, state: 'OPEN', url: VALID_PR, statusCheckRollup: [] }),
+    });
+    const cache = new PrStatusCache(() => 0, ghExec);
+    const daemon = { rpc: vi.fn(async () => ({ ok: true })) };
+    const svc = new TaskPrService({ daemon, cache, exec });
+
+    const paneTarget = {
+      sessionId: 'pty-1',
+      location: { domain: 'host' as const, cwd: 'D:\\wt\\Task-1', shell: 'pwsh.exe' },
+    };
+    await cache.get(paneTarget, INPUT.branch);
+    expect(ghExec).toHaveBeenCalledTimes(1);
+    await cache.get(paneTarget, INPUT.branch);
+    expect(ghExec).toHaveBeenCalledTimes(1); // inside the 5-minute TTL
+
+    const res = await svc.createPr({ ...INPUT, worktreePath: 'd:/wt/task-1/' });
+    expect(res.ok).toBe(true);
+
+    await cache.get(paneTarget, INPUT.branch);
+    expect(ghExec).toHaveBeenCalledTimes(2); // evicted despite the different spelling
+
+    // Another branch in the same worktree keeps its own entry.
+    await cache.get(paneTarget, 'other');
+    await cache.get(paneTarget, 'other');
+    expect(ghExec).toHaveBeenCalledTimes(3);
   });
 
   it('F6 — repo view failure → explicit error without base guess (no pr create)', async () => {

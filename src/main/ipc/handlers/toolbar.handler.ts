@@ -1,6 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import { IPC } from '../../../shared/constants';
+import { parseSessionLocation } from '../../../shared/sessionLocation';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
 
@@ -19,9 +20,17 @@ function gitStatusPorcelain(cwd: string): Promise<string> {
 }
 
 export function registerToolbarHandlers(): () => void {
+  // The payload is a pane location (issue #21 AC 1): the toolbar's file
+  // explorer invokes this with the pane's own cwd, which on Windows may be a
+  // Git Bash `/c/...` or WSL `/home/...` path. `parseSessionLocation` accepts
+  // either a structured location or a bare cwd string (a host location), and
+  // `resolveAccessiblePath` converts it through the shared choke point — no
+  // path-domain sniffing happens here.
   ipcMain.removeHandler(IPC.GIT_STATUS);
-  ipcMain.handle(IPC.GIT_STATUS, wrapHandler(IPC.GIT_STATUS, async (_event: Electron.IpcMainInvokeEvent, cwd: string): Promise<string> => {
-    const resolved = await resolveAccessiblePath(cwd);
+  ipcMain.handle(IPC.GIT_STATUS, wrapHandler(IPC.GIT_STATUS, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<string> => {
+    const location = parseSessionLocation(raw);
+    if (!location) return '';
+    const resolved = await resolveAccessiblePath(location.cwd, location);
     if (!resolved) return '';
     return gitStatusPorcelain(resolved);
   }));

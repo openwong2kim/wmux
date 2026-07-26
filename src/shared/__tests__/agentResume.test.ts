@@ -27,8 +27,19 @@ describe('resumeBindingMatchesLocation', () => {
     const ubuntu = classifySessionLocation('wsl.exe', '/home/me/repo', 'Ubuntu');
     const debian = classifySessionLocation('wsl.exe', '/home/me/repo', 'Debian');
     const captured = binding({ cwd: ubuntu.cwd, locationIdentity: locationIdentity(ubuntu) });
-    expect(resumeBindingMatchesLocation(captured, debian.cwd, debian)).toBe(false);
-    expect(resumeBindingMatchesLocation(captured, ubuntu.cwd, ubuntu)).toBe(true);
+    expect(resumeBindingMatchesLocation(captured, debian.cwd, debian, 'linux')).toBe(false);
+    expect(resumeBindingMatchesLocation(captured, ubuntu.cwd, ubuntu, 'linux')).toBe(true);
+  });
+
+  it('matches a macOS identity using the renderer-provided platform', () => {
+    const pane = classifySessionLocation('zsh', '/Users/Alice/Repo');
+    const captured = binding({
+      cwd: pane.cwd,
+      locationIdentity: locationIdentity(pane, 'darwin'),
+    });
+
+    expect(resumeBindingMatchesLocation(captured, pane.cwd, pane, 'darwin')).toBe(true);
+    expect(resumeBindingMatchesLocation(captured, pane.cwd, pane, 'linux')).toBe(false);
   });
 });
 

@@ -41,6 +41,44 @@ describe('fs.handler security helpers', () => {
     expect(isSensitivePath(path.join(home, '.fmux', 'daemon-auth-token'))).toBe(true);
   });
 
+  it.each([
+    ['blocked directory', '.ssh', true],
+    ['blocked directory descendant', '.ssh/id_rsa', true],
+    ['blocked file', '.npmrc', true],
+    ['directory prefix neighbor', '.ssh-backup/id_rsa', false],
+    ['file prefix neighbor', '.npmrc.old', false],
+  ])('applies the same home-relative boundary to host and WSL: %s', (_name, relative, blocked) => {
+    const hostPath = path.join(home, ...relative.split('/'));
+    const wslPath = `/home/alice/${relative}`;
+    const wslLocation = {
+      domain: 'wsl' as const,
+      cwd: '/home/alice/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+
+    expect(isSensitivePath(hostPath)).toBe(blocked);
+    expect(isSensitivePath(wslPath, wslLocation)).toBe(blocked);
+    expect(isSensitivePath(
+      `\\\\wsl.localhost\\Ubuntu${wslPath.replace(/\//g, '\\')}`,
+      wslLocation,
+    )).toBe(blocked);
+  });
+
+  it('fails closed before conversion for a WSL namespace from another distro', async () => {
+    const mismatched = '\\\\wsl.localhost\\Debian\\home\\alice\\.ssh\\id_rsa';
+    const convert = vi.fn(() => ({ ok: true as const, path: mismatched }));
+
+    await expect(resolveAccessiblePath(
+      mismatched,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      convert,
+    )).resolves.toBeNull();
+
+    expect(convert).not.toHaveBeenCalled();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects a symlink whose canonical target is sensitive', async () => {
     realpathSpy.mockResolvedValue(path.join(home, '.ssh', 'id_rsa'));
 
@@ -84,6 +122,44 @@ describe('fs.handler security helpers', () => {
     expect(realpathSpy).toHaveBeenCalledWith(path.resolve(hostPath));
   });
 
+  it.each([
+    '/home/alice/.ssh/id_rsa',
+    '/home/alice/.aws/credentials',
+    '/root/.gnupg/private-keys-v1.d/key',
+    '/root/.fmux/daemon-auth-token',
+  ])('rejects a direct WSL home secret before conversion: %s', async (guestPath) => {
+    const convert = vi.fn(() => ({
+      ok: true as const,
+      path: `\\\\wsl.localhost\\Ubuntu${guestPath.replace(/\//g, '\\')}`,
+    }));
+
+    await expect(resolveAccessiblePath(
+      guestPath,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      convert,
+    )).resolves.toBeNull();
+
+    expect(convert).not.toHaveBeenCalled();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '\\\\wsl.localhost\\Ubuntu\\home\\alice\\.ssh\\id_rsa',
+    '\\\\wsl$\\Ubuntu\\root\\.npmrc',
+  ])('rejects a canonical WSL home secret reached through a link: %s', async (canonical) => {
+    const guestPath = '/home/alice/project/link';
+    const accessible = '\\\\wsl.localhost\\Ubuntu\\home\\alice\\project\\link';
+    realpathSpy.mockResolvedValue(canonical);
+
+    await expect(resolveAccessiblePath(
+      guestPath,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      vi.fn(() => ({ ok: true as const, path: accessible })),
+    )).resolves.toBeNull();
+
+    expect(realpathSpy).toHaveBeenCalledWith(path.resolve(accessible));
+  });
+
   it('fails softly when WSL conversion requires a missing distro', async () => {
     await expect(resolveAccessiblePath(
       '/home/me/project',
@@ -110,4 +186,31 @@ describe('fs.handler security helpers', () => {
     )).resolves.toEqual([]);
     expect(realpathSpy).toHaveBeenCalled();
   });
+
+  // Issue #21: `msys` is a legal wire domain. The handler used to re-declare
+  // the SessionLocation contract itself and reject it, so a Git Bash pane got
+  // an empty file tree.
+  it('accepts an MSYS location and converts its guest path', async () => {
+    const converted = path.resolve('C:\\dev\\proj');
+    realpathSpy.mockResolvedValue(converted);
+    vi.spyOn(fs.promises, 'readdir').mockResolvedValue([] as never);
+    registerFsHandlers();
+    const calls = vi.mocked(ipcMain.handle).mock.calls;
+    const readDir = calls.find(([channel]) => channel === 'fs:read-dir')?.[1];
+    expect(readDir).toBeTypeOf('function');
+
+    await expect(readDir!(
+      {} as Electron.IpcMainInvokeEvent,
+      {
+        path: '/c/dev/proj',
+        location: {
+          domain: 'msys',
+          cwd: '/c/dev/proj',
+          shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+      },
+    )).resolves.toEqual([]);
+    expect(realpathSpy).toHaveBeenCalledWith(converted);
+  });
+
 });

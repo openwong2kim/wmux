@@ -3,8 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
-import { toHostAccessiblePath, type SessionLocation } from '../../../shared/sessionLocation';
-import { isLinuxLikeCwd } from '../../../shared/wslCwd';
+import {
+  hostLocation,
+  parseSessionLocation,
+  toHostAccessiblePath,
+  toWslGuestPath,
+  type SessionLocation,
+} from '../../../shared/sessionLocation';
 import { wrapHandler } from '../wrapHandler';
 
 export interface FileEntry {
@@ -37,22 +42,37 @@ const BLOCKED_FILES = [
   '.fmux/daemon-auth-token',
 ];
 
-export function isSensitivePath(resolvedPath: string): boolean {
-  const home = os.homedir();
-  const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
-  const homeNorm = home.replace(/\\/g, '/').toLowerCase();
-
-  // Block directories under home
+function isBlockedHomeRelative(relativePath: string): boolean {
+  const normalized = relativePath.replace(/^\/+/, '').toLowerCase();
   for (const dir of BLOCKED_DIRS) {
-    const blocked = (homeNorm + '/' + dir).toLowerCase();
-    if (normalized.startsWith(blocked)) return true;
+    const blocked = dir.toLowerCase();
+    if (normalized === blocked || normalized.startsWith(`${blocked}/`)) return true;
+  }
+  return BLOCKED_FILES.some((file) => normalized === file.toLowerCase());
+}
+
+function homeRelativePath(
+  candidatePath: string,
+  guestPath: string | null,
+): string | null {
+  const normalized = candidatePath.replace(/\\/g, '/');
+  const home = os.homedir().replace(/\\/g, '/');
+  if (normalized.toLowerCase().startsWith(`${home.toLowerCase()}/`)) {
+    return normalized.slice(home.length + 1);
   }
 
-  // Block specific files in home
-  for (const file of BLOCKED_FILES) {
-    const blocked = (homeNorm + '/' + file).toLowerCase();
-    if (normalized === blocked) return true;
-  }
+  if (!guestPath) return null;
+  const userHome = /^\/home\/[^/]+(?:\/(.*))?$/i.exec(guestPath);
+  if (userHome) return userHome[1] ?? '';
+  const rootHome = /^\/root(?:\/(.*))?$/i.exec(guestPath);
+  return rootHome ? rootHome[1] ?? '' : null;
+}
+
+export function isSensitivePath(
+  resolvedPath: string,
+  location?: SessionLocation,
+): boolean {
+  const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
 
   // Block Windows credential stores
   if (process.platform === 'win32') {
@@ -60,7 +80,10 @@ export function isSensitivePath(resolvedPath: string): boolean {
     if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
   }
 
-  return false;
+  const guest = toWslGuestPath(location, resolvedPath);
+  if (!guest.ok && guest.error === 'WSL_DISTRO_MISMATCH') return true;
+  const homeRelative = homeRelativePath(resolvedPath, guest.ok ? guest.path : null);
+  return homeRelative !== null && isBlockedHomeRelative(homeRelative);
 }
 
 interface FileLocationRequest {
@@ -70,43 +93,42 @@ interface FileLocationRequest {
 
 type LocationPathOperation = typeof toHostAccessiblePath;
 
+/**
+ * Read the `{ path, location }` wire payload. The location contract itself is
+ * validated by `parseSessionLocation` — the ONE wire validator (issue #21) —
+ * so `msys` is accepted here like any other domain, and whether a host
+ * location's path is actually reachable is decided by `toHostAccessiblePath`
+ * rather than by a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff
+ * in this file.
+ */
 function readFileLocationRequest(raw: unknown): FileLocationRequest | null {
   if (typeof raw === 'string') {
-    if (!raw || (process.platform === 'win32' && isLinuxLikeCwd(raw))) return null;
-    return { path: raw, location: { domain: 'host', cwd: raw, shell: '' } };
+    const location = parseSessionLocation(raw);
+    return location ? { path: location.cwd, location } : null;
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const req = raw as { path?: unknown; location?: unknown };
   if (typeof req.path !== 'string' || !req.path) return null;
-  if (!req.location || typeof req.location !== 'object' || Array.isArray(req.location)) return null;
-  const location = req.location as Partial<SessionLocation>;
-  if (
-    (location.domain !== 'host' && location.domain !== 'wsl')
-    || typeof location.cwd !== 'string'
-    || !location.cwd
-    || typeof location.shell !== 'string'
-  ) return null;
-  if (location.domain === 'wsl' && location.distro !== undefined && typeof location.distro !== 'string') {
-    return null;
-  }
-  return { path: req.path, location: location as SessionLocation };
+  const location = parseSessionLocation(req.location);
+  return location ? { path: req.path, location } : null;
 }
 
 export async function resolveAccessiblePath(
   inputPath: string,
-  location: SessionLocation = { domain: 'host', cwd: inputPath, shell: '' },
+  location: SessionLocation = hostLocation(inputPath),
   convert: LocationPathOperation = toHostAccessiblePath,
 ): Promise<string | null> {
   if (!inputPath || typeof inputPath !== 'string') return null;
+  if (isSensitivePath(inputPath, location)) return null;
 
   const accessible = convert(location, inputPath);
   if (!accessible.ok) return null;
   const resolved = path.resolve(accessible.path);
-  if (isSensitivePath(resolved)) return null;
+  if (isSensitivePath(resolved, location)) return null;
 
   try {
     const canonical = await fs.promises.realpath(resolved);
-    if (isSensitivePath(canonical)) return null;
+    if (isSensitivePath(canonical, location)) return null;
     return canonical;
   } catch {
     return null;

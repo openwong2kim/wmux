@@ -11,6 +11,8 @@ import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
+import { sessionLocationForSurface } from '../../utils/focusedSurface';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -582,7 +584,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
               pane.activeSurfaceId = filtered[0]?.id ?? '';
             }
           }
+          // Backfill `location` on surfaces persisted before it existed.
+          //
+          // An editor surface carries `cwd: ''`, so it cannot classify itself;
+          // its location is set by whoever opened it. Sessions saved before
+          // that field existed have none, and a file-reading surface with no
+          // location reads nothing. Derive it once here — at the load-time
+          // migration seam that already handles legacy surface shapes — rather
+          // than at the render sites, where two copies of the same sibling scan
+          // is precisely the duplication this change removed.
+          const paneLocation = pane.surfaces
+            .map((candidate) => sessionLocationForSurface(candidate))
+            .find((location): location is SessionLocation => location !== null);
           for (const s of pane.surfaces) {
+            if (!s.location && !s.cwd && paneLocation) s.location = paneLocation;
             // Strip dangerous browserUrl schemes that could execute code on load
             if (s.browserUrl) {
               const normalized = s.browserUrl.trim().toLowerCase();

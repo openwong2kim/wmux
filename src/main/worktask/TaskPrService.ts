@@ -37,7 +37,16 @@ export interface PrDaemonPort {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Minimal PrStatusCache invalidation surface (injectable in tests). */
+/**
+ * Minimal PrStatusCache invalidation surface (injectable in tests).
+ *
+ * A raw worktree path is passed here while the metadata poll caches under the
+ * pane's `PaneCommandTarget`. Both resolve through `locationIdentity`
+ * (shared/sessionLocation.ts), so a differently-cased or differently-separated
+ * spelling of the same directory still evicts the poll's entry (CX8). Do not
+ * pre-normalize the path at this call site — that is what forked the key
+ * before.
+ */
 export interface PrCachePort {
   invalidate(cwd: string, branch: string): void;
 }

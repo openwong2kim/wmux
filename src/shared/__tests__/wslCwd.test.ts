@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { applyWslPromptIntegration, isWslShell, isLinuxLikeCwd, splitWslCwd } from '../wslCwd';
+import { applyWslPromptIntegration, isWslShell, isLinuxLikeCwd } from '../wslCwd';
+import { classifySessionLocation, preparePtyLocation } from '../sessionLocation';
 
 // Track B (WSL/Ubuntu cwd) — a Linux-style cwd handed to a WSL pane must
 // launch via `wsl.exe --cd <linuxpath>` rather than node-pty's `cwd` spawn
@@ -57,48 +58,45 @@ describe('isLinuxLikeCwd', () => {
   });
 });
 
-describe('splitWslCwd', () => {
+// The spawn-cwd split moved to shared/sessionLocation.ts so one computation
+// covers host, MSYS and WSL. These cases moved with it, unchanged in meaning.
+describe('preparePtyLocation (spawn cwd split)', () => {
   const home = 'C:\\Users\\geoffrey';
+  const split = (shell: string, cwd: string) =>
+    preparePtyLocation(classifySessionLocation(shell, cwd), home);
 
   it('splits an absolute Linux path under wsl.exe', () => {
-    expect(splitWslCwd('wsl.exe', '/home/x', home)).toEqual({
+    expect(split('wsl.exe', '/home/x')).toEqual({
       spawnCwd: home,
       prefixArgs: ['--cd', '/home/x'],
     });
   });
 
   it('passes a Windows path through unchanged under wsl.exe', () => {
-    expect(splitWslCwd('wsl.exe', 'C:\\Users\\x', home)).toEqual({
+    expect(split('wsl.exe', 'C:\\Users\\x')).toEqual({
       spawnCwd: 'C:\\Users\\x',
       prefixArgs: [],
     });
   });
 
-  it('passes a Linux path through unchanged under a non-WSL shell', () => {
-    expect(splitWslCwd('pwsh.exe', '/home/x', home)).toEqual({
+  it('passes a Linux path through unchanged under a non-WSL, non-MSYS shell', () => {
+    expect(split('pwsh.exe', '/home/x')).toEqual({
       spawnCwd: '/home/x',
       prefixArgs: [],
     });
   });
 
   it('splits a ~-relative path under wsl.exe', () => {
-    expect(splitWslCwd('wsl.exe', '~/p', home)).toEqual({
+    expect(split('wsl.exe', '~/p')).toEqual({
       spawnCwd: home,
       prefixArgs: ['--cd', '~/p'],
     });
   });
 
   it('splits a \\\\wsl.localhost\\ UNC path under wsl.exe', () => {
-    expect(splitWslCwd('wsl.exe', '\\\\wsl.localhost\\Ubuntu\\home\\x', home)).toEqual({
+    expect(split('wsl.exe', '\\\\wsl.localhost\\Ubuntu\\home\\x')).toEqual({
       spawnCwd: home,
       prefixArgs: ['--cd', '\\\\wsl.localhost\\Ubuntu\\home\\x'],
-    });
-  });
-
-  it('passes undefined cwd through unchanged', () => {
-    expect(splitWslCwd('wsl.exe', undefined, home)).toEqual({
-      spawnCwd: undefined,
-      prefixArgs: [],
     });
   });
 });

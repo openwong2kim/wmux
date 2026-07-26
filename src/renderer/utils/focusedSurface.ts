@@ -1,34 +1,57 @@
-import type { Workspace, Pane, PaneLeaf, Surface } from '../../shared/types';
-import { classifySessionLocation, type SessionLocation } from '../../shared/sessionLocation';
+import type { Workspace, Surface } from '../../shared/types';
+import {
+  classifySessionLocation,
+  locationsEqual,
+  parseSessionLocation,
+  resolveSessionLocation,
+  type SessionLocation,
+} from '../../shared/sessionLocation';
+import { findActiveLeaf } from './paneTraversal';
 
-/** Find the leaf pane matching the workspace's activePaneId. */
-export function findActiveLeaf(workspace: Workspace): PaneLeaf | null {
-  const walk = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === workspace.activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = walk(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  return walk(workspace.rootPane);
+export function reuseEquivalentSessionLocation(
+  previous: SessionLocation | undefined,
+  next: SessionLocation | undefined,
+  platform: NodeJS.Platform,
+): SessionLocation | undefined {
+  return previous && next && locationsEqual(previous, next, platform) ? previous : next;
 }
 
+/**
+ * The renderer's ONE surface→location derivation. Every file-reading surface
+ * (file tree, explorer popover, editor, deck skill scan) resolves through this
+ * or through `activeSessionLocation` below — hand-rolled pane walkers that
+ * re-spell `location ?? classify(...)` are how the two drifted apart.
+ *
+ * A stored location is authoritative even when the legacy surface cwd is
+ * empty. Surfaces with neither return null.
+ */
 export function sessionLocationForSurface(surface: Surface | undefined): SessionLocation | null {
-  if (!surface?.cwd) return null;
-  return surface.location ?? classifySessionLocation(surface.shell, surface.cwd);
+  if (!surface) return null;
+  const stored = parseSessionLocation(surface.location);
+  if (stored) return stored;
+  if (!surface.cwd) return null;
+  return resolveSessionLocation({
+    shell: surface.shell,
+    cwd: surface.cwd,
+  });
 }
 
 /** Authoritative filesystem location for the active surface, including a
  * classification fallback for sessions persisted before `location`. */
 export function activeSessionLocation(workspace: Workspace): SessionLocation | null {
-  const leaf = findActiveLeaf(workspace);
+  const leaf = findActiveLeaf(workspace.rootPane, workspace.activePaneId);
   const surface = leaf?.surfaces.find((candidate) => candidate.id === leaf.activeSurfaceId);
   const surfaceLocation = sessionLocationForSurface(surface);
   if (surfaceLocation) return surfaceLocation;
+  // Workspace-level fallback, for a workspace whose active pane holds no
+  // terminal yet. `WorkspaceProfile.shell` is optional, so retain a usable
+  // plain-host cwd without one. A shell-less guest cwd is classified as host
+  // here but stays fail-closed at the shared UNRESOLVED_GUEST_PATH guard before
+  // main or daemon performs Windows filesystem work.
+  const shell = workspace.profile?.shell ?? '';
   const cwd = workspace.metadata?.cwd ?? workspace.profile?.startupCwd;
   if (!cwd) return null;
-  return classifySessionLocation(workspace.profile?.shell ?? '', cwd);
+  return classifySessionLocation(shell, cwd);
 }
 
 /**
@@ -38,7 +61,7 @@ export function activeSessionLocation(workspace: Workspace): SessionLocation | n
  */
 export function focusedTerminalPtyId(workspace: Workspace | undefined): string | null {
   if (!workspace) return null;
-  const leaf = findActiveLeaf(workspace);
+  const leaf = findActiveLeaf(workspace.rootPane, workspace.activePaneId);
   if (!leaf) return null;
   const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   if (!surface) return null;

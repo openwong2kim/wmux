@@ -67,13 +67,21 @@ export interface RecoveryPane {
  * Panes whose ptyId no longer maps to a live pane are skipped.
  */
 export function buildRecoveryPanes(args: {
+  platform: NodeJS.Platform;
   resumeHintByPtyId: Record<string, AgentSlug>;
   resumeBindingByPtyId: Record<string, ResumeBinding>;
   ptyReadyByPtyId: Record<string, true>;
   workspaces: Workspace[];
   paneLabel: Record<string, string>;
 }): RecoveryPane[] {
-  const { resumeHintByPtyId, resumeBindingByPtyId, ptyReadyByPtyId, workspaces, paneLabel } = args;
+  const {
+    platform,
+    resumeHintByPtyId,
+    resumeBindingByPtyId,
+    ptyReadyByPtyId,
+    workspaces,
+    paneLabel,
+  } = args;
   const hintPtyIds = Object.keys(resumeHintByPtyId);
   if (hintPtyIds.length === 0) return [];
 
@@ -94,7 +102,7 @@ export function buildRecoveryPanes(args: {
         const cwdMatches = !!(
           binding &&
           surface.cwd &&
-          resumeBindingMatchesLocation(binding, surface.cwd, surface.location)
+          resumeBindingMatchesLocation(binding, surface.cwd, surface.location, platform)
         );
         const exact = cwdMatches && binding?.agent === agent;
         // Exact-session form restores the recorded permission mode on the SAME

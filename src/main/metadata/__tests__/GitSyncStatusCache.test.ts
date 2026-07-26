@@ -73,7 +73,7 @@ describe('GitSyncStatusCache', () => {
   it('isolates cache entries by domain and distro', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
-    await cache.get(host('/repo'));
+    await cache.get(host('D:\\repo'));
     await cache.get({
       sessionId: 'pty-ubuntu',
       location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
@@ -85,6 +85,18 @@ describe('GitSyncStatusCache', () => {
       activeContext: { sessionId: 'pty-debian', active: true, distro: 'Debian' },
     });
     expect(exec).toHaveBeenCalledTimes(3);
+  });
+
+  it('normalizes the cwd key (separator/trailing-slash/case variance collapse onto one entry)', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
+    const cache = new GitSyncStatusCache(() => 0, exec);
+    await cache.get(host('D:\\repo'));
+    await cache.get(host('D:/repo/'));
+    await cache.get(host('d:\\REPO'));
+    // A bare worktree path (the pre-location caller form) must land on the
+    // same entry the pane target created — locationIdentity owns the folding.
+    await cache.get('D:/Repo//');
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces concurrent callers onto one git subprocess', async () => {
@@ -108,13 +120,14 @@ describe('GitSyncStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
-  it('invalidate() forces a refetch before the TTL', async () => {
+  it('invalidate() forces a refetch before the TTL, across cwd spellings', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
-    const target = host('D:\\repo');
-    await cache.get(target);
-    cache.invalidate(target);
-    await cache.get(target);
+    await cache.get(host('D:\\repo'));
+    // Deliberately a DIFFERENT spelling of the same directory: an invalidate
+    // that only works on the identical object proves nothing about the key.
+    cache.invalidate('d:/repo/');
+    await cache.get(host('D:\\repo'));
     expect(exec).toHaveBeenCalledTimes(2);
   });
 

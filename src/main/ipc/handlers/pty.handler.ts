@@ -25,12 +25,10 @@ import {
   type SessionDataHandler,
 } from './sessionDataDispatcher';
 import {
-  getPaneCommandTarget,
   removePaneLocation,
   updateCwd,
   updatePaneLocation,
 } from './metadata.handler';
-import { isWslShell, isLinuxLikeCwd } from '../../../shared/wslCwd';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
@@ -46,8 +44,10 @@ import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import {
   classifySessionLocation,
+  resolveSessionLocation,
   type SessionLocation,
 } from '../../../shared/sessionLocation';
+import { isWslUncPath } from '../../../shared/wslCwd';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -208,15 +208,20 @@ const RESIZE_RETRY_DELAY_MS = 20;
  * Linux path, the UNC block would reject the legitimate `\\wsl$\...` /
  * `\\wsl.localhost\...` forms, and `fs.existsSync`/`fs.statSync` can never
  * see into the Linux filesystem from Windows. Bypass and return the cwd
- * unchanged — `splitWslCwd` (PTYManager / DaemonSessionManager) is what
- * actually turns it into a safe node-pty cwd + `wsl.exe --cd` prefix.
+ * unchanged — `preparePtyLocation` (PTYManager / DaemonSessionManager) is
+ * what actually turns it into a safe node-pty cwd + `wsl.exe --cd` prefix.
+ *
+ * Which domain a (shell, cwd) pair belongs to is not decided here: classifying
+ * it is the shared module's job, so a guest cwd is recognised for Git Bash as
+ * well as WSL rather than by a second local rule.
  */
-function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
+export function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
   if (!cwd) return undefined;
-  if (shell && isWslShell(shell) && isLinuxLikeCwd(cwd)) return cwd;
+  if (shell && classifySessionLocation(shell, cwd).domain !== 'host') return cwd;
   const resolved = path.resolve(cwd);
-  // Block UNC paths (e.g. \\server\share)
-  if (resolved.startsWith('\\\\')) return undefined;
+  // Block ordinary UNC paths; Windows exposes WSL filesystems through two
+  // host-accessible UNC namespaces that still receive the checks below.
+  if (resolved.startsWith('\\\\') && !isWslUncPath(resolved)) return undefined;
   if (!fs.existsSync(resolved)) return undefined;
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) return undefined;
@@ -342,15 +347,10 @@ export function registerPTYHandlers(
     daemonClient.on('session:flushComplete', onDaemonFlushComplete);
 
     onDaemonCwd = (payload: { sessionId: string; cwd: string }) => {
+      // updateCwd IS the pane's location: getPaneCommandTarget derives the
+      // pane's SessionLocation from this live feed (issue #21 I2), so there is
+      // nothing to mirror into a second store here.
       updateCwd(payload.sessionId, payload.cwd);
-      const target = getPaneCommandTarget(payload.sessionId);
-      if (target) {
-        updatePaneLocation(
-          payload.sessionId,
-          { ...target.location, cwd: payload.cwd },
-          target.activeContext,
-        );
-      }
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.CWD_CHANGED, payload.sessionId, payload.cwd);
@@ -549,9 +549,11 @@ export function registerPTYHandlers(
       };
       setSessionDataListener(sessionId, onSessionData);
 
-      // Register initial CWD
-      updateCwd(sessionId, effectiveCwd);
+      // Register the pane's identity BEFORE seeding its cwd: updateCwd fires
+      // the cwd listeners (localContextWatch's git watcher), and those read the
+      // pane's command target — which does not exist until the identity is in.
       updatePaneLocation(sessionId, sessionLocation);
+      updateCwd(sessionId, effectiveCwd);
 
       // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
       // (the session id). The owning workspace is resolved live downstream,
@@ -606,8 +608,9 @@ export function registerPTYHandlers(
       logCwdResolution(instance.id, options?.cwd, safeCwd);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
-      updateCwd(instance.id, actualCwd);
+      // Identity first, then the cwd — see the daemon-mode create path.
       updatePaneLocation(instance.id, classifySessionLocation(instance.shell, actualCwd));
+      updateCwd(instance.id, actualCwd);
       // Startup command: gate on the shell's first output (one-shot onData)
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
       // writes are always delivered locally, so the writer returns void.
@@ -932,15 +935,12 @@ export function registerPTYHandlers(
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
         if (session.cwd) {
+          const location = resolveSessionLocation({ ...session, cwd: session.cwd });
+          // Identity first, then the cwd — see the create path. The pane is
+          // live again from here, so its active-session context (and, for a
+          // bare `wsl.exe` pane, its distro) is derived, not reconstructed.
+          updatePaneLocation(id, location);
           updateCwd(id, session.cwd);
-          const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
-          updatePaneLocation(
-            id,
-            location,
-            location.domain === 'wsl' && location.distro
-              ? { sessionId: id, active: true, distro: location.distro }
-              : undefined,
-          );
         }
 
         // Set up data forwarding BEFORE attachSession, not after. attachSession

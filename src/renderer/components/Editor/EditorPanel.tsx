@@ -68,7 +68,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId, location }:
   const handleReload = useCallback(() => {
     setLoading(true);
     setError(null);
-    readFileContent(filePath).then((result) => {
+    readFileContent(filePath, location).then((result) => {
       if (result === null) {
         setError('Unable to read file');
         setContent(null);
@@ -78,7 +78,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId, location }:
       }
       setLoading(false);
     });
-  }, [filePath]);
+  }, [filePath, location]);
 
   return (
     <div

@@ -8,7 +8,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { getProjectConfigStore, type ProjectConfigState } from '../../project/ProjectConfigStore';
-import type { SessionLocation } from '../../../shared/sessionLocation';
+import { parseSessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
 
 const MAX_PATH_LEN = 4096;
 
@@ -57,23 +57,21 @@ export function registerProjectConfigHandlers(): () => void {
   };
 }
 
-function readLocation(raw: unknown): string | SessionLocation | null {
-  if (typeof raw === 'string') {
-    return raw.length > 0 && raw.length <= MAX_PATH_LEN ? raw : null;
-  }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const location = (raw as { location?: unknown }).location;
-  if (!location || typeof location !== 'object' || Array.isArray(location)) return null;
-  const candidate = location as Partial<SessionLocation>;
-  if (
-    (candidate.domain !== 'host' && candidate.domain !== 'wsl')
-    || typeof candidate.cwd !== 'string'
-    || candidate.cwd.length === 0
-    || candidate.cwd.length > MAX_PATH_LEN
-    || typeof candidate.shell !== 'string'
-  ) return null;
-  if (candidate.domain === 'wsl' && candidate.distro !== undefined && typeof candidate.distro !== 'string') {
-    return null;
-  }
-  return candidate as SessionLocation;
+/**
+ * Renderer payload → SessionLocation. The wire contract belongs to
+ * `parseSessionLocation` (issue #21 — it used to be re-declared here, and this
+ * copy rejected `msys`, so a Git Bash pane never got its project config).
+ *
+ * The only thing left here is the renderer-payload length cap, which is a
+ * resource guard on an untrusted string rather than part of the location
+ * contract.
+ */
+function readLocation(raw: unknown): SessionLocation | null {
+  const location = parseSessionLocation(
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as { location?: unknown }).location
+      : raw,
+  );
+  if (!location) return null;
+  return location.cwd.length <= MAX_PATH_LEN ? location : null;
 }

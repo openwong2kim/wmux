@@ -177,6 +177,11 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
   });
 
   it('blocks all configured executable extensions case-insensitively', async () => {
+    // Windows hosts normalize forward slashes to backslashes; POSIX hosts leave
+    // the input unchanged. Asserting the exact revealed path matters: a bare
+    // call-count assertion passes even when main reveals the WRONG folder.
+    const expectNormalized = (input: string) =>
+      process.platform === 'win32' ? input.replace(/\//g, '\\') : input;
     const samples = [
       '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1',
       '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi',
@@ -193,7 +198,23 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
         error: 'BLOCKED_EXTENSION',
       });
       expect(mockedElectron.__openPath).not.toHaveBeenCalled();
-      expect(mockedElectron.__showItemInFolder).toHaveBeenCalledOnce();
+      expect(mockedElectron.__showItemInFolder).toHaveBeenCalledWith(expectNormalized(input));
     }
+  });
+
+  it('allows non-executable extensions', async () => {
+    const input = process.platform === 'win32' ? 'C:\\foo.txt' : '/foo.txt';
+
+    await expect(invoke(input)).resolves.toEqual({ ok: true, error: undefined });
+    expect(mockedElectron.__openPath).toHaveBeenCalledWith(input);
+    expect(mockedElectron.__showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it('allows extension-less paths (folders)', async () => {
+    const input = process.platform === 'win32' ? 'C:\\Users\\rizz' : '/home/rizz';
+
+    await expect(invoke(input)).resolves.toEqual({ ok: true, error: undefined });
+    expect(mockedElectron.__openPath).toHaveBeenCalledWith(input);
+    expect(mockedElectron.__showItemInFolder).not.toHaveBeenCalled();
   });
 });

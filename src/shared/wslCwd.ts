@@ -38,6 +38,12 @@ export function isWslShell(cmd: string): boolean {
   return basename === 'wsl.exe' || basename === 'wsl';
 }
 
+/** True for the two UNC namespaces Windows exposes for WSL filesystems. */
+export function isWslUncPath(p: string): boolean {
+  const lower = p.toLowerCase();
+  return lower.startsWith('\\\\wsl$\\') || lower.startsWith('\\\\wsl.localhost\\');
+}
+
 const WSL_PROMPT_ENV_NAMES = ['WMUX_SHELL_INTEGRATION', 'WMUX_BASH_INIT', 'TERM'] as const;
 
 /**
@@ -94,23 +100,13 @@ export function applyWslPromptIntegration(
 export function isLinuxLikeCwd(p: string): boolean {
   if (!p) return false;
   if (p.startsWith('/') || p.startsWith('~')) return true;
-  const lower = p.toLowerCase();
-  return lower.startsWith('\\\\wsl$\\') || lower.startsWith('\\\\wsl.localhost\\');
+  return isWslUncPath(p);
 }
 
-/**
- * Split a resolved (shell, cwd) pair into what node-pty should actually
- * receive: a safe Windows `spawnCwd` plus any `prefixArgs` to prepend to the
- * spawn argv. Only WSL + a Linux-like cwd triggers the split; every other
- * combination passes the cwd through untouched.
+/*
+ * `splitWslCwd` used to live here. It computed a spawn cwd for WSL only,
+ * which meant an MSYS/Git Bash `/c/...` cwd was handed to node-pty verbatim
+ * and CreateProcess failed on it. PTY spawn preparation now delegates to
+ * `preparePtyLocation` in shared/sessionLocation.ts, which handles all three
+ * domains. This module keeps the pure predicates used by that computation.
  */
-export function splitWslCwd(
-  cmd: string,
-  cwd: string | undefined,
-  homeDir: string,
-): { spawnCwd: string | undefined; prefixArgs: string[] } {
-  if (cwd && isWslShell(cmd) && isLinuxLikeCwd(cwd)) {
-    return { spawnCwd: homeDir, prefixArgs: ['--cd', cwd] };
-  }
-  return { spawnCwd: cwd, prefixArgs: [] };
-}

@@ -27,6 +27,7 @@ import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf, PrStatus } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
+import { findActiveLeaf } from '../../utils/paneTraversal';
 
 // A workspace's review row — resolved repo + summed numstat, or the reason
 // there is nothing to review (no repo / clean / read error).
@@ -40,15 +41,6 @@ interface ReviewRow {
   additions: number;
   deletions: number;
   error: string | null;
-}
-
-function findActiveLeaf(root: Pane, activePaneId: string): PaneLeaf | null {
-  if (root.type === 'leaf') return root.id === activePaneId ? root : null;
-  for (const child of root.children) {
-    const found = findActiveLeaf(child, activePaneId);
-    if (found) return found;
-  }
-  return null;
 }
 
 /** First leaf fallback — a diff surface needs SOME leaf to mount on when the

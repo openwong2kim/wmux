@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import {
   PR_COMMENT_BODY_CAP,
   cliPath,
+  repoCacheKey,
   type PrProvider,
   type PrGate,
   type PrListResult,
@@ -22,6 +23,11 @@ import {
   type PrSummary,
   type PrComment,
 } from './PrProvider';
+import {
+  hostCommandTarget,
+  preparePaneCommand,
+  type PaneCommandTarget,
+} from '../git/paneCommand';
 
 const execFileAsync = promisify(execFile);
 
@@ -39,17 +45,10 @@ const GLAB_ENV: NodeJS.ProcessEnv = {
   NO_COLOR: '1',
 };
 
-// Cache key — filesystem case policy (same as gh path). POSIX keeps original form.
-function cacheKey(repoPath: string): string {
-  return process.platform === 'win32' || process.platform === 'darwin'
-    ? repoPath.toLowerCase()
-    : repoPath;
-}
-
 type Exec = (
   cmd: string,
   args: string[],
-  opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean },
+  opts: { cwd?: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean },
 ) => Promise<{ stdout: string }>;
 
 // ── GitLab REST payload mapping (pure, exported for tests) ─────────────────────────
@@ -150,21 +149,31 @@ export class GlabPrService implements PrProvider {
     private exec: Exec = execFileAsync,
   ) {}
 
-  private glab(args: string[], cwd: string): Promise<{ stdout: string }> {
-    return this.exec(process.platform === 'win32' ? 'glab.exe' : 'glab', args, {
-      cwd,
+  private glab(
+    args: string[],
+    repoPath: string,
+    target?: PaneCommandTarget,
+  ): Promise<{ stdout: string }> {
+    const command = preparePaneCommand(
+      target ?? hostCommandTarget(repoPath),
+      process.platform === 'win32' ? 'glab.exe' : 'glab',
+      args,
+    );
+    if (!command.ok) return Promise.reject(new Error(command.error));
+    return this.exec(command.file, command.args, {
+      ...(command.cwd ? { cwd: command.cwd } : {}),
       timeout: GLAB_TIMEOUT_MS,
       env: GLAB_ENV,
       windowsHide: true,
     });
   }
 
-  async gate(repoPath: string, host: string): Promise<PrGate> {
+  async gate(repoPath: string, host: string, target?: PaneCommandTarget): Promise<PrGate> {
     if (this.glabAvailable === false) {
       return { ok: false, reason: 'cli-missing', message: 'GitLab CLI (glab) is not installed' };
     }
     try {
-      await this.glab(['--version'], repoPath);
+      await this.glab(['--version'], repoPath, target);
       this.glabAvailable = true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.glabAvailable = false;
@@ -172,7 +181,7 @@ export class GlabPrService implements PrProvider {
     }
     try {
       // Per-host auth (self-hosted) — unauthenticated exits non-zero.
-      await this.glab(['auth', 'status', '--hostname', host], repoPath);
+      await this.glab(['auth', 'status', '--hostname', host], repoPath, target);
     } catch {
       return {
         ok: false,
@@ -184,15 +193,21 @@ export class GlabPrService implements PrProvider {
   }
 
   // force=true: manual refresh — skip TTL cache (same contract as gh path).
-  async listPrs(repoPath: string, force = false): Promise<PrListResult> {
-    const key = cacheKey(repoPath);
+  async listPrs(repoPath: string, force = false, target?: PaneCommandTarget): Promise<PrListResult> {
+    const prepared = target
+      ? preparePaneCommand(target, process.platform === 'win32' ? 'glab.exe' : 'glab', ['mr', 'list'])
+      : null;
+    if (prepared && !prepared.ok) {
+      return { ok: false, error: prepared.error };
+    }
+    const key = repoCacheKey(repoPath, target);
     const entry = this.listCache.get(key);
     const now = this.now();
     if (entry) {
       if (entry.pending) return entry.pending;
       if (!force && now - entry.fetchedAt < LIST_TTL_MS) return entry.value;
     }
-    const pending = this.fetchList(repoPath)
+    const pending = this.fetchList(repoPath, target)
       .then((value) => {
         this.listCache.set(key, { value, fetchedAt: this.now(), pending: null });
         return value;
@@ -211,18 +226,21 @@ export class GlabPrService implements PrProvider {
     return pending;
   }
 
-  private async fetchList(repoPath: string): Promise<PrListResult> {
+  private async fetchList(repoPath: string, target?: PaneCommandTarget): Promise<PrListResult> {
     try {
       // Raw REST MR array — glab mr list json output (open MRs by default).
       const { stdout } = await this.glab(
         ['mr', 'list', '--per-page', String(LIST_LIMIT), '--output', 'json'],
         repoPath,
+        target,
       );
       const arr = JSON.parse(stdout) as GlabMrItem[];
       const prs = (Array.isArray(arr) ? arr : [])
         .map(mapGlabMrItem)
         .filter((p): p is PrSummary => p !== null);
-      for (const p of prs) this.urlByIid.set(`${cacheKey(repoPath)}\0${p.number}`, p.url);
+      for (const p of prs) {
+        this.urlByIid.set(`${repoCacheKey(repoPath, target)}\0${p.number}`, p.url);
+      }
       return { ok: true, prs };
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
@@ -230,8 +248,19 @@ export class GlabPrService implements PrProvider {
     }
   }
 
-  async prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult> {
-    const key = `${cacheKey(repoPath)}\0${number}`;
+  async prDetail(
+    repoPath: string,
+    number: number,
+    updatedAt: string,
+    target?: PaneCommandTarget,
+  ): Promise<PrDetailResult> {
+    const prepared = target
+      ? preparePaneCommand(target, process.platform === 'win32' ? 'glab.exe' : 'glab', ['api'])
+      : null;
+    if (prepared && !prepared.ok) {
+      return { ok: false, error: prepared.error };
+    }
+    const key = `${repoCacheKey(repoPath, target)}\0${number}`;
     const cached = this.detailCache.get(key);
     if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;
     try {
@@ -239,6 +268,7 @@ export class GlabPrService implements PrProvider {
       const { stdout } = await this.glab(
         ['api', `projects/:id/merge_requests/${number}/notes?sort=asc&per_page=100`],
         repoPath,
+        target,
       );
       const notes = JSON.parse(stdout) as GlabNote[];
       const mrUrl = this.urlByIid.get(key) ?? '';

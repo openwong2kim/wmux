@@ -17,17 +17,26 @@ const execFileAsync = promisify(execFile);
  * cache with a 5 min TTL, and is silently absent when `gh` is not installed
  * or the branch has no PR. Never throws; never prompts (GH_PROMPT_DISABLED).
  *
- * Cache key is `cwd + branch` — the same branch checked out in two repos
- * (or two worktrees) resolves independently, while repeated lookups from
- * the metadata poll collapse onto one gh subprocess per TTL window.
+ * Cache key is `location identity + branch` — the same branch checked out in
+ * two repos, worktrees, domains, or WSL distributions resolves independently,
+ * while repeated lookups from the metadata poll collapse onto one gh
+ * subprocess per TTL window.
  */
 
 /**
- * Cache key = normalized cwd + NUL + branch. Normalizing the cwd (J3 F5) folds
- * Windows path-casing / separator / trailing-slash variance so a PR-creation
- * `invalidate(worktreePath, branch)` reliably hits the same entry the metadata
- * poll's `get(cwd, branch)` created — otherwise `C:\a` vs `c:/a/` miss and the
- * stale 5-min entry survives (CX8). The raw cwd is still what `fetch` runs gh in.
+ * Cache key = location identity + NUL + branch.
+ *
+ * The identity is computed by `paneCommandIdentity` → `locationIdentity`
+ * (shared/sessionLocation.ts). That shared identity helper separates
+ * host/msys/wsl (and WSL distros) and, for host
+ * paths, folds separator, duplicate-slash, trailing-slash and — on the
+ * case-insensitive filesystems — case variance. That folding is what makes a
+ * PR-creation `invalidate(worktreePath, branch)` hit the entry the metadata
+ * poll's `get(target, branch)` created; without it `C:\a` vs `c:/a/` miss and
+ * the stale 5-min entry survives (CX8). Nothing is normalized here — a second
+ * normalizer is exactly how the two spellings drifted apart before.
+ *
+ * The raw location is still what `fetch` runs gh in.
  */
 function cacheKey(target: PaneCommandTarget, branch: string): string {
   return `${paneCommandIdentity(target)}\0${branch}`;

@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 import {
   PR_COMMENT_BODY_CAP,
   cliPath,
+  repoCacheKey,
   type PrProvider,
   type PrGate,
   type PrListResult,
@@ -23,7 +24,6 @@ import {
 } from './PrProvider';
 import {
   hostCommandTarget,
-  paneCommandIdentity,
   preparePaneCommand,
   type PaneCommandTarget,
 } from '../git/paneCommand';
@@ -40,16 +40,6 @@ const MAX_ENTRIES = 128;
 // gh JSON stdout buffer cap — large review threads exceeded execFile default 1MB
 // before capBody (Codex P2). Individual bodies are re-capped below.
 const GH_MAX_BUFFER = 16 * 1024 * 1024;
-
-// Cache key — filesystem case policy (Codex P3). On POSIX (case-sensitive)
-// /src/Foo and /src/foo are different repos — lowercasing would mix caches.
-function cacheKey(repoPath: string, target?: PaneCommandTarget): string {
-  if (target) return paneCommandIdentity(target);
-  const normalized = process.platform === 'win32' || process.platform === 'darwin'
-    ? repoPath.toLowerCase()
-    : repoPath;
-  return `host\0${normalized}`;
-}
 
 const GH_ENV: NodeJS.ProcessEnv = {
   ...process.env,
@@ -277,7 +267,7 @@ export class GhPrService implements PrProvider {
     if (prepared && !prepared.ok) {
       return { ok: false, error: prepared.error };
     }
-    const key = cacheKey(repoPath, target);
+    const key = repoCacheKey(repoPath, target);
     const entry = this.listCache.get(key);
     const now = this.now();
     if (entry) {
@@ -340,7 +330,7 @@ export class GhPrService implements PrProvider {
     if (prepared && !prepared.ok) {
       return { ok: false, error: prepared.error };
     }
-    const key = `${cacheKey(repoPath, target)}\0${number}`;
+    const key = `${repoCacheKey(repoPath, target)}\0${number}`;
     const cached = this.detailCache.get(key);
     // unchanged updatedAt → skip comment re-fetch (key to rate-limit ceiling).
     if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;

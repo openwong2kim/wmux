@@ -11,13 +11,26 @@
 //  - remove: plain `git worktree remove` — git rejects dirty worktrees and surfaces
 //    stderr to user. --force not provided in v1 (careful principle).
 //  - All failures demoted to { ok:false, error } (fail-soft display surface).
+//
+// Session locations (issue #21 AC 1). Neither the list/add/remove nor the merge
+// session takes a SessionLocation, and none is needed:
+//   • `repoPath`/`sourcePath` arrive as raw cwds, but the only thing done with
+//     them is `resolveGitToplevel`, i.e. `git()` — `hostCommandTarget` →
+//     `prepareLocationCommand`, the shared choke point. A host location
+//     carrying a guest cwd is refused there (UNRESOLVED_GUEST_PATH), so a WSL
+//     or Git Bash pane degrades to 'not a git repository' rather than handing a
+//     guest path to a Windows API.
+//   • Every path used afterwards — `top`, `mainWt`, each `WorktreeEntry.path`,
+//     and the integration worktree — comes from `git worktree list --porcelain`
+//     or `rev-parse --show-toplevel` run through that same helper, so the
+//     `existsSync`/`mkdirSync`/`resolve` calls below are provably host-native.
 import { ipcMain } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { git } from '../../git/git';
+import { git, resolveGitToplevel } from '../../git/git';
 import {
   parseWorktreePorcelain,
   validateGitRef,
@@ -89,12 +102,6 @@ function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // cwd (subdir allowed) → own worktree toplevel. null if not git.
-async function resolveToplevel(cwd: string): Promise<string | null> {
-  const r = await git(['rev-parse', '--show-toplevel'], cwd);
-  const top = r.code === 0 ? r.stdout.trim() : '';
-  return top || null;
-}
-
 // Path normalization — reflect filesystem case policy (Codex P2). Windows/macOS are
 // case-insensitive → lowercase; POSIX (case-sensitive) keeps original so
 // `/repo/Foo` and `/repo/foo` are correctly distinct worktrees.
@@ -112,7 +119,7 @@ async function resolveMainWorktree(top: string): Promise<string> {
 }
 
 async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
-  const top = await resolveToplevel(repoPath);
+  const top = await resolveGitToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
@@ -140,7 +147,7 @@ async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMu
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-  const top = await resolveToplevel(repoPath);
+  const top = await resolveGitToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
   // Path derivation basis = main worktree (Codex P2). When opened from linked worktree,
   // top was that worktree itself, producing `<linked>-worktrees` bug.
@@ -176,7 +183,7 @@ async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMu
 }
 
 async function removeWorktree(repoPath: string, worktreePath: string): Promise<WorktreeMutateResult> {
-  const top = await resolveToplevel(repoPath);
+  const top = await resolveGitToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
   // Renderer path comes from prior list result, but re-validate against actual
   // worktree list (block arbitrary path args).
@@ -279,7 +286,7 @@ function kickVerify(s: MergeSessionState): void {
 type MergeCtx = { top: string; mainWt: string; repoKey: string; entries: WorktreeEntry[] };
 
 async function resolveMergeContext(repoPath: string): Promise<MergeCtx | { error: string }> {
-  const top = await resolveToplevel(repoPath);
+  const top = await resolveGitToplevel(repoPath);
   if (!top) return { error: 'not a git repository' };
   const listed = await git(['worktree', 'list', '--porcelain'], top);
   if (listed.code !== 0) return { error: listed.stderr.slice(0, 300) };
@@ -311,7 +318,7 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
     if (!pre.ok) return { ok: false, error: pre.error };
 
     // source worktree → capture OID (not moving branch name) + branch name (if any).
-    const sourceTop = await resolveToplevel(sourcePath);
+    const sourceTop = await resolveGitToplevel(sourcePath);
     if (!sourceTop) return { ok: false, error: 'Source is not a git worktree' };
     // Re-validate against this repo's worktree list (like removeWorktree) — the
     // renderer must not be able to inject an arbitrary git repo path as source.

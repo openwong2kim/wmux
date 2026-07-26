@@ -56,7 +56,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { classifySessionLocation, locationIdentity, resolveReplayLocation } from '../shared/sessionLocation';
+import { locationIdentity, resolveReplayLocation, resolveSessionLocation } from '../shared/sessionLocation';
 import { transcriptFileLives } from '../main/claude/lastAssistantMessage';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
@@ -506,7 +506,7 @@ function bindingTranscriptLives(
   if (!binding) return false;
   if (!binding.transcriptPath) return true;
   if (!session) return transcriptFileLives(binding.transcriptPath);
-  const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+  const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
   return transcriptFileLives(binding.transcriptPath, {
     location,
     activeSession: {
@@ -714,7 +714,12 @@ function ingestResumeSpool(
     // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
     // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
     // Normalized compare so a drive-case / trailing-slash diff isn't a false miss.
-    if (!resumeBindingMatchesLocation(binding, managed.meta.cwd, managed.meta.location)) { drop(); continue; }
+    if (!resumeBindingMatchesLocation(
+      binding,
+      managed.meta.cwd,
+      managed.meta.location,
+      process.platform,
+    )) { drop(); continue; }
     const prev = managed.meta.resumeBinding;
     // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
     // wins (ts tiebreak). For the SAME conversation the spool is redundant — its
@@ -1289,7 +1294,11 @@ async function recoverSessions(
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
     // the pill to the cwd-relative `--continue`.
-    if (m.resumeBinding && resumeBindingMatchesLocation(m.resumeBinding, m.cwd, m.location) && bindingTranscriptLives(m.resumeBinding, m)) {
+    if (
+      m.resumeBinding
+      && resumeBindingMatchesLocation(m.resumeBinding, m.cwd, m.location, process.platform)
+      && bindingTranscriptLives(m.resumeBinding, m)
+    ) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
@@ -2054,8 +2063,11 @@ function registerRpcHandlers(
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
     if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
-    const sessionLocation = managed.meta.location
-      ?? classifySessionLocation(managed.meta.cmd, managed.meta.cwd);
+    const sessionLocation = resolveSessionLocation({
+      cmd: managed.meta.cmd,
+      cwd: managed.meta.cwd,
+      location: managed.meta.location,
+    });
     const p = {
       id,
       resumeBinding: {
@@ -3454,8 +3466,11 @@ function wireEvents(
         ...arbitration,
         ...(eventSession
           ? {
-              location: eventSession.meta.location
-                ?? classifySessionLocation(eventSession.meta.cmd, eventSession.meta.cwd),
+              location: resolveSessionLocation({
+                cmd: eventSession.meta.cmd,
+                cwd: eventSession.meta.cwd,
+                location: eventSession.meta.location,
+              }),
             }
           : {}),
       },
@@ -3576,7 +3591,7 @@ function wireContextWatchers(
     sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
   );
   const commandTargetFor = (session: DaemonSession) => {
-    const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+    const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
     return {
       sessionId: session.id,
       location,

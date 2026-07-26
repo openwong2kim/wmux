@@ -13,7 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Session-location edge cases no longer send panes or filesystem work to the wrong place.** Stored pane locations remain authoritative even when a legacy cwd field is empty, shell-less Windows workspaces keep their host cwd, both WSL UNC namespaces pass host validation, overlapping WSL distribution names resolve to the longest match, and an unconvertible Git Bash recovery path is reported as degraded instead of silently appearing to recover in the Windows home directory.
+
 - **Host, Git Bash, and WSL sessions now keep their filesystem operations in the pane's own location.** Session recovery, project discovery, file browsing, Git and GitHub commands, transcript reads, and terminal path links share one domain-aware path model, so Linux paths are no longer mistaken for Windows paths and identical paths in different WSL distributions no longer share cache or resume identities.
+
+- **WSL panes now resolve their distribution, so the features that depend on it actually run.** A pane opened with `wsl.exe` knew it was a WSL pane but never learned *which* distribution it belonged to, and every feature that needs to reach into the guest filesystem refused to guess: the file tree came back empty, project configuration and project skills were not discovered, the Git branch and PR chips stayed blank, and terminal path links would not open. Those features now work from the first moment a WSL pane exists rather than only after an app restart, and two panes in different distributions with the same path no longer share a cache entry.
+
+- **Git Bash panes can browse files, discover project configuration, and load project skills again.** A pane whose shell reports an MSYS-style path such as `/c/dev/project` was rejected by the file-reading services as an unrecognised location, so its file tree was empty and its project skills never loaded. A Git Bash session that was interrupted and recovered also failed to restart, because its saved directory was handed to Windows unconverted.
+
+- **The Git branch, PR, and dirty-file indicators follow the pane when you change directory.** On macOS and Linux — and in any run without the background daemon — `cd` into another repository left the sidebar showing the original repository's branch, ahead/behind counts, and pull-request chip indefinitely, and the file watcher stayed pointed at the old repository.
+
+- **Reloading a file in the editor works again.** The Reload button always reported "Unable to read file" regardless of platform or which file was open.
+
+- **The Deck pull-request panel and the pane indicators no longer each run their own `gh` query for the same repository.** They addressed one repository two different ways, so each kept a separate cache entry and neither benefited from the other's result. Pull-request state also refreshes reliably right after you create a PR, rather than serving a stale entry for up to five minutes when the recorded path differed only by capitalisation or slash direction.
+
+- **A WSL agent pane no longer stalls the background daemon.** Checking whether an agent transcript still exists ran a blocking command inside the guest on every status poll, so several WSL agent panes together could hold up terminal output and every other request for a noticeable fraction of a second at a time, repeatedly.
 
 - **Automatic updates no longer wait on Electron's stale release-discovery cache.** Forge Mux now reads its version, installer URL, and SHA-256 directly from the latest GitHub release manifest, compares that version locally using SemVer, and downloads the already hash-pinned installer when it is newer. Background and manual checks therefore see a release as soon as GitHub publishes its manifest instead of accepting a cached `204 No Content` response as "up to date."
 

@@ -6,8 +6,9 @@ import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
-import { classifySessionLocation } from '../../../shared/sessionLocation';
+import { resolveSessionLocation } from '../../../shared/sessionLocation';
 import type { SessionLocation } from '../../../shared/sessionLocation';
+import { sessionLocationForSurface } from '../../utils/focusedSurface';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -136,6 +137,15 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       return;
     }
     const fileName = filePath.split(/[/\\]/).pop() || filePath;
+    // Sole owner of an editor surface's location. The surface itself has no
+    // cwd and no shell, so nothing downstream can derive one — the render tree
+    // used to guess from an arbitrary sibling terminal on every paint, in two
+    // places. Openers that already know the location (file tree, explorer
+    // popover) pass it; anyone else gets it resolved from this pane's own
+    // terminal once, here.
+    const resolved = location
+      ?? sessionLocationForSurface(pane.surfaces.find((s) => s.cwd))
+      ?? undefined;
     const surface: Surface = {
       id: generateId('surface'),
       ptyId: '',
@@ -144,7 +154,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'editor',
       editorFilePath: filePath,
-      ...(location ? { location } : {}),
+      ...(resolved ? { location: resolved } : {}),
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
@@ -309,12 +319,17 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
           if (surface) {
             surface.cwd = cwd;
-            const classified = classifySessionLocation(
-              surface.shell,
+            // Reclassify against the NEW cwd — `location` is deliberately not
+            // passed to the resolver, which would short-circuit to the stale
+            // one. `surface.location.shell` backstops a surface persisted
+            // without a shell: classifying '' would silently demote a WSL
+            // session to `host` and Windows would then resolve its guest path
+            // (issue #21 AC 6).
+            surface.location = resolveSessionLocation({
+              shell: surface.shell || surface.location?.shell || '',
               cwd,
-              surface.location?.domain === 'wsl' ? surface.location.distro : undefined,
-            );
-            surface.location = classified;
+              distro: surface.location?.domain === 'wsl' ? surface.location.distro : undefined,
+            });
             return true;
           }
           return false;
