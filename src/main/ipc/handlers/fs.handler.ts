@@ -41,7 +41,36 @@ const BLOCKED_FILES = [
   '.fmux/daemon-auth-token',
 ];
 
-export function isSensitivePath(resolvedPath: string): boolean {
+function isBlockedHomeRelative(relativePath: string): boolean {
+  const normalized = relativePath.replace(/^\/+/, '').toLowerCase();
+  for (const dir of BLOCKED_DIRS) {
+    const blocked = dir.toLowerCase();
+    if (normalized === blocked || normalized.startsWith(`${blocked}/`)) return true;
+  }
+  return BLOCKED_FILES.some((file) => normalized === file.toLowerCase());
+}
+
+function wslHomeRelative(
+  candidatePath: string,
+  location?: SessionLocation,
+): string | null {
+  let normalized = candidatePath.replace(/\\/g, '/');
+  const unc = /^\/\/wsl(?:\.localhost|\$)\/[^/]+(\/.*)?$/i.exec(normalized);
+  if (unc) {
+    normalized = unc[1] || '/';
+  } else if (location?.domain !== 'wsl') {
+    return null;
+  }
+  const userHome = /^\/home\/[^/]+\/(.+)$/i.exec(normalized);
+  if (userHome) return userHome[1];
+  const rootHome = /^\/root\/(.+)$/i.exec(normalized);
+  return rootHome?.[1] ?? null;
+}
+
+export function isSensitivePath(
+  resolvedPath: string,
+  location?: SessionLocation,
+): boolean {
   const home = os.homedir();
   const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
   const homeNorm = home.replace(/\\/g, '/').toLowerCase();
@@ -64,7 +93,8 @@ export function isSensitivePath(resolvedPath: string): boolean {
     if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
   }
 
-  return false;
+  const guestRelative = wslHomeRelative(resolvedPath, location);
+  return guestRelative !== null && isBlockedHomeRelative(guestRelative);
 }
 
 interface FileLocationRequest {
@@ -100,15 +130,16 @@ export async function resolveAccessiblePath(
   convert: LocationPathOperation = toHostAccessiblePath,
 ): Promise<string | null> {
   if (!inputPath || typeof inputPath !== 'string') return null;
+  if (isSensitivePath(inputPath, location)) return null;
 
   const accessible = convert(location, inputPath);
   if (!accessible.ok) return null;
   const resolved = path.resolve(accessible.path);
-  if (isSensitivePath(resolved)) return null;
+  if (isSensitivePath(resolved, location)) return null;
 
   try {
     const canonical = await fs.promises.realpath(resolved);
-    if (isSensitivePath(canonical)) return null;
+    if (isSensitivePath(canonical, location)) return null;
     return canonical;
   } catch {
     return null;

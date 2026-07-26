@@ -84,6 +84,44 @@ describe('fs.handler security helpers', () => {
     expect(realpathSpy).toHaveBeenCalledWith(path.resolve(hostPath));
   });
 
+  it.each([
+    '/home/alice/.ssh/id_rsa',
+    '/home/alice/.aws/credentials',
+    '/root/.gnupg/private-keys-v1.d/key',
+    '/root/.fmux/daemon-auth-token',
+  ])('rejects a direct WSL home secret before conversion: %s', async (guestPath) => {
+    const convert = vi.fn(() => ({
+      ok: true as const,
+      path: `\\\\wsl.localhost\\Ubuntu${guestPath.replace(/\//g, '\\')}`,
+    }));
+
+    await expect(resolveAccessiblePath(
+      guestPath,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      convert,
+    )).resolves.toBeNull();
+
+    expect(convert).not.toHaveBeenCalled();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '\\\\wsl.localhost\\Ubuntu\\home\\alice\\.ssh\\id_rsa',
+    '\\\\wsl$\\Ubuntu\\root\\.npmrc',
+  ])('rejects a canonical WSL home secret reached through a link: %s', async (canonical) => {
+    const guestPath = '/home/alice/project/link';
+    const accessible = '\\\\wsl.localhost\\Ubuntu\\home\\alice\\project\\link';
+    realpathSpy.mockResolvedValue(canonical);
+
+    await expect(resolveAccessiblePath(
+      guestPath,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      vi.fn(() => ({ ok: true as const, path: accessible })),
+    )).resolves.toBeNull();
+
+    expect(realpathSpy).toHaveBeenCalledWith(path.resolve(accessible));
+  });
+
   it('fails softly when WSL conversion requires a missing distro', async () => {
     await expect(resolveAccessiblePath(
       '/home/me/project',
