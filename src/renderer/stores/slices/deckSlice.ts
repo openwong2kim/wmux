@@ -69,6 +69,12 @@ export interface DeckSlice {
    *  REJECTED before any stream event — e.g. a busy race). */
   failDeckBrainTurn: (workspaceId: string, message: string) => void;
 
+  /** `claude-pty` brain only: the daemon session id of each workspace's
+   *  embedded Claude Code TUI, pushed by main when the adapter spawns it.
+   *  Transient — a fresh launch re-learns it on the next turn. */
+  brainPtyIds: Record<string, string | null>;
+  setBrainPtyId: (workspaceId: string, ptyId: string | null) => void;
+
   /** P3b: the reboot-recovery greeting card was dismissed (or its recovery was
    *  launched) this session. Transient — a fresh launch re-evaluates from the
    *  resume hints, which self-clear as agents come back. */
@@ -153,6 +159,13 @@ export const createDeckSlice: StateCreator<
       const thread = threadOf(state, workspaceId);
       thread.messages = applyBrainEvent(thread.messages, { type: 'error', message });
       thread.status = 'idle';
+    }),
+
+  brainPtyIds: {},
+
+  setBrainPtyId: (workspaceId, ptyId) =>
+    set((state: StoreState) => {
+      state.brainPtyIds[workspaceId] = ptyId;
     }),
 
   recoveryCardDismissed: false,

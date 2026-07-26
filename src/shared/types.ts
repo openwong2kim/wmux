@@ -24,9 +24,11 @@ import type { OrchestratorRoleBindings } from './orchestratorRole';
 // Re-export for backward compatibility
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
  *  'claude' = the Claude Agent SDK (default); 'hermes' = the generic ACP
- *  adapter with the Hermes Agent spawn spec. New ACP vendors extend this
- *  union + a spawn spec — no new adapter code. */
-export type BrainVendor = 'claude' | 'hermes';
+ *  adapter with the Hermes Agent spawn spec; 'claude-pty' = the user's own
+ *  Claude Code binary driven as an interactive TUI inside a deck-embedded pty
+ *  (the subscription-safe hedge — see ClaudePtyBrainAdapter). New ACP vendors
+ *  extend this union + a spawn spec — no new adapter code. */
+export type BrainVendor = 'claude' | 'hermes' | 'claude-pty';
 
 export type AgentPreset = _AgentPreset;
 export type MemberStatus = _MemberStatus;

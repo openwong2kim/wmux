@@ -68,6 +68,7 @@ import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
+import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 
@@ -101,6 +102,11 @@ export interface CommanderViewContentProps {
    *  author label can be clicked to jump. Returns null when the pane is gone. */
   resolvePtyPane: (ptyId: string) => { workspaceId: string; paneId: string } | null;
   workspaceName?: (workspaceId: string) => string | undefined;
+  /** `claude-pty` brain only: the daemon session id of the embedded Claude
+   *  Code TUI for this workspace. When set, the terminal REPLACES the bubble
+   *  list — the TUI is the conversation view (only the turn's final text is
+   *  still recorded as a bubble, which the terminal shows anyway). */
+  brainPtyId?: string | null;
   /** P3b: recoverable panes after a reboot. Non-empty → the greeting card shows
    *  with a one-click "Recover fleet" button. */
   recoveryPanes?: RecoveryPane[];
@@ -144,6 +150,7 @@ export function CommanderViewContent({
   onJumpToPane,
   resolvePtyPane,
   workspaceName = () => undefined,
+  brainPtyId = null,
   recoveryPanes = [],
   onRecoverFleet,
   onDismissRecovery,
@@ -158,7 +165,7 @@ export function CommanderViewContent({
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
-  const isEmpty = threads.length === 0 && brainMessages.length === 0;
+  const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
 
   // Stick-to-bottom autoscroll. `stickToBottom` flips off when the user
   // scrolls up to read history (>48px from the bottom) and back on when they
@@ -202,7 +209,11 @@ export function CommanderViewContent({
       <div
         ref={threadsRef}
         onScroll={onThreadsScroll}
-        className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
+        className={
+          brainPtyId
+            ? 'flex-1 min-h-0 flex flex-col overflow-hidden px-4 py-3 gap-3'
+            : 'flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3'
+        }
         data-commander-threads
       >
         {isEmpty && (
@@ -282,13 +293,19 @@ export function CommanderViewContent({
             this workspace. */}
         <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
 
-        {/* Brain conversation — orchestrator turns (text bubbles + tool chips). */}
-        {brainMessages.map((m) => (
-          <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
-        ))}
+        {/* Brain conversation. The `claude-pty` vendor embeds the brain's own
+            terminal here — its TUI already IS the transcript — and every other
+            vendor renders the normalized bubbles + tool chips. */}
+        {brainPtyId ? (
+          <BrainTerminalEmbed ptyId={brainPtyId} />
+        ) : (
+          brainMessages.map((m) => (
+            <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+          ))
+        )}
 
         {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
-        {threads.map((thread, idx) => (
+        {!brainPtyId && threads.map((thread, idx) => (
           <CommanderThreadItem
             key={thread.dispatch ? `d-${thread.dispatch.seq}` : `r-${idx}`}
             thread={thread}
@@ -846,6 +863,11 @@ export function CommanderView(): React.ReactElement {
   const ptyReadyByPtyId = useStore((s) => s.ptyReadyByPtyId);
   const recoveryCardDismissed = useStore((s) => s.recoveryCardDismissed);
   const dismissRecoveryCard = useStore((s) => s.dismissRecoveryCard);
+  // `claude-pty` only: main pushes this workspace's brain pty id when the
+  // adapter spawns its TUI. Any other vendor never sets it, so the bubble
+  // rendering path is unchanged for them.
+  const brainPtyIds = useStore((s) => s.brainPtyIds);
+  const brainPtyId = activeWorkspaceId ? brainPtyIds[activeWorkspaceId] ?? null : null;
 
   // M1.5: recovery is per-workspace — this deck's card lists only the ACTIVE
   // workspace's recoverable panes (its orchestrator cannot target the others;
@@ -1207,6 +1229,7 @@ export function CommanderView(): React.ReactElement {
       onJumpToPane={onJumpToPane}
       resolvePtyPane={resolvePtyPane}
       workspaceName={workspaceName}
+      brainPtyId={brainPtyId}
       recoveryPanes={recoveryCardDismissed ? [] : recoveryPanes}
       onRecoverFleet={handleRecoverFleet}
       onDismissRecovery={dismissRecoveryCard}

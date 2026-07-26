@@ -810,6 +810,12 @@ export function registerPTYHandlers(
       // status; restartCount is volatile (0 until the supervisor restarts once).
       const live = sessions
         .filter(s => s.state !== 'dead')
+        // Orchestrator brain ptys (the `claude-pty` vendor) are deck-embedded,
+        // not fleet panes: the renderer must never adopt one into a surface and
+        // the orchestrator must never see itself in pane_list. Filtered in this
+        // ONE spot — every pane/session listing the UI and MCP surface use is
+        // derived from it.
+        .filter(s => s.env?.[ENV_KEYS.BRAIN_PTY] !== '1')
         .map(s => ({
           id: s.id,
           shell: s.cmd,

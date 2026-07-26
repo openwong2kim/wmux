@@ -23,6 +23,16 @@ export function useDeckStream(): void {
       if (!workspaceId) return; // malformed envelope — never guess a thread
       useStore.getState().applyDeckBrainEvent(workspaceId, event);
     });
-    return off;
+    // `claude-pty` brain: the pty id of the embedded TUI. Subscribed here, in
+    // the same always-on owner, so a brain that spawns while the human is on
+    // another workspace still has its terminal ready when they switch back.
+    const offPty = api.onBrainPty?.(({ workspaceId, ptyId }) => {
+      if (!workspaceId) return;
+      useStore.getState().setBrainPtyId(workspaceId, ptyId ?? null);
+    });
+    return () => {
+      off();
+      offPty?.();
+    };
   }, []);
 }

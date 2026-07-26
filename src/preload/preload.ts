@@ -397,10 +397,10 @@ const electronAPI = {
         ok: true;
         enabled: boolean;
       }>,
-    brainVendorSet: (vendor: 'claude' | 'hermes') =>
+    brainVendorSet: (vendor: import('../shared/types').BrainVendor) =>
       ipcRenderer.invoke(IPC.DECK_BRAIN_VENDOR_SET, { vendor }) as Promise<{
         ok: true;
-        vendor: 'claude' | 'hermes';
+        vendor: import('../shared/types').BrainVendor;
       }>,
     status: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
@@ -590,6 +590,19 @@ const electronAPI = {
       ) => callback(envelope);
       ipcRenderer.on(IPC.DECK_STREAM, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
+    },
+    // `claude-pty` brain only: the daemon session id of the embedded TUI for
+    // one workspace (null retires it). Separate from onStream because it is
+    // pane wiring, not conversation content.
+    onBrainPty: (
+      callback: (envelope: { workspaceId: string; ptyId: string | null }) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        envelope: { workspaceId: string; ptyId: string | null },
+      ) => callback(envelope);
+      ipcRenderer.on(IPC.DECK_BRAIN_PTY, listener);
+      return () => { ipcRenderer.removeListener(IPC.DECK_BRAIN_PTY, listener); };
     },
   },
   // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +

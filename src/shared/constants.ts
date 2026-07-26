@@ -159,6 +159,12 @@ export const IPC = {
   //                   turn path consults it, idle stale-vendor brains retire
   //                   on change, renderer pushes on change + after hydration.
   DECK_BRAIN_VENDOR_SET: 'deck:brainvendor:set',
+  //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
+  //                   spawned its interactive TUI in daemon session <ptyId>.
+  //                   One-way and additive to DECK_STREAM (which carries only
+  //                   normalized BrainEvents) — the deck embeds that terminal
+  //                   in place of the bubble list. `ptyId: null` retires it.
+  DECK_BRAIN_PTY: 'deck:brainpty',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
@@ -544,6 +550,12 @@ export const ENV_KEYS = {
   // display prettiness comes from the daemon-derived roster memberName (1b),
   // and ghost-vs-roster drift is absorbed by the 1c single-row mapping.
   MEMBER_ID: 'WMUX_MEMBER_ID',
+  // Marks a daemon session as an ORCHESTRATOR BRAIN pty (the `claude-pty`
+  // brain vendor runs the interactive Claude Code TUI in one). A brain is not
+  // a worker pane: it is embedded in the deck, never in a surface, and must be
+  // filtered out of pane/session listings so it can neither be adopted by the
+  // renderer's reconcile nor show up as an agent the orchestrator can drive.
+  BRAIN_PTY: 'WMUX_BRAIN_PTY',
   // B′ daemon auto-replace: the app version that spawned this daemon, injected
   // UNCONDITIONALLY (overwriting any inherited value) by launcher.spawnDaemon()
   // and echoed back in daemon.ping as `spawnedByVersion`. Unconditional

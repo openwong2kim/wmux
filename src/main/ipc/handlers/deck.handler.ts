@@ -25,6 +25,12 @@ import { wrapHandler } from '../wrapHandler';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
+import {
+  ClaudePtyBrainAdapter,
+  createBrainPtyHost,
+  resolveBrainBridgePath,
+  type DaemonClientLike,
+} from '../../deck/ClaudePtyBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -118,6 +124,9 @@ export interface RegisterDeckHandlerOptions {
   /** The fleet-wide concurrent-turn gate. Injected in tests to observe/spy the
    *  acquire path; defaults to a fresh cap-2 gate. */
   turnGate?: GlobalTurnGate;
+  /** Live daemon client getter. Required for the `claude-pty` vendor, whose
+   *  brain IS a daemon pty session; every other vendor ignores it. */
+  getDaemonClient?: () => DaemonClientLike | null;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -186,6 +195,16 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  // One-way push: which daemon session holds a workspace's embedded brain TUI
+  // (`claude-pty` only; null retires it). Declared before createAdapter so the
+  // default factory can hand it to a freshly spawned adapter.
+  const emitBrainPty = (workspaceId: string, ptyId: string | null): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.DECK_BRAIN_PTY, { workspaceId, ptyId });
+    }
+  };
+
   const createAdapter =
     opts.createAdapter ??
     ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean; vendor?: BrainVendor }) => {
@@ -194,6 +213,24 @@ export function registerDeckHandler(
       // could — Hermes is simply the first configured spawn spec); everything
       // else is the Claude SDK default. Model/fullPower are Claude-specific
       // and deliberately not forwarded to ACP brains.
+      // 'claude-pty' drives the user's OWN claude binary as an interactive TUI
+      // in a daemon pty the deck embeds — the subscription-safe hedge. It needs
+      // the daemon (its brain IS a session); with no daemon we fall through to
+      // the SDK adapter rather than handing back a brain that cannot spawn.
+      if (adapterOpts.vendor === 'claude-pty') {
+        const client = opts.getDaemonClient?.() ?? null;
+        if (client) {
+          return new ClaudePtyBrainAdapter({
+            workspaceId: adapterOpts.workspaceId,
+            host: createBrainPtyHost(client),
+            bridgePath: resolveBrainBridgePath(),
+            onPtySpawned: (ptyId) => emitBrainPty(adapterOpts.workspaceId, ptyId),
+          });
+        }
+        console.warn(
+          '[deck] the terminal brain (claude-pty) needs daemon mode — falling back to the Claude SDK brain.',
+        );
+      }
       if (adapterOpts.vendor === 'hermes') {
         return new AcpBrainAdapter({
           spawnSpec: { command: 'hermes', args: ['acp'] },
@@ -530,7 +567,8 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       // Fail closed to the default: only known vendor ids are accepted.
-      const vendor: BrainVendor = req.vendor === 'hermes' ? 'hermes' : 'claude';
+      const vendor: BrainVendor =
+        req.vendor === 'hermes' || req.vendor === 'claude-pty' ? req.vendor : 'claude';
       if (vendor !== brainVendor) {
         brainVendor = vendor;
         // Retire IDLE stale-vendor brains now (same contract as full power):
@@ -540,6 +578,10 @@ export function registerDeckHandler(
           if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
+            // The retired brain's embedded terminal is gone with it — retract
+            // the pty id so the deck falls back to the bubble view instead of
+            // showing a dead terminal.
+            emitBrainPty(workspaceId, null);
           }
         }
       }

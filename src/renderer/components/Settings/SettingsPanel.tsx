@@ -868,9 +868,12 @@ function OrchestratorSection() {
       >
         <SettingSelect
           value={deckBrainVendor}
-          onChange={(v) => setDeckBrainVendor(v === 'hermes' ? 'hermes' : 'claude')}
+          onChange={(v) =>
+            setDeckBrainVendor(v === 'hermes' || v === 'claude-pty' ? v : 'claude')
+          }
           options={[
             { value: 'claude', label: t('settings.orchestratorBrainClaude') },
+            { value: 'claude-pty', label: t('settings.orchestratorBrainClaudePty') },
             { value: 'hermes', label: t('settings.orchestratorBrainHermes') },
           ]}
           label={t('settings.orchestratorBrain')}
