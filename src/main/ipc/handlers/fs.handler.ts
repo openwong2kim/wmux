@@ -53,7 +53,7 @@ function isBlockedHomeRelative(relativePath: string): boolean {
 
 function homeRelativePath(
   candidatePath: string,
-  location?: SessionLocation,
+  guestPath: string | null,
 ): string | null {
   const normalized = candidatePath.replace(/\\/g, '/');
   const home = os.homedir().replace(/\\/g, '/');
@@ -61,7 +61,6 @@ function homeRelativePath(
     return normalized.slice(home.length + 1);
   }
 
-  const guestPath = toWslGuestPath(location, candidatePath);
   if (!guestPath) return null;
   const userHome = /^\/home\/[^/]+(?:\/(.*))?$/i.exec(guestPath);
   if (userHome) return userHome[1] ?? '';
@@ -81,7 +80,9 @@ export function isSensitivePath(
     if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
   }
 
-  const homeRelative = homeRelativePath(resolvedPath, location);
+  const guest = toWslGuestPath(location, resolvedPath);
+  if (!guest.ok && guest.error === 'WSL_DISTRO_MISMATCH') return true;
+  const homeRelative = homeRelativePath(resolvedPath, guest.ok ? guest.path : null);
   return homeRelative !== null && isBlockedHomeRelative(homeRelative);
 }
 

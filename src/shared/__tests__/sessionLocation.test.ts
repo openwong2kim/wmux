@@ -168,15 +168,23 @@ describe('session location operations', () => {
     ['//wsl.localhost/Ubuntu/root/.ssh', '/root/.ssh'],
   ])('decomposes a WSL path through one canonical operation: %s', (input, expected) => {
     const location = classifySessionLocation('wsl.exe', '/home/Alice', 'Ubuntu');
-    expect(toWslGuestPath(location, input)).toBe(expected);
+    expect(toWslGuestPath(location, input)).toEqual({ ok: true, path: expected });
   });
 
   it('rejects non-WSL, malformed, and mismatched WSL paths', () => {
     const ubuntu = classifySessionLocation('wsl.exe', '/home/me', 'Ubuntu');
-    expect(toWslGuestPath(undefined, '/home/me')).toBeNull();
-    expect(toWslGuestPath(ubuntu, 'C:\\Users\\me')).toBeNull();
-    expect(toWslGuestPath(ubuntu, '\\\\server\\share\\file')).toBeNull();
-    expect(toWslGuestPath(ubuntu, '\\\\wsl.localhost\\Debian\\home\\me')).toBeNull();
+    expect(toWslGuestPath(undefined, '/home/me')).toEqual({
+      ok: false, error: 'UNSUPPORTED_WSL_PATH',
+    });
+    expect(toWslGuestPath(ubuntu, 'C:\\Users\\me')).toEqual({
+      ok: false, error: 'UNSUPPORTED_WSL_PATH',
+    });
+    expect(toWslGuestPath(ubuntu, '\\\\server\\share\\file')).toEqual({
+      ok: false, error: 'UNSUPPORTED_WSL_PATH',
+    });
+    expect(toWslGuestPath(ubuntu, '\\\\wsl.localhost\\Debian\\home\\me')).toEqual({
+      ok: false, error: 'WSL_DISTRO_MISMATCH',
+    });
   });
 
   it('preserves a guest cwd during replay without asking Windows fs', () => {

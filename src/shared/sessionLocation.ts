@@ -312,7 +312,8 @@ export function toHostAccessiblePath(
 export function toWslGuestPath(
   location: SessionLocation | undefined,
   targetPath: string,
-): string | null {
+): { ok: true; path: string }
+  | { ok: false; error: 'UNSUPPORTED_WSL_PATH' | 'WSL_DISTRO_MISMATCH' } {
   const unc = wslUncParts(targetPath);
   if (unc) {
     if (
@@ -320,12 +321,14 @@ export function toWslGuestPath(
       && location.distro
       && location.distro.toLowerCase() !== unc.distro.toLowerCase()
     ) {
-      return null;
+      return { ok: false, error: 'WSL_DISTRO_MISMATCH' };
     }
-    return unc.guestPath;
+    return { ok: true, path: unc.guestPath };
   }
-  if (location?.domain !== 'wsl' || !targetPath.startsWith('/')) return null;
-  return targetPath.replace(/\\/g, '/');
+  if (location?.domain !== 'wsl' || !targetPath.startsWith('/')) {
+    return { ok: false, error: 'UNSUPPORTED_WSL_PATH' };
+  }
+  return { ok: true, path: targetPath.replace(/\\/g, '/') };
 }
 
 export function prepareLocationCommand(

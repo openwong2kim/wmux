@@ -65,6 +65,20 @@ describe('fs.handler security helpers', () => {
     )).toBe(blocked);
   });
 
+  it('fails closed before conversion for a WSL namespace from another distro', async () => {
+    const mismatched = '\\\\wsl.localhost\\Debian\\home\\alice\\.ssh\\id_rsa';
+    const convert = vi.fn(() => ({ ok: true as const, path: mismatched }));
+
+    await expect(resolveAccessiblePath(
+      mismatched,
+      { domain: 'wsl', cwd: '/home/alice/project', shell: 'wsl.exe', distro: 'Ubuntu' },
+      convert,
+    )).resolves.toBeNull();
+
+    expect(convert).not.toHaveBeenCalled();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects a symlink whose canonical target is sensitive', async () => {
     realpathSpy.mockResolvedValue(path.join(home, '.ssh', 'id_rsa'));
 
