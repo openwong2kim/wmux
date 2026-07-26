@@ -7,7 +7,7 @@ import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
-import type { WebTerminalInfo } from './web/WebTerminalServer';
+import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
 import { loadWebState, saveWebState, clearWebState } from './web/webStateStore';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
@@ -42,6 +42,7 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
@@ -52,6 +53,7 @@ import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
+import { buildWebPaneEnv } from './web/webPaneEnv';
 import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
@@ -76,6 +78,13 @@ let hookIngest: HookIngest | null = null;
 // getDeviceStore() rather than at import time, because the constructor reads
 // devices.json off disk and module init must stay free of IO.
 let deviceStore: DeviceStore | null = null;
+
+// Pane spawn/close for `wmux web`. Module-scoped for the same reason as the
+// servers above: it is built inside registerRpcHandlers (where the two RPC
+// handlers it wraps are defined) but injected at BOTH WebTerminalServer
+// construction sites, one of which is a module-level function. Null until
+// registerRpcHandlers runs, which is before either site.
+let sessionLifecycle: WebSessionLifecycle | null = null;
 
 /**
  * The one device roster in this process. A second instance would be a second
@@ -196,6 +205,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // construction sites: a restored server serves paired phones on their
         // own credentials, exactly like one the operator just started.
         devices: getDeviceStore(),
+        // Pane spawn/close for POST/DELETE /api/sessions. Both routes answer
+        // 503 without it, and both are additionally gated on --allow-input.
+        ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),
         // M2 — /api/approvals answers 503 without this. Safe at both
         // construction sites: main() builds the registry before it registers
         // RPC handlers and before it kicks off this restore.
@@ -1030,6 +1042,10 @@ async function recoverSessions(
               id: session.id,
             cmd: session.cmd,
             cwd,
+            // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+            // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+            // diff route a root the pane's own process chose. See createSession.
+            spawnCwd: session.spawnCwd,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1116,6 +1132,10 @@ async function recoverSessions(
             id: session.id,
             cmd: session.cmd,
             cwd,
+            // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+            // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+            // diff route a root the pane's own process chose. See createSession.
+            spawnCwd: session.spawnCwd,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1161,6 +1181,10 @@ async function recoverSessions(
           id: session.id,
           cmd: session.cmd,
           cwd,
+          // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+          // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+          // diff route a root the pane's own process chose. See createSession.
+          spawnCwd: session.spawnCwd,
           env: session.env,
           cols: session.cols,
           rows: session.rows,
@@ -1315,6 +1339,9 @@ function restartSupervisedSession(
     id: meta.id,
     cmd: meta.cmd,
     cwd: fs.existsSync(meta.cwd) ? meta.cwd : os.homedir(),
+    // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
+    // 7-tracked one. See createSession's `spawnCwd`.
+    spawnCwd: meta.spawnCwd,
     env: meta.env,
     cols: meta.cols,
     rows: meta.rows,
@@ -1411,7 +1438,13 @@ function registerRpcHandlers(
   };
 
   // daemon.createSession
-  pipeServer.onRpc('daemon.createSession', async (params) => {
+  //
+  // The body is a NAMED function rather than an inline handler because it has
+  // a second caller: `wmux web`'s POST /api/sessions
+  // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
+  // object as a GUI-spawned one — process-monitored, supervised, persisted,
+  // snapshotted — and the only way to guarantee that is for both to run this.
+  const createSessionRpc = async (params: Record<string, unknown>): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -1480,10 +1513,15 @@ function registerRpcHandlers(
 
     // 응답에서 자격증명 값 제거(main은 pid 등만 사용). fresh env 교체 — live meta 불변.
     return { ...session, env: stripCredentialValues(session.env) };
-  });
+  };
+  pipeServer.onRpc('daemon.createSession', createSessionRpc);
 
   // daemon.destroySession
-  pipeServer.onRpc('daemon.destroySession', async (params) => {
+  //
+  // Named for the same reason as createSessionRpc:
+  // DELETE /api/sessions/:id must reap a pane exactly as a pane close does,
+  // including the pipe stop, the listener removal and the buffer-dump cleanup.
+  const destroySessionRpc = async (params: Record<string, unknown>): Promise<unknown> => {
     const p = params as unknown as DaemonSessionIdParams;
     // OBSERVABILITY: log wmux-initiated kills (pane/workspace close, reset) so
     // they can be told apart from a process self-exit in the session:died log.
@@ -1522,7 +1560,77 @@ function registerRpcHandlers(
     stateWriter.saveImmediate(state);
 
     return { ok: true };
-  });
+  };
+  pipeServer.onRpc('daemon.destroySession', destroySessionRpc);
+
+  /**
+   * `wmux web`'s pane lifecycle, expressed in terms of the two handlers above.
+   *
+   * WHAT THIS IS NOT: the MCP `pane_split` / `surface_new` path. Those are RPCs
+   * registered in the Electron MAIN process and forwarded to the renderer,
+   * which owns the pane TREE and the workspace registry. The daemon cannot call
+   * them — `daemonExecuteWall.test.ts` bans importing `src/main/pipe` from
+   * anywhere under `src/daemon`, on purpose, because that is where a remote
+   * byte could reach the execute machinery. What the renderer's split ULTIMATELY
+   * does is issue `daemon.createSession`, so that is what this reuses.
+   *
+   * CONSEQUENCE, stated plainly: a pane created from the phone is a real
+   * daemon session — it appears in `/api/sessions` and `wmux list`, it is
+   * monitored, persisted and recoverable, and it can be streamed and typed into
+   * over the web. It has no node in the desktop GUI's layout, because only the
+   * renderer can mint one and the daemon may not ask it to. A phone-spawned
+   * pane is therefore a headless pane until the GUI adopts it.
+   *
+   * The env comes from `buildWebPaneEnv`: what `createSession`'s own fallback
+   * would produce (filtered `process.env`, whole `WMUX_*` namespace stripped)
+   * with the identity stamped back on — the channel member id always, the
+   * workspace when one is named. Supplying it rather than leaving it to the
+   * fallback is what lets the member id exist at all for a workspace-less
+   * pane. The human-readable workspace NAME is looked up here, from a live
+   * sibling pane, since the daemon has no workspace registry of its own. That
+   * live-sibling lookup is what the web layer validates the id against before
+   * it ever gets here — an id no live pane is running under is refused rather
+   * than stamped into a child's environment on the caller's say-so. See
+   * `rejectWorkspaceId` in WebTerminalServer for the trade-off that buys.
+   */
+  sessionLifecycle = {
+    create: async ({ workspaceId, cwd }) => {
+      const id = `web-${randomUUID()}`;
+      // The human-readable workspace NAME is copied from a live sibling pane;
+      // the daemon has no workspace registry of its own to look one up in.
+      const sibling = workspaceId
+        ? sessionManager
+            .listLiveSessions()
+            .find((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId)
+        : undefined;
+      const env = buildWebPaneEnv({
+        id,
+        parentEnv: process.env,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(sibling?.env?.[ENV_KEYS.WORKSPACE_NAME]
+          ? { workspaceName: sibling.env[ENV_KEYS.WORKSPACE_NAME] }
+          : {}),
+      });
+      await createSessionRpc({
+        id,
+        // `cmd` is OMITTED, not empty-string. `createSession` resolves an unset
+        // cmd to the daemon's configured default shell, which is the single
+        // choke point for that decision (platform tables, Store aliases,
+        // $SHELL); naming a shell here would be a second copy of it. `''` took
+        // the same branch today only because `resolveShellPath` happens to
+        // treat it as falsy — one line elsewhere deciding that an explicitly
+        // requested empty command is a request rather than a default, and this
+        // spawns nothing at all. Say what is meant. An unset cwd falls back to
+        // the home directory the same way.
+        ...(cwd ? { cwd } : {}),
+        env,
+      });
+      return { id };
+    },
+    destroy: async (id) => {
+      await destroySessionRpc({ id });
+    },
+  };
 
   // daemon.attachSession
   pipeServer.onRpc('daemon.attachSession', async (params) => {
@@ -1857,6 +1965,9 @@ function registerRpcHandlers(
       log: (level, msg) => log(level, msg),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
+      // See the restore path: the lifecycle routes need this and answer 503
+      // without it. Registered by the time either site runs.
+      ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),
       // M2 — see the restore path: the approval routes need the registry, and
       // it exists by the time either site runs.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),

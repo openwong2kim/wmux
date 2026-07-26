@@ -528,8 +528,13 @@ export interface DaemonEvent {
 
 export interface DaemonCreateSessionParams {
   id: string;
-  cwd: string;
-  cmd: string;
+  /** Absent means the home directory. */
+  cwd?: string;
+  /**
+   * Absent means the daemon's configured default shell. Omit it to get the
+   * default; do not send `''`, which only works by accident.
+   */
+  cmd?: string;
   /**
    * The fully-resolved child environment. Main builds this (resolveSpawnEnv:
    * buildSafeChildEnv + workspace-profile overlay + forced WMUX identity) and

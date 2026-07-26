@@ -5,6 +5,12 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
+import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
+
+/** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
+const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
+/** The git subcommand — `rev-parse`, `diff`, `status`. */
+const gitVerb = (args: readonly string[]): string => gitBody(args)[0] ?? '';
 import type {
   ApprovalEvent,
   ApprovalRegistryApi,
@@ -19,7 +25,11 @@ function makeDeps() {
   const bridge = new EventEmitter();
   const write = vi.fn();
   const managed = {
-    meta: { id: 's1', cols: 80, rows: 24, state: 'detached', cwd: '/x' },
+    // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
+    // process last claimed via OSC 7 (i.e. attacker-controlled), `spawnCwd` is
+    // where the daemon actually spawned it. Every diff assertion below expects
+    // '/x', which is the whole point.
+    meta: { id: 's1', cols: 80, rows: 24, state: 'detached', cwd: '/tmp/osc7-said-so', spawnCwd: '/x' },
     ringBuffer: { readAll: () => Buffer.from('screen-bytes') },
     bridge,
     ptyProcess: { write },
@@ -27,7 +37,12 @@ function makeDeps() {
   // Three panes covering the workspace-label matrix: named workspace, a legacy
   // pane spawned before WMUX_WORKSPACE_NAME existed (id present, name absent),
   // and no wmux identity at all.
-  const live = [
+  type LiveRow = {
+    id: string; cwd: string; cols: number; rows: number; state: string;
+    agent: undefined; lastDetectedAgent: undefined; lastActivity: string;
+    env: Record<string, string>; cmd: string;
+  };
+  const live: LiveRow[] = [
     {
       id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
@@ -56,10 +71,76 @@ function makeDeps() {
   // The real DaemonSessionManager is an EventEmitter; the server tees its
   // session:critical / session:notification events, so the fake must emit too.
   const sessionManager = Object.assign(new EventEmitter(), {
-    getSession: (id: string) => (id === 's1' ? managed : undefined),
+    // Every live pane is gettable, each with its own spawn cwd, so the
+    // concurrency bound can be exercised across more than one session.
+    getSession: (id: string) => {
+      if (id === 's1') return managed;
+      const row = live.find((l) => l.id === id);
+      return row
+        ? { ...managed, meta: { ...managed.meta, id, cwd: '/tmp/osc7-said-so', spawnCwd: row.cwd } }
+        : undefined;
+    },
     listLiveSessions: () => live,
   }) as unknown as DaemonSessionManager;
-  return { sessionManager, bridge, write, ...makeApprovals(), ...makeDevices() };
+  // Lifecycle stand-in for the daemon's own daemon.createSession /
+  // daemon.destroySession handlers (src/daemon/index.ts). The real ones spawn a
+  // PTY, arm the supervisor, start the process monitor and flush state — none
+  // of which the HTTP surface may know about, which is why the fake is two
+  // functions. It mutates `live` so the route's "describe the new pane with the
+  // SAME projection /api/sessions uses" claim is actually exercised.
+  const lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }> = [];
+  const lifecycleBox = { createThrows: '', destroyThrows: '', createGoesMissing: false };
+  let created = 0;
+  const lifecycle = {
+    async create(params: { workspaceId?: string; cwd?: string }) {
+      lifecycleCalls.push({ op: 'create', arg: { ...params } });
+      if (lifecycleBox.createThrows) throw new Error(lifecycleBox.createThrows);
+      created += 1;
+      const id = `web-${created}`;
+      if (!lifecycleBox.createGoesMissing) {
+        live.push({
+          id, cwd: params.cwd ?? '/home', cols: 120, rows: 30, state: 'detached',
+          agent: undefined, lastDetectedAgent: undefined,
+          lastActivity: '2020-01-02T00:00:00.000Z',
+          env: params.workspaceId ? { WMUX_WORKSPACE_ID: params.workspaceId, WMUX_WORKSPACE_NAME: 'Workspace 1' } : {},
+          cmd: '/bin/zsh',
+        });
+      }
+      return { id };
+    },
+    async destroy(id: string) {
+      lifecycleCalls.push({ op: 'destroy', arg: id });
+      if (lifecycleBox.destroyThrows) throw new Error(lifecycleBox.destroyThrows);
+    },
+  };
+
+  // Scripted git for /api/sessions/:id/diff. Records every argv so the
+  // "fixed-argv, cwd-from-the-daemon" claim can be asserted from the route side
+  // too, not just in sessionDiff.test.ts.
+  const gitCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+  const gitScript: Record<
+    string,
+    { ok: boolean; stdout: string; stderr: string; ran?: boolean }
+  > = {
+    'rev-parse': { ok: true, stdout: 'true\n/x\n', stderr: '' },
+    diff: { ok: true, stdout: 'PATCH\n', stderr: '' },
+    status: { ok: true, stdout: ' M src/a.ts\0?? notes.md\0', stderr: '' },
+  };
+  // Lets a test hold a collection open, which is the only way to observe the
+  // concurrency bound and the per-session coalescing.
+  const gitGate: { hold: Promise<void> | null } = { hold: null };
+  const git: GitRunner = async (args, cwd) => {
+    gitCalls.push({ args, cwd });
+    if (gitGate.hold) await gitGate.hold;
+    return gitScript[gitVerb(args)] ?? { ok: true, stdout: '', stderr: '' };
+  };
+
+  return {
+    sessionManager, bridge, write, live, managed,
+    lifecycle, lifecycleCalls, lifecycleBox,
+    git, gitCalls, gitScript, gitGate,
+    ...makeApprovals(), ...makeDevices(),
+  };
 }
 
 /**
@@ -195,6 +276,12 @@ describe('WebTerminalServer', () => {
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let deviceTouchCalls: string[];
   let deviceBox: { mintThrows: boolean };
+  let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
+  let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean };
+  let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
+  let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
+  let gitGate: { hold: Promise<void> | null };
+  let managed: { meta: Record<string, unknown> };
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -211,10 +298,18 @@ describe('WebTerminalServer', () => {
     pushRegistrations = deps.pushRegistrations;
     deviceTouchCalls = deps.deviceTouchCalls;
     deviceBox = deps.deviceBox;
+    lifecycleCalls = deps.lifecycleCalls;
+    lifecycleBox = deps.lifecycleBox;
+    gitCalls = deps.gitCalls;
+    gitScript = deps.gitScript;
+    gitGate = deps.gitGate;
+    managed = deps.managed;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
       devices: deps.devices,
+      lifecycle: deps.lifecycle,
+      git: deps.git,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -2111,5 +2206,405 @@ describe('WebTerminalServer', () => {
     expect(await closedWithin(pane.reader!, 1000)).toBe(true);
     expect(server.disconnectDevice(device.deviceId)).toBe(0);
     pane.ac.abort();
+  });
+  // ── pane diff (read-only git) ──────────────────────────────────────────────
+
+  const getDiff = (id: string, cred: string) =>
+    fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/diff`, { headers: bearer(cred) });
+
+  it('gates the diff route on the Bearer token — a query token is not enough', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    expect((await fetch(`${base()}/api/sessions/s1/diff`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/sessions/s1/diff?token=${encodeURIComponent(token)}`)).status).toBe(401);
+    expect((await getDiff('s1', token)).status).toBe(200);
+  });
+
+  it('★ the diff payload is never cacheable', async () => {
+    // A 200 GET with no Cache-Control and no validator is heuristically
+    // cacheable, and this is the one payload an approval decision is made
+    // against: a phone — or an intermediary — replaying yesterday's patch
+    // under today's prompt is the exact failure this route exists to prevent.
+    const info = await startRO();
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('★ answers the diff on a READ-ONLY server, and only ever runs fixed-argv read-only git', async () => {
+    const info = await startRO();
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      files: [
+        { path: 'src/a.ts', status: ' M' },
+        { path: 'notes.md', status: '??' },
+      ],
+      // Staged, working tree, then the untracked add-hunk — three runs of the
+      // same scripted stdout.
+      patch: 'PATCH\nPATCH\nPATCH\n',
+      truncated: false,
+      omittedBytes: 0,
+      patchIncomplete: false,
+    });
+    expect(gitCalls.map((c) => gitBody(c.args))).toEqual([
+      ['rev-parse', '--is-inside-work-tree', '--show-toplevel'],
+      // Names the repo's content filters so they can be blanked before
+      // anything below converts working-tree content.
+      ['config', '--list', '--name-only', '-z'],
+      ['diff', '--cached', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--no-ext-diff', '--no-textconv'],
+      ['status', '--porcelain', '-z', '--untracked-files=all'],
+      // #6: an untracked file is in files[] and would otherwise contribute
+      // nothing to the patch. The path goes after a literal `--`.
+      ['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', 'notes.md'],
+      // Closing re-read: did the tree change while all of that ran?
+      ['status', '--porcelain', '-z', '--untracked-files=all'],
+    ]);
+    // Every one of them carried the hardening prefix.
+    for (const c of gitCalls) {
+      expect(c.args.slice(0, GIT_HARDENING_CONFIG.length)).toEqual([...GIT_HARDENING_CONFIG]);
+    }
+  });
+
+  it("★ takes the cwd from the daemon's session record, never from the request", async () => {
+    const info = await startRO();
+    // Every shape a caller could try to smuggle a directory or a ref through.
+    await fetch(`${base()}/api/sessions/s1/diff?cwd=/etc&ref=HEAD~5&base=main`, {
+      headers: bearer(info.token as string),
+    });
+    // s1's recorded spawn cwd is /x — see makeDeps.
+    expect(new Set(gitCalls.map((c) => c.cwd))).toEqual(new Set(['/x']));
+    const flat = gitCalls.flatMap((c) => c.args);
+    expect(flat).not.toContain('/etc');
+    expect(flat).not.toContain('HEAD~5');
+    expect(flat).not.toContain('main');
+  });
+
+  it('★ diffs the SPAWN cwd, never the OSC 7 cwd the pane itself last claimed', async () => {
+    // The pane's process emitted an OSC 7 pointing at /tmp/osc7-said-so, which
+    // the daemon dutifully recorded in meta.cwd. If the route read that, any
+    // process inside any pane could aim this read-only route at any directory
+    // on the machine and get the patch back over HTTP.
+    const info = await startRO();
+    await getDiff('s1', info.token as string);
+    expect(gitCalls.length).toBeGreaterThan(0);
+    for (const c of gitCalls) expect(c.cwd).toBe('/x');
+    expect(gitCalls.map((c) => c.cwd)).not.toContain('/tmp/osc7-said-so');
+  });
+
+  it('409s a session record with no spawn cwd rather than falling back to the live one', async () => {
+    const info = await startRO();
+    // A pre-spawnCwd record. Falling back to meta.cwd here would reopen the
+    // hole above for exactly the sessions whose provenance is unknown.
+    const meta = (managed as unknown as { meta: Record<string, unknown> }).meta;
+    const saved = meta.spawnCwd;
+    meta.spawnCwd = undefined;
+    try {
+      expect((await getDiff('s1', info.token as string)).status).toBe(409);
+      expect(gitCalls).toHaveLength(0);
+    } finally {
+      meta.spawnCwd = saved;
+    }
+  });
+
+  it('★ 409s a cwd that is not a git repo — a scratch pane is normal, not an error', async () => {
+    const info = await startRO();
+    gitScript['rev-parse'] = { ok: false, stdout: '', stderr: 'fatal: not a git repository' };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'not-a-git-repo' });
+  });
+
+  it('★ 500s, not 409s, when git never ran — "no repo here" must be gits word', async () => {
+    // ENOENT on the git binary, or our own timeout. The old code collapsed
+    // every failure into 409, telling the human their perfectly good repo was
+    // not a repo.
+    const info = await startRO();
+    gitScript['rev-parse'] = { ok: false, ran: false, stdout: '', stderr: 'spawn git ENOENT' };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'git-failed' });
+  });
+
+  it('500s when git itself fails, and leaks no detail on the wire', async () => {
+    const info = await startRO();
+    gitScript['status'] = {
+      ok: false,
+      stdout: '',
+      stderr: 'fatal: index file /home/someone/secret-project/.git/index corrupt',
+    };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(500);
+    // The whole body, not a subset: git stderr names paths, remotes and config
+    // keys, and none of it helps a phone decide what to do next.
+    expect(await res.json()).toEqual({ error: 'git-failed' });
+  });
+
+  it('★ reports patchIncomplete when a diff command fails, instead of "no changes"', async () => {
+    // The reason this flag exists: an empty patch with truncated:false renders
+    // on a phone as a clean tree, and a human approves an edit against it.
+    const info = await startRO();
+    gitScript['diff'] = { ok: false, ran: false, stdout: '', stderr: 'killed' };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      patch: '',
+      truncated: false,
+      patchIncomplete: true,
+      files: [
+        { path: 'src/a.ts', status: ' M' },
+        { path: 'notes.md', status: '??' },
+      ],
+    });
+  });
+
+  it('★ bounds concurrent collections and coalesces per session', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    // Hold every collection open so all of them are genuinely in flight.
+    let release = (): void => { /* replaced below */ };
+    gitGate.hold = new Promise<void>((r) => { release = r; });
+
+    // s1 twice (coalesced into one collection) + s2 = two slots used.
+    const a = getDiff('s1', token);
+    const b = getDiff('s1', token);
+    const c = getDiff('s2', token);
+    // Let the three requests reach the handler before the fourth.
+    await new Promise((r) => setTimeout(r, 30));
+    const d = getDiff('s3', token);
+    const dRes = await d;
+    expect(dRes.status).toBe(429);
+    expect(await dRes.json()).toEqual({ error: 'busy' });
+
+    gitGate.hold = null;
+    release();
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    expect([ra.status, rb.status, rc.status]).toEqual([200, 200, 200]);
+    // Coalescing: the two s1 requests got the same answer from one collection.
+    expect(await ra.json()).toEqual(await rb.json());
+    // s3 never shelled out at all — the refusal is before git, which is the
+    // point of the bound.
+    expect(gitCalls.map((x) => x.cwd)).not.toContain('/z');
+
+    // And the bound is released: a later request succeeds normally.
+    expect((await getDiff('s1', token)).status).toBe(200);
+  });
+
+  it('404s an unknown session id, and never shells out for one', async () => {
+    const info = await startRO();
+    expect((await getDiff('nope', info.token as string)).status).toBe(404);
+    expect((await getDiff('a/b', info.token as string)).status).toBe(404);
+    expect(gitCalls).toHaveLength(0);
+  });
+
+  it('serves the diff to a paired device exactly as to the operator', async () => {
+    await startRO();
+    const device = await pairDevice('Phone');
+    const res = await getDiff('s1', device.token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { files: unknown[] }).files).toHaveLength(2);
+  });
+
+  // ── pane lifecycle (POST / DELETE /api/sessions) ───────────────────────────
+
+  const postSession = (cred: string, body?: unknown) =>
+    fetch(`${base()}/api/sessions`, {
+      method: 'POST',
+      headers: { ...bearer(cred), 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const deleteSession = (id: string, cred: string) =>
+    fetch(`${base()}/api/sessions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: bearer(cred),
+    });
+
+  it('★ refuses BOTH lifecycle routes on a read-only server — this is not an approval-style carve-out', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    const created = await postSession(token, {});
+    expect(created.status).toBe(403);
+    expect(((await created.json()) as { error: string }).error).toMatch(/read-only/);
+    const deleted = await deleteSession('s1', token);
+    expect(deleted.status).toBe(403);
+    // The point of the gate: nothing reached the daemon.
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('gates the lifecycle routes on the Bearer token — a query token is not enough', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    expect((await fetch(`${base()}/api/sessions`, { method: 'POST' })).status).toBe(401);
+    expect(
+      (await fetch(`${base()}/api/sessions?token=${encodeURIComponent(token)}`, { method: 'POST' })).status,
+    ).toBe(401);
+    expect((await fetch(`${base()}/api/sessions/s1`, { method: 'DELETE' })).status).toBe(401);
+  });
+
+  it('★ spawns a pane and describes it with the SAME projection /api/sessions uses', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    const res = await postSession(token, { workspaceId: 'ws-1', cwd: '/repo' });
+    expect(res.status).toBe(201);
+    const row = await res.json();
+    expect(row).toMatchObject({
+      id: 'web-1', cwd: '/repo', cols: 120, rows: 30,
+      state: 'detached', agent: null, workspace: 'Workspace 1', shell: 'zsh',
+    });
+    expect(lifecycleCalls).toEqual([{ op: 'create', arg: { workspaceId: 'ws-1', cwd: '/repo' } }]);
+
+    // Byte-identical to the row the list route serves for the same pane.
+    const listed = (
+      (await (await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).json()) as {
+        sessions: Array<{ id: string }>;
+      }
+    ).sessions.find((sx) => sx.id === 'web-1');
+    expect(listed).toEqual(row);
+  });
+
+  it('forwards neither field when the body is empty, absent, or the wrong type', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    expect((await postSession(token)).status).toBe(201);
+    expect((await postSession(token, {})).status).toBe(201);
+    expect((await postSession(token, { workspaceId: 7, cwd: ['/x'] })).status).toBe(201);
+    expect(lifecycleCalls.map((c) => c.arg)).toEqual([{}, {}, {}]);
+  });
+
+  it('★ 400s a workspaceId that is not the right SHAPE, before anything is spawned', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    // The value is stamped into WMUX_WORKSPACE_ID and persisted into
+    // sessions.json, so a control character or a newline is not a cosmetic
+    // problem — it is a value that renders as something else downstream.
+    for (const bad of [
+      'ws 1',
+      'ws/../other',
+      'ws-1\nWMUX_AUTH_TOKEN=x',
+      // A literal NUL, written as an escape: as a raw byte it makes this
+      // file unsearchable and reads as a duplicate of the space case above.
+      'ws\u00001',
+      'ws-\u001b[31m1',
+      'w'.repeat(65),
+      '../../etc/passwd',
+    ]) {
+      const res = await postSession(token, { workspaceId: bad });
+      expect(res.status, bad).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'invalid-workspace-id' });
+    }
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('★ 400s a well-shaped workspaceId that no live pane is running in', async () => {
+    // The daemon owns no workspace registry, so "some live session already
+    // carries this id" is the only evidence it has that the workspace exists.
+    // Accepting an unverifiable id would be workspace impersonation.
+    const info = await startRW();
+    const res = await postSession(info.token as string, { workspaceId: 'ws-invented' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'unknown-workspace-id' });
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('accepts a workspaceId a live pane vouches for, and always accepts none at all', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    // ws-1 is s1's workspace; ws-legacy is s2's (id present, name absent).
+    expect((await postSession(token, { workspaceId: 'ws-1' })).status).toBe(201);
+    expect((await postSession(token, { workspaceId: 'ws-legacy' })).status).toBe(201);
+    // The documented escape hatch from the trade-off above.
+    expect((await postSession(token, {})).status).toBe(201);
+    expect(lifecycleCalls.map((c) => c.arg)).toEqual([
+      { workspaceId: 'ws-1' },
+      { workspaceId: 'ws-legacy' },
+      {},
+    ]);
+  });
+
+  it('400s a malformed JSON body rather than spawning anything', async () => {
+    const info = await startRW();
+    const res = await fetch(`${base()}/api/sessions`, {
+      method: 'POST',
+      headers: { ...bearer(info.token as string), 'Content-Type': 'application/json' },
+      body: '{not json',
+    });
+    expect(res.status).toBe(400);
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it("409s with the daemon's own wording when the create is refused", async () => {
+    const info = await startRW();
+    lifecycleBox.createThrows = 'Cannot create new terminal: 200 active sessions already running.';
+    const res = await postSession(info.token as string, {});
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: 'create-failed',
+      detail: expect.stringContaining('200 active sessions'),
+    });
+  });
+
+  it('500s rather than faking a row when the created session is not live', async () => {
+    const info = await startRW();
+    lifecycleBox.createGoesMissing = true;
+    expect((await postSession(info.token as string, {})).status).toBe(500);
+  });
+
+  it('★ closes a pane through the daemon and answers 204', async () => {
+    const info = await startRW();
+    const res = await deleteSession('s1', info.token as string);
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect(lifecycleCalls).toEqual([{ op: 'destroy', arg: 's1' }]);
+  });
+
+  it('404s an unknown or malformed id on DELETE, without calling the daemon', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    expect((await deleteSession('nope', token)).status).toBe(404);
+    expect((await deleteSession('a/b', token)).status).toBe(404);
+    expect((await fetch(`${base()}/api/sessions/`, { method: 'DELETE', headers: bearer(token) })).status).toBe(404);
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('500s when the daemon fails to reap the pane', async () => {
+    const info = await startRW();
+    lifecycleBox.destroyThrows = 'pty already gone';
+    const res = await deleteSession('s1', info.token as string);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ error: 'destroy-failed' });
+  });
+
+  it('★ works from a paired device, not just the operator token', async () => {
+    await startRW();
+    const device = await pairDevice('Phone');
+    const created = await postSession(device.token, { cwd: '/repo' });
+    expect(created.status).toBe(201);
+    expect((await deleteSession('s1', device.token)).status).toBe(204);
+    expect(lifecycleCalls.map((c) => c.op)).toEqual(['create', 'destroy']);
+  });
+
+  it('answers 503 on both lifecycle routes when the daemon wired no lifecycle', async () => {
+    const bare = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: true });
+    try {
+      const url = `http://127.0.0.1:${info.port}/api/sessions`;
+      const hdrs = bearer(info.token as string);
+      expect((await fetch(url, { method: 'POST', headers: hdrs })).status).toBe(503);
+      expect((await fetch(`${url}/s1`, { method: 'DELETE', headers: hdrs })).status).toBe(503);
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  it('leaves unmatched methods on the sessions namespace as 404, not 405 guesswork', async () => {
+    const info = await startRW();
+    const hdrs = bearer(info.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1`, { method: 'GET', headers: hdrs })).status).toBe(404);
+    expect((await fetch(`${base()}/api/sessions/s1/diff`, { method: 'DELETE', headers: hdrs })).status).toBe(404);
   });
 });

@@ -27,7 +27,24 @@ export interface DaemonSession {
   lastActivity: string;     // ISO 8601
   pid: number;              // child process PID
   cmd: string;              // executed command
+  /**
+   * LIVE working directory. Updated at runtime from the OSC 7 sequences the
+   * pane's shell emits, so it follows a `cd` — and so it is whatever any
+   * process running in that pane says it is. Fine for a tab tooltip; NOT a
+   * directory to act on. Use `spawnCwd` for that.
+   */
   cwd: string;
+  /**
+   * The directory the PTY was actually spawned in. Written once at creation
+   * from the resolved spawn parameters and never updated afterwards — in
+   * particular the OSC 7 handler that maintains `cwd` does not touch it.
+   *
+   * Exists because a remote reader (`wmux web`'s diff route) needs a directory
+   * that the pane's own process cannot choose. Optional only because a
+   * `sessions.json` written before this field existed has no value for it; a
+   * recovered session is respawned through `createSession` and gets one.
+   */
+  spawnCwd?: string;
   env: Record<string, string>;
   cols: number;
   rows: number;

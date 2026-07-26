@@ -12,6 +12,12 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 import { ENV_KEYS } from '../../shared/constants';
 import type { PairRefusal } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
+import {
+  collectSessionDiff,
+  createGitRunner,
+  type GitRunner,
+  type SessionDiffResult,
+} from './sessionDiff';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
 
@@ -45,6 +51,13 @@ import { buildWebCsp } from './webCsp';
  *     explicitly). The ONE carve-out is `POST /api/approvals/:id`, which works
  *     on a read-only server; see that handler for why a scoped approval is a
  *     strictly narrower grant than `--allow-input`.
+ *   - The pane LIFECYCLE routes (`POST /api/sessions`, `DELETE
+ *     /api/sessions/:id`) are NOT a second carve-out: both require
+ *     `--allow-input`. Spawning a shell IS arbitrary execution, and killing a
+ *     pane is destructive; see handleSessionCreate for the full reasoning.
+ *   - `GET /api/sessions/:id/diff` runs read-only git in the pane's own cwd.
+ *     The cwd comes from the daemon's session record, never from the request,
+ *     and no ref/pathspec argument is accepted — see sessionDiff.ts.
  *
  * Route table (everything under `/api/` is Bearer-gated unless noted):
  *   GET  /                     app shell (unauthenticated, no secrets)
@@ -53,6 +66,9 @@ import { buildWebCsp } from './webCsp';
  *                              off-machine transports — see mintRefusal)
  *   GET  /api/config           allowInput flag
  *   GET  /api/sessions         pane list
+ *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
+ *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
+ *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
  *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
@@ -218,6 +234,33 @@ export type WebPairStartResult =
   | { ok: true; code: string; expiresAt: number }
   | { ok: false; error: string };
 
+/**
+ * Pane lifecycle as far as the HTTP surface is concerned.
+ *
+ * STRUCTURAL, like `WebDeviceResolver`, and for a sharper reason than usual.
+ * Spawning a PTY means an id policy, a shell resolution, an environment
+ * filter, the process monitor, the supervisor, a state flush and a snapshot
+ * trigger — the exact body of the `daemon.createSession` RPC. This module must
+ * not own a second copy of that (a second copy is how the web-created pane
+ * ends up unmonitored and unpersisted), so the daemon hands its OWN handler in
+ * and the route calls it.
+ *
+ * NOT the MCP `pane_split` path. That RPC is registered in the Electron main
+ * process (`src/main/pipe/handlers/pane.rpc.ts`) and forwarded to the renderer,
+ * which owns the pane TREE; the daemon cannot reach it and must not learn how
+ * — `daemonExecuteWall.test.ts` bans importing `src/main/pipe` outright. What
+ * both paths converge on is `daemon.createSession`, and that is what this is.
+ * The consequence is stated where the daemon implements it: a pane created
+ * here is a real, monitored, persisted daemon session that the desktop GUI has
+ * no layout node for.
+ */
+export interface WebSessionLifecycle {
+  /** Spawn a pane. Resolves to the new session's id. */
+  create(params: { workspaceId?: string; cwd?: string }): Promise<{ id: string }>;
+  /** Close a pane and dispose its PTY. Called only for an id already resolved. */
+  destroy(id: string): Promise<void>;
+}
+
 interface WebTerminalServerDeps {
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
@@ -241,6 +284,18 @@ interface WebTerminalServerDeps {
    * (`resources/daemon-web`) layouts.
    */
   assetsDir: string;
+  /**
+   * Pane spawn/close. Optional like `approvals`: a daemon that did not wire it
+   * (or a unit test that does not care) still serves every other route, and the
+   * two lifecycle routes answer 503 rather than pretending.
+   */
+  lifecycle?: WebSessionLifecycle;
+  /**
+   * How `GET /api/sessions/:id/diff` reaches git. Seam, defaulted to the real
+   * `execFile` runner — injected only so the route's status-code mapping can be
+   * tested without a repository on the test machine's disk.
+   */
+  git?: GitRunner;
   /**
    * Clock seam. Only the attention log's TTL eviction reads it; injected so the
    * unit tests can age entries deterministically instead of sleeping half an
@@ -325,6 +380,33 @@ const STREAM_TICKET_BYTES = 32;
  * tickets in a loop, which no client of ours does.
  */
 const MAX_STREAM_TICKETS = 512;
+
+/**
+ * How many pane diffs may be collected at once, across the whole daemon.
+ *
+ * A diff is a `rev-parse`, a config listing, three collection commands, a
+ * closing `status` and up to `UNTRACKED_DIFF_LIMIT` more `--no-index` runs —
+ * two dozen `git` processes in the worst case, each allowed five seconds and
+ * half a megabyte of buffer, with the untracked pass held to
+ * `UNTRACKED_TOTAL_BUDGET_MS` overall so the worst case is bounded in TIME as
+ * well as in count. The route needs no `--allow-input`, so a phone that
+ * retries on every reconnect — or a client that simply polls — is a fork bomb
+ * with a Bearer token. Two is chosen to be obviously enough for the intended
+ * use (one human, looking at one approval) and obviously not a load: a third
+ * concurrent collection is refused with 429 rather than queued, because a
+ * queued diff arrives after the human has already decided.
+ */
+const MAX_CONCURRENT_DIFFS = 2;
+/** Live collections, daemon-wide. Module-level: the bound is on `git`, not on a server object. */
+let activeDiffs = 0;
+/**
+ * Collections in flight, keyed by session id, so N requests for the SAME pane
+ * cost ONE git run and all get the same answer. This is the common case by far:
+ * a phone reconnecting mid-request re-issues it, and the diff is a pure read,
+ * so sharing the result is not a cache — the second caller is waiting on the
+ * very run it would otherwise have started.
+ */
+const inFlightDiffs = new Map<string, Promise<SessionDiffResult>>();
 
 interface SseClient {
   res: http.ServerResponse;
@@ -464,6 +546,9 @@ export class WebTerminalServer {
    * `loadAssets()` is served the locked-down header, never a permissive one.
    */
   private csp: string = buildWebCsp(null);
+
+  /** Lazily-built git runner for `/api/sessions/:id/diff` (see that handler). */
+  private git: GitRunner | null = null;
 
   constructor(private readonly deps: WebTerminalServerDeps) {}
 
@@ -1031,6 +1116,18 @@ export class WebTerminalServer {
     if (req.method === 'GET' && p === '/api/sessions') {
       return this.json(res, 200, { sessions: this.listSessions() });
     }
+    if (req.method === 'POST' && p === '/api/sessions') {
+      return this.handleSessionCreate(req, res);
+    }
+    if (p.startsWith('/api/sessions/')) {
+      const rest = p.slice('/api/sessions/'.length);
+      if (req.method === 'GET' && rest.endsWith('/diff')) {
+        return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
+      }
+      if (req.method === 'DELETE') {
+        return this.handleSessionDelete(res, rest);
+      }
+    }
     if (req.method === 'GET' && p === '/api/stream') {
       return this.handleStream(req, res, url, principal);
     }
@@ -1100,6 +1197,247 @@ export class WebTerminalServer {
       ...workspaceLabelOf(s.env),
       ...shellLabelOf(s.cmd),
     }));
+  }
+
+  // --- pane diff (read-only git) -------------------------------------------
+
+  /**
+   * `GET /api/sessions/:id/diff` — what has this pane's repository changed?
+   *
+   * The route exists for the approval screen. Answering "may I edit this file?"
+   * from a phone means deciding with a screen tail and nothing else; the pane's
+   * working tree already holds the real answer, so this reads it.
+   *
+   * READ-ONLY, and available on a read-only server — it is strictly narrower
+   * than `/api/approvals/:id` (which writes keystrokes): it runs four fixed
+   * read-only git commands and returns text. It is NOT gated on `--allow-input`
+   * for that reason, and the same Bearer gate as every other route still
+   * applies, so this is not a new reader.
+   *
+   * The cwd is looked up from the daemon's own session record. Nothing in the
+   * request names a directory, a ref, or a pathspec — see sessionDiff.ts for
+   * why the argv is a constant.
+   *
+   * IT IS `meta.spawnCwd`, NOT `meta.cwd`. `meta.cwd` is live: the daemon
+   * rewrites it whenever the pane's process emits an OSC 7 sequence
+   * (DaemonSessionManager's `cwd` bridge handler), and ANY process running in
+   * that pane can emit one — it is three bytes of terminal output, not a
+   * privileged operation. Diffing `meta.cwd` would therefore let a hostile
+   * process inside a pane aim this route at any directory on the machine and
+   * read the resulting patch back over the web API. `spawnCwd` is written once
+   * at spawn from the daemon's own record and never updated, so the directory
+   * being read is the one an operator actually chose.
+   *
+   * `not-a-git-repo` is a 409, not a 500: a pane running in `~` is completely
+   * normal and the phone should say "no repository here", not "something broke".
+   */
+  private async handleSessionDiff(res: http.ServerResponse, rawId: string): Promise<void> {
+    const id = decodePathSegment(rawId);
+    if (id === null) return this.json(res, 404, { error: 'session not found' });
+    const managed = this.deps.sessionManager.getSession(id);
+    if (!managed) return this.json(res, 404, { error: 'session not found' });
+
+    // Absent only for a session record written before spawnCwd existed. Every
+    // live session goes through DaemonSessionManager.createSession, which sets
+    // it, so this is a belt-and-braces refusal rather than a reachable path —
+    // and refusing is the right way round: falling back to `meta.cwd` would
+    // reopen the hole above for exactly the sessions we cannot vouch for.
+    const cwd = managed.meta.spawnCwd;
+    if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
+
+    // Built once and cached: the default runner closes over nothing per-call,
+    // and constructing one per request would be noise in a hot approval screen.
+    this.git ??= this.deps.git ?? createGitRunner();
+    const git = this.git;
+
+    let work = inFlightDiffs.get(id);
+    if (!work) {
+      if (activeDiffs >= MAX_CONCURRENT_DIFFS) {
+        return this.json(res, 429, { error: 'busy' });
+      }
+      activeDiffs += 1;
+      work = collectSessionDiff(cwd, git).finally(() => {
+        activeDiffs -= 1;
+        inFlightDiffs.delete(id);
+      });
+      inFlightDiffs.set(id, work);
+    }
+
+    let result: SessionDiffResult;
+    try {
+      result = await work;
+    } catch (err) {
+      // collectSessionDiff returns failures as data, so this is a bug rather
+      // than a git problem — but an unhandled rejection here would take the
+      // daemon down, and every coalesced waiter must be answered.
+      this.deps.log('warn', `[web] diff threw for ${id}: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'git-failed' });
+    }
+    if (!result.ok) {
+      if (result.reason === 'not-a-git-repo') {
+        return this.json(res, 409, { error: 'not-a-git-repo' });
+      }
+      // Detail-free on the wire: git's stderr can name paths, remotes and
+      // config keys, and the client's only useful action ("it broke, retry")
+      // does not depend on which. The operator gets the text in the log.
+      this.deps.log('warn', `[web] diff failed for ${id}: ${result.detail ?? ''}`);
+      return this.json(res, 500, { error: 'git-failed' });
+    }
+    // `no-store`, like the app shell: a 200 GET with no validator is
+    // heuristically cacheable, and this is the one payload an approval decision
+    // is made against. A phone — or an intermediary — replaying yesterday's
+    // patch under today's prompt is the exact failure this route exists to
+    // prevent.
+    return this.json(res, 200, result.diff, { 'Cache-Control': 'no-store' });
+  }
+
+  // --- pane lifecycle (opt-in) ---------------------------------------------
+
+  /**
+   * `POST /api/sessions` — spawn a pane from the phone. Body: `{workspaceId?,
+   * cwd?}`.
+   *
+   * ┌───────────────────────────────────────────────────────────────────────┐
+   * │ GATED ON `--allow-input`. THIS IS NOT AN APPROVAL-STYLE CARVE-OUT.    │
+   * └───────────────────────────────────────────────────────────────────────┘
+   * `POST /api/approvals/:id` is allowed on a read-only server because the
+   * caller supplies a `approve`/`deny` verb and the registry picks the bytes
+   * for a request the DAEMON already raised — the caller cannot invent the
+   * action. Creating a shell is the opposite: an interactive shell is the
+   * definition of arbitrary execution, and a caller who can spawn one and then
+   * type into it has everything `--allow-input` grants, obtained by a route
+   * that claimed not to need it. Anything else here would make
+   * `--allow-input` a label rather than a boundary.
+   *
+   * `DELETE` is gated for the adjacent reason: killing somebody's pane
+   * destroys unsaved work, and "read-only" must not include "can end your
+   * running build".
+   *
+   * Both credential forms may call it. A paired phone authenticates as itself
+   * and is individually revocable; the operator token is not more trusted here,
+   * only differently revocable, so gating on the credential FORM rather than on
+   * the server's input policy would be a boundary that is not one.
+   */
+  private handleSessionCreate(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (this.opts?.allowInput !== true) {
+      return this.json(res, 403, {
+        error: 'read-only: server started without --allow-input',
+        detail: 'creating a shell is arbitrary execution — it requires the same grant as typing',
+      });
+    }
+    const lifecycle = this.deps.lifecycle;
+    if (!lifecycle) return this.json(res, 503, { error: 'lifecycle unavailable' });
+
+    this.readJsonBody(req, res, (body) => {
+      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown };
+      const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
+      const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
+      if (workspaceId) {
+        const bad = this.rejectWorkspaceId(workspaceId);
+        if (bad) return this.json(res, 400, bad);
+      }
+      lifecycle
+        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}) })
+        .then(({ id }) => {
+          // One serializer: the new pane is described by the SAME projection
+          // `GET /api/sessions` uses, so a client can append the response to
+          // its list without a second shape to keep in step. A create that
+          // somehow left nothing live is reported rather than faked.
+          const row = this.listSessions().find((s) => s.id === id);
+          if (!row) return this.json(res, 500, { error: 'created session is not live' });
+          return this.json(res, 201, row);
+        })
+        .catch((err: unknown) => {
+          // The daemon refuses a create for reasons that are the operator's
+          // situation, not a bug: the session cap, memory pressure, a shutdown
+          // in flight. 409 says "not now" and carries the daemon's own wording,
+          // which already tells the human what to do about it.
+          this.deps.log('warn', `[web] session create failed: ${errMsg(err)}`);
+          return this.json(res, 409, { error: 'create-failed', detail: errMsg(err) });
+        });
+    });
+  }
+
+  /**
+   * Is this `workspaceId` one we are willing to stamp into a child's
+   * environment? Returns the 400 body when it is not, `null` when it is.
+   *
+   * The id does not stay in the request. It is written into the new pane's
+   * `WMUX_WORKSPACE_ID`, persisted into `sessions.json`, and read back by the
+   * app as this pane's identity — so an unchecked string is workspace
+   * impersonation (claim a workspace you were never granted and the pane is
+   * filed under it) plus a persistence bug (a newline or a NUL in an env value
+   * and a state file that renders as something else entirely).
+   *
+   * TWO CHECKS, and the second is the interesting one:
+   *
+   *   1. SHAPE. The same `^[A-Za-z0-9_-]{1,64}$` the daemon already enforces on
+   *      a session id. Control characters, spaces and 4 KB of text are out.
+   *
+   *   2. EXISTENCE, evidenced by a live pane. The daemon has no workspace
+   *      registry — the renderer owns that list and the daemon deliberately
+   *      cannot ask it (see `sessionLifecycle` in daemon/index.ts). The only
+   *      evidence available here is that some live session is ALREADY running
+   *      under that id, which means the desktop minted it. So that is the rule.
+   *
+   * THE TRADE-OFF, stated plainly, because this replaced a deliberate decision
+   * that went the other way: a genuine workspace whose every pane happens to be
+   * closed cannot be named until one is open again, and the phone gets a 400
+   * for an id that really exists. The previous behaviour — spawn anyway, on the
+   * grounds that the daemon should not adjudicate a list it does not own — is
+   * the friendlier of the two and the wrong one: "I cannot verify this" must
+   * not resolve to "so I will accept it" for a value that becomes an identity.
+   * The workspace-less spawn (omit the field) is always available and is what a
+   * client should fall back to.
+   */
+  private rejectWorkspaceId(workspaceId: string): { error: string; detail: string } | null {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(workspaceId)) {
+      return {
+        error: 'invalid-workspace-id',
+        detail: 'workspaceId must match ^[A-Za-z0-9_-]{1,64}$',
+      };
+    }
+    const known = this.deps.sessionManager
+      .listLiveSessions()
+      .some((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId);
+    if (!known) {
+      return {
+        error: 'unknown-workspace-id',
+        detail:
+          'no live pane is running in that workspace — the daemon can only verify a ' +
+          'workspace id it can see on a running session. Omit workspaceId to spawn ' +
+          'outside a workspace.',
+      };
+    }
+    return null;
+  }
+
+  /** `DELETE /api/sessions/:id` — close a pane. See handleSessionCreate for the gate. */
+  private handleSessionDelete(res: http.ServerResponse, rawId: string): void {
+    if (this.opts?.allowInput !== true) {
+      return this.json(res, 403, {
+        error: 'read-only: server started without --allow-input',
+        detail: 'closing a pane destroys running work — it requires the same grant as typing',
+      });
+    }
+    const lifecycle = this.deps.lifecycle;
+    if (!lifecycle) return this.json(res, 503, { error: 'lifecycle unavailable' });
+
+    const id = decodePathSegment(rawId);
+    if (id === null) return this.json(res, 404, { error: 'session not found' });
+    if (!this.deps.sessionManager.getSession(id)) {
+      return this.json(res, 404, { error: 'session not found' });
+    }
+    lifecycle
+      .destroy(id)
+      .then(() => {
+        res.writeHead(204, this.securityHeaders());
+        res.end();
+      })
+      .catch((err: unknown) => {
+        this.deps.log('warn', `[web] session delete failed: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'destroy-failed', detail: errMsg(err) });
+      });
   }
 
   // --- SSE output stream --------------------------------------------------
@@ -1944,11 +2282,17 @@ export class WebTerminalServer {
     res.end(body);
   }
 
-  private json(res: http.ServerResponse, status: number, obj: unknown): void {
+  private json(
+    res: http.ServerResponse,
+    status: number,
+    obj: unknown,
+    extraHeaders?: Record<string, string>,
+  ): void {
     const body = JSON.stringify(obj);
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       ...this.securityHeaders(),
+      ...extraHeaders,
     });
     res.end(body);
   }
@@ -2073,6 +2417,25 @@ function shellLabelOf(cmd: string | undefined): { shell?: string } {
   const base = first.split(/[\\/]/).pop() ?? '';
   const name = base.replace(/\.(exe|cmd|bat|com)$/i, '');
   return name ? { shell: name } : {};
+}
+
+/**
+ * One path segment as an id, or null if it cannot be one.
+ *
+ * Same discipline as the approval-id decode: a malformed percent-escape is not
+ * an error to report, it is an id that by definition names nothing, and a
+ * segment containing `/` was never a single segment. Returning null lets both
+ * callers answer their own 404 rather than sharing a thrown error.
+ */
+function decodePathSegment(raw: string): string | null {
+  let id: string;
+  try {
+    id = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  if (!id || id.includes('/')) return null;
+  return id;
 }
 
 function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?: string } {

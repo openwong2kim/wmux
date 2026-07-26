@@ -193,6 +193,92 @@ Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
 
+### Creating and closing panes
+
+```
+POST   /api/sessions            body: {workspaceId?, cwd?}  → 201 <session row>
+DELETE /api/sessions/<id>                                   → 204
+```
+
+Both are **403 without `--allow-input`**, same as the keyboard — an interactive
+shell is arbitrary execution, and closing a pane destroys running work. Gate the
+UI on `/api/config` exactly as you gate the keyboard.
+
+`POST` answers with a single session row in the same shape `/api/sessions`
+returns, so append it to the list rather than refetching. Omit `cwd` for the
+home directory.
+
+`workspaceId` stamps the new pane's workspace identity, so it is checked twice
+before it is used. It must match `^[A-Za-z0-9_-]{1,64}$`, and **it must be a
+workspace some live pane is already running in** — the daemon owns no workspace
+registry (the desktop does), so a running session carrying the id is the only
+evidence available to it that the workspace exists. Either check failing is a
+400 (`invalid-workspace-id` / `unknown-workspace-id`) and nothing is spawned.
+The consequence is real and accepted: a genuine workspace whose panes are all
+closed cannot be named until one is open. Omit the field to spawn outside a
+workspace — that always works. The human-readable label is copied from the same
+live pane.
+
+409 means the daemon refused (session cap, memory pressure, shutdown in
+flight); `detail` is operator-facing copy worth showing verbatim. 404 on DELETE
+means the pane is already gone — treat it as success.
+
+A pane created this way is a real daemon session: it is listed, streamable,
+typeable, monitored and recovered. It has **no pane in the desktop GUI's
+layout** — only the renderer can create one of those, and the daemon
+deliberately cannot reach it.
+
+### What did this agent change?
+
+```
+GET /api/sessions/<id>/diff  → 200 {files: [{path, status, from?}], patch,
+                                    truncated, omittedBytes, patchIncomplete}
+                               409 {error: 'not-a-git-repo'}
+                               429 {error: 'busy'}
+                               500 {error: 'git-failed'}
+```
+
+Read-only, and **available on a read-only server** — it runs `git diff`,
+`git diff --cached` and `git status` in the pane's own working directory and
+returns text. Nothing in the request names a directory or a ref. The response
+is `Cache-Control: no-store`: it is the payload an approval is decided against
+and must never be replayed from a cache.
+
+`status` is the raw two-character porcelain code (`' M'`, `'M '`, `'??'`, `'R '`,
+`'UU'`, …): the index column and the worktree column are independent and any
+one-word summary loses one of them. `patch` is the staged patch, then the
+working-tree patch, then an add-hunk for each untracked file (the first 20 of
+them). It is capped at 512 KB, and `truncated` says the tail was cut.
+
+**`patchIncomplete` is the flag you must not ignore.** It means `files[]` is
+accurate but `patch` is missing content for a reason that is *not* the cap: a
+git command timed out or failed, there were more than 20 untracked files, the
+untracked pass ran out of its overall time budget, an untracked entry was a
+whole directory (a nested repository, or an unreadable one) that has no single
+file to render, or **the tree changed while the diff was being collected** —
+the pane's own agent staging a file mid-read produces a change that is in
+neither patch. Do
+not render a `patchIncomplete: true` response as a diff a human can approve
+against — say the patch is partial and offer the desktop. `truncated` and
+`patchIncomplete` are independent: `truncated` alone means "you have the first
+512 KB of a complete patch", which is a normal thing to show.
+
+The directory read is the one the pane was **spawned** in, not the one it is in
+now. A `cd` inside the pane does not move the diff. That is deliberate: the live
+directory is tracked from terminal escape sequences, which any process in the
+pane can emit, so acting on it would let a pane point this route anywhere on the
+machine.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 409 | `{error: 'not-a-git-repo'}` | **Normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no repository here", not "something went wrong". Only returned when git ran and said so — a repository that EXISTS but is broken (malformed config, dubious ownership, unreadable metadata) is a 500, not this |
+| 429 | `{error: 'busy'}` | Too many diffs in flight (the daemon collects at most two at once). Retry; do not treat it as an error state |
+| 500 | `{error: 'git-failed'}` | git could not be run, or timed out, or the tree could not be described. Deliberately carries no detail — git's stderr names paths, remotes and config keys, and the operator has it in the daemon log. Retry once, then offer the desktop |
+
+Concurrent requests for the same pane are coalesced into one git run and all
+receive the same answer, so a client that retries on reconnect costs nothing
+extra.
+
 ---
 
 ## 6. Approvals
