@@ -325,6 +325,30 @@ describe('buildBrainSettingsProfile', () => {
   });
 });
 
+// ── generated profile files ────────────────────────────────────────────────
+
+describe('generated profile files', () => {
+  it('writes the token-bearing profile + MCP config owner-only (0600 in a 0700 dir)', async () => {
+    // The MCP config embeds WMUX_COMMANDER_TOKEN — a bearer credential for the
+    // whole commander tool surface. At the default 0644 every local user could
+    // read it off disk and drive the operator's fleet.
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    const dir = path.join(tmpDir, 'brain-profiles');
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    const files = fs.readdirSync(dir);
+    expect(files.some((f) => f.startsWith('mcp-'))).toBe(true);
+    expect(files.some((f) => f.startsWith('settings-'))).toBe(true);
+    for (const f of files) {
+      expect(fs.statSync(path.join(dir, f)).mode & 0o777, `${f} must be 0600`).toBe(0o600);
+    }
+    adapter.dispose();
+    await turn;
+  });
+});
+
 describe('buildBrainLaunchCommand', () => {
   it('restricts the ambient setting sources to project', () => {
     // `--settings` only ADDS a source: without this flag the operator's own

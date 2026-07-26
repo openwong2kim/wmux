@@ -617,7 +617,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** Write the generated profile + MCP config, returning their paths. */
   private writeProfile(): { settingsPath: string; mcpConfigPath: string | null } {
     const dir = path.join(this.wmuxDir, 'brain-profiles');
-    fs.mkdirSync(dir, { recursive: true });
+    // 0700 / 0600 throughout: the generated MCP config carries this spawn's
+    // WMUX_COMMANDER_TOKEN, which is a bearer credential for the whole
+    // commander tool surface. Default 0644 would hand it to every local user.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stamp = randomUUID();
     const settingsPath = path.join(dir, `settings-${stamp}.json`);
     const bridgePath = this.deps.bridgePath ?? null;
@@ -625,7 +628,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     fs.writeFileSync(
       settingsPath,
       JSON.stringify(buildBrainSettingsProfile({ bridgePath, nodePath }), null, 2),
-      'utf8',
+      { encoding: 'utf8', mode: 0o600 },
     );
     this.profilePaths.push(settingsPath);
 
@@ -648,7 +651,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           null,
           2,
         ),
-        'utf8',
+        // Contains WMUX_COMMANDER_TOKEN — owner-only, never world-readable.
+        { encoding: 'utf8', mode: 0o600 },
       );
       this.profilePaths.push(mcpConfigPath);
     }
