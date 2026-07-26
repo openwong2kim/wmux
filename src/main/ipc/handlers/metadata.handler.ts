@@ -15,7 +15,11 @@ import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
-import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
+import {
+  classifySessionLocation,
+  type SessionLocation,
+  type SessionLocationSnapshot,
+} from '../../../shared/sessionLocation';
 import { resolveWslDistro } from '../../pty/wslDistro';
 import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
@@ -96,6 +100,54 @@ const paneIdentities = new Map<string, PaneIdentity>();
 const paneLocationEnricher = new SessionLocationEnricher(
   (shell) => resolveWslDistro({ shell }),
 );
+const paneLocationSnapshots = new Map<string, SessionLocationSnapshot>();
+type PaneLocationListener = (ptyId: string, snapshot: SessionLocationSnapshot) => void;
+const paneLocationListeners = new Set<PaneLocationListener>();
+let lastPaneLocationGeneration = 0;
+
+function nextPaneLocationGeneration(): number {
+  lastPaneLocationGeneration = Math.max(lastPaneLocationGeneration + 1, Date.now());
+  return lastPaneLocationGeneration;
+}
+
+function sameLocation(left: SessionLocation, right: SessionLocation): boolean {
+  return left.domain === right.domain
+    && left.cwd === right.cwd
+    && left.shell === right.shell
+    && (left.domain !== 'wsl' ? undefined : left.distro)
+      === (right.domain !== 'wsl' ? undefined : right.distro);
+}
+
+function publishPaneLocation(
+  ptyId: string,
+  location: SessionLocation,
+  newGeneration = false,
+): SessionLocationSnapshot {
+  const previous = paneLocationSnapshots.get(ptyId);
+  const snapshot: SessionLocationSnapshot = {
+    generation: newGeneration || !previous
+      ? nextPaneLocationGeneration()
+      : previous.generation,
+    revision: newGeneration || !previous ? 1 : previous.revision + 1,
+    location,
+  };
+  paneLocationSnapshots.set(ptyId, snapshot);
+  for (const listener of paneLocationListeners) {
+    try { listener(ptyId, snapshot); } catch { /* projection errors must not break PTY flow */ }
+  }
+  return snapshot;
+}
+
+export function onPaneLocationUpdate(listener: PaneLocationListener): () => void {
+  paneLocationListeners.add(listener);
+  return () => { paneLocationListeners.delete(listener); };
+}
+
+export function getPaneLocationSnapshot(
+  ptyId: string,
+): SessionLocationSnapshot | undefined {
+  return paneLocationSnapshots.get(ptyId);
+}
 
 // Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
 // (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
@@ -404,6 +456,14 @@ export function registerMetadataHandlers(
 
 export function updateCwd(ptyId: string, cwd: string): void {
   cwdMap.set(ptyId, cwd);
+  const identity = paneIdentities.get(ptyId);
+  const previous = paneLocationSnapshots.get(ptyId);
+  if (identity && previous) {
+    const location = classifySessionLocation(identity.shell, cwd, identity.distro);
+    if (!sameLocation(location, previous.location)) {
+      publishPaneLocation(ptyId, location);
+    }
+  }
   for (const listener of cwdListeners) {
     try { listener(ptyId, cwd); } catch { /* listener errors must not break PTY flow */ }
   }
@@ -448,8 +508,10 @@ export function updatePaneLocation(
   paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
   if (!resolveDistro) {
     paneLocationEnricher.cancel(ptyId);
+    paneLocationSnapshots.delete(ptyId);
     return;
   }
+  publishPaneLocation(ptyId, location, true);
   void paneLocationEnricher.enrich(
     ptyId,
     () => {
@@ -465,12 +527,14 @@ export function updatePaneLocation(
       const current = paneIdentities.get(ptyId);
       if (!current || enriched.domain !== 'wsl' || !enriched.distro) return;
       paneIdentities.set(ptyId, { ...current, distro: enriched.distro });
+      publishPaneLocation(ptyId, enriched);
     },
   );
 }
 
 export function removePaneLocation(ptyId: string): void {
   paneLocationEnricher.cancel(ptyId);
+  paneLocationSnapshots.delete(ptyId);
   paneIdentities.delete(ptyId);
 }
 

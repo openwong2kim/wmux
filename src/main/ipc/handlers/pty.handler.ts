@@ -25,6 +25,8 @@ import {
   type SessionDataHandler,
 } from './sessionDataDispatcher';
 import {
+  getPaneLocationSnapshot,
+  onPaneLocationUpdate,
   removePaneLocation,
   updateCwd,
   updatePaneLocation,
@@ -300,6 +302,12 @@ export function registerPTYHandlers(
     const win = getWindow?.();
     if (win && !win.isDestroyed()) {
       win.webContents.send(IPC.PTY_DATA, sessionId, text);
+    }
+  });
+  const unsubscribePaneLocation = onPaneLocationUpdate((ptyId, snapshot) => {
+    const win = getWindow?.();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.LOCATION_CHANGED, ptyId, snapshot);
     }
   });
 
@@ -647,7 +655,12 @@ export function registerPTYHandlers(
           initialCmd.onFirstData();
         });
       }
-      return { id: instance.id, shell: instance.shell, cwd: actualCwd };
+      return {
+        id: instance.id,
+        shell: instance.shell,
+        cwd: actualCwd,
+        locationSnapshot: getPaneLocationSnapshot(instance.id),
+      };
     }));
   }
 
@@ -928,7 +941,10 @@ export function registerPTYHandlers(
     }));
   } else {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, () => {
-      return ptyManager.getActiveInstances();
+      return ptyManager.getActiveInstances().map((instance) => ({
+        ...instance,
+        locationSnapshot: getPaneLocationSnapshot(instance.id),
+      }));
     }));
   }
 
@@ -1059,7 +1075,12 @@ export function registerPTYHandlers(
       if (!instance) {
         return { success: false, error: 'PTY not found' };
       }
-      return { success: true, id: instance.id, shell: instance.shell };
+      return {
+        success: true,
+        id: instance.id,
+        shell: instance.shell,
+        locationSnapshot: getPaneLocationSnapshot(instance.id),
+      };
     }));
   }
 
@@ -1309,6 +1330,7 @@ export function registerPTYHandlers(
 
   // Cleanup function
   return () => {
+    unsubscribePaneLocation();
     ipcMain.removeHandler(IPC.PTY_CREATE);
     ipcMain.removeAllListeners(IPC.PTY_WRITE);
     ipcMain.removeHandler(IPC.PTY_RESIZE);
