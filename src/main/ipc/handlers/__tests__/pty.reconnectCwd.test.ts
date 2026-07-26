@@ -1,6 +1,42 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { IPC } from '../../../../shared/constants';
+import {
+  getCwd,
+  getPaneCommandTarget,
+  onCwdUpdate,
+  removeCwd,
+  removePaneLocation,
+} from '../metadata.handler';
+import { registerPTYHandlers } from '../pty.handler';
+import type { PTYManager } from '../../../pty/PTYManager';
+import type { PTYBridge } from '../../../pty/PTYBridge';
+import type { DaemonClient } from '../../../DaemonClient';
+import type { SessionLocation } from '../../../../shared/sessionLocation';
+
+const electronMock = vi.hoisted(() => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  return {
+    handlers,
+    ipcMain: {
+      handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
+        handlers.set(channel, handler);
+      }),
+      removeHandler: vi.fn((channel: string) => {
+        handlers.delete(channel);
+      }),
+      on: vi.fn(),
+      removeAllListeners: vi.fn(),
+    },
+  };
+});
+
+vi.mock('electron', async (importOriginal) => ({
+  ...await importOriginal<typeof import('electron')>(),
+  ipcMain: electronMock.ipcMain,
+}));
 
 /**
  * Source-level regression lock (owner-reported 2026-07-19):
@@ -14,9 +50,8 @@ import path from 'node:path';
  * scraping only catches PowerShell/bash prompts, not macOS's default zsh ("works on
  * win but not mac"), so reconnect must seed it.
  *
- * The reconnect handler is deeply coupled to daemonClient RPC, so unit isolation is
- * hard (mocking it all is fragile). Like the imeCopyPaste / macCtrlPassthrough locks,
- * we pin it at the source level.
+ * The registered handler is exercised through the mocked ipcMain boundary so
+ * the assertion covers its daemon RPC wiring and metadata side effects.
  */
 
 const SRC = readFileSync(
@@ -28,25 +63,106 @@ const SRC = readFileSync(
 const reconnectStart = SRC.indexOf('IPC.PTY_RECONNECT, wrapHandler');
 const RECONNECT = reconnectStart > -1 ? SRC.slice(reconnectStart) : '';
 
-describe('PTY_RECONNECT seeds cwd (source-level lock)', () => {
-  it('locates the reconnect handler', () => {
-    expect(reconnectStart).toBeGreaterThan(-1);
+type ListedSession = {
+  id: string;
+  cmd: string;
+  state: string;
+  cwd?: string;
+  location?: SessionLocation;
+};
+
+class FakeDaemon extends EventEmitter {
+  readonly isConnected = true;
+  readonly rpc = vi.fn(async (method: string) => {
+    if (method === 'daemon.listSessions') return this.sessions;
+    return {};
+  });
+  readonly connectSessionPipe = vi.fn(async () => {});
+  readonly isSessionPipeWritable = vi.fn(() => true);
+  readonly writeToSession = vi.fn(() => true);
+  readonly disconnectSessionPipe = vi.fn(async () => {});
+
+  constructor(readonly sessions: ListedSession[]) {
+    super();
+  }
+}
+
+let cleanup: (() => void) | undefined;
+const testIds = ['pty-live', 'pty-absent', 'pty-dead'];
+
+beforeEach(() => {
+  electronMock.handlers.clear();
+  for (const id of testIds) {
+    removeCwd(id);
+    removePaneLocation(id);
+  }
+});
+
+afterEach(() => {
+  cleanup?.();
+  cleanup = undefined;
+  for (const id of testIds) {
+    removeCwd(id);
+    removePaneLocation(id);
+  }
+});
+
+function registerReconnect(sessions: ListedSession[]) {
+  const daemon = new FakeDaemon(sessions);
+  cleanup = registerPTYHandlers(
+    {} as PTYManager,
+    {} as PTYBridge,
+    daemon as unknown as DaemonClient,
+  );
+  const handler = electronMock.handlers.get(IPC.PTY_RECONNECT);
+  if (!handler) throw new Error('PTY_RECONNECT handler was not registered');
+  return { daemon, handler };
+}
+
+describe('PTY_RECONNECT metadata restoration', () => {
+  it('seeds the authoritative location once before notifying cwd listeners', async () => {
+    const location: SessionLocation = {
+      domain: 'wsl',
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+    const { handler } = registerReconnect([{
+      id: 'pty-live',
+      cmd: 'wsl.exe',
+      state: 'running',
+      cwd: '/home/me/project',
+      location,
+    }]);
+    const observed: Array<SessionLocation | undefined> = [];
+    const unsubscribe = onCwdUpdate((id) => {
+      if (id === 'pty-live') observed.push(getPaneCommandTarget(id)?.location);
+    });
+
+    const result = await handler({}, 'pty-live');
+    unsubscribe();
+
+    expect(result).toMatchObject({ success: true, id: 'pty-live' });
+    expect(observed).toEqual([location]);
+    expect(getCwd('pty-live')).toBe('/home/me/project');
+    expect(getPaneCommandTarget('pty-live')?.location).toEqual(location);
   });
 
-  it('the listSessions response type includes cwd', () => {
-    expect(RECONNECT).toMatch(
-      /id: string;\s+cmd: string;\s+state: string;\s+pid\?: number;\s+cwd\?: string;\s+location\?: SessionLocation/,
-    );
-  });
+  it.each([
+    ['absent', [], 'pty-absent'],
+    ['dead', [{ id: 'pty-dead', cmd: 'pwsh.exe', state: 'dead', cwd: 'C:\\repo' }], 'pty-dead'],
+  ] as const)('does not seed metadata for an %s session', async (_case, sessions, id) => {
+    const { handler } = registerReconnect([...sessions]);
+    const listener = vi.fn();
+    const unsubscribe = onCwdUpdate(listener);
 
-  it('calls updateCwd with the session cwd on reconnect', () => {
-    expect(RECONNECT).toMatch(/if \(session\.cwd\) \{[\s\S]*?updateCwd\(id, session\.cwd\)/);
-    // Locks that reconnect seeds the pane's location, not how the location is
-    // derived: the legacy `{cmd, cwd}` fallback is owned by
-    // `resolveSessionLocation` in shared/sessionLocation.ts and is unit-tested
-    // there. Pinning the old `?? classifySessionLocation` spelling here is what
-    // kept this call site on it after every other site had moved.
-    expect(RECONNECT).toMatch(/resolveSessionLocation\([\s\S]*?updatePaneLocation\(/);
+    const result = await handler({}, id);
+    unsubscribe();
+
+    expect(result).toMatchObject({ success: false, code: 'session-dead' });
+    expect(listener).not.toHaveBeenCalled();
+    expect(getCwd(id)).toBeUndefined();
+    expect(getPaneCommandTarget(id)).toBeUndefined();
   });
 });
 

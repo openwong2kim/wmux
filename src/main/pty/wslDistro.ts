@@ -43,6 +43,19 @@ export interface WslDistroList {
  */
 export type WslRunner = (args: readonly string[]) => Promise<string>;
 
+type WslExecFile = (
+  file: string,
+  args: string[],
+  options: {
+    encoding: 'buffer';
+    timeout: number;
+    maxBuffer: number;
+    windowsHide: boolean;
+    env: NodeJS.ProcessEnv;
+  },
+  callback: (error: Error | null, stdout: Buffer) => void,
+) => unknown;
+
 /**
  * `wsl.exe` writes UTF-16LE unless `WSL_UTF8=1` is honoured (newer builds
  * only), so sniff instead of trusting either: a NUL byte in the first chunk of
@@ -54,36 +67,44 @@ function decodeWslOutput(buffer: Buffer): string {
   return text.replace(/^\uFEFF/, '');
 }
 
-const defaultRunner: WslRunner = (args) => new Promise<string>((resolve) => {
-  if (process.platform !== 'win32') {
-    resolve('');
-    return;
-  }
-  try {
-    execFile(
-      'wsl.exe',
-      [...args],
-      {
-        // `encoding: 'buffer'` because the codepage is decided per build (see
-        // decodeWslOutput). WSL_UTF8 asks for UTF-8 where it is supported.
-        encoding: 'buffer',
-        timeout: WSL_LIST_TIMEOUT_MS,
-        maxBuffer: WSL_LIST_MAX_BUFFER,
-        windowsHide: true,
-        env: { ...process.env, WSL_UTF8: '1' },
-      },
-      (err, stdout) => {
-        if (err || !stdout) {
-          resolve('');
-          return;
-        }
-        resolve(decodeWslOutput(stdout));
-      },
-    );
-  } catch {
-    resolve('');
-  }
-});
+export function createWslRunner(
+  runFile: WslExecFile = execFile as unknown as WslExecFile,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): WslRunner {
+  return (args) => new Promise<string>((resolve) => {
+    if (platform !== 'win32') {
+      resolve('');
+      return;
+    }
+    try {
+      runFile(
+        'wsl.exe',
+        [...args],
+        {
+          // `encoding: 'buffer'` because the codepage is decided per build (see
+          // decodeWslOutput). WSL_UTF8 asks for UTF-8 where it is supported.
+          encoding: 'buffer',
+          timeout: WSL_LIST_TIMEOUT_MS,
+          maxBuffer: WSL_LIST_MAX_BUFFER,
+          windowsHide: true,
+          env: { ...env, WSL_UTF8: '1' },
+        },
+        (error, stdout) => {
+          if (error || !stdout) {
+            resolve('');
+            return;
+          }
+          resolve(decodeWslOutput(stdout));
+        },
+      );
+    } catch {
+      resolve('');
+    }
+  });
+}
+
+const defaultRunner = createWslRunner();
 
 function parseQuietList(output: string): string[] {
   return output

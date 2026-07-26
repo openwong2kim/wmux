@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // DeckLoopModal — steps editor·skill autocomplete·START payload (jsdom + fake api).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createElement, act } from 'react';
+import { createElement, act, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { DeckLoopModal, filterSkillSuggestions } from '../DeckLoopModal';
 import type { DeckLoopApi } from '../DeckLoopPanel';
@@ -64,7 +64,10 @@ describe('filterSkillSuggestions — "/" prefix autocomplete (pure)', () => {
 });
 
 describe('DeckLoopModal', () => {
-  async function mount(api: DeckLoopApi, over: Record<string, unknown> = {}) {
+  async function mount(
+    api: DeckLoopApi,
+    over: Partial<ComponentProps<typeof DeckLoopModal>> = {},
+  ) {
     await act(async () => {
       root.render(
         createElement(DeckLoopModal, {
@@ -95,16 +98,12 @@ describe('DeckLoopModal', () => {
     expect(skills).toHaveBeenCalledWith(location);
   });
 
-  // A bare cwd carries no shell, so nothing can tell a WSL `/home/me/proj`
-  // from a host path. Fabricating `{ domain: 'host' }` there is what makes
-  // Windows resolve a guest path as `C:\home\me\proj` (issue #21 AC 6), so the
-  // modal scans nothing rather than scanning the wrong domain.
-  it('never fabricates a location from a bare cwd', async () => {
+  it('does not scan skills when no location is supplied', async () => {
     const api = fakeApi();
     const skills = vi.fn(async () => ({ skills: CATALOG }));
     api.skills = skills;
 
-    await mount(api, { location: undefined, cwd: '/home/me/proj' });
+    await mount(api, { location: undefined });
 
     expect(skills).not.toHaveBeenCalled();
   });

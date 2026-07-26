@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { activeSessionLocation, focusedTerminalPtyId } from '../focusedSurface';
+import {
+  activeSessionLocation,
+  focusedTerminalPtyId,
+  reuseEquivalentSessionLocation,
+} from '../focusedSurface';
 import type { Workspace } from '../../../shared/types';
 
 function leaf(id: string, surfaces: any[], activeSurfaceId: string) {
@@ -117,5 +121,24 @@ describe('activeSessionLocation', () => {
       cwd: 'C:\\dev\\fmux',
       shell: '',
     });
+  });
+});
+
+describe('reuseEquivalentSessionLocation', () => {
+  const upper = { domain: 'host' as const, cwd: '/Users/Me/Repo', shell: 'zsh' };
+  const lower = { domain: 'host' as const, cwd: '/users/me/repo', shell: 'zsh' };
+
+  it('reuses the previous reference on case-insensitive renderer platforms', () => {
+    expect(reuseEquivalentSessionLocation(upper, lower, 'darwin')).toBe(upper);
+    const windows = { domain: 'host' as const, cwd: 'C:\\Repo\\', shell: 'pwsh.exe' };
+    expect(reuseEquivalentSessionLocation(
+      windows,
+      { ...windows, cwd: 'c:/repo' },
+      'win32',
+    )).toBe(windows);
+  });
+
+  it('keeps a new reference on case-sensitive renderer platforms', () => {
+    expect(reuseEquivalentSessionLocation(upper, lower, 'linux')).toBe(lower);
   });
 });

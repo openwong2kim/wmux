@@ -1,22 +1,19 @@
-import type { Workspace, Pane, PaneLeaf, Surface } from '../../shared/types';
+import type { Workspace, Surface } from '../../shared/types';
 import {
   classifySessionLocation,
+  locationsEqual,
   parseSessionLocation,
   resolveSessionLocation,
   type SessionLocation,
 } from '../../shared/sessionLocation';
+import { findActiveLeaf } from './paneTraversal';
 
-/** Find the leaf pane matching the workspace's activePaneId. */
-export function findActiveLeaf(workspace: Workspace): PaneLeaf | null {
-  const walk = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === workspace.activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = walk(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  return walk(workspace.rootPane);
+export function reuseEquivalentSessionLocation(
+  previous: SessionLocation | undefined,
+  next: SessionLocation | undefined,
+  platform: NodeJS.Platform,
+): SessionLocation | undefined {
+  return previous && next && locationsEqual(previous, next, platform) ? previous : next;
 }
 
 /**
@@ -42,7 +39,7 @@ export function sessionLocationForSurface(surface: Surface | undefined): Session
 /** Authoritative filesystem location for the active surface, including a
  * classification fallback for sessions persisted before `location`. */
 export function activeSessionLocation(workspace: Workspace): SessionLocation | null {
-  const leaf = findActiveLeaf(workspace);
+  const leaf = findActiveLeaf(workspace.rootPane, workspace.activePaneId);
   const surface = leaf?.surfaces.find((candidate) => candidate.id === leaf.activeSurfaceId);
   const surfaceLocation = sessionLocationForSurface(surface);
   if (surfaceLocation) return surfaceLocation;
@@ -64,7 +61,7 @@ export function activeSessionLocation(workspace: Workspace): SessionLocation | n
  */
 export function focusedTerminalPtyId(workspace: Workspace | undefined): string | null {
   if (!workspace) return null;
-  const leaf = findActiveLeaf(workspace);
+  const leaf = findActiveLeaf(workspace.rootPane, workspace.activePaneId);
   if (!leaf) return null;
   const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   if (!surface) return null;

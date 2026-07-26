@@ -71,7 +71,10 @@ import { DeckDecisionCard } from './DeckDecisionCard';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 import type { SessionLocation } from '../../../shared/sessionLocation';
-import { activeSessionLocation } from '../../utils/focusedSurface';
+import {
+  activeSessionLocation,
+  reuseEquivalentSessionLocation,
+} from '../../utils/focusedSurface';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -839,9 +842,9 @@ export function CommanderView(): React.ReactElement {
     // and consumers key effects on this identity (the loop modal re-runs its
     // skill catalog scan whenever the location changes).
     const prev = activePaneLocationRef.current;
-    if (prev && next && JSON.stringify(prev) === JSON.stringify(next)) return prev;
-    activePaneLocationRef.current = next;
-    return next;
+    const stable = reuseEquivalentSessionLocation(prev, next, window.electronAPI.platform);
+    activePaneLocationRef.current = stable;
+    return stable;
   }, [workspaces, activeWorkspaceId]);
   const brainThread =
     useStore((s) => (activeWorkspaceId ? s.brainThreads[activeWorkspaceId] : undefined)) ??

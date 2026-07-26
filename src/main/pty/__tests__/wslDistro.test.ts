@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  createWslRunner,
   listWslDistros,
   resetWslDistroCache,
   resolveWslDistro,
@@ -11,11 +12,6 @@ import {
  * without an app restart, and naming it must never boot a distribution
  * (AC 4). The runner is injected so these assertions never spawn wsl.exe.
  */
-
-/** UTF-16LE is what a stock `wsl.exe` writes; the parser must handle both. */
-function utf16(text: string): string {
-  return Buffer.from(Buffer.from(text, 'utf16le')).toString('utf16le');
-}
 
 function fakeRunner(outputs: Record<string, string>): { run: WslRunner; calls: string[][] } {
   const calls: string[][] = [];
@@ -43,15 +39,6 @@ describe('resolveWslDistro', () => {
     });
     await expect(resolveWslDistro({ shell: 'C:\\Windows\\System32\\wsl.exe' }, run))
       .resolves.toBe('Ubuntu');
-  });
-
-  it('decodes the UTF-16LE listing wsl.exe emits by default', async () => {
-    const { run } = fakeRunner({
-      [QUIET]: utf16('Ubuntu-24.04\n'),
-      [VERBOSE]: utf16('* Ubuntu-24.04 Running 2\n'),
-      [RUNNING]: utf16('Ubuntu-24.04\n'),
-    });
-    await expect(resolveWslDistro({ shell: 'wsl.exe' }, run)).resolves.toBe('Ubuntu-24.04');
   });
 
   it('prefers the pane\'s own -d argument over enumeration', async () => {
@@ -99,6 +86,60 @@ describe('resolveWslDistro', () => {
       expect(call).not.toContain('-e');
       expect(call).not.toContain('--cd');
     }
+  });
+});
+
+describe('createWslRunner', () => {
+  it('decodes UTF-16LE bytes and bounds the hidden non-interactive process', async () => {
+    type Exec = NonNullable<Parameters<typeof createWslRunner>[0]>;
+    const exec = vi.fn<Exec>((_file, _args, _options, callback) => {
+      callback(null, Buffer.from('\uFEFFUbuntu-24.04\r\n', 'utf16le'));
+    });
+    const run = createWslRunner(exec, 'win32', { PATH: 'test-bin' });
+
+    await expect(run(['-l', '-q'])).resolves.toBe('Ubuntu-24.04\r\n');
+    expect(exec).toHaveBeenCalledWith(
+      'wsl.exe',
+      ['-l', '-q'],
+      {
+        encoding: 'buffer',
+        timeout: 3_000,
+        maxBuffer: 256 * 1024,
+        windowsHide: true,
+        env: { PATH: 'test-bin', WSL_UTF8: '1' },
+      },
+      expect.any(Function),
+    );
+  });
+
+  it('decodes UTF-8 bytes when WSL honours WSL_UTF8', async () => {
+    type Exec = NonNullable<Parameters<typeof createWslRunner>[0]>;
+    const exec = vi.fn<Exec>((_file, _args, _options, callback) => {
+      callback(null, Buffer.from('Ubuntu\n', 'utf8'));
+    });
+
+    await expect(createWslRunner(exec, 'win32')(['-l', '-q'])).resolves.toBe('Ubuntu\n');
+  });
+
+  it('degrades callback errors and synchronous spawn failures to an empty result', async () => {
+    type Exec = NonNullable<Parameters<typeof createWslRunner>[0]>;
+    const callbackError = vi.fn<Exec>((_file, _args, _options, callback) => {
+      callback(new Error('failed'), Buffer.alloc(0));
+    });
+    const synchronousError = vi.fn<Exec>(() => {
+      throw new Error('failed');
+    });
+
+    await expect(createWslRunner(callbackError, 'win32')(['-l'])).resolves.toBe('');
+    await expect(createWslRunner(synchronousError, 'win32')(['-l'])).resolves.toBe('');
+  });
+
+  it('does not spawn outside Windows', async () => {
+    type Exec = NonNullable<Parameters<typeof createWslRunner>[0]>;
+    const exec = vi.fn<Exec>();
+
+    await expect(createWslRunner(exec, 'linux')(['-l'])).resolves.toBe('');
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 
