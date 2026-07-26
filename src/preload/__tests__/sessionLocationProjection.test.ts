@@ -42,8 +42,36 @@ describe('preload session location propagation', () => {
     const oldRequest = projection.beginDiscovery();
     projection.reset();
 
-    expect(projection.accept('pty-1', snapshot(100, 1), oldRequest)).toBe(false);
+    const projected = projection.projectResponse(
+      { id: 'pty-1', locationSnapshot: snapshot(100, 1), shell: 'pwsh.exe' },
+      oldRequest,
+    );
+    expect(projected).toEqual({
+      response: { id: 'pty-1', locationSnapshot: undefined, shell: 'pwsh.exe' },
+      accepted: false,
+    });
     expect(projection.acceptEvent('pty-1', snapshot(1, 1))).toBe(true);
+  });
+
+  it('strips a released id from a delayed list response without affecting peers', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const request = projection.beginDiscovery();
+    projection.release('closed');
+
+    expect(projection.projectResponse(
+      { id: 'closed', locationSnapshot: snapshot(4, 1) },
+      request,
+    )).toEqual({
+      response: { id: 'closed', locationSnapshot: undefined },
+      accepted: false,
+    });
+    expect(projection.projectResponse(
+      { id: 'live', locationSnapshot: snapshot(1, 1) },
+      request,
+    )).toEqual({
+      response: { id: 'live', locationSnapshot: snapshot(1, 1) },
+      accepted: true,
+    });
   });
 
   it('ordered exact-generation exit releases a closed session', () => {

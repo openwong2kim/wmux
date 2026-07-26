@@ -28,6 +28,25 @@ export class PreloadSessionLocationProjection {
     return lease ? this.owner.accept(ptyId, snapshot, lease) : false;
   }
 
+  projectResponse<T extends {
+    id?: string;
+    locationSnapshot?: SessionLocationSnapshot;
+  }>(
+    response: T,
+    authority: SessionLocationDiscoveryAuthority,
+  ): { response: T; accepted: boolean } {
+    const { id, locationSnapshot } = response;
+    if (!id || !locationSnapshot) return { response, accepted: false };
+
+    const accepted = this.accept(id, locationSnapshot, authority);
+    return {
+      response: accepted
+        ? response
+        : { ...response, locationSnapshot: undefined },
+      accepted,
+    };
+  }
+
   acceptEvent(ptyId: string, snapshot: SessionLocationSnapshot): boolean {
     const authority = this.owner.beginDiscovery();
     try {

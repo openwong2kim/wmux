@@ -34,28 +34,24 @@ ipcRenderer.on('daemon:connected', () => {
   projectedLocations.reset();
 });
 
-function rememberProjectedLocation(
-  ptyId: string,
-  snapshot: SessionLocationSnapshot,
+function projectLocationResponse<T extends {
+  id?: string;
+  locationSnapshot?: SessionLocationSnapshot;
+}>(
+  response: T,
   authority: SessionLocationDiscoveryAuthority,
-): boolean {
-  return projectedLocations.accept(ptyId, snapshot, authority);
-}
-
-function projectLocationSnapshot(
-  ptyId: string | undefined,
-  snapshot: SessionLocationSnapshot | undefined,
-  authority: SessionLocationDiscoveryAuthority,
-): void {
-  if (!ptyId || !snapshot) return;
-  if (!rememberProjectedLocation(ptyId, snapshot, authority)) return;
-  ipcRenderer.emit(
-    IPC.LOCATION_CHANGED,
-    {} as Electron.IpcRendererEvent,
-    ptyId,
-    snapshot,
-    true,
-  );
+): T {
+  const projected = projectedLocations.projectResponse(response, authority);
+  if (projected.accepted) {
+    ipcRenderer.emit(
+      IPC.LOCATION_CHANGED,
+      {} as Electron.IpcRendererEvent,
+      response.id,
+      response.locationSnapshot,
+      true,
+    );
+  }
+  return projected.response;
 }
 
 function projectLocationEvent(
@@ -103,8 +99,7 @@ const electronAPI = {
           cwd?: string;
           locationSnapshot?: SessionLocationSnapshot;
         };
-        projectLocationSnapshot(result.id, result.locationSnapshot, authority);
-        return result;
+        return projectLocationResponse(result, authority);
       } finally {
         projectedLocations.finishDiscovery(authority);
       }
@@ -131,10 +126,7 @@ const electronAPI = {
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
         const result = await ipcRenderer.invoke(IPC.PTY_LIST) as Array<{ id: string; shell: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
-        for (const session of result) {
-          projectLocationSnapshot(session.id, session.locationSnapshot, authority);
-        }
-        return result;
+        return result.map((session) => projectLocationResponse(session, authority));
       } finally {
         projectedLocations.finishDiscovery(authority);
       }
@@ -156,8 +148,7 @@ const electronAPI = {
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
         const result = await ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as { success: boolean; id?: string; shell?: string; locationSnapshot?: SessionLocationSnapshot; error?: string; code?: string; transient?: boolean };
-        projectLocationSnapshot(result.id, result.locationSnapshot, authority);
-        return result;
+        return projectLocationResponse(result, authority);
       } finally {
         projectedLocations.finishDiscovery(authority);
       }
