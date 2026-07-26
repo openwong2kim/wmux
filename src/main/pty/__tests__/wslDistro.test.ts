@@ -37,13 +37,13 @@ describe('resolveWslDistro', () => {
       [VERBOSE]: '  NAME            STATE           VERSION\r\n* Ubuntu          Running         2\r\n  docker-desktop  Stopped         2\r\n',
       [RUNNING]: 'Ubuntu\r\n',
     });
-    await expect(resolveWslDistro('C:\\Windows\\System32\\wsl.exe', run))
+    await expect(resolveWslDistro({ shell: 'C:\\Windows\\System32\\wsl.exe' }, run))
       .resolves.toBe('Ubuntu');
   });
 
   it('falls back to the only registered distro when no default is marked', async () => {
     const { run } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '', [RUNNING]: '' });
-    await expect(resolveWslDistro('wsl.exe', run)).resolves.toBe('Ubuntu');
+    await expect(resolveWslDistro({ shell: 'wsl.exe' }, run)).resolves.toBe('Ubuntu');
   });
 
   it('stays unresolved rather than guessing between distros', async () => {
@@ -52,18 +52,18 @@ describe('resolveWslDistro', () => {
       [VERBOSE]: '  NAME STATE VERSION\n  Ubuntu Stopped 2\n  Debian Stopped 2\n',
       [RUNNING]: '',
     });
-    await expect(resolveWslDistro('wsl.exe', run)).resolves.toBeUndefined();
+    await expect(resolveWslDistro({ shell: 'wsl.exe' }, run)).resolves.toBeUndefined();
   });
 
   it('never enumerates for a non-WSL pane', async () => {
     const { run, calls } = fakeRunner({ [QUIET]: 'Ubuntu\n' });
-    await expect(resolveWslDistro('pwsh.exe', run)).resolves.toBeUndefined();
+    await expect(resolveWslDistro({ shell: 'pwsh.exe' }, run)).resolves.toBeUndefined();
     expect(calls).toEqual([]);
   });
 
   it('only ever enumerates — it never runs a command inside a distro', async () => {
     const { run, calls } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '* Ubuntu Running 2\n' });
-    await resolveWslDistro('wsl.exe', run);
+    await resolveWslDistro({ shell: 'wsl.exe' }, run);
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
       expect(call[0]).toBe('-l');

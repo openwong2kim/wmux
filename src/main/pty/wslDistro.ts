@@ -1,6 +1,11 @@
 import { execFile } from 'node:child_process';
 import { isWslShell } from '../../shared/wslCwd';
 
+export interface WslPaneContext {
+  /** The pane's shell command, e.g. `C:\\Windows\\System32\\wsl.exe`. */
+  shell: string;
+}
+
 /**
  * Resolve the WSL distribution a pane is actually running in.
  *
@@ -187,10 +192,10 @@ export function listWslDistros(run: WslRunner = defaultRunner): Promise<WslDistr
  * unambiguous, and anything else stays unresolved.
  */
 export async function resolveWslDistro(
-  shell: string,
+  ctx: WslPaneContext,
   run: WslRunner = defaultRunner,
 ): Promise<string | undefined> {
-  if (!isWslShell(shell)) return undefined;
+  if (!isWslShell(ctx.shell)) return undefined;
 
   const list = await listWslDistros(run);
   if (list.defaultName) return list.defaultName;

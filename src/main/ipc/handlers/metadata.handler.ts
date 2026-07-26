@@ -17,6 +17,7 @@ import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
 import { resolveWslDistro } from '../../pty/wslDistro';
+import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 import { resolveGitToplevel } from '../../git/git';
 
@@ -92,6 +93,9 @@ interface PaneIdentity {
   distro?: string;
 }
 const paneIdentities = new Map<string, PaneIdentity>();
+const paneLocationEnricher = new SessionLocationEnricher(
+  (shell) => resolveWslDistro({ shell }),
+);
 
 // Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
 // (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
@@ -438,20 +442,27 @@ export function getCwd(ptyId: string): string | undefined {
 export function updatePaneLocation(ptyId: string, location: SessionLocation): void {
   const distro = location.domain === 'wsl' ? location.distro : undefined;
   paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
-  if (location.domain !== 'wsl' || distro) return;
-  void resolveWslDistro(location.shell)
-    .then((resolved) => {
-      if (!resolved) return;
+  void paneLocationEnricher.enrich(
+    ptyId,
+    () => {
       const current = paneIdentities.get(ptyId);
-      // The pane may have been closed, or re-registered with a real distro,
-      // while the enumeration was in flight.
-      if (!current || current.shell !== location.shell || current.distro) return;
-      paneIdentities.set(ptyId, { ...current, distro: resolved });
-    })
-    .catch(() => { /* unresolved distro is a fail-closed state, not an error */ });
+      if (!current) return undefined;
+      return classifySessionLocation(
+        current.shell,
+        cwdMap.get(ptyId) ?? location.cwd,
+        current.distro,
+      );
+    },
+    (enriched) => {
+      const current = paneIdentities.get(ptyId);
+      if (!current || enriched.domain !== 'wsl' || !enriched.distro) return;
+      paneIdentities.set(ptyId, { ...current, distro: enriched.distro });
+    },
+  );
 }
 
 export function removePaneLocation(ptyId: string): void {
+  paneLocationEnricher.cancel(ptyId);
   paneIdentities.delete(ptyId);
 }
 
