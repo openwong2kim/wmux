@@ -189,13 +189,17 @@ export function locationsEqual(
 export function preparePtyLocation(
   location: SessionLocation,
   hostHome: string,
-): { spawnCwd: string; prefixArgs: string[] } {
+): { spawnCwd: string; prefixArgs: string[]; degraded?: true } {
   if (location.domain === 'wsl' && isLinuxLikeCwd(location.cwd)) {
     return { spawnCwd: hostHome, prefixArgs: ['--cd', location.cwd] };
   }
   if (location.domain === 'msys') {
+    const converted = msysWindowsPath(location.shell, location.cwd);
+    if (!converted) {
+      return { spawnCwd: hostHome, prefixArgs: [], degraded: true };
+    }
     return {
-      spawnCwd: msysWindowsPath(location.shell, location.cwd) ?? hostHome,
+      spawnCwd: converted,
       prefixArgs: [],
     };
   }
@@ -220,9 +224,9 @@ export function resolveReplayLocation(
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };
   }
   if (original.domain === 'msys') {
-    const converted = msysWindowsPath(original.shell, original.cwd);
-    if (converted && hostDirectoryExists(converted)) {
-      return { location: original, spawnCwd: converted, prefixArgs: [], degraded: false };
+    const prepared = preparePtyLocation(original, hostHome);
+    if (!prepared.degraded && hostDirectoryExists(prepared.spawnCwd)) {
+      return { location: original, ...prepared, degraded: false };
     }
   } else if (hostDirectoryExists(cwd)) {
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };

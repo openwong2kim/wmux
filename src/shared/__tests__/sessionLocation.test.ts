@@ -147,6 +147,11 @@ describe('one spawn-cwd computation', () => {
       .toEqual({ spawnCwd: 'C:\\dev\\x', prefixArgs: [] });
   });
 
+  it('marks an unconvertible MSYS cwd when it must use host home', () => {
+    expect(split('C:\\Program Files\\Git\\bin\\bash.exe', '/usr/bin'))
+      .toEqual({ spawnCwd: 'C:\\Users\\me', prefixArgs: [], degraded: true });
+  });
+
   it('positions WSL with --cd and leaves a host path alone', () => {
     expect(split('wsl.exe', '/home/me'))
       .toEqual({ spawnCwd: 'C:\\Users\\me', prefixArgs: ['--cd', '/home/me'] });
