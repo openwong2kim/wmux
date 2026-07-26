@@ -5,6 +5,9 @@ import {
 } from './StateWriter';
 
 export type SessionLocationDurability = 'asap' | 'immediate-retry';
+export type SessionLocationTransactionOutcome =
+  | ExactStateWriteOutcome
+  | 'publication-failed';
 
 export interface SessionLocationTransactionRequest {
   durability: SessionLocationDurability;
@@ -26,9 +29,9 @@ export class SessionLocationTransaction {
 
   constructor(private readonly writer: StateWriter) {}
 
-  submit(request: SessionLocationTransactionRequest): Promise<ExactStateWriteOutcome> {
+  submit(request: SessionLocationTransactionRequest): Promise<SessionLocationTransactionOutcome> {
     const transactionId = ++this.nextTransactionId;
-    return new Promise<ExactStateWriteOutcome>((resolve, reject) => {
+    return new Promise<SessionLocationTransactionOutcome>((resolve, reject) => {
       this.pending.push({
         request,
         transactionId,
@@ -108,13 +111,13 @@ export class SessionLocationTransaction {
   private finalize(item: PendingTransaction, outcome: ExactStateWriteOutcome): void {
     if (item.finalized) return;
     item.finalized = true;
-    let terminalOutcome = outcome;
+    let terminalOutcome: SessionLocationTransactionOutcome = outcome;
     if (outcome === 'written' && item.committed) {
       try {
         item.request.publish(item.transactionId);
       } catch (err) {
         console.error('[SessionLocationTransaction] Failed to publish committed state:', err);
-        terminalOutcome = 'failed';
+        terminalOutcome = 'publication-failed';
       }
     }
     item.resolve(terminalOutcome);
@@ -131,7 +134,7 @@ interface PendingTransaction {
   transactionId: number;
   committed: boolean;
   finalized: boolean;
-  resolve: (outcome: ExactStateWriteOutcome) => void;
+  resolve: (outcome: SessionLocationTransactionOutcome) => void;
   reject: (error: unknown) => void;
 }
 

@@ -391,7 +391,7 @@ describe('SessionLocationTransaction', () => {
       publish,
     });
 
-    await expect(result).resolves.toBe('failed');
+    await expect(result).resolves.toBe('publication-failed');
     await expect(transaction.flush()).resolves.toBeUndefined();
     expect(publish).toHaveBeenCalledOnce();
     expect(accepted).toEqual(candidate);
@@ -416,7 +416,7 @@ describe('SessionLocationTransaction', () => {
     transaction.flushSync();
 
     await expect(Promise.all([failedPublication, later]))
-      .resolves.toEqual(['failed', 'written']);
+      .resolves.toEqual(['publication-failed', 'written']);
     expect(publish).toHaveBeenCalledOnce();
     expect(commitOrder).toEqual(['later']);
     expect(publishOrder).toEqual(['later']);
