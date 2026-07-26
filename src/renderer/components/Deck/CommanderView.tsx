@@ -294,15 +294,15 @@ export function CommanderViewContent({
         <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
 
         {/* Brain conversation. The `claude-pty` vendor embeds the brain's own
-            terminal here — its TUI already IS the transcript — and every other
-            vendor renders the normalized bubbles + tool chips. */}
-        {brainPtyId ? (
-          <BrainTerminalEmbed ptyId={brainPtyId} />
-        ) : (
-          brainMessages.map((m) => (
-            <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
-          ))
-        )}
+            terminal AND keeps the bubble log below it: the TUI scrolls away and
+            drowns the brain's reports in preamble/status noise, so the
+            turn-end final texts (recovered from the transcript) remain the
+            durable report surface the operator actually reads. Every other
+            vendor renders only the normalized bubbles + tool chips. */}
+        {brainPtyId ? <BrainTerminalEmbed ptyId={brainPtyId} /> : null}
+        {brainMessages.map((m) => (
+          <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+        ))}
 
         {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
         {!brainPtyId && threads.map((thread, idx) => (

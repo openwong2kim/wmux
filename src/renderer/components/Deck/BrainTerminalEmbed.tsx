@@ -71,7 +71,9 @@ export function BrainTerminalEmbed({
       data-pty-id={ptyId}
       ref={containerRef}
       onMouseDown={focusTerminal}
-      className="flex-1 min-h-0 w-full overflow-hidden rounded-[6px]"
+      // Firm height (not flex-1): the bubble log now renders BELOW the embed in
+      // the same scroll column, and a flex-fill terminal would squeeze it out.
+      className="h-[42vh] min-h-[260px] shrink-0 w-full overflow-hidden rounded-[6px]"
     />
   );
 }
