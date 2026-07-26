@@ -214,7 +214,9 @@ describe('X6 ② reboot-survival durability', () => {
     // Attribute by EXACT pane id, not cwd guessing.
     expect(body).toMatch(/sessionManager\.getSession\(ptyId\)/);
     // F7: origin cwd must match the recovered pane cwd (normalized — codex P2).
-    expect(body).toMatch(/resumeBindingMatchesLocation\(binding, managed\.meta\.cwd, managed\.meta\.location\)/);
+    expect(body).toMatch(
+      /resumeBindingMatchesLocation\(\s*binding,\s*managed\.meta\.cwd,\s*managed\.meta\.location,\s*process\.platform/,
+    );
     // Never let an older spooled capture overwrite a newer live one, and skip a
     // same-conversation spool (codex P2).
     expect(body).toMatch(/prev\.ts >= binding\.ts/);

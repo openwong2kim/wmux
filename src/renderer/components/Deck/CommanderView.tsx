@@ -865,6 +865,7 @@ export function CommanderView(): React.ReactElement {
   const recoveryPanes = useMemo(
     () =>
       buildRecoveryPanes({
+        platform: window.electronAPI.platform,
         resumeHintByPtyId,
         resumeBindingByPtyId,
         ptyReadyByPtyId,

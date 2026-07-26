@@ -125,10 +125,11 @@ export function normalizeResumeCwd(p: string): string {
 export function resumeBindingMatchesLocation(
   binding: Pick<ResumeBinding, 'cwd' | 'locationIdentity'>,
   paneCwd: string,
-  paneLocation?: SessionLocation,
+  paneLocation: SessionLocation | undefined,
+  platform: NodeJS.Platform,
 ): boolean {
   if (binding.locationIdentity && paneLocation) {
-    return binding.locationIdentity === locationIdentity(paneLocation);
+    return binding.locationIdentity === locationIdentity(paneLocation, platform);
   }
   return normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd);
 }

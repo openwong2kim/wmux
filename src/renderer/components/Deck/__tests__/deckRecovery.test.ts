@@ -3,12 +3,19 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildRecoveryPanes,
+  buildRecoveryPanes as buildRecoveryPanesBase,
   buildRecoveryPrompt,
   buildRecoveryContextLines,
 } from '../deckRecovery';
 import { createLeafPane, createSurface, type Workspace } from '../../../../shared/types';
 import type { ResumeBinding } from '../../../../shared/agentResume';
+import { classifySessionLocation, locationIdentity } from '../../../../shared/sessionLocation';
+
+function buildRecoveryPanes(
+  args: Omit<Parameters<typeof buildRecoveryPanesBase>[0], 'platform'>,
+) {
+  return buildRecoveryPanesBase({ platform: 'win32', ...args });
+}
 
 function workspaceWith(ptyId: string, cwd: string): Workspace {
   const leaf = createLeafPane(createSurface(ptyId, 'pwsh', cwd), 1);
@@ -42,6 +49,32 @@ describe('buildRecoveryPanes', () => {
       command: 'claude --resume sess-1',
       exact: true,
       workspaceName: 'Backend',
+    });
+  });
+
+  it('keeps an exact macOS resume when path casing differs', () => {
+    const workspace = workspaceWith('p1', '/Users/Alice/Repo');
+    const location = classifySessionLocation('zsh', '/Users/Alice/Repo');
+    if (workspace.rootPane.type !== 'leaf') throw new Error('expected leaf workspace');
+    workspace.rootPane.surfaces[0].location = location;
+
+    const panes = buildRecoveryPanesBase({
+      platform: 'darwin',
+      resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
+      resumeBindingByPtyId: {
+        p1: binding({
+          cwd: '/users/alice/repo',
+          locationIdentity: locationIdentity(location, 'darwin'),
+        }),
+      },
+      workspaces: [workspace],
+      paneLabel: {},
+    });
+
+    expect(panes[0]).toMatchObject({
+      command: 'claude --resume sess-1',
+      exact: true,
     });
   });
 
