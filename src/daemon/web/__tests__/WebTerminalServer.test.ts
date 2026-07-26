@@ -135,10 +135,15 @@ function makeDeps() {
     return gitScript[gitVerb(args)] ?? { ok: true, stdout: '', stderr: '' };
   };
 
+  // Where POST /api/upload writes. A real directory rather than a mock: the
+  // route's whole job is the file it leaves behind, and the filename pattern,
+  // the 0600 mode and the TTL sweep are only observable on disk.
+  const uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-uploads-'));
+
   return {
     sessionManager, bridge, write, live, managed,
     lifecycle, lifecycleCalls, lifecycleBox,
-    git, gitCalls, gitScript, gitGate,
+    git, gitCalls, gitScript, gitGate, uploadsDir,
     ...makeApprovals(), ...makeDevices(),
   };
 }
@@ -282,6 +287,7 @@ describe('WebTerminalServer', () => {
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
   let managed: { meta: Record<string, unknown> };
+  let uploadsDir: string;
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -304,12 +310,14 @@ describe('WebTerminalServer', () => {
     gitScript = deps.gitScript;
     gitGate = deps.gitGate;
     managed = deps.managed;
+    uploadsDir = deps.uploadsDir;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
       devices: deps.devices,
       lifecycle: deps.lifecycle,
       git: deps.git,
+      uploadsDir: deps.uploadsDir,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -317,11 +325,15 @@ describe('WebTerminalServer', () => {
 
   afterEach(async () => {
     if (server.isRunning) await server.stop();
+    fs.rmSync(uploadsDir, { recursive: true, force: true });
   });
 
   // Port 0 → ephemeral bind; status() reports the actual port.
   const startRO = () => server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
   const startRW = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false });
+  /** Uploads on, input OFF — the combination that proves the two grants are separate. */
+  const startUpload = () =>
+    server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 
@@ -2721,5 +2733,176 @@ describe('WebTerminalServer', () => {
     const hdrs = bearer(info.token as string);
     expect((await fetch(`${base()}/api/sessions/s1`, { method: 'GET', headers: hdrs })).status).toBe(404);
     expect((await fetch(`${base()}/api/sessions/s1/diff`, { method: 'DELETE', headers: hdrs })).status).toBe(404);
+  });
+  // --- POST /api/upload ---------------------------------------------------
+  //
+  // The route exists because a phone has a camera and a desktop does not. What
+  // the tests below pin down is everything a client cannot be trusted to get
+  // right: the grant, the format, and the name on disk.
+
+  /** A minimal JPEG: the SOI + APP0 marker is all the sniff looks at. */
+  const jpegBytes = () => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('body-jpeg')]);
+  /** A minimal PNG: the eight-byte signature plus filler. */
+  const pngBytes = () =>
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('body-png'),
+    ]);
+  const upload = (token: string, body: Buffer, contentType = 'application/octet-stream') =>
+    fetch(`${base()}/api/upload`, {
+      method: 'POST',
+      headers: { ...bearer(token), 'Content-Type': contentType },
+      body: new Uint8Array(body),
+    });
+
+  it('refuses an unauthenticated upload before it looks at anything else', async () => {
+    await startUpload();
+    const res = await fetch(`${base()}/api/upload`, {
+      method: 'POST',
+      body: new Uint8Array(jpegBytes()),
+    });
+    expect(res.status).toBe(401);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('403s an upload on a server started with --allow-input but not --allow-upload', async () => {
+    // The point of the pairing: input is a grant to type into a pane the
+    // operator is watching, upload is a grant to write files into their home
+    // directory. One must never imply the other.
+    const info = await startRW();
+    const res = await upload(info.token as string, jpegBytes());
+    expect(res.status).toBe(403);
+    // The exact string, not just the code: the phone client prefix-matches it
+    // to say "ask your Mac to enable uploads" instead of showing an HTTP code.
+    expect(await res.json()).toEqual({
+      error: 'uploads-disabled: server started without --allow-upload',
+    });
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('413s a body over the 10 MB cap and writes nothing', async () => {
+    const info = await startUpload();
+    const oversized = Buffer.concat([jpegBytes(), Buffer.alloc(10 * 1024 * 1024)]);
+    // The server destroys the socket on the cap, so the fetch itself may reject
+    // rather than resolve with the 413 — the same trade-off /api/input makes.
+    // What matters either way is that no file appeared.
+    const res = await upload(info.token as string, oversized).catch(() => undefined);
+    if (res) expect(res.status).toBe(413);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('415s anything that is not JPEG or PNG by its leading bytes, including an empty body', async () => {
+    const info = await startUpload();
+    const token = info.token as string;
+
+    const text = await upload(token, Buffer.from('this is not an image at all'));
+    expect(text.status).toBe(415);
+    expect(await text.json()).toEqual({
+      error: 'unsupported-format: only JPEG and PNG are accepted',
+    });
+
+    // Empty, and shorter-than-a-signature, are the same answer: we could not
+    // identify it, so we will not store it.
+    expect((await upload(token, Buffer.alloc(0))).status).toBe(415);
+    expect((await upload(token, Buffer.from([0xff, 0xd8]))).status).toBe(415);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('stores a JPEG under a server-chosen name and answers 201 with the absolute path', async () => {
+    const info = await startUpload();
+    const bytes = jpegBytes();
+    const before = Date.now();
+    const res = await upload(info.token as string, bytes);
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { path: string; expiresAt: number };
+
+    expect(path.isAbsolute(body.path)).toBe(true);
+    expect(path.dirname(body.path)).toBe(uploadsDir);
+    // The client never names the file — a client-supplied name is a traversal
+    // primitive and nothing reads these by name anyway.
+    expect(path.basename(body.path)).toMatch(
+      /^photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.jpg$/,
+    );
+    expect(fs.readFileSync(body.path).equals(bytes)).toBe(true);
+    // A day out, measured from the same clock the route used.
+    expect(body.expiresAt).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+    expect(body.expiresAt).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60 * 1000);
+  });
+
+  it('trusts the magic bytes over the Content-Type the client claimed', async () => {
+    const info = await startUpload();
+    const bytes = pngBytes();
+    // A PNG announced as a JPEG. Believing the header would put .jpg on a PNG
+    // and hand the agent a file whose extension lies about its contents.
+    const res = await upload(info.token as string, bytes, 'image/jpeg');
+    expect(res.status).toBe(201);
+    const { path: stored } = (await res.json()) as { path: string };
+    expect(stored.endsWith('.png')).toBe(true);
+    expect(fs.readFileSync(stored).equals(bytes)).toBe(true);
+  });
+
+  it('sweeps photos past the TTL before a write, and leaves everything else alone', async () => {
+    // A dedicated server so the clock seam is under this test's control.
+    let clock = Date.parse('2030-01-01T00:00:00.000Z');
+    const swept = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      now: () => clock,
+    });
+    const info = await swept.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const token = info.token as string;
+      const url = `http://127.0.0.1:${info.port}/api/upload`;
+      const post = (body: Buffer) =>
+        fetch(url, { method: 'POST', headers: bearer(token), body: new Uint8Array(body) });
+
+      const first = (await (await post(jpegBytes())).json()) as { path: string };
+      // Not ours. `~/.wmux/uploads` is also where an operator drops files for
+      // browser_file_upload, and those are not the sweep's to delete.
+      const keep = path.join(uploadsDir, 'keep.txt');
+      fs.writeFileSync(keep, 'operator file');
+
+      clock += 25 * 60 * 60 * 1000;
+      const second = (await (await post(pngBytes())).json()) as { path: string };
+
+      expect(fs.existsSync(first.path)).toBe(false);
+      expect(fs.existsSync(keep)).toBe(true);
+      expect(fs.existsSync(second.path)).toBe(true);
+    } finally {
+      await swept.stop();
+    }
+  });
+
+  it('reports allowUpload on /api/config so the phone can hide the button', async () => {
+    const info = await startUpload();
+    const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
+    expect(await res.json()).toEqual({ allowInput: false, allowUpload: true });
+    // status() carries it too — that is what `wmux web --status` prints.
+    expect(server.status().allowUpload).toBe(true);
+  });
+
+  it('answers 503 when the daemon wired no uploads directory', async () => {
+    const bare = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      // 503, not 403: the operator DID grant the permission, the server simply
+      // has nowhere to put the bytes. Saying "disabled" would send them off to
+      // re-add a flag that is already there.
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'uploads-unavailable' });
+    } finally {
+      await bare.stop();
+    }
   });
 });
