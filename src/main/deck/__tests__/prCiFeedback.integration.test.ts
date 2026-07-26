@@ -178,6 +178,7 @@ describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
         }),
         prDetail: async () => ({ ok: true as const, detail: { number: 494, comments } }),
       },
+      async (cwd) => cwd,
       () => WS,
       (e) =>
         eventBus.emit({

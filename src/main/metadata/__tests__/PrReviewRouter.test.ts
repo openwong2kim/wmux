@@ -1,10 +1,12 @@
 // Unit tests for the watermark-triggered review-feedback router. Fakes the gh
 // provider + resolver + emit sink so the batch logic runs without subprocesses.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PrReviewRouter, sanitizeSnippet, type PrReviewEmit, type PrConflictEmit } from '../PrReviewRouter';
 import type { PrStatus } from '../../../shared/types';
 import type { PrComment } from '../../../shared/prSurface';
+import { repoCacheKey } from '../../github/PrProvider';
+import { hostCommandTarget } from '../../git/paneCommand';
 
 const CWD = 'D:/repo';
 
@@ -52,6 +54,7 @@ function mk(opts: {
   };
   const router = new PrReviewRouter(
     provider,
+    async (cwd) => cwd,
     opts.resolve ?? (() => 'ws-1'),
     (e) => emits.push(e),
     () => now,
@@ -68,6 +71,42 @@ function mk(opts: {
 }
 
 describe('PrReviewRouter — watermark batch routing', () => {
+  it('resolves a pane subdirectory before provider cache-key construction', async () => {
+    const subdir = 'D:/repo/packages/app';
+    const target = hostCommandTarget(subdir);
+    const resolveRepoRoot = vi.fn(async () => CWD);
+    let listKey = '';
+    let detailKey = '';
+    const router = new PrReviewRouter(
+      {
+        listPrs: async (repoPath, _force, receivedTarget) => {
+          listKey = repoCacheKey(repoPath, receivedTarget);
+          return {
+            ok: true as const,
+            prs: [{
+              number: 42, title: 't', state: 'open' as const, author: 'a',
+              headRefName: 'b', updatedAt: 'u', url: 'https://x/pull/42',
+              reviewDecision: '', checks: null, mergeable: '',
+            }],
+          };
+        },
+        prDetail: async (repoPath, number, _updatedAt, receivedTarget) => {
+          detailKey = repoCacheKey(repoPath, receivedTarget);
+          return { ok: true as const, detail: { number, comments: [] } };
+        },
+      },
+      resolveRepoRoot,
+      () => 'ws-1',
+      () => {},
+    );
+
+    await router.note('ptyA', subdir, pr(), target);
+
+    expect(resolveRepoRoot).toHaveBeenCalledWith(subdir, target);
+    expect(listKey).toBe(repoCacheKey(CWD));
+    expect(detailKey).toBe(repoCacheKey(CWD));
+  });
+
   it('first sighting arms silently — existing history never fires', async () => {
     const h = mk({ comments: [comment('2026-07-01T00:00:00Z'), comment('2026-07-02T00:00:00Z')] });
     await h.router.note('ptyA', CWD, pr());
@@ -216,6 +255,7 @@ describe('PrReviewRouter — merge-conflict edge (slice 3)', () => {
         }),
         prDetail: async () => ({ ok: true as const, detail: { number: 42, comments: [] } }),
       },
+      async (cwd) => cwd,
       () => (ok ? 'ws-1' : null),
       () => {},
       (() => { let n = 0; return () => (n += 60_000); })(),
