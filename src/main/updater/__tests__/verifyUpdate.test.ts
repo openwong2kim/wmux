@@ -95,7 +95,7 @@ describe('validateManifest', () => {
   it('normalizes the Windows setupExe field to fileName', () => {
     const r = validateManifest(validManifest(), '2.14.1');
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.manifest.fileName).toBe('wmux-2.14.1.Setup.exe');
+    if (r.ok) expect(r.manifest.fileName).toBe('fmux-2.14.1.Setup.exe');
   });
 
   it('accepts a darwin manifest that names the artifact with `file`', () => {

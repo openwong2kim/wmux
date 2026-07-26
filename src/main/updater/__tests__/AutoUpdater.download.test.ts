@@ -298,7 +298,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
     // The sha-mismatched download must be unlinked — both by the stream's
     // fail-path cleanup and the caller's catch (idempotent best-effort).
     expect(unlinkMock).toHaveBeenCalled();
-    expect(String(unlinkMock.mock.calls[0][0])).toContain('wmux-update-');
+    expect(String(unlinkMock.mock.calls[0][0])).toContain('fmux-update-');
   });
 
   it('a newer release supersedes a downloaded one: old artifact unlinked, new one downloaded', async () => {
@@ -319,7 +319,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
     // The stale 9.9.10 artifact is deleted (not left to pile up in temp) and
     // the new version goes through the full download+verify cycle again.
-    expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(`wmux-update-${NEW_VERSION}`))).toBe(true);
+    expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(`fmux-update-${NEW_VERSION}`))).toBe(true);
     const downloadsAfter = sent.filter((s) => s.channel === IPC.UPDATE_AVAILABLE && s.data.status === 'downloaded').length;
     expect(downloadsAfter).toBe(downloadsBefore + 1);
   });

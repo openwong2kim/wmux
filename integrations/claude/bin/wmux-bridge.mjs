@@ -254,13 +254,13 @@ function getRpcTargets() {
 // at the daemon first and keep the main pipe as the fallback for an older wmux
 // (whose daemon has no `daemon.hooks.signal`) or a daemon that is down.
 //
-// Same ~/.wmux (NO data-suffix) limitation as bridge.log: the bridge cannot see
+// Same ~/.fmux (NO data-suffix) limitation as bridge.log: the bridge cannot see
 // WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane env), so a
 // dev-suffix daemon is unreachable from here — packaged-only testing for this
 // path, unchanged from the pre-M1 bridge.
 function getDaemonAuthTokenPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux', 'daemon-auth-token');
+  return join(home, '.fmux', 'daemon-auth-token');
 }
 
 // Prefer the `daemon-pipe` hint file the daemon writes at boot — it carries the
@@ -270,16 +270,16 @@ function getDaemonAuthTokenPath() {
 function getDaemonPipeName() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
   try {
-    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    const fromFile = readFileSync(join(home, '.fmux', 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
     // Hint file absent/unreadable — fall through to the derived name.
   }
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\fmux-daemon-${username}`;
   }
-  return join(home, '.wmux', 'daemon.sock');
+  return join(home, '.fmux', 'daemon.sock');
 }
 
 function readTokenFile(tokenPath) {
@@ -356,7 +356,7 @@ function getBridgeLogPath() {
 // (recovery) and reconnect, attributing each record to the EXACT pane by its
 // WMUX_PTY_ID. Pipe-free local file write, so it never depends on wmux being up.
 //
-// Path matches the bridge.log convention (~/.wmux, NO data-suffix): the bridge
+// Path matches the bridge.log convention (~/.fmux, NO data-suffix): the bridge
 // cannot see WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane
 // env), so dev/prod-concurrent isolation falls back to cwd routing — same
 // pre-existing limitation as bridge.log. In production (no suffix) and in the
@@ -414,7 +414,7 @@ function spoolResumeBinding(record) {
 
 // ----- PostToolUse activity stamp (source-side throttle) ------------------
 
-// Stamp files live next to bridge.log (same no-suffix ~/.wmux limitation).
+// Stamp files live next to bridge.log (same no-suffix ~/.fmux limitation).
 // One zero-byte file per throttle key; mtime is the last-send timestamp.
 function getActivityStampPath(key) {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();

@@ -69,11 +69,11 @@ function getPipeName() {
 //
 // The daemon is the always-on process and owns hook ingest, so it is tried
 // first; the main pipe stays as the fallback for an older wmux or a daemon
-// that is down. Same ~/.wmux (no data-suffix) limitation as bridge.log — the
+// that is down. Same ~/.fmux (no data-suffix) limitation as bridge.log — the
 // pane env strips WMUX_DATA_SUFFIX, so a dev-suffix daemon is unreachable here.
 function getDaemonAuthTokenPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux', 'daemon-auth-token');
+  return join(home, '.fmux', 'daemon-auth-token');
 }
 
 // Prefer the `daemon-pipe` hint file the daemon writes at boot (the name it
@@ -82,16 +82,16 @@ function getDaemonAuthTokenPath() {
 function getDaemonPipeName() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
   try {
-    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    const fromFile = readFileSync(join(home, '.fmux', 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
     // Hint file absent/unreadable — fall through to the derived name.
   }
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\fmux-daemon-${username}`;
   }
-  return join(home, '.wmux', 'daemon.sock');
+  return join(home, '.fmux', 'daemon.sock');
 }
 
 function readTokenFile(tokenPath) {

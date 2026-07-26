@@ -70,11 +70,11 @@ function getPipeName() {
 //
 // The daemon is the always-on process and owns hook ingest, so it is tried
 // first; the main pipe stays as the fallback for an older wmux or a daemon that
-// is down. Same ~/.wmux (no data-suffix) limitation as the log path — the pane
+// is down. Same ~/.fmux (no data-suffix) limitation as the log path — the pane
 // env strips WMUX_DATA_SUFFIX, so a dev-suffix daemon is unreachable here.
 function getDaemonAuthTokenPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux', 'daemon-auth-token');
+  return join(home, '.fmux', 'daemon-auth-token');
 }
 
 // Prefer the `daemon-pipe` hint file the daemon writes at boot (the name it
@@ -83,16 +83,16 @@ function getDaemonAuthTokenPath() {
 function getDaemonPipeName() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
   try {
-    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    const fromFile = readFileSync(join(home, '.fmux', 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
     // Hint file absent/unreadable — fall through to the derived name.
   }
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\fmux-daemon-${username}`;
   }
-  return join(home, '.wmux', 'daemon.sock');
+  return join(home, '.fmux', 'daemon.sock');
 }
 
 function readTokenFile(tokenPath) {
@@ -153,7 +153,7 @@ function logEvent(outcome, extra) {
 //
 // Same record shape + ptyId key + atomic temp→rename + don't-replace-newer rule
 // the daemon ingest expects (mirrors integrations/claude/bin/wmux-bridge.mjs).
-// Path matches the bridge convention (~/.wmux, no data-suffix — a reserved
+// Path matches the bridge convention (~/.fmux, no data-suffix — a reserved
 // WMUX_* var the pane env strips).
 function getResumeSpoolDir() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
