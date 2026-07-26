@@ -193,6 +193,53 @@ Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
 
+### Creating and closing panes
+
+```
+POST   /api/sessions            body: {workspaceId?, cwd?}  → 201 <session row>
+DELETE /api/sessions/<id>                                   → 204
+```
+
+Both are **403 without `--allow-input`**, same as the keyboard — an interactive
+shell is arbitrary execution, and closing a pane destroys running work. Gate the
+UI on `/api/config` exactly as you gate the keyboard.
+
+`POST` answers with a single session row in the same shape `/api/sessions`
+returns, so append it to the list rather than refetching. Omit `cwd` for the
+home directory. `workspaceId` stamps the new pane's workspace identity; the
+human-readable label is filled in from a live pane in that workspace, so a
+workspace with no live panes yields a row with no `workspace` field.
+
+409 means the daemon refused (session cap, memory pressure, shutdown in
+flight); `detail` is operator-facing copy worth showing verbatim. 404 on DELETE
+means the pane is already gone — treat it as success.
+
+A pane created this way is a real daemon session: it is listed, streamable,
+typeable, monitored and recovered. It has **no pane in the desktop GUI's
+layout** — only the renderer can create one of those, and the daemon
+deliberately cannot reach it.
+
+### What did this agent change?
+
+```
+GET /api/sessions/<id>/diff  → 200 {files: [{path, status, from?}], patch,
+                                    truncated, omittedBytes}
+                               409 {error: 'not-a-git-repo'}
+```
+
+Read-only, and **available on a read-only server** — it runs `git diff`,
+`git diff --cached` and `git status` in the pane's own working directory and
+returns text. Nothing in the request names a directory or a ref.
+
+`status` is the raw two-character porcelain code (`' M'`, `'M '`, `'??'`, `'R '`,
+`'UU'`, …): the index column and the worktree column are independent and any
+one-word summary loses one of them. `patch` is the staged patch followed by the
+working-tree patch; it is capped at 512 KB, and `truncated` says the tail was
+cut.
+
+**409 is normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no
+repository here", not "something went wrong".
+
 ---
 
 ## 6. Approvals

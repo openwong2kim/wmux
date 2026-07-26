@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **See what an agent actually changed before you approve it.** An approval prompt on a phone gave you a screenful of terminal and a yes/no button — the agent asked to edit a file and the one thing you needed was what the edit was. `wmux web` now answers that from the pane's own repository: the changed file list and the full patch, staged and unstaged, read straight out of git. It works on a read-only server, because reading a diff is reading. A pane that is not in a git repository says so plainly rather than looking broken — running in a scratch directory is normal. Large diffs are capped at 512 KB so a phone on a train is not made to pull a generated-file commit to answer one question.
+
+- **Open and close panes from the phone.** `wmux web` can now spawn a new pane (optionally in a chosen workspace and directory) and close one, so a phone is no longer restricted to the panes that happened to exist when you left your desk. Both require the server to have been started with `--allow-input`: an interactive shell is arbitrary execution, and closing someone's pane ends their running build, so neither belongs on a server that promised to be read-only. A pane created this way is a real, monitored, recoverable session — it is not yet drawn in the desktop window's layout.
+
 ## [3.35.1] — 2026-07-26
 
 ### Fixed
