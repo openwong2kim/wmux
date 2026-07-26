@@ -91,6 +91,9 @@ export interface BrainPtyHost {
   /** Attach + connect the session's data pipe (the renderer embed reattaches
    *  on its own; this is what makes main see output for the stale-resume probe). */
   attach(id: string): Promise<void>;
+  /** Write keystrokes to the session. THROWS when the write could not be
+   *  delivered (dead session, closed pipe) — send() turns that into an
+   *  immediate turn error instead of waiting out a Stop that never comes. */
   write(id: string, data: string): void;
   destroy(id: string): Promise<void>;
   /** Subscribe to this session's raw output. Returns an unsubscribe. */
@@ -143,7 +146,13 @@ export function createBrainPtyHost(client: DaemonClientLike): BrainPtyHost {
       await client.connectSessionPipe(id);
     },
     write(id, data) {
-      client.writeToSession(id, data);
+      // writeToSession returns false when the session (or its pipe) is gone.
+      // Swallowing that verdict left the prompt undelivered while the turn sat
+      // waiting for a Stop hook nothing would ever fire — the composer locked
+      // for the full TURN_TIMEOUT_MS. Throwing surfaces it on this tick.
+      if (!client.writeToSession(id, data)) {
+        throw new Error(`the terminal brain's pty session is gone (write to ${id} was refused)`);
+      }
     },
     async destroy(id) {
       try {

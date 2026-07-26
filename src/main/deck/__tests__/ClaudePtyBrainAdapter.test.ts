@@ -23,7 +23,9 @@ import {
   flattenPromptForPty,
   resolveBrainHomeDir,
   BRAIN_PTY_ALLOWED_TOOLS,
+  createBrainPtyHost,
   type BrainPtyHost,
+  type DaemonClientLike,
 } from '../ClaudePtyBrainAdapter';
 import { deliverBrainPtyHookSignal, __resetBrainPtyHookBusForTesting } from '../brainPtyHookBus';
 import { __resetCommanderTrustForTesting } from '../commanderTrust';
@@ -47,6 +49,9 @@ interface FakeHost extends BrainPtyHost {
   failNextAttach: boolean;
   /** Ids whose data listener was installed, in order. */
   readonly listened: string[];
+  /** Make every write throw — the production host's "the pty is gone" signal
+   *  (createBrainPtyHost turns a false writeToSession into this). */
+  failWrites: boolean;
 }
 
 function makeHost(): FakeHost {
@@ -58,7 +63,14 @@ function makeHost(): FakeHost {
   const exitListeners = new Map<string, (code: number | null) => void>();
   const listened: string[] = [];
   let failAttach = false;
+  let failWrites = false;
   return {
+    get failWrites() {
+      return failWrites;
+    },
+    set failWrites(v: boolean) {
+      failWrites = v;
+    },
     created,
     writes,
     destroyed,
@@ -88,6 +100,7 @@ function makeHost(): FakeHost {
       }
     },
     write(id, data) {
+      if (failWrites) throw new Error(`the terminal brain's pty session is gone (write to ${id} was refused)`);
       writes.push({ id, data });
     },
     async destroy(id) {
@@ -678,5 +691,49 @@ describe('brainPtyHookBus', () => {
     // by a dead adapter.
     adapter.dispose();
     expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId))).toBe(false);
+  });
+});
+
+// ── undeliverable keystrokes ────────────────────────────────────────────────
+
+describe('a write the pty cannot take', () => {
+  it('ends the turn immediately instead of waiting for a Stop that never comes', async () => {
+    // DaemonClient.writeToSession returns false when the session/pipe is gone.
+    // Discarding that verdict left the prompt undelivered while the turn sat
+    // out the full TURN_TIMEOUT_MS with the composer locked.
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    host.failWrites = true;
+    const events = await collect(adapter.send('hi'));
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('error');
+    expect((events[0] as { message: string }).message).toContain('could not reach the terminal brain');
+    adapter.dispose();
+  });
+});
+
+describe('createBrainPtyHost.write', () => {
+  it('throws when the daemon refuses the write', () => {
+    const client = {
+      rpc: async () => undefined,
+      connectSessionPipe: async () => undefined,
+      writeToSession: () => false,
+      on: () => undefined,
+      off: () => undefined,
+    };
+    const host = createBrainPtyHost(client as unknown as DaemonClientLike);
+    expect(() => host.write('brain-1', 'hi')).toThrow(/pty session is gone/);
+  });
+
+  it('stays silent when the write lands', () => {
+    const client = {
+      rpc: async () => undefined,
+      connectSessionPipe: async () => undefined,
+      writeToSession: () => true,
+      on: () => undefined,
+      off: () => undefined,
+    };
+    const host = createBrainPtyHost(client as unknown as DaemonClientLike);
+    expect(() => host.write('brain-1', 'hi')).not.toThrow();
   });
 });
