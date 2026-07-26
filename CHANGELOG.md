@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Session-location edge cases no longer send panes or filesystem work to the wrong place.** Stored pane locations remain authoritative even when a legacy cwd field is empty, shell-less Windows workspaces keep their host cwd, both WSL UNC namespaces pass host validation, overlapping WSL distribution names resolve to the longest match, and an unconvertible Git Bash recovery path is reported as degraded instead of silently appearing to recover in the Windows home directory.
+
 - **Host, Git Bash, and WSL sessions now keep their filesystem operations in the pane's own location.** Session recovery, project discovery, file browsing, Git and GitHub commands, transcript reads, and terminal path links share one domain-aware path model, so Linux paths are no longer mistaken for Windows paths and identical paths in different WSL distributions no longer share cache or resume identities.
 
 - **WSL panes now resolve their distribution, so the features that depend on it actually run.** A pane opened with `wsl.exe` knew it was a WSL pane but never learned *which* distribution it belonged to, and every feature that needs to reach into the guest filesystem refused to guess: the file tree came back empty, project configuration and project skills were not discovered, the Git branch and PR chips stayed blank, and terminal path links would not open. Those features now work from the first moment a WSL pane exists rather than only after an app restart, and two panes in different distributions with the same path no longer share a cache entry.
