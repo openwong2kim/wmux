@@ -513,7 +513,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       mcpConfigPath,
       resumeSessionId,
     });
-    this.sessionStarted = createWaiter<void>();
+    // Held locally as well as on the instance: a dispose() racing this spawn
+    // nulls the field (killPty), and awaiting the field would then throw
+    // inside the turn instead of unwinding it.
+    const started = createWaiter<void>();
+    this.sessionStarted = started;
     this.banner = '';
     this.bannerWatching = true;
     try {
@@ -546,7 +550,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       /* the embed is cosmetic — never fail a spawn on it */
     }
     await Promise.race([
-      this.sessionStarted.promise,
+      started.promise,
       delay(this.deps.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS),
     ]);
     return { ok: true };
