@@ -1,12 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifySessionLocation,
+  hostLocation,
   locationIdentity,
   locationsEqual,
+  parseSessionLocation,
   prepareLocationCommand,
+  preparePtyLocation,
   resolveReplayLocation,
+  resolveSessionLocation,
+  splitWslCwd,
   toHostAccessiblePath,
 } from '../sessionLocation';
+
+/**
+ * The guest-path guard is Windows-only, so pin the platform rather than let
+ * these cases pass for the wrong reason on whichever CI leg runs them.
+ */
+function onPlatform(platform: NodeJS.Platform): void {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
+}
+const onWindows = () => onPlatform('win32');
+afterEach(() => vi.restoreAllMocks());
 
 describe('session location classification and identity', () => {
   it.each([
@@ -33,6 +48,112 @@ describe('session location classification and identity', () => {
       classifySessionLocation('pwsh.exe', 'C:\\Repo\\'),
       classifySessionLocation('pwsh.exe', 'c:/Repo'),
     )).toBe(true);
+  });
+
+  // CX8: a PR-creation `invalidate(worktreePath, branch)` must hit the entry
+  // the metadata poll's `get(cwd, branch)` created. Casing variance between
+  // the two callers is the documented way that missed.
+  it('folds host path casing on case-insensitive filesystems', () => {
+    expect(locationsEqual(
+      hostLocation('C:\\Repo\\WT'),
+      hostLocation('c:/repo/wt/'),
+    )).toBe(true);
+    expect(locationsEqual(
+      hostLocation('/Users/Geoffrey/dev/Repo'),
+      hostLocation('/users/geoffrey/dev/repo'),
+      'darwin',
+    )).toBe(true);
+  });
+
+  it('keeps backslash a legal filename character off Windows', () => {
+    expect(locationsEqual(
+      hostLocation('/x/a\\b'),
+      hostLocation('/x/a/b'),
+      'linux',
+    )).toBe(false);
+    expect(locationsEqual(
+      hostLocation('/x/A'),
+      hostLocation('/x/a'),
+      'linux',
+    )).toBe(false);
+  });
+});
+
+describe('the single wire validator and legacy fallback', () => {
+  it('accepts all three domains over the wire', () => {
+    for (const domain of ['host', 'msys', 'wsl'] as const) {
+      expect(parseSessionLocation({ domain, cwd: '/x', shell: 'sh' })?.domain).toBe(domain);
+    }
+  });
+
+  it('rejects malformed payloads and reads a bare cwd as a host location', () => {
+    expect(parseSessionLocation({ domain: 'nope', cwd: '/x', shell: '' })).toBeNull();
+    expect(parseSessionLocation({ domain: 'host', cwd: '  ', shell: '' })).toBeNull();
+    expect(parseSessionLocation({ domain: 'wsl', cwd: '/x', shell: '', distro: 7 })).toBeNull();
+    expect(parseSessionLocation('')).toBeNull();
+    expect(parseSessionLocation(null)).toBeNull();
+    expect(parseSessionLocation(' C:\\repo ')).toEqual({ domain: 'host', cwd: 'C:\\repo', shell: '' });
+  });
+
+  it('classifies a legacy {cmd, cwd} record and prefers a stored location', () => {
+    expect(resolveSessionLocation({ cmd: 'wsl.exe', cwd: '/home/me', distro: 'Ubuntu' })).toEqual({
+      domain: 'wsl', cwd: '/home/me', shell: 'wsl.exe', distro: 'Ubuntu',
+    });
+    expect(resolveSessionLocation({
+      cmd: 'wsl.exe',
+      cwd: '/home/me',
+      location: { domain: 'host', cwd: 'C:\\repo', shell: 'pwsh.exe' },
+    }).domain).toBe('host');
+  });
+});
+
+describe('the guest-path guard (issue #21 AC 6)', () => {
+  it('refuses to resolve a guest path carried by a host location on Windows', () => {
+    onWindows();
+    // How this arises: a workspace profile with no `shell`, so nothing can
+    // classify the cwd as wsl/msys, leaves `/home/me/proj` on a host location.
+    const stranded = classifySessionLocation('', '/home/me/proj');
+    expect(stranded.domain).toBe('host');
+    expect(toHostAccessiblePath(stranded, '/home/me/proj/a.ts')).toEqual({
+      ok: false, error: 'UNRESOLVED_GUEST_PATH',
+    });
+    expect(prepareLocationCommand(stranded, 'git', ['status'])).toEqual({
+      ok: false, error: 'UNRESOLVED_GUEST_PATH',
+    });
+  });
+
+  it('leaves genuine POSIX host paths alone off Windows', () => {
+    onPlatform('linux');
+    const posix = classifySessionLocation('/bin/bash', '/home/me/proj');
+    expect(toHostAccessiblePath(posix, '/home/me/proj/a.ts')).toEqual({
+      ok: true, path: '/home/me/proj/a.ts',
+    });
+  });
+
+  it('still allows real Windows paths on a host location', () => {
+    onWindows();
+    expect(toHostAccessiblePath(hostLocation('C:\\repo'), 'C:\\repo\\a.ts')).toEqual({
+      ok: true, path: 'C:\\repo\\a.ts',
+    });
+  });
+});
+
+describe('one spawn-cwd computation', () => {
+  it('routes an MSYS cwd to its Windows path instead of handing node-pty /c/...', () => {
+    expect(splitWslCwd('C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x', 'C:\\Users\\me'))
+      .toEqual({ spawnCwd: 'C:\\dev\\x', prefixArgs: [] });
+  });
+
+  it('agrees with preparePtyLocation for every domain', () => {
+    const cases = [
+      ['wsl.exe', '/home/me'],
+      ['C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x'],
+      ['pwsh.exe', 'C:\\dev\\x'],
+    ] as const;
+    for (const [shell, cwd] of cases) {
+      expect(splitWslCwd(shell, cwd, 'C:\\Users\\me'))
+        .toEqual(preparePtyLocation(classifySessionLocation(shell, cwd), 'C:\\Users\\me'));
+    }
   });
 });
 

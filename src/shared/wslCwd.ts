@@ -98,19 +98,11 @@ export function isLinuxLikeCwd(p: string): boolean {
   return lower.startsWith('\\\\wsl$\\') || lower.startsWith('\\\\wsl.localhost\\');
 }
 
-/**
- * Split a resolved (shell, cwd) pair into what node-pty should actually
- * receive: a safe Windows `spawnCwd` plus any `prefixArgs` to prepend to the
- * spawn argv. Only WSL + a Linux-like cwd triggers the split; every other
- * combination passes the cwd through untouched.
+/*
+ * `splitWslCwd` used to live here. It computed a spawn cwd for WSL only,
+ * which meant an MSYS/Git Bash `/c/...` cwd was handed to node-pty verbatim
+ * and CreateProcess failed on it. The spawn cwd is now computed in exactly
+ * one place — `preparePtyLocation` in shared/sessionLocation.ts — which knows
+ * all three domains. This module keeps the pure predicates that computation
+ * is built from.
  */
-export function splitWslCwd(
-  cmd: string,
-  cwd: string | undefined,
-  homeDir: string,
-): { spawnCwd: string | undefined; prefixArgs: string[] } {
-  if (cwd && isWslShell(cmd) && isLinuxLikeCwd(cwd)) {
-    return { spawnCwd: homeDir, prefixArgs: ['--cd', cwd] };
-  }
-  return { spawnCwd: cwd, prefixArgs: [] };
-}

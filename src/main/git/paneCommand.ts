@@ -1,4 +1,5 @@
 import {
+  hostLocation,
   locationIdentity,
   prepareLocationCommand,
   type ActiveSessionContext,
@@ -37,6 +38,6 @@ export function preparePaneCommand(
 export function hostCommandTarget(cwd: string): PaneCommandTarget {
   return {
     sessionId: `host:${cwd}`,
-    location: { domain: 'host', cwd, shell: '' },
+    location: hostLocation(cwd),
   };
 }

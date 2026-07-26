@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { applyWslPromptIntegration, isWslShell, isLinuxLikeCwd, splitWslCwd } from '../wslCwd';
+import { applyWslPromptIntegration, isWslShell, isLinuxLikeCwd } from '../wslCwd';
+import { splitWslCwd } from '../sessionLocation';
 
 // Track B (WSL/Ubuntu cwd) — a Linux-style cwd handed to a WSL pane must
 // launch via `wsl.exe --cd <linuxpath>` rather than node-pty's `cwd` spawn
