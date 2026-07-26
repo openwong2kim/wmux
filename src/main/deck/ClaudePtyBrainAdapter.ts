@@ -657,6 +657,12 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         if (this._disposed) return;
         spawned = fresh;
       }
+      // A validated `--resume` means the transcript ALREADY contains the
+      // commander identity from the conversation's first turn — re-injecting
+      // it would blast the multi-KB preamble into the TUI on every app
+      // restart (adapter instances don't outlive the app; the conversation
+      // does). Fresh conversations still get the full first-turn injection.
+      if (this._sessionId) this._contextInjected = true;
       this.bannerWatching = false;
       // The TUI stopped on a dialog before it ever reached a prompt. Typing
       // into that dialog would answer it with the user's message (arrow keys
