@@ -134,7 +134,7 @@ function parseDefaultName(verboseOutput: string, names: readonly string[]): stri
 
 let cached: { at: number; value: Promise<WslDistroList> } | null = null;
 
-/** Drops the memoized distro list. Exported for tests and for install/remove. */
+/** Drops the memoized distro list so tests can isolate cache state. */
 export function resetWslDistroCache(): void {
   cached = null;
 }

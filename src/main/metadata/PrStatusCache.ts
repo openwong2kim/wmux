@@ -26,8 +26,8 @@ const execFileAsync = promisify(execFile);
  * Cache key = location identity + NUL + branch.
  *
  * The identity is computed by `paneCommandIdentity` → `locationIdentity`
- * (shared/sessionLocation.ts), which is the single owner of path→identity for
- * every domain: it separates host/msys/wsl (and WSL distros) and, for host
+ * (shared/sessionLocation.ts). That shared identity helper separates
+ * host/msys/wsl (and WSL distros) and, for host
  * paths, folds separator, duplicate-slash, trailing-slash and — on the
  * case-insensitive filesystems — case variance. That folding is what makes a
  * PR-creation `invalidate(worktreePath, branch)` hit the entry the metadata

@@ -106,8 +106,7 @@ export function isLinuxLikeCwd(p: string): boolean {
 /*
  * `splitWslCwd` used to live here. It computed a spawn cwd for WSL only,
  * which meant an MSYS/Git Bash `/c/...` cwd was handed to node-pty verbatim
- * and CreateProcess failed on it. The spawn cwd is now computed in exactly
- * one place — `preparePtyLocation` in shared/sessionLocation.ts — which knows
- * all three domains. This module keeps the pure predicates that computation
- * is built from.
+ * and CreateProcess failed on it. PTY spawn preparation now delegates to
+ * `preparePtyLocation` in shared/sessionLocation.ts, which handles all three
+ * domains. This module keeps the pure predicates used by that computation.
  */
