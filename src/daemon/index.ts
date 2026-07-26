@@ -1059,6 +1059,10 @@ async function recoverSessions(
               id: session.id,
             cmd: session.cmd,
             cwd,
+            // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+            // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+            // diff route a root the pane's own process chose. See createSession.
+            spawnCwd: session.spawnCwd,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1145,6 +1149,10 @@ async function recoverSessions(
             id: session.id,
             cmd: session.cmd,
             cwd,
+            // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+            // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+            // diff route a root the pane's own process chose. See createSession.
+            spawnCwd: session.spawnCwd,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -1190,6 +1198,10 @@ async function recoverSessions(
           id: session.id,
           cmd: session.cmd,
           cwd,
+          // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
+          // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
+          // diff route a root the pane's own process chose. See createSession.
+          spawnCwd: session.spawnCwd,
           env: session.env,
           cols: session.cols,
           rows: session.rows,
@@ -1344,6 +1356,9 @@ function restartSupervisedSession(
     id: meta.id,
     cmd: meta.cmd,
     cwd: fs.existsSync(meta.cwd) ? meta.cwd : os.homedir(),
+    // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
+    // 7-tracked one. See createSession's `spawnCwd`.
+    spawnCwd: meta.spawnCwd,
     env: meta.env,
     cols: meta.cols,
     rows: meta.rows,
