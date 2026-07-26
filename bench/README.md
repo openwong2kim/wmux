@@ -213,6 +213,80 @@ Other rules:
 Exit codes: `0` pass or record-only, `1` any gate failure, `2` usage / current
 -file IO error.
 
+## Confirmation re-run (#570)
+
+A red gate on CI is not final on its own. Given `--confirm-retry <path>`,
+`perf-compare.mjs` measures the failing scenarios once more on the same runner
+and only lets the red stand if the failure **reproduces** — a deterministic
+regression should; a runner-interference tail spike should not. It costs extra
+CI time only on runs that are already red, and it touches no baseline: the
+policy below is unaffected in either direction.
+
+It happens inside the compare process, not as a second CI step, and that is
+deliberate: the confirmation is handed the very numbers this invocation judged.
+There is no second read of the result file that could see different bytes, and
+no handshake file that could outlive its run and describe a different one.
+
+**Only measurements are confirmed.** A red that includes a boolean correctness
+gate (`ime.pass`, `webglContextLoss.pass`) stands at once and is never re-run —
+they are a consistency check, not a tail-prone measurement, and "it worked the
+second time" is not a reason to ship a broken one. The rule cuts both ways: a
+leg re-runs *all* of its scenarios, so a correctness gate that fails in the
+re-run keeps the red even though it is not what went red first. Everything the
+re-run measured has to come back clean, and a scenario the first run measured
+inside a selected leg cannot disappear from the re-run — "could not measure it
+again" is not a pass.
+
+The trade is real and worth stating: a regression that only shows up in half of
+runs now needs to land twice, so its chance of red-lighting a given push drops
+from 50% to 25%. That is the price of a gate people believe; a gate that fires
+at random is one nobody reads.
+
+What gets re-run is a **leg** — one packaged-app instance — not the failing
+metric. `scripts/perf-bench.mjs` measures several scenarios in sequence on one
+instance and each inherits what the previous ones left behind (`ram.panes8` is
+sampled after `inputLatency` has typed into that app; `webglContextLoss`
+deliberately reuses the layout `frameBudget` leaves at max N), so a retry
+narrowed to the failing metric would measure a different scenario and its
+verdict would mean nothing. `scripts/perf-legs.mjs` holds that mapping —
+`coldStart`, `a1` (ram + inputLatency), `w2` (ime + frameBudget +
+webglContextLoss), `hiddenFlood` — and a gate whose scenario belongs to no leg
+is refused loudly rather than skipped.
+
+Two further properties are load-bearing:
+
+- **The files the verdict rests on survive.** The re-run's target
+  (`out/perf-retry.json`) is refused if it is the result file or the baseline by
+  any name — resolved path, real path (symlinks and `\\?\` spellings), or
+  hard-link identity — and is created with an atomic `wx+` open, so an existing
+  file is refused rather than deleted (clearing whatever sits at a mistyped path
+  would turn a typo into data loss). Its original handle stays open through the
+  bench: identity is captured from that handle with the full 64-bit `dev:ino`,
+  the path must still resolve to it afterward, and the verdict parses bytes
+  through the original handle rather than reopening the checked name. A name
+  swap is therefore detected, and keeping the original open prevents a deleted
+  inode from being reused to masquerade as the same file; a filesystem that
+  exposes no usable identity (`ino = 0`) makes the confirmation unconfirmable
+  instead of weakening the check. The result file *and* the baseline are also
+  compared byte for byte against what they held before the re-run — whatever happened in
+  between, including a crash — and put back if they moved. The trend line
+  published to `bench-history` is written from that first, tail-carrying
+  measurement before any re-run starts. Both result files are uploaded as
+  artifacts, and the job summary shows them side by side.
+
+  For the same reason, `perf-compare` refuses at startup if `--summary`,
+  `--append-history` or `--confirm-retry` names the same file as `--current` or
+  `--baseline` (exit 2), and refuses a `--current` that is valid JSON but not a
+  result object — it would otherwise read as every gate `SKIP` and pass green.
+- **It fails closed.** An unreadable file, a re-run that crashes, a commit or
+  schema mismatch, a gate that comes back `SKIP` because its leg died — all of
+  those are "could not confirm", and could-not-confirm keeps the red. Only an
+  explicit second `PASS` on every failing gate clears the job.
+
+A cleared red is still reported (`::warning::` plus a job-summary section). If
+one metric keeps clearing this way, that is a calibration problem worth its own
+issue, not a re-run.
+
 ## Baseline update policy
 
 Baselines are **descriptive, not aspirational**. Update them only when an
@@ -245,8 +319,19 @@ regression first.
 ## CI
 
 `.github/workflows/perf.yml` runs on `windows-latest`: package → bench
-(`--mode ci`) → compare against `bench/baseline-ci.json` → write
-`perf-summary.md` into the job step summary and upload artifacts.
+(`--mode ci`) → compare against `bench/baseline-ci.json`, confirming a red with
+a re-run of the failing legs → write `perf-summary.md` into the job step summary
+and upload artifacts.
+
+The gate's verdict is one step's exit code, and YAML is where that can be broken
+without a test, a type-check or a lint noticing: `continue-on-error` on the step
+or on the job makes a red non-fatal, an `if:` lets the step not run at all, and
+a block or folded `run:` with a second command hands the step the last command's
+exit code instead of the gate's. Even a harmless-looking `--help`, or shell
+syntax smuggled through another step's output, can turn the exact command into a
+zero. `scripts/__tests__/perfWorkflow.test.mjs` therefore pins the invocation
+and the only two literal values that its history output may splice into it,
+against the shipped file.
 
 On pushes to `main` it also publishes that run's trend line to the
 `bench-history` branch (`[perf-history]`), appending it to `history.ndjson`

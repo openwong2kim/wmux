@@ -8,6 +8,7 @@ import {
   detectThrottled,
   hasFailure,
   historyLine,
+  evaluateRun,
   BOOL_GATES,
   GATES,
   SCHEMA_VERSION,
@@ -341,5 +342,49 @@ describe('historyLine — the trend record (#602)', () => {
     expect(withIme({ pass: false }).imePass).toBe(false);
     // makeResult() has no ime scenario at all — skipped, not failed.
     expect(withIme(undefined).imePass).toBeNull();
+  });
+});
+
+// evaluateRun is the comparison half of the gate, exported so the confirmation
+// re-run (#570) judges a retry with exactly the code that judged the run.
+describe('evaluateRun', () => {
+  const baseline = makeResult();
+
+  it('produces the same verdict the gate exits on', () => {
+    const green = evaluateRun(makeResult(), baseline);
+    expect(green.recordOnly).toBe(false);
+    expect(hasFailure(green.results)).toBe(false);
+    const red = evaluateRun(makeResult({ ram8: 4000 * 1024 * 1024 }), baseline);
+    expect(hasFailure(red.results)).toBe(true);
+    expect(red.results.filter((r) => r.status === 'FAIL').map((r) => r.key)).toEqual(['ram8Bytes']);
+  });
+
+  it('drops to record-only on a schemaVersion mismatch, and compares against nothing', () => {
+    const out = evaluateRun(makeResult({ schemaVersion: SCHEMA_VERSION + 1 }), baseline);
+    expect(out.recordOnly).toBe(true);
+    expect(out.baseline).toBeNull();
+    expect(hasFailure(out.results)).toBe(false);
+  });
+
+  it('leaves "was a baseline supplied at all" to its caller', () => {
+    // main() decides record-only for the IO cases (no --baseline, unreadable
+    // file) and evaluateRun only for the schema mismatch. Moving that decision
+    // in here would change what a baseline file containing `null` means — see
+    // the next test.
+    expect(evaluateRun(makeResult(), null).recordOnly).toBe(false);
+  });
+
+  it('still enforces the boolean gates when the baseline parses to null', () => {
+    // A baseline file whose contents are literally `null` reads fine, so it is
+    // NOT the record-only bootstrap path: the numeric gates have nothing to
+    // compare against, but the baseline-independent correctness gates enforce
+    // exactly as they always have. Pinned because this is the one behaviour a
+    // careless refactor of the record-only rules silently flips to green.
+    const cur = makeResult();
+    cur.scenarios.ime = { pass: false };
+    const out = evaluateRun(cur, null);
+    expect(out.recordOnly).toBe(false);
+    expect(hasFailure(out.results)).toBe(true);
+    expect(out.results.filter((r) => r.status === 'FAIL').map((r) => r.key)).toEqual(['imePass']);
   });
 });
