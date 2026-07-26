@@ -351,7 +351,7 @@ export function registerDeckHandler(
     ) {
       existing.manager.dispose();
       managers.delete(workspaceId);
-      shownAmbientBlocks.delete(workspaceId);
+      forgetAmbient(workspaceId);
     }
     const current = managers.get(workspaceId);
     if (current) return current.manager;
@@ -420,6 +420,27 @@ export function registerDeckHandler(
   // keep the every-turn behavior — nothing is visible there and stale-block
   // risk beats noise.
   const shownAmbientBlocks = new Map<string, string>();
+  // Ambient text a turn CARRIED but whose delivery is not yet proven. A first
+  // turn that dies on Claude's own trust/sign-in dialog never showed the brain
+  // anything, so marking at build time permanently skipped those blocks for the
+  // retry. Promoted to `shown` only by a CLEAN turn (settleAmbient).
+  const pendingAmbientBlocks = new Map<string, string>();
+  /** Resolve the ambient blocks this workspace's just-finished turn carried.
+   *  `code:'errored'` covers both a thrown adapter and one that merely YIELDED
+   *  an error event (the TUI-dialog case) — either way the brain did not see
+   *  the blocks, so the next turn must re-send them. */
+  const settleAmbient = (workspaceId: string, verdict: CommanderSendResult): void => {
+    const pending = pendingAmbientBlocks.get(workspaceId);
+    if (pending === undefined) return;
+    pendingAmbientBlocks.delete(workspaceId);
+    if (verdict.ok && verdict.code !== 'errored') shownAmbientBlocks.set(workspaceId, pending);
+  };
+  /** Drop both halves of the ambient memory — a retired conversation must be
+   *  told the rules again. */
+  const forgetAmbient = (workspaceId: string): void => {
+    shownAmbientBlocks.delete(workspaceId);
+    pendingAmbientBlocks.delete(workspaceId);
+  };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
@@ -449,7 +470,7 @@ export function registerDeckHandler(
     const ambientText = ambient.join('\n\n');
     if (brainVendor === 'claude-pty') {
       if (ambientText && shownAmbientBlocks.get(workspaceId) !== ambientText) {
-        shownAmbientBlocks.set(workspaceId, ambientText);
+        pendingAmbientBlocks.set(workspaceId, ambientText);
         blocks.push(ambientText);
       }
     } else if (ambientText) {
@@ -505,6 +526,7 @@ export function registerDeckHandler(
       // a resolved decision's block, consume it (id-scoped) so it never re-injects.
       const injectedDecision = loadWorkspaceDecision(workspaceId);
       const verdict = await mgr.send(withLoopContext(workspaceId, text));
+      settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
         void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
       }
@@ -549,7 +571,7 @@ export function registerDeckHandler(
       if (entry) {
         entry.manager.dispose(); // interrupts an in-flight turn, flips to disposed
         managers.delete(workspaceId);
-        shownAmbientBlocks.delete(workspaceId);
+        forgetAmbient(workspaceId);
       }
       const vendor = brainVendor;
       const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
@@ -597,7 +619,7 @@ export function registerDeckHandler(
           if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
-            shownAmbientBlocks.delete(workspaceId);
+            forgetAmbient(workspaceId);
           }
         }
       }
@@ -627,7 +649,7 @@ export function registerDeckHandler(
           if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
-            shownAmbientBlocks.delete(workspaceId);
+            forgetAmbient(workspaceId);
             // The retired brain's embedded terminal is gone with it — retract
             // the pty id so the deck falls back to the bubble view instead of
             // showing a dead terminal.
@@ -761,6 +783,7 @@ export function registerDeckHandler(
       }
       emit(workspaceId, { type: 'turn-start', prompt });
       const verdict = await mgr.send(prompted);
+      settleAmbient(workspaceId, verdict);
       if (verdict.ok) {
         if (runOpts.reExamine) {
           // The brain may have self-resolved its OWN decision during this

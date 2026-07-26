@@ -31,6 +31,17 @@ vi.mock('../../../deck/deckPolicy', () => ({
   getDeckPolicyPath: vi.fn(() => '/fake/deck-policy.md'),
 }));
 
+// The ambient [autonomy] block only exists for a non-off workspace, and the
+// re-send test needs one. Everything else stays real.
+vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
+  return {
+    ...actual,
+    loadWorkspaceAutonomy: vi.fn(() => ({ mode: 'auto', ...actual.modeToCaps('auto') })),
+    loadWorkspaceMode: vi.fn(() => 'auto'),
+  };
+});
+
 import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
@@ -40,20 +51,32 @@ function noop(): void {
   /* the default fake never announces a terminal */
 }
 
+/** Every wire prompt every fake adapter received, in order. */
+let prompts: string[];
+/** When true the NEXT turn yields an error event instead of a turn-end — what
+ *  a TUI brain stopped on its own trust/sign-in dialog looks like from here. */
+let failNextTurn = false;
+
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
   disposed = false;
+  startOptions: BrainStartOptions | null = null;
   constructor(
     public readonly vendor: BrainVendor | undefined,
     public readonly workspaceId: string,
     public readonly announcePty: (ptyId: string | null) => void = noop,
+    public readonly model: string | undefined = undefined,
   ) {}
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  start(_opts: BrainStartOptions): void {
-    /* nothing to prime in the fake */
+  start(opts: BrainStartOptions): void {
+    this.startOptions = opts;
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async *send(_text: string): AsyncIterable<BrainEvent> {
+  async *send(text: string): AsyncIterable<BrainEvent> {
+    prompts.push(text);
+    if (failNextTurn) {
+      failNextTurn = false;
+      yield { type: 'error', message: 'Claude Code is waiting on a prompt of its own' } as BrainEvent;
+      return;
+    }
     yield { type: 'turn-end', sessionId: 'sess-1' } as BrainEvent;
   }
   interrupt(): void {
@@ -80,7 +103,7 @@ const fakeWindow = {
 function register(): void {
   cleanup = registerDeckHandler(() => fakeWindow, {
     createAdapter: (opts) => {
-      const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned);
+      const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
       adapters.push(a);
       return a;
     },
@@ -100,6 +123,8 @@ beforeEach(() => {
   captured.clear();
   adapters = [];
   sent = [];
+  prompts = [];
+  failNextTurn = false;
   sessionKeys.length = 0;
   cleanup?.();
   cleanup = null;
@@ -144,6 +169,26 @@ describe('deck handler — brain vendor narrowing', () => {
       payload: { workspaceId: 'ws-1', ptyId: null },
     });
   });
+});
+
+describe('deck handler — ambient blocks on a terminal brain', () => {
+  it('re-sends the ambient blocks after a turn that never reached the brain', async () => {
+    // A first turn that dies on Claude's own trust/sign-in dialog showed the
+    // brain NOTHING. Marking the blocks "shown" when the prompt was BUILT made
+    // the retry — and every turn after it — silently skip the autonomy/policy
+    // rules for the rest of the conversation.
+    await setVendor('claude-pty');
+    failNextTurn = true;
+    await send('ws-1');
+    expect(prompts[0]).toContain('[autonomy]');
+    await send('ws-1');
+    expect(prompts[1]).toContain('[autonomy]');
+    // …and once a turn DID land, the unchanged block stops repeating (the
+    // whole reason a visible TUI brain gates them in the first place).
+    await send('ws-1');
+    expect(prompts[2]).not.toContain('[autonomy]');
+  });
+
 });
 
 describe('deck handler — embedded terminal hydration', () => {
