@@ -108,10 +108,16 @@ export class SessionLocationTransaction {
   private finalize(item: PendingTransaction, outcome: ExactStateWriteOutcome): void {
     if (item.finalized) return;
     item.finalized = true;
+    let terminalOutcome = outcome;
     if (outcome === 'written' && item.committed) {
-      item.request.publish(item.transactionId);
+      try {
+        item.request.publish(item.transactionId);
+      } catch (err) {
+        console.error('[SessionLocationTransaction] Failed to publish committed state:', err);
+        terminalOutcome = 'failed';
+      }
     }
-    item.resolve(outcome);
+    item.resolve(terminalOutcome);
   }
 
   private notifyFlushed(): void {

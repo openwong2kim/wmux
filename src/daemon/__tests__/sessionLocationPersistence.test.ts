@@ -374,4 +374,51 @@ describe('SessionLocationTransaction', () => {
     expect(commit).toHaveBeenCalledOnce();
     expect(writtenLocation(io.syncWrite.mock.calls.at(-1)!)).toEqual(candidate);
   });
+
+  it('settles a committed async request when publication throws', async () => {
+    const candidate = location('/home/me/new');
+    const publish = vi.fn(() => { throw new Error('pipe closed'); });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = transaction.submit({
+      durability: 'asap',
+      prepare: () => state(candidate),
+      commit: () => {
+        accepted = candidate;
+        return state(accepted);
+      },
+      current: () => state(accepted),
+      publish,
+    });
+
+    await expect(result).resolves.toBe('failed');
+    await expect(transaction.flush()).resolves.toBeUndefined();
+    expect(publish).toHaveBeenCalledOnce();
+    expect(accepted).toEqual(candidate);
+  });
+
+  it('continues flushSync after a committed publisher throws', async () => {
+    const first = location('/home/me/first');
+    const publish = vi.fn(() => { throw new Error('pipe closed'); });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failedPublication = transaction.submit({
+      durability: 'asap',
+      prepare: () => state(first),
+      commit: () => {
+        accepted = first;
+        return state(accepted);
+      },
+      current: () => state(accepted),
+      publish,
+    });
+    const later = submit('later', location('/home/me/later'), 'asap');
+
+    transaction.flushSync();
+
+    await expect(Promise.all([failedPublication, later]))
+      .resolves.toEqual(['failed', 'written']);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(commitOrder).toEqual(['later']);
+    expect(publishOrder).toEqual(['later']);
+  });
 });
