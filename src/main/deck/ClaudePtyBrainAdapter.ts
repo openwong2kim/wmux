@@ -700,6 +700,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       await delay(this.deps.submitDelayMs ?? SUBMIT_DELAY_MS);
       if (this._disposed) return;
       this.deps.host.write(ptyId, '\r');
+      // Belt-and-braces second Enter: the first can still be swallowed when it
+      // lands during a TUI redraw right after the previous turn (observed in
+      // dogfood). If the first one DID submit, the input box is empty by now
+      // and an Enter on an empty box is a no-op — so the retry is harmless.
+      await delay((this.deps.submitDelayMs ?? SUBMIT_DELAY_MS) * 2);
+      if (this._disposed) return;
+      this.deps.host.write(ptyId, '\r');
     } catch (err) {
       this.turnStop = null;
       yield { type: 'error', message: `could not reach the terminal brain: ${String(err)}` };

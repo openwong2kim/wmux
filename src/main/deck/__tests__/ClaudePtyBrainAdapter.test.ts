@@ -262,12 +262,15 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const host = makeHost();
     const adapter = makeAdapter(host);
     const turn = collect(adapter.send('summarise the fleet'));
-    await vi.waitFor(() => expect(host.writes.length).toBe(2));
+    await vi.waitFor(() => expect(host.writes.length).toBe(3));
     const ptyId = host.created[0].id;
-    // The prompt and the submitting Enter are separate writes: one chunk would
-    // make the TUI's paste detection swallow the `\r` as pasted content.
+    // The prompt and the submitting Enter are separate writes (one chunk would
+    // make the TUI's paste detection swallow the `\r` as pasted content), and
+    // the Enter is retried once — a redraw can eat the first, and an Enter on
+    // an already-empty input box is a no-op.
     expect(host.writes[0].data).toBe('summarise the fleet');
     expect(host.writes[1].data).toBe('\r');
+    expect(host.writes[2].data).toBe('\r');
 
     deliverBrainPtyHookSignal(
       signal('agent.stop', ptyId, {
