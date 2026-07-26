@@ -5,7 +5,12 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
-import type { GitRunner } from '../sessionDiff';
+import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
+
+/** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
+const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
+/** The git subcommand — `rev-parse`, `diff`, `status`. */
+const gitVerb = (args: readonly string[]): string => gitBody(args)[0] ?? '';
 import type {
   ApprovalEvent,
   ApprovalRegistryApi,
@@ -20,7 +25,11 @@ function makeDeps() {
   const bridge = new EventEmitter();
   const write = vi.fn();
   const managed = {
-    meta: { id: 's1', cols: 80, rows: 24, state: 'detached', cwd: '/x' },
+    // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
+    // process last claimed via OSC 7 (i.e. attacker-controlled), `spawnCwd` is
+    // where the daemon actually spawned it. Every diff assertion below expects
+    // '/x', which is the whole point.
+    meta: { id: 's1', cols: 80, rows: 24, state: 'detached', cwd: '/tmp/osc7-said-so', spawnCwd: '/x' },
     ringBuffer: { readAll: () => Buffer.from('screen-bytes') },
     bridge,
     ptyProcess: { write },
@@ -62,7 +71,15 @@ function makeDeps() {
   // The real DaemonSessionManager is an EventEmitter; the server tees its
   // session:critical / session:notification events, so the fake must emit too.
   const sessionManager = Object.assign(new EventEmitter(), {
-    getSession: (id: string) => (id === 's1' ? managed : undefined),
+    // Every live pane is gettable, each with its own spawn cwd, so the
+    // concurrency bound can be exercised across more than one session.
+    getSession: (id: string) => {
+      if (id === 's1') return managed;
+      const row = live.find((l) => l.id === id);
+      return row
+        ? { ...managed, meta: { ...managed.meta, id, cwd: '/tmp/osc7-said-so', spawnCwd: row.cwd } }
+        : undefined;
+    },
     listLiveSessions: () => live,
   }) as unknown as DaemonSessionManager;
   // Lifecycle stand-in for the daemon's own daemon.createSession /
@@ -101,20 +118,27 @@ function makeDeps() {
   // "fixed-argv, cwd-from-the-daemon" claim can be asserted from the route side
   // too, not just in sessionDiff.test.ts.
   const gitCalls: Array<{ args: readonly string[]; cwd: string }> = [];
-  const gitScript: Record<string, { ok: boolean; stdout: string; stderr: string }> = {
-    'rev-parse': { ok: true, stdout: 'true\n', stderr: '' },
+  const gitScript: Record<
+    string,
+    { ok: boolean; stdout: string; stderr: string; ran?: boolean }
+  > = {
+    'rev-parse': { ok: true, stdout: 'true\n/x\n', stderr: '' },
     diff: { ok: true, stdout: 'PATCH\n', stderr: '' },
     status: { ok: true, stdout: ' M src/a.ts\0?? notes.md\0', stderr: '' },
   };
+  // Lets a test hold a collection open, which is the only way to observe the
+  // concurrency bound and the per-session coalescing.
+  const gitGate: { hold: Promise<void> | null } = { hold: null };
   const git: GitRunner = async (args, cwd) => {
     gitCalls.push({ args, cwd });
-    return gitScript[args[0] as string] ?? { ok: true, stdout: '', stderr: '' };
+    if (gitGate.hold) await gitGate.hold;
+    return gitScript[gitVerb(args)] ?? { ok: true, stdout: '', stderr: '' };
   };
 
   return {
-    sessionManager, bridge, write, live,
+    sessionManager, bridge, write, live, managed,
     lifecycle, lifecycleCalls, lifecycleBox,
-    git, gitCalls, gitScript,
+    git, gitCalls, gitScript, gitGate,
     ...makeApprovals(), ...makeDevices(),
   };
 }
@@ -255,7 +279,9 @@ describe('WebTerminalServer', () => {
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
   let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean };
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
-  let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string }>;
+  let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
+  let gitGate: { hold: Promise<void> | null };
+  let managed: { meta: Record<string, unknown> };
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -276,6 +302,8 @@ describe('WebTerminalServer', () => {
     lifecycleBox = deps.lifecycleBox;
     gitCalls = deps.gitCalls;
     gitScript = deps.gitScript;
+    gitGate = deps.gitGate;
+    managed = deps.managed;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
@@ -2201,17 +2229,26 @@ describe('WebTerminalServer', () => {
         { path: 'src/a.ts', status: ' M' },
         { path: 'notes.md', status: '??' },
       ],
-      // Staged then working tree, from the same scripted stdout.
-      patch: 'PATCH\nPATCH\n',
+      // Staged, working tree, then the untracked add-hunk — three runs of the
+      // same scripted stdout.
+      patch: 'PATCH\nPATCH\nPATCH\n',
       truncated: false,
       omittedBytes: 0,
+      patchIncomplete: false,
     });
-    expect(gitCalls.map((c) => c.args)).toEqual([
-      ['rev-parse', '--is-inside-work-tree'],
-      ['diff', '--cached'],
-      ['diff'],
+    expect(gitCalls.map((c) => gitBody(c.args))).toEqual([
+      ['rev-parse', '--is-inside-work-tree', '--show-toplevel'],
+      ['diff', '--cached', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--no-ext-diff', '--no-textconv'],
       ['status', '--porcelain', '-z', '--untracked-files=all'],
+      // #6: an untracked file is in files[] and would otherwise contribute
+      // nothing to the patch. The path goes after a literal `--`.
+      ['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', 'notes.md'],
     ]);
+    // Every one of them carried the hardening prefix.
+    for (const c of gitCalls) {
+      expect(c.args.slice(0, GIT_HARDENING_CONFIG.length)).toEqual([...GIT_HARDENING_CONFIG]);
+    }
   });
 
   it("★ takes the cwd from the daemon's session record, never from the request", async () => {
@@ -2220,12 +2257,39 @@ describe('WebTerminalServer', () => {
     await fetch(`${base()}/api/sessions/s1/diff?cwd=/etc&ref=HEAD~5&base=main`, {
       headers: bearer(info.token as string),
     });
-    // s1's recorded cwd is /x — see makeDeps.
+    // s1's recorded spawn cwd is /x — see makeDeps.
     expect(new Set(gitCalls.map((c) => c.cwd))).toEqual(new Set(['/x']));
     const flat = gitCalls.flatMap((c) => c.args);
     expect(flat).not.toContain('/etc');
     expect(flat).not.toContain('HEAD~5');
     expect(flat).not.toContain('main');
+  });
+
+  it('★ diffs the SPAWN cwd, never the OSC 7 cwd the pane itself last claimed', async () => {
+    // The pane's process emitted an OSC 7 pointing at /tmp/osc7-said-so, which
+    // the daemon dutifully recorded in meta.cwd. If the route read that, any
+    // process inside any pane could aim this read-only route at any directory
+    // on the machine and get the patch back over HTTP.
+    const info = await startRO();
+    await getDiff('s1', info.token as string);
+    expect(gitCalls.length).toBeGreaterThan(0);
+    for (const c of gitCalls) expect(c.cwd).toBe('/x');
+    expect(gitCalls.map((c) => c.cwd)).not.toContain('/tmp/osc7-said-so');
+  });
+
+  it('409s a session record with no spawn cwd rather than falling back to the live one', async () => {
+    const info = await startRO();
+    // A pre-spawnCwd record. Falling back to meta.cwd here would reopen the
+    // hole above for exactly the sessions whose provenance is unknown.
+    const meta = (managed as unknown as { meta: Record<string, unknown> }).meta;
+    const saved = meta.spawnCwd;
+    meta.spawnCwd = undefined;
+    try {
+      expect((await getDiff('s1', info.token as string)).status).toBe(409);
+      expect(gitCalls).toHaveLength(0);
+    } finally {
+      meta.spawnCwd = saved;
+    }
   });
 
   it('★ 409s a cwd that is not a git repo — a scratch pane is normal, not an error', async () => {
@@ -2236,12 +2300,79 @@ describe('WebTerminalServer', () => {
     expect(await res.json()).toEqual({ error: 'not-a-git-repo' });
   });
 
-  it('500s when git itself fails, so the two cases stay tellable apart', async () => {
+  it('★ 500s, not 409s, when git never ran — "no repo here" must be gits word', async () => {
+    // ENOENT on the git binary, or our own timeout. The old code collapsed
+    // every failure into 409, telling the human their perfectly good repo was
+    // not a repo.
     const info = await startRO();
-    gitScript['status'] = { ok: false, stdout: '', stderr: 'fatal: index file corrupt' };
+    gitScript['rev-parse'] = { ok: false, ran: false, stdout: '', stderr: 'spawn git ENOENT' };
     const res = await getDiff('s1', info.token as string);
     expect(res.status).toBe(500);
-    expect(await res.json()).toMatchObject({ error: 'git-failed' });
+    expect(await res.json()).toEqual({ error: 'git-failed' });
+  });
+
+  it('500s when git itself fails, and leaks no detail on the wire', async () => {
+    const info = await startRO();
+    gitScript['status'] = {
+      ok: false,
+      stdout: '',
+      stderr: 'fatal: index file /home/someone/secret-project/.git/index corrupt',
+    };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(500);
+    // The whole body, not a subset: git stderr names paths, remotes and config
+    // keys, and none of it helps a phone decide what to do next.
+    expect(await res.json()).toEqual({ error: 'git-failed' });
+  });
+
+  it('★ reports patchIncomplete when a diff command fails, instead of "no changes"', async () => {
+    // The reason this flag exists: an empty patch with truncated:false renders
+    // on a phone as a clean tree, and a human approves an edit against it.
+    const info = await startRO();
+    gitScript['diff'] = { ok: false, ran: false, stdout: '', stderr: 'killed' };
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      patch: '',
+      truncated: false,
+      patchIncomplete: true,
+      files: [
+        { path: 'src/a.ts', status: ' M' },
+        { path: 'notes.md', status: '??' },
+      ],
+    });
+  });
+
+  it('★ bounds concurrent collections and coalesces per session', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    // Hold every collection open so all of them are genuinely in flight.
+    let release = (): void => { /* replaced below */ };
+    gitGate.hold = new Promise<void>((r) => { release = r; });
+
+    // s1 twice (coalesced into one collection) + s2 = two slots used.
+    const a = getDiff('s1', token);
+    const b = getDiff('s1', token);
+    const c = getDiff('s2', token);
+    // Let the three requests reach the handler before the fourth.
+    await new Promise((r) => setTimeout(r, 30));
+    const d = getDiff('s3', token);
+    const dRes = await d;
+    expect(dRes.status).toBe(429);
+    expect(await dRes.json()).toEqual({ error: 'busy' });
+
+    gitGate.hold = null;
+    release();
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    expect([ra.status, rb.status, rc.status]).toEqual([200, 200, 200]);
+    // Coalescing: the two s1 requests got the same answer from one collection.
+    expect(await ra.json()).toEqual(await rb.json());
+    // s3 never shelled out at all — the refusal is before git, which is the
+    // point of the bound.
+    expect(gitCalls.map((x) => x.cwd)).not.toContain('/z');
+
+    // And the bound is released: a later request succeeds normally.
+    expect((await getDiff('s1', token)).status).toBe(200);
   });
 
   it('404s an unknown session id, and never shells out for one', async () => {
@@ -2323,6 +2454,54 @@ describe('WebTerminalServer', () => {
     expect((await postSession(token, {})).status).toBe(201);
     expect((await postSession(token, { workspaceId: 7, cwd: ['/x'] })).status).toBe(201);
     expect(lifecycleCalls.map((c) => c.arg)).toEqual([{}, {}, {}]);
+  });
+
+  it('★ 400s a workspaceId that is not the right SHAPE, before anything is spawned', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    // The value is stamped into WMUX_WORKSPACE_ID and persisted into
+    // sessions.json, so a control character or a newline is not a cosmetic
+    // problem — it is a value that renders as something else downstream.
+    for (const bad of [
+      'ws 1',
+      'ws/../other',
+      'ws-1\nWMUX_AUTH_TOKEN=x',
+      'ws 1',
+      'ws-\u001b[31m1',
+      'w'.repeat(65),
+      '../../etc/passwd',
+    ]) {
+      const res = await postSession(token, { workspaceId: bad });
+      expect(res.status, bad).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'invalid-workspace-id' });
+    }
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('★ 400s a well-shaped workspaceId that no live pane is running in', async () => {
+    // The daemon owns no workspace registry, so "some live session already
+    // carries this id" is the only evidence it has that the workspace exists.
+    // Accepting an unverifiable id would be workspace impersonation.
+    const info = await startRW();
+    const res = await postSession(info.token as string, { workspaceId: 'ws-invented' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'unknown-workspace-id' });
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('accepts a workspaceId a live pane vouches for, and always accepts none at all', async () => {
+    const info = await startRW();
+    const token = info.token as string;
+    // ws-1 is s1's workspace; ws-legacy is s2's (id present, name absent).
+    expect((await postSession(token, { workspaceId: 'ws-1' })).status).toBe(201);
+    expect((await postSession(token, { workspaceId: 'ws-legacy' })).status).toBe(201);
+    // The documented escape hatch from the trade-off above.
+    expect((await postSession(token, {})).status).toBe(201);
+    expect(lifecycleCalls.map((c) => c.arg)).toEqual([
+      { workspaceId: 'ws-1' },
+      { workspaceId: 'ws-legacy' },
+      {},
+    ]);
   });
 
   it('400s a malformed JSON body rather than spawning anything', async () => {

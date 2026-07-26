@@ -206,9 +206,18 @@ UI on `/api/config` exactly as you gate the keyboard.
 
 `POST` answers with a single session row in the same shape `/api/sessions`
 returns, so append it to the list rather than refetching. Omit `cwd` for the
-home directory. `workspaceId` stamps the new pane's workspace identity; the
-human-readable label is filled in from a live pane in that workspace, so a
-workspace with no live panes yields a row with no `workspace` field.
+home directory.
+
+`workspaceId` stamps the new pane's workspace identity, so it is checked twice
+before it is used. It must match `^[A-Za-z0-9_-]{1,64}$`, and **it must be a
+workspace some live pane is already running in** — the daemon owns no workspace
+registry (the desktop does), so a running session carrying the id is the only
+evidence available to it that the workspace exists. Either check failing is a
+400 (`invalid-workspace-id` / `unknown-workspace-id`) and nothing is spawned.
+The consequence is real and accepted: a genuine workspace whose panes are all
+closed cannot be named until one is open. Omit the field to spawn outside a
+workspace — that always works. The human-readable label is copied from the same
+live pane.
 
 409 means the daemon refused (session cap, memory pressure, shutdown in
 flight); `detail` is operator-facing copy worth showing verbatim. 404 on DELETE
@@ -223,8 +232,10 @@ deliberately cannot reach it.
 
 ```
 GET /api/sessions/<id>/diff  → 200 {files: [{path, status, from?}], patch,
-                                    truncated, omittedBytes}
+                                    truncated, omittedBytes, patchIncomplete}
                                409 {error: 'not-a-git-repo'}
+                               429 {error: 'busy'}
+                               500 {error: 'git-failed'}
 ```
 
 Read-only, and **available on a read-only server** — it runs `git diff`,
@@ -233,12 +244,33 @@ returns text. Nothing in the request names a directory or a ref.
 
 `status` is the raw two-character porcelain code (`' M'`, `'M '`, `'??'`, `'R '`,
 `'UU'`, …): the index column and the worktree column are independent and any
-one-word summary loses one of them. `patch` is the staged patch followed by the
-working-tree patch; it is capped at 512 KB, and `truncated` says the tail was
-cut.
+one-word summary loses one of them. `patch` is the staged patch, then the
+working-tree patch, then an add-hunk for each untracked file (the first 20 of
+them). It is capped at 512 KB, and `truncated` says the tail was cut.
 
-**409 is normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no
-repository here", not "something went wrong".
+**`patchIncomplete` is the flag you must not ignore.** It means `files[]` is
+accurate but `patch` is missing content for a reason that is *not* the cap: a
+git command timed out or failed, or there were more than 20 untracked files. Do
+not render a `patchIncomplete: true` response as a diff a human can approve
+against — say the patch is partial and offer the desktop. `truncated` and
+`patchIncomplete` are independent: `truncated` alone means "you have the first
+512 KB of a complete patch", which is a normal thing to show.
+
+The directory read is the one the pane was **spawned** in, not the one it is in
+now. A `cd` inside the pane does not move the diff. That is deliberate: the live
+directory is tracked from terminal escape sequences, which any process in the
+pane can emit, so acting on it would let a pane point this route anywhere on the
+machine.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 409 | `{error: 'not-a-git-repo'}` | **Normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no repository here", not "something went wrong". Only returned when git ran and said so |
+| 429 | `{error: 'busy'}` | Too many diffs in flight (the daemon collects at most two at once). Retry; do not treat it as an error state |
+| 500 | `{error: 'git-failed'}` | git could not be run, or timed out, or the tree could not be described. Deliberately carries no detail — git's stderr names paths, remotes and config keys, and the operator has it in the daemon log. Retry once, then offer the desktop |
+
+Concurrent requests for the same pane are coalesced into one git run and all
+receive the same answer, so a client that retries on reconnect costs nothing
+extra.
 
 ---
 

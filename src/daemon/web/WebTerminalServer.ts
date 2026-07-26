@@ -12,7 +12,12 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 import { ENV_KEYS } from '../../shared/constants';
 import type { PairRefusal } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
-import { collectSessionDiff, createGitRunner, type GitRunner } from './sessionDiff';
+import {
+  collectSessionDiff,
+  createGitRunner,
+  type GitRunner,
+  type SessionDiffResult,
+} from './sessionDiff';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
 
@@ -375,6 +380,29 @@ const STREAM_TICKET_BYTES = 32;
  * tickets in a loop, which no client of ours does.
  */
 const MAX_STREAM_TICKETS = 512;
+
+/**
+ * How many pane diffs may be collected at once, across the whole daemon.
+ *
+ * A diff is up to five `git` processes each allowed five seconds and half a
+ * megabyte of buffer, and the route needs no `--allow-input`, so a phone that
+ * retries on every reconnect — or a client that simply polls — is a fork bomb
+ * with a Bearer token. Two is chosen to be obviously enough for the intended
+ * use (one human, looking at one approval) and obviously not a load: a third
+ * concurrent collection is refused with 429 rather than queued, because a
+ * queued diff arrives after the human has already decided.
+ */
+const MAX_CONCURRENT_DIFFS = 2;
+/** Live collections, daemon-wide. Module-level: the bound is on `git`, not on a server object. */
+let activeDiffs = 0;
+/**
+ * Collections in flight, keyed by session id, so N requests for the SAME pane
+ * cost ONE git run and all get the same answer. This is the common case by far:
+ * a phone reconnecting mid-request re-issues it, and the diff is a pure read,
+ * so sharing the result is not a cache — the second caller is waiting on the
+ * very run it would otherwise have started.
+ */
+const inFlightDiffs = new Map<string, Promise<SessionDiffResult>>();
 
 interface SseClient {
   res: http.ServerResponse;
@@ -1186,6 +1214,16 @@ export class WebTerminalServer {
    * request names a directory, a ref, or a pathspec — see sessionDiff.ts for
    * why the argv is a constant.
    *
+   * IT IS `meta.spawnCwd`, NOT `meta.cwd`. `meta.cwd` is live: the daemon
+   * rewrites it whenever the pane's process emits an OSC 7 sequence
+   * (DaemonSessionManager's `cwd` bridge handler), and ANY process running in
+   * that pane can emit one — it is three bytes of terminal output, not a
+   * privileged operation. Diffing `meta.cwd` would therefore let a hostile
+   * process inside a pane aim this route at any directory on the machine and
+   * read the resulting patch back over the web API. `spawnCwd` is written once
+   * at spawn from the daemon's own record and never updated, so the directory
+   * being read is the one an operator actually chose.
+   *
    * `not-a-git-repo` is a 409, not a 500: a pane running in `~` is completely
    * normal and the phone should say "no repository here", not "something broke".
    */
@@ -1195,19 +1233,51 @@ export class WebTerminalServer {
     const managed = this.deps.sessionManager.getSession(id);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
-    const cwd = managed.meta.cwd;
+    // Absent only for a session record written before spawnCwd existed. Every
+    // live session goes through DaemonSessionManager.createSession, which sets
+    // it, so this is a belt-and-braces refusal rather than a reachable path —
+    // and refusing is the right way round: falling back to `meta.cwd` would
+    // reopen the hole above for exactly the sessions we cannot vouch for.
+    const cwd = managed.meta.spawnCwd;
     if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
 
     // Built once and cached: the default runner closes over nothing per-call,
     // and constructing one per request would be noise in a hot approval screen.
     this.git ??= this.deps.git ?? createGitRunner();
-    const result = await collectSessionDiff(cwd, this.git);
+    const git = this.git;
+
+    let work = inFlightDiffs.get(id);
+    if (!work) {
+      if (activeDiffs >= MAX_CONCURRENT_DIFFS) {
+        return this.json(res, 429, { error: 'busy' });
+      }
+      activeDiffs += 1;
+      work = collectSessionDiff(cwd, git).finally(() => {
+        activeDiffs -= 1;
+        inFlightDiffs.delete(id);
+      });
+      inFlightDiffs.set(id, work);
+    }
+
+    let result: SessionDiffResult;
+    try {
+      result = await work;
+    } catch (err) {
+      // collectSessionDiff returns failures as data, so this is a bug rather
+      // than a git problem — but an unhandled rejection here would take the
+      // daemon down, and every coalesced waiter must be answered.
+      this.deps.log('warn', `[web] diff threw for ${id}: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'git-failed' });
+    }
     if (!result.ok) {
       if (result.reason === 'not-a-git-repo') {
         return this.json(res, 409, { error: 'not-a-git-repo' });
       }
+      // Detail-free on the wire: git's stderr can name paths, remotes and
+      // config keys, and the client's only useful action ("it broke, retry")
+      // does not depend on which. The operator gets the text in the log.
       this.deps.log('warn', `[web] diff failed for ${id}: ${result.detail ?? ''}`);
-      return this.json(res, 500, { error: 'git-failed', detail: result.detail ?? '' });
+      return this.json(res, 500, { error: 'git-failed' });
     }
     return this.json(res, 200, result.diff);
   }
@@ -1253,6 +1323,10 @@ export class WebTerminalServer {
       const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown };
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
+      if (workspaceId) {
+        const bad = this.rejectWorkspaceId(workspaceId);
+        if (bad) return this.json(res, 400, bad);
+      }
       lifecycle
         .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}) })
         .then(({ id }) => {
@@ -1273,6 +1347,60 @@ export class WebTerminalServer {
           return this.json(res, 409, { error: 'create-failed', detail: errMsg(err) });
         });
     });
+  }
+
+  /**
+   * Is this `workspaceId` one we are willing to stamp into a child's
+   * environment? Returns the 400 body when it is not, `null` when it is.
+   *
+   * The id does not stay in the request. It is written into the new pane's
+   * `WMUX_WORKSPACE_ID`, persisted into `sessions.json`, and read back by the
+   * app as this pane's identity — so an unchecked string is workspace
+   * impersonation (claim a workspace you were never granted and the pane is
+   * filed under it) plus a persistence bug (a newline or a NUL in an env value
+   * and a state file that renders as something else entirely).
+   *
+   * TWO CHECKS, and the second is the interesting one:
+   *
+   *   1. SHAPE. The same `^[A-Za-z0-9_-]{1,64}$` the daemon already enforces on
+   *      a session id. Control characters, spaces and 4 KB of text are out.
+   *
+   *   2. EXISTENCE, evidenced by a live pane. The daemon has no workspace
+   *      registry — the renderer owns that list and the daemon deliberately
+   *      cannot ask it (see `sessionLifecycle` in daemon/index.ts). The only
+   *      evidence available here is that some live session is ALREADY running
+   *      under that id, which means the desktop minted it. So that is the rule.
+   *
+   * THE TRADE-OFF, stated plainly, because this replaced a deliberate decision
+   * that went the other way: a genuine workspace whose every pane happens to be
+   * closed cannot be named until one is open again, and the phone gets a 400
+   * for an id that really exists. The previous behaviour — spawn anyway, on the
+   * grounds that the daemon should not adjudicate a list it does not own — is
+   * the friendlier of the two and the wrong one: "I cannot verify this" must
+   * not resolve to "so I will accept it" for a value that becomes an identity.
+   * The workspace-less spawn (omit the field) is always available and is what a
+   * client should fall back to.
+   */
+  private rejectWorkspaceId(workspaceId: string): { error: string; detail: string } | null {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(workspaceId)) {
+      return {
+        error: 'invalid-workspace-id',
+        detail: 'workspaceId must match ^[A-Za-z0-9_-]{1,64}$',
+      };
+    }
+    const known = this.deps.sessionManager
+      .listLiveSessions()
+      .some((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId);
+    if (!known) {
+      return {
+        error: 'unknown-workspace-id',
+        detail:
+          'no live pane is running in that workspace — the daemon can only verify a ' +
+          'workspace id it can see on a running session. Omit workspaceId to spawn ' +
+          'outside a workspace.',
+      };
+    }
+    return null;
   }
 
   /** `DELETE /api/sessions/:id` — close a pane. See handleSessionCreate for the gate. */
