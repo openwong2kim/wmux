@@ -6,6 +6,7 @@
 // Never use generic patterns like "Done", "Failed", "?" that match
 // normal shell output. False positives are worse than missed detections.
 
+import { CRITICAL_PATTERNS } from '../../shared/criticalPatterns';
 import type { AgentStatus } from '../../shared/types';
 
 // Agent event status uses the same enum as WorkspaceMetadata.agentStatus so
@@ -286,30 +287,6 @@ const AGENT_PATTERNS: AgentPattern[] = [
       { regex: /^copilot>\s*$/,                  status: 'waiting',   message: 'Waiting for input' },
     ],
   },
-];
-
-// ---------------------------------------------------------------------------
-// Critical action patterns — require approval before execution
-// ---------------------------------------------------------------------------
-
-interface CriticalPattern {
-  regex: RegExp;
-  riskLevel: 'review' | 'critical';
-  label: string;
-}
-
-const CRITICAL_PATTERNS: CriticalPattern[] = [
-  { regex: /git\s+push\s+(?:.*--force|-f)\b/i,          riskLevel: 'critical', label: 'git push --force' },
-  { regex: /git\s+reset\s+--hard\b/i,                   riskLevel: 'critical', label: 'git reset --hard' },
-  { regex: /git\s+clean\s+.*-f\b/i,                     riskLevel: 'critical', label: 'git clean -f' },
-  { regex: /\brm\s+(?:.*-r.*-f|-f.*-r|-rf|-fr)\s+/i,   riskLevel: 'critical', label: 'rm -rf' },
-  { regex: /\brmdir\s+\/[sS]\s+/,                       riskLevel: 'critical', label: 'rmdir /S' },
-  { regex: /\bDROP\s+(?:TABLE|DATABASE|SCHEMA)\b/i,     riskLevel: 'critical', label: 'DROP TABLE/DATABASE' },
-  { regex: /\bDELETE\s+FROM\b/i,                        riskLevel: 'review',   label: 'DELETE FROM' },
-  { regex: /\bTRUNCATE\s+TABLE\b/i,                     riskLevel: 'critical', label: 'TRUNCATE TABLE' },
-  { regex: /\bnpm\s+publish\b/i,                        riskLevel: 'critical', label: 'npm publish' },
-  { regex: /\bterraform\s+destroy\b/i,                  riskLevel: 'critical', label: 'terraform destroy' },
-  { regex: /\bkubectl\s+delete\b/i,                     riskLevel: 'review',   label: 'kubectl delete' },
 ];
 
 const MAX_BUFFER = 16 * 1024;

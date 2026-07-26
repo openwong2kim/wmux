@@ -450,6 +450,29 @@ interface EventClient {
 type EventKind = 'critical' | 'notify' | 'approval';
 
 /**
+ * How much of a human this event is asking for.
+ *
+ *   act   someone is BLOCKED on a person — an approval was raised, a critical
+ *         signal fired. Nothing proceeds until a human acts.
+ *   info  FYI — a notification, or the lifecycle echo of an approval that is
+ *         already over (resolved, expired, superseded). Worth showing, not
+ *         worth waking anyone for.
+ *
+ * The vocabulary is deliberately two semantic words and NOT a platform's
+ * notification taxonomy. 'timeSensitive'/'passive' are Apple's names for
+ * Apple's interruption levels; putting them on the wire would make the daemon
+ * the place where one client OS's policy is encoded, and the next client
+ * (Android channels, a desktop toast, a terminal bell) would either inherit a
+ * vocabulary that does not fit it or force a second field. `act`/`info` states
+ * the FACT — is a person being waited on — and leaves the mapping to whoever
+ * is doing the notifying.
+ *
+ * Additive: a client that does not know the field loses nothing, and the kind
+ * it already switches on still carries the same meaning it always did.
+ */
+type EventTier = 'act' | 'info';
+
+/**
  * One recorded attention event. `payload` is the flattened wire object
  * (`{sessionId, ...event}`) exactly as it goes out live, so a replay and a live
  * delivery are byte-identical apart from framing.
@@ -458,7 +481,38 @@ interface AttentionEntry {
   id: number;
   at: number;
   kind: EventKind;
+  /**
+   * Server-authoritative urgency. Held beside the payload rather than inside
+   * it for the same reason `id` and `epoch` are stamped last: the payload of a
+   * `critical`/`notify` event is pane-supplied, and a pane must not be able to
+   * declare its own event non-urgent by putting a `tier` key in it.
+   */
+  tier: EventTier;
   payload: Record<string, unknown>;
+}
+
+/**
+ * The one place tier is decided. `phase` is only consulted for approvals — the
+ * create is the ask, everything after it is the echo of an ask that is done.
+ *
+ * `critical` is NOT uniformly `act`. The kind names the channel, not the
+ * severity: `CRITICAL_PATTERNS` carries two risk levels and the daemon puts
+ * both on it, so `DELETE FROM` and `kubectl delete` (`review`) arrive beside
+ * `rm -rf` and `terraform destroy` (`critical`). Waking a phone for the first
+ * pair at the same urgency as the second is how a person learns to ignore the
+ * channel — and it would contradict `hasCriticalRisk`, which already answers
+ * "is this the dangerous class?" with review-level excluded.
+ *
+ * Only the exact literal `'review'` softens the tier. An absent, unknown or
+ * malformed `riskLevel` stays `act`: the failure that matters is a destructive
+ * action delivered quietly, not an FYI delivered loudly. Note that this field
+ * is derived by the daemon from its own pattern table — a pane supplies the
+ * LINE, never the classification.
+ */
+function tierFor(kind: EventKind, payload: Record<string, unknown>): EventTier {
+  if (kind === 'notify') return 'info';
+  if (kind === 'critical') return payload['riskLevel'] === 'review' ? 'info' : 'act';
+  return payload['phase'] === 'create' ? 'act' : 'info';
 }
 
 /** A resume position: which server generation, and how far into it. */
@@ -1818,6 +1872,10 @@ export class WebTerminalServer {
       // route stamps the ENVELOPE kind onto that name, so carrying both would
       // mean `kind` said different things on the two shapes of the same event.
       createdAt: r.createdAt,
+      // Carried on the nudge as well as the record: a client that wants to
+      // raise the alert style for a destructive prompt should not have to wait
+      // for the /api/approvals round trip to know it should.
+      ...(r.risk ? { risk: r.risk } : {}),
       ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
@@ -1869,7 +1927,13 @@ export class WebTerminalServer {
    * that makes a resume ambiguous.
    */
   private publish(kind: EventKind, payload: Record<string, unknown>): AttentionEntry {
-    const entry: AttentionEntry = { id: ++this.attentionSeq, at: this.now(), kind, payload };
+    const entry: AttentionEntry = {
+      id: ++this.attentionSeq,
+      at: this.now(),
+      kind,
+      tier: tierFor(kind, payload),
+      payload,
+    };
     this.attentionLog.push(entry);
     this.evictAttention();
 
@@ -1902,8 +1966,9 @@ export class WebTerminalServer {
 
   /** The exact JSON one attention event carries on the wire, live or replayed. */
   private attentionWireBody(entry: AttentionEntry): string {
-    // Identity fields go LAST so pane-supplied payload data can never shadow them.
-    return JSON.stringify({ ...entry.payload, id: entry.id, epoch: this.attentionEpoch });
+    // Identity fields — and `tier`, which is the server's judgement, not the
+    // pane's — go LAST so pane-supplied payload data can never shadow them.
+    return JSON.stringify({ ...entry.payload, tier: entry.tier, id: entry.id, epoch: this.attentionEpoch });
   }
 
   /** SSE `id:` value — epoch-qualified so a stale cursor is detectable. */
@@ -2031,7 +2096,7 @@ export class WebTerminalServer {
       headId: this.headId(),
       reset,
       // Identity fields go LAST so pane-supplied payload data can never shadow them.
-      events: entries.map((e) => ({ ...e.payload, id: e.id, kind: e.kind, at: e.at })),
+      events: entries.map((e) => ({ ...e.payload, tier: e.tier, id: e.id, kind: e.kind, at: e.at })),
     });
   }
 
@@ -2473,6 +2538,9 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     // options list is a fact the registry recorded, not a missing field.
     ...(typeof r.question === 'string' ? { question: r.question } : {}),
     ...(Array.isArray(r.options) ? { options: r.options } : {}),
+    // A hint for UI step-up (see ApprovalRequest.risk). Never a permission:
+    // every request on this list is answerable through POST regardless.
+    ...(r.risk ? { risk: r.risk } : {}),
     ...(r.screenTail ? { screenTail: r.screenTail } : {}),
     ...(r.decision ? { decision: r.decision } : {}),
     ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),

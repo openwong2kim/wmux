@@ -59,6 +59,22 @@ export interface ApprovalRequest {
    * the digit that selects them.
    */
   options?: string[];
+  /**
+   * A HINT that the question names a destructive action — set at creation when
+   * `question`/`options` match the daemon's existing critical-action patterns
+   * (shared/criticalPatterns.ts, the same list the PTY scanner uses).
+   *
+   * IT IS NOT A GATE. A surface may use it to step up its own confirmation
+   * (Face ID, a second tap, a louder colour); it must NEVER use it to withhold,
+   * delay or refuse an answer. The patterns are regexes over agent-authored
+   * prose: they miss (an `rm -rf` described in words) and they over-fire (a
+   * question ABOUT deleting a table). Both directions are expected, and neither
+   * may cost a human the ability to answer the prompt in front of them.
+   *
+   * Absent means "no match", never "safe". Only 'critical' exists today; the
+   * softer `review` tier is deliberately not carried — see hasCriticalRisk.
+   */
+  risk?: 'critical';
   /** Epoch ms. */
   createdAt: number;
   state: ApprovalState;

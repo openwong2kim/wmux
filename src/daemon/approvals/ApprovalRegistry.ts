@@ -43,6 +43,7 @@
 //     visible (see looksLikeApprovalPrompt — biased to refuse).
 
 import crypto from 'node:crypto';
+import { hasCriticalRisk } from '../../shared/criticalPatterns';
 import { keystrokesForAgent, looksLikeApprovalPrompt } from './approvalKeystrokes';
 import {
   formatScreenTail,
@@ -229,6 +230,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         // request.
         ...(snapshot.question ? { question: snapshot.question } : {}),
         ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
+        // Danger HINT for UI step-up, computed once at creation from the same
+        // pattern list the PTY critical-action scanner uses. A miss or a false
+        // positive changes nothing about whether this request can be answered.
+        ...(hasCriticalRisk(snapshot.question, ...(snapshot.options ?? []))
+          ? { risk: 'critical' as const }
+          : {}),
         createdAt: this.now(),
         state: 'pending',
       };
