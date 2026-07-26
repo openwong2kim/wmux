@@ -354,11 +354,13 @@ export function registerPTYHandlers(
   function retireDaemonLocation(
     sessionId: string,
     generation: number,
-  ): void {
+  ): boolean {
     const authority = daemonLocations.beginDiscovery();
     try {
       const lease = daemonLocations.begin(sessionId, authority);
-      if (lease) daemonLocations.retire(sessionId, generation, lease);
+      return lease
+        ? daemonLocations.retire(sessionId, generation, lease)
+        : false;
     } finally {
       daemonLocations.finishDiscovery(authority);
     }
@@ -1350,21 +1352,23 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
-      if (payload.locationGeneration !== undefined) {
-        retireDaemonLocation(payload.sessionId, payload.locationGeneration);
+      const retiredCurrent = payload.locationGeneration !== undefined
+        && retireDaemonLocation(payload.sessionId, payload.locationGeneration);
+      if (retiredCurrent) {
+        removePaneLocation(payload.sessionId);
       }
-      removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
     onDaemonSessionDestroyed = (payload) => {
-      if (payload.locationGeneration !== undefined) {
-        retireDaemonLocation(payload.sessionId, payload.locationGeneration);
+      const retiredCurrent = payload.locationGeneration !== undefined
+        && retireDaemonLocation(payload.sessionId, payload.locationGeneration);
+      if (retiredCurrent) {
+        removePaneLocation(payload.sessionId);
       }
       sessionDecoders.delete(payload.sessionId);
       clearSessionDataListener(payload.sessionId);
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
       removePidMapByPtyId(payload.sessionId);
-      removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:destroyed', onDaemonSessionDestroyed);
   }

@@ -37,18 +37,24 @@ describe('OrderedSessionLocationProjection', () => {
   });
 
   it.each([
-    ['older', 4, true, 5],
-    ['current', 5, false, undefined],
-    ['newer', 6, false, undefined],
-  ] as const)('retires an exact %s generation', (_label, retired, remains, generation) => {
+    ['older', 4, false, true, 5],
+    ['current', 5, true, false, undefined],
+    ['newer', 6, true, false, undefined],
+  ] as const)('retires an exact %s generation', (
+    _label,
+    retired,
+    retiresCurrent,
+    remains,
+    generation,
+  ) => {
     const projection = new OrderedSessionLocationProjection();
     const lease = begin(projection);
     projection.accept('s1', snapshot(5, 1), lease);
 
-    expect(projection.retire('s1', retired, lease)).toBe(true);
+    expect(projection.retire('s1', retired, lease)).toBe(retiresCurrent);
     expect(projection.get('s1')?.generation).toBe(generation);
     expect(projection.accept('s1', snapshot(retired, 99), lease)).toBe(false);
-    expect(projection.retire('s1', retired, lease)).toBe(true);
+    expect(projection.retire('s1', retired, lease)).toBe(retiresCurrent);
     expect(projection.get('s1') !== undefined).toBe(remains);
   });
 

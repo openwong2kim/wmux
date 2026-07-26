@@ -103,10 +103,14 @@ export class OrderedSessionLocationProjection {
     if (!state) return false;
 
     state.retiredGeneration = Math.max(state.retiredGeneration ?? 0, generation);
-    if (state.snapshot && state.snapshot.generation <= generation) {
+    // The return value tells an adapter whether it may remove its projected
+    // mirror. An older destruction still advances the watermark, but must not
+    // clear a newer live snapshot or any boundary state derived from it.
+    const retiresCurrent = !state.snapshot || state.snapshot.generation <= generation;
+    if (retiresCurrent) {
       state.snapshot = undefined;
     }
-    return true;
+    return retiresCurrent;
   }
 
   release(
