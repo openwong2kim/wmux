@@ -7,6 +7,7 @@ import {
   hostLocation,
   parseSessionLocation,
   toHostAccessiblePath,
+  toWslGuestPath,
   type SessionLocation,
 } from '../../../shared/sessionLocation';
 import { wrapHandler } from '../wrapHandler';
@@ -50,42 +51,29 @@ function isBlockedHomeRelative(relativePath: string): boolean {
   return BLOCKED_FILES.some((file) => normalized === file.toLowerCase());
 }
 
-function wslHomeRelative(
+function homeRelativePath(
   candidatePath: string,
   location?: SessionLocation,
 ): string | null {
-  let normalized = candidatePath.replace(/\\/g, '/');
-  const unc = /^\/\/wsl(?:\.localhost|\$)\/[^/]+(\/.*)?$/i.exec(normalized);
-  if (unc) {
-    normalized = unc[1] || '/';
-  } else if (location?.domain !== 'wsl') {
-    return null;
+  const normalized = candidatePath.replace(/\\/g, '/');
+  const home = os.homedir().replace(/\\/g, '/');
+  if (normalized.toLowerCase().startsWith(`${home.toLowerCase()}/`)) {
+    return normalized.slice(home.length + 1);
   }
-  const userHome = /^\/home\/[^/]+\/(.+)$/i.exec(normalized);
-  if (userHome) return userHome[1];
-  const rootHome = /^\/root\/(.+)$/i.exec(normalized);
-  return rootHome?.[1] ?? null;
+
+  const guestPath = toWslGuestPath(location, candidatePath);
+  if (!guestPath) return null;
+  const userHome = /^\/home\/[^/]+(?:\/(.*))?$/i.exec(guestPath);
+  if (userHome) return userHome[1] ?? '';
+  const rootHome = /^\/root(?:\/(.*))?$/i.exec(guestPath);
+  return rootHome ? rootHome[1] ?? '' : null;
 }
 
 export function isSensitivePath(
   resolvedPath: string,
   location?: SessionLocation,
 ): boolean {
-  const home = os.homedir();
   const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
-  const homeNorm = home.replace(/\\/g, '/').toLowerCase();
-
-  // Block directories under home
-  for (const dir of BLOCKED_DIRS) {
-    const blocked = (homeNorm + '/' + dir).toLowerCase();
-    if (normalized.startsWith(blocked)) return true;
-  }
-
-  // Block specific files in home
-  for (const file of BLOCKED_FILES) {
-    const blocked = (homeNorm + '/' + file).toLowerCase();
-    if (normalized === blocked) return true;
-  }
 
   // Block Windows credential stores
   if (process.platform === 'win32') {
@@ -93,8 +81,8 @@ export function isSensitivePath(
     if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
   }
 
-  const guestRelative = wslHomeRelative(resolvedPath, location);
-  return guestRelative !== null && isBlockedHomeRelative(guestRelative);
+  const homeRelative = homeRelativePath(resolvedPath, location);
+  return homeRelative !== null && isBlockedHomeRelative(homeRelative);
 }
 
 interface FileLocationRequest {

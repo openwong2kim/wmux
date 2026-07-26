@@ -30,9 +30,23 @@ function hostPlatform(): string {
   return typeof process !== 'undefined' ? process.platform : '';
 }
 
+interface WslUncParts {
+  distro: string;
+  guestPath: string;
+}
+
+function wslUncParts(value: string): WslUncParts | undefined {
+  const normalized = value.replace(/\//g, '\\');
+  const match = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(?:\\(.*))?$/i.exec(normalized);
+  if (!match) return undefined;
+  return {
+    distro: match[1],
+    guestPath: match[2] ? `/${match[2].replace(/\\/g, '/')}` : '/',
+  };
+}
+
 function distroFromUnc(value: string): string | undefined {
-  const match = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(?:\\|$)/i.exec(value);
-  return match?.[1];
+  return wslUncParts(value)?.distro;
 }
 
 /**
@@ -288,6 +302,30 @@ export function toHostAccessiblePath(
     ok: true,
     path: `\\\\wsl.localhost\\${location.distro}${targetPath.replace(/\//g, '\\')}`,
   };
+}
+
+/**
+ * Converts a path in a WSL location or namespace to its rooted guest spelling.
+ * A WSL location is required for bare POSIX paths; either WSL UNC namespace is
+ * self-describing. When both sources name a distro, they must agree.
+ */
+export function toWslGuestPath(
+  location: SessionLocation | undefined,
+  targetPath: string,
+): string | null {
+  const unc = wslUncParts(targetPath);
+  if (unc) {
+    if (
+      location?.domain === 'wsl'
+      && location.distro
+      && location.distro.toLowerCase() !== unc.distro.toLowerCase()
+    ) {
+      return null;
+    }
+    return unc.guestPath;
+  }
+  if (location?.domain !== 'wsl' || !targetPath.startsWith('/')) return null;
+  return targetPath.replace(/\\/g, '/');
 }
 
 export function prepareLocationCommand(

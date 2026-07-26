@@ -41,6 +41,30 @@ describe('fs.handler security helpers', () => {
     expect(isSensitivePath(path.join(home, '.fmux', 'daemon-auth-token'))).toBe(true);
   });
 
+  it.each([
+    ['blocked directory', '.ssh', true],
+    ['blocked directory descendant', '.ssh/id_rsa', true],
+    ['blocked file', '.npmrc', true],
+    ['directory prefix neighbor', '.ssh-backup/id_rsa', false],
+    ['file prefix neighbor', '.npmrc.old', false],
+  ])('applies the same home-relative boundary to host and WSL: %s', (_name, relative, blocked) => {
+    const hostPath = path.join(home, ...relative.split('/'));
+    const wslPath = `/home/alice/${relative}`;
+    const wslLocation = {
+      domain: 'wsl' as const,
+      cwd: '/home/alice/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+
+    expect(isSensitivePath(hostPath)).toBe(blocked);
+    expect(isSensitivePath(wslPath, wslLocation)).toBe(blocked);
+    expect(isSensitivePath(
+      `\\\\wsl.localhost\\Ubuntu${wslPath.replace(/\//g, '\\')}`,
+      wslLocation,
+    )).toBe(blocked);
+  });
+
   it('rejects a symlink whose canonical target is sensitive', async () => {
     realpathSpy.mockResolvedValue(path.join(home, '.ssh', 'id_rsa'));
 
