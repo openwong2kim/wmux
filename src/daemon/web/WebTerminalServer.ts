@@ -74,6 +74,8 @@ import { buildWebCsp } from './webCsp';
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
  *                              allowed) or JSON backlog (Bearer only)
  *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   POST /api/upload           raw JPEG/PNG bytes → a path on disk — 403
+ *                              unless `--allow-upload` (its own grant)
  *   GET  /api/approvals        pending + recently resolved approval requests
  *   POST /api/approvals/:id    resolve one — ALLOWED on a read-only server
  */
@@ -308,15 +310,40 @@ interface WebTerminalServerDeps {
    */
   git?: GitRunner;
   /**
-   * Clock seam. Only the attention log's TTL eviction reads it; injected so the
-   * unit tests can age entries deterministically instead of sleeping half an
-   * hour. Defaults to the wall clock.
+   * Where `POST /api/upload` writes photos. Optional like `approvals`: a daemon
+   * that did not wire one still serves every other route, and the upload route
+   * answers 503 rather than guessing at a directory to create.
+   *
+   * Production passes `~/.wmux/uploads/phone`, which sits under the directory
+   * the Playwright sandbox already allowlists — so an uploaded photo is usable
+   * by `browser_file_upload` without a second policy.
+   */
+  uploadsDir?: string;
+  /**
+   * Clock seam. The attention log's TTL eviction and the upload sweep read it;
+   * injected so the unit tests can age entries deterministically instead of
+   * sleeping half an hour. Defaults to the wall clock.
    */
   now?: () => number;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
 const MAX_INPUT_BYTES = 64 * 1024;
+/**
+ * Cap a single photo upload. A phone transcodes to JPEG at 2048px on its long
+ * edge before sending, which lands an order of magnitude under this; the cap is
+ * here for the client that does not, not for the one that does.
+ */
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+/**
+ * How long an uploaded photo survives.
+ *
+ * The path handed back is a CONSUMABLE, not a library: the phone puts it in a
+ * composer draft the operator sends within seconds. A day is generous for that
+ * and short enough that a directory nobody looks at does not become an archive
+ * of everything ever photographed at a terminal.
+ */
+const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 /** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
@@ -716,9 +743,14 @@ export class WebTerminalServer {
       if (name) this.allowedHosts.add(name);
     }
 
+    // Boot-time sweep. There is no timer, so this and the pre-write sweep are
+    // the only two moments expired photos go away — and a daemon restart is
+    // exactly when a directory left behind by yesterday's session gets seen.
+    if (this.deps.uploadsDir) pruneUploads(this.deps.uploadsDir, this.now());
+
     this.deps.log(
       'info',
-      `[web] listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'})`,
+      `[web] listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'})`,
     );
     return this.status();
   }
@@ -1224,6 +1256,9 @@ export class WebTerminalServer {
     if (req.method === 'POST' && p === '/api/input') {
       return this.handleInput(req, res, url);
     }
+    if (req.method === 'POST' && p === '/api/upload') {
+      return this.handleUpload(req, res);
+    }
     if (req.method === 'GET' && p === '/api/approvals') {
       return this.handleApprovalsList(res);
     }
@@ -1621,6 +1656,85 @@ export class WebTerminalServer {
       }
       res.writeHead(204);
       res.end();
+    });
+    req.on('error', () => {
+      aborted = true;
+    });
+  }
+
+  // --- photo upload (opt-in) ----------------------------------------------
+
+  /**
+   * `POST /api/upload` — raw JPEG/PNG bytes in, an absolute path out.
+   *
+   * A phone can take a photo and a desktop cannot, but `POST /api/input` writes
+   * to a PTY and an image cannot ride that. So the bytes land on disk here and
+   * the CLIENT puts the returned path in a composer draft — this route never
+   * types anything at anyone. Sending it stays the operator's deliberate act
+   * through the existing input route.
+   *
+   * Modelled on handleInput down to the accumulate-and-cap shape. The three
+   * things it does differently are all refusals: the grant is its own flag, the
+   * format is decided by the BYTES rather than by a Content-Type the client
+   * chose, and the filename is ours — a client-supplied name is a traversal
+   * primitive and buys nothing, since nobody reads these by name.
+   *
+   * No multipart. The daemon has no parser and is not getting one for a body
+   * that is a single blob.
+   */
+  private handleUpload(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (this.opts?.allowUpload !== true) {
+      return this.json(res, 403, {
+        error: 'uploads-disabled: server started without --allow-upload',
+      });
+    }
+    const dir = this.deps.uploadsDir;
+    if (!dir) {
+      return this.json(res, 503, { error: 'uploads-unavailable' });
+    }
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let aborted = false;
+    req.on('data', (chunk: Buffer) => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > MAX_UPLOAD_BYTES) {
+        aborted = true;
+        this.json(res, 413, { error: 'payload too large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      const body = Buffer.concat(chunks);
+      const ext = sniffImageExt(body);
+      if (!ext) {
+        return this.json(res, 415, {
+          error: 'unsupported-format: only JPEG and PNG are accepted',
+        });
+      }
+      const now = this.now();
+      // Before the write, not on a timer: a sweeper firing while the operator
+      // is reading a path would be a race we invented for ourselves, and an
+      // upload is the only moment this directory is known to be in use.
+      pruneUploads(dir, now);
+      const name = `photo-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto
+        .randomBytes(4)
+        .toString('hex')}.${ext}`;
+      const full = path.join(dir, name);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        // `wx` refuses to overwrite. With 32 bits of randomness in the name a
+        // collision means something is wrong, and answering 500 is better than
+        // silently replacing a photo somebody is about to send.
+        fs.writeFileSync(full, body, { mode: 0o600, flag: 'wx' });
+      } catch (err) {
+        return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
+      }
+      return this.json(res, 201, { path: full, expiresAt: now + UPLOAD_TTL_MS });
     });
     req.on('error', () => {
       aborted = true;
@@ -2592,6 +2706,51 @@ function readIfExists(p: string): Buffer | null {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The eight bytes every PNG starts with. */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * What this blob actually is, by its leading bytes — or null for anything that
+ * is not one of the two formats we accept.
+ *
+ * The Content-Type header is deliberately not consulted. It is a claim by the
+ * client about a file the client did not necessarily produce, and the one thing
+ * that must not be client-controlled here is the extension we write to disk.
+ */
+function sniffImageExt(body: Buffer): 'jpg' | 'png' | null {
+  if (body.length < PNG_SIGNATURE.length) return null;
+  if (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return 'jpg';
+  if (body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return 'png';
+  return null;
+}
+
+/**
+ * Delete uploads older than the TTL. Modelled on `pruneOldLogs`, including the
+ * swallow-everything posture: a sweep is housekeeping, and a failure to tidy up
+ * must never turn into a failed upload.
+ *
+ * The filename guard is the load-bearing part. `~/.wmux/uploads` is also where
+ * an operator drops files for `browser_file_upload`, so the sweep only touches
+ * names THIS route generated — anything else in the directory is somebody
+ * else's file and stays put however old it is.
+ */
+function pruneUploads(dir: string, now: number): void {
+  try {
+    const cutoff = now - UPLOAD_TTL_MS;
+    for (const file of fs.readdirSync(dir)) {
+      if (!/^photo-.*\.(jpg|png)$/.test(file)) continue;
+      const full = path.join(dir, file);
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
+      } catch {
+        /* skip file on stat/unlink failure */
+      }
+    }
+  } catch {
+    /* dir missing — nothing to sweep */
+  }
 }
 
 /**

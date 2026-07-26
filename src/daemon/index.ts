@@ -233,6 +233,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // construction sites: main() builds the registry before it registers
         // RPC handlers and before it kicks off this restore.
         ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+        // Where POST /api/upload writes photos. Under ~/.wmux/uploads, which
+        // the Playwright sandbox already allowlists, so an uploaded photo is
+        // reachable by browser_file_upload without a second policy.
+        uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       });
     }
     const info = await webTerminalServer.start({
@@ -2000,6 +2004,8 @@ function registerRpcHandlers(
       // M2 — see the restore path: the approval routes need the registry, and
       // it exists by the time either site runs.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+      // See the restore path for why this directory and not another.
+      uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
     });
   }
   const webServer = webTerminalServer;
