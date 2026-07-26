@@ -13,12 +13,13 @@ export interface WslPaneContext {
 /** Resolve only facts carried by the pane itself, without enumeration. */
 export function distroFromPaneContext(ctx: WslPaneContext): string | undefined {
   if (!isWslShell(ctx.shell)) return undefined;
-  for (let i = 0; i < (ctx.args?.length ?? 0); i += 1) {
-    const arg = ctx.args![i];
+  const args = ctx.args ?? [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
     const inline = /^(?:-d|--distribution)=(.+)$/.exec(arg);
     if (inline) return inline[1];
     if (arg === '-d' || arg === '--distribution') {
-      const next = ctx.args![i + 1];
+      const next = args[i + 1];
       if (next && !next.startsWith('-')) return next;
     }
   }

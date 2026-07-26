@@ -15,6 +15,7 @@ import {
   preparePtyLocation,
   resolveSessionLocation,
   type SessionLocation,
+  type SessionLocationSnapshot,
 } from '../shared/sessionLocation';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
@@ -24,7 +25,6 @@ import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
 import { SessionLocationEnricher, type WslDistroResolver } from '../shared/sessionLocationEnrichment';
 import { distroFromPaneContext, resolveWslDistro } from '../shared/wslDistro';
-import type { SessionLocationSnapshot } from '../shared/sessionLocation';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
