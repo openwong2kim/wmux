@@ -99,6 +99,18 @@ describe('PrStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(4);
   });
 
+  it('normalizes the cwd key (separator/trailing-slash/case variance collapse onto one entry)', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => 0, exec);
+    await cache.get(host('D:\\repo'), 'main');
+    await cache.get(host('D:/repo/'), 'main');
+    await cache.get(host('d:\\REPO'), 'main');
+    // A bare worktree path (the pre-location caller form) must land on the
+    // same entry the pane target created — locationIdentity owns the folding.
+    await cache.get('D:/Repo//', 'main');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
   it('coalesces concurrent callers onto one gh subprocess', async () => {
     let resolve!: (v: { stdout: string }) => void;
     const exec = vi.fn().mockReturnValue(new Promise<{ stdout: string }>((r) => { resolve = r; }));
@@ -129,13 +141,18 @@ describe('PrStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(1); // never probed again
   });
 
-  it('invalidate() forces a refetch before the TTL', async () => {
+  it('invalidate() forces a refetch before the TTL, across cwd spellings', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => 0, exec);
-    const target = host('D:\\repo');
-    await cache.get(target, 'main');
-    cache.invalidate(target, 'main');
-    await cache.get(target, 'main');
+    await cache.get(host('D:\\repo'), 'main');
+    // Deliberately a DIFFERENT spelling of the same directory: an invalidate
+    // that only works on the identical object proves nothing about the key.
+    cache.invalidate('d:/repo/', 'main');
+    await cache.get(host('D:\\repo'), 'main');
+    expect(exec).toHaveBeenCalledTimes(2);
+    // Branch is still part of the key — a sibling branch keeps its own entry.
+    cache.invalidate('d:/repo/', 'other');
+    await cache.get(host('D:\\repo'), 'main');
     expect(exec).toHaveBeenCalledTimes(2);
   });
 

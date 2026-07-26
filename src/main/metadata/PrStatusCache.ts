@@ -23,11 +23,19 @@ const execFileAsync = promisify(execFile);
  */
 
 /**
- * Cache key = normalized cwd + NUL + branch. Normalizing the cwd (J3 F5) folds
- * Windows path-casing / separator / trailing-slash variance so a PR-creation
- * `invalidate(worktreePath, branch)` reliably hits the same entry the metadata
- * poll's `get(cwd, branch)` created — otherwise `C:\a` vs `c:/a/` miss and the
- * stale 5-min entry survives (CX8). The raw cwd is still what `fetch` runs gh in.
+ * Cache key = location identity + NUL + branch.
+ *
+ * The identity is computed by `paneCommandIdentity` → `locationIdentity`
+ * (shared/sessionLocation.ts), which is the single owner of path→identity for
+ * every domain: it separates host/msys/wsl (and WSL distros) and, for host
+ * paths, folds separator, duplicate-slash, trailing-slash and — on the
+ * case-insensitive filesystems — case variance. That folding is what makes a
+ * PR-creation `invalidate(worktreePath, branch)` hit the entry the metadata
+ * poll's `get(target, branch)` created; without it `C:\a` vs `c:/a/` miss and
+ * the stale 5-min entry survives (CX8). Nothing is normalized here — a second
+ * normalizer is exactly how the two spellings drifted apart before.
+ *
+ * The raw location is still what `fetch` runs gh in.
  */
 function cacheKey(target: PaneCommandTarget, branch: string): string {
   return `${paneCommandIdentity(target)}\0${branch}`;

@@ -2,6 +2,7 @@
 // (exec mock, symmetric with GhPrService tests).
 import { describe, it, expect, vi } from 'vitest';
 import { GlabPrService, mapGlabMrItem, mapGlabNotes } from '../GlabPrService';
+import { hostCommandTarget } from '../../git/paneCommand';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
 type ExecCall = { cmd: string; args: string[] };
@@ -138,6 +139,43 @@ describe('GlabPrService — list TTL·detail updatedAt cache', () => {
     // api path uses :id substitution + iid.
     const api = calls.find((c) => c.args[0] === 'api')!;
     expect(api.args[1]).toContain('projects/:id/merge_requests/7/notes');
+  });
+
+  // Same identity contract as the gh path (PrProvider): the Deck panel calls
+  // without a target, the pane poller calls with one — one repo, one entry.
+  it('targeted and untargeted calls for one repo share a single cache entry', async () => {
+    const { svc, calls } = dataService();
+    await svc.listPrs('D:\\repo');
+    await svc.listPrs('D:\\repo', false, hostCommandTarget('D:\\repo'));
+    await svc.listPrs('d:/repo/');
+    await svc.listPrs('D:/Repo', false, hostCommandTarget('d:\\repo\\'));
+    expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
+  });
+
+  it('routes a WSL target through wsl.exe and isolates it per distro', async () => {
+    const { svc, calls } = dataService();
+    const wsl = (distro: string, sessionId: string) => ({
+      sessionId,
+      location: { domain: 'wsl' as const, cwd: '/repo', shell: 'wsl.exe', distro },
+      activeContext: { sessionId, active: true as const, distro },
+    });
+    await svc.listPrs('/repo', false, wsl('Ubuntu', 'pty-u'));
+    await svc.listPrs('/repo', false, wsl('Debian', 'pty-d'));
+    expect(calls.filter((c) => c.cmd === 'wsl.exe').length).toBe(2);
+    expect(calls[0].args).toEqual(
+      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo', '--exec']),
+    );
+  });
+
+  it('fails soft without invoking wsl.exe for stale pane context', async () => {
+    const { svc, calls } = dataService();
+    const r = await svc.listPrs('/repo', false, {
+      sessionId: 'pty-current',
+      location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-stale', active: true, distro: 'Ubuntu' },
+    });
+    expect(r.ok).toBe(false);
+    expect(calls.length).toBe(0);
   });
 
   it('glab failure stderr demoted fail-soft', async () => {
