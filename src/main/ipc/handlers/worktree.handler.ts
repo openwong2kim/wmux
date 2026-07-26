@@ -11,6 +11,19 @@
 //  - remove: plain `git worktree remove` — git rejects dirty worktrees and surfaces
 //    stderr to user. --force not provided in v1 (careful principle).
 //  - All failures demoted to { ok:false, error } (fail-soft display surface).
+//
+// Session locations (issue #21 AC 1). Neither the list/add/remove nor the merge
+// session takes a SessionLocation, and none is needed:
+//   • `repoPath`/`sourcePath` arrive as raw cwds, but the only thing done with
+//     them is `resolveToplevel`, i.e. `git()` — `hostCommandTarget` →
+//     `prepareLocationCommand`, the shared choke point. A host location
+//     carrying a guest cwd is refused there (UNRESOLVED_GUEST_PATH), so a WSL
+//     or Git Bash pane degrades to 'not a git repository' rather than handing a
+//     guest path to a Windows API.
+//   • Every path used afterwards — `top`, `mainWt`, each `WorktreeEntry.path`,
+//     and the integration worktree — comes from `git worktree list --porcelain`
+//     or `rev-parse --show-toplevel` run through that same helper, so the
+//     `existsSync`/`mkdirSync`/`resolve` calls below are provably host-native.
 import { ipcMain } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';

@@ -110,4 +110,42 @@ describe('fs.handler security helpers', () => {
     )).resolves.toEqual([]);
     expect(realpathSpy).toHaveBeenCalled();
   });
+
+  // Issue #21: `msys` is a legal wire domain. The handler used to re-declare
+  // the SessionLocation contract itself and reject it, so a Git Bash pane got
+  // an empty file tree.
+  it('accepts an MSYS location and converts its guest path', async () => {
+    const converted = path.resolve('C:\\dev\\proj');
+    realpathSpy.mockResolvedValue(converted);
+    vi.spyOn(fs.promises, 'readdir').mockResolvedValue([] as never);
+    registerFsHandlers();
+    const calls = vi.mocked(ipcMain.handle).mock.calls;
+    const readDir = calls.find(([channel]) => channel === 'fs:read-dir')?.[1];
+    expect(readDir).toBeTypeOf('function');
+
+    await expect(readDir!(
+      {} as Electron.IpcMainInvokeEvent,
+      {
+        path: '/c/dev/proj',
+        location: {
+          domain: 'msys',
+          cwd: '/c/dev/proj',
+          shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+      },
+    )).resolves.toEqual([]);
+    expect(realpathSpy).toHaveBeenCalledWith(converted);
+  });
+
+  // The guest-path guard belongs to toHostAccessiblePath (issue #21 AC 6), not
+  // to a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff in here.
+  it('rejects a bare guest cwd through the shared choke point on Windows', async () => {
+    if (process.platform !== 'win32') return;
+    registerFsHandlers();
+    const calls = vi.mocked(ipcMain.handle).mock.calls;
+    const readDir = calls.find(([channel]) => channel === 'fs:read-dir')?.[1];
+
+    await expect(readDir!({} as Electron.IpcMainInvokeEvent, '/home/me/project')).resolves.toEqual([]);
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
 });

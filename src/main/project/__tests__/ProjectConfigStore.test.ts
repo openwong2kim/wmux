@@ -107,6 +107,41 @@ describe('getState — config + trust evaluation', () => {
     expect(state.config?.commands).toHaveLength(1);
   });
 
+  // Issue #21: `msys` is a legal wire domain. The store used to re-declare the
+  // SessionLocation contract itself and reject it, so a Git Bash pane found no
+  // project config at all.
+  it('discovers an MSYS (Git Bash) project through the shared conversion seam', async () => {
+    const proj = path.join(tmpRoot, 'msys-proj');
+    writeConfig(proj, VALID);
+    const seen: unknown[] = [];
+    const store = new ProjectConfigStore(trustPath, {
+      toHostPath: (location, target) => {
+        seen.push([location, target]);
+        return { ok: true, path: proj };
+      },
+    });
+
+    const state = await store.getState({
+      domain: 'msys',
+      cwd: '/c/dev/proj',
+      shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    });
+
+    expect(seen).toEqual([[
+      { domain: 'msys', cwd: '/c/dev/proj', shell: 'C:\\Program Files\\Git\\bin\\bash.exe' },
+      '/c/dev/proj',
+    ]]);
+    expect(state.found).toBe(true);
+    expect(state.config?.commands).toHaveLength(1);
+  });
+
+  // The guest-path guard belongs to toHostAccessiblePath (issue #21 AC 6), not
+  // to a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff in here.
+  it('fails softly for a bare guest cwd on Windows via the shared choke point', async () => {
+    if (process.platform !== 'win32') return;
+    await expect(makeStore().getState('/home/me/project')).resolves.toEqual({ found: false });
+  });
+
   it('fails softly when a WSL project cannot be converted without a distro', async () => {
     await expect(makeStore().getState({
       domain: 'wsl',

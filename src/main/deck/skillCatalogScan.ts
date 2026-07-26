@@ -12,8 +12,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { toHostAccessiblePath, type SessionLocation } from '../../shared/sessionLocation';
-import { isLinuxLikeCwd } from '../../shared/wslCwd';
+import {
+  parseSessionLocation,
+  toHostAccessiblePath,
+  type SessionLocation,
+} from '../../shared/sessionLocation';
 
 export interface SkillCatalogEntry {
   /** Name without leading slash — UI renders as `/${name}`. */
@@ -111,7 +114,10 @@ export function scanSkillCatalog(
   options: SkillCatalogScanOptions = {},
 ): SkillCatalogEntry[] {
   const out: SkillCatalogEntry[] = [];
-  const location = normalizeLocationInput(input);
+  // `parseSessionLocation` owns the wire contract (issue #21) — including
+  // `msys`, whose project skills this scan used to drop. Reachability of the
+  // resulting path is `toHostAccessiblePath`'s call, not a local sniff.
+  const location = parseSessionLocation(input);
   const converted = location
     ? (options.toHostPath ?? toHostAccessiblePath)(location, location.cwd)
     : null;
@@ -125,16 +131,4 @@ export function scanSkillCatalog(
     seen.add(e.name);
     return true;
   });
-}
-
-function normalizeLocationInput(input: string | SessionLocation): SessionLocation | null {
-  if (typeof input === 'string') {
-    if (!input || (process.platform === 'win32' && isLinuxLikeCwd(input))) return null;
-    return { domain: 'host', cwd: input, shell: '' };
-  }
-  if (!input || typeof input !== 'object') return null;
-  if (input.domain !== 'host' && input.domain !== 'wsl') return null;
-  if (typeof input.cwd !== 'string' || !input.cwd || typeof input.shell !== 'string') return null;
-  if (input.domain === 'wsl' && input.distro !== undefined && typeof input.distro !== 'string') return null;
-  return input;
 }
