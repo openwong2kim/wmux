@@ -25,7 +25,10 @@ vi.mock('../../metadata/PrStatusCache', () => ({
 const { resolveWslDistro } = vi.hoisted(() => ({
   resolveWslDistro: vi.fn<() => Promise<string | undefined>>(),
 }));
-vi.mock('../wslDistro', () => ({ resolveWslDistro }));
+vi.mock('../wslDistro', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../wslDistro')>()),
+  resolveWslDistro,
+}));
 
 function reset(ptyId: string): void {
   removeCwd(ptyId);
@@ -38,6 +41,22 @@ beforeEach(() => {
 });
 
 describe('local pane location projection', () => {
+  it('publishes the distro carried by the actual spawn context without enumeration', () => {
+    const ptyId = 'local-explicit-wsl';
+    reset(ptyId);
+
+    updatePaneLocation(
+      ptyId,
+      { domain: 'wsl', cwd: '/home/me', shell: 'wsl.exe' },
+      true,
+      { args: ['-d', 'Debian'], env: { WSL_DISTRO_NAME: 'Ubuntu' } },
+    );
+
+    expect(getPaneLocationSnapshot(ptyId)?.location).toMatchObject({ distro: 'Debian' });
+    expect(resolveWslDistro).not.toHaveBeenCalled();
+    reset(ptyId);
+  });
+
   it('publishes atomic snapshots for create, cwd, and late distro resolution', async () => {
     const ptyId = 'local-wsl';
     reset(ptyId);

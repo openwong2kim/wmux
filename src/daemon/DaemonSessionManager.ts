@@ -23,7 +23,7 @@ import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsE
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
 import { SessionLocationEnricher, type WslDistroResolver } from '../shared/sessionLocationEnrichment';
-import { resolveWslDistro } from '../shared/wslDistro';
+import { distroFromPaneContext, resolveWslDistro } from '../shared/wslDistro';
 import type { SessionLocationSnapshot } from '../shared/sessionLocation';
 
 const DEFAULT_COLS = 80;
@@ -315,7 +315,7 @@ export class DaemonSessionManager extends EventEmitter {
     // `cwd` above is canonical (tilde-expanded, defaulted); a supplied location
     // must not carry a stale twin of it, so it is pinned here once and this is
     // the value both `meta.location` and the spawn positioning below read.
-    const location: SessionLocation = {
+    let location: SessionLocation = {
       ...resolveSessionLocation({ shell: cmd, cwd, location: params.location }),
       cwd,
     };
@@ -459,6 +459,10 @@ export class DaemonSessionManager extends EventEmitter {
       const prepared = preparePtyLocation(location, os.homedir());
       spawnCwd = prepared.spawnCwd;
       spawnArgs = [...prepared.prefixArgs, ...spawnArgs];
+    }
+    if (location.domain === 'wsl' && !location.distro) {
+      const discoveredDistro = distroFromPaneContext({ shell: cmd, args: spawnArgs, env });
+      if (discoveredDistro) location = { ...location, distro: discoveredDistro };
     }
 
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell

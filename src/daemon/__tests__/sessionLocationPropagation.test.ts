@@ -31,6 +31,25 @@ afterEach(() => {
 });
 
 describe('daemon session location propagation', () => {
+  it('persists the distro carried by the actual child environment without enumeration', () => {
+    const resolve = vi.fn<() => Promise<string | undefined>>();
+    const manager = new DaemonSessionManager(resolve);
+    managers.push(manager);
+
+    const session = manager.createSession({
+      id: 'wsl-explicit',
+      cmd: 'wsl.exe',
+      cwd: '/home/me/repo',
+      env: { WSL_DISTRO_NAME: 'Alpine' },
+      location: { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe' },
+    });
+
+    expect(session.location).toMatchObject({ distro: 'Alpine' });
+    expect(manager.getLocationSnapshot('wsl-explicit')?.location)
+      .toMatchObject({ distro: 'Alpine' });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('stores late enrichment on the durable record and preserves a newer cwd', async () => {
     const distro = deferred<string | undefined>();
     const manager = new DaemonSessionManager(() => distro.promise);

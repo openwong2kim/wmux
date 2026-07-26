@@ -84,11 +84,12 @@ not exist, so its defensive default uses case-sensitive POSIX behavior.
 
 ## WSL distribution discovery
 
-`src/shared/wslDistro.ts` is the single resolver implementation. It receives
-the pane shell and resolves a distribution from `wsl.exe -l` variants, accepting
-a single registered or single running distribution only when the result is
-unambiguous. Spawn arguments and environment variables are not resolver inputs;
-there is no separate precedence path for producers to populate.
+`src/shared/wslDistro.ts` is the single resolver implementation. It first reads
+the actual spawn arguments (`-d` / `--distribution`) and child
+`WSL_DISTRO_NAME` captured by the local PTY manager or daemon session manager.
+When the pane carries neither fact, it resolves from `wsl.exe -l` variants,
+accepting a single registered or single running distribution only when the
+result is unambiguous.
 
 Local mode runs the resolver from the main metadata registry. Daemon mode runs
 it from the daemon session manager. Consumers receive the resulting stored

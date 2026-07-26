@@ -4,6 +4,25 @@ import { isWslShell } from './wslCwd';
 export interface WslPaneContext {
   /** The pane's shell command, e.g. `C:\\Windows\\System32\\wsl.exe`. */
   shell: string;
+  /** Actual spawn argv, when the pane pins a distribution explicitly. */
+  args?: readonly string[];
+  /** Actual child environment, when it identifies the running distribution. */
+  env?: Record<string, string | undefined>;
+}
+
+/** Resolve only facts carried by the pane itself, without enumeration. */
+export function distroFromPaneContext(ctx: WslPaneContext): string | undefined {
+  if (!isWslShell(ctx.shell)) return undefined;
+  for (let i = 0; i < (ctx.args?.length ?? 0); i += 1) {
+    const arg = ctx.args![i];
+    const inline = /^(?:-d|--distribution)=(.+)$/.exec(arg);
+    if (inline) return inline[1];
+    if (arg === '-d' || arg === '--distribution') {
+      const next = ctx.args![i + 1];
+      if (next && !next.startsWith('-')) return next;
+    }
+  }
+  return ctx.env?.WSL_DISTRO_NAME?.trim() || undefined;
 }
 
 /**
@@ -196,6 +215,9 @@ export async function resolveWslDistro(
   run: WslRunner = defaultRunner,
 ): Promise<string | undefined> {
   if (!isWslShell(ctx.shell)) return undefined;
+
+  const explicit = distroFromPaneContext(ctx);
+  if (explicit) return explicit;
 
   const list = await listWslDistros(run);
   if (list.defaultName) return list.defaultName;

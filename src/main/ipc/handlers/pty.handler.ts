@@ -641,7 +641,12 @@ export function registerPTYHandlers(
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       // Identity first, then the cwd — see the daemon-mode create path.
-      updatePaneLocation(instance.id, classifySessionLocation(instance.shell, actualCwd));
+      updatePaneLocation(
+        instance.id,
+        classifySessionLocation(instance.shell, actualCwd),
+        true,
+        { args: instance.spawnArgs, env: instance.spawnEnv },
+      );
       updateCwd(instance.id, actualCwd);
       // Startup command: gate on the shell's first output (one-shot onData)
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager

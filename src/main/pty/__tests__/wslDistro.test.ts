@@ -41,6 +41,21 @@ describe('resolveWslDistro', () => {
       .resolves.toBe('Ubuntu');
   });
 
+  it('prefers the pane\'s own -d argument over enumeration', async () => {
+    const { run, calls } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '* Ubuntu Running 2\n' });
+    await expect(resolveWslDistro({ shell: 'wsl.exe', args: ['-d', 'Debian'] }, run))
+      .resolves.toBe('Debian');
+    // AC 4: an answer the pane already states must cost no subprocess at all.
+    expect(calls).toEqual([]);
+  });
+
+  it('prefers WSL_DISTRO_NAME from the pane environment', async () => {
+    const { run, calls } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '* Ubuntu Running 2\n' });
+    await expect(resolveWslDistro({ shell: 'wsl.exe', env: { WSL_DISTRO_NAME: 'Alpine' } }, run))
+      .resolves.toBe('Alpine');
+    expect(calls).toEqual([]);
+  });
+
   it('falls back to the only registered distro when no default is marked', async () => {
     const { run } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '', [RUNNING]: '' });
     await expect(resolveWslDistro({ shell: 'wsl.exe' }, run)).resolves.toBe('Ubuntu');

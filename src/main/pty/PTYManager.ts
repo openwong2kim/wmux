@@ -21,6 +21,10 @@ export interface PTYInstance {
   id: string;
   process: pty.IPty;
   shell: string;
+  /** Exact argv used to spawn the pane, retained for location identity discovery. */
+  spawnArgs?: readonly string[];
+  /** Exact child environment used to spawn the pane, retained for location identity discovery. */
+  spawnEnv?: Record<string, string>;
   /**
    * Workspace this PTY belongs to. Captured at create time so the EventBus
    * can scope process.* events without consulting the renderer state.
@@ -259,6 +263,8 @@ export class PTYManager {
       id,
       process: ptyProcess,
       shell,
+      spawnArgs: [...prefixArgs, ...hookInjection.args],
+      spawnEnv: hookInjection.env,
       ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
     };
     this.instances.set(id, instance);
