@@ -11,7 +11,7 @@ import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServ
 import { loadWebState, saveWebState, clearWebState } from './web/webStateStore';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
-import { stripCredentialValues, buildSafeChildEnv } from '../shared/envFilter';
+import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
 import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
@@ -53,6 +53,7 @@ import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
+import { buildWebPaneEnv } from './web/webPaneEnv';
 import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
@@ -84,24 +85,6 @@ let deviceStore: DeviceStore | null = null;
 // construction sites, one of which is a module-level function. Null until
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
-
-/**
- * Drop the whole reserved `WMUX_*` namespace from an environment.
- *
- * Mirrors what `createSession` does to its own `process.env` fallback: a daemon
- * that was itself launched from a wmux pane inherited that pane's
- * WMUX_WORKSPACE_ID / WMUX_SURFACE_ID / WMUX_SOCKET_PATH, and a child must not
- * be told it belongs to a workspace it does not. Applied here because the
- * lifecycle create path SUPPLIES an env (to stamp the requested workspace), and
- * a supplied env is replayed verbatim by contract.
- */
-function stripWmuxNamespace(env: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (!k.startsWith('WMUX_')) out[k] = v;
-  }
-  return out;
-}
 
 /**
  * The one device roster in this process. A second instance would be a second
@@ -1598,11 +1581,13 @@ function registerRpcHandlers(
    * renderer can mint one and the daemon may not ask it to. A phone-spawned
    * pane is therefore a headless pane until the GUI adopts it.
    *
-   * The env is left to `createSession`'s own fallback (filtered `process.env`
-   * with the whole `WMUX_*` namespace stripped) EXCEPT when a workspace is
-   * named, in which case the identity is stamped back on afterwards — and the
-   * human-readable workspace NAME is copied from a live sibling pane, since the
-   * daemon has no workspace registry of its own to look it up in. That same
+   * The env comes from `buildWebPaneEnv`: what `createSession`'s own fallback
+   * would produce (filtered `process.env`, whole `WMUX_*` namespace stripped)
+   * with the identity stamped back on — the channel member id always, the
+   * workspace when one is named. Supplying it rather than leaving it to the
+   * fallback is what lets the member id exist at all for a workspace-less
+   * pane. The human-readable workspace NAME is looked up here, from a live
+   * sibling pane, since the daemon has no workspace registry of its own. That
    * live-sibling lookup is what the web layer validates the id against before
    * it ever gets here — an id no live pane is running under is refused rather
    * than stamped into a child's environment on the caller's say-so. See
@@ -1611,18 +1596,21 @@ function registerRpcHandlers(
   sessionLifecycle = {
     create: async ({ workspaceId, cwd }) => {
       const id = `web-${randomUUID()}`;
-      let env: Record<string, string> | undefined;
-      if (workspaceId) {
-        const sibling = sessionManager
-          .listLiveSessions()
-          .find((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId);
-        const name = sibling?.env?.[ENV_KEYS.WORKSPACE_NAME];
-        env = {
-          ...stripWmuxNamespace(buildSafeChildEnv(process.env)),
-          [ENV_KEYS.WORKSPACE_ID]: workspaceId,
-          ...(name ? { [ENV_KEYS.WORKSPACE_NAME]: name } : {}),
-        };
-      }
+      // The human-readable workspace NAME is copied from a live sibling pane;
+      // the daemon has no workspace registry of its own to look one up in.
+      const sibling = workspaceId
+        ? sessionManager
+            .listLiveSessions()
+            .find((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId)
+        : undefined;
+      const env = buildWebPaneEnv({
+        id,
+        parentEnv: process.env,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(sibling?.env?.[ENV_KEYS.WORKSPACE_NAME]
+          ? { workspaceName: sibling.env[ENV_KEYS.WORKSPACE_NAME] }
+          : {}),
+      });
       await createSessionRpc({
         id,
         // `cmd` is OMITTED, not empty-string. `createSession` resolves an unset
@@ -1635,7 +1623,7 @@ function registerRpcHandlers(
         // spawns nothing at all. Say what is meant. An unset cwd falls back to
         // the home directory the same way.
         ...(cwd ? { cwd } : {}),
-        ...(env ? { env } : {}),
+        env,
       });
       return { id };
     },
