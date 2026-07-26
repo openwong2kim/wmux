@@ -854,7 +854,7 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
-      daemonLocations.forget(id);
+      daemonLocations.retire(id);
       removePaneLocation(id);
     }));
   } else {
@@ -1277,7 +1277,7 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
-      daemonLocations.forget(payload.sessionId);
+      daemonLocations.retire(payload.sessionId);
       removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);

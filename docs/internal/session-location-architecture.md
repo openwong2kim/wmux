@@ -73,10 +73,17 @@ replacement may start with lower generation numbers. An accepted renderer
 snapshot also drives the owning workspace cwd and task-worktree departure state;
 stale snapshots drive none of those side effects.
 
+Closing a daemon session retires rather than deletes its main-process ordering
+watermark. An RPC response already in flight cannot resurrect that generation;
+only a strictly newer generation or a daemon replacement reset can reuse the
+session ID.
+
 Late daemon enrichment is published only after a synchronous state write. If
 both the write and its single retry fail, the daemon rolls the candidate
 location and revision back before any later list response or cwd event can
-expose them.
+expose them. The rollback also replaces StateWriter's in-flight recovery
+payload, so an older asynchronous write cannot restore the rejected candidate
+after it finishes.
 
 The daemon reconnect path prefers the daemon's stored `location`;
 `resolveSessionLocation` supplies the legacy `{ cmd, cwd }` fallback.

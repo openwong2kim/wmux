@@ -3560,7 +3560,10 @@ function wireEvents(
       const state = buildState(sessionManager);
       const persisted = persistLocationEnrichment(
         () => stateWriter.saveImmediate(state),
-        payload.rollback,
+        () => {
+          payload.rollback?.();
+          stateWriter.recoverRejectedImmediateState(buildState(sessionManager));
+        },
       );
       if (!persisted) {
         log(

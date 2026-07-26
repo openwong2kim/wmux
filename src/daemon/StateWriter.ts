@@ -225,6 +225,17 @@ export class StateWriter {
     }
   }
 
+  /**
+   * Replace every recovery reference to a synchronous candidate that was
+   * rejected after saveImmediate failed. An older async write may already be
+   * in flight; it must restore this rolled-back state, never the rejected one.
+   */
+  recoverRejectedImmediateState(state: DaemonState): void {
+    this.lastImmediateState = state;
+    this.pendingState = state;
+    void this.enqueueAsyncWrite();
+  }
+
   /** Debounced save — coalesces frequent updates (e.g. lastActivity) over 30s. */
   saveDebounced(state: DaemonState): void {
     this.pendingState = state;
