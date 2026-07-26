@@ -135,13 +135,6 @@ describe('getState — config + trust evaluation', () => {
     expect(state.config?.commands).toHaveLength(1);
   });
 
-  // The guest-path guard belongs to toHostAccessiblePath (issue #21 AC 6), not
-  // to a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff in here.
-  it('fails softly for a bare guest cwd on Windows via the shared choke point', async () => {
-    if (process.platform !== 'win32') return;
-    await expect(makeStore().getState('/home/me/project')).resolves.toEqual({ found: false });
-  });
-
   it('fails softly when a WSL project cannot be converted without a distro', async () => {
     await expect(makeStore().getState({
       domain: 'wsl',

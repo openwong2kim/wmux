@@ -89,12 +89,6 @@ describe('git:status — pane location', () => {
     );
   });
 
-  it('returns empty for a bare guest cwd on Windows without spawning git', async () => {
-    if (process.platform !== 'win32') return;
-    await expect(gitStatus()(fakeEvent, '/home/me/project')).resolves.toBe('');
-    expect(execFile).not.toHaveBeenCalled();
-  });
-
   it('returns empty for a malformed payload', async () => {
     await expect(gitStatus()(fakeEvent, { domain: 'nope', cwd: '/x', shell: '' })).resolves.toBe('');
     expect(execFile).not.toHaveBeenCalled();

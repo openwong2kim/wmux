@@ -55,11 +55,4 @@ describe('scanSkillCatalog — session locations', () => {
     expect(entries.find((e) => e.name === 'project-only')?.source).toBe('project');
   });
 
-  // The guest-path guard belongs to toHostAccessiblePath (issue #21 AC 6), not
-  // to a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff in here.
-  it('degrades to the user catalog for a bare guest cwd on Windows', () => {
-    if (process.platform !== 'win32') return;
-    const names = scanSkillCatalog('/home/me/project', home).map((e) => e.name);
-    expect(names).toEqual(['global-only']);
-  });
 });

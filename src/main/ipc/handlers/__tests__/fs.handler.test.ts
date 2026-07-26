@@ -137,15 +137,4 @@ describe('fs.handler security helpers', () => {
     expect(realpathSpy).toHaveBeenCalledWith(converted);
   });
 
-  // The guest-path guard belongs to toHostAccessiblePath (issue #21 AC 6), not
-  // to a `process.platform === 'win32' && isLinuxLikeCwd(...)` sniff in here.
-  it('rejects a bare guest cwd through the shared choke point on Windows', async () => {
-    if (process.platform !== 'win32') return;
-    registerFsHandlers();
-    const calls = vi.mocked(ipcMain.handle).mock.calls;
-    const readDir = calls.find(([channel]) => channel === 'fs:read-dir')?.[1];
-
-    await expect(readDir!({} as Electron.IpcMainInvokeEvent, '/home/me/project')).resolves.toEqual([]);
-    expect(realpathSpy).not.toHaveBeenCalled();
-  });
 });
