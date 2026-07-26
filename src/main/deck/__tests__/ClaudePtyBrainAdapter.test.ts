@@ -40,6 +40,13 @@ interface FakeHost extends BrainPtyHost {
    *  subscribes — the banner arrives before any test code can observe the
    *  spawn, so queueing it is the only race-free way to script it. */
   nextBanner: string | null;
+  /** Fire the daemon's session-died signal for one session. */
+  killSession(id: string, exitCode?: number | null): void;
+  /** Make the next attach() reject — the "createSession took, attach threw"
+   *  leak the spawn rollback exists for. */
+  failNextAttach: boolean;
+  /** Ids whose data listener was installed, in order. */
+  readonly listened: string[];
 }
 
 function makeHost(): FakeHost {
@@ -48,10 +55,23 @@ function makeHost(): FakeHost {
   const writes: FakeHost['writes'] = [];
   const destroyed: string[] = [];
   const listeners = new Map<string, (chunk: string) => void>();
+  const exitListeners = new Map<string, (code: number | null) => void>();
+  const listened: string[] = [];
+  let failAttach = false;
   return {
     created,
     writes,
     destroyed,
+    listened,
+    get failNextAttach() {
+      return failAttach;
+    },
+    set failNextAttach(v: boolean) {
+      failAttach = v;
+    },
+    killSession(id, exitCode = 1) {
+      exitListeners.get(id)?.(exitCode);
+    },
     get nextBanner() {
       return pendingBanner;
     },
@@ -62,7 +82,10 @@ function makeHost(): FakeHost {
       created.push({ id: params.id, command: params.command, env: params.env, cwd: params.cwd });
     },
     async attach() {
-      /* nothing to attach in the fake */
+      if (failAttach) {
+        failAttach = false;
+        throw new Error('attach refused');
+      }
     },
     write(id, data) {
       writes.push({ id, data });
@@ -70,9 +93,15 @@ function makeHost(): FakeHost {
     async destroy(id) {
       destroyed.push(id);
       listeners.delete(id);
+      exitListeners.delete(id);
+    },
+    onExit(id, cb) {
+      exitListeners.set(id, cb);
+      return () => exitListeners.delete(id);
     },
     onData(id, cb) {
       listeners.set(id, cb);
+      listened.push(id);
       if (pendingBanner) {
         const banner = pendingBanner;
         pendingBanner = null;
@@ -451,6 +480,100 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     expect(adapter.brainPtyId).toBe(spawned[0]);
     adapter.dispose();
     await turn;
+  });
+});
+
+// ── spawn lifecycle ─────────────────────────────────────────────────────────
+
+describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {
+  it('installs the hook + data listeners BEFORE the session is created', async () => {
+    // SessionStart and the banner can both land while createSession/attach are
+    // still awaiting; listeners installed afterwards would miss them.
+    const host = makeHost();
+    const order: string[] = [];
+    const wrapped: FakeHost = {
+      ...host,
+      async createSession(params) {
+        order.push('create');
+        await host.createSession(params);
+      },
+      onData(id, cb) {
+        order.push('onData');
+        return host.onData(id, cb);
+      },
+      onExit(id, cb) {
+        order.push('onExit');
+        return host.onExit(id, cb);
+      },
+    };
+    const adapter = makeAdapter(wrapped);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    expect(order.indexOf('onData')).toBeLessThan(order.indexOf('create'));
+    expect(order.indexOf('onExit')).toBeLessThan(order.indexOf('create'));
+    // The hook lane is claimed just as early — a SessionStart delivered before
+    // createSession resolved must be accepted, not dropped.
+    adapter.dispose();
+    await turn;
+  });
+
+  it('destroys the created session when attach throws (no orphaned claude)', async () => {
+    const host = makeHost();
+    host.failNextAttach = true;
+    const adapter = makeAdapter(host);
+    const events = await collect(adapter.send('hi'));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect(host.created).toHaveLength(1);
+    expect(host.destroyed).toEqual([host.created[0].id]);
+    expect(adapter.brainPtyId).toBeNull();
+    // A late hook signal from the abandoned pty must not be claimed any more.
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id))).toBe(false);
+    adapter.dispose();
+  });
+
+  it('ends the turn immediately when the pty dies, and retracts the embed', async () => {
+    const host = makeHost();
+    const spawned: Array<string | null> = [];
+    const adapter = makeAdapter(host, {
+      turnTimeoutMs: 60_000, // the point: we do NOT wait this out
+      onPtySpawned: (id: string | null) => spawned.push(id),
+    });
+    const turn = collect(adapter.send('do a big job'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    host.killSession(host.created[0].id, 1);
+    const events = await turn;
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('error');
+    expect((events[0] as { message: string }).message).toMatch(/session ended \(exit code 1\)/i);
+    // Dead session state cleared: id retracted for the renderer, gone here.
+    expect(spawned).toEqual([host.created[0].id, null]);
+    expect(adapter.brainPtyId).toBeNull();
+    // …so the next send spawns a fresh TUI rather than typing into a corpse.
+    const next = collect(adapter.send('again'));
+    await vi.waitFor(() => expect(host.created.length).toBe(2));
+    adapter.dispose();
+    await next;
+  });
+
+  it('retracts the embed on every teardown path', async () => {
+    const host = makeHost();
+    const spawned: Array<string | null> = [];
+    const adapter = makeAdapter(host, {
+      staleResumeWindowMs: 400,
+      onPtySpawned: (id: string | null) => spawned.push(id),
+    });
+    // Stale-resume respawn: the first pty is destroyed — the renderer must be
+    // told, or it keeps embedding a session that no longer exists.
+    adapter.start({ resumeSessionId: 'sess-dead' });
+    host.nextBanner = 'No conversation found with session ID: sess-dead\n';
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(2));
+    expect(spawned).toEqual([host.created[0].id, null, host.created[1].id]);
+    // Dispose (the /clear + vendor-swap path) retracts too.
+    adapter.dispose();
+    await turn;
+    expect(spawned.at(-1)).toBeNull();
   });
 });
 

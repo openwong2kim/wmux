@@ -89,6 +89,12 @@ export interface BrainPtyHost {
   destroy(id: string): Promise<void>;
   /** Subscribe to this session's raw output. Returns an unsubscribe. */
   onData(id: string, cb: (chunk: string) => void): () => void;
+  /** Subscribe to this session ENDING — the claude process exited (crash, auth
+   *  failure, a human typing `/quit` in the embed) or the daemon destroyed the
+   *  session. An exited claude fires no Stop hook, so without this the open
+   *  turn would wait out the full 30-minute timeout with the composer locked.
+   *  Returns an unsubscribe. */
+  onExit(id: string, cb: (exitCode: number | null) => void): () => void;
 }
 
 /** Minimal structural view of DaemonClient — avoids importing the concrete
@@ -99,6 +105,14 @@ export interface DaemonClientLike {
   writeToSession(sessionId: string, data: string | Buffer): boolean;
   on(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
   off(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
+  on(
+    event: 'session:died' | 'session:destroyed',
+    listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
+  ): unknown;
+  off(
+    event: 'session:died' | 'session:destroyed',
+    listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
+  ): unknown;
 }
 
 /** Build the production host from a live DaemonClient. */
@@ -140,6 +154,23 @@ export function createBrainPtyHost(client: DaemonClientLike): BrainPtyHost {
       client.on('session:data', listener);
       return () => {
         client.off('session:data', listener);
+      };
+    },
+    onExit(id, cb) {
+      // BOTH daemon signals mean the same thing out here: this pty is gone.
+      // `session:died` is the natural exit (the claude TUI IS the session's
+      // root process, so its exit ends the session); `session:destroyed` is a
+      // dispose from any other holder. The adapter unsubscribes before its own
+      // destroy, so its teardown never re-enters through this callback.
+      const listener = (payload: { sessionId: string; exitCode?: number | null }): void => {
+        if (payload.sessionId !== id) return;
+        cb(payload.exitCode ?? null);
+      };
+      client.on('session:died', listener);
+      client.on('session:destroyed', listener);
+      return () => {
+        client.off('session:died', listener);
+        client.off('session:destroyed', listener);
       };
     },
   };
@@ -387,8 +418,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Node-compatible executable for the generated hook commands. */
   nodePath?: string;
   /** Fired with the daemon session id the moment the pty exists, so the deck
-   *  can embed the live terminal. */
-  onPtySpawned?: (ptyId: string) => void;
+   *  can embed the live terminal, and with `null` on every teardown so the
+   *  deck retires a terminal that no longer exists. */
+  onPtySpawned?: (ptyId: string | null) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   sessionStartTimeoutMs?: number;
@@ -431,6 +463,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private profilePaths: string[] = [];
   private unregisterHooks: (() => void) | null = null;
   private unsubscribeData: (() => void) | null = null;
+  private unsubscribeExit: (() => void) | null = null;
+  /** Resolved when the CURRENT pty exits. Raced against the Stop hook so a
+   *  dead claude ends its turn immediately instead of at TURN_TIMEOUT_MS. */
+  private ptyDead: Waiter<number | null> | null = null;
   /** Resolved by the SessionStart hook of the CURRENT pty. */
   private sessionStarted: Waiter<void> | null = null;
   /** True once the CURRENT pty's SessionStart hook landed. Reset per spawn. */
@@ -442,6 +478,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
+  /** Exit code of the pty that died most recently — only for the message. */
+  private lastExitCode: number | null = null;
 
   constructor(deps: ClaudePtyBrainAdapterDeps) {
     this.deps = deps;
@@ -604,6 +642,25 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.sessionStartSeen = false;
     this.banner = '';
     this.bannerWatching = true;
+    // CLAIM the id and INSTALL the listeners BEFORE the session exists.
+    //  - The SessionStart hook and the spawn banner can both land while
+    //    createSession/attach are still awaiting; listeners installed after
+    //    would miss them (the hook silently, which costs the whole
+    //    startup race).
+    //  - `ptyId` set up front is what makes a failed attach — and a dispose()
+    //    that lands mid-spawn — able to destroy the session it created
+    //    instead of leaking a live claude nobody holds a handle to.
+    // Both are rolled back by abandonPty() on every failure path below.
+    this.ptyId = ptyId;
+    this.unregisterHooks = registerBrainPty(ptyId, (s) => this.onHookSignal(s));
+    this.unsubscribeData = this.deps.host.onData(ptyId, (chunk) => {
+      if (!this.bannerWatching) return;
+      this.banner += chunk;
+      if (this.banner.length > 64 * 1024) this.bannerWatching = false;
+    });
+    const dead = createWaiter<number | null>();
+    this.ptyDead = dead;
+    this.unsubscribeExit = this.deps.host.onExit(ptyId, (code) => this.onPtyExit(ptyId, code));
     try {
       // claude keys its transcripts by cwd, so this must be STABLE across app
       // updates and launch locations — the same reason ClaudeSdkAdapter pins
@@ -628,16 +685,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       });
       await this.deps.host.attach(ptyId);
     } catch (err) {
-      this.bannerWatching = false;
+      // createSession may well have SUCCEEDED and attach thrown — destroy the
+      // id we claimed rather than leave an orphaned claude behind.
+      await this.abandonPty(ptyId);
       return { error: `could not start the terminal brain: ${String(err)}` };
     }
-    this.ptyId = ptyId;
-    this.unregisterHooks = registerBrainPty(ptyId, (s) => this.onHookSignal(s));
-    this.unsubscribeData = this.deps.host.onData(ptyId, (chunk) => {
-      if (!this.bannerWatching) return;
-      this.banner += chunk;
-      if (this.banner.length > 64 * 1024) this.bannerWatching = false;
-    });
+    if (this._disposed) {
+      // dispose() ran while we were awaiting: its killPty saw no live id (or
+      // an id whose session did not exist yet), so the pty that just came up
+      // is ours to reap.
+      await this.abandonPty(ptyId);
+      return { error: 'commander session disposed' };
+    }
     try {
       this.deps.onPtySpawned?.(ptyId);
     } catch {
@@ -645,8 +704,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
     await Promise.race([
       started.promise,
+      // A claude that dies during startup (bad auth, a missing binary the
+      // shell only discovers on exec) must not cost the full SessionStart
+      // timeout before the turn hears about it.
+      dead.promise,
       delay(this.deps.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS),
     ]);
+    if (!this.ptyId) {
+      return { error: describePtyExit(this.lastExitCode) };
+    }
     // No SessionStart but the pty DID print: the binary is alive and stopped on
     // something. A silent pty is a different (slower) failure — a cold start on
     // a big install, or a claude build that never fires the hook — and typing
@@ -664,17 +730,64 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return seen();
   }
 
-  /** Tear down the live pty (profile files survive for the next spawn). */
-  private async killPty(): Promise<void> {
-    const id = this.ptyId;
+  /** The pty ended under us. Clears the dead session state (id retracted, the
+   *  embed retired) so the NEXT send() spawns a fresh TUI, and wakes an open
+   *  turn — an exited claude fires no Stop hook, so nothing else would. */
+  private onPtyExit(ptyId: string, exitCode: number | null): void {
+    if (this.ptyId !== ptyId) return; // a stale listener for a pty we let go
+    this.lastExitCode = exitCode;
+    const dead = this.ptyDead;
+    // detach, not killPty: destroying a session the daemon just told us is
+    // gone would be a pointless round-trip. The embed still has to be retired.
+    this.detachPty();
+    this.retractPty();
+    dead?.resolve(exitCode);
+  }
+
+  /** Drop every per-pty listener and forget the id, WITHOUT destroying the
+   *  session. Shared by killPty and the failed-spawn rollback. */
+  private detachPty(): void {
     this.ptyId = null;
     this.bannerWatching = false;
     this.unregisterHooks?.();
     this.unregisterHooks = null;
     this.unsubscribeData?.();
     this.unsubscribeData = null;
+    this.unsubscribeExit?.();
+    this.unsubscribeExit = null;
     this.sessionStarted = null;
-    if (id) await this.deps.host.destroy(id);
+    this.ptyDead = null;
+  }
+
+  /** Tell the deck this workspace no longer has an embeddable terminal. Fired
+   *  on EVERY teardown path (stale-resume respawn, /clear-style dispose, vendor
+   *  swap, a pty that died) so the renderer never keeps a dead embed. */
+  private retractPty(): void {
+    try {
+      this.deps.onPtySpawned?.(null);
+    } catch {
+      /* the embed is cosmetic — never fail a teardown on it */
+    }
+  }
+
+  /** Tear down the live pty (profile files survive for the next spawn). */
+  private async killPty(): Promise<void> {
+    const id = this.ptyId;
+    this.detachPty();
+    if (!id) return;
+    this.retractPty();
+    await this.deps.host.destroy(id);
+  }
+
+  /** Roll back a spawn that never became THIS adapter's live pty: unwind the
+   *  claimed id + listeners and destroy whatever the daemon did create. */
+  private async abandonPty(ptyId: string): Promise<void> {
+    if (this.ptyId === ptyId) this.detachPty();
+    try {
+      await this.deps.host.destroy(ptyId);
+    } catch {
+      /* nothing was created, or it is already gone */
+    }
   }
 
   // ── the turn ────────────────────────────────────────────────────────────
@@ -699,11 +812,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
     if (!this.ptyId) {
       let spawned = await this.spawn(this._sessionId);
+      // Disposal wins over the spawn's own outcome: a disposed adapter must
+      // terminate its iterator silently (the manager's for-await unwinds).
+      if (this._disposed) return;
       if ('error' in spawned) {
         yield { type: 'error', message: spawned.error };
         return;
       }
-      if (this._disposed) return;
       // Soft-fail resume (same contract as the SDK/ACP adapters): a persisted
       // id the claude side no longer knows must start a fresh conversation,
       // not brick the commander.
@@ -717,11 +832,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         await this.killPty();
         if (this._disposed) return;
         const fresh = await this.spawn(null);
+        if (this._disposed) return;
         if ('error' in fresh) {
           yield { type: 'error', message: fresh.error };
           return;
         }
-        if (this._disposed) return;
         spawned = fresh;
       }
       // A validated `--resume` means the transcript ALREADY contains the
@@ -787,10 +902,22 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
 
     const timeout = delay(this.deps.turnTimeoutMs ?? TURN_TIMEOUT_MS).then(() => 'timeout' as const);
-    const stop = await Promise.race([waiter.promise, timeout]);
+    // Captured locally: the field is nulled the moment the pty is let go, and
+    // the race still has to settle on the promise this turn started with.
+    const died = this.ptyDead?.promise.then(() => 'died' as const) ?? never<'died'>();
+    const stop = await Promise.race([waiter.promise, timeout, died]);
     // dispose() resolves the waiter with null so this iterator TERMINATES
     // rather than hanging the manager's for-await on app quit.
     if (stop === null || this._disposed) return;
+    if (stop === 'died') {
+      // The TUI exited mid-turn (auth failure, crash, a human `/quit` in the
+      // embed). No Stop hook is coming — end the turn NOW instead of holding
+      // the composer for the rest of TURN_TIMEOUT_MS. onPtyExit already
+      // retracted the pty, so the next send() spawns a fresh one.
+      this.turnStop = null;
+      yield { type: 'error', message: describePtyExit(this.lastExitCode) };
+      return;
+    }
     if (stop === 'timeout') {
       this.turnStop = null;
       yield { type: 'error', message: 'the terminal brain did not finish its turn' };
@@ -851,6 +978,20 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
     this.profilePaths = [];
   }
+}
+
+/** A promise that never settles — the "no live pty" arm of the turn race. */
+function never<T>(): Promise<T> {
+  return new Promise<T>(() => {});
+}
+
+/** The user-facing wording for a brain whose terminal exited. */
+export function describePtyExit(exitCode: number | null): string {
+  const code = exitCode === null ? '' : ` (exit code ${exitCode})`;
+  return (
+    `the terminal brain's Claude Code session ended${code} — check the terminal above ` +
+    '(sign-in, a crash, or a manual quit), then send your message again to restart it.'
+  );
 }
 
 function delay(ms: number): Promise<void> {
