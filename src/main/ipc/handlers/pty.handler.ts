@@ -643,9 +643,7 @@ export function registerPTYHandlers(
       // Identity first, then the cwd — see the daemon-mode create path.
       updatePaneLocation(
         instance.id,
-        classifySessionLocation(instance.shell, actualCwd),
-        true,
-        { args: instance.spawnArgs, env: instance.spawnEnv },
+        classifySessionLocation(instance.shell, actualCwd, instance.wslDistro),
       );
       updateCwd(instance.id, actualCwd);
       // Startup command: gate on the shell's first output (one-shot onData)

@@ -41,16 +41,16 @@ beforeEach(() => {
 });
 
 describe('local pane location projection', () => {
-  it('publishes the distro carried by the actual spawn context without enumeration', () => {
+  it('publishes a distro extracted by the spawn producer without enumeration', () => {
     const ptyId = 'local-explicit-wsl';
     reset(ptyId);
 
-    updatePaneLocation(
-      ptyId,
-      { domain: 'wsl', cwd: '/home/me', shell: 'wsl.exe' },
-      true,
-      { args: ['-d', 'Debian'], env: { WSL_DISTRO_NAME: 'Ubuntu' } },
-    );
+    updatePaneLocation(ptyId, {
+      domain: 'wsl',
+      cwd: '/home/me',
+      shell: 'wsl.exe',
+      distro: 'Debian',
+    });
 
     expect(getPaneLocationSnapshot(ptyId)?.location).toMatchObject({ distro: 'Debian' });
     expect(resolveWslDistro).not.toHaveBeenCalled();

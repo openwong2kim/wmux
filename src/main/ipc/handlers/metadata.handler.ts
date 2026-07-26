@@ -20,11 +20,7 @@ import {
   type SessionLocation,
   type SessionLocationSnapshot,
 } from '../../../shared/sessionLocation';
-import {
-  distroFromPaneContext,
-  resolveWslDistro,
-  type WslPaneContext,
-} from '../../pty/wslDistro';
+import { resolveWslDistro } from '../../pty/wslDistro';
 import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 import { resolveGitToplevel } from '../../git/git';
@@ -507,24 +503,15 @@ export function updatePaneLocation(
   ptyId: string,
   location: SessionLocation,
   resolveDistro = true,
-  paneContext?: Pick<WslPaneContext, 'args' | 'env'>,
 ): void {
-  const discoveredDistro = location.domain === 'wsl'
-    ? location.distro ?? distroFromPaneContext({ shell: location.shell, ...paneContext })
-    : undefined;
-  const initialLocation = location.domain === 'wsl' && discoveredDistro
-    ? { ...location, distro: discoveredDistro }
-    : location;
-  paneIdentities.set(ptyId, {
-    shell: initialLocation.shell,
-    ...(discoveredDistro ? { distro: discoveredDistro } : {}),
-  });
+  const distro = location.domain === 'wsl' ? location.distro : undefined;
+  paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
   if (!resolveDistro) {
     paneLocationEnricher.cancel(ptyId);
     paneLocationSnapshots.delete(ptyId);
     return;
   }
-  publishPaneLocation(ptyId, initialLocation, true);
+  publishPaneLocation(ptyId, location, true);
   void paneLocationEnricher.enrich(
     ptyId,
     () => {
@@ -532,7 +519,7 @@ export function updatePaneLocation(
       if (!current) return undefined;
       return classifySessionLocation(
         current.shell,
-        cwdMap.get(ptyId) ?? initialLocation.cwd,
+        cwdMap.get(ptyId) ?? location.cwd,
         current.distro,
       );
     },
