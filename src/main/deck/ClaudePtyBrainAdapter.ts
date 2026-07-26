@@ -167,6 +167,32 @@ export function createBrainPtyHost(client: DaemonClientLike): BrainPtyHost {
  * WMUX_* stamps are deliberately KEPT — the daemon adds `WMUX_PTY_ID` on top,
  * and that id is how the hook bridge's signals find their way back here.
  */
+/** Same whitelist commanderMemory uses for its per-workspace partitions: a
+ *  workspace id that could traverse (`../`), name a parent, or nest is treated
+ *  as absent rather than thrown on. */
+const SAFE_WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/**
+ * The per-workspace home the brain's TUI runs in: `<wmuxDir>/brains/<wsId>`.
+ *
+ * Why per workspace (D4): claude keys transcripts AND project context by cwd.
+ * One shared cwd meant every workspace's orchestrator shared one transcript
+ * namespace and there was no place to give a single workspace its own
+ * standing instructions. A per-workspace home gives each orchestrator its own
+ * transcript partition and — because an interactive claude reads the cwd's
+ * CLAUDE.md — an operator-editable `brains/<wsId>/CLAUDE.md` becomes that
+ * workspace's persistent orchestrator instructions (create the file, no wmux
+ * config needed). `--resume` stays stable: each home is as pinned as the old
+ * shared dir was.
+ *
+ * A missing/unsafe workspace id falls back to `<wmuxDir>` itself — the
+ * pre-D4 behavior, and where existing conversations already live.
+ */
+export function resolveBrainHomeDir(wmuxDir: string, workspaceId: string | undefined): string {
+  if (!workspaceId || !SAFE_WORKSPACE_ID_RE.test(workspaceId)) return wmuxDir;
+  return path.join(wmuxDir, 'brains', workspaceId);
+}
+
 export function scrubBrainSpawnEnv(base: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
@@ -548,12 +574,22 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.banner = '';
     this.bannerWatching = true;
     try {
+      // claude keys its transcripts by cwd, so this must be STABLE across app
+      // updates and launch locations — the same reason ClaudeSdkAdapter pins
+      // it. Per-workspace (D4): each workspace's orchestrator gets its own
+      // home under <wmuxDir>/brains/<wsId>, which partitions transcripts and
+      // lets the operator drop a CLAUDE.md there as that workspace's standing
+      // orchestrator instructions. Created here because claude refuses to
+      // start in (and posix_spawn fails on) a missing cwd.
+      const brainHome = resolveBrainHomeDir(this.wmuxDir, this._workspaceId);
+      try {
+        fs.mkdirSync(brainHome, { recursive: true });
+      } catch {
+        /* an unmakeable home surfaces as the spawn error below */
+      }
       await this.deps.host.createSession({
         id: ptyId,
-        // claude keys its transcripts by cwd, so this must be STABLE across app
-        // updates and launch locations — the same reason ClaudeSdkAdapter pins
-        // it. A packaged Electron app's own cwd is the per-version install dir.
-        cwd: this.wmuxDir,
+        cwd: brainHome,
         env: this.buildSpawnEnv(),
         command,
         cols: 120,

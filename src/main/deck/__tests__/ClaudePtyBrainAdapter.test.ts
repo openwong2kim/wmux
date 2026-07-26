@@ -21,6 +21,7 @@ import {
   buildBrainSettingsProfile,
   buildBrainLaunchCommand,
   flattenPromptForPty,
+  resolveBrainHomeDir,
   BRAIN_PTY_ALLOWED_TOOLS,
   type BrainPtyHost,
 } from '../ClaudePtyBrainAdapter';
@@ -178,6 +179,33 @@ describe('scrubBrainSpawnEnv', () => {
       if (prev === undefined) delete process.env.CLAUDE_CODE_CHILD_SESSION;
       else process.env.CLAUDE_CODE_CHILD_SESSION = prev;
     }
+  });
+});
+
+// ── per-workspace brain home (D4) ───────────────────────────────────────────
+
+describe('resolveBrainHomeDir', () => {
+  it('gives each workspace its own home under brains/', () => {
+    expect(resolveBrainHomeDir('/wmux', 'ws-1')).toBe(path.join('/wmux', 'brains', 'ws-1'));
+  });
+
+  it('falls back to the wmux dir for a missing or unsafe workspace id', () => {
+    expect(resolveBrainHomeDir('/wmux', undefined)).toBe('/wmux');
+    expect(resolveBrainHomeDir('/wmux', '../evil')).toBe('/wmux');
+    expect(resolveBrainHomeDir('/wmux', 'a/b')).toBe('/wmux');
+  });
+
+  it('spawns the pty in the workspace home and creates it', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const it2 = adapter.send('hello')[Symbol.asyncIterator]();
+    const first = it2.next();
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    const expected = path.join(tmpDir, 'brains', 'ws-1');
+    expect(host.created[0].cwd).toBe(expected);
+    expect(fs.existsSync(expected)).toBe(true);
+    adapter.dispose();
+    await first;
   });
 });
 
