@@ -135,10 +135,15 @@ function makeDeps() {
     return gitScript[gitVerb(args)] ?? { ok: true, stdout: '', stderr: '' };
   };
 
+  // Where POST /api/upload writes. A real directory rather than a mock: the
+  // route's whole job is the file it leaves behind, and the filename pattern,
+  // the 0600 mode and the TTL sweep are only observable on disk.
+  const uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-uploads-'));
+
   return {
     sessionManager, bridge, write, live, managed,
     lifecycle, lifecycleCalls, lifecycleBox,
-    git, gitCalls, gitScript, gitGate,
+    git, gitCalls, gitScript, gitGate, uploadsDir,
     ...makeApprovals(), ...makeDevices(),
   };
 }
@@ -282,6 +287,7 @@ describe('WebTerminalServer', () => {
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
   let managed: { meta: Record<string, unknown> };
+  let uploadsDir: string;
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -304,12 +310,14 @@ describe('WebTerminalServer', () => {
     gitScript = deps.gitScript;
     gitGate = deps.gitGate;
     managed = deps.managed;
+    uploadsDir = deps.uploadsDir;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
       devices: deps.devices,
       lifecycle: deps.lifecycle,
       git: deps.git,
+      uploadsDir: deps.uploadsDir,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -317,11 +325,15 @@ describe('WebTerminalServer', () => {
 
   afterEach(async () => {
     if (server.isRunning) await server.stop();
+    fs.rmSync(uploadsDir, { recursive: true, force: true });
   });
 
   // Port 0 → ephemeral bind; status() reports the actual port.
-  const startRO = () => server.start({ port: 0, host: '127.0.0.1', allowInput: false });
-  const startRW = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true });
+  const startRO = () => server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+  const startRW = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false });
+  /** Uploads on, input OFF — the combination that proves the two grants are separate. */
+  const startUpload = () =>
+    server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 
@@ -341,7 +353,7 @@ describe('WebTerminalServer', () => {
     // Bearer header → 200
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ allowInput: false });
+    expect(await ok.json()).toEqual({ allowInput: false, allowUpload: false });
   });
 
   it('labels sessions by workspace NAME only, and leaks nothing else from env', async () => {
@@ -409,7 +421,7 @@ describe('WebTerminalServer', () => {
     const a = (await startRO()).token as string;
     await server.stop();
 
-    const b = (await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: a }))
+    const b = (await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token: a }))
       .token as string;
     expect(b).toBe(a);
 
@@ -419,7 +431,7 @@ describe('WebTerminalServer', () => {
   });
 
   it('mints a fresh token when the supplied one is empty (no accidental blank-token server)', async () => {
-    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: '' });
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token: '' });
     expect(info.token).toBeTruthy();
     expect((info.token as string).length).toBeGreaterThan(8);
     // An empty Bearer must not authenticate against it.
@@ -433,7 +445,7 @@ describe('WebTerminalServer', () => {
     const codeA = first.pairCode as string;
     await server.stop();
 
-    const second = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token });
+    const second = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token });
     // The token is carried, the single-use pairing code is NOT — handing back a
     // burned code would be worse than asking for a fresh one.
     expect(second.token).toBe(token);
@@ -620,7 +632,7 @@ describe('WebTerminalServer', () => {
       assetsDir: dir,
     });
     try {
-      const info = await csps.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      const info = await csps.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
       const res = await fetch(`http://127.0.0.1:${info.port}/`);
       expect(res.status).toBe(200);
       const csp = res.headers.get('content-security-policy') ?? '';
@@ -760,7 +772,7 @@ describe('WebTerminalServer', () => {
     const info = await server.start({
       port: 0,
       host: '127.0.0.1',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['machine.tail-net.ts.net'],
     });
     // 401 (not 403) proves the host gate passed and the token gate took over.
@@ -774,7 +786,7 @@ describe('WebTerminalServer', () => {
   it('brackets an IPv6 bind host in the advertised URL', async () => {
     let info: Awaited<ReturnType<typeof server.start>>;
     try {
-      info = await server.start({ port: 0, host: '::1', allowInput: false });
+      info = await server.start({ port: 0, host: '::1', allowInput: false, allowUpload: false });
     } catch {
       return; // environment without IPv6 loopback — nothing to assert
     }
@@ -791,7 +803,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
     });
     await expect(
-      second.start({ port: blockerInfo.port as number, host: '127.0.0.1', allowInput: false }),
+      second.start({ port: blockerInfo.port as number, host: '127.0.0.1', allowInput: false, allowUpload: false }),
     ).rejects.toThrow();
     // Only the FIRST (running) server's listeners remain.
     expect(em.listenerCount('session:critical')).toBe(1);
@@ -1036,7 +1048,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
       now: () => clock,
     });
-    const info = await aged.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await aged.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     const token = info.token as string;
     const port = info.port as number;
     const em = sessionManager as unknown as EventEmitter;
@@ -1408,7 +1420,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     const url = `http://127.0.0.1:${info.port}/api/approvals`;
     try {
       const list = await fetch(url, { headers: bearer(info.token as string) });
@@ -1935,7 +1947,7 @@ describe('WebTerminalServer', () => {
     // without asking whether the server could mint a credential at all. On an
     // exposed bind the GUI showed a fresh 6-char code every poll, the operator
     // read one onto a phone, and only the redemption said 403.
-    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
 
     const status = server.status();
@@ -1949,7 +1961,7 @@ describe('WebTerminalServer', () => {
   });
 
   it('★ status advertises a pairing code normally on loopback', async () => {
-    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
 
     const status = server.status();
@@ -1963,7 +1975,7 @@ describe('WebTerminalServer', () => {
   it('★ refuses to mint over a plaintext bind, and --allow-host does NOT buy an exception', async () => {
     // A real non-loopback bind: the gate reads the BIND, because that is the
     // only thing about the transport the daemon actually knows.
-    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     const port = info.port as number;
 
     const refusedUpFront = server.startPairing({ name: 'Phone' });
@@ -2002,7 +2014,7 @@ describe('WebTerminalServer', () => {
     const fronted = await server.start({
       port: 0,
       host: '0.0.0.0',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['machine.tail-net.ts.net'],
     });
 
@@ -2031,7 +2043,7 @@ describe('WebTerminalServer', () => {
     const info = await server.start({
       port: 0,
       host: '127.0.0.1',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['Machine.tail-net.ts.net'],
     });
     const status = server.status();
@@ -2092,7 +2104,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
     });
     try {
-      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
       expect(info.deviceCredentials).toBe(false);
       // Explicitly false, never absent: a missing field reads as "old daemon"
       // on the GUI side and would be rendered as unknown rather than as off.
@@ -2112,7 +2124,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${info.pairCode}`);
       expect(res.status).toBe(200);
@@ -2705,7 +2717,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: true });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false });
     try {
       const url = `http://127.0.0.1:${info.port}/api/sessions`;
       const hdrs = bearer(info.token as string);
@@ -2721,5 +2733,328 @@ describe('WebTerminalServer', () => {
     const hdrs = bearer(info.token as string);
     expect((await fetch(`${base()}/api/sessions/s1`, { method: 'GET', headers: hdrs })).status).toBe(404);
     expect((await fetch(`${base()}/api/sessions/s1/diff`, { method: 'DELETE', headers: hdrs })).status).toBe(404);
+  });
+  // --- POST /api/upload ---------------------------------------------------
+  //
+  // The route exists because a phone has a camera and a desktop does not. What
+  // the tests below pin down is everything a client cannot be trusted to get
+  // right: the grant, the format, and the name on disk.
+
+  /** A minimal JPEG: the SOI + APP0 marker is all the sniff looks at. */
+  const jpegBytes = () => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('body-jpeg')]);
+  /** A minimal PNG: the eight-byte signature plus filler. */
+  const pngBytes = () =>
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('body-png'),
+    ]);
+  const upload = (token: string, body: Buffer, contentType = 'application/octet-stream') =>
+    fetch(`${base()}/api/upload`, {
+      method: 'POST',
+      headers: { ...bearer(token), 'Content-Type': contentType },
+      body: new Uint8Array(body),
+    });
+
+  it('refuses an unauthenticated upload before it looks at anything else', async () => {
+    await startUpload();
+    const res = await fetch(`${base()}/api/upload`, {
+      method: 'POST',
+      body: new Uint8Array(jpegBytes()),
+    });
+    expect(res.status).toBe(401);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('403s an upload on a server started with --allow-input but not --allow-upload', async () => {
+    // The point of the pairing: input is a grant to type into a pane the
+    // operator is watching, upload is a grant to write files into their home
+    // directory. One must never imply the other.
+    const info = await startRW();
+    const res = await upload(info.token as string, jpegBytes());
+    expect(res.status).toBe(403);
+    // The exact string, not just the code: the phone client prefix-matches it
+    // to say "ask your Mac to enable uploads" instead of showing an HTTP code.
+    expect(await res.json()).toEqual({
+      error: 'uploads-disabled: server started without --allow-upload',
+    });
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('413s a body over the 10 MB cap and writes nothing', async () => {
+    const info = await startUpload();
+    const oversized = Buffer.concat([jpegBytes(), Buffer.alloc(10 * 1024 * 1024)]);
+    // The server destroys the socket on the cap, so the fetch itself may reject
+    // rather than resolve with the 413 — the same trade-off /api/input makes.
+    // What matters either way is that no file appeared.
+    const res = await upload(info.token as string, oversized).catch(() => undefined);
+    if (res) expect(res.status).toBe(413);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('415s anything that is not JPEG or PNG by its leading bytes, including an empty body', async () => {
+    const info = await startUpload();
+    const token = info.token as string;
+
+    const text = await upload(token, Buffer.from('this is not an image at all'));
+    expect(text.status).toBe(415);
+    expect(await text.json()).toEqual({
+      error: 'unsupported-format: only JPEG and PNG are accepted',
+    });
+
+    // Empty, and shorter-than-a-signature, are the same answer: we could not
+    // identify it, so we will not store it.
+    expect((await upload(token, Buffer.alloc(0))).status).toBe(415);
+    expect((await upload(token, Buffer.from([0xff, 0xd8]))).status).toBe(415);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('stores a JPEG under a server-chosen name and answers 201 with the absolute path', async () => {
+    const info = await startUpload();
+    const bytes = jpegBytes();
+    const before = Date.now();
+    const res = await upload(info.token as string, bytes);
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { path: string; expiresAt: number };
+
+    expect(path.isAbsolute(body.path)).toBe(true);
+    expect(path.dirname(body.path)).toBe(uploadsDir);
+    // The client never names the file — a client-supplied name is a traversal
+    // primitive and nothing reads these by name anyway.
+    expect(path.basename(body.path)).toMatch(
+      /^photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.jpg$/,
+    );
+    expect(fs.readFileSync(body.path).equals(bytes)).toBe(true);
+    // A day out, measured from the same clock the route used.
+    expect(body.expiresAt).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+    expect(body.expiresAt).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60 * 1000);
+  });
+
+  it('trusts the magic bytes over the Content-Type the client claimed', async () => {
+    const info = await startUpload();
+    const bytes = pngBytes();
+    // A PNG announced as a JPEG. Believing the header would put .jpg on a PNG
+    // and hand the agent a file whose extension lies about its contents.
+    const res = await upload(info.token as string, bytes, 'image/jpeg');
+    expect(res.status).toBe(201);
+    const { path: stored } = (await res.json()) as { path: string };
+    expect(stored.endsWith('.png')).toBe(true);
+    expect(fs.readFileSync(stored).equals(bytes)).toBe(true);
+  });
+
+  it('sweeps photos past the TTL before a write, and leaves everything else alone', async () => {
+    // A dedicated server so the clock seam is under this test's control.
+    let clock = Date.parse('2030-01-01T00:00:00.000Z');
+    const swept = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      now: () => clock,
+    });
+    const info = await swept.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const token = info.token as string;
+      const url = `http://127.0.0.1:${info.port}/api/upload`;
+      const post = (body: Buffer) =>
+        fetch(url, { method: 'POST', headers: bearer(token), body: new Uint8Array(body) });
+
+      const first = (await (await post(jpegBytes())).json()) as { path: string };
+      // Not ours. `~/.wmux/uploads` is also where an operator drops files for
+      // browser_file_upload, and those are not the sweep's to delete.
+      const keep = path.join(uploadsDir, 'keep.txt');
+      fs.writeFileSync(keep, 'operator file');
+
+      clock += 25 * 60 * 60 * 1000;
+      const second = (await (await post(pngBytes())).json()) as { path: string };
+
+      expect(fs.existsSync(first.path)).toBe(false);
+      expect(fs.existsSync(keep)).toBe(true);
+      expect(fs.existsSync(second.path)).toBe(true);
+    } finally {
+      await swept.stop();
+    }
+  });
+
+  it('reports allowUpload on /api/config so the phone can hide the button', async () => {
+    const info = await startUpload();
+    const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
+    expect(await res.json()).toEqual({ allowInput: false, allowUpload: true });
+    // status() carries it too — that is what `wmux web --status` prints.
+    expect(server.status().allowUpload).toBe(true);
+  });
+
+  it('answers 503 when the daemon wired no uploads directory', async () => {
+    const bare = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      // 503, not 403: the operator DID grant the permission, the server simply
+      // has nowhere to put the bytes. Saying "disabled" would send them off to
+      // re-add a flag that is already there.
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'uploads-unavailable' });
+    } finally {
+      await bare.stop();
+    }
+  });
+  /** A name the sweep and the quota both recognise as ours. */
+  const generatedName = (isoMs: number, hex: string, ext: 'jpg' | 'png' = 'jpg') =>
+    `photo-${new Date(isoMs).toISOString().replace(/[:.]/g, '-')}-${hex}.${ext}`;
+
+  it('507s once the directory quota is full, and counts only its own files', async () => {
+    // Limits are injected rather than honoured at their production values: the
+    // only honest way to test a 200 MB ceiling is to fill it, and that is not a
+    // test. The pass/fail logic under test is the same either way.
+    const quota = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxFiles: 2 },
+    });
+    const info = await quota.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const url = `http://127.0.0.1:${info.port}/api/upload`;
+      const post = () =>
+        fetch(url, {
+          method: 'POST',
+          headers: bearer(info.token as string),
+          body: new Uint8Array(jpegBytes()),
+        });
+
+      expect((await post()).status).toBe(201);
+      expect((await post()).status).toBe(201);
+
+      const full = await post();
+      // 507, not 403: the operator granted the permission and the request is
+      // well formed — the server has no room, and the TTL will make some.
+      expect(full.status).toBe(507);
+      expect(await full.json()).toEqual({ error: 'uploads-full: quota exceeded, try again later' });
+    } finally {
+      await quota.stop();
+    }
+  });
+
+  it('does not charge the quota for files it did not write', async () => {
+    const quota = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxFiles: 1 },
+    });
+    // An operator's own staged files are not ours to delete, so they are not
+    // ours to count against a limit either.
+    fs.writeFileSync(path.join(uploadsDir, 'photo-vacation.jpg'), 'operator file');
+    fs.writeFileSync(path.join(uploadsDir, 'notes.txt'), 'operator file');
+    const info = await quota.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      expect(res.status).toBe(201);
+    } finally {
+      await quota.stop();
+    }
+  });
+
+  it('429s a fifth concurrent upload rather than buffering it', async () => {
+    // Each in-flight upload holds its whole body in memory, so the disk quota
+    // does nothing for RAM. maxConcurrent: 1 makes the bound observable with
+    // one held-open request instead of five.
+    const busy = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxConcurrent: 1 },
+    });
+    const info = await busy.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    const token = info.token as string;
+    const port = info.port as number;
+    try {
+      const bytes = jpegBytes();
+      // A request whose body arrives in two pieces, so the handler is provably
+      // inside the buffering window while the second request is made.
+      const held = httpReq({
+        host: '127.0.0.1', port, path: '/api/upload', method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Length': String(bytes.length) },
+      });
+      const heldStatus = new Promise<number>((resolve, reject) => {
+        held.on('response', (r) => { r.resume(); resolve(r.statusCode ?? 0); });
+        held.on('error', reject);
+      });
+      await new Promise<void>((resolve) => held.write(bytes.subarray(0, 4), () => resolve()));
+
+      const refused = await fetch(`http://127.0.0.1:${port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(token),
+        body: new Uint8Array(bytes),
+      });
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toEqual({ error: 'too-many-uploads: try again in a moment' });
+
+      // The slot comes back when the held request finishes, so the next caller
+      // is served rather than being locked out by a leaked counter.
+      held.end(bytes.subarray(4));
+      expect(await heldStatus).toBe(201);
+      const after = await fetch(`http://127.0.0.1:${port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(token),
+        body: new Uint8Array(bytes),
+      });
+      expect(after.status).toBe(201);
+    } finally {
+      await busy.stop();
+    }
+  });
+
+  it('sweeps only the names it generated — an operator photo-*.jpg survives', async () => {
+    let clock = Date.parse('2030-01-01T00:00:00.000Z');
+    const swept = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      now: () => clock,
+    });
+    const info = await swept.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      // Ours, and expired: the exact shape handleUpload writes.
+      const mine = path.join(uploadsDir, generatedName(clock, '0123abcd'));
+      fs.writeFileSync(mine, 'old photo');
+      // Theirs, and just as old. `photo-*.jpg` would have matched it, which is
+      // why the pattern anchors the timestamp and the hex suffix instead.
+      // (The uppercase-hex name below must not collide with `mine` — a
+      // case-insensitive filesystem would make them the same file.)
+      const theirs = path.join(uploadsDir, 'photo-vacation.jpg');
+      fs.writeFileSync(theirs, 'operator file');
+      const alsoTheirs = path.join(uploadsDir, 'photo-2030-01-01T00-00-00-000Z-DEADBEEF.jpg');
+      fs.writeFileSync(alsoTheirs, 'uppercase hex is not ours');
+
+      clock += 25 * 60 * 60 * 1000;
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      expect(res.status).toBe(201);
+
+      expect(fs.existsSync(mine)).toBe(false);
+      expect(fs.existsSync(theirs)).toBe(true);
+      expect(fs.existsSync(alsoTheirs)).toBe(true);
+    } finally {
+      await swept.stop();
+    }
   });
 });

@@ -17,6 +17,8 @@ interface WebInfo {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  /** Whether `POST /api/upload` accepts photos. Separate opt-in from input. */
+  allowUpload?: boolean;
   token?: string;
   urls?: string[];
   clients?: number;
@@ -104,6 +106,9 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // `--tailscale` narrows this further — see decideTailscaleBinding.
   const explicitHost = parseFlag(args, '--host');
   const allowInput = hasFlag(args, '--allow-input');
+  // Its own flag, not a rider on --allow-input: writing files into the
+  // operator's home directory is a heavier grant than typing into a pane.
+  const allowUpload = hasFlag(args, '--allow-upload');
   // Extra Host-header names the server should accept (comma-separated). A
   // reverse proxy in front of the loopback bind forwards the browser's Host
   // verbatim — `tailscale serve` sends the MagicDNS name, which the default
@@ -132,6 +137,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         port,
         host,
         allowInput,
+        allowUpload,
         allowedHosts: hosts,
         newToken,
         // Forwarded so the daemon persists which transport this is. Without it
@@ -289,7 +295,7 @@ function report(
   const loopbackOnly = info.host === LOOPBACK_HOST || info.host === '::1';
 
   console.log('');
-  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}`);
+  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}`);
   console.log(`  bind ${info.host}:${info.port}${typeof info.clients === 'number' ? `  ·  ${info.clients} viewer(s)` : ''}`);
   console.log('');
 
@@ -361,6 +367,13 @@ function report(
     console.log('  Re-run with --allow-input to enable keyboard input.');
   } else {
     console.log('  Input is ENABLED: the browser can type into your panes.');
+  }
+  if (info.allowUpload) {
+    console.log('  Photo upload is ENABLED: a paired phone can write JPEG/PNG files');
+    console.log('  into ~/.wmux/uploads/phone. They are deleted after 24 hours.');
+  } else {
+    console.log('  Photo upload is off. Re-run with --allow-upload to let a paired');
+    console.log('  phone send photos into ~/.wmux/uploads/phone.');
   }
   if (tailnet) {
     console.log('  PWA: served over HTTPS, so "Add to Home Screen", Android install and');

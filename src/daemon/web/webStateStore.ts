@@ -31,6 +31,15 @@ export interface WebPersistedState {
   port: number;
   host: string;
   allowInput: boolean;
+  /**
+   * Whether `POST /api/upload` was opted into (`--allow-upload`).
+   *
+   * A separate grant from `allowInput`: input writes bytes into a pane the
+   * operator is watching, an upload writes a FILE into their home directory.
+   * Absent in files written before this field existed, so it reads as false —
+   * a restored server never gains a permission the operator did not ask for.
+   */
+  allowUpload: boolean;
   allowedHosts: string[];
   /**
    * Whether the operator asked for a `tailscale serve` front.
@@ -68,6 +77,7 @@ export const WEB_STATE_DISABLED: Readonly<WebPersistedState> = Object.freeze({
   port: 7681,
   host: '127.0.0.1',
   allowInput: false,
+  allowUpload: false,
   allowedHosts: [] as string[],
   tailscale: false,
   token: '',
@@ -135,6 +145,7 @@ export function coerceWebState(parsed: unknown): WebPersistedState {
     port,
     host,
     allowInput: o['allowInput'] === true,
+    allowUpload: o['allowUpload'] === true,
     allowedHosts,
     tailscale: o['tailscale'] === true,
     token,

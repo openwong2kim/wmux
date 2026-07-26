@@ -50,6 +50,7 @@ const enabled = (over: Partial<WebPersistedState> = {}): WebPersistedState => ({
   port: 7681,
   host: '0.0.0.0',
   allowInput: true,
+  allowUpload: false,
   allowedHosts: ['box.tail-scale.ts.net'],
   tailscale: false,
   token: 'tok-abc',
