@@ -193,6 +193,25 @@ describe('collectSessionDiff', () => {
     expect(env.GIT_OPTIONAL_LOCKS).toBe('0');
   });
 
+  it('★ PINS the locale, because git\'s messages are parsed', async () => {
+    // `isNotARepoStderr` decides 409-vs-500 from git's own wording, and git
+    // translates it. Inheriting a Korean or French LANG would make "not a git
+    // repository" match nothing and turn the most common answer this route
+    // gives — an ordinary non-repo pane — into a 500.
+    const env = buildGitEnv({
+      PATH: '/usr/bin',
+      LANG: 'ko_KR.UTF-8',
+      LC_ALL: 'ko_KR.UTF-8',
+      LC_CTYPE: 'ko_KR.UTF-8',
+      LANGUAGE: 'ko:en',
+    });
+    expect(env.LC_ALL).toBe('C');
+    // gettext consults LANGUAGE ahead of LC_ALL, so it has to be neutralised too.
+    expect(env.LANGUAGE).toBe('');
+    expect(env.LANG).toBeUndefined();
+    expect(env.LC_CTYPE).toBeUndefined();
+  });
+
   it('gitArgv puts the hardening first, so a command can never precede it', () => {
     expect(gitArgv('status')).toEqual([...GIT_HARDENING_CONFIG, 'status']);
   });

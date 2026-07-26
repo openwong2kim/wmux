@@ -222,7 +222,7 @@ export function buildGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
   const KEEP = [
     'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
     'SystemRoot', 'SYSTEMROOT', 'SystemDrive', 'windir', 'COMSPEC', 'ComSpec',
-    'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'TMPDIR', 'TEMP', 'TMP', 'TZ',
   ];
   const env: NodeJS.ProcessEnv = {};
   for (const k of KEEP) {
@@ -240,6 +240,22 @@ export function buildGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
   // anywhere to draw on a daemon's stdio.
   env.GIT_PAGER = 'cat';
   env.GIT_TERMINAL_PROMPT = '0';
+  // MESSAGES ARE PARSED, so the locale is PINNED rather than inherited.
+  //
+  // `isNotARepoStderr` decides 409-vs-500 by reading git's own wording, and git
+  // translates its messages: on a machine whose LANG is not English, "fatal:
+  // not a git repository" arrives in that language, matches nothing, and a
+  // perfectly ordinary non-repo pane — the single most common answer this route
+  // gives — turns into a 500. Pinning is the only way that classification can
+  // be relied on. `LC_ALL` because it outranks everything else git might have
+  // inherited, and `LANGUAGE=''` because gettext consults it ahead of `LC_ALL`.
+  //
+  // Nothing we read is locale-formatted: the porcelain is `-z`, so paths are
+  // raw bytes rather than quoted (`core.quotePath` never applies), and a patch
+  // is a byte stream. Only the human-readable text changes, and the only reader
+  // of that text is the daemon log and the classifier above.
+  env.LC_ALL = 'C';
+  env.LANGUAGE = '';
   return env;
 }
 
