@@ -656,6 +656,7 @@ export class DaemonSessionManager extends EventEmitter {
         signal: payload.signal,
         cmd: meta.cmd,
         lastActivityMsAgo,
+        locationGeneration: managed.locationGeneration,
       };
       if (involuntary) {
         this.emit('session:interrupted', forensics);

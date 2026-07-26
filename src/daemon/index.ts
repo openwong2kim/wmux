@@ -3187,7 +3187,7 @@ function wireEvents(
   // repeats as fatal and shuts the whole daemon down, killing every other
   // session as collateral damage. Per-step isolation ensures one session's
   // exit can't cascade into a mass kill.
-  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string }) => {
+  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string; locationGeneration?: number }) => {
     // OBSERVABILITY: PTY deaths were previously unlogged — a session could
     // vanish (e.g. powershell exiting -1 under a TUI like claude) with zero
     // trace in the daemon log, making root-cause impossible. Log the forensics
@@ -3201,11 +3201,18 @@ function wireEvents(
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
     hookIngest?.dropPty(payload.id);
+    const locationGeneration = payload.locationGeneration
+      ?? sessionManager.getLocationSnapshot(payload.id)?.generation;
     try {
       const event: DaemonEvent = {
         type: 'session.died',
         sessionId: payload.id,
-        data: { exitCode: payload.exitCode },
+        data: {
+          exitCode: payload.exitCode,
+          ...(locationGeneration !== undefined
+            ? { locationGeneration }
+            : {}),
+        },
       };
       pipeServer.broadcast(event);
     } catch (err) {

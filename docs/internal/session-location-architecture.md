@@ -74,7 +74,9 @@ snapshot also drives the owning workspace cwd and task-worktree departure state;
 stale snapshots drive none of those side effects.
 
 Closing a daemon session retires rather than deletes its main-process ordering
-watermark. An RPC response already in flight cannot resurrect that generation;
+watermark. The daemon carries the exact generation on its death event even when
+main has not received the first snapshot yet. An RPC response already in flight
+cannot resurrect that generation; the closed snapshot itself is discarded, and
 only a strictly newer generation or a daemon replacement reset can reuse the
 session ID.
 

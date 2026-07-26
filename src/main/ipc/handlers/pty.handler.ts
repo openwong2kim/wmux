@@ -854,7 +854,8 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
-      daemonLocations.retire(id);
+      const currentLocation = daemonLocations.get(id);
+      if (currentLocation) daemonLocations.retire(id, currentLocation.generation);
       removePaneLocation(id);
     }));
   } else {
@@ -1262,9 +1263,13 @@ export function registerPTYHandlers(
   }));
 
   // Listen for daemon session:died events and forward to renderer
-  let onDaemonSessionDied: ((payload: { sessionId: string; exitCode: number | null }) => void) | null = null;
+  let onDaemonSessionDied: ((payload: {
+    sessionId: string;
+    exitCode: number | null;
+    locationGeneration?: number;
+  }) => void) | null = null;
   if (useDaemon && daemonClient) {
-    onDaemonSessionDied = (payload: { sessionId: string; exitCode: number | null }) => {
+    onDaemonSessionDied = (payload) => {
       // P1-3 ordering rule: drain buffered output before the exit marker so
       // the shell's final lines land ahead of "[Process exited...]" (same
       // drain-before-exit contract as local-mode PTYBridge).
@@ -1277,7 +1282,11 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
-      daemonLocations.retire(payload.sessionId);
+      const retiredGeneration = payload.locationGeneration
+        ?? daemonLocations.get(payload.sessionId)?.generation;
+      if (retiredGeneration !== undefined) {
+        daemonLocations.retire(payload.sessionId, retiredGeneration);
+      }
       removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);

@@ -28,10 +28,19 @@ describe('main daemon session location projection', () => {
   it('does not resurrect a retired session from an in-flight stale response', () => {
     const projection = new DaemonSessionLocationProjection();
     projection.accept('s1', snapshot(4, 2, '/live'));
-    projection.retire('s1');
+    projection.retire('s1', 4);
 
     expect(projection.accept('s1', snapshot(4, 1, '/stale-response'))).toBe(false);
     expect(projection.accept('s1', snapshot(4, 3, '/late-event'))).toBe(false);
+    expect(projection.get('s1')).toBeUndefined();
     expect(projection.accept('s1', snapshot(5, 1, '/reused'))).toBe(true);
+  });
+
+  it('accepts reuse when death arrives before the first snapshot', () => {
+    const projection = new DaemonSessionLocationProjection();
+    projection.retire('s1', 4);
+
+    expect(projection.accept('s1', snapshot(4, 1, '/stale-create'))).toBe(false);
+    expect(projection.accept('s1', snapshot(5, 1, '/restarted'))).toBe(true);
   });
 });

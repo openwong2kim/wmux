@@ -23,12 +23,17 @@ export class DaemonSessionLocationProjection {
     return this.snapshots.get(sessionId);
   }
 
-  retire(sessionId: string): void {
+  retire(sessionId: string, generation: number): void {
     const current = this.snapshots.get(sessionId);
     this.retiredGenerations.set(
       sessionId,
-      current?.generation ?? Number.MAX_SAFE_INTEGER,
+      Math.max(
+        this.retiredGenerations.get(sessionId) ?? 0,
+        current?.generation ?? 0,
+        generation,
+      ),
     );
+    this.snapshots.delete(sessionId);
   }
 
   reset(): void {

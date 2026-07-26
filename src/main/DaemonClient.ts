@@ -542,10 +542,16 @@ export class DaemonClient extends EventEmitter {
       // metadata + notification + toast, critical → approval request.
       switch (event.type) {
         case 'session.died': {
-          const data = event.data as { exitCode?: number | null } | null;
+          const data = event.data as {
+            exitCode?: number | null;
+            locationGeneration?: number;
+          } | null;
           this.emit('session:died', {
             sessionId: event.sessionId,
             exitCode: data?.exitCode ?? null,
+            ...(data?.locationGeneration !== undefined
+              ? { locationGeneration: data.locationGeneration }
+              : {}),
           });
           break;
         }
