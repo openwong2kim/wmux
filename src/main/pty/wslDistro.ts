@@ -100,11 +100,12 @@ function parseQuietList(output: string): string[] {
  * name containing spaces.
  */
 function parseDefaultName(verboseOutput: string, names: readonly string[]): string | undefined {
+  const longestFirst = [...names].sort((a, b) => b.length - a.length);
   for (const rawLine of verboseOutput.split(/\r?\n/)) {
     const line = rawLine.replace(/\r/g, '').trim();
     if (!line.startsWith('*')) continue;
     const rest = line.slice(1).trim();
-    const match = names.find((name) => rest === name || rest.startsWith(`${name} `));
+    const match = longestFirst.find((name) => rest === name || rest.startsWith(`${name} `));
     if (match) return match;
   }
   return undefined;

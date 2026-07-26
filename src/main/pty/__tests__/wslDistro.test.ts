@@ -103,6 +103,20 @@ describe('resolveWslDistro', () => {
 });
 
 describe('listWslDistros caching', () => {
+  it('matches the longest default distro name without reordering the quiet list', async () => {
+    const { run } = fakeRunner({
+      [QUIET]: 'Ubuntu\nUbuntu Preview\n',
+      [VERBOSE]: '* Ubuntu Preview Running 2\n  Ubuntu Stopped 2\n',
+      [RUNNING]: 'Ubuntu Preview\n',
+    });
+
+    await expect(listWslDistros(run)).resolves.toEqual({
+      names: ['Ubuntu', 'Ubuntu Preview'],
+      running: ['Ubuntu Preview'],
+      defaultName: 'Ubuntu Preview',
+    });
+  });
+
   it('serves concurrent callers from one enumeration', async () => {
     const { run, calls } = fakeRunner({ [QUIET]: 'Ubuntu\n', [VERBOSE]: '* Ubuntu Running 2\n' });
     await Promise.all([listWslDistros(run), listWslDistros(run), listWslDistros(run)]);
