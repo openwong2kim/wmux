@@ -328,7 +328,9 @@ describe('buildBrainSettingsProfile', () => {
 // ── generated profile files ────────────────────────────────────────────────
 
 describe('generated profile files', () => {
-  it('writes the token-bearing profile + MCP config owner-only (0600 in a 0700 dir)', async () => {
+  it.skipIf(process.platform === 'win32')('writes the token-bearing profile + MCP config owner-only (0600 in a 0700 dir)', async () => {
+    // POSIX-only: Windows has no chmod bits — token protection there rides the
+    // profile dir living under the user profile + the existing ACL hardening.
     // The MCP config embeds WMUX_COMMANDER_TOKEN — a bearer credential for the
     // whole commander tool surface. At the default 0644 every local user could
     // read it off disk and drive the operator's fleet.
@@ -361,6 +363,8 @@ describe('buildBrainLaunchCommand', () => {
       settingsPath: '/tmp/s.json',
       mcpConfigPath: null,
       allowedTools: [],
+    
+      platform: 'linux',
     });
     expect(cmd).toContain('--setting-sources "project"');
     expect(cmd.indexOf('--setting-sources')).toBeLessThan(cmd.indexOf('--settings '));
@@ -373,6 +377,8 @@ describe('buildBrainLaunchCommand', () => {
       mcpConfigPath: '/tmp/m.json',
       allowedTools: ['mcp__wmux__pane_list'],
       resumeSessionId: 'sess-9',
+    
+      platform: 'linux',
     });
     expect(cmd).toBe(
       '"/Applications/My Apps/claude" --setting-sources "project" --settings "/tmp/s.json" ' +
@@ -428,6 +434,8 @@ describe('buildBrainLaunchCommand', () => {
       settingsPath: '/tmp/s.json',
       mcpConfigPath: null,
       allowedTools: [],
+    
+      platform: 'linux',
     });
     expect(cmd).not.toContain('--resume');
     expect(cmd).not.toContain('--mcp-config');
@@ -440,7 +448,7 @@ describe('the spawned command line', () => {
     const adapter = makeAdapter(host, { model: 'opus' });
     const turn = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.created.length).toBe(1));
-    expect(host.created[0].command).toContain('--model "opus"');
+    expect(host.created[0].command).toMatch(/--model ["']opus["']/);
     adapter.dispose();
     await turn;
   });
@@ -494,7 +502,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     adapter.start({ resumeSessionId: 'sess-prev' });
     const turn = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
-    expect(host.created[0].command).toContain('--resume "sess-prev"');
+    expect(host.created[0].command).toMatch(/--resume ["']sess-prev["']/);
     deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-prev' }));
     await turn;
     adapter.dispose();
