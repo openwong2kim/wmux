@@ -162,3 +162,61 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
     expect(res.ok, 'first-party must not be allowed when the trust lookup throws').toBe(false);
   });
 });
+
+describe('enforce-mode dispatch — rejection names the observed client (#636)', () => {
+  // The discoverability half of #636. Before this, a blocked client was told
+  // only "plugin is unconfirmed" and had no supported way to learn which name
+  // wmux saw — which is how a real agent guessed its own name wrong and
+  // proposed an allowlist entry that would never have matched.
+  it('echoes the observed clientName in an unconfirmed rejection', async () => {
+    await store.upsertContact('mcp', '0.1.0');
+    const res = await router.dispatch({
+      id: 'obs-1',
+      method: 'surface.list',
+      params: {},
+      clientName: 'mcp',
+      clientVersion: '0.1.0',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toContain('observed clientName: "mcp"');
+      // And it points at the command that lists them.
+      expect(res.error).toContain('wmux mcp clients');
+    }
+  });
+
+  it('says so explicitly when the caller reported no clientName', async () => {
+    // Envelope-less callers take the legacy grandfather path, so drive the
+    // message builder through a named-but-denied caller instead: the point is
+    // that the message never silently omits the identity field.
+    await store.upsertContact('evil-plugin');
+    await store.setUserDecision('evil-plugin', 'denied');
+    const res = await router.dispatch({
+      id: 'obs-2',
+      method: 'browser.open',
+      params: {},
+      clientName: 'evil-plugin',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('observed clientName: "evil-plugin"');
+  });
+
+  it('strips control characters from the echoed name', async () => {
+    // clientName is self-asserted, untrusted input that lands in logs and in
+    // terminal-rendered agent output.
+    const nasty = 'ev\u001b[31mil';
+    await store.upsertContact(nasty);
+    const res = await router.dispatch({
+      id: 'obs-3',
+      method: 'surface.list',
+      params: {},
+      clientName: nasty,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).not.toContain('\u001b');
+      expect(res.error).not.toContain('\u0000');
+      expect(res.error).toContain('observed clientName: "ev[31mil"');
+    }
+  });
+});
