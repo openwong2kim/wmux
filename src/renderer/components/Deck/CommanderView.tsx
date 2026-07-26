@@ -315,7 +315,11 @@ export function CommanderViewContent({
             {/* Collapse hides, never unmounts: unmounting would tear down the
                 xterm attach and drop scrollback on every toggle. */}
             <div className={terminalCollapsed ? 'hidden' : undefined}>
-              <BrainTerminalEmbed ptyId={brainPtyId} />
+              {/* isVisible, not just `hidden`: xterm's fit addon measures the
+                  container, and a display:none wrapper measures zero — the
+                  collapsed terminal would resize itself to nothing and only
+                  recover on the next resize after expanding. */}
+              <BrainTerminalEmbed ptyId={brainPtyId} isVisible={!terminalCollapsed} />
             </div>
           </div>
         ) : null}
