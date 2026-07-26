@@ -138,9 +138,10 @@ describe('WebPopoverBody — off state', () => {
     expect(html).toContain('bg-[var(--accent)]');
   });
 
-  it('shows the daemon-offline note when info carries an error', () => {
+  it('shows the actual control error instead of misreporting every failure as offline', () => {
     const offline = renderBody({ info: { running: false, error: 'boom' } });
-    expect(offline).toContain('web.daemonOffline');
+    expect(offline).toContain('boom');
+    expect(offline).not.toContain('web.daemonOffline');
   });
 
   it('reflects a busy Start as "starting"', () => {
@@ -199,6 +200,15 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('web.stop');
     expect(html).toContain('bg-[var(--bg-surface)]');
     expect(html).not.toContain('accent-red');
+  });
+
+  it('shows the exact stop error when the listener is still running', () => {
+    const html = renderBody({
+      info: { ...runningInfo, error: 'listener close failed' },
+    });
+    expect(html).toContain('listener close failed');
+    expect(html).toContain('text-[var(--accent-red)]');
+    expect(html).toContain('web.stop');
   });
 
   it('only the copied field swaps its label', () => {

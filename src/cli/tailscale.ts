@@ -678,13 +678,24 @@ export async function stopWebTransport<T>(opts: {
   exec?: TailscaleExec;
   /** Read the running server's port. Called BEFORE the stop, deliberately. */
   readPort: () => Promise<number | undefined>;
-  stopServer: () => Promise<{ failed: boolean; value: T }>;
+  stopServer: () => Promise<{
+    failed: boolean;
+    /**
+     * A failed control reply can still follow a completed live stop (for
+     * example, durable-state revocation failed afterward). Set only after a
+     * fresh status check confirms the listener is down.
+     */
+    liveStopped?: boolean;
+    value: T;
+  }>;
 }): Promise<{ value: T; serveRemoved: boolean; reason: ServeRemoval | 'skipped' }> {
   const priorPort = await opts.readPort();
   const stopped = await opts.stopServer();
 
-  // A failed stop leaves a server running that still needs its front door.
-  if (stopped.failed || priorPort === undefined) {
+  // Most failed stops leave a server running that still needs its front door.
+  // Durable-state revocation is the exception: the listener is intentionally
+  // stopped before that error is returned, and leaving its front creates a 502.
+  if ((stopped.failed && !stopped.liveStopped) || priorPort === undefined) {
     return { value: stopped.value, serveRemoved: false, reason: 'skipped' };
   }
 

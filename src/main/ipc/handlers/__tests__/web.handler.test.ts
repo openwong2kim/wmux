@@ -289,7 +289,7 @@ describe('web.handler — forwarding', () => {
     // failure on this surface.
     expect(res.running).toBe(false);
     expect(res.transportError?.reason).toBe('not-installed');
-    expect(res.transportError!.lines.length).toBeGreaterThan(0);
+    expect(res.transportError?.lines.length).toBeGreaterThan(0);
     // And nothing was started: a server without its front is reachable only on
     // loopback, which is not what the operator asked for.
     expect(rpc).not.toHaveBeenCalledWith('daemon.web.start', expect.anything());
@@ -335,6 +335,75 @@ describe('web.handler — forwarding', () => {
     const res = (await getHandler(IPC.WEB_STOP)(fakeEvent)) as { running: boolean };
     expect(rpc).toHaveBeenCalledWith('daemon.web.stop', {});
     expect(res.running).toBe(false);
+  });
+
+  it('keeps the durable-stop error visible but removes a front once status confirms live is off', async () => {
+    const tailscaleCalls: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      tailscaleCalls.push(args.join(' '));
+      if (args[0] === 'serve' && args[1] === 'status') {
+        return {
+          stdout: JSON.stringify({
+            TCP: { '443': { HTTPS: true } },
+            Web: {
+              'box.tail1234.ts.net:443': {
+                Handlers: { '/': { Proxy: 'http://127.0.0.1:7681' } },
+              },
+            },
+          }),
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    };
+    let statusReads = 0;
+    rpc = vi.fn(async (method: string) => {
+      if (method === 'daemon.web.status') {
+        statusReads += 1;
+        return statusReads === 1
+          ? { running: true, port: 7681 }
+          : { running: false };
+      }
+      if (method === 'daemon.web.stop') {
+        throw new Error(
+          'The web server is stopped now, but persisted state could not be revoked',
+        );
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, exec);
+
+    const res = (await getHandler(IPC.WEB_STOP)(fakeEvent)) as WebTerminalInfo;
+
+    expect(res.running).toBe(false);
+    expect(res.error).toContain('persisted state could not be revoked');
+    expect(statusReads).toBe(2);
+    expect(tailscaleCalls).toContain('serve --https=443 off');
+  });
+
+  it('keeps the toggle and front on when fresh status says the live stop failed', async () => {
+    const tailscaleCalls: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      tailscaleCalls.push(args.join(' '));
+      return { stdout: '', stderr: '' };
+    };
+    rpc = vi.fn(async (method: string) => {
+      if (method === 'daemon.web.status') return { running: true, port: 7681 };
+      if (method === 'daemon.web.stop') {
+        throw new Error('The web server could not be stopped now');
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, exec);
+
+    const res = (await getHandler(IPC.WEB_STOP)(fakeEvent)) as WebTerminalInfo;
+
+    expect(res.running).toBe(true);
+    expect(res.port).toBe(7681);
+    expect(res.error).toContain('could not be stopped now');
+    expect(tailscaleCalls).toEqual([]);
   });
 });
 

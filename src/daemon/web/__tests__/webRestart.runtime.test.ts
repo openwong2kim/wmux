@@ -80,8 +80,21 @@ function rpc(method: string, params: Record<string, unknown> = {}): Promise<RpcR
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const res = JSON.parse(line) as { id: string; result?: RpcResult };
-          if (res.id === id) finish(() => resolve(res.result ?? {}));
+          const res = JSON.parse(line) as {
+            id: string;
+            ok?: boolean;
+            result?: RpcResult;
+            error?: string;
+          };
+          if (res.id === id) {
+            finish(() => {
+              if (res.ok === false) {
+                reject(new Error(res.error ?? `${method}: daemon rejected the request`));
+              } else {
+                resolve(res.result ?? {});
+              }
+            });
+          }
         } catch {
           /* ignore malformed lines */
         }
@@ -209,6 +222,8 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       const token = started.token as string;
       expect(token).toBeTruthy();
       expect(await probe(port, '/api/config', token)).toEqual({ status: 200 });
+      const statePath = path.join(WMUX_DIR, 'web-state.json');
+      const persistedMtime = fs.statSync(statePath).mtimeMs;
 
       // ── crash / reboot / one-click update restart ──
       await killDaemon(d1);
@@ -228,6 +243,10 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       // open reconnects on its own with nobody at the desktop.
       expect(after.token).toBe(token);
       expect(await probe(port, '/api/config', token)).toEqual({ status: 200 });
+      // Restore must not rewrite an identical state record: on Windows that
+      // no-op would synchronously shell out for ACL hardening and freeze the
+      // daemon event loop for seconds. Async ACL re-hardening leaves mtime put.
+      expect(fs.statSync(statePath).mtimeMs).toBe(persistedMtime);
     },
     120_000,
   );
@@ -252,6 +271,38 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       const restarted = await rpc('daemon.web.start', { port, host: '127.0.0.1', allowInput: false });
       expect(restarted.token).not.toBe(token);
       expect((await probe(port, '/api/config', token)).status).toBe(401);
+    },
+    120_000,
+  );
+
+  it(
+    'a durable-stop write failure rejects the RPC after the live listener is down',
+    async () => {
+      const port = await freePort();
+
+      await startDaemon();
+      const started = await rpc('daemon.web.start', {
+        port,
+        host: '127.0.0.1',
+        allowInput: false,
+      });
+      const token = started.token as string;
+      const statePath = path.join(WMUX_DIR, 'web-state.json');
+
+      // A same-name directory makes both unlink and overwrite fail while
+      // remaining portable and recoverable inside this disposable fixture.
+      fs.rmSync(statePath, { force: true });
+      fs.mkdirSync(statePath);
+
+      try {
+        await expect(rpc('daemon.web.stop')).rejects.toThrow(
+          'persisted state could not be revoked',
+        );
+        expect((await rpc('daemon.web.status')).running).toBe(false);
+        expect((await probe(port, '/api/config', token)).error).toBeTruthy();
+      } finally {
+        fs.rmSync(statePath, { recursive: true, force: true });
+      }
     },
     120_000,
   );

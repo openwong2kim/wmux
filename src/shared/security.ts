@@ -467,6 +467,21 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
       const message = aclErr instanceof Error ? aclErr.message : String(aclErr);
       throw new Error(`Failed to set secure ACL on ${filePath}: ${message}`);
     }
+  } else {
+    // `mode` only affects a newly-created inode. An overwrite of a file that
+    // was restored or externally loosened to 0644 must repair it too.
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch (modeErr) {
+      console.warn('[secureWriteTokenFile] Could not set file mode:', modeErr);
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        // Best effort cleanup of an insecure token file.
+      }
+      const message = modeErr instanceof Error ? modeErr.message : String(modeErr);
+      throw new Error(`Failed to set secure mode on ${filePath}: ${message}`);
+    }
   }
 }
 

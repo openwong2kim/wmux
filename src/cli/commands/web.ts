@@ -51,15 +51,40 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
       readPort: async () => webPortOf(await sendDaemonStringRequest('daemon.web.status', {})),
       stopServer: async () => {
         const res = await sendDaemonStringRequest('daemon.web.stop', {});
-        return { failed: getResultError(res) !== undefined, value: res };
+        const failed = getResultError(res) !== undefined;
+        // #620: the daemon stops the live listener before reporting a durable
+        // revocation failure. Confirm that state before deciding whether the
+        // tailnet front is still needed; preserve the original response so the
+        // CLI still prints the revocation error and exits 1.
+        let liveStopped = false;
+        if (failed) {
+          try {
+            liveStopped = webIsStopped(
+              await sendDaemonStringRequest('daemon.web.status', {}),
+            );
+          } catch {
+            // Verification is advisory. If the daemon disappeared before it
+            // could answer, preserve the original stop error and leave the
+            // front alone rather than guessing that no listener remains.
+          }
+        }
+        return { failed, liveStopped, value: res };
       },
     });
     const response = stop.value;
     if (jsonMode) {
-      if (stop.serveRemoved && response.ok && isRecord(response.result)) {
-        return printResult({ ...response, result: { ...response.result, tailscaleServeRemoved: true } });
+      const output = annotateWebStopJsonResponse(response, stop.serveRemoved);
+      if (stop.serveRemoved && !response.ok) {
+        // printResult intentionally renders RPC-envelope errors for humans.
+        // This command has an additional machine-relevant fact to preserve, so
+        // emit the original error envelope plus that fact and keep exit 1.
+        console.log(JSON.stringify(output, null, 2));
+        process.exit(1);
       }
-      return printResult(response);
+      return printResult(output);
+    }
+    if (stop.serveRemoved && getResultError(response) !== undefined) {
+      console.log('`tailscale serve` configuration removed.');
     }
     ensureOk(response);
     console.log('wmux web stopped.');
@@ -135,6 +160,35 @@ function webPortOf(response: RpcResponse): number | undefined {
   if (!response.ok || !isRecord(response.result)) return undefined;
   const port = response.result['port'];
   return typeof port === 'number' && Number.isInteger(port) ? port : undefined;
+}
+
+function webIsStopped(response: RpcResponse): boolean {
+  return (
+    response.ok &&
+    isRecord(response.result) &&
+    response.result['running'] === false &&
+    getResultError(response) === undefined
+  );
+}
+
+/**
+ * Preserve front-removal state in JSON even when the stop RPC itself failed.
+ *
+ * A success already has a result object to annotate. An error envelope has no
+ * result by contract, so the additive flag lives at its top level while `ok`
+ * and `error` remain untouched for existing consumers.
+ */
+export function annotateWebStopJsonResponse(
+  response: RpcResponse,
+  serveRemoved: boolean,
+): RpcResponse | (Extract<RpcResponse, { ok: false }> & { tailscaleServeRemoved: true }) {
+  if (!serveRemoved) return response;
+  if (!response.ok) return { ...response, tailscaleServeRemoved: true };
+  if (!isRecord(response.result)) return response;
+  return {
+    ...response,
+    result: { ...response.result, tailscaleServeRemoved: true },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

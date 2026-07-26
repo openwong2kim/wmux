@@ -28,9 +28,9 @@ import {
  *  1. It takes a live `getDaemonClient` getter and registers UNCONDITIONALLY
  *     (not gated on a DaemonClient snapshot). The web toggle is always present
  *     in the titlebar, so a click must ALWAYS resolve — never throw "No handler
- *     registered". When there is no daemon (local mode, or the pipe is down) the
- *     handler resolves `{ running: false, error }` so the popover can render a
- *     quiet "daemon not running" state instead of surfacing an exception toast.
+ *     registered". When the control operation cannot complete, the handler
+ *     resolves `{ running: false, error }` so the popover can render the actual
+ *     failure instead of surfacing an exception toast.
  *
  *  2. Every method resolves a WebTerminalInfo (never rejects) for the same
  *     reason — a browser-terminal toggle is a low-stakes convenience surface,
@@ -256,8 +256,9 @@ export function registerWebHandlers(
         failure = (err as Error)?.message ?? String(err);
       }
       const info = await call('daemon.web.status', {});
-      // NOT `error`: that field means "the daemon is unreachable", and this
-      // reply carries a running server.
+      // NOT `error`: that field means the control operation as a whole failed
+      // and carries no trustworthy running status. This reply has a healthy
+      // server; only the pairing-code operation failed.
       if (failure) return { ...withFront(info), pairStartError: failure };
       // A fresh code is the last moment before a camera is pointed at it.
       if (info.running && advertisesFront(info)) {
@@ -283,7 +284,22 @@ export function registerWebHandlers(
         readPort: async () => (await call('daemon.web.status', {})).port,
         stopServer: async () => {
           const info = await call('daemon.web.stop', {});
-          return { failed: info.error !== undefined, value: info };
+          const failed = info.error !== undefined;
+          // A durable-revocation error is returned AFTER the daemon has stopped
+          // the live listener. Confirm that fact rather than treating every
+          // failed reply as "still running" and leaving a dead Tailscale front.
+          const status = failed ? await call('daemon.web.status', {}) : undefined;
+          const liveStopped =
+            status !== undefined && status.error === undefined && status.running === false;
+          // `call` has to use running:false for a rejected RPC because that
+          // envelope carries no status. Once the fresh status succeeds, keep
+          // its actual running state and attach the original stop error. This
+          // leaves the toggle on when the listener itself failed to stop.
+          const value =
+            failed && status !== undefined && status.error === undefined
+              ? { ...status, error: info.error }
+              : info;
+          return { failed, liveStopped, value };
         },
       });
       return stop.value;
