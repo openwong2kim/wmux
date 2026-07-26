@@ -2220,6 +2220,17 @@ describe('WebTerminalServer', () => {
     expect((await getDiff('s1', token)).status).toBe(200);
   });
 
+  it('★ the diff payload is never cacheable', async () => {
+    // A 200 GET with no Cache-Control and no validator is heuristically
+    // cacheable, and this is the one payload an approval decision is made
+    // against: a phone — or an intermediary — replaying yesterday's patch
+    // under today's prompt is the exact failure this route exists to prevent.
+    const info = await startRO();
+    const res = await getDiff('s1', info.token as string);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
   it('★ answers the diff on a READ-ONLY server, and only ever runs fixed-argv read-only git', async () => {
     const info = await startRO();
     const res = await getDiff('s1', info.token as string);
@@ -2238,12 +2249,17 @@ describe('WebTerminalServer', () => {
     });
     expect(gitCalls.map((c) => gitBody(c.args))).toEqual([
       ['rev-parse', '--is-inside-work-tree', '--show-toplevel'],
+      // Names the repo's content filters so they can be blanked before
+      // anything below converts working-tree content.
+      ['config', '--list', '--name-only', '-z'],
       ['diff', '--cached', '--no-ext-diff', '--no-textconv'],
       ['diff', '--no-ext-diff', '--no-textconv'],
       ['status', '--porcelain', '-z', '--untracked-files=all'],
       // #6: an untracked file is in files[] and would otherwise contribute
       // nothing to the patch. The path goes after a literal `--`.
       ['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', 'notes.md'],
+      // Closing re-read: did the tree change while all of that ran?
+      ['status', '--porcelain', '-z', '--untracked-files=all'],
     ]);
     // Every one of them carried the hardening prefix.
     for (const c of gitCalls) {
@@ -2466,7 +2482,9 @@ describe('WebTerminalServer', () => {
       'ws 1',
       'ws/../other',
       'ws-1\nWMUX_AUTH_TOKEN=x',
-      'ws 1',
+      // A literal NUL, written as an escape: as a raw byte it makes this
+      // file unsearchable and reads as a duplicate of the space case above.
+      'ws\u00001',
       'ws-\u001b[31m1',
       'w'.repeat(65),
       '../../etc/passwd',

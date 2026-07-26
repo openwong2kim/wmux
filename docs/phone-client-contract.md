@@ -240,7 +240,9 @@ GET /api/sessions/<id>/diff  → 200 {files: [{path, status, from?}], patch,
 
 Read-only, and **available on a read-only server** — it runs `git diff`,
 `git diff --cached` and `git status` in the pane's own working directory and
-returns text. Nothing in the request names a directory or a ref.
+returns text. Nothing in the request names a directory or a ref. The response
+is `Cache-Control: no-store`: it is the payload an approval is decided against
+and must never be replayed from a cache.
 
 `status` is the raw two-character porcelain code (`' M'`, `'M '`, `'??'`, `'R '`,
 `'UU'`, …): the index column and the worktree column are independent and any
@@ -250,7 +252,12 @@ them). It is capped at 512 KB, and `truncated` says the tail was cut.
 
 **`patchIncomplete` is the flag you must not ignore.** It means `files[]` is
 accurate but `patch` is missing content for a reason that is *not* the cap: a
-git command timed out or failed, or there were more than 20 untracked files. Do
+git command timed out or failed, there were more than 20 untracked files, the
+untracked pass ran out of its overall time budget, an untracked entry was a
+whole directory (a nested repository, or an unreadable one) that has no single
+file to render, or **the tree changed while the diff was being collected** —
+the pane's own agent staging a file mid-read produces a change that is in
+neither patch. Do
 not render a `patchIncomplete: true` response as a diff a human can approve
 against — say the patch is partial and offer the desktop. `truncated` and
 `patchIncomplete` are independent: `truncated` alone means "you have the first
@@ -264,7 +271,7 @@ machine.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| 409 | `{error: 'not-a-git-repo'}` | **Normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no repository here", not "something went wrong". Only returned when git ran and said so |
+| 409 | `{error: 'not-a-git-repo'}` | **Normal.** Panes run in `~`, in `/tmp`, in scratch directories. Say "no repository here", not "something went wrong". Only returned when git ran and said so — a repository that EXISTS but is broken (malformed config, dubious ownership, unreadable metadata) is a 500, not this |
 | 429 | `{error: 'busy'}` | Too many diffs in flight (the daemon collects at most two at once). Retry; do not treat it as an error state |
 | 500 | `{error: 'git-failed'}` | git could not be run, or timed out, or the tree could not be described. Deliberately carries no detail — git's stderr names paths, remotes and config keys, and the operator has it in the daemon log. Retry once, then offer the desktop |
 

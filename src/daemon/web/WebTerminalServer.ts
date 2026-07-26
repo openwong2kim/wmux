@@ -384,8 +384,12 @@ const MAX_STREAM_TICKETS = 512;
 /**
  * How many pane diffs may be collected at once, across the whole daemon.
  *
- * A diff is up to five `git` processes each allowed five seconds and half a
- * megabyte of buffer, and the route needs no `--allow-input`, so a phone that
+ * A diff is a `rev-parse`, a config listing, three collection commands, a
+ * closing `status` and up to `UNTRACKED_DIFF_LIMIT` more `--no-index` runs —
+ * two dozen `git` processes in the worst case, each allowed five seconds and
+ * half a megabyte of buffer, with the untracked pass held to
+ * `UNTRACKED_TOTAL_BUDGET_MS` overall so the worst case is bounded in TIME as
+ * well as in count. The route needs no `--allow-input`, so a phone that
  * retries on every reconnect — or a client that simply polls — is a fork bomb
  * with a Bearer token. Two is chosen to be obviously enough for the intended
  * use (one human, looking at one approval) and obviously not a load: a third
@@ -1279,7 +1283,12 @@ export class WebTerminalServer {
       this.deps.log('warn', `[web] diff failed for ${id}: ${result.detail ?? ''}`);
       return this.json(res, 500, { error: 'git-failed' });
     }
-    return this.json(res, 200, result.diff);
+    // `no-store`, like the app shell: a 200 GET with no validator is
+    // heuristically cacheable, and this is the one payload an approval decision
+    // is made against. A phone — or an intermediary — replaying yesterday's
+    // patch under today's prompt is the exact failure this route exists to
+    // prevent.
+    return this.json(res, 200, result.diff, { 'Cache-Control': 'no-store' });
   }
 
   // --- pane lifecycle (opt-in) ---------------------------------------------
@@ -2273,11 +2282,17 @@ export class WebTerminalServer {
     res.end(body);
   }
 
-  private json(res: http.ServerResponse, status: number, obj: unknown): void {
+  private json(
+    res: http.ServerResponse,
+    status: number,
+    obj: unknown,
+    extraHeaders?: Record<string, string>,
+  ): void {
     const body = JSON.stringify(obj);
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       ...this.securityHeaders(),
+      ...extraHeaders,
     });
     res.end(body);
   }
