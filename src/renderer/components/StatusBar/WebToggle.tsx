@@ -203,7 +203,7 @@ export function WebPopoverBody({
         </div>
         {info.error ? (
           <div className="text-[11px] text-[var(--text-sub)] leading-snug">
-            {t('web.daemonOffline')}
+            {info.error}
           </div>
         ) : null}
         <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
@@ -491,6 +491,12 @@ export function WebPopoverBody({
 
       {exposed ? (
         <p className="text-[10px] leading-snug text-[var(--text-sub)]">{t('web.exposeWarning')}</p>
+      ) : null}
+
+      {info.error ? (
+        <span className="text-[10px] leading-snug text-[var(--accent-red)]">
+          {info.error}
+        </span>
       ) : null}
 
       <button

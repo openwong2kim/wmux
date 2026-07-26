@@ -698,6 +698,32 @@ describe('startWebTransport / stopWebTransport ordering', () => {
     expect(out.reason).toBe('skipped');
   });
 
+  it('removes the front when a failed reply still confirms the listener stopped', async () => {
+    const events: string[] = [];
+    const exec: TailscaleExec = async (_cmd, args) => {
+      if (args[0] === 'serve' && args[1] === 'status') {
+        events.push('tailscale:serve-status');
+        return { stdout: serveOurs(), stderr: '' };
+      }
+      events.push('tailscale:serve-off');
+      return { stdout: '', stderr: '' };
+    };
+    const out = await stopWebTransport({
+      exec,
+      readPort: async () => WEB_PORT,
+      stopServer: async () => ({
+        failed: true,
+        liveStopped: true,
+        value: 'durable revoke failed',
+      }),
+    });
+
+    expect(events).toEqual(['tailscale:serve-status', 'tailscale:serve-off']);
+    expect(out.value).toBe('durable revoke failed');
+    expect(out.serveRemoved).toBe(true);
+    expect(out.reason).toBe('removed');
+  });
+
   it('leaves a foreign serve config alone on stop', async () => {
     const foreign = JSON.stringify({
       TCP: { '443': { HTTPS: true } },

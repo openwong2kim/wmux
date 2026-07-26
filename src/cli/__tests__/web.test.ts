@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { deviceCredentialWarning } from '../commands/web';
+import {
+  annotateWebStopJsonResponse,
+  deviceCredentialWarning,
+} from '../commands/web';
 
 /**
  * `wmux web --status` and the per-device credential posture (M3).
@@ -34,5 +37,39 @@ describe('deviceCredentialWarning', () => {
     // real one, and it would fire on every `--status` against a 3.34.0 daemon.
     expect(deviceCredentialWarning({})).toBeNull();
     expect(deviceCredentialWarning({ deviceCredentials: undefined })).toBeNull();
+  });
+});
+
+describe('annotateWebStopJsonResponse', () => {
+  it('keeps a failed stop failed while reporting that its front was removed', () => {
+    expect(
+      annotateWebStopJsonResponse(
+        { id: 'stop-1', ok: false, error: 'persisted state could not be revoked' },
+        true,
+      ),
+    ).toEqual({
+      id: 'stop-1',
+      ok: false,
+      error: 'persisted state could not be revoked',
+      tailscaleServeRemoved: true,
+    });
+  });
+
+  it('annotates a successful result without changing its envelope', () => {
+    expect(
+      annotateWebStopJsonResponse(
+        { id: 'stop-2', ok: true, result: { running: false } },
+        true,
+      ),
+    ).toEqual({
+      id: 'stop-2',
+      ok: true,
+      result: { running: false, tailscaleServeRemoved: true },
+    });
+  });
+
+  it('leaves the response untouched when no front was removed', () => {
+    const response = { id: 'stop-3', ok: false as const, error: 'still running' };
+    expect(annotateWebStopJsonResponse(response, false)).toBe(response);
   });
 });

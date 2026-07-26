@@ -120,6 +120,39 @@ describe('secureWriteTokenFile', () => {
     });
   });
 
+  it('re-applies mode 0600 when overwriting an existing POSIX token file', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = '/home/tester/.wmux-auth-token';
+      fsMock.existsSync.mockReturnValue(true);
+
+      secureWriteTokenFile(tokenPath, 'secret-token');
+
+      expect(fsMock.chmodSync).toHaveBeenCalledWith(tokenPath, 0o600);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it('fails closed when a POSIX mode repair fails', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    fsMock.chmodSync.mockImplementationOnce(() => {
+      throw new Error('chmod denied');
+    });
+    try {
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = '/home/tester/.wmux-auth-token';
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        `Failed to set secure mode on ${tokenPath}: chmod denied`,
+      );
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it('rebuilds the DACL via a DACL-only PowerShell primitive (SID payload over stdin, never Set-Acl) on Windows', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');

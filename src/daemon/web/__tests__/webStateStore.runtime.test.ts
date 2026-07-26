@@ -1,7 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+const { secureWriteTokenFileMock } = vi.hoisted(() => ({
+  secureWriteTokenFileMock: vi.fn(),
+}));
+
+vi.mock('../../../shared/security', () => ({
+  secureWriteTokenFile: secureWriteTokenFileMock,
+}));
+
 import {
   loadWebState,
   saveWebState,
@@ -13,14 +22,21 @@ import {
 } from '../webStateStore';
 
 // Disk-IO → `.runtime.test.ts` so it runs serially (vitest.runtime.config sets
-// fileParallelism:false) and the tmp+rename dance never races another file.
+// fileParallelism:false). The expensive OS ACL primitive is mocked here; the
+// shared security tests cover its native behavior.
 
 let dir: string;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-webstate-'));
+  secureWriteTokenFileMock.mockReset();
+  secureWriteTokenFileMock.mockImplementation((filePath: string, contents: string) => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, contents, { encoding: 'utf8', mode: 0o600 });
+  });
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch {
@@ -46,18 +62,147 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(loadWebState(dir)).toEqual(enabled());
   });
 
+  it('hardens a disabled inode before either create or overwrite receives the token', () => {
+    const first = enabled();
+    const second = enabled({ token: 'tok-reconfigured', port: 8765 });
+    const target = getWebStatePath(dir);
+
+    expect(saveWebState(dir, first)).toBe(true);
+    expect(saveWebState(dir, second)).toBe(true);
+
+    expect(secureWriteTokenFileMock).toHaveBeenNthCalledWith(
+      1,
+      target,
+      JSON.stringify(WEB_STATE_DISABLED, null, 2),
+    );
+    expect(secureWriteTokenFileMock).toHaveBeenNthCalledWith(
+      2,
+      target,
+      JSON.stringify(WEB_STATE_DISABLED, null, 2),
+    );
+    expect(loadWebState(dir)).toEqual(second);
+  });
+
+  it('never leaves the active token when placeholder hardening and cleanup both fail', () => {
+    const target = getWebStatePath(dir);
+    const persistenceError = new Error('ACL hardening denied; cleanup was busy');
+    const onError = vi.fn();
+    secureWriteTokenFileMock.mockImplementationOnce((filePath: string, contents: string) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, contents, { encoding: 'utf8', mode: 0o600 });
+      // The real helper throws after ACL failure. Omitting its own deletion
+      // models the review case where AV holds the file during cleanup too.
+      throw persistenceError;
+    });
+    vi.spyOn(fs, 'unlinkSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('EBUSY: retry was busy too'), { code: 'EBUSY' });
+    });
+
+    expect(saveWebState(dir, enabled(), onError)).toBe(false);
+    expect(onError).toHaveBeenCalledWith(persistenceError);
+    expect(fs.readFileSync(target, 'utf8')).toBe(JSON.stringify(WEB_STATE_DISABLED, null, 2));
+    expect(fs.readFileSync(target, 'utf8')).not.toContain('tok-abc');
+    expect(loadWebState(dir)).toEqual({ ...WEB_STATE_DISABLED });
+  });
+
+  it('does not let a diagnostic callback failure turn best-effort save into a throw', () => {
+    secureWriteTokenFileMock.mockImplementationOnce(() => {
+      throw new Error('disk denied persistence');
+    });
+
+    expect(
+      saveWebState(dir, enabled(), () => {
+        throw new Error('logger failed too');
+      }),
+    ).toBe(false);
+  });
+
+  it('does not recreate an unhardened inode when the placeholder disappears before populate', () => {
+    const target = getWebStatePath(dir);
+    secureWriteTokenFileMock.mockImplementationOnce((filePath: string, contents: string) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, contents, { encoding: 'utf8', mode: 0o600 });
+      // External deletion in the harden → populate window. The populate step
+      // must open existing-only; path-based writeFileSync would recreate it.
+      fs.unlinkSync(filePath);
+    });
+
+    expect(saveWebState(dir, enabled())).toBe(false);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(secureWriteTokenFileMock).toHaveBeenCalledWith(
+      target,
+      JSON.stringify(WEB_STATE_DISABLED, null, 2),
+    );
+  });
+
   it('no file → disabled, so a fresh install still has nothing listening', () => {
     expect(loadWebState(dir)).toEqual({ ...WEB_STATE_DISABLED });
     expect(fs.existsSync(getWebStatePath(dir))).toBe(false);
   });
 
-  it('clearWebState revokes the token — the file is gone, not just flagged off', () => {
+  it('normal deletion revokes the token and removes the file', () => {
     saveWebState(dir, enabled());
     clearWebState(dir);
     expect(fs.existsSync(getWebStatePath(dir))).toBe(false);
     expect(loadWebState(dir).token).toBe('');
-    // Clearing an already-absent file is the desired end state either way.
+  });
+
+  it('clearing an absent file succeeds only through ENOENT', () => {
+    secureWriteTokenFileMock.mockClear();
     expect(() => clearWebState(dir)).not.toThrow();
+    expect(secureWriteTokenFileMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['EPERM', 'EBUSY'])(
+    'falls back to a securely written disabled record when unlink fails with %s',
+    (code) => {
+      saveWebState(dir, enabled());
+      secureWriteTokenFileMock.mockClear();
+      vi.spyOn(fs, 'unlinkSync').mockImplementationOnce(() => {
+        throw Object.assign(new Error(`${code}: file is busy`), { code });
+      });
+
+      expect(() => clearWebState(dir)).not.toThrow();
+
+      expect(secureWriteTokenFileMock).toHaveBeenCalledWith(
+        getWebStatePath(dir),
+        JSON.stringify(WEB_STATE_DISABLED, null, 2),
+      );
+      expect(loadWebState(dir)).toEqual({ ...WEB_STATE_DISABLED });
+      expect(loadWebState(dir).token).toBe('');
+    },
+  );
+
+  it('cannot report success when deletion and secure disablement both fail', () => {
+    saveWebState(dir, enabled());
+    secureWriteTokenFileMock.mockImplementationOnce(() => {
+      throw new Error('ACL hardening denied');
+    });
+    vi.spyOn(fs, 'unlinkSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('EACCES: deletion denied'), { code: 'EACCES' });
+    });
+
+    expect(() => clearWebState(dir)).toThrow(
+      'Could not revoke persisted web state: deletion failed (EACCES: deletion denied) ' +
+        'and secure disablement failed (ACL hardening denied)',
+    );
+    expect(loadWebState(dir)).toEqual(enabled());
+  });
+
+  it('accepts helper failure when its fail-closed cleanup already deleted the file', () => {
+    saveWebState(dir, enabled());
+    const target = getWebStatePath(dir);
+    secureWriteTokenFileMock.mockImplementationOnce((filePath: string) => {
+      fs.unlinkSync(filePath);
+      throw new Error('ACL hardening denied after cleanup');
+    });
+    vi.spyOn(fs, 'unlinkSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('EBUSY: first deletion denied'), { code: 'EBUSY' });
+    });
+
+    expect(() => clearWebState(dir)).not.toThrow();
+    expect(fs.existsSync(target)).toBe(false);
+    expect(loadWebState(dir)).toEqual({ ...WEB_STATE_DISABLED });
   });
 
   it('a corrupt state file degrades to disabled instead of blocking daemon boot', () => {
@@ -105,7 +250,7 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
   });
 
-  it('leaves no .tmp behind after a successful write', () => {
+  it('never creates a secret-bearing .tmp file', () => {
     saveWebState(dir, enabled());
     expect(fs.existsSync(`${getWebStatePath(dir)}.tmp`)).toBe(false);
   });

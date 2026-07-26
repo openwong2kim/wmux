@@ -8,7 +8,14 @@ import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
-import { loadWebState, saveWebState, clearWebState } from './web/webStateStore';
+import {
+  loadWebState,
+  saveWebState,
+  clearWebState,
+  getWebStatePath,
+} from './web/webStateStore';
+import { stopWebServerDurably } from './web/webStop';
+import { scheduleTokenFileReHarden } from '../shared/security';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
@@ -159,24 +166,31 @@ let webRestore: Promise<void> | null = null;
 /**
  * Record the running server's exact shape so the next daemon can reproduce it
  * (#596). Best-effort by design: the operator's start already succeeded, so a
- * write failure degrades to "will not come back on its own" and is logged —
- * never surfaced as a failed start.
+ * write failure is logged rather than surfaced as a failed start. The store
+ * neutralises best-effort, but an older locked record can remain when the
+ * filesystem refuses every write and delete.
  */
 function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscale: boolean): void {
   if (!info.running || !info.token) return;
-  const ok = saveWebState(wmuxDir, {
-    version: 1,
-    enabled: true,
-    port: info.port ?? 7681,
-    host: info.host ?? '127.0.0.1',
-    allowInput: info.allowInput === true,
-    allowedHosts,
-    tailscale,
-    token: info.token,
-  });
-  if (!ok) {
-    log('warn', '[web] could not persist web state — the server will NOT restart with the daemon');
-  }
+  saveWebState(
+    wmuxDir,
+    {
+      version: 1,
+      enabled: true,
+      port: info.port ?? 7681,
+      host: info.host ?? '127.0.0.1',
+      allowInput: info.allowInput === true,
+      allowedHosts,
+      tailscale,
+      token: info.token,
+    },
+    (error) =>
+      log(
+        'warn',
+        '[web] could not safely persist the requested web state — this exact server may not restore, and an older locked record may remain',
+        error,
+      ),
+  );
 }
 
 /**
@@ -193,6 +207,12 @@ function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscal
 async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<void> {
   const state = loadWebState(wmuxDir);
   if (!state.enabled) return;
+
+  // This is an existing credential whose prior exposure window was already
+  // unbounded. Re-harden it asynchronously: the synchronous Windows primitive
+  // shells out for seconds and would freeze the just-opened control pipe.
+  // Every NEW token-bearing write remains synchronously harden-before-populate.
+  scheduleTokenFileReHarden(getWebStatePath(wmuxDir));
 
   try {
     if (!webTerminalServer) {
@@ -229,10 +249,17 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       // left open reconnects on its own (EventSource retries) with no human.
       token: state.token,
     });
-    // The bind may have landed on a different port than requested only when
-    // asked for 0, which never happens here — but re-persist anyway so the
-    // record always mirrors reality.
-    persistWebState(info, state.allowedHosts, state.tailscale);
+    // A normal restore reproduces these values exactly. Rewriting that no-op
+    // state now costs a synchronous Windows ACL shell-out, so only pay it if a
+    // future start implementation genuinely lets the bind diverge.
+    if (
+      info.port !== state.port ||
+      info.host !== state.host ||
+      info.allowInput !== state.allowInput ||
+      info.token !== state.token
+    ) {
+      persistWebState(info, state.allowedHosts, state.tailscale);
+    }
     // A restore that puts a WRITABLE terminal back on every network interface
     // happens with nobody at the desktop, so it is logged at warn: the operator
     // asked for exactly this, but "it came back on its own" should be findable
@@ -2042,8 +2069,10 @@ function registerRpcHandlers(
     // teardown of a server the operator still wants and therefore leaves the
     // persisted state alone.
     await afterRestore();
-    clearWebState(wmuxDir);
-    return webServer.stop();
+    return stopWebServerDurably(
+      () => clearWebState(wmuxDir),
+      () => webServer.stop(),
+    );
   });
   pipeServer.onRpc('daemon.web.status', async () => {
     // Without this a status() called during boot would report `running:false`

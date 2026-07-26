@@ -106,8 +106,9 @@ export interface WebTerminalInfo {
    */
   pairStartError?: string;
   /**
-   * Set ONLY by the main-process handler when it could not reach the daemon
-   * (no control pipe, or the RPC threw/timed out). Absent on a normal reply.
+   * Set by the main-process handler when the control operation failed: no
+   * daemon, a timeout, or an application-level RPC error such as a durable stop
+   * whose on-disk state could not be revoked. Absent on a normal reply.
    */
   error?: string;
 }

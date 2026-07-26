@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A successful `wmux web --stop` now means the listener is off now and stays off after a daemon restart.** If Windows refuses to delete `web-state.json`, wmux securely replaces it with a disabled record that contains no bearer token; if neither operation succeeds, it still stops the live server but reports that persisted state could not be revoked instead of acknowledging a durable stop. The popover shows that real error instead of claiming the daemon is offline, and a Tailscale front is still removed once a fresh status check confirms the listener did stop. A reusable web token is now written only after its inode has been synchronously hardened, POSIX overwrites repair mode `0600`, and boot restore no longer rewrites an identical record merely to re-harden it — existing permissions are repaired asynchronously without freezing the daemon event loop. (#620)
+
 ## [3.36.0] — 2026-07-26
 
 ### Added
