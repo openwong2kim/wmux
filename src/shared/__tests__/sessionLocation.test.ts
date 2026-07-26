@@ -181,6 +181,28 @@ describe('session location operations', () => {
     expect(result.originalCwd).toBe('C:\\missing');
   });
 
+  it('reports a non-convertible MSYS cwd as degraded instead of clean at host home', () => {
+    const hostHome = 'C:\\Users\\me';
+    const result = resolveReplayLocation(
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      '/usr/bin',
+      hostHome,
+      (cwd) => cwd === hostHome,
+    );
+
+    expect(result).toEqual({
+      location: {
+        domain: 'host',
+        cwd: hostHome,
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+      },
+      spawnCwd: hostHome,
+      prefixArgs: [],
+      degraded: true,
+      originalCwd: '/usr/bin',
+    });
+  });
+
   it('builds explicit host paths and refuses unresolved guest paths', () => {
     expect(toHostAccessiblePath(
       classifySessionLocation('wsl.exe', '/mnt/c/dev/x', 'Ubuntu'),

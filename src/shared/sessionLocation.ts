@@ -220,12 +220,11 @@ export function resolveReplayLocation(
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };
   }
   if (original.domain === 'msys') {
-    const prepared = preparePtyLocation(original, hostHome);
-    if (hostDirectoryExists(prepared.spawnCwd)) {
-      return { location: original, ...prepared, degraded: false };
+    const converted = msysWindowsPath(original.shell, original.cwd);
+    if (converted && hostDirectoryExists(converted)) {
+      return { location: original, spawnCwd: converted, prefixArgs: [], degraded: false };
     }
-  }
-  if (hostDirectoryExists(cwd)) {
+  } else if (hostDirectoryExists(cwd)) {
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };
   }
   const fallback = classifySessionLocation(shell, hostHome, distro);
