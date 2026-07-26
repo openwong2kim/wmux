@@ -1,8 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readLastAssistantMessage, endsWithQuestion } from '../lastAssistantMessage';
+import type { SessionLocation } from '../../../shared/sessionLocation';
+import {
+  readLastAssistantMessage,
+  transcriptFileLives,
+  endsWithQuestion,
+  type TranscriptCommandRunner,
+} from '../lastAssistantMessage';
 
 // The regression these guard: an agent.stop wake used to reach the orchestrator
 // with no content, so "finished" and "blocked on a question" were
@@ -171,9 +177,81 @@ describe('readLastAssistantMessage', () => {
     expect(readLastAssistantMessage(fifo)).toBeNull();
   });
 
+  it('refuses a symlink instead of following it', () => {
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue({
+      isFile: () => false,
+      isSymbolicLink: () => true,
+    } as fs.Stats);
+    expect(readLastAssistantMessage('link.jsonl')).toBeNull();
+    expect(transcriptFileLives('link.jsonl')).toBe(false);
+    lstat.mockRestore();
+  });
+
+  it('refuses a device rather than attempting a read', () => {
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue({
+      isFile: () => false,
+    } as fs.Stats);
+    expect(readLastAssistantMessage('device')).toBeNull();
+    expect(transcriptFileLives('device')).toBe(false);
+    lstat.mockRestore();
+  });
+
   it('returns null rather than throwing on a missing or garbage file', () => {
     expect(readLastAssistantMessage(path.join(dir, 'nope.jsonl'))).toBeNull();
     fs.writeFileSync(file, 'not json at all\n{also not\n');
     expect(readLastAssistantMessage(file)).toBeNull();
+  });
+});
+
+describe('WSL transcript reads', () => {
+  const location: SessionLocation = {
+    domain: 'wsl',
+    cwd: '/work/repo',
+    shell: 'wsl.exe',
+    distro: 'Ubuntu-24.04',
+  };
+  const context = { location, activeSession: { sessionId: 'pty-1', active: true as const, distro: 'Ubuntu-24.04' } };
+  const assistantText = (text: string) =>
+    `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`;
+
+  it('uses a structured distro-bound command and caps timeout and output', () => {
+    const run = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from(assistantText('Proceed?')));
+    expect(readLastAssistantMessage('/home/me/transcript.jsonl', context, run)).toEqual({
+      text: 'Proceed?',
+      endsWithQuestion: true,
+    });
+    const [file, args, options] = run.mock.calls[0];
+    expect(file).toBe('wsl.exe');
+    expect(args.slice(0, 6)).toEqual(['-d', 'Ubuntu-24.04', '--cd', '/work/repo', '--exec', 'python3']);
+    expect(args.at(-1)).toBe('/home/me/transcript.jsonl');
+    expect(options).toMatchObject({ timeout: 750, maxBuffer: 256 * 1024, windowsHide: true });
+  });
+
+  it('fails softly when the bounded WSL command times out', () => {
+    const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
+      const err = new Error('timed out');
+      Object.assign(err, { code: 'ETIMEDOUT' });
+      throw err;
+    });
+    expect(readLastAssistantMessage('/home/me/transcript.jsonl', context, run)).toBeNull();
+    expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(false);
+  });
+
+  it('rejects a location/distro mismatch without executing anything', () => {
+    const run = vi.fn<TranscriptCommandRunner>();
+    const mismatched = {
+      location,
+      activeSession: { sessionId: 'pty-1', active: true as const, distro: 'Debian' },
+    };
+    expect(readLastAssistantMessage('/home/me/transcript.jsonl', mismatched, run)).toBeNull();
+    expect(transcriptFileLives('/home/me/transcript.jsonl', mismatched, run)).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('treats only an explicit regular-file probe result as live', () => {
+    const live = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1'));
+    const unsafe = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('0'));
+    expect(transcriptFileLives('/home/me/transcript.jsonl', context, live)).toBe(true);
+    expect(transcriptFileLives('/home/me/transcript.jsonl', context, unsafe)).toBe(false);
   });
 });

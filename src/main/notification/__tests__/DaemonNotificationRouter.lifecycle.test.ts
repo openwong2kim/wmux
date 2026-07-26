@@ -659,6 +659,54 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
     }
   });
 
+  it('attributes a WSL hook transcript to the daemon session location', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'emit',
+          location: {
+            domain: 'wsl',
+            cwd: '/initial',
+            shell: 'wsl.exe',
+            distro: 'Ubuntu-24.04',
+          },
+          signal: hookSignal({
+            ptyId: 'pty-a',
+            cwd: '/work/repo',
+            payload: { transcript_path: '/home/me/session.jsonl' },
+          }),
+        },
+      });
+      await flushMicrotasks();
+
+      expect(readLastAssistantMessageMock).toHaveBeenCalledWith(
+        '/home/me/session.jsonl',
+        {
+          location: {
+            domain: 'wsl',
+            cwd: '/initial',
+            shell: 'wsl.exe',
+            distro: 'Ubuntu-24.04',
+          },
+          activeSession: {
+            sessionId: 'pty-a',
+            active: true,
+            distro: 'Ubuntu-24.04',
+          },
+        },
+      );
+    } finally {
+      router.stop();
+    }
+  });
+
   it('a stop that asks nothing clears the pending question', async () => {
     readLastAssistantMessageMock.mockReturnValue({ text: 'All done.', endsWithQuestion: false });
     const { router, captured } = makeRouter();

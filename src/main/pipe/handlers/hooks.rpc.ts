@@ -52,10 +52,14 @@ import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
-import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
+import {
+  readLastAssistantMessage,
+  type TranscriptReadContext,
+} from '../../claude/lastAssistantMessage';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import type { AgentLastMessage } from '../../../shared/events';
 import type { NotificationCategory } from '../../../shared/types';
+import type { SessionLocation } from '../../../shared/sessionLocation';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,11 +93,14 @@ function readPermissionMode(payload: Record<string, unknown>): PermissionMode | 
  */
 function readLastAssistantMessageSafely(
   payload: Record<string, unknown>,
+  context?: TranscriptReadContext,
 ): AgentLastMessage | null {
   const p = payload?.transcript_path;
   if (typeof p !== 'string' || !p) return null;
   try {
-    return readLastAssistantMessage(p);
+    return context
+      ? readLastAssistantMessage(p, context)
+      : readLastAssistantMessage(p);
   } catch {
     return null;
   }
@@ -109,9 +116,26 @@ function readLastAssistantMessageSafely(
  * below, and `DaemonNotificationRouter` replaying the daemon's hook event —
  * and both must read the same field with the same guards.
  */
-export function readStopMessage(signal: AgentSignal): AgentLastMessage | null {
+export function readStopMessage(
+  signal: AgentSignal,
+  origin?: { ptyId: string; location: SessionLocation },
+): AgentLastMessage | null {
+  if (origin && signal.ptyId && signal.ptyId !== origin.ptyId) return null;
+  if (origin?.location.domain === 'wsl' && !origin.location.distro) return null;
+  const context = origin
+    ? {
+        location: origin.location,
+        activeSession: {
+          sessionId: origin.ptyId,
+          active: true as const,
+          ...(origin.location.domain === 'wsl' && origin.location.distro
+            ? { distro: origin.location.distro }
+            : {}),
+        },
+      }
+    : undefined;
   return signal.kind === 'agent.stop' && signal.agent === 'claude'
-    ? readLastAssistantMessageSafely(signal.payload)
+    ? readLastAssistantMessageSafely(signal.payload, context)
     : null;
 }
 

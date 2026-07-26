@@ -1,4 +1,10 @@
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  prepareLocationCommand,
+  type ActiveSessionContext,
+  type SessionLocation,
+} from '../../shared/sessionLocation';
 
 /**
  * Read the tail of a Claude Code transcript and extract the final assistant
@@ -23,6 +29,7 @@ import fs from 'node:fs';
 /** Cap the tail we read. Transcripts grow to megabytes; the last message is at
  *  the end, and a bounded read keeps a stop-hook off the slow path. */
 const TAIL_BYTES = 256 * 1024;
+const WSL_READ_TIMEOUT_MS = 750;
 /** Cap what we hand to the orchestrator — enough to convey a question, not so
  *  much that one pane's essay dominates the wake prompt. */
 const MAX_TEXT = 600;
@@ -32,6 +39,94 @@ export interface LastAssistantMessage {
   text: string;
   /** True when the message reads as a question aimed at the human. */
   endsWithQuestion: boolean;
+}
+
+export interface TranscriptReadContext {
+  /** Location of the PTY that originated the hook, never inferred from the path. */
+  location: SessionLocation;
+  /** Verified live daemon session used to bind WSL execution to its distro. */
+  activeSession?: ActiveSessionContext;
+}
+
+export interface TranscriptCommandOptions {
+  timeout: number;
+  maxBuffer: number;
+  windowsHide: boolean;
+}
+
+export type TranscriptCommandRunner = (
+  file: string,
+  args: readonly string[],
+  options: TranscriptCommandOptions,
+) => Buffer;
+
+const runTranscriptCommand: TranscriptCommandRunner = (file, args, options) =>
+  execFileSync(file, [...args], options);
+
+/**
+ * The guest helper performs both checks at the point of use:
+ * - lstat must report a regular file (symlinks/FIFOs/devices are rejected);
+ * - open uses O_NOFOLLOW + O_NONBLOCK, then fstat re-checks the descriptor.
+ *
+ * It writes at most TAIL_BYTES and receives the path as argv, never interpolated
+ * into source or a shell command.
+ */
+const WSL_TRANSCRIPT_SCRIPT = [
+  'import os, stat, sys',
+  'mode, p = sys.argv[1], sys.argv[2]',
+  'try:',
+  ' s = os.lstat(p)',
+  ' if not stat.S_ISREG(s.st_mode): raise OSError()',
+  ' flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)',
+  ' fd = os.open(p, flags)',
+  ' try:',
+  '  opened = os.fstat(fd)',
+  '  if not stat.S_ISREG(opened.st_mode): raise OSError()',
+  '  if mode == "probe": os.write(1, b"1")',
+  `  else: os.lseek(fd, max(0, opened.st_size - ${TAIL_BYTES}), os.SEEK_SET); os.write(1, os.read(fd, ${TAIL_BYTES}))`,
+  ' finally: os.close(fd)',
+  'except (OSError, ValueError):',
+  ' pass',
+].join('\n');
+
+function runWslTranscriptOperation(
+  transcriptPath: string,
+  mode: 'probe' | 'tail',
+  context: TranscriptReadContext,
+  run: TranscriptCommandRunner,
+): Buffer | null {
+  const prepared = prepareLocationCommand(
+    context.location,
+    'python3',
+    ['-c', WSL_TRANSCRIPT_SCRIPT, mode, transcriptPath],
+    context.activeSession,
+  );
+  if (!prepared.ok) return null;
+  try {
+    return run(prepared.file, prepared.args, {
+      timeout: WSL_READ_TIMEOUT_MS,
+      maxBuffer: TAIL_BYTES,
+      windowsHide: true,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Safe, best-effort transcript liveness/type probe for recovery and UI use. */
+export function transcriptFileLives(
+  transcriptPath: string,
+  context?: TranscriptReadContext,
+  run: TranscriptCommandRunner = runTranscriptCommand,
+): boolean {
+  if (context?.location.domain === 'wsl') {
+    return runWslTranscriptOperation(transcriptPath, 'probe', context, run)?.toString() === '1';
+  }
+  try {
+    return fs.lstatSync(transcriptPath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -108,19 +203,36 @@ function textOf(content: unknown): string {
  * rotated, truncated mid-write, or written by an agent whose format we don't
  * know.
  */
-export function readLastAssistantMessage(transcriptPath: string): LastAssistantMessage | null {
+export function readLastAssistantMessage(
+  transcriptPath: string,
+  context?: TranscriptReadContext,
+  run: TranscriptCommandRunner = runTranscriptCommand,
+): LastAssistantMessage | null {
   let raw: string;
-  try {
+  if (context?.location.domain === 'wsl') {
+    const result = runWslTranscriptOperation(transcriptPath, 'tail', context, run);
+    if (!result) return null;
+    raw = result.toString('utf8');
+  } else try {
     // lstat, and only a regular file: `transcript_path` arrives from a hook
     // payload, and openSync on a FIFO blocks the MAIN process indefinitely —
     // there is no timeout to save us, the hook's budget cannot cancel a blocked
     // syscall, and the whole app stalls with it.
     const st = fs.lstatSync(transcriptPath);
     if (!st.isFile()) return null;
-    const start = Math.max(0, st.size - TAIL_BYTES);
-    const fd = fs.openSync(transcriptPath, 'r');
+    const safeReadFlags =
+      fs.constants.O_RDONLY
+      | (fs.constants.O_NONBLOCK ?? 0)
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    const fd = fs.openSync(transcriptPath, safeReadFlags);
     try {
-      const buf = Buffer.alloc(st.size - start);
+      // Re-check the opened descriptor: the path could have been replaced
+      // between lstat and open. O_NONBLOCK prevents a replacement FIFO from
+      // hanging even on platforms without O_NOFOLLOW.
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile()) return null;
+      const start = Math.max(0, opened.size - TAIL_BYTES);
+      const buf = Buffer.alloc(opened.size - start);
       // Decode ONLY what was actually read. A transcript being truncated or
       // rotated concurrently would otherwise leave zero-fill in the tail and
       // corrupt the very last record — the one we came here for.
