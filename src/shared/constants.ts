@@ -565,6 +565,29 @@ export const ENV_KEYS = {
   SPAWNED_BY_VERSION: 'WMUX_SPAWNED_BY_VERSION',
 } as const;
 
+/** Id prefix every orchestrator brain pty is minted with (ClaudePtyBrainAdapter).
+ *  The ENV_KEYS.BRAIN_PTY marker is the authoritative one, but it only travels
+ *  with the daemon SESSION record — per-pty renderer events (metadata updates,
+ *  agent status, activity) carry a bare ptyId and nothing else, so the id itself
+ *  has to carry the mark too. Both are set at the same place and read through
+ *  `isBrainPty` / `isBrainPtyId`. */
+export const BRAIN_PTY_ID_PREFIX = 'brain-';
+
+/** True for a ptyId minted as an orchestrator brain pty. The renderer-side half
+ *  of the brain exclusion: a brain is not a fleet agent and must never enter a
+ *  roster, an agent-status map or the principal registry. */
+export function isBrainPtyId(ptyId: string | null | undefined): boolean {
+  return typeof ptyId === 'string' && ptyId.startsWith(BRAIN_PTY_ID_PREFIX);
+}
+
+/** True for a daemon session that is an orchestrator brain pty. Checks BOTH
+ *  marks so a daemon build that omits `env` from its session listing (which
+ *  would make the env test silently fail OPEN and let a brain be adopted as a
+ *  pane) is still caught by the id. */
+export function isBrainPty(session: { id?: string; env?: Record<string, string> | undefined }): boolean {
+  return session.env?.[ENV_KEYS.BRAIN_PTY] === '1' || isBrainPtyId(session.id);
+}
+
 // Auth token file path — written by wmux main process, read by MCP server
 export function getAuthTokenPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';

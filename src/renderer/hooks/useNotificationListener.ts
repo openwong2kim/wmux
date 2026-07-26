@@ -12,6 +12,7 @@ import {
 import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/paneTraversal';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
+import { isBrainPtyId } from '../../shared/constants';
 
 /**
  * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
@@ -585,6 +586,16 @@ export function useNotificationListener() {
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
       const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, paneId, paneLabel, paneRole, agentSlug, ...rest } = payload;
+
+      // The orchestrator's own brain pty (the `claude-pty` vendor's embedded
+      // Claude Code TUI) is not a fleet agent. The daemon has no idea it is
+      // special, so it emits the full metadata stream for it — agentStatus,
+      // agentName ("Claude Code"), activity, pendingQuestion. Applying any of
+      // it would register the brain as an addressable principal and surface it
+      // as an agent "needing your input" in the very deck it is driving.
+      // Nothing downstream of here is meaningful for a brain, so drop the
+      // payload whole.
+      if (isBrainPtyId(ptyId)) return;
 
       // P2 (checklist D): a paneId-only payload is the pane-label relay from
       // MetadataStore. Route it to the per-pane label + role mirrors and return
