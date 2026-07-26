@@ -27,10 +27,12 @@ The shared module provides the canonical operations on this model:
   infer a WSL distribution from a Linux path such as `/home/me/repo`.
 - `locationIdentity` and `locationsEqual` normalize locations for cache keys and
   equality without collapsing domains or WSL distributions.
-- `preparePtyLocation`, `toHostAccessiblePath`, and
-  `prepareLocationCommand` are the path and command conversion boundaries.
-  They return explicit `LocationError` values when a conversion would require
-  guessing.
+- `preparePtyLocation` computes PTY spawn cwd/arguments. An unconvertible MSYS
+  cwd degrades to the supplied safe host home and marks the result
+  `degraded: true`.
+- `toHostAccessiblePath` and `prepareLocationCommand` are filesystem and
+  command conversion boundaries. They return explicit `LocationError` values
+  when a conversion would require guessing.
 
 `src/main/git/paneCommand.ts` adds the live-pane command boundary. A WSL command
 requires an active context for the same pane and a known distribution; passive
@@ -79,10 +81,12 @@ decodes either UTF-16LE or UTF-8, sets `WSL_UTF8=1`, hides the window, and
 bounds the process with a three-second timeout and a 256 KiB output cap.
 
 Enumeration results have a 60-second TTL, and concurrent callers share the same
-in-flight promise. Empty or failed results are removed immediately so the next
-call retries. There is currently no production hook that invalidates the cache
-when a distribution is installed or removed; `resetWslDistroCache` exists for
-test isolation. Therefore an install/remove can remain invisible until the TTL
+in-flight promise. Results with no registered names, and rejected enumerations,
+are removed immediately so the next call retries. A partial result is cached
+when the quiet registered-name listing succeeds but another listing fails.
+There is currently no production hook that invalidates the cache when a
+distribution is installed or removed; `resetWslDistroCache` exists for test
+isolation. Therefore an install/remove can remain invisible until the TTL
 expires.
 
 ## Fail-closed boundaries

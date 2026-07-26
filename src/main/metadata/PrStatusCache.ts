@@ -17,9 +17,10 @@ const execFileAsync = promisify(execFile);
  * cache with a 5 min TTL, and is silently absent when `gh` is not installed
  * or the branch has no PR. Never throws; never prompts (GH_PROMPT_DISABLED).
  *
- * Cache key is `cwd + branch` — the same branch checked out in two repos
- * (or two worktrees) resolves independently, while repeated lookups from
- * the metadata poll collapse onto one gh subprocess per TTL window.
+ * Cache key is `location identity + branch` — the same branch checked out in
+ * two repos, worktrees, domains, or WSL distributions resolves independently,
+ * while repeated lookups from the metadata poll collapse onto one gh
+ * subprocess per TTL window.
  */
 
 /**
