@@ -15,6 +15,17 @@ vi.mock('electron', () => ({
 }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
+// Multi-account binding: empty by default (an unbound workspace), so the env
+// scrub assertions below still see a CLAUDE-free environment.
+let boundAccountEnv: Record<string, string> = {};
+vi.mock('../../account/accountStore', () => ({
+  VENDOR_ENV_KEYS: { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' },
+  getAccountStore: () => ({
+    resolveAccountEnv: () => boundAccountEnv,
+    getBinding: () => null,
+  }),
+}));
+
 import {
   ClaudePtyBrainAdapter,
   scrubBrainSpawnEnv,
@@ -220,6 +231,29 @@ describe('scrubBrainSpawnEnv', () => {
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CODE_CHILD_SESSION;
       else process.env.CLAUDE_CODE_CHILD_SESSION = prev;
+    }
+  });
+
+  it('re-applies the workspace\'s bound claude account AFTER the scrub', async () => {
+    // The scrub drops every CLAUDE* var — including the CLAUDE_CONFIG_DIR of an
+    // account the operator explicitly bound to this workspace, which silently
+    // ran the brain on the DEFAULT account. The scrub is for inherited noise;
+    // an explicit binding outranks it.
+    const host = makeHost();
+    boundAccountEnv = { CLAUDE_CONFIG_DIR: '/home/me/.claude-work' };
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = '/home/me/.claude-inherited';
+    try {
+      const adapter = makeAdapter(host);
+      const turn = collect(adapter.send('hello'));
+      await vi.waitFor(() => expect(host.created.length).toBe(1));
+      expect(host.created[0].env.CLAUDE_CONFIG_DIR).toBe('/home/me/.claude-work');
+      adapter.dispose();
+      await turn;
+    } finally {
+      boundAccountEnv = {};
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
     }
   });
 });

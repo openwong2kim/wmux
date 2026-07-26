@@ -34,6 +34,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
+import { getAccountStore } from '../account/accountStore';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
@@ -676,6 +677,29 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // is not a worker pane and must not appear in the fleet's pane list.
     env[ENV_KEYS.BRAIN_PTY] = '1';
     if (this._workspaceId) env[ENV_KEYS.WORKSPACE_ID] = this._workspaceId;
+    // Multi-account (M0), AFTER the scrub: the scrub above strips every
+    // CLAUDE* var, including the CLAUDE_CONFIG_DIR of an account this
+    // workspace is EXPLICITLY bound to — which would silently run the brain on
+    // the default account. The scrub exists to drop INHERITED noise, not to
+    // override an operator's binding, so the binding is re-applied here (same
+    // contract as ClaudeSdkAdapter.buildEnv). A missing bound dir resolves to
+    // {} + a warn and falls back to the default credential.
+    if (this._workspaceId) {
+      try {
+        Object.assign(
+          env,
+          getAccountStore().resolveAccountEnv(this._workspaceId, 'claude', (acc) =>
+            console.warn(
+              `[account] terminal brain ws ${this._workspaceId}: bound account "${acc.name}" ` +
+              `configDir missing (${acc.configDir}) — falling back to the default credential.`,
+            ),
+          ),
+        );
+      } catch (err) {
+        // An unreadable account store costs the binding, never the spawn.
+        console.warn('[account] terminal brain could not resolve its account binding:', err);
+      }
+    }
     return env;
   }
 
