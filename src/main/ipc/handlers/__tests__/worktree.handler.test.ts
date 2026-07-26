@@ -180,11 +180,11 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(r.worktrees!.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('F2 (#615) — 홈 .ssh 하위의 유효한 repo도 confine 거부', async () => {
-    // resolveToplevel이 fs.handler의 sensitive-path blocklist를 실제로 거치는지
-    // 검증한다. 홈을 test base로 옮겨 <home>/.ssh/repo를 진짜 git repo로 만든 뒤,
-    // 유효한 repo임에도 handler가 fail-soft로 거부해야 한다(미확인 repoPath가
-    // `git -C <path>`로 직행하던 갭을 닫았다는 회귀 방어선).
+  it('F2 (#615) — a valid repo under home .ssh is still confine-rejected', async () => {
+    // Verifies resolveToplevel actually routes through fs.handler's sensitive-path
+    // blocklist. Relocate home to the test base, make <home>/.ssh/repo a real git
+    // repo, and assert the handler fail-softs despite it being a valid repo — the
+    // regression guard for the gap where an unconfined repoPath ran `git -C <path>`.
     const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(scn.base);
     try {
       const sshRepo = join(scn.base, '.ssh', 'repo');
