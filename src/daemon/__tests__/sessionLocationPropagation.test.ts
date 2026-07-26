@@ -34,8 +34,8 @@ describe('daemon session location propagation', () => {
   it('carries the exact location generation on explicit destroy', () => {
     const manager = new DaemonSessionManager();
     managers.push(manager);
-    const destroyed = vi.fn();
-    manager.on('session:destroyed', destroyed);
+    const destroying = vi.fn();
+    manager.on('session:destroying', destroying);
     manager.createSession({
       id: 'destroyed-generation',
       cmd: 'wsl.exe',
@@ -46,7 +46,7 @@ describe('daemon session location propagation', () => {
 
     manager.destroySession('destroyed-generation');
 
-    expect(destroyed).toHaveBeenCalledWith({
+    expect(destroying).toHaveBeenCalledWith({
       id: 'destroyed-generation',
       locationGeneration: generation,
     });

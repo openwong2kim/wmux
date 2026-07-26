@@ -725,8 +725,9 @@ export class DaemonSessionManager extends EventEmitter {
     } catch {
       /* already dead */
     }
+    this.emit('session:destroying', { id, locationGeneration });
     this.sessions.delete(id);
-    this.emit('session:destroyed', { id, locationGeneration });
+    this.emit('session:destroyed', { id });
   }
 
   deactivateSessionLocation(id: string): void {
