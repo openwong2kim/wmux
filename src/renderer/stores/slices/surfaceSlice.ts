@@ -294,6 +294,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfacePtyId: (paneId, surfaceId, ptyId, locationSnapshot) => {
     let previousPtyId = '';
+    let bindingUpdated = false;
     set((state: StoreState) => {
       for (const ws of state.workspaces) {
         const pane = findLeafPane(ws.rootPane, paneId);
@@ -302,10 +303,12 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (surface) {
           previousPtyId = surface.ptyId;
           surface.ptyId = ptyId;
+          bindingUpdated = true;
           return;
         }
       }
     });
+    if (!bindingUpdated) return;
     if (previousPtyId && previousPtyId !== ptyId) {
       forgetSessionLocation(previousPtyId);
     }

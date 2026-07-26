@@ -3,6 +3,7 @@ import { createWorkspace, type Workspace } from '../../../../shared/types';
 import type { SessionLocationSnapshot } from '../../../../shared/sessionLocation';
 import {
   getRememberedSessionLocation,
+  rememberSessionLocation,
   resetSessionLocationProjections,
 } from '../../sessionLocationProjection';
 import { createSurfaceSlice } from '../surfaceSlice';
@@ -93,5 +94,14 @@ describe('surface location snapshot projection', () => {
 
     expect(getRememberedSessionLocation('pty-1')).toBeUndefined();
     expect(slice.updateSurfaceLocation('pty-1', snapshot(2, '/late'))).toBe(false);
+  });
+
+  it('does not mint a lease for a delayed rebind after its surface disappeared', () => {
+    const { slice } = createHarness();
+
+    slice.updateSurfacePtyId('missing-pane', 'missing-surface', 'pty-late');
+
+    expect(rememberSessionLocation('pty-late', snapshot(1, '/late'))).toBe(false);
+    expect(getRememberedSessionLocation('pty-late')).toBeUndefined();
   });
 });
