@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **"Check for updates" now works with auto-update switched off.** The toggle was wired through the one gate every check passes, so turning background polling off also turned the manual button into a no-op that reported "checking" and went silent — leaving reinstalling as the only way to update. The toggle now silences background polls only; pressing the button is an explicit request and always checks.
+
 ## [3.37.0] — 2026-07-27
 
 ### Added

@@ -121,7 +121,11 @@ export class AutoUpdater {
     // Defense in depth: never poll the update feed on an unsupported platform,
     // even if a caller invokes check() directly.
     if (!isUpdaterSupported) return;
-    if (!this.enabled) return;
+    // The auto-update toggle silences BACKGROUND polls only. A manual
+    // "check for updates" press (oneShot) is an explicit user request and
+    // must work with the toggle off — otherwise the toggle bricks the only
+    // update path short of reinstalling.
+    if (!this.enabled && !oneShot) return;
     // Record the one-shot intent BEFORE the isChecking guard: if a background
     // poll is already downloading, its downloadUpdate completion will honor the
     // intent and install, so a manual press mid-poll still updates in one click.

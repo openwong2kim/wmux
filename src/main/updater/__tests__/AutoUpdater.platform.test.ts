@@ -478,3 +478,46 @@ describe('AutoUpdater darwin-arm64 install (Squirrel.Mac loopback feed)', () => 
     expect(loaded.nativeUpdater.quitAndInstall).not.toHaveBeenCalled();
   });
 });
+
+describe('AutoUpdater — the auto-update toggle gates background polls only', () => {
+  it('toggle off: background polls stop, but a manual UPDATE_CHECK still hits the feed', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcHandlers, ipcListeners } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null);
+    updater.start();
+
+    // User turns auto-update OFF before the first scheduled check fires.
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
+
+    // Neither the 15s first check nor a full 30-min interval may touch the network.
+    await vi.advanceTimersByTimeAsync(15_000 + 30 * 60 * 1000);
+    expect(requestUrls).toHaveLength(0);
+
+    // A manual "check for updates" press is an explicit request: it must work
+    // with the toggle off — otherwise the toggle bricks the only update path.
+    const reply = await ipcHandlers.get(IPC.UPDATE_CHECK)!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reply).toEqual({ status: 'checking' });
+    expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+
+    updater.stop();
+  });
+
+  it('toggle back on: background polling resumes at the next interval', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcListeners } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null);
+    updater.start();
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(requestUrls).toHaveLength(0);
+
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, true);
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+    expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+
+    updater.stop();
+  });
+});
