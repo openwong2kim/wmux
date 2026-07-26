@@ -32,7 +32,7 @@ describe('scrollback restore — chain instrumentation', () => {
     const readMatch = daemonIndexSrc.indexOf("fs.readFileSync(session.bufferDumpPath)");
     expect(readMatch).toBeGreaterThan(0);
 
-    const recoveryLogMatch = daemonIndexSrc.indexOf("[recovery] session");
+    const recoveryLogMatch = daemonIndexSrc.indexOf("[recovery] session ${session.id} dump=");
     expect(recoveryLogMatch).toBeGreaterThan(readMatch);
 
     const createSessionAfter = daemonIndexSrc.indexOf(

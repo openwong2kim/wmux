@@ -72,7 +72,7 @@ export function registerShellHandlers(
   // app, permission denied) we fall back to showItemInFolder so the user
   // can still locate the target.
   ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
-  ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (
+  const handleOpenPath = async (
     _event: Electron.IpcMainInvokeEvent,
     request: OpenPathRequest,
   ) => {
@@ -133,7 +133,8 @@ export function registerShellHandlers(
       shell.showItemInFolder(normalized);
     }
     return { ok: !err, error: err || undefined };
-  }));
+  };
+  ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, handleOpenPath));
 
   // Total app memory across the whole Electron process tree. The StatusBar
   // RAM widget used to read performance.memory.usedJSHeapSize in the renderer,

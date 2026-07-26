@@ -34,11 +34,16 @@ describe('PTY_RECONNECT seeds cwd (source-level lock)', () => {
   });
 
   it('the listSessions response type includes cwd', () => {
-    expect(RECONNECT).toMatch(/id: string; cmd: string; state: string; pid\?: number; cwd\?: string/);
+    expect(RECONNECT).toMatch(
+      /id: string;\s+cmd: string;\s+state: string;\s+pid\?: number;\s+cwd\?: string;\s+location\?: SessionLocation/,
+    );
   });
 
   it('calls updateCwd with the session cwd on reconnect', () => {
-    expect(RECONNECT).toMatch(/if \(session\.cwd\) updateCwd\(id, session\.cwd\)/);
+    expect(RECONNECT).toMatch(/if \(session\.cwd\) \{[\s\S]*?updateCwd\(id, session\.cwd\)/);
+    expect(RECONNECT).toMatch(
+      /const location = session\.location \?\? classifySessionLocation[\s\S]*?updatePaneLocation\(/,
+    );
   });
 });
 
