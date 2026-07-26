@@ -58,6 +58,24 @@ describe('activeSessionLocation', () => {
     expect(activeSessionLocation(ws(root, 'p1'))).toBe(location);
   });
 
+  it('uses an authoritative stored location before requiring a legacy cwd', () => {
+    const location = {
+      domain: 'wsl' as const,
+      cwd: '/home/me/project',
+      shell: 'wsl.exe',
+      distro: 'Ubuntu',
+    };
+    const root = leaf('p1', [{
+      id: 's1',
+      ptyId: 'pty-1',
+      cwd: '',
+      shell: '',
+      location,
+    }], 's1');
+
+    expect(activeSessionLocation(ws(root, 'p1'))).toBe(location);
+  });
+
   it('classifies a legacy surface without a persisted location', () => {
     const root = leaf('p1', [{
       id: 's1',
@@ -87,16 +105,17 @@ describe('activeSessionLocation', () => {
     });
   });
 
-  // WorkspaceProfile.shell is optional. Classifying with '' would make every
-  // guest cwd look host-native, and Windows would then resolve `/home/me/proj`
-  // as `C:\home\me\proj` (issue #21 AC 6). Declining is the only honest answer.
-  it('declines rather than guessing `host` when no shell is known', () => {
+  it('keeps a plain Windows host cwd when no profile shell is configured', () => {
     const workspace = {
       ...ws(leaf('p1', [], ''), 'p1'),
-      metadata: { cwd: '/home/me/proj' },
+      metadata: { cwd: 'C:\\dev\\fmux' },
       profile: {},
     } as Workspace;
 
-    expect(activeSessionLocation(workspace)).toBeNull();
+    expect(activeSessionLocation(workspace)).toEqual({
+      domain: 'host',
+      cwd: 'C:\\dev\\fmux',
+      shell: '',
+    });
   });
 });

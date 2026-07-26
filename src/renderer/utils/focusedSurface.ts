@@ -1,6 +1,7 @@
 import type { Workspace, Pane, PaneLeaf, Surface } from '../../shared/types';
 import {
   classifySessionLocation,
+  parseSessionLocation,
   resolveSessionLocation,
   type SessionLocation,
 } from '../../shared/sessionLocation';
@@ -24,16 +25,17 @@ export function findActiveLeaf(workspace: Workspace): PaneLeaf | null {
  * or through `activeSessionLocation` below — hand-rolled pane walkers that
  * re-spell `location ?? classify(...)` are how the two drifted apart.
  *
- * Surfaces without a cwd (editor, browser, diff — created with `cwd: ''`) are
- * not classifiable from themselves and return null; their location is set by
- * whoever opened them.
+ * A stored location is authoritative even when the legacy surface cwd is
+ * empty. Surfaces with neither return null.
  */
 export function sessionLocationForSurface(surface: Surface | undefined): SessionLocation | null {
-  if (!surface?.cwd) return null;
+  if (!surface) return null;
+  const stored = parseSessionLocation(surface.location);
+  if (stored) return stored;
+  if (!surface.cwd) return null;
   return resolveSessionLocation({
     shell: surface.shell,
     cwd: surface.cwd,
-    location: surface.location,
   });
 }
 
@@ -45,13 +47,13 @@ export function activeSessionLocation(workspace: Workspace): SessionLocation | n
   const surfaceLocation = sessionLocationForSurface(surface);
   if (surfaceLocation) return surfaceLocation;
   // Workspace-level fallback, for a workspace whose active pane holds no
-  // terminal yet. `WorkspaceProfile.shell` is optional, and classifying with
-  // '' would make every guest cwd look host-native — Windows would then
-  // resolve a WSL `/home/me/proj` as `C:\home\me\proj` (issue #21 AC 6).
-  // Without a real shell there is no honest answer, so decline.
-  const shell = workspace.profile?.shell;
+  // terminal yet. `WorkspaceProfile.shell` is optional, so retain a usable
+  // plain-host cwd without one. A shell-less guest cwd is classified as host
+  // here but stays fail-closed at the shared UNRESOLVED_GUEST_PATH guard before
+  // main or daemon performs Windows filesystem work.
+  const shell = workspace.profile?.shell ?? '';
   const cwd = workspace.metadata?.cwd ?? workspace.profile?.startupCwd;
-  if (!shell || !cwd) return null;
+  if (!cwd) return null;
   return classifySessionLocation(shell, cwd);
 }
 
