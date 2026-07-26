@@ -45,6 +45,36 @@ export interface RpcRequest {
 export const WMUX_CLI_CLIENT_NAME = 'wmux-cli';
 
 /**
+ * `clientName` values that must NEVER be promoted to first-party recognition
+ * through `mcp.firstPartyClients` in `~/.wmux/config.json` (issue #636).
+ * Compared case-insensitively. Enforced by `setConfiguredFirstPartyClients`
+ * (src/main/mcp/firstParty.ts); surfaced by `wmux mcp clients` so an operator
+ * sees *why* a name they observed is not configurable.
+ *
+ * Defined in shared for the same reason as WMUX_CLI_CLIENT_NAME above: the CLI
+ * and the main-process enforcer are separate builds and must agree on the exact
+ * strings without a cross-build import.
+ *
+ * Two classes qualify, and an operator hits both in good faith:
+ *   - SDK defaults. `mcp` is the Python MCP SDK's `DEFAULT_CLIENT_INFO`
+ *     (`mcp/client/session.py`, verified against mcp 1.26.0 on 2026-07-27):
+ *     every client that never sets `clientInfo` reports it, so allowlisting it
+ *     would recognise all of them at once. (The TypeScript SDK requires
+ *     `clientInfo` in the `Client` constructor — no analogous default.)
+ *   - wmux's own internal tiers. `wmux-cli` has a deliberately NARROWER
+ *     allowlist than first-party and is checked after it, so configuring it
+ *     would silently widen the CLI. `unknown` is wmux's placeholder for
+ *     envelope-less callers and appears verbatim in real trust DBs.
+ */
+export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
+  'mcp',
+  'unknown',
+  'client',
+  'default',
+  WMUX_CLI_CLIENT_NAME,
+]);
+
+/**
  * Per-request context surfaced to RPC handlers — populated by PipeServer
  * from RpcRequest fields. Handlers receive this as an optional second
  * argument so legacy handlers `(params) => ...` keep compiling.
