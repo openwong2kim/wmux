@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { git } from '../../git/git';
+import { resolveAccessiblePath } from './fs.handler';
 import {
   parseWorktreePorcelain,
   validateGitRef,
@@ -89,8 +90,14 @@ function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // cwd(서브디렉토리 가능) → 자기 worktree toplevel. 비-git이면 null.
+// F2 (#615): every worktree entry point funnels through here, so confine the
+// renderer-supplied path against the shared sensitive-path blocklist before it
+// reaches `git -C <path>`. Closes the gap where an unconfined repoPath ran git
+// inside e.g. ~/.ssh. resolveAccessiblePath also canonicalizes via realpath.
 async function resolveToplevel(cwd: string): Promise<string | null> {
-  const r = await git(['rev-parse', '--show-toplevel'], cwd);
+  const safe = await resolveAccessiblePath(cwd);
+  if (!safe) return null;
+  const r = await git(['rev-parse', '--show-toplevel'], safe);
   const top = r.code === 0 ? r.stdout.trim() : '';
   return top || null;
 }

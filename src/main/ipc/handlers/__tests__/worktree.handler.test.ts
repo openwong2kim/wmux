@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
 const captured = new Map<string, (...args: unknown[]) => unknown>();
@@ -26,7 +26,7 @@ function g(cwd: string, args: string[]): string {
 function makeRepo(): { base: string; repo: string; cleanup: () => void } {
   // realpathSync.native로 8.3 단축폼(CI Windows RUNNER~1)을 롱폼으로 정규화 —
   // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
-  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-wth-')));
+  const base = realpathSync.native(mkdtempSync(join(os.tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
   mkdirSync(repo);
   g(repo, ['init', '-q', '-b', 'main']);
@@ -178,5 +178,24 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     const r = (await list({}, join(scn.repo, 'sub'))) as ListRes;
     expect(r.ok).toBe(true);
     expect(r.worktrees!.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('F2 (#615) — 홈 .ssh 하위의 유효한 repo도 confine 거부', async () => {
+    // resolveToplevel이 fs.handler의 sensitive-path blocklist를 실제로 거치는지
+    // 검증한다. 홈을 test base로 옮겨 <home>/.ssh/repo를 진짜 git repo로 만든 뒤,
+    // 유효한 repo임에도 handler가 fail-soft로 거부해야 한다(미확인 repoPath가
+    // `git -C <path>`로 직행하던 갭을 닫았다는 회귀 방어선).
+    const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(scn.base);
+    try {
+      const sshRepo = join(scn.base, '.ssh', 'repo');
+      mkdirSync(dirname(sshRepo), { recursive: true });
+      mkdirSync(sshRepo);
+      g(sshRepo, ['init', '-q', '-b', 'main']);
+      const list = captured.get(IPC.WORKTREE_LIST)!;
+      const r = (await list({}, sshRepo)) as ListRes;
+      expect(r.ok).toBe(false);
+    } finally {
+      homeSpy.mockRestore();
+    }
   });
 });

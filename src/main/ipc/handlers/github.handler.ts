@@ -7,6 +7,7 @@
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { resolveAccessiblePath } from './fs.handler';
 import { detectRemoteHost, isGithubHost } from '../../github/PrProvider';
 import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
@@ -54,7 +55,12 @@ export function registerGithubHandlers(): () => void {
       if (typeof repoPath !== 'string' || !repoPath) {
         return { ok: false, code: 'error', message: 'repoPath required' } satisfies GithubPrListResult;
       }
-      return prList(repoPath, force === true);
+      // F2 (#615): confine the renderer path before it reaches `gh -C` / cwd.
+      const safeRepo = await resolveAccessiblePath(repoPath);
+      if (!safeRepo) {
+        return { ok: false, code: 'error', message: 'repoPath required' } satisfies GithubPrListResult;
+      }
+      return prList(safeRepo, force === true);
     }),
   );
 
@@ -75,11 +81,14 @@ export function registerGithubHandlers(): () => void {
         if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
           return { ok: false, code: 'error', message: 'valid PR number required' };
         }
+        // F2 (#615): confine the renderer path before it reaches `gh -C` / cwd.
+        const safeRepo = await resolveAccessiblePath(repoPath);
+        if (!safeRepo) return { ok: false, code: 'error', message: 'repoPath required' };
         // 목록과 동일한 provider로 라우팅(호스트 재감지 — 상세는 저빈도라 무해).
-        const host = await detectRemoteHost(repoPath);
+        const host = await detectRemoteHost(safeRepo);
         if (!host) return { ok: false, code: 'error', message: 'no origin remote' };
         const res = await providerFor(host).prDetail(
-          repoPath,
+          safeRepo,
           number,
           typeof updatedAt === 'string' ? updatedAt : '',
         );
