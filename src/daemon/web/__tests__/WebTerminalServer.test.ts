@@ -320,8 +320,8 @@ describe('WebTerminalServer', () => {
   });
 
   // Port 0 → ephemeral bind; status() reports the actual port.
-  const startRO = () => server.start({ port: 0, host: '127.0.0.1', allowInput: false });
-  const startRW = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true });
+  const startRO = () => server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+  const startRW = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 
@@ -341,7 +341,7 @@ describe('WebTerminalServer', () => {
     // Bearer header → 200
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ allowInput: false });
+    expect(await ok.json()).toEqual({ allowInput: false, allowUpload: false });
   });
 
   it('labels sessions by workspace NAME only, and leaks nothing else from env', async () => {
@@ -409,7 +409,7 @@ describe('WebTerminalServer', () => {
     const a = (await startRO()).token as string;
     await server.stop();
 
-    const b = (await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: a }))
+    const b = (await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token: a }))
       .token as string;
     expect(b).toBe(a);
 
@@ -419,7 +419,7 @@ describe('WebTerminalServer', () => {
   });
 
   it('mints a fresh token when the supplied one is empty (no accidental blank-token server)', async () => {
-    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: '' });
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token: '' });
     expect(info.token).toBeTruthy();
     expect((info.token as string).length).toBeGreaterThan(8);
     // An empty Bearer must not authenticate against it.
@@ -433,7 +433,7 @@ describe('WebTerminalServer', () => {
     const codeA = first.pairCode as string;
     await server.stop();
 
-    const second = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token });
+    const second = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, token });
     // The token is carried, the single-use pairing code is NOT — handing back a
     // burned code would be worse than asking for a fresh one.
     expect(second.token).toBe(token);
@@ -620,7 +620,7 @@ describe('WebTerminalServer', () => {
       assetsDir: dir,
     });
     try {
-      const info = await csps.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      const info = await csps.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
       const res = await fetch(`http://127.0.0.1:${info.port}/`);
       expect(res.status).toBe(200);
       const csp = res.headers.get('content-security-policy') ?? '';
@@ -760,7 +760,7 @@ describe('WebTerminalServer', () => {
     const info = await server.start({
       port: 0,
       host: '127.0.0.1',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['machine.tail-net.ts.net'],
     });
     // 401 (not 403) proves the host gate passed and the token gate took over.
@@ -774,7 +774,7 @@ describe('WebTerminalServer', () => {
   it('brackets an IPv6 bind host in the advertised URL', async () => {
     let info: Awaited<ReturnType<typeof server.start>>;
     try {
-      info = await server.start({ port: 0, host: '::1', allowInput: false });
+      info = await server.start({ port: 0, host: '::1', allowInput: false, allowUpload: false });
     } catch {
       return; // environment without IPv6 loopback — nothing to assert
     }
@@ -791,7 +791,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
     });
     await expect(
-      second.start({ port: blockerInfo.port as number, host: '127.0.0.1', allowInput: false }),
+      second.start({ port: blockerInfo.port as number, host: '127.0.0.1', allowInput: false, allowUpload: false }),
     ).rejects.toThrow();
     // Only the FIRST (running) server's listeners remain.
     expect(em.listenerCount('session:critical')).toBe(1);
@@ -1036,7 +1036,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
       now: () => clock,
     });
-    const info = await aged.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await aged.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     const token = info.token as string;
     const port = info.port as number;
     const em = sessionManager as unknown as EventEmitter;
@@ -1408,7 +1408,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     const url = `http://127.0.0.1:${info.port}/api/approvals`;
     try {
       const list = await fetch(url, { headers: bearer(info.token as string) });
@@ -1935,7 +1935,7 @@ describe('WebTerminalServer', () => {
     // without asking whether the server could mint a credential at all. On an
     // exposed bind the GUI showed a fresh 6-char code every poll, the operator
     // read one onto a phone, and only the redemption said 403.
-    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
 
     const status = server.status();
@@ -1949,7 +1949,7 @@ describe('WebTerminalServer', () => {
   });
 
   it('★ status advertises a pairing code normally on loopback', async () => {
-    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
 
     const status = server.status();
@@ -1963,7 +1963,7 @@ describe('WebTerminalServer', () => {
   it('★ refuses to mint over a plaintext bind, and --allow-host does NOT buy an exception', async () => {
     // A real non-loopback bind: the gate reads the BIND, because that is the
     // only thing about the transport the daemon actually knows.
-    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false });
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     const port = info.port as number;
 
     const refusedUpFront = server.startPairing({ name: 'Phone' });
@@ -2002,7 +2002,7 @@ describe('WebTerminalServer', () => {
     const fronted = await server.start({
       port: 0,
       host: '0.0.0.0',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['machine.tail-net.ts.net'],
     });
 
@@ -2031,7 +2031,7 @@ describe('WebTerminalServer', () => {
     const info = await server.start({
       port: 0,
       host: '127.0.0.1',
-      allowInput: false,
+      allowInput: false, allowUpload: false,
       allowedHosts: ['Machine.tail-net.ts.net'],
     });
     const status = server.status();
@@ -2092,7 +2092,7 @@ describe('WebTerminalServer', () => {
       assetsDir: os.tmpdir(),
     });
     try {
-      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
       expect(info.deviceCredentials).toBe(false);
       // Explicitly false, never absent: a missing field reads as "old daemon"
       // on the GUI side and would be rendered as unknown rather than as off.
@@ -2112,7 +2112,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${info.pairCode}`);
       expect(res.status).toBe(200);
@@ -2705,7 +2705,7 @@ describe('WebTerminalServer', () => {
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
-    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: true });
+    const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false });
     try {
       const url = `http://127.0.0.1:${info.port}/api/sessions`;
       const hdrs = bearer(info.token as string);

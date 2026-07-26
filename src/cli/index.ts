@@ -68,6 +68,9 @@ WEB ACCESS (browser / PWA over Tailscale)
                                     and accept the MagicDNS name. Removed again
                                     by --stop
         [--allow-input]             Enable keyboard input (off by default)
+        [--allow-upload]            Enable photo upload from a paired phone
+                                    (JPEG/PNG, 10 MB cap, files kept 24h in
+                                    ~/.wmux/uploads/phone). Off by default
         [--allow-host <h1,h2>]      Extra Host headers to accept, for a reverse
                                     proxy in front (e.g. a 'tailscale serve'
                                     MagicDNS name)

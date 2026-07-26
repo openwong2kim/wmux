@@ -64,7 +64,7 @@ import { buildWebCsp } from './webCsp';
  *   GET  /api/pair?code=       the ONLY unauthenticated API route; mints this
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
- *   GET  /api/config           allowInput flag
+ *   GET  /api/config           allowInput + allowUpload flags
  *   GET  /api/sessions         pane list
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
@@ -82,6 +82,15 @@ export interface WebTerminalStartOptions {
   port: number;
   host: string;
   allowInput: boolean;
+  /**
+   * Whether `POST /api/upload` accepts photos (`--allow-upload`).
+   *
+   * REQUIRED, not optional, and deliberately not folded into `allowInput`:
+   * writing a file into the operator's home directory is a heavier grant than
+   * typing into a pane they are watching, so every caller has to state which
+   * one it means rather than inheriting a default.
+   */
+  allowUpload: boolean;
   /**
    * Extra hostnames to accept in the `Host` header, beyond loopback and the
    * bound addresses. Needed when a reverse proxy in front of the loopback bind
@@ -114,6 +123,8 @@ export interface WebTerminalInfo {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  /** Whether `POST /api/upload` is armed. Its own opt-in, see start options. */
+  allowUpload?: boolean;
   token?: string;
   /** Reachable URLs with the token embedded (`http://<ip>:<port>/?token=…`). */
   urls?: string[];
@@ -979,6 +990,7 @@ export class WebTerminalServer {
         port: this.opts.port,
         host: this.opts.host,
         allowInput: this.opts.allowInput,
+        allowUpload: this.opts.allowUpload,
         token: this.token,
         urls: this.buildUrls(),
         clients: this.clients.size,
@@ -994,6 +1006,7 @@ export class WebTerminalServer {
       port: this.opts.port,
       host: this.opts.host,
       allowInput: this.opts.allowInput,
+      allowUpload: this.opts.allowUpload,
       token: this.token,
       urls: this.buildUrls(),
       clients: this.clients.size,
@@ -1165,7 +1178,10 @@ export class WebTerminalServer {
     }
     const principal = auth.principal;
     if (req.method === 'GET' && p === '/api/config') {
-      return this.json(res, 200, { allowInput: this.opts?.allowInput === true });
+      return this.json(res, 200, {
+        allowInput: this.opts?.allowInput === true,
+        allowUpload: this.opts?.allowUpload === true,
+      });
     }
     if (req.method === 'GET' && p === '/api/sessions') {
       return this.json(res, 200, { sessions: this.listSessions() });

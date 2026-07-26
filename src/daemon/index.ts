@@ -180,6 +180,7 @@ function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscal
       port: info.port ?? 7681,
       host: info.host ?? '127.0.0.1',
       allowInput: info.allowInput === true,
+      allowUpload: info.allowUpload === true,
       allowedHosts,
       tailscale,
       token: info.token,
@@ -238,6 +239,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       port: state.port,
       host: state.host,
       allowInput: state.allowInput,
+      allowUpload: state.allowUpload,
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
       // main process and tailscaled keeps it across reboots on its own. All
@@ -2012,6 +2014,7 @@ function registerRpcHandlers(
       port?: number;
       host?: string;
       allowInput?: boolean;
+      allowUpload?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2022,6 +2025,9 @@ function registerRpcHandlers(
     // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
     const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
     const allowInput = p.allowInput === true;
+    // Separate opt-in from `allowInput`, and fail-closed the same way: a caller
+    // that says nothing gets a server that cannot write files.
+    const allowUpload = p.allowUpload === true;
     // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
     // forwards the MagicDNS name). Strings only; anything else is dropped.
     const allowedHosts = Array.isArray(p.allowedHosts)
@@ -2059,7 +2065,15 @@ function registerRpcHandlers(
       }
     }
     const tailscale = p.tailscale === true;
-    const info = await webServer.start({ port, host, allowInput, allowedHosts, tailscale, token });
+    const info = await webServer.start({
+      port,
+      host,
+      allowInput,
+      allowUpload,
+      allowedHosts,
+      tailscale,
+      token,
+    });
     persistWebState(info, allowedHosts, tailscale);
     return info;
   });
