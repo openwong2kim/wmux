@@ -26,12 +26,17 @@ export type PrDetailResult = { ok: true; detail: PrDetail } | { ok: false; error
  * A repo is addressed two ways: the Deck PR panel passes only a `repoPath`
  * (github.handler), while the pane poller passes the pane's target
  * (PrReviewRouter). Both must land on ONE entry, or each spawns its own CLI
- * subprocess and keeps its own TTL window for the same repo. A bare path IS a
- * host location, so it goes through `hostCommandTarget` and the identity is
- * always computed by `locationIdentity` — there is no second normalizer here.
+ * subprocess and keeps its own TTL window for the same repo. The resolved repo
+ * root supplies the path component even when a pane is in a subdirectory; a
+ * target still supplies its domain and WSL distro so guest contexts never
+ * collide. A bare path is a host location.
  */
 export function repoCacheKey(repoPath: string, target?: PaneCommandTarget): string {
-  return paneCommandIdentity(target ?? hostCommandTarget(repoPath));
+  if (!target) return paneCommandIdentity(hostCommandTarget(repoPath));
+  return paneCommandIdentity({
+    ...target,
+    location: { ...target.location, cwd: repoPath },
+  });
 }
 
 /** Host-neutral provider contract. `host` is remote hostname — GitLab auth is

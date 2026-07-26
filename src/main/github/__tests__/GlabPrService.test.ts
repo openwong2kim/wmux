@@ -146,7 +146,7 @@ describe('GlabPrService — list TTL·detail updatedAt cache', () => {
   it('targeted and untargeted calls for one repo share a single cache entry', async () => {
     const { svc, calls } = dataService();
     await svc.listPrs('D:\\repo');
-    await svc.listPrs('D:\\repo', false, hostCommandTarget('D:\\repo'));
+    await svc.listPrs('D:\\repo', false, hostCommandTarget('D:\\repo\\packages\\app'));
     await svc.listPrs('d:/repo/');
     await svc.listPrs('D:/Repo', false, hostCommandTarget('d:\\repo\\'));
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
@@ -154,16 +154,17 @@ describe('GlabPrService — list TTL·detail updatedAt cache', () => {
 
   it('routes a WSL target through wsl.exe and isolates it per distro', async () => {
     const { svc, calls } = dataService();
-    const wsl = (distro: string, sessionId: string) => ({
+    const wsl = (distro: string, sessionId: string, cwd = '/repo') => ({
       sessionId,
-      location: { domain: 'wsl' as const, cwd: '/repo', shell: 'wsl.exe', distro },
+      location: { domain: 'wsl' as const, cwd, shell: 'wsl.exe', distro },
       activeContext: { sessionId, active: true as const, distro },
     });
-    await svc.listPrs('/repo', false, wsl('Ubuntu', 'pty-u'));
+    await svc.listPrs('/repo', false, wsl('Ubuntu', 'pty-u', '/repo/packages/app'));
+    await svc.listPrs('/repo', false, wsl('Ubuntu', 'pty-u2', '/repo/packages/other'));
     await svc.listPrs('/repo', false, wsl('Debian', 'pty-d'));
     expect(calls.filter((c) => c.cmd === 'wsl.exe').length).toBe(2);
     expect(calls[0].args).toEqual(
-      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo', '--exec']),
+      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo/packages/app', '--exec']),
     );
   });
 

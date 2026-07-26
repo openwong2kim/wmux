@@ -2,7 +2,7 @@
 // PrStatusCache test style). + PrProvider remote host classification.
 import { describe, it, expect, vi } from 'vitest';
 import { GhPrService, mapGhListItem, mapGhDetail } from '../GhPrService';
-import { parseRemoteHost, isGithubHost } from '../PrProvider';
+import { parseRemoteHost, isGithubHost, repoCacheKey } from '../PrProvider';
 import { hostCommandTarget } from '../../git/paneCommand';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
@@ -200,7 +200,7 @@ describe('GhPrService — list TTL·detail updatedAt cache', () => {
       return { stdout: '' };
     });
     await svc.listPrs('D:\\repo');
-    await svc.listPrs('D:\\repo', false, hostCommandTarget('D:\\repo'));
+    await svc.listPrs('D:\\repo', false, hostCommandTarget('D:\\repo\\packages\\app'));
     // ...and path-spelling variance folds too, both with and without a target.
     await svc.listPrs('d:/repo/');
     await svc.listPrs('D:/Repo', false, hostCommandTarget('d:\\repo\\'));
@@ -215,7 +215,7 @@ describe('GhPrService — list TTL·detail updatedAt cache', () => {
       return { stdout: '' };
     });
     await svc.prDetail('D:\\repo', 423, 'T1');
-    await svc.prDetail('d:/repo/', 423, 'T1', hostCommandTarget('D:\\repo'));
+    await svc.prDetail('d:/repo/', 423, 'T1', hostCommandTarget('D:\\repo\\packages\\app'));
     expect(calls.filter((c) => c.args[1] === 'view').length).toBe(1);
   });
 
@@ -224,8 +224,13 @@ describe('GhPrService — list TTL·detail updatedAt cache', () => {
     const svc = new GhPrService(() => 0, exec);
     const ubuntu = {
       sessionId: 'pty-u',
-      location: { domain: 'wsl' as const, cwd: '/repo with spaces', shell: 'wsl.exe', distro: 'Ubuntu' },
+      location: { domain: 'wsl' as const, cwd: '/repo with spaces/packages/app', shell: 'wsl.exe', distro: 'Ubuntu' },
       activeContext: { sessionId: 'pty-u', active: true as const, distro: 'Ubuntu' },
+    };
+    const ubuntuOtherPane = {
+      sessionId: 'pty-u2',
+      location: { domain: 'wsl' as const, cwd: '/repo with spaces/packages/other', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-u2', active: true as const, distro: 'Ubuntu' },
     };
     const debian = {
       sessionId: 'pty-d',
@@ -233,13 +238,23 @@ describe('GhPrService — list TTL·detail updatedAt cache', () => {
       activeContext: { sessionId: 'pty-d', active: true as const, distro: 'Debian' },
     };
     await svc.listPrs('/repo with spaces', false, ubuntu);
+    await svc.listPrs('/repo with spaces', false, ubuntuOtherPane);
     await svc.listPrs('/repo with spaces', false, debian);
     expect(exec).toHaveBeenCalledTimes(2);
     expect(exec).toHaveBeenCalledWith(
       'wsl.exe',
-      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo with spaces', '--exec']),
+      expect.arrayContaining(['-d', 'Ubuntu', '--cd', '/repo with spaces/packages/app', '--exec']),
       expect.objectContaining({ timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }),
     );
+  });
+
+  it('keeps host and WSL cache identities isolated for the same repo path', () => {
+    const wsl = {
+      sessionId: 'pty-u',
+      location: { domain: 'wsl' as const, cwd: '/repo/subdir', shell: 'wsl.exe', distro: 'Ubuntu' },
+      activeContext: { sessionId: 'pty-u', active: true as const, distro: 'Ubuntu' },
+    };
+    expect(repoCacheKey('/repo', wsl)).not.toBe(repoCacheKey('/repo'));
   });
 
   it('fails soft without invoking wsl.exe for stale pane context', async () => {
