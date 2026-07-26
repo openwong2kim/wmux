@@ -330,6 +330,7 @@ export function registerDeckHandler(
     ) {
       existing.manager.dispose();
       managers.delete(workspaceId);
+      shownAmbientBlocks.delete(workspaceId);
     }
     const current = managers.get(workspaceId);
     if (current) return current.manager;
@@ -388,6 +389,15 @@ export function registerDeckHandler(
   // which would go stale immediately. READ-ONLY context — the brain has no tool
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
+  // Last ambient (autonomy+policy) text each workspace's TUI brain has already
+  // been shown. Those blocks are re-read every turn so Settings/policy edits
+  // apply immediately — but a VISIBLE terminal brain types its whole prompt on
+  // screen, and re-sending an unchanged multi-KB block every turn drowns the
+  // conversation. Keyed per workspace; cleared wherever the manager is retired
+  // so a fresh conversation gets the blocks again. Headless brains (SDK/ACP)
+  // keep the every-turn behavior — nothing is visible there and stale-block
+  // risk beats noise.
+  const shownAmbientBlocks = new Map<string, string>();
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
@@ -398,15 +408,30 @@ export function registerDeckHandler(
     // The [autonomy] block LEADS — it frames how the brain should read everything
     // below it (whether it has authority to resolve the policy/decision itself).
     // `off` returns null (no ambient instructions for an off workspace).
+    const ambient: string[] = [];
     const autonomy = renderAutonomyBlock(mode);
-    if (autonomy) blocks.push(autonomy);
+    if (autonomy) ambient.push(autonomy);
     // Binding operator policy next: the standing rules that let the brain resolve
     // a fork itself instead of escalating (and, in assist, guide what it
     // recommends). Injected for auto AND assist; never for off. Read fresh (the
     // operator can edit deck-policy.md between turns). Fail-open → no block.
     if (mode !== 'off') {
       const policy = loadDeckPolicyBlock();
-      if (policy) blocks.push(policy);
+      if (policy) ambient.push(policy);
+    }
+    // A visible TUI brain re-types its whole prompt on screen, so the ambient
+    // (autonomy+policy) blocks go in only when their content CHANGED since the
+    // last turn this conversation saw them. A Settings/policy edit therefore
+    // still applies on the very next turn; unchanged rules stop drowning the
+    // terminal. Headless brains keep the unconditional every-turn injection.
+    const ambientText = ambient.join('\n\n');
+    if (brainVendor === 'claude-pty') {
+      if (ambientText && shownAmbientBlocks.get(workspaceId) !== ambientText) {
+        shownAmbientBlocks.set(workspaceId, ambientText);
+        blocks.push(ambientText);
+      }
+    } else if (ambientText) {
+      blocks.push(ambientText);
     }
     // Then the decision block — a blocked (or just-resolved) decision is the most
     // urgent trusted context. Both decision + loop survive a reboot as atomic
@@ -502,6 +527,7 @@ export function registerDeckHandler(
       if (entry) {
         entry.manager.dispose(); // interrupts an in-flight turn, flips to disposed
         managers.delete(workspaceId);
+        shownAmbientBlocks.delete(workspaceId);
       }
       const vendor = brainVendor;
       const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
@@ -549,6 +575,7 @@ export function registerDeckHandler(
           if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
+            shownAmbientBlocks.delete(workspaceId);
           }
         }
       }
@@ -578,6 +605,7 @@ export function registerDeckHandler(
           if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
+            shownAmbientBlocks.delete(workspaceId);
             // The retired brain's embedded terminal is gone with it — retract
             // the pty id so the deck falls back to the bubble view instead of
             // showing a dead terminal.
