@@ -791,12 +791,12 @@ function delay(ms: number): Promise<void> {
  *  the same candidate list `wmux setup-hooks` uses, plus the already-installed
  *  stable copy at `~/.wmux/hooks/`. Returns null when none exists. */
 export function resolveBrainBridgePath(startDir = __dirname): string | null {
-  const installed = path.join(os.homedir(), '.wmux', 'hooks', 'wmux-bridge.mjs');
-  try {
-    if (fs.existsSync(installed)) return installed;
-  } catch {
-    /* fall through to the bundle walk */
-  }
+  // Prefer OUR OWN copy of the bridge (the bundle walk below) over the
+  // user-installed ~/.wmux/hooks one: the installed copy belongs to whatever
+  // release last wrote it and may predate fixes this build depends on (the
+  // instance-suffix pipe routing did exactly that — the prod copy delivered a
+  // dev brain's signals to the production pipe). The installed copy remains
+  // the fallback for exotic packagings where the walk finds nothing.
   const candidates = [
     'wmux-bridge.mjs',
     path.join('cli-bundle', 'wmux-bridge.mjs'),
@@ -816,6 +816,12 @@ export function resolveBrainBridgePath(startDir = __dirname): string | null {
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  const installed = path.join(os.homedir(), '.wmux', 'hooks', 'wmux-bridge.mjs');
+  try {
+    if (fs.existsSync(installed)) return installed;
+  } catch {
+    /* no installed copy either */
   }
   return null;
 }
