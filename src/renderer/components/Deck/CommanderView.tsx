@@ -165,6 +165,9 @@ export function CommanderViewContent({
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  // Collapsed state of the embedded brain terminal. Local by design: it is a
+  // view preference, resets to open on remount, and needs no persistence.
+  const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
 
   // Stick-to-bottom autoscroll. `stickToBottom` flips off when the user
@@ -209,11 +212,7 @@ export function CommanderViewContent({
       <div
         ref={threadsRef}
         onScroll={onThreadsScroll}
-        className={
-          brainPtyId
-            ? 'flex-1 min-h-0 flex flex-col overflow-hidden px-4 py-3 gap-3'
-            : 'flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3'
-        }
+        className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
         data-commander-threads
       >
         {isEmpty && (
@@ -299,7 +298,27 @@ export function CommanderViewContent({
             turn-end final texts (recovered from the transcript) remain the
             durable report surface the operator actually reads. Every other
             vendor renders only the normalized bubbles + tool chips. */}
-        {brainPtyId ? <BrainTerminalEmbed ptyId={brainPtyId} /> : null}
+        {brainPtyId ? (
+          // Sticky wrapper: the terminal stays pinned while the bubble log
+          // scrolls beneath it, and the header collapses it to one row when
+          // the operator wants the history to have the whole dock.
+          <div className="sticky top-0 z-10 bg-[var(--bg-mantle)] -mx-4 px-4 pb-1">
+            <button
+              type="button"
+              data-commander-terminal-toggle
+              onClick={() => setTerminalCollapsed((v) => !v)}
+              className="w-full flex items-center gap-1.5 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
+            >
+              <span aria-hidden>{terminalCollapsed ? '▸' : '▾'}</span>
+              <span>{t('deck.brainTerminal')}</span>
+            </button>
+            {/* Collapse hides, never unmounts: unmounting would tear down the
+                xterm attach and drop scrollback on every toggle. */}
+            <div className={terminalCollapsed ? 'hidden' : undefined}>
+              <BrainTerminalEmbed ptyId={brainPtyId} />
+            </div>
+          </div>
+        ) : null}
         {brainMessages.map((m) => (
           <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
         ))}

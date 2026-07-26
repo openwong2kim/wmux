@@ -397,6 +397,7 @@ export const en = {
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'usage',
+  'deck.brainTerminal': 'Brain terminal',
   'deck.limit.resetsSoon': 'resets soon',
   'deck.limit.resetsIn': 'resets in {rel}',
   'deck.limit.onAccount': ' on {account}',
