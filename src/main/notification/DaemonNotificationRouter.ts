@@ -67,9 +67,10 @@ interface AgentEventPayload {
 function isSessionLocation(value: unknown): value is SessionLocation {
   if (!value || typeof value !== 'object') return false;
   const location = value as Record<string, unknown>;
-  if (location.domain !== 'host' && location.domain !== 'wsl') return false;
+  if (location.domain !== 'host' && location.domain !== 'msys' && location.domain !== 'wsl') return false;
   if (typeof location.cwd !== 'string' || typeof location.shell !== 'string') return false;
   return location.domain === 'host'
+    || location.domain === 'msys'
     || location.distro === undefined
     || typeof location.distro === 'string';
 }

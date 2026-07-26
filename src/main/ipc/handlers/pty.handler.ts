@@ -24,7 +24,12 @@ import {
   type SessionDataDispatcher,
   type SessionDataHandler,
 } from './sessionDataDispatcher';
-import { updateCwd } from './metadata.handler';
+import {
+  getPaneCommandTarget,
+  removePaneLocation,
+  updateCwd,
+  updatePaneLocation,
+} from './metadata.handler';
 import { isWslShell, isLinuxLikeCwd } from '../../../shared/wslCwd';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -335,6 +340,14 @@ export function registerPTYHandlers(
 
     onDaemonCwd = (payload: { sessionId: string; cwd: string }) => {
       updateCwd(payload.sessionId, payload.cwd);
+      const target = getPaneCommandTarget(payload.sessionId);
+      if (target) {
+        updatePaneLocation(
+          payload.sessionId,
+          { ...target.location, cwd: payload.cwd },
+          target.activeContext,
+        );
+      }
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.CWD_CHANGED, payload.sessionId, payload.cwd);
@@ -475,11 +488,12 @@ export function registerPTYHandlers(
       // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
       // `exec`/`supervision` are present only for an X8 supervised leaf — the
       // daemon runs the command as the pane root and arms the PaneSupervisor.
+      const sessionLocation = classifySessionLocation(shell, effectiveCwd);
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
         cwd: effectiveCwd,
-        location: classifySessionLocation(shell, effectiveCwd),
+        location: sessionLocation,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: resolvedEnv,
@@ -534,6 +548,7 @@ export function registerPTYHandlers(
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
+      updatePaneLocation(sessionId, sessionLocation);
 
       // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
       // (the session id). The owning workspace is resolved live downstream,
@@ -589,6 +604,7 @@ export function registerPTYHandlers(
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
+      updatePaneLocation(instance.id, classifySessionLocation(instance.shell, actualCwd));
       // Startup command: gate on the shell's first output (one-shot onData)
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
       // writes are always delivered locally, so the writer returns void.
@@ -781,10 +797,12 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
+      removePaneLocation(id);
     }));
   } else {
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
       ptyManager.dispose(id);
+      removePaneLocation(id);
     }));
   }
 
@@ -903,7 +921,17 @@ export function registerPTYHandlers(
         // recovers but regex only catches PowerShell (`PS C:\…>`) and bash (`user@host:…$`),
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
-        if (session.cwd) updateCwd(id, session.cwd);
+        if (session.cwd) {
+          updateCwd(id, session.cwd);
+          const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+          updatePaneLocation(
+            id,
+            location,
+            location.domain === 'wsl' && location.distro
+              ? { sessionId: id, active: true, distro: location.distro }
+              : undefined,
+          );
+        }
 
         // Set up data forwarding BEFORE attachSession, not after. attachSession
         // makes the daemon replay the session's historical screen (the recovered
@@ -1153,6 +1181,7 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
+      removePaneLocation(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }

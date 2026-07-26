@@ -57,6 +57,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { classifySessionLocation, locationIdentity, resolveReplayLocation } from '../shared/sessionLocation';
+import { transcriptFileLives } from '../main/claude/lastAssistantMessage';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -498,10 +499,22 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // exact stored path (slug-rule-free). Bindings with no transcriptPath (older
 // captures) are treated as usable — we can't prove them dead, and `--resume`
 // degrades gracefully if so.
-function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
+function bindingTranscriptLives(
+  binding: ResumeBinding | undefined,
+  session?: Pick<DaemonSession, 'id' | 'cmd' | 'cwd' | 'location'>,
+): boolean {
   if (!binding) return false;
   if (!binding.transcriptPath) return true;
-  return fs.existsSync(binding.transcriptPath);
+  if (!session) return transcriptFileLives(binding.transcriptPath);
+  const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+  return transcriptFileLives(binding.transcriptPath, {
+    location,
+    activeSession: {
+      sessionId: session.id,
+      active: true,
+      ...(location.domain === 'wsl' && location.distro ? { distro: location.distro } : {}),
+    },
+  });
 }
 
 function replayCwd(session: Pick<DaemonSession, 'id' | 'cmd' | 'cwd' | 'location'>): {
@@ -550,7 +563,7 @@ function resumeLaunchCommand(
     binding = spoolBinding;
   }
   // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
-  const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
+  const usableBinding = bindingTranscriptLives(binding, session) ? binding : undefined;
   // U-PERM: honor the persisted, consent-gated restore bit (set by main at
   // creation). When ON, toResumeCommand appends the captured permission flag
   // (e.g. --dangerously-skip-permissions) — but ONLY inside its binding+cwd-match
@@ -717,7 +730,7 @@ function ingestResumeSpool(
 
     // D5: a purged origin transcript makes `--resume` a silent "No conversation
     // found." — drop the record (the pill can still degrade to --continue).
-    if (!bindingTranscriptLives(binding)) { drop(); continue; }
+    if (!bindingTranscriptLives(binding, managed.meta)) { drop(); continue; }
 
     managed.meta.resumeBinding = mergeResumeBinding(prev, binding);
     // Rung 1 parity: a spooled capture also proves the pane ran claude, so it
@@ -1276,7 +1289,7 @@ async function recoverSessions(
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
     // the pill to the cwd-relative `--continue`.
-    if (m.resumeBinding && resumeBindingMatchesLocation(m.resumeBinding, m.cwd, m.location) && bindingTranscriptLives(m.resumeBinding)) {
+    if (m.resumeBinding && resumeBindingMatchesLocation(m.resumeBinding, m.cwd, m.location) && bindingTranscriptLives(m.resumeBinding, m)) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
@@ -1836,7 +1849,7 @@ function registerRpcHandlers(
       // dead `--resume` (F8).
       const surfacedBinding =
         resumeBinding ??
-        (durableBinding && bindingTranscriptLives(durableBinding) ? durableBinding : undefined);
+        (durableBinding && bindingTranscriptLives(durableBinding, s) ? durableBinding : undefined);
       // OSC 133 shell-integration state — the AUTHORITATIVE resume-chip gate.
       // Only surfaced when this pane's shell actually emits markers (size > 0);
       // an empty log means shell integration is off, so we send `undefined` and
@@ -3396,12 +3409,13 @@ function wireEvents(
   });
 
   sessionManager.on('session:agent', (payload: { sessionId: string; event: { agent: string; status: string; message: string } }) => {
+    const eventSession = sessionManager.getSession(payload.sessionId);
     // X6 Feature ②: record the detected agent SLUG on the session so a future
     // reboot knows this interactive pane was an agent. agentDisplayToSlug maps
     // the AgentDetector display name ('Claude Code') → canonical slug ('claude').
     const slug = agentDisplayToSlug(payload.event.agent);
     if (slug) {
-      const managed = sessionManager.getSession(payload.sessionId);
+      const managed = eventSession;
       if (managed && managed.meta.lastDetectedAgent !== slug) {
         managed.meta.lastDetectedAgent = slug;
         // X6 ②: persist IMMEDIATELY, not debounced. lastDetectedAgent is the
@@ -3435,7 +3449,16 @@ function wireEvents(
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,
-      data: { ...payload.event, ...arbitration },
+      data: {
+        ...payload.event,
+        ...arbitration,
+        ...(eventSession
+          ? {
+              location: eventSession.meta.location
+                ?? classifySessionLocation(eventSession.meta.cmd, eventSession.meta.cwd),
+            }
+          : {}),
+      },
     };
     pipeServer.broadcast(event);
   });
@@ -3552,6 +3575,22 @@ function wireContextWatchers(
   const portWatcher = new PortWatcher(() =>
     sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
   );
+  const commandTargetFor = (session: DaemonSession) => {
+    const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+    return {
+      sessionId: session.id,
+      location,
+      ...(location.domain === 'wsl' && location.distro
+        ? {
+            activeContext: {
+              sessionId: session.id,
+              active: true as const,
+              distro: location.distro,
+            },
+          }
+        : {}),
+    };
+  };
 
   gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
     try {
@@ -3579,11 +3618,13 @@ function wireContextWatchers(
     }
   });
 
-  const onCreated = (payload: { session: { id: string; cwd: string } }) => {
-    gitWatcher.update(payload.session.id, payload.session.cwd);
+  const onCreated = (payload: { session: DaemonSession }) => {
+    gitWatcher.update(payload.session.id, commandTargetFor(payload.session));
   };
   const onCwd = (payload: { sessionId: string; cwd: string }) => {
-    gitWatcher.update(payload.sessionId, payload.cwd);
+    const session = sessionManager.getSession(payload.sessionId)?.meta;
+    if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
+    else gitWatcher.remove(payload.sessionId);
   };
   const onGone = (payload: { id: string }) => {
     gitWatcher.remove(payload.id);
@@ -3597,7 +3638,7 @@ function wireContextWatchers(
 
   // Seed git context for sessions recovered before this wiring ran.
   for (const s of sessionManager.listLiveSessions()) {
-    gitWatcher.update(s.id, s.cwd);
+    gitWatcher.update(s.id, commandTargetFor(s));
   }
 
   return () => {

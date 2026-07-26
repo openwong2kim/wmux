@@ -77,6 +77,23 @@ describe('session location operations', () => {
     )).toEqual({ ok: true, path: '\\\\wsl.localhost\\Ubuntu\\home\\me\\x\\a.ts' });
   });
 
+  it('keeps Git Bash/MSYS conversion distinct from WSL conversion', () => {
+    const msys = classifySessionLocation('C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x');
+    expect(msys.domain).toBe('msys');
+    expect(toHostAccessiblePath(
+      msys,
+      '/c/dev/x/a.ts',
+    )).toEqual({ ok: true, path: 'C:\\dev\\x\\a.ts' });
+    expect(toHostAccessiblePath(msys, '/usr/bin/tool')).toEqual({
+      ok: false,
+      error: 'UNSUPPORTED_MSYS_PATH',
+    });
+    expect(toHostAccessiblePath(
+      classifySessionLocation('wsl.exe', '/c/dev/x', 'Ubuntu'),
+      '/c/dev/x/a.ts',
+    )).toEqual({ ok: true, path: '\\\\wsl.localhost\\Ubuntu\\c\\dev\\x\\a.ts' });
+  });
+
   it('requires a matching active pane context before preparing passive WSL work', () => {
     const location = classifySessionLocation('wsl.exe', '/home/me/x', 'Ubuntu');
     expect(prepareLocationCommand(location, 'git', ['status'], undefined)).toEqual({

@@ -158,6 +158,10 @@ export class GitContextWatcher extends EventEmitter {
   private watchPath(sessionId: string, target: PaneCommandTarget): string | null {
     if (target.sessionId !== sessionId) return null;
     if (target.location.domain === 'host') return target.location.cwd;
+    if (target.location.domain === 'msys') {
+      const converted = toHostAccessiblePath(target.location, target.location.cwd);
+      return converted.ok ? converted.path : null;
+    }
     // Reuse command preparation as the active-session/distro gate. The watcher
     // itself uses the host-accessible UNC path and does not launch a subprocess.
     if (!preparePaneCommand(target, 'git', ['rev-parse', '--git-dir']).ok) return null;

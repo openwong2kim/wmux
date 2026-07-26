@@ -220,6 +220,6 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).toMatch(/prev\.ts >= binding\.ts/);
     expect(body).toMatch(/prev\.sessionId === binding\.sessionId/);
     // D5: purged transcript → drop, never offer a dead --resume.
-    expect(body).toMatch(/bindingTranscriptLives\(binding\)/);
+    expect(body).toMatch(/bindingTranscriptLives\(binding, managed\.meta\)/);
   });
 });

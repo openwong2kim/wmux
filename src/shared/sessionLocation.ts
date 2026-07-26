@@ -2,6 +2,7 @@ import { isLinuxLikeCwd, isWslShell } from './wslCwd';
 
 export type SessionLocation =
   | { domain: 'host'; cwd: string; shell: string }
+  | { domain: 'msys'; cwd: string; shell: string }
   | { domain: 'wsl'; cwd: string; shell: string; distro?: string };
 
 export interface ActiveSessionContext {
@@ -14,7 +15,8 @@ export type LocationError =
   | 'ACTIVE_CONTEXT_REQUIRED'
   | 'WSL_DISTRO_MISMATCH'
   | 'WSL_DISTRO_REQUIRED'
-  | 'UNSUPPORTED_WSL_PATH';
+  | 'UNSUPPORTED_WSL_PATH'
+  | 'UNSUPPORTED_MSYS_PATH';
 
 function distroFromUnc(value: string): string | undefined {
   const match = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(?:\\|$)/i.exec(value);
@@ -26,7 +28,10 @@ export function classifySessionLocation(
   cwd: string,
   distro?: string,
 ): SessionLocation {
-  if (!isWslShell(shell)) return { domain: 'host', cwd, shell };
+  if (!isWslShell(shell)) {
+    if (isMsysShell(shell) && cwd.startsWith('/')) return { domain: 'msys', cwd, shell };
+    return { domain: 'host', cwd, shell };
+  }
   const resolvedDistro = distro || distroFromUnc(cwd);
   return {
     domain: 'wsl',
@@ -53,6 +58,9 @@ export function locationIdentity(location: SessionLocation): string {
   if (location.domain === 'host') {
     return `host\0${normalizeHostIdentity(location.cwd)}`;
   }
+  if (location.domain === 'msys') {
+    return `msys\0${normalizeGuestIdentity(location.cwd)}`;
+  }
   return `wsl\0${location.distro ?? ''}\0${normalizeGuestIdentity(location.cwd)}`;
 }
 
@@ -66,6 +74,12 @@ export function preparePtyLocation(
 ): { spawnCwd: string; prefixArgs: string[] } {
   if (location.domain === 'wsl' && isLinuxLikeCwd(location.cwd)) {
     return { spawnCwd: hostHome, prefixArgs: ['--cd', location.cwd] };
+  }
+  if (location.domain === 'msys') {
+    return {
+      spawnCwd: msysWindowsPath(location.shell, location.cwd) ?? hostHome,
+      prefixArgs: [],
+    };
   }
   return { spawnCwd: location.cwd, prefixArgs: [] };
 }
@@ -87,6 +101,12 @@ export function resolveReplayLocation(
   if (original.domain === 'wsl' && isLinuxLikeCwd(cwd)) {
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };
   }
+  if (original.domain === 'msys') {
+    const prepared = preparePtyLocation(original, hostHome);
+    if (hostDirectoryExists(prepared.spawnCwd)) {
+      return { location: original, ...prepared, degraded: false };
+    }
+  }
   if (hostDirectoryExists(cwd)) {
     return { location: original, ...preparePtyLocation(original, hostHome), degraded: false };
   }
@@ -106,11 +126,32 @@ function mountedWindowsPath(value: string): string | undefined {
   return `${match[1].toUpperCase()}:${tail}`;
 }
 
+function isMsysShell(shell: string): boolean {
+  return /(?:^|[\\/])(?:ba|z|k)?sh\.exe$/i.test(shell);
+}
+
+function msysWindowsPath(shell: string, value: string): string | undefined {
+  if (!isMsysShell(shell)) return undefined;
+  const match = /^\/([A-Za-z])(?:\/(.*))?$/.exec(value);
+  if (!match) return undefined;
+  const tail = match[2] ? `\\${match[2].replace(/\//g, '\\')}` : '\\';
+  return `${match[1].toUpperCase()}:${tail}`;
+}
+
 export function toHostAccessiblePath(
   location: SessionLocation,
   targetPath: string,
 ): { ok: true; path: string } | { ok: false; error: LocationError } {
-  if (location.domain === 'host') return { ok: true, path: targetPath };
+  if (location.domain === 'host') {
+    return { ok: true, path: targetPath };
+  }
+  if (location.domain === 'msys') {
+    if (/^[A-Za-z]:[\\/]/.test(targetPath)) return { ok: true, path: targetPath };
+    const converted = msysWindowsPath(location.shell, targetPath);
+    return converted
+      ? { ok: true, path: converted }
+      : { ok: false, error: 'UNSUPPORTED_MSYS_PATH' };
+  }
   if (/^[A-Za-z]:[\\/]/.test(targetPath) || /^\\\\(?!wsl(?:\.localhost|\$)\\)/i.test(targetPath)) {
     return { ok: true, path: targetPath };
   }
@@ -135,17 +176,22 @@ export function prepareLocationCommand(
   if (location.domain === 'host') {
     return { ok: true, file: executable, args: [...args], cwd: location.cwd };
   }
+  if (location.domain === 'msys') {
+    const cwd = msysWindowsPath(location.shell, location.cwd);
+    if (!cwd) return { ok: false, error: 'UNSUPPORTED_MSYS_PATH' };
+    return { ok: true, file: executable, args: [...args], cwd };
+  }
+  const distro = location.distro ?? context?.distro;
+  if (!distro) return { ok: false, error: 'WSL_DISTRO_REQUIRED' };
   if (!context?.active || !context.sessionId) {
     return { ok: false, error: 'ACTIVE_CONTEXT_REQUIRED' };
   }
   if (location.distro && context.distro && location.distro !== context.distro) {
     return { ok: false, error: 'WSL_DISTRO_MISMATCH' };
   }
-  const distro = location.distro ?? context.distro;
-  const prefix = distro ? ['-d', distro] : [];
   return {
     ok: true,
     file: 'wsl.exe',
-    args: [...prefix, '--cd', location.cwd, '--exec', executable, ...args],
+    args: ['-d', distro, '--cd', location.cwd, '--exec', executable, ...args],
   };
 }

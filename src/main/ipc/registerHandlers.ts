@@ -15,7 +15,7 @@ import { registerPTYHandlers } from './handlers/pty.handler';
 // autosave overwrites the previous scrollback files on disk.
 import { registerShellHandlers } from './handlers/shell.handler';
 import { registerFontHandlers } from './handlers/fonts.handler';
-import { registerMetadataHandlers } from './handlers/metadata.handler';
+import { getCwd, registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
@@ -38,6 +38,10 @@ import { setMutedNotificationCategories } from '../notification/mutedCategories'
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
+import {
+  classifySessionLocation,
+  type SessionLocation,
+} from '../../shared/sessionLocation';
 
 const EVENT_TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
 
@@ -150,7 +154,24 @@ export function registerAllHandlers(
   // session/scrollback handlers: installed elsewhere (module-load in
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
-  const cleanupShell = registerShellHandlers();
+  const cleanupShell = registerShellHandlers(async (ptyId): Promise<SessionLocation | null> => {
+    if (daemonClient) {
+      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+        id: string;
+        cmd: string;
+        cwd: string;
+        location?: SessionLocation;
+        state: string;
+      }>;
+      const session = sessions.find((candidate) => candidate.id === ptyId);
+      if (!session || session.state === 'dead') return null;
+      return session.location ?? classifySessionLocation(session.cmd, session.cwd);
+    }
+    const instance = ptyManager.get(ptyId);
+    const cwd = getCwd(ptyId);
+    if (!instance || !cwd) return null;
+    return classifySessionLocation(instance.shell, cwd);
+  });
   const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {
     // X1: daemon-backed sessions never appear in ptyManager — disable the
