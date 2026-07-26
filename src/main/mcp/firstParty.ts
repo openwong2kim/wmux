@@ -37,7 +37,7 @@
 // the curated-allowlist invariant: docs/api/mcp-plugin-spec.md §2.4.
 
 import type { RpcMethod } from '../../shared/rpc';
-import { NON_IDENTIFYING_CLIENT_NAMES } from '../../shared/rpc';
+import { MAX_PLUGIN_NAME_LEN, NON_IDENTIFYING_CLIENT_NAMES } from '../../shared/rpc';
 
 // Host identities that own the bundled wmux MCP server. The server reports the
 // connecting MCP client's `clientInfo.name` (see wireClientIdentityHook in
@@ -109,7 +109,16 @@ export function setConfiguredFirstPartyClients(
   const rejected: { name: string; reason: 'non-identifying' }[] = [];
   const next = new Set<string>();
   for (const raw of names) {
-    const name = typeof raw === 'string' ? raw.trim() : '';
+    // Clamp to the trust store's bound. PluginTrustStore truncates at
+    // MAX_PLUGIN_NAME_LEN before persisting, so that is the longest name an
+    // operator can ever SEE — and therefore the longest one they can copy out
+    // of `wmux mcp clients` into config. Clamping both this and the lookup
+    // below keeps "the name you were shown is the name that matches" true;
+    // without it a client reporting a longer name is listed under a truncated
+    // one that could never be configured to match. No new impersonation
+    // surface: clientName is self-asserted anyway (spec §2.3), so a caller
+    // that wanted to match could always just send the exact string.
+    const name = typeof raw === 'string' ? clampClientName(raw.trim()) : '';
     if (name.length === 0) continue;
     if (NON_IDENTIFYING_CLIENT_NAMES.has(name.toLowerCase())) {
       rejected.push({ name, reason: 'non-identifying' });
@@ -121,6 +130,12 @@ export function setConfiguredFirstPartyClients(
   }
   configuredFirstPartyClients = next;
   return { accepted, rejected };
+}
+
+function clampClientName(name: string): string {
+  return name.length <= MAX_PLUGIN_NAME_LEN
+    ? name
+    : name.slice(0, MAX_PLUGIN_NAME_LEN);
 }
 
 /** The operator-configured additions currently in effect (for diagnostics). */
@@ -267,8 +282,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
  */
 export function isFirstPartyClient(clientName: string | undefined): boolean {
   if (typeof clientName !== 'string') return false;
-  return (
-    FIRST_PARTY_CLIENT_NAMES.has(clientName) ||
-    configuredFirstPartyClients.has(clientName)
-  );
+  if (FIRST_PARTY_CLIENT_NAMES.has(clientName)) return true;
+  if (configuredFirstPartyClients.size === 0) return false;
+  // Clamped on both sides — see setConfiguredFirstPartyClients. The compiled
+  // defaults above stay an exact match; they are all well under the bound.
+  return configuredFirstPartyClients.has(clampClientName(clientName));
 }

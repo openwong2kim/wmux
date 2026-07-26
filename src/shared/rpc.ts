@@ -75,6 +75,44 @@ export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>
 ]);
 
 /**
+ * Maximum stored length of a plugin `clientName`. `PluginTrustStore` truncates
+ * to this before persisting, so it is also the longest name an operator can
+ * ever SEE (via `wmux mcp clients` or plugin-trust.json) and therefore the
+ * longest one they can copy into `mcp.firstPartyClients`. First-party
+ * recognition clamps to the same bound so the name that is displayed is the
+ * name that matches — otherwise a longer-than-this client would be listed under
+ * a truncated name that could never be configured to match it.
+ *
+ * Lives here rather than in PluginTrustStore so the recognition path can share
+ * the bound without importing the store's filesystem machinery.
+ */
+export const MAX_PLUGIN_NAME_LEN = 256 as const;
+
+/**
+ * Render an untrusted, self-asserted client identity (name or version) for
+ * display. Strips C0/DEL control characters and clips to `maxLen`.
+ *
+ * These strings are chosen by the connecting client (§2.3) and are surfaced in
+ * daemon logs, RPC error messages, and `wmux mcp clients` — all of which land
+ * in a terminal. A name carrying escape sequences must not be able to move the
+ * cursor, recolour the screen, or forge output around itself. Anything that
+ * prints a client-supplied identity MUST go through this.
+ *
+ * Filtered by code point rather than by regex: the equivalent character class
+ * is exactly what the `no-control-regex` lint rule forbids.
+ */
+export function sanitizeClientDisplayName(value: string, maxLen = 64): string {
+  let out = '';
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) continue;
+    out += ch;
+    if (out.length >= maxLen) break;
+  }
+  return out;
+}
+
+/**
  * Per-request context surfaced to RPC handlers — populated by PipeServer
  * from RpcRequest fields. Handlers receive this as an optional second
  * argument so legacy handlers `(params) => ...` keep compiling.

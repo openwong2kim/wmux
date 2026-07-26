@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { MAX_PLUGIN_NAME_LEN } from '../../../shared/rpc';
 import { readConfiguredFirstPartyClients } from '../firstPartyConfig';
 import {
   FIRST_PARTY_CLIENT_NAMES,
@@ -183,5 +184,32 @@ describe('setConfiguredFirstPartyClients', () => {
     for (const near of ['hermes', 'Hermes-Agent', 'hermes-agent-2', ' hermes-agent']) {
       expect(isFirstPartyClient(near)).toBe(false);
     }
+  });
+
+  it('matches a name the operator could only have seen truncated', () => {
+    // The discover-and-configure flow this feature documents is: read the name
+    // out of `wmux mcp clients`, paste it into config. PluginTrustStore
+    // truncates at MAX_PLUGIN_NAME_LEN on write, so for a longer clientName the
+    // ONLY value an operator can obtain is the truncated one — while RpcRouter
+    // hands the enforcer the full string. Without clamping both sides the
+    // documented flow silently cannot work for such a client.
+    const full = 'a'.repeat(MAX_PLUGIN_NAME_LEN + 50);
+    const asDisplayed = full.slice(0, MAX_PLUGIN_NAME_LEN);
+    const res = setConfiguredFirstPartyClients([asDisplayed]);
+    expect(res.accepted).toEqual([asDisplayed]);
+    expect(isFirstPartyClient(full)).toBe(true);
+  });
+
+  it('clamps an over-long config entry so it is stored as it would be displayed', () => {
+    const over = 'b'.repeat(MAX_PLUGIN_NAME_LEN + 10);
+    const res = setConfiguredFirstPartyClients([over]);
+    expect(res.accepted[0].length).toBe(MAX_PLUGIN_NAME_LEN);
+    expect(isFirstPartyClient(over)).toBe(true);
+  });
+
+  it('clamping does not soften the denylist', () => {
+    // A refused name must stay refused whatever its length.
+    expect(setConfiguredFirstPartyClients(['mcp']).accepted).toEqual([]);
+    expect(isFirstPartyClient('mcp')).toBe(false);
   });
 });

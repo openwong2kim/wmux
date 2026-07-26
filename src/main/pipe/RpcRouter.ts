@@ -6,6 +6,7 @@ import type {
   RpcRequest,
   RpcResponse,
 } from '../../shared/rpc';
+import { sanitizeClientDisplayName } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
@@ -405,24 +406,6 @@ export class RpcRouter {
  * its own name wrong. It is echoed as-is and clipped; it is untrusted,
  * self-asserted input (§2.3).
  */
-/**
- * Clip and strip control characters from a self-asserted clientName before it
- * is echoed. This lands in daemon logs and in terminal-rendered agent output,
- * so a name carrying escape sequences must not be able to move the cursor or
- * recolour someone's terminal. Filtered by code point rather than a regex —
- * the equivalent character class is exactly what `no-control-regex` forbids.
- */
-function sanitizeObservedName(name: string): string {
-  let out = '';
-  for (const ch of name) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) continue;
-    out += ch;
-    if (out.length >= 64) break;
-  }
-  return out;
-}
-
 function renderRejectionMessage(
   r: RpcRejection,
   observedClientName?: string,
@@ -431,7 +414,7 @@ function renderRejectionMessage(
   // caller and lands in logs and terminal-rendered agent output.
   const observed =
     typeof observedClientName === 'string' && observedClientName.length > 0
-      ? ` (observed clientName: "${sanitizeObservedName(observedClientName)}")`
+      ? ` (observed clientName: "${sanitizeClientDisplayName(observedClientName)}")`
       : ' (no clientName reported)';
   switch (r.reason) {
     case 'capability-not-declared':

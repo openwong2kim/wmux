@@ -3,7 +3,11 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { getMcpBrokerPipeName, getPluginTrustPath } from '../../shared/constants';
-import { NON_IDENTIFYING_CLIENT_NAMES } from '../../shared/rpc';
+import {
+  MAX_PLUGIN_NAME_LEN,
+  NON_IDENTIFYING_CLIENT_NAMES,
+  sanitizeClientDisplayName,
+} from '../../shared/rpc';
 import { MCP_TARGETS, type McpTarget } from '../../shared/mcpTargets';
 import {
   readAllTargetStatuses,
@@ -112,12 +116,26 @@ interface ObservedClient {
   nonIdentifying: boolean;
 }
 
-export function readObservedClients(trustPath: string): ObservedClient[] | null {
+/**
+ * Discriminated so `--json` can tell "nothing has connected yet" apart from "I
+ * could not read my own source". Collapsing both to an empty list (and exit 0)
+ * would let a script treat an unreadable or corrupt trust DB as an
+ * authoritative "no clients" — the one answer that is never safe here, since
+ * this command exists to be believed about who has connected.
+ */
+export type ObservedClientsResult =
+  | { ok: true; clients: ObservedClient[] }
+  | { ok: false; reason: 'absent' | 'unreadable' };
+
+export function readObservedClients(trustPath: string): ObservedClientsResult {
   let raw: string;
   try {
     raw = fs.readFileSync(trustPath, 'utf-8');
-  } catch {
-    return null;
+  } catch (err) {
+    // A missing file is a legitimate empty state (no client has ever
+    // connected). Any other read error — permissions, I/O — is a failure.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return { ok: false, reason: code === 'ENOENT' ? 'absent' : 'unreadable' };
   }
   let parsed: unknown;
   try {
@@ -128,20 +146,33 @@ export function readObservedClients(trustPath: string): ObservedClient[] | null 
       return value;
     });
   } catch {
-    return null;
+    return { ok: false, reason: 'unreadable' };
   }
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!parsed || typeof parsed !== 'object') return { ok: false, reason: 'unreadable' };
   const plugins = (parsed as Record<string, unknown>).plugins;
-  if (!plugins || typeof plugins !== 'object') return [];
+  if (!plugins || typeof plugins !== 'object') return { ok: true, clients: [] };
   const out: ObservedClient[] = [];
   for (const [key, value] of Object.entries(plugins as Record<string, unknown>)) {
     if (!value || typeof value !== 'object') continue;
     const rec = value as Record<string, unknown>;
-    const name = typeof rec.name === 'string' && rec.name.length > 0 ? rec.name : key;
+    const rawName = typeof rec.name === 'string' && rec.name.length > 0 ? rec.name : key;
+    // Name and version are self-asserted by the client and stored verbatim —
+    // the trust store bounds their length but does not strip control
+    // characters. They are printed to a terminal below, so they go through the
+    // same sanitizer the RPC rejection path uses; otherwise running this
+    // diagnostic would let a previously-connected client repaint the terminal
+    // or forge output around its own row.
+    const name = sanitizeClientDisplayName(rawName, MAX_PLUGIN_NAME_LEN);
     out.push({
       name,
-      version: typeof rec.version === 'string' ? rec.version : undefined,
-      status: typeof rec.status === 'string' ? rec.status : 'unknown',
+      version:
+        typeof rec.version === 'string'
+          ? sanitizeClientDisplayName(rec.version, 64)
+          : undefined,
+      status:
+        typeof rec.status === 'string'
+          ? sanitizeClientDisplayName(rec.status, 32)
+          : 'unknown',
       firstSeen: typeof rec.firstSeen === 'number' ? rec.firstSeen : undefined,
       lastSeen: typeof rec.lastSeen === 'number' ? rec.lastSeen : undefined,
       nonIdentifying: NON_IDENTIFYING_CLIENT_NAMES.has(name.toLowerCase()),
@@ -150,7 +181,7 @@ export function readObservedClients(trustPath: string): ObservedClient[] | null 
   // Most recently seen first — the client the operator is debugging right now
   // is almost always the last one that connected.
   out.sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
-  return out;
+  return { ok: true, clients: out };
 }
 
 function formatSeen(ms: number | undefined): string {
@@ -163,23 +194,35 @@ function formatSeen(ms: number | undefined): string {
   );
 }
 
+/** Exit code: 0 when the listing is authoritative, 1 when it could not be read. */
 function printClients(
-  clients: ObservedClient[] | null,
+  result: ObservedClientsResult,
   trustPath: string,
   jsonMode: boolean,
-): void {
-  if (jsonMode) {
-    console.log(JSON.stringify({ trustPath, clients: clients ?? [] }, null, 2));
-    return;
+): number {
+  if (!result.ok) {
+    if (jsonMode) {
+      console.log(
+        JSON.stringify({ trustPath, error: result.reason, clients: null }, null, 2),
+      );
+    } else if (result.reason === 'absent') {
+      console.log(`No clients recorded yet — ${trustPath} does not exist.`);
+      console.log('Connect an MCP client to wmux once, then run this again.');
+    } else {
+      console.error(`Could not read ${trustPath} (unreadable or corrupt).`);
+    }
+    // `absent` is a normal empty state, not a failure. Only a real read/parse
+    // failure gets a non-zero status, so `--json` consumers can trust a 0.
+    return result.reason === 'absent' ? 0 : 1;
   }
-  if (clients === null) {
-    console.log(`No client records yet — ${trustPath} is missing or unreadable.`);
-    console.log('Connect an MCP client to wmux once, then run this again.');
-    return;
+  const clients = result.clients;
+  if (jsonMode) {
+    console.log(JSON.stringify({ trustPath, clients }, null, 2));
+    return 0;
   }
   if (clients.length === 0) {
     console.log(`No clients recorded yet — ${trustPath}`);
-    return;
+    return 0;
   }
   for (const c of clients) {
     const version = c.version ? ` v${c.version}` : '';
@@ -206,6 +249,7 @@ function printClients(
     'To recognise a client, add its exact name to mcp.firstPartyClients in',
   );
   console.log('~/.wmux/config.json, then restart wmux.');
+  return 0;
 }
 
 // Full single-child MCP bundle candidates (the pre-broker layout). Used when the
@@ -324,7 +368,8 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
 
     case 'clients': {
       const trustPath = getPluginTrustPath();
-      printClients(readObservedClients(trustPath), trustPath, jsonMode);
+      const code = printClients(readObservedClients(trustPath), trustPath, jsonMode);
+      if (code !== 0) process.exit(code);
       return;
     }
 
