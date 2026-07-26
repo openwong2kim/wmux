@@ -314,6 +314,46 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     adapter.dispose();
   });
 
+  // Permission prompts enabled (not bypass mode): Claude Code's folder-trust /
+  // permission / sign-in dialogs render BEFORE SessionStart, so the hook never
+  // fires. Typing the prompt into that dialog would answer it with the user's
+  // message and hang the turn for the whole TURN_TIMEOUT_MS with the composer
+  // disabled — "needs your input" with no way to give any.
+  it('hands the turn back when the TUI printed but never fired SessionStart', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    host.nextBanner = 'Do you trust the files in this folder?\n';
+    const events = await collect(adapter.send('summarise the fleet'));
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('error');
+    expect((events[0] as { message: string }).message).toMatch(/answer it in the terminal/i);
+    // Nothing was typed — the dialog is the user's to answer, in the embed.
+    expect(host.writes).toEqual([]);
+    // And the pty survives, so answering it there resumes the same session.
+    expect(host.destroyed).toEqual([]);
+    adapter.dispose();
+  });
+
+  it('runs the turn normally when SessionStart lands despite a noisy banner', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { sessionStartTimeoutMs: 2_000 });
+    host.nextBanner = 'Welcome to Claude Code\n';
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    const ptyId = host.created[0].id;
+    // The hook bus registration lands just after createSession resolves, so
+    // retry until the signal is actually claimed by this pty's lane.
+    await vi.waitFor(() =>
+      expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId))).toBe(true),
+    );
+    await vi.waitFor(() => expect(host.writes.length).toBe(1));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
+    const events = await turn;
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-ok' });
+    adapter.dispose();
+  });
+
   it('terminates the iterator when disposed mid-turn', async () => {
     const host = makeHost();
     const adapter = makeAdapter(host, { turnTimeoutMs: 60_000 });

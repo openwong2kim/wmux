@@ -35,7 +35,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
-import { ENV_KEYS } from '../../shared/constants';
+import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty } from './brainPtyHookBus';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
@@ -368,6 +368,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private unsubscribeData: (() => void) | null = null;
   /** Resolved by the SessionStart hook of the CURRENT pty. */
   private sessionStarted: Waiter<void> | null = null;
+  /** True once the CURRENT pty's SessionStart hook landed. Reset per spawn. */
+  private sessionStartSeen = false;
   /** Set only between a send()'s keystroke and its accepted Stop. A second
    *  Stop for the same turn finds it null and is ignored — the "exactly one
    *  turn-end" half of the manager contract. */
@@ -407,6 +409,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** Every hook signal from THIS pty. Only two kinds carry turn meaning. */
   private onHookSignal(signal: AgentSignal): void {
     if (signal.kind === 'agent.session_start') {
+      this.sessionStartSeen = true;
       this.sessionStarted?.resolve();
       return;
     }
@@ -480,8 +483,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return env;
   }
 
-  /** Spawn the TUI. Resolves once SessionStart landed (or its timeout). */
-  private async spawn(resumeSessionId: string | null): Promise<{ ok: true } | { error: string }> {
+  /** Spawn the TUI. Resolves once SessionStart landed (or its timeout).
+   *
+   *  `blockedOnTui` is the timeout half of that race REPORTED, not swallowed:
+   *  the TUI printed something but never fired SessionStart, which is what a
+   *  blocking startup dialog (folder trust, a permission prompt, /login) looks
+   *  like from out here. See the caller for what it does with it. */
+  private async spawn(
+    resumeSessionId: string | null,
+  ): Promise<{ ok: true; blockedOnTui: boolean } | { error: string }> {
     const executable =
       this.deps.claudeExecutable !== undefined
         ? this.deps.claudeExecutable
@@ -506,7 +516,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       return { error: `could not write the brain settings profile: ${String(err)}` };
     }
 
-    const ptyId = `brain-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const ptyId = `${BRAIN_PTY_ID_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 24)}`;
     const command = buildBrainLaunchCommand({
       executable,
       settingsPath,
@@ -518,6 +528,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // inside the turn instead of unwinding it.
     const started = createWaiter<void>();
     this.sessionStarted = started;
+    this.sessionStartSeen = false;
     this.banner = '';
     this.bannerWatching = true;
     try {
@@ -553,7 +564,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       started.promise,
       delay(this.deps.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS),
     ]);
-    return { ok: true };
+    // No SessionStart but the pty DID print: the binary is alive and stopped on
+    // something. A silent pty is a different (slower) failure — a cold start on
+    // a big install, or a claude build that never fires the hook — and typing
+    // the prompt anyway is still the better bet there.
+    return { ok: true, blockedOnTui: !this.sessionStartSeen && this.banner.length > 0 };
   }
 
   /** True when the spawn banner says the `--resume` id is dead. */
@@ -600,7 +615,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
 
     if (!this.ptyId) {
-      const spawned = await this.spawn(this._sessionId);
+      let spawned = await this.spawn(this._sessionId);
       if ('error' in spawned) {
         yield { type: 'error', message: spawned.error };
         return;
@@ -624,8 +639,27 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           return;
         }
         if (this._disposed) return;
+        spawned = fresh;
       }
       this.bannerWatching = false;
+      // The TUI stopped on a dialog before it ever reached a prompt. Typing
+      // into that dialog would answer it with the user's message (arrow keys
+      // and Enter are its controls) and no Stop hook would ever fire, so the
+      // turn would hang for the full TURN_TIMEOUT_MS with the composer
+      // disabled — the deadlock this branch exists to break. Hand the turn
+      // back instead and point at the embedded terminal, which is now typable
+      // (BrainTerminalEmbed). We deliberately do NOT answer the dialog for the
+      // user: trusting a folder and granting permissions are their calls, and
+      // the pty stays alive so the next send() reuses the answered session.
+      if (spawned.blockedOnTui) {
+        yield {
+          type: 'error',
+          message:
+            'Claude Code is waiting on a prompt of its own (folder trust, permissions, or sign-in). ' +
+            'Answer it in the terminal above, then send your message again.',
+        };
+        return;
+      }
     }
 
     const ptyId = this.ptyId;
