@@ -35,7 +35,7 @@ vi.mock('../../metadata/PrStatusCache', () => ({
 }));
 
 const { resolveWslDistro } = vi.hoisted(() => ({
-  resolveWslDistro: vi.fn<(ctx: { shell: string }) => Promise<string | undefined>>(),
+  resolveWslDistro: vi.fn<(shell: string) => Promise<string | undefined>>(),
 }));
 vi.mock('../wslDistro', () => ({ resolveWslDistro }));
 
@@ -141,7 +141,7 @@ describe('I1 — a live WSL pane can be acted on in its first session', () => {
     await vi.waitFor(() => {
       expect(getPaneCommandTarget(ptyId)?.location).toMatchObject({ distro: 'Ubuntu' });
     });
-    expect(resolveWslDistro).toHaveBeenCalledWith(expect.objectContaining({ shell: 'wsl.exe' }));
+    expect(resolveWslDistro).toHaveBeenCalledWith('wsl.exe');
     expect(preparePaneCommand(getPaneCommandTarget(ptyId)!, 'git', ['status'])).toEqual({
       ok: true,
       file: 'wsl.exe',

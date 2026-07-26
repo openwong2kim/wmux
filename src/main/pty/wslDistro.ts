@@ -176,53 +176,21 @@ export function listWslDistros(run: WslRunner = defaultRunner): Promise<WslDistr
   return entry.value;
 }
 
-export interface WslPaneContext {
-  /** The pane's shell command, e.g. `C:\\Windows\\System32\\wsl.exe`. */
-  shell: string;
-  /** Spawn argv, if the pane pinned a distribution with `-d` / `--distribution`. */
-  args?: readonly string[];
-  /** The pane's environment, if it is known to carry `WSL_DISTRO_NAME`. */
-  env?: Record<string, string | undefined>;
-}
-
-/** `-d <name>`, `--distribution <name>`, `-d=<name>` — whichever the pane used. */
-function distroFromArgs(args: readonly string[] | undefined): string | undefined {
-  if (!args) return undefined;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    const inline = /^(?:-d|--distribution)=(.+)$/.exec(arg);
-    if (inline) return inline[1];
-    if (arg === '-d' || arg === '--distribution') {
-      const next = args[i + 1];
-      if (next && !next.startsWith('-')) return next;
-    }
-  }
-  return undefined;
-}
-
 /**
  * The distribution this pane runs in, or `undefined` when it cannot be named
  * without guessing (a caller that gets `undefined` must fail closed rather than
  * pick a distro — see `WSL_DISTRO_REQUIRED`).
  *
- * Order: what the pane itself states (explicit `-d`, then `WSL_DISTRO_NAME`)
- * beats enumeration, because those are facts about THIS pane. Enumeration then
- * names the default distribution, which is exactly what a bare `wsl.exe` pane
- * launched; if the default cannot be identified, a single registered — or
- * single running — distribution is unambiguous, and anything else stays
- * unresolved.
+ * Enumeration names the default distribution, which is exactly what the only
+ * production caller launches: a bare `wsl.exe` pane. If the default cannot be
+ * identified, a single registered — or single running — distribution is
+ * unambiguous, and anything else stays unresolved.
  */
 export async function resolveWslDistro(
-  ctx: WslPaneContext,
+  shell: string,
   run: WslRunner = defaultRunner,
 ): Promise<string | undefined> {
-  if (!isWslShell(ctx.shell)) return undefined;
-
-  const explicit = distroFromArgs(ctx.args);
-  if (explicit) return explicit;
-
-  const fromEnv = ctx.env?.WSL_DISTRO_NAME?.trim();
-  if (fromEnv) return fromEnv;
+  if (!isWslShell(shell)) return undefined;
 
   const list = await listWslDistros(run);
   if (list.defaultName) return list.defaultName;

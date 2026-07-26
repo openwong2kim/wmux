@@ -439,7 +439,7 @@ export function updatePaneLocation(ptyId: string, location: SessionLocation): vo
   const distro = location.domain === 'wsl' ? location.distro : undefined;
   paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
   if (location.domain !== 'wsl' || distro) return;
-  void resolveWslDistro({ shell: location.shell })
+  void resolveWslDistro(location.shell)
     .then((resolved) => {
       if (!resolved) return;
       const current = paneIdentities.get(ptyId);
