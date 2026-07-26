@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import {
   prepareLocationCommand,
+  toHostAccessiblePath,
   type ActiveSessionContext,
   type SessionLocation,
 } from '../../shared/sessionLocation';
@@ -63,6 +64,15 @@ export type TranscriptCommandRunner = (
 const runTranscriptCommand: TranscriptCommandRunner = (file, args, options) =>
   execFileSync(file, [...args], options);
 
+function resolveHostTranscriptPath(
+  transcriptPath: string,
+  context?: TranscriptReadContext,
+): string | null {
+  if (!context) return transcriptPath;
+  const resolved = toHostAccessiblePath(context.location, transcriptPath);
+  return resolved.ok ? resolved.path : null;
+}
+
 /**
  * The guest helper performs both checks at the point of use:
  * - lstat must report a regular file (symlinks/FIFOs/devices are rejected);
@@ -122,8 +132,10 @@ export function transcriptFileLives(
   if (context?.location.domain === 'wsl') {
     return runWslTranscriptOperation(transcriptPath, 'probe', context, run)?.toString() === '1';
   }
+  const hostPath = resolveHostTranscriptPath(transcriptPath, context);
+  if (!hostPath) return false;
   try {
-    return fs.lstatSync(transcriptPath).isFile();
+    return fs.lstatSync(hostPath).isFile();
   } catch {
     return false;
   }
@@ -214,17 +226,19 @@ export function readLastAssistantMessage(
     if (!result) return null;
     raw = result.toString('utf8');
   } else try {
+    const hostPath = resolveHostTranscriptPath(transcriptPath, context);
+    if (!hostPath) return null;
     // lstat, and only a regular file: `transcript_path` arrives from a hook
     // payload, and openSync on a FIFO blocks the MAIN process indefinitely —
     // there is no timeout to save us, the hook's budget cannot cancel a blocked
     // syscall, and the whole app stalls with it.
-    const st = fs.lstatSync(transcriptPath);
+    const st = fs.lstatSync(hostPath);
     if (!st.isFile()) return null;
     const safeReadFlags =
       fs.constants.O_RDONLY
       | (fs.constants.O_NONBLOCK ?? 0)
       | (fs.constants.O_NOFOLLOW ?? 0);
-    const fd = fs.openSync(transcriptPath, safeReadFlags);
+    const fd = fs.openSync(hostPath, safeReadFlags);
     try {
       // Re-check the opened descriptor: the path could have been replaced
       // between lstat and open. O_NONBLOCK prevents a replacement FIFO from

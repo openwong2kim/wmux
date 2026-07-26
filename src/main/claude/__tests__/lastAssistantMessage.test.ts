@@ -255,3 +255,68 @@ describe('WSL transcript reads', () => {
     expect(transcriptFileLives('/home/me/transcript.jsonl', context, unsafe)).toBe(false);
   });
 });
+
+describe('MSYS transcript paths', () => {
+  const context = {
+    location: {
+      domain: 'msys' as const,
+      cwd: '/c/dev/repo',
+      shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    },
+    activeSession: { sessionId: 'pty-msys', active: true as const },
+  };
+
+  it('converts a drive-rooted MSYS path before the host liveness probe', () => {
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue({
+      isFile: () => true,
+    } as fs.Stats);
+    try {
+      expect(transcriptFileLives('/c/Users/me/session.jsonl', context)).toBe(true);
+      expect(lstat).toHaveBeenCalledWith('C:\\Users\\me\\session.jsonl');
+    } finally {
+      lstat.mockRestore();
+    }
+  });
+
+  it('converts a drive-rooted MSYS path before reading its bounded host tail', () => {
+    const raw = Buffer.from(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Proceed?' }] },
+      })}\n`,
+    );
+    const stats = { isFile: () => true, size: raw.length } as fs.Stats;
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue(stats);
+    const open = vi.spyOn(fs, 'openSync').mockReturnValue(7);
+    const fstat = vi.spyOn(fs, 'fstatSync').mockReturnValue(stats);
+    const read = vi.spyOn(fs, 'readSync').mockImplementation(
+      ((_fd: number, buffer: Buffer) => {
+        raw.copy(buffer);
+        return raw.length;
+      }) as typeof fs.readSync,
+    );
+    const close = vi.spyOn(fs, 'closeSync').mockImplementation(() => undefined);
+    try {
+      expect(readLastAssistantMessage('/c/Users/me/session.jsonl', context)).toEqual({
+        text: 'Proceed?',
+        endsWithQuestion: true,
+      });
+      expect(lstat).toHaveBeenCalledWith('C:\\Users\\me\\session.jsonl');
+      expect(open.mock.calls[0][0]).toBe('C:\\Users\\me\\session.jsonl');
+    } finally {
+      lstat.mockRestore();
+      open.mockRestore();
+      fstat.mockRestore();
+      read.mockRestore();
+      close.mockRestore();
+    }
+  });
+
+  it('fails softly for an MSYS path without a drive mapping', () => {
+    const lstat = vi.spyOn(fs, 'lstatSync');
+    expect(transcriptFileLives('/usr/local/session.jsonl', context)).toBe(false);
+    expect(readLastAssistantMessage('/usr/local/session.jsonl', context)).toBeNull();
+    expect(lstat).not.toHaveBeenCalled();
+    lstat.mockRestore();
+  });
+});
