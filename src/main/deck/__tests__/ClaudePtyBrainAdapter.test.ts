@@ -310,6 +310,47 @@ describe('buildBrainLaunchCommand', () => {
     );
   });
 
+  it('carries the orchestrator model override', () => {
+    const cmd = buildBrainLaunchCommand({
+      executable: 'claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      model: 'opus',
+      platform: 'darwin',
+    });
+    expect(cmd).toContain('--model "opus"');
+  });
+
+  it('makes the command RUNNABLE under the daemon\'s pwsh exec wrapper', () => {
+    // `pwsh -Command "\"C:\\...\\claude.exe\" --settings …"` parses a leading
+    // quoted token as a STRING, prints it and exits 0 — nothing launches. The
+    // `&` call operator is what makes it a command, and PowerShell's literal
+    // quoting is single quotes (backslashes are NOT escapes there, so the
+    // POSIX quoting would corrupt every Windows path).
+    const cmd = buildBrainLaunchCommand({
+      executable: 'C:\\Users\\me\\.local\\bin\\claude.exe',
+      settingsPath: 'C:\\Users\\me\\.wmux\\brain-profiles\\s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      platform: 'win32',
+    });
+    expect(cmd.startsWith("& 'C:\\Users\\me\\.local\\bin\\claude.exe'")).toBe(true);
+    expect(cmd).toContain("--settings 'C:\\Users\\me\\.wmux\\brain-profiles\\s.json'");
+    expect(cmd).not.toContain('\\\\');
+  });
+
+  it('leaves the POSIX command line untouched', () => {
+    const cmd = buildBrainLaunchCommand({
+      executable: '/usr/local/bin/claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      platform: 'linux',
+    });
+    expect(cmd.startsWith('"/usr/local/bin/claude"')).toBe(true);
+  });
+
   it('omits --resume for a fresh conversation', () => {
     const cmd = buildBrainLaunchCommand({
       executable: 'claude',
@@ -319,6 +360,18 @@ describe('buildBrainLaunchCommand', () => {
     });
     expect(cmd).not.toContain('--resume');
     expect(cmd).not.toContain('--mcp-config');
+  });
+});
+
+describe('the spawned command line', () => {
+  it('puts the model override on the spawned command line', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { model: 'opus' });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    expect(host.created[0].command).toContain('--model "opus"');
+    adapter.dispose();
+    await turn;
   });
 });
 

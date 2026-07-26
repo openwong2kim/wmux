@@ -337,12 +337,24 @@ export function buildBrainMcpConfig(opts: {
   };
 }
 
-/** Quote one argv token for the daemon's exec wrapper shell. The wrapper is a
- *  POSIX shell (`-lc`) or cmd/pwsh (`/c`, `-Command`); double quotes with
- *  escaped inner quotes are the one form all three read the same way, and every
- *  value we pass is a path or an id (never a shell metacharacter soup). */
+/** Quote one argv token for a POSIX exec wrapper shell (`-lc`): double quotes
+ *  with escaped inner quotes. Every value we pass is a path or an id (never a
+ *  shell metacharacter soup). */
 export function quoteArg(value: string): string {
   return `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+/**
+ * Quote one argv token for a PowerShell `-Command` string.
+ *
+ * NOT quoteArg: PowerShell does not read `\` as an escape inside quotes, so
+ * quoteArg's backslash doubling would turn `C:\Users\me` into a literal
+ * `C:\\Users\\me` and every path in the launch line would miss. Single quotes
+ * with `''` doubling is PowerShell's own literal form — the same encoding
+ * shell-integration.ts uses for its dot-source line.
+ */
+export function quotePwshArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /**
@@ -373,6 +385,14 @@ const BRAIN_SETTING_SOURCES = 'project';
  * The commander identity rides the first turn's prompt text instead (the
  * AcpBrainAdapter pattern) — it lands in the transcript, so `--resume` carries
  * it forward, and it never has to survive cross-platform shell quoting.
+ *
+ * WINDOWS: the daemon's exec wrapper runs this string through
+ * `pwsh -Command` (execWrapper.buildExecArgs — the Windows default shell is
+ * always a PowerShell, never cmd). PowerShell parses a command that STARTS
+ * with a quoted token as a STRING EXPRESSION, so the line would print the
+ * claude path and exit 0 instead of running anything; the `&` call operator
+ * is what makes it a command. Quoting switches to PowerShell's literal form
+ * for the same reason (see quotePwshArg). POSIX is unchanged.
  */
 export function buildBrainLaunchCommand(opts: {
   executable: string;
@@ -380,22 +400,32 @@ export function buildBrainLaunchCommand(opts: {
   mcpConfigPath: string | null;
   allowedTools?: string[];
   resumeSessionId?: string | null;
+  /** Model override (`--model`), or empty/absent for the CLI default. */
+  model?: string | null;
+  /** Host platform the command will be wrapped for. Injected by tests. */
+  platform?: NodeJS.Platform;
 }): string {
+  const isWindows = (opts.platform ?? process.platform) === 'win32';
+  const q = isWindows ? quotePwshArg : quoteArg;
   const parts = [
-    quoteArg(opts.executable),
+    q(opts.executable),
     // BEFORE --settings: restrict the ambient sources, then add ours.
     '--setting-sources',
-    quoteArg(BRAIN_SETTING_SOURCES),
+    q(BRAIN_SETTING_SOURCES),
     '--settings',
-    quoteArg(opts.settingsPath),
+    q(opts.settingsPath),
   ];
   if (opts.mcpConfigPath) {
-    parts.push('--mcp-config', quoteArg(opts.mcpConfigPath), '--strict-mcp-config');
+    parts.push('--mcp-config', q(opts.mcpConfigPath), '--strict-mcp-config');
   }
   const tools = opts.allowedTools ?? BRAIN_PTY_ALLOWED_TOOLS;
-  if (tools.length > 0) parts.push('--allowedTools', quoteArg(tools.join(',')));
-  if (opts.resumeSessionId) parts.push('--resume', quoteArg(opts.resumeSessionId));
-  return parts.join(' ');
+  if (tools.length > 0) parts.push('--allowedTools', q(tools.join(',')));
+  // The orchestrator's model picker applies to this brain too: the TUI takes
+  // the same `--model <alias|full-name>` flag the SDK adapter's option maps to.
+  if (opts.model) parts.push('--model', q(opts.model));
+  if (opts.resumeSessionId) parts.push('--resume', q(opts.resumeSessionId));
+  const line = parts.join(' ');
+  return isWindows ? `& ${line}` : line;
 }
 
 /** Flatten a prompt into ONE line. The TUI submits on Enter, so an embedded
@@ -413,6 +443,9 @@ export interface ClaudePtyBrainAdapterDeps {
   workspaceId?: string;
   /** Daemon pty host. Required in production; injected as a fake in tests. */
   host: BrainPtyHost;
+  /** Model override from the deck's model picker (`--model`). Empty/absent
+   *  leaves the TUI on whatever model the user's claude defaults to. */
+  model?: string;
   /** Absolute path to the user's claude binary. Defaults to the resolver. */
   claudeExecutable?: string | null;
   /** Absolute path to the wmux MCP stdio bundle. Defaults to the resolver. */
@@ -676,6 +709,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       settingsPath,
       mcpConfigPath,
       resumeSessionId,
+      ...(this.deps.model ? { model: this.deps.model } : {}),
     });
     // Held locally as well as on the instance: a dispose() racing this spawn
     // nulls the field (killPty), and awaiting the field would then throw

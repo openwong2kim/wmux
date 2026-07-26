@@ -242,6 +242,10 @@ export function registerDeckHandler(
             host: createBrainPtyHost(client),
             bridgePath: resolveBrainBridgePath(),
             onPtySpawned: adapterOpts.onPtySpawned,
+            // The model picker applies to the TUI brain too (`--model`);
+            // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
+            // an interactive session has no equivalent for).
+            ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
           });
         }
         console.warn(
