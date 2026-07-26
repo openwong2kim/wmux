@@ -313,4 +313,65 @@ describe('SessionLocationTransaction', () => {
     expect(io.asyncWrite).not.toHaveBeenCalled();
     expect(writtenLocation(io.syncWrite.mock.calls.at(-1)!)).toEqual(candidate);
   });
+
+  it('flush waits for two producer-ordered requests', async () => {
+    const cwd = submit('cwd', location('/home/me/new'), 'asap');
+    const enriched = submit(
+      'enriched',
+      location('/home/me/new', 'Ubuntu'),
+      'immediate-retry',
+    );
+
+    await transaction.flush();
+
+    await expect(Promise.all([cwd, enriched]))
+      .resolves.toEqual(['written', 'written']);
+    expect(commitOrder).toEqual(['cwd', 'enriched']);
+    expect(publishOrder).toEqual(['cwd', 'enriched']);
+  });
+
+  it('flushSync drains running I/O and every later coordinator request', async () => {
+    const pending = deferred();
+    io.asyncWrite.mockImplementationOnce(() => pending.promise);
+    const cwd = submit('cwd', location('/home/me/new'), 'asap');
+    const enriched = submit(
+      'enriched',
+      location('/home/me/new', 'Ubuntu'),
+      'immediate-retry',
+    );
+    await vi.waitFor(() => expect(io.asyncWrite).toHaveBeenCalledOnce());
+
+    transaction.flushSync();
+
+    await expect(Promise.all([cwd, enriched]))
+      .resolves.toEqual(['written', 'written']);
+    expect(commitOrder).toEqual(['cwd', 'enriched']);
+    expect(publishOrder).toEqual(['cwd', 'enriched']);
+
+    pending.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writtenLocation(io.syncWrite.mock.calls.at(-1)!))
+      .toHaveProperty('distro', 'Ubuntu');
+  });
+
+  it('does not retry a commit that throws after a successful write', () => {
+    const candidate = location('/home/me/new');
+    const commit = vi.fn(() => {
+      accepted = candidate;
+      throw new Error('commit failed');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const outcome = writer.writeExactImmediate({
+      prepare: () => state(candidate),
+      commit,
+      current: () => state(accepted),
+    }, 2);
+
+    expect(outcome).toBe('failed');
+    expect(io.syncWrite).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(writtenLocation(io.syncWrite.mock.calls.at(-1)!)).toEqual(candidate);
+  });
 });

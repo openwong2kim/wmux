@@ -19,37 +19,114 @@ export interface SessionLocationTransactionRequest {
  * publishing session-location candidates. Requests run in producer order.
  */
 export class SessionLocationTransaction {
-  private tail: Promise<void> = Promise.resolve();
   private nextTransactionId = 0;
+  private readonly pending: PendingTransaction[] = [];
+  private active: PendingTransaction | undefined;
+  private readonly flushWaiters: Array<() => void> = [];
 
   constructor(private readonly writer: StateWriter) {}
 
   submit(request: SessionLocationTransactionRequest): Promise<ExactStateWriteOutcome> {
     const transactionId = ++this.nextTransactionId;
-    const execute = async (): Promise<ExactStateWriteOutcome> => {
-      let committed = false;
-      const transaction: ExactStateTransaction = {
-        prepare: () => request.prepare(transactionId),
-        commit: () => {
-          if (committed) return undefined;
-          const state = request.commit(transactionId);
-          if (state) committed = true;
-          return state;
-        },
-        current: request.current,
-      };
+    return new Promise<ExactStateWriteOutcome>((resolve, reject) => {
+      this.pending.push({
+        request,
+        transactionId,
+        committed: false,
+        finalized: false,
+        resolve,
+        reject,
+      });
+      queueMicrotask(() => { void this.processNext(); });
+    });
+  }
 
-      const outcome = request.durability === 'immediate-retry'
+  /** Wait until all producer-ordered requests have reached a terminal result. */
+  flush(): Promise<void> {
+    if (!this.active && this.pending.length === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => this.flushWaiters.push(resolve));
+  }
+
+  /**
+   * Process-exit drain for both the writer-visible request and every later
+   * request still held by this coordinator.
+   */
+  flushSync(): void {
+    if (this.active && !this.active.finalized) {
+      const [outcome] = this.writer.flushExactWritesSync();
+      if (outcome) this.finalize(this.active, outcome);
+    }
+    while (this.pending.length > 0) {
+      const item = this.pending.shift()!;
+      const outcome = this.writer.writeExactImmediate(
+        this.exactTransaction(item),
+        item.request.durability === 'immediate-retry' ? 2 : 1,
+      );
+      this.finalize(item, outcome);
+    }
+    this.notifyFlushed();
+  }
+
+  private exactTransaction(item: PendingTransaction): ExactStateTransaction {
+    return {
+      prepare: () => item.request.prepare(item.transactionId),
+      commit: () => {
+        if (item.committed) return undefined;
+        const state = item.request.commit(item.transactionId);
+        if (state) item.committed = true;
+        return state;
+      },
+      current: item.request.current,
+    };
+  }
+
+  private async processNext(): Promise<void> {
+    if (this.active) return;
+    const item = this.pending.shift();
+    if (!item) {
+      this.notifyFlushed();
+      return;
+    }
+    this.active = item;
+    try {
+      const transaction = this.exactTransaction(item);
+      const outcome = item.request.durability === 'immediate-retry'
         ? this.writer.writeExactImmediate(transaction, 2)
         : await this.writer.writeExactAsap(transaction);
-      if (outcome === 'written' && committed) request.publish(transactionId);
-      return outcome;
-    };
-
-    const result = this.tail.then(execute);
-    this.tail = result.then(() => undefined, () => undefined);
-    return result;
+      this.finalize(item, outcome);
+    } catch (err) {
+      if (!item.finalized) {
+        item.finalized = true;
+        item.reject(err);
+      }
+    } finally {
+      if (this.active === item) this.active = undefined;
+      void this.processNext();
+    }
   }
+
+  private finalize(item: PendingTransaction, outcome: ExactStateWriteOutcome): void {
+    if (item.finalized) return;
+    item.finalized = true;
+    if (outcome === 'written' && item.committed) {
+      item.request.publish(item.transactionId);
+    }
+    item.resolve(outcome);
+  }
+
+  private notifyFlushed(): void {
+    if (this.active || this.pending.length > 0) return;
+    for (const resolve of this.flushWaiters.splice(0)) resolve();
+  }
+}
+
+interface PendingTransaction {
+  request: SessionLocationTransactionRequest;
+  transactionId: number;
+  committed: boolean;
+  finalized: boolean;
+  resolve: (outcome: ExactStateWriteOutcome) => void;
+  reject: (error: unknown) => void;
 }
 
 /**

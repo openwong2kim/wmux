@@ -112,6 +112,12 @@ export interface ExactStateTransaction {
   current: () => DaemonState;
 }
 
+interface ExactWriteRecord {
+  outcome: ExactStateWriteOutcome;
+  finalized: boolean;
+  runSync: () => ExactStateWriteOutcome;
+}
+
 // Default suspended-session retention (hours). Suspended sessions persist
 // across daemon restarts so an interrupted shell can be resumed. Without a
 // TTL they accumulate indefinitely: every X-button shutdown re-suspends
@@ -175,6 +181,7 @@ export class StateWriter {
   // overwrites the emergency save.
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
+  private readonly exactWrites = new Map<string, ExactWriteRecord>();
 
   constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT, persistHealedOnLoad = false) {
     this.filePath = path.join(baseDir, 'sessions.json');
@@ -259,32 +266,41 @@ export class StateWriter {
     const candidate = transaction.prepare();
     if (!candidate) return 'superseded';
 
+    let written = false;
     for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
       try {
         atomicWriteJSONSync(this.filePath, toPersistable(candidate), {
           validate: StateWriter.isDaemonState,
           rotationEnabled: true,
         });
-
-        // Synchronous I/O cannot interleave with an async completion on this
-        // thread, so publish the epoch only after a successful write. Failed
-        // candidates must not make an older accepted write restore a stale
-        // lastImmediateState.
-        this.immediateEpoch++;
-        const committed = transaction.commit();
-        if (!committed) {
-          return this.restoreExactState(transaction.current(), 'superseded');
-        }
-
-        this.lastImmediateState = committed;
-        this.pendingState = null;
-        this.queue.clear();
-        return 'written';
+        written = true;
+        break;
       } catch (err) {
         console.error('[StateWriter] Failed to save exact state:', err);
       }
     }
-    return 'failed';
+    if (!written) return 'failed';
+
+    // Synchronous I/O cannot interleave with an async completion on this
+    // thread, so publish the epoch only after a successful write. Failed
+    // candidates must not make an older accepted write restore a stale
+    // lastImmediateState.
+    this.immediateEpoch++;
+    let committed: DaemonState | undefined;
+    try {
+      committed = transaction.commit();
+    } catch (err) {
+      console.error('[StateWriter] Failed to commit exact state:', err);
+      return this.restoreExactState(transaction.current(), 'failed');
+    }
+    if (!committed) {
+      return this.restoreExactState(transaction.current(), 'superseded');
+    }
+
+    this.lastImmediateState = committed;
+    this.pendingState = null;
+    this.queue.clear();
+    return 'written';
   }
 
   /**
@@ -296,18 +312,27 @@ export class StateWriter {
     transaction: ExactStateTransaction,
   ): Promise<ExactStateWriteOutcome> {
     const key = `state:exact:${++nextExactWriteId}`;
-    let outcome: ExactStateWriteOutcome = 'superseded';
-
-    const runSync = (): void => {
-      outcome = this.writeExactImmediate(transaction);
+    const record: ExactWriteRecord = {
+      outcome: 'superseded',
+      finalized: false,
+      runSync: () => {
+        if (!record.finalized) {
+          record.outcome = this.writeExactImmediate(transaction);
+          record.finalized = true;
+        }
+        return record.outcome;
+      },
     };
-    this.queue.setSyncFallback(key, runSync);
+    this.exactWrites.set(key, record);
+    this.queue.setSyncFallback(key, () => { record.runSync(); });
 
     try {
       await this.queue.enqueue(key, async () => {
+        if (record.finalized) return;
         const candidate = transaction.prepare();
         if (!candidate) {
-          outcome = 'superseded';
+          record.outcome = 'superseded';
+          record.finalized = true;
           return;
         }
 
@@ -319,22 +344,37 @@ export class StateWriter {
           });
         } catch (err) {
           console.error('[StateWriter] Failed to save exact state (async):', err);
-          outcome = 'failed';
+          record.outcome = 'failed';
+          record.finalized = true;
           return;
         }
 
         if (this.immediateEpoch !== epochAtStart) {
           if (this.lastImmediateState !== null) {
-            outcome = this.restoreExactState(this.lastImmediateState, 'superseded');
+            const restored = this.restoreExactState(this.lastImmediateState, 'superseded');
+            if (!record.finalized) {
+              record.outcome = restored;
+              record.finalized = true;
+            }
           } else {
-            outcome = 'superseded';
+            record.outcome = 'superseded';
+            record.finalized = true;
           }
           return;
         }
 
-        const committed = transaction.commit();
+        let committed: DaemonState | undefined;
+        try {
+          committed = transaction.commit();
+        } catch (err) {
+          console.error('[StateWriter] Failed to commit exact state:', err);
+          record.outcome = this.restoreExactState(transaction.current(), 'failed');
+          record.finalized = true;
+          return;
+        }
         if (!committed) {
-          outcome = this.restoreExactState(transaction.current(), 'superseded');
+          record.outcome = this.restoreExactState(transaction.current(), 'superseded');
+          record.finalized = true;
           return;
         }
 
@@ -342,12 +382,23 @@ export class StateWriter {
         // flight, but ensure their pending representation includes the newly
         // committed transition.
         if (this.pendingState !== null) this.pendingState = committed;
-        outcome = 'written';
+        record.outcome = 'written';
+        record.finalized = true;
       });
-      return outcome;
+      return record.outcome;
     } finally {
       this.queue.deleteSyncFallback(key);
+      this.exactWrites.delete(key);
     }
+  }
+
+  /**
+   * Synchronously finish every exact write currently pending or in flight.
+   * A running async write observes the epoch bump and restores the newest
+   * committed state if its older I/O completes later.
+   */
+  flushExactWritesSync(): ExactStateWriteOutcome[] {
+    return Array.from(this.exactWrites.values(), (record) => record.runSync());
   }
 
   private restoreExactState(
