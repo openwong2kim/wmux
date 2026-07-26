@@ -57,9 +57,13 @@ symptom is layout- or terminal-state dependent.
 - **Release = explicit user action**: bump `package.json` version, rename
   `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, run
   `node scripts/gen-api-reference.mjs` (the generated header bakes the
-  version — the CI drift guard enforces this), commit `chore(release)`,
-  then push the tag explicitly to the fork — `git push fork vX.Y.Z`,
-  never bare `git push --tags` (installer builds hang off the tag).
+  version — the CI drift guard enforces this), and commit `chore(release)`.
+  Push `main` to the fork first (`--force-with-lease` when the upstream sync
+  rewrote it), then wait for every required CI check on that exact release
+  commit to pass. **Do not create or push the release tag before CI is green.**
+  Only then create the annotated tag and push it explicitly to the fork —
+  `git push fork vX.Y.Z`, never bare `git push --tags` (installer builds hang
+  off the tag).
 - Consequence accepted with this decision: same-version dev builds are not
   distinguishable by semver, so the stale-daemon auto-replacement triggers
   only on (a) pre-B′ daemons (missing version field) and (b) release-to-
@@ -155,5 +159,6 @@ wording or symbol renames.
   is per-clone config, not versioned — so fetching upstream never
   re-imports wmux tags.
 - Release tags are annotated, point at the `chore(release)` commit on
-  `main`, and are pushed one at a time (`git push fork vX.Y.Z`). Never run
+  `main`, and are created only after that exact commit passes required CI on
+  the fork. They are pushed one at a time (`git push fork vX.Y.Z`). Never run
   bare `git push --tags`.

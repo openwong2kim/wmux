@@ -38,8 +38,10 @@ layer onto the new upstream tip.
 
 Forge Mux versioning restarts at 1.0.0, and this repository's `v*` tags mark
 Forge Mux releases only — wmux's historical release tags live in the upstream
-repository. Release tags are pushed individually (`git push fork vX.Y.Z`,
-never bare `git push --tags`), and clones set
+repository. A release commit is pushed to `main` first and must pass every
+required CI check there before its annotated release tag is created or pushed.
+Release tags are pushed individually (`git push fork vX.Y.Z`, never bare
+`git push --tags`), and clones set
 `git config remote.origin.tagOpt --no-tags` so upstream fetches don't
 re-import wmux tags.
 
