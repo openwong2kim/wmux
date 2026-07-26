@@ -17,10 +17,14 @@ This is the product claim, and it is meant to be checkable by reading
 `src/index.ts` rather than trusted:
 
 1. **The relay has no key material for the payload.** The daemon seals the
-   notification with AES-256-GCM under a key derived from the per-device secret
-   established at pairing (`src/shared/push/pushEnvelope.ts` in the main repo).
-   That secret exists only on the daemon and on the paired iPhone. It is never
-   sent here, and the relay has no pairing endpoint that could obtain one.
+   notification with AES-256-GCM under a key agreed via X25519: the phone
+   generates a key pair at registration, keeps the private half in its
+   Keychain, and registers only the public half; each notification uses a
+   fresh ephemeral sender key (`src/shared/push/pushEnvelope.ts` in the main
+   repo — its header records why the earlier derive-from-pairing-secret design
+   was abandoned: the daemon deliberately never persists that secret). The
+   private half exists only on the paired iPhone. It is never sent here, and
+   the relay has no registration endpoint that could obtain one.
 2. **The ciphertext is never opened.** It arrives as one opaque base64 string
    containing the whole envelope — including the device id and timestamp — so
    the relay cannot even see which device a notification is for beyond the APNs

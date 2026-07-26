@@ -25,6 +25,12 @@ import { wrapHandler } from '../wrapHandler';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
+import {
+  ClaudePtyBrainAdapter,
+  createBrainPtyHost,
+  resolveBrainBridgePath,
+  type DaemonClientLike,
+} from '../../deck/ClaudePtyBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -110,6 +116,10 @@ export interface RegisterDeckHandlerOptions {
     workspaceId: string;
     fullPower?: boolean;
     vendor?: BrainVendor;
+    /** How an adapter announces (or retracts, with null) the terminal the deck
+     *  embeds. Passed to every factory — including an injected one — so the
+     *  embed plumbing is exercisable without a live daemon. */
+    onPtySpawned: (ptyId: string | null) => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -118,6 +128,9 @@ export interface RegisterDeckHandlerOptions {
   /** The fleet-wide concurrent-turn gate. Injected in tests to observe/spy the
    *  acquire path; defaults to a fresh cap-2 gate. */
   turnGate?: GlobalTurnGate;
+  /** Live daemon client getter. Required for the `claude-pty` vendor, whose
+   *  brain IS a daemon pty session; every other vendor ignores it. */
+  getDaemonClient?: () => DaemonClientLike | null;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -186,14 +199,59 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  // One-way push: which daemon session holds a workspace's embedded brain TUI
+  // (`claude-pty` only; null retires it). Declared before createAdapter so the
+  // default factory can hand it to a freshly spawned adapter.
+  // Main is the authority on which workspace currently has an embeddable
+  // terminal; the push below is only a notification. The renderer hydrates
+  // from this map on mount (DECK_BRAIN_PTY_LIST) because a reload drops
+  // everything it learned from earlier pushes.
+  const brainPtyIds = new Map<string, string>();
+  const emitBrainPty = (workspaceId: string, ptyId: string | null): void => {
+    if (ptyId) brainPtyIds.set(workspaceId, ptyId);
+    else brainPtyIds.delete(workspaceId);
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.DECK_BRAIN_PTY, { workspaceId, ptyId });
+    }
+  };
+
   const createAdapter =
     opts.createAdapter ??
-    ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean; vendor?: BrainVendor }) => {
+    ((adapterOpts: {
+      model?: string;
+      workspaceId: string;
+      fullPower?: boolean;
+      vendor?: BrainVendor;
+      onPtySpawned: (ptyId: string | null) => void;
+    }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
       // could — Hermes is simply the first configured spawn spec); everything
       // else is the Claude SDK default. Model/fullPower are Claude-specific
       // and deliberately not forwarded to ACP brains.
+      // 'claude-pty' drives the user's OWN claude binary as an interactive TUI
+      // in a daemon pty the deck embeds — the subscription-safe hedge. It needs
+      // the daemon (its brain IS a session); with no daemon we fall through to
+      // the SDK adapter rather than handing back a brain that cannot spawn.
+      if (adapterOpts.vendor === 'claude-pty') {
+        const client = opts.getDaemonClient?.() ?? null;
+        if (client) {
+          return new ClaudePtyBrainAdapter({
+            workspaceId: adapterOpts.workspaceId,
+            host: createBrainPtyHost(client),
+            bridgePath: resolveBrainBridgePath(),
+            onPtySpawned: adapterOpts.onPtySpawned,
+            // The model picker applies to the TUI brain too (`--model`);
+            // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
+            // an interactive session has no equivalent for).
+            ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
+          });
+        }
+        console.warn(
+          '[deck] the terminal brain (claude-pty) needs daemon mode — falling back to the Claude SDK brain.',
+        );
+      }
       if (adapterOpts.vendor === 'hermes') {
         return new AcpBrainAdapter({
           spawnSpec: { command: 'hermes', args: ['acp'] },
@@ -293,6 +351,7 @@ export function registerDeckHandler(
     ) {
       existing.manager.dispose();
       managers.delete(workspaceId);
+      forgetAmbient(workspaceId);
     }
     const current = managers.get(workspaceId);
     if (current) return current.manager;
@@ -307,6 +366,7 @@ export function registerDeckHandler(
       adapter: createAdapter({
         workspaceId,
         vendor,
+        onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -317,6 +377,11 @@ export function registerDeckHandler(
         systemPrompt: buildCommanderSystemPrompt(undefined, {
           memoryRoot: getMemoryRootDir(),
           workspaceId,
+          // The terminal brain's generated profile hard-denies Write (an
+          // interactive session has no canUseTool sandbox to route it
+          // through), so it is told memory persistence is unavailable rather
+          // than handed a write policy it can only fail at.
+          memoryWrites: vendor !== 'claude-pty',
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
@@ -351,6 +416,36 @@ export function registerDeckHandler(
   // which would go stale immediately. READ-ONLY context — the brain has no tool
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
+  // Last ambient (autonomy+policy) text each workspace's TUI brain has already
+  // been shown. Those blocks are re-read every turn so Settings/policy edits
+  // apply immediately — but a VISIBLE terminal brain types its whole prompt on
+  // screen, and re-sending an unchanged multi-KB block every turn drowns the
+  // conversation. Keyed per workspace; cleared wherever the manager is retired
+  // so a fresh conversation gets the blocks again. Headless brains (SDK/ACP)
+  // keep the every-turn behavior — nothing is visible there and stale-block
+  // risk beats noise.
+  const shownAmbientBlocks = new Map<string, string>();
+  // Ambient text a turn CARRIED but whose delivery is not yet proven. A first
+  // turn that dies on Claude's own trust/sign-in dialog never showed the brain
+  // anything, so marking at build time permanently skipped those blocks for the
+  // retry. Promoted to `shown` only by a CLEAN turn (settleAmbient).
+  const pendingAmbientBlocks = new Map<string, string>();
+  /** Resolve the ambient blocks this workspace's just-finished turn carried.
+   *  `code:'errored'` covers both a thrown adapter and one that merely YIELDED
+   *  an error event (the TUI-dialog case) — either way the brain did not see
+   *  the blocks, so the next turn must re-send them. */
+  const settleAmbient = (workspaceId: string, verdict: CommanderSendResult): void => {
+    const pending = pendingAmbientBlocks.get(workspaceId);
+    if (pending === undefined) return;
+    pendingAmbientBlocks.delete(workspaceId);
+    if (verdict.ok && verdict.code !== 'errored') shownAmbientBlocks.set(workspaceId, pending);
+  };
+  /** Drop both halves of the ambient memory — a retired conversation must be
+   *  told the rules again. */
+  const forgetAmbient = (workspaceId: string): void => {
+    shownAmbientBlocks.delete(workspaceId);
+    pendingAmbientBlocks.delete(workspaceId);
+  };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
@@ -361,15 +456,30 @@ export function registerDeckHandler(
     // The [autonomy] block LEADS — it frames how the brain should read everything
     // below it (whether it has authority to resolve the policy/decision itself).
     // `off` returns null (no ambient instructions for an off workspace).
+    const ambient: string[] = [];
     const autonomy = renderAutonomyBlock(mode);
-    if (autonomy) blocks.push(autonomy);
+    if (autonomy) ambient.push(autonomy);
     // Binding operator policy next: the standing rules that let the brain resolve
     // a fork itself instead of escalating (and, in assist, guide what it
     // recommends). Injected for auto AND assist; never for off. Read fresh (the
     // operator can edit deck-policy.md between turns). Fail-open → no block.
     if (mode !== 'off') {
       const policy = loadDeckPolicyBlock();
-      if (policy) blocks.push(policy);
+      if (policy) ambient.push(policy);
+    }
+    // A visible TUI brain re-types its whole prompt on screen, so the ambient
+    // (autonomy+policy) blocks go in only when their content CHANGED since the
+    // last turn this conversation saw them. A Settings/policy edit therefore
+    // still applies on the very next turn; unchanged rules stop drowning the
+    // terminal. Headless brains keep the unconditional every-turn injection.
+    const ambientText = ambient.join('\n\n');
+    if (brainVendor === 'claude-pty') {
+      if (ambientText && shownAmbientBlocks.get(workspaceId) !== ambientText) {
+        pendingAmbientBlocks.set(workspaceId, ambientText);
+        blocks.push(ambientText);
+      }
+    } else if (ambientText) {
+      blocks.push(ambientText);
     }
     // Then the decision block — a blocked (or just-resolved) decision is the most
     // urgent trusted context. Both decision + loop survive a reboot as atomic
@@ -421,6 +531,7 @@ export function registerDeckHandler(
       // a resolved decision's block, consume it (id-scoped) so it never re-injects.
       const injectedDecision = loadWorkspaceDecision(workspaceId);
       const verdict = await mgr.send(withLoopContext(workspaceId, text));
+      settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
         void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
       }
@@ -465,6 +576,7 @@ export function registerDeckHandler(
       if (entry) {
         entry.manager.dispose(); // interrupts an in-flight turn, flips to disposed
         managers.delete(workspaceId);
+        forgetAmbient(workspaceId);
       }
       const vendor = brainVendor;
       const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
@@ -512,6 +624,7 @@ export function registerDeckHandler(
           if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
+            forgetAmbient(workspaceId);
           }
         }
       }
@@ -530,7 +643,8 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       // Fail closed to the default: only known vendor ids are accepted.
-      const vendor: BrainVendor = req.vendor === 'hermes' ? 'hermes' : 'claude';
+      const vendor: BrainVendor =
+        req.vendor === 'hermes' || req.vendor === 'claude-pty' ? req.vendor : 'claude';
       if (vendor !== brainVendor) {
         brainVendor = vendor;
         // Retire IDLE stale-vendor brains now (same contract as full power):
@@ -540,6 +654,11 @@ export function registerDeckHandler(
           if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
             managers.delete(workspaceId);
+            forgetAmbient(workspaceId);
+            // The retired brain's embedded terminal is gone with it — retract
+            // the pty id so the deck falls back to the bubble view instead of
+            // showing a dead terminal.
+            emitBrainPty(workspaceId, null);
           }
         }
       }
@@ -669,6 +788,7 @@ export function registerDeckHandler(
       }
       emit(workspaceId, { type: 'turn-start', prompt });
       const verdict = await mgr.send(prompted);
+      settleAmbient(workspaceId, verdict);
       if (verdict.ok) {
         if (runOpts.reExamine) {
           // The brain may have self-resolved its OWN decision during this
@@ -1339,6 +1459,15 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Embedded brain terminals: the renderer's mount-time hydration ────────
+  ipcMain.removeHandler(IPC.DECK_BRAIN_PTY_LIST);
+  ipcMain.handle(
+    IPC.DECK_BRAIN_PTY_LIST,
+    wrapHandler(IPC.DECK_BRAIN_PTY_LIST, async (): Promise<{ ptyIds: Record<string, string> }> => {
+      return { ptyIds: Object.fromEntries(brainPtyIds) };
+    }),
+  );
+
   // ── Global auto-wake switch (Settings toggle) ─────────────────────────────
   ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
   ipcMain.handle(
@@ -1694,6 +1823,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
     ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
     ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
+    ipcMain.removeHandler(IPC.DECK_BRAIN_PTY_LIST);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
     ipcMain.removeHandler(IPC.DECK_MODE_GET);

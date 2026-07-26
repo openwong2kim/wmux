@@ -159,6 +159,20 @@ export const IPC = {
   //                   turn path consults it, idle stale-vendor brains retire
   //                   on change, renderer pushes on change + after hydration.
   DECK_BRAIN_VENDOR_SET: 'deck:brainvendor:set',
+  //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
+  //                   spawned its interactive TUI in daemon session <ptyId>.
+  //                   One-way and additive to DECK_STREAM (which carries only
+  //                   normalized BrainEvents) — the deck embeds that terminal
+  //                   in place of the bubble list. `ptyId: null` retires it.
+  DECK_BRAIN_PTY: 'deck:brainpty',
+  //   DECK_BRAIN_PTY_LIST (invoke) renderer → main: the CURRENT brain pty of
+  //                   every workspace. DECK_BRAIN_PTY is a one-way push, so a
+  //                   renderer reload (or a late-mounting subscriber) would
+  //                   otherwise never learn about a terminal that spawned
+  //                   before it was listening. Called once when useDeckStream
+  //                   mounts — the same hydrate-then-subscribe shape the other
+  //                   main-authoritative deck state uses.
+  DECK_BRAIN_PTY_LIST: 'deck:brainpty:list',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
@@ -544,6 +558,12 @@ export const ENV_KEYS = {
   // display prettiness comes from the daemon-derived roster memberName (1b),
   // and ghost-vs-roster drift is absorbed by the 1c single-row mapping.
   MEMBER_ID: 'WMUX_MEMBER_ID',
+  // Marks a daemon session as an ORCHESTRATOR BRAIN pty (the `claude-pty`
+  // brain vendor runs the interactive Claude Code TUI in one). A brain is not
+  // a worker pane: it is embedded in the deck, never in a surface, and must be
+  // filtered out of pane/session listings so it can neither be adopted by the
+  // renderer's reconcile nor show up as an agent the orchestrator can drive.
+  BRAIN_PTY: 'WMUX_BRAIN_PTY',
   // B′ daemon auto-replace: the app version that spawned this daemon, injected
   // UNCONDITIONALLY (overwriting any inherited value) by launcher.spawnDaemon()
   // and echoed back in daemon.ping as `spawnedByVersion`. Unconditional
@@ -552,6 +572,29 @@ export const ENV_KEYS = {
   // OLD daemon's version and poison the staleness gate.
   SPAWNED_BY_VERSION: 'WMUX_SPAWNED_BY_VERSION',
 } as const;
+
+/** Id prefix every orchestrator brain pty is minted with (ClaudePtyBrainAdapter).
+ *  The ENV_KEYS.BRAIN_PTY marker is the authoritative one, but it only travels
+ *  with the daemon SESSION record — per-pty renderer events (metadata updates,
+ *  agent status, activity) carry a bare ptyId and nothing else, so the id itself
+ *  has to carry the mark too. Both are set at the same place and read through
+ *  `isBrainPty` / `isBrainPtyId`. */
+export const BRAIN_PTY_ID_PREFIX = 'brain-';
+
+/** True for a ptyId minted as an orchestrator brain pty. The renderer-side half
+ *  of the brain exclusion: a brain is not a fleet agent and must never enter a
+ *  roster, an agent-status map or the principal registry. */
+export function isBrainPtyId(ptyId: string | null | undefined): boolean {
+  return typeof ptyId === 'string' && ptyId.startsWith(BRAIN_PTY_ID_PREFIX);
+}
+
+/** True for a daemon session that is an orchestrator brain pty. Checks BOTH
+ *  marks so a daemon build that omits `env` from its session listing (which
+ *  would make the env test silently fail OPEN and let a brain be adopted as a
+ *  pane) is still caught by the id. */
+export function isBrainPty(session: { id?: string; env?: Record<string, string> | undefined }): boolean {
+  return session.env?.[ENV_KEYS.BRAIN_PTY] === '1' || isBrainPtyId(session.id);
+}
 
 // Auth token file path — written by wmux main process, read by MCP server
 export function getAuthTokenPath(): string {

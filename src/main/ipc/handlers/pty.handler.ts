@@ -6,7 +6,7 @@ import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { DaemonClient } from '../../DaemonClient';
-import { IPC, ENV_KEYS } from '../../../shared/constants';
+import { IPC, ENV_KEYS, isBrainPty } from '../../../shared/constants';
 import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
@@ -810,6 +810,13 @@ export function registerPTYHandlers(
       // status; restartCount is volatile (0 until the supervisor restarts once).
       const live = sessions
         .filter(s => s.state !== 'dead')
+        // Orchestrator brain ptys (the `claude-pty` vendor) are deck-embedded,
+        // not fleet panes: the renderer must never adopt one into a surface and
+        // the orchestrator must never see itself in pane_list. This is the ONE
+        // spot every pane/session listing the UI and MCP surface use is derived
+        // from — the per-ptyId event lanes (agent status, activity) bypass it
+        // and are guarded separately by the same `isBrainPty*` predicate.
+        .filter(s => !isBrainPty(s))
         .map(s => ({
           id: s.id,
           shell: s.cmd,

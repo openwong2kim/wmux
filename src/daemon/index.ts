@@ -4714,10 +4714,20 @@ async function main(): Promise<void> {
     // the user closing every pane. lastDisconnectAt anchors the idle
     // window; see DaemonPipeServer.getLastDisconnectAt for the 0-edge
     // stamping rule.
+    //
+    // pendingApprovals makes the native-app decision explicit: a pending
+    // approval keeps the daemon alive, a read-only SSE viewer does not.
+    // Today this is belt-and-braces rather than a reachable fix — an
+    // approval is only ever minted for a live pane, and `dropPty` expires
+    // it when that pane dies, so `sessions` already covers every steady
+    // state. It is wired anyway so the invariant is enforced here instead
+    // of being an accident of who happens to expire what, and so the phone
+    // surface cannot regress it later.
     onIdleCheck: () => ({
       connections: pipeServer.getConnectionCount(),
       sessions: sessionManager.listLiveSessions().length,
       lastDisconnectAt: pipeServer.getLastDisconnectAt(),
+      pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
     // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`

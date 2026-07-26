@@ -53,6 +53,7 @@ import { summarizeActivity } from '../../../shared/activitySummary';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
+import { deliverBrainPtyHookSignal } from '../../deck/brainPtyHookBus';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import type { AgentLastMessage } from '../../../shared/events';
 import type { NotificationCategory } from '../../../shared/types';
@@ -466,6 +467,17 @@ export function registerHooksRpc(
       return { ok: false, reason: 'invalid-envelope' };
     }
     const signal: AgentSignal = params;
+
+    // 1b. Brain-pty lane. The `claude-pty` orchestrator brain runs the
+    //     interactive Claude Code TUI in its own daemon session and uses this
+    //     same bridge as its ONLY turn protocol. Claim those signals here,
+    //     above everything else: they must not reach the daemon ledger, the
+    //     notification fan-out, or the `agent.lifecycle` tee — that tee feeds
+    //     the deck's wake coalescer, so a brain's own Stop would wake the
+    //     brain, forever. See deck/brainPtyHookBus.
+    if (deliverBrainPtyHookSignal(signal)) {
+      return { ok: true };
+    }
 
     // 2. Latency observability runs BEFORE workspace match so that
     //    plugin signals from cwds outside any wmux workspace still

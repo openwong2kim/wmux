@@ -68,6 +68,7 @@ import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
+import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 
@@ -101,6 +102,11 @@ export interface CommanderViewContentProps {
    *  author label can be clicked to jump. Returns null when the pane is gone. */
   resolvePtyPane: (ptyId: string) => { workspaceId: string; paneId: string } | null;
   workspaceName?: (workspaceId: string) => string | undefined;
+  /** `claude-pty` brain only: the daemon session id of the embedded Claude
+   *  Code TUI for this workspace. When set, the terminal REPLACES the bubble
+   *  list — the TUI is the conversation view (only the turn's final text is
+   *  still recorded as a bubble, which the terminal shows anyway). */
+  brainPtyId?: string | null;
   /** P3b: recoverable panes after a reboot. Non-empty → the greeting card shows
    *  with a one-click "Recover fleet" button. */
   recoveryPanes?: RecoveryPane[];
@@ -144,6 +150,7 @@ export function CommanderViewContent({
   onJumpToPane,
   resolvePtyPane,
   workspaceName = () => undefined,
+  brainPtyId = null,
   recoveryPanes = [],
   onRecoverFleet,
   onDismissRecovery,
@@ -158,7 +165,10 @@ export function CommanderViewContent({
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
-  const isEmpty = threads.length === 0 && brainMessages.length === 0;
+  // Collapsed state of the embedded brain terminal. Local by design: it is a
+  // view preference, resets to open on remount, and needs no persistence.
+  const [terminalCollapsed, setTerminalCollapsed] = useState(false);
+  const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
 
   // Stick-to-bottom autoscroll. `stickToBottom` flips off when the user
   // scrolls up to read history (>48px from the bottom) and back on when they
@@ -282,13 +292,43 @@ export function CommanderViewContent({
             this workspace. */}
         <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
 
-        {/* Brain conversation — orchestrator turns (text bubbles + tool chips). */}
+        {/* Brain conversation. The `claude-pty` vendor embeds the brain's own
+            terminal AND keeps the bubble log below it: the TUI scrolls away and
+            drowns the brain's reports in preamble/status noise, so the
+            turn-end final texts (recovered from the transcript) remain the
+            durable report surface the operator actually reads. Every other
+            vendor renders only the normalized bubbles + tool chips. */}
+        {brainPtyId ? (
+          // Sticky wrapper: the terminal stays pinned while the bubble log
+          // scrolls beneath it, and the header collapses it to one row when
+          // the operator wants the history to have the whole dock.
+          <div className="sticky top-0 z-10 bg-[var(--bg-mantle)] -mx-4 px-4 pb-1">
+            <button
+              type="button"
+              data-commander-terminal-toggle
+              onClick={() => setTerminalCollapsed((v) => !v)}
+              className="w-full flex items-center gap-1.5 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
+            >
+              <span aria-hidden>{terminalCollapsed ? '▸' : '▾'}</span>
+              <span>{t('deck.brainTerminal')}</span>
+            </button>
+            {/* Collapse hides, never unmounts: unmounting would tear down the
+                xterm attach and drop scrollback on every toggle. */}
+            <div className={terminalCollapsed ? 'hidden' : undefined}>
+              {/* isVisible, not just `hidden`: xterm's fit addon measures the
+                  container, and a display:none wrapper measures zero — the
+                  collapsed terminal would resize itself to nothing and only
+                  recover on the next resize after expanding. */}
+              <BrainTerminalEmbed ptyId={brainPtyId} isVisible={!terminalCollapsed} />
+            </div>
+          </div>
+        ) : null}
         {brainMessages.map((m) => (
           <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
         ))}
 
         {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
-        {threads.map((thread, idx) => (
+        {!brainPtyId && threads.map((thread, idx) => (
           <CommanderThreadItem
             key={thread.dispatch ? `d-${thread.dispatch.seq}` : `r-${idx}`}
             thread={thread}
@@ -846,6 +886,11 @@ export function CommanderView(): React.ReactElement {
   const ptyReadyByPtyId = useStore((s) => s.ptyReadyByPtyId);
   const recoveryCardDismissed = useStore((s) => s.recoveryCardDismissed);
   const dismissRecoveryCard = useStore((s) => s.dismissRecoveryCard);
+  // `claude-pty` only: main pushes this workspace's brain pty id when the
+  // adapter spawns its TUI. Any other vendor never sets it, so the bubble
+  // rendering path is unchanged for them.
+  const brainPtyIds = useStore((s) => s.brainPtyIds);
+  const brainPtyId = activeWorkspaceId ? brainPtyIds[activeWorkspaceId] ?? null : null;
 
   // M1.5: recovery is per-workspace — this deck's card lists only the ACTIVE
   // workspace's recoverable panes (its orchestrator cannot target the others;
@@ -1207,6 +1252,7 @@ export function CommanderView(): React.ReactElement {
       onJumpToPane={onJumpToPane}
       resolvePtyPane={resolvePtyPane}
       workspaceName={workspaceName}
+      brainPtyId={brainPtyId}
       recoveryPanes={recoveryCardDismissed ? [] : recoveryPanes}
       onRecoverFleet={handleRecoverFleet}
       onDismissRecovery={dismissRecoveryCard}

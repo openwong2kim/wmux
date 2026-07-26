@@ -1,5 +1,6 @@
 import type { AgentStatus, Task } from '../../../shared/types';
 import { getLeafPanes } from '../../../shared/paneUtils';
+import { isBrainPtyId } from '../../../shared/constants';
 import type { StoreState } from '../index';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
@@ -176,6 +177,13 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
     for (const leaf of getLeafPanes(ws.rootPane)) {
       const surf = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const ptyId = surf?.ptyId ?? '';
+      // The orchestrator's own brain pty is never a fleet member. It should
+      // never reach a surface at all (pty.list filters it), so this is the
+      // belt to that braces: every roster in the app — DeckFleet, FleetView,
+      // the titlebar vitals chip, the mirror snapshot that feeds the deck
+      // briefing — derives from this one selector, so excluding it here keeps
+      // the brain from ever listing itself as an agent it can command.
+      if (isBrainPtyId(ptyId)) continue;
       const isActivePane = ws.activePaneId === leaf.id;
       // Surface the most-urgent attention status across ANY of the leaf's
       // surfaces (a background TAB can be awaiting_input while the active tab

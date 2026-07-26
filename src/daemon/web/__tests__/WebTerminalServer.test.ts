@@ -238,6 +238,7 @@ function makeApprovals() {
         recentlyResolved: records.filter((r) => r.state !== 'pending'),
       };
     },
+    pendingCount: () => records.filter((r) => r.state === 'pending').length,
     resolve: async (params) => {
       resolveCalls.push({ ...params });
       return box.result;
@@ -287,6 +288,7 @@ describe('WebTerminalServer', () => {
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
   let managed: { meta: Record<string, unknown> };
+  let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
 
   beforeEach(() => {
@@ -310,6 +312,7 @@ describe('WebTerminalServer', () => {
     gitScript = deps.gitScript;
     gitGate = deps.gitGate;
     managed = deps.managed;
+    live = deps.live;
     uploadsDir = deps.uploadsDir;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
@@ -354,6 +357,35 @@ describe('WebTerminalServer', () => {
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ allowInput: false, allowUpload: false });
+  });
+
+  it('never lists the orchestrator brain as a pane', async () => {
+    // The brain's TUI is a daemon session like any other, but it is the
+    // orchestrator itself — not a worker pane. It must not be listed (nor
+    // attachable/approvable) from the phone, exactly as the fleet pane listing
+    // already excludes it. Both markers are checked: the env stamp is
+    // authoritative, the id prefix is the fallback for a session whose env the
+    // daemon no longer holds.
+    live.push(
+      {
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/local/bin/claude',
+      },
+      {
+        id: 'brain-noenv', cwd: '/b2', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: {}, cmd: '/usr/local/bin/claude',
+      },
+    );
+    try {
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) });
+      const { sessions } = (await res.json()) as { sessions: Array<{ id: string }> };
+      expect(sessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
+    } finally {
+      live.length = 3;
+    }
   });
 
   it('labels sessions by workspace NAME only, and leaks nothing else from env', async () => {

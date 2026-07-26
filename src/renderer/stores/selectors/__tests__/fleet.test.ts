@@ -330,6 +330,50 @@ describe('selectFleetPanes — X8 supervision mirror', () => {
   });
 });
 
+// ─── Brain-pty exclusion ─────────────────────────────────────────────────────
+//
+// The `claude-pty` orchestrator brain runs in a daemon pty of its own. It is
+// embedded in the deck, never bound to a surface — but if one ever leaks into
+// the pane tree (a daemon build that drops `env` from its session listing makes
+// the pty.list filter fail open), it must still not be listed as a fleet agent
+// the orchestrator can command. Every roster — DeckFleet, FleetView, the vitals
+// chip, and the mirror snapshot behind the deck briefing — derives from this
+// selector, so the exclusion lives here.
+
+describe('selectFleetPanes — brain-pty exclusion', () => {
+  const wsBrain = workspace(
+    'ws-b',
+    'brain-host',
+    branch('bb', [
+      leaf('p-brain', [surface('s-brain', 'brain-abc123', { title: 'Claude Code' })]),
+      leaf('p-agent', [surface('s-agent', 'pty-agent')]),
+    ]),
+    'p-agent',
+  );
+  const state = {
+    workspaces: [wsBrain],
+    // The daemon has no idea the brain is special: it reports it as an agent
+    // that needs the user — the exact row the dogfood report showed.
+    surfaceAgentStatus: { 'brain-abc123': 'awaiting_input' as AgentStatus },
+    surfaceActivity: {},
+  };
+
+  it('drops the brain pty and keeps the real agent pane', () => {
+    const panes = selectFleetPanes(state);
+    expect(panes.map((p) => p.ptyId)).toEqual(['pty-agent']);
+  });
+
+  it('does not count the brain towards "needs attention"', () => {
+    expect(countNeedsAttention(selectFleetPanes(state))).toBe(0);
+  });
+
+  it('leaves ordinary ptyIds that merely mention "brain" alone', () => {
+    const wsOk = workspace('ws-o', 'ok', leaf('po', [surface('so', 'pty-brain-1')]), 'po');
+    const panes = selectFleetPanes({ workspaces: [wsOk], surfaceAgentStatus: {}, surfaceActivity: {} });
+    expect(panes.map((p) => p.ptyId)).toEqual(['pty-brain-1']);
+  });
+});
+
 // ─── selectLatestCompletionEvidenceTask (NB3 trust surface) ──────────────────
 
 describe('selectLatestCompletionEvidenceTask', () => {

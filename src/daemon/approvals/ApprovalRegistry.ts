@@ -165,6 +165,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     return { pending, recentlyResolved: terminal };
   }
 
+  /** Count only — skips the copy+sort `list()` does for callers that just need a number. */
+  pendingCount(): number {
+    let count = 0;
+    for (const r of this.requests) if (r.state === 'pending') count++;
+    return count;
+  }
+
   onEvent(listener: (event: ApprovalEvent) => void): () => void {
     this.listeners.add(listener);
     return () => {

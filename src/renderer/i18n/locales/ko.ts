@@ -270,6 +270,7 @@ export const ko = {
   'settings.orchestratorBrainDesc':
     '커맨드 데크를 구동할 에이전트 런타임. 기본은 Claude Code, Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 브레인별로 대화 이력이 따로 유지됩니다.',
   'settings.orchestratorBrainClaude': 'Claude Code (기본)',
+  'settings.orchestratorBrainClaudePty': 'Claude Code (터미널) — 구독',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — 실험적',
   'settings.orchestratorModel': 'agent 모델',
   'settings.orchestratorModelDesc':
@@ -280,6 +281,7 @@ export const ko = {
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/assist/auto).
   'deck.limit.window': '사용량',
+  'deck.brainTerminal': '브레인 터미널',
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
   'deck.limit.onAccount': ' · {account}',

@@ -80,17 +80,27 @@ const HOOK_TO_KIND = {
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
+// Instance suffix ('' in production, '-dev' under a dev build). Ordinary panes
+// never see WMUX_DATA_SUFFIX (it is stripped from their env), so this stays ''
+// for them and nothing changes. Brain ptys DO carry it — the deck spawns them
+// with the full instance env — and without honouring it here their signals
+// would be delivered to the PRODUCTION instance's pipe while the dev deck
+// waits forever (dogfood 2026-07-26).
+function instanceSuffix() {
+  return process.env.WMUX_DATA_SUFFIX || '';
+}
+
 function getAuthTokenPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux-auth-token');
+  return join(home, `.wmux${instanceSuffix()}-auth-token`);
 }
 
 function getPipeName() {
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\wmux${instanceSuffix()}-${username}`;
   }
-  return join(homedir() || '/tmp', '.wmux.sock');
+  return join(homedir() || '/tmp', `.wmux${instanceSuffix()}.sock`);
 }
 
 // ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------

@@ -222,6 +222,40 @@ describe('Watchdog', () => {
       expect(onIdleShutdown).not.toHaveBeenCalled();
     });
 
+    it('does not fire while an approval is pending, even with no connections or sessions', () => {
+      // A phone/web viewer watching a pane with an unresolved approval must
+      // not have the daemon vanish underneath it (M4 native-app decision).
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({
+          connections: 0,
+          sessions: 0,
+          lastDisconnectAt: Date.now() - 90_000,
+          pendingApprovals: 1,
+        }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+
+    it('fires when pendingApprovals is 0 and every other signal is empty', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({
+          connections: 0,
+          sessions: 0,
+          lastDisconnectAt: Date.now() - 90_000,
+          pendingApprovals: 0,
+        }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).toHaveBeenCalledTimes(1);
+    });
+
     it('fires after lastDisconnectAt + idleTimeoutMs has elapsed', () => {
       const onIdleShutdown = vi.fn();
       const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });

@@ -642,7 +642,12 @@ registerWorktaskHandlers(() => daemonClient);
 // process-boundary trust basis as channelLocal/fanout, pipe-unreachable): the
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
 // MCP bundle. Lazily spawned on the first deck:send; disposed on before-quit.
-const disposeDeckHandler = registerDeckHandler(() => mainWindow);
+// getDaemonClient: the `claude-pty` brain vendor spawns its interactive TUI as
+// a daemon session, so it needs the live client (a getter, because the deck
+// handler registers before the daemon connects).
+const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
+  getDaemonClient: () => daemonClient,
+});
 // WorkspaceMirror — renderer push (fire-and-forget) keeps a main-process cache
 // of the workspace tree + per-pane agent status warm, so routing / hook
 // resolution is served locally instead of via the workspace.list renderer

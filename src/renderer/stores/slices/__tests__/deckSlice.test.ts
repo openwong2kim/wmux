@@ -123,5 +123,14 @@ describe('deckSlice', () => {
       expect(a.messages[1].errorText).toBe('busy');
       expect(threadOf(WS_B).status).toBe('busy');
     });
+
+    it('hydrateBrainPtyIds replaces the map with main\'s snapshot', () => {
+      const st = useStore.getState();
+      // A stale id from before a reload must not survive the hydration —
+      // main is the authority on which terminals actually exist.
+      st.setBrainPtyId(WS_A, 'brain-old');
+      st.hydrateBrainPtyIds({ [WS_B]: 'brain-live' });
+      expect(useStore.getState().brainPtyIds).toEqual({ [WS_B]: 'brain-live' });
+    });
   });
 });

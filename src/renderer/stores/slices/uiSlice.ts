@@ -179,9 +179,10 @@ export interface UISlice {
 
   // Orchestrator brain vendor (BYOB M0): which runtime the Command Deck brain
   // runs on. 'claude' (default) = Claude Agent SDK; 'hermes' = the generic
-  // ACP adapter. Main-authoritative like fullPower — AppLayout syncs it.
-  deckBrainVendor: 'claude' | 'hermes';
-  setDeckBrainVendor: (vendor: 'claude' | 'hermes') => void;
+  // ACP adapter; 'claude-pty' = the interactive Claude Code TUI embedded in
+  // the deck. Main-authoritative like fullPower — AppLayout syncs it.
+  deckBrainVendor: import('../../../shared/types').BrainVendor;
+  setDeckBrainVendor: (vendor: import('../../../shared/types').BrainVendor) => void;
 
   // Whether the deck shows the Channels tab (the human channel UI). Default
   // OFF: the orchestrator is the single interface and channels are its

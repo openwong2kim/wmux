@@ -366,6 +366,7 @@ export const en = {
   'settings.orchestratorBrainDesc':
     'Which agent runtime drives the Command Deck. Claude Code is the default; Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
   'settings.orchestratorBrainClaude': 'Claude Code (default)',
+  'settings.orchestratorBrainClaudePty': 'Claude Code (terminal) — subscription',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — experimental',
   'settings.orchestratorModel': 'Orchestrator model',
   'settings.orchestratorModelDesc':
@@ -396,6 +397,7 @@ export const en = {
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'usage',
+  'deck.brainTerminal': 'Brain terminal',
   'deck.limit.resetsSoon': 'resets soon',
   'deck.limit.resetsIn': 'resets in {rel}',
   'deck.limit.onAccount': ' on {account}',
