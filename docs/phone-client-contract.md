@@ -451,8 +451,10 @@ POST /api/upload      body: raw JPEG or PNG bytes (no multipart)
   → 403 {error: 'uploads-disabled: server started without --allow-upload'}
   → 413 {error: 'payload too large'}
   → 415 {error: 'unsupported-format: only JPEG and PNG are accepted'}
+  → 429 {error: 'too-many-uploads: try again in a moment'}
   → 500 {error: 'write failed: …'}
   → 503 {error: 'uploads-unavailable'}
+  → 507 {error: 'uploads-full: quota exceeded, try again later'}
 ```
 
 Any authenticated principal may call it — operator token or device credential,
@@ -476,6 +478,14 @@ goes on the wire.
 your request may surface as a transport error rather than as a readable 413.
 Treat both the same.
 
+**Two bounds beyond the per-request cap, and both are retryable.** At most 4
+uploads may be buffering at once server-wide (each holds its body in memory), so
+send photos one at a time — a 5th concurrent request is 429, not queued. And the
+uploads directory holds at most 100 files or 200 MB of this route's own output;
+past that it is 507 until the sweep frees room. Treat both as "wait and retry",
+never as a reason to hide the button — unlike 403, neither says anything about
+what the operator granted.
+
 **The server names the file.** `photo-<ISO timestamp with ":" and "." replaced
 by "-">-<8 hex>.jpg|png`, written 0600 into `~/.wmux/uploads/phone/`. There is no
 field for a client-supplied name and there will not be one: nothing reads these
@@ -483,10 +493,12 @@ by name, and accepting one would be accepting a path.
 
 **`expiresAt` is a deadline, and the path is a consumable.** Files are deleted
 24 hours after they are written, and the sweep runs on upload and on daemon
-start — do not build a gallery on top of these paths, and do not hold one
+start (it is also what frees the quota above) — do not build a gallery on top of these paths, and do not hold one
 overnight. Put it in the draft, let the operator send it, forget it. Nothing
 else in the uploads directory is touched: only files matching the name pattern
-above are ever deleted.
+above are ever deleted — and the pattern is the exact generated shape,
+timestamp and hex included, so a file of your own called `photo-vacation.jpg`
+staged in that directory is neither swept nor counted against the quota.
 
 There is no offline queue. A failed upload is a notice and a manual retry.
 

@@ -2905,4 +2905,156 @@ describe('WebTerminalServer', () => {
       await bare.stop();
     }
   });
+  /** A name the sweep and the quota both recognise as ours. */
+  const generatedName = (isoMs: number, hex: string, ext: 'jpg' | 'png' = 'jpg') =>
+    `photo-${new Date(isoMs).toISOString().replace(/[:.]/g, '-')}-${hex}.${ext}`;
+
+  it('507s once the directory quota is full, and counts only its own files', async () => {
+    // Limits are injected rather than honoured at their production values: the
+    // only honest way to test a 200 MB ceiling is to fill it, and that is not a
+    // test. The pass/fail logic under test is the same either way.
+    const quota = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxFiles: 2 },
+    });
+    const info = await quota.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const url = `http://127.0.0.1:${info.port}/api/upload`;
+      const post = () =>
+        fetch(url, {
+          method: 'POST',
+          headers: bearer(info.token as string),
+          body: new Uint8Array(jpegBytes()),
+        });
+
+      expect((await post()).status).toBe(201);
+      expect((await post()).status).toBe(201);
+
+      const full = await post();
+      // 507, not 403: the operator granted the permission and the request is
+      // well formed — the server has no room, and the TTL will make some.
+      expect(full.status).toBe(507);
+      expect(await full.json()).toEqual({ error: 'uploads-full: quota exceeded, try again later' });
+    } finally {
+      await quota.stop();
+    }
+  });
+
+  it('does not charge the quota for files it did not write', async () => {
+    const quota = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxFiles: 1 },
+    });
+    // An operator's own staged files are not ours to delete, so they are not
+    // ours to count against a limit either.
+    fs.writeFileSync(path.join(uploadsDir, 'photo-vacation.jpg'), 'operator file');
+    fs.writeFileSync(path.join(uploadsDir, 'notes.txt'), 'operator file');
+    const info = await quota.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      expect(res.status).toBe(201);
+    } finally {
+      await quota.stop();
+    }
+  });
+
+  it('429s a fifth concurrent upload rather than buffering it', async () => {
+    // Each in-flight upload holds its whole body in memory, so the disk quota
+    // does nothing for RAM. maxConcurrent: 1 makes the bound observable with
+    // one held-open request instead of five.
+    const busy = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      uploadLimits: { maxConcurrent: 1 },
+    });
+    const info = await busy.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    const token = info.token as string;
+    const port = info.port as number;
+    try {
+      const bytes = jpegBytes();
+      // A request whose body arrives in two pieces, so the handler is provably
+      // inside the buffering window while the second request is made.
+      const held = httpReq({
+        host: '127.0.0.1', port, path: '/api/upload', method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Length': String(bytes.length) },
+      });
+      const heldStatus = new Promise<number>((resolve, reject) => {
+        held.on('response', (r) => { r.resume(); resolve(r.statusCode ?? 0); });
+        held.on('error', reject);
+      });
+      await new Promise<void>((resolve) => held.write(bytes.subarray(0, 4), () => resolve()));
+
+      const refused = await fetch(`http://127.0.0.1:${port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(token),
+        body: new Uint8Array(bytes),
+      });
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toEqual({ error: 'too-many-uploads: try again in a moment' });
+
+      // The slot comes back when the held request finishes, so the next caller
+      // is served rather than being locked out by a leaked counter.
+      held.end(bytes.subarray(4));
+      expect(await heldStatus).toBe(201);
+      const after = await fetch(`http://127.0.0.1:${port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(token),
+        body: new Uint8Array(bytes),
+      });
+      expect(after.status).toBe(201);
+    } finally {
+      await busy.stop();
+    }
+  });
+
+  it('sweeps only the names it generated — an operator photo-*.jpg survives', async () => {
+    let clock = Date.parse('2030-01-01T00:00:00.000Z');
+    const swept = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      uploadsDir,
+      now: () => clock,
+    });
+    const info = await swept.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+    try {
+      // Ours, and expired: the exact shape handleUpload writes.
+      const mine = path.join(uploadsDir, generatedName(clock, '0123abcd'));
+      fs.writeFileSync(mine, 'old photo');
+      // Theirs, and just as old. `photo-*.jpg` would have matched it, which is
+      // why the pattern anchors the timestamp and the hex suffix instead.
+      // (The uppercase-hex name below must not collide with `mine` — a
+      // case-insensitive filesystem would make them the same file.)
+      const theirs = path.join(uploadsDir, 'photo-vacation.jpg');
+      fs.writeFileSync(theirs, 'operator file');
+      const alsoTheirs = path.join(uploadsDir, 'photo-2030-01-01T00-00-00-000Z-DEADBEEF.jpg');
+      fs.writeFileSync(alsoTheirs, 'uppercase hex is not ours');
+
+      clock += 25 * 60 * 60 * 1000;
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/upload`, {
+        method: 'POST',
+        headers: bearer(info.token as string),
+        body: new Uint8Array(jpegBytes()),
+      });
+      expect(res.status).toBe(201);
+
+      expect(fs.existsSync(mine)).toBe(false);
+      expect(fs.existsSync(theirs)).toBe(true);
+      expect(fs.existsSync(alsoTheirs)).toBe(true);
+    } finally {
+      await swept.stop();
+    }
+  });
 });

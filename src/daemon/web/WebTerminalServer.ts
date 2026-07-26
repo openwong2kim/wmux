@@ -320,6 +320,13 @@ interface WebTerminalServerDeps {
    */
   uploadsDir?: string;
   /**
+   * Overrides for the upload bounds. Test seam only — production takes the
+   * module constants, and there is no operator surface for these. Filling a
+   * quota honestly is the only way to test the refusal, and 200 MB of temp
+   * files per test run is not a test.
+   */
+  uploadLimits?: { maxFiles?: number; maxDirBytes?: number; maxConcurrent?: number };
+  /**
    * Clock seam. The attention log's TTL eviction and the upload sweep read it;
    * injected so the unit tests can age entries deterministically instead of
    * sleeping half an hour. Defaults to the wall clock.
@@ -344,6 +351,28 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
  * of everything ever photographed at a terminal.
  */
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Ceiling on what the uploads directory may hold, in files and in bytes.
+ *
+ * The per-request cap bounds ONE upload; nothing bounded the sum, so a client
+ * in a loop could fill the operator's disk a legal 10 MB at a time — the TTL
+ * only collects what is already a day old, which is no help inside the hour it
+ * takes. A hundred photos is far past what the intended use produces (take a
+ * picture, send it, forget it) and 200 MB is a bounded, recoverable amount of
+ * disk to lose to a misbehaving client.
+ */
+const MAX_UPLOAD_FILES = 100;
+const MAX_UPLOAD_DIR_BYTES = 200 * 1024 * 1024;
+/**
+ * How many upload bodies may be buffering at once, server-wide.
+ *
+ * Each in-flight upload holds its whole body in memory up to MAX_UPLOAD_BYTES,
+ * so the disk quota above does nothing for RAM: an authenticated client opening
+ * requests in parallel costs 10 MB of heap apiece before a single byte is
+ * written or refused. Four is comfortably more than one human sending photos
+ * from one phone, and caps the exposure at 40 MB.
+ */
+const MAX_CONCURRENT_UPLOADS = 4;
 /** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
@@ -641,6 +670,13 @@ export class WebTerminalServer {
 
   /** Lazily-built git runner for `/api/sessions/:id/diff` (see that handler). */
   private git: GitRunner | null = null;
+
+  /**
+   * Upload bodies currently buffering in memory. Bounded by
+   * `MAX_CONCURRENT_UPLOADS` — see that constant for why the disk quota does
+   * not cover this.
+   */
+  private inFlightUploads = 0;
 
   constructor(private readonly deps: WebTerminalServerDeps) {}
 
@@ -1692,6 +1728,25 @@ export class WebTerminalServer {
     if (!dir) {
       return this.json(res, 503, { error: 'uploads-unavailable' });
     }
+    const limits = this.deps.uploadLimits ?? {};
+    const maxConcurrent = limits.maxConcurrent ?? MAX_CONCURRENT_UPLOADS;
+    // Checked BEFORE a byte is read: the whole point is not to hold this body
+    // in memory, so refusing after buffering it would cost exactly what the
+    // bound exists to avoid.
+    if (this.inFlightUploads >= maxConcurrent) {
+      return this.json(res, 429, { error: 'too-many-uploads: try again in a moment' });
+    }
+    this.inFlightUploads += 1;
+    // Every exit from here on has to give the slot back exactly once —
+    // success, refusal, socket dropped mid-body. `close` always fires, so it is
+    // the backstop; the explicit calls just return the slot sooner.
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      this.inFlightUploads -= 1;
+    };
+    req.on('close', release);
 
     const chunks: Buffer[] = [];
     let total = 0;
@@ -1703,6 +1758,7 @@ export class WebTerminalServer {
         aborted = true;
         this.json(res, 413, { error: 'payload too large' });
         req.destroy();
+        release();
         return;
       }
       chunks.push(chunk);
@@ -1712,6 +1768,7 @@ export class WebTerminalServer {
       const body = Buffer.concat(chunks);
       const ext = sniffImageExt(body);
       if (!ext) {
+        release();
         return this.json(res, 415, {
           error: 'unsupported-format: only JPEG and PNG are accepted',
         });
@@ -1721,6 +1778,19 @@ export class WebTerminalServer {
       // is reading a path would be a race we invented for ourselves, and an
       // upload is the only moment this directory is known to be in use.
       pruneUploads(dir, now);
+      // Measured AFTER the sweep, so a directory full of expired photos does
+      // not refuse an upload the sweep was about to make room for.
+      const held = measureUploads(dir);
+      if (
+        held.files + 1 > (limits.maxFiles ?? MAX_UPLOAD_FILES) ||
+        held.bytes + body.length > (limits.maxDirBytes ?? MAX_UPLOAD_DIR_BYTES)
+      ) {
+        release();
+        // 507, not 403: the permission is there and the request is well formed,
+        // the server simply has no room. "try again later" is honest — the TTL
+        // will free space on its own.
+        return this.json(res, 507, { error: 'uploads-full: quota exceeded, try again later' });
+      }
       const name = `photo-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto
         .randomBytes(4)
         .toString('hex')}.${ext}`;
@@ -1732,12 +1802,15 @@ export class WebTerminalServer {
         // silently replacing a photo somebody is about to send.
         fs.writeFileSync(full, body, { mode: 0o600, flag: 'wx' });
       } catch (err) {
+        release();
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
       }
+      release();
       return this.json(res, 201, { path: full, expiresAt: now + UPLOAD_TTL_MS });
     });
     req.on('error', () => {
       aborted = true;
+      release();
     });
   }
 
@@ -2727,20 +2800,28 @@ function sniffImageExt(body: Buffer): 'jpg' | 'png' | null {
 }
 
 /**
+ * Exactly the names `handleUpload` generates, every segment anchored:
+ * `photo-` + an ISO 8601 instant with `:` and `.` rewritten to `-` + `-` +
+ * eight lowercase hex + `.jpg` or `.png`.
+ *
+ * This is a DELETION predicate, so it is written to be over-strict rather than
+ * convenient. `~/.wmux/uploads` is also where an operator stages files for
+ * `browser_file_upload`, and a looser pattern (`photo-*.jpg`) would happily
+ * unlink `photo-vacation.jpg` a day after they put it there. Nothing this route
+ * did not write is ever removed.
+ */
+const UPLOAD_NAME_RE = /^photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.(jpg|png)$/;
+
+/**
  * Delete uploads older than the TTL. Modelled on `pruneOldLogs`, including the
  * swallow-everything posture: a sweep is housekeeping, and a failure to tidy up
  * must never turn into a failed upload.
- *
- * The filename guard is the load-bearing part. `~/.wmux/uploads` is also where
- * an operator drops files for `browser_file_upload`, so the sweep only touches
- * names THIS route generated — anything else in the directory is somebody
- * else's file and stays put however old it is.
  */
 function pruneUploads(dir: string, now: number): void {
   try {
     const cutoff = now - UPLOAD_TTL_MS;
     for (const file of fs.readdirSync(dir)) {
-      if (!/^photo-.*\.(jpg|png)$/.test(file)) continue;
+      if (!UPLOAD_NAME_RE.test(file)) continue;
       const full = path.join(dir, file);
       try {
         if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
@@ -2751,6 +2832,33 @@ function pruneUploads(dir: string, now: number): void {
   } catch {
     /* dir missing — nothing to sweep */
   }
+}
+
+/**
+ * What this route is currently holding, for the quota check. Counts the SAME
+ * names the sweep would delete and nothing else — an operator's own staged
+ * files are not ours to delete, so they are not ours to charge for either.
+ *
+ * An unreadable directory reads as empty. The write is about to fail on its own
+ * if the directory is genuinely broken, and that error is the useful one.
+ */
+function measureUploads(dir: string): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  try {
+    for (const file of fs.readdirSync(dir)) {
+      if (!UPLOAD_NAME_RE.test(file)) continue;
+      try {
+        bytes += fs.statSync(path.join(dir, file)).size;
+        files += 1;
+      } catch {
+        /* vanished between readdir and stat — not holding anything */
+      }
+    }
+  } catch {
+    /* dir missing — nothing held */
+  }
+  return { files, bytes };
 }
 
 /**
