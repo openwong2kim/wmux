@@ -205,7 +205,7 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput}
+GET /api/config    → {allowInput, allowUpload}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
@@ -439,7 +439,60 @@ hold.
 A `410` from Apple makes the daemon forget your registration, so a reinstalled
 app must register again before it hears anything.
 
-## 8. What is not built yet
+## 8. Photo upload
+
+A phone has a camera and a desktop does not, which is the whole reason this
+route exists. `POST /api/input` writes to a PTY and an image cannot ride it, so
+the bytes land on disk and you put the **path** in the composer.
+
+```
+POST /api/upload      body: raw JPEG or PNG bytes (no multipart)
+  → 201 {path, expiresAt}
+  → 403 {error: 'uploads-disabled: server started without --allow-upload'}
+  → 413 {error: 'payload too large'}
+  → 415 {error: 'unsupported-format: only JPEG and PNG are accepted'}
+  → 500 {error: 'write failed: …'}
+  → 503 {error: 'uploads-unavailable'}
+```
+
+Any authenticated principal may call it — operator token or device credential,
+same as every other route.
+
+**The grant is its own flag.** `--allow-upload`, not `--allow-input`: typing
+into a pane the operator is watching is a smaller thing than writing a file into
+their home directory, so one never implies the other. Gate the button on
+`allowUpload` from `/api/config`, and match the 403 by **prefix** — the text
+after the colon is prose and may be reworded, the `uploads-disabled:` tag is
+not. A daemon predating this route has no `allowUpload` key at all; read a
+missing key as `false` and hide the button.
+
+**The bytes decide the format, not your header.** JPEG (`FF D8 FF`) and PNG
+(the 8-byte signature) only; anything else is 415, including an empty body.
+`Content-Type` is ignored entirely — send `application/octet-stream` and do not
+expect it to change the outcome. Transcode HEIC to JPEG on the phone; HEIC never
+goes on the wire.
+
+**10 MB cap**, and the server destroys the connection when a body exceeds it, so
+your request may surface as a transport error rather than as a readable 413.
+Treat both the same.
+
+**The server names the file.** `photo-<ISO timestamp with ":" and "." replaced
+by "-">-<8 hex>.jpg|png`, written 0600 into `~/.wmux/uploads/phone/`. There is no
+field for a client-supplied name and there will not be one: nothing reads these
+by name, and accepting one would be accepting a path.
+
+**`expiresAt` is a deadline, and the path is a consumable.** Files are deleted
+24 hours after they are written, and the sweep runs on upload and on daemon
+start — do not build a gallery on top of these paths, and do not hold one
+overnight. Put it in the draft, let the operator send it, forget it. Nothing
+else in the uploads directory is touched: only files matching the name pattern
+above are ever deleted.
+
+There is no offline queue. A failed upload is a notice and a manual retry.
+
+---
+
+## 9. What is not built yet
 
 - **`session:critical` is notify-only** and is not suitable for a remote approve
   button — see issue #605.
@@ -449,7 +502,7 @@ app must register again before it hears anything.
 
 ---
 
-## 9. Things the browser client got wrong
+## 10. Things the browser client got wrong
 
 Every one of these passed unit tests and a live-daemon harness first, and was
 found only on a real phone. They are the cheapest tests to write on day one.
