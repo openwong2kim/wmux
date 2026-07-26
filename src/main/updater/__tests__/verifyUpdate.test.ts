@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  compareSemVer,
   normalizeVersion,
   isAllowedDownloadUrl,
   digestsEqual,
@@ -26,6 +27,30 @@ describe('normalizeVersion', () => {
     expect(normalizeVersion('v2.14.0')).toBe('2.14.0');
     expect(normalizeVersion('2.14.0')).toBe('2.14.0');
     expect(normalizeVersion('  V1.0 ')).toBe('1.0');
+  });
+});
+
+describe('compareSemVer', () => {
+  it('orders major, minor, and patch releases', () => {
+    expect(compareSemVer('2.0.0', '1.99.99')).toBeGreaterThan(0);
+    expect(compareSemVer('1.10.0', '1.9.99')).toBeGreaterThan(0);
+    expect(compareSemVer('1.0.1', '1.0.0')).toBeGreaterThan(0);
+    expect(compareSemVer('v1.0.0', '1.0.0')).toBe(0);
+    expect(compareSemVer('1.0.0', '1.0.1')).toBeLessThan(0);
+  });
+
+  it('follows SemVer prerelease precedence and ignores build metadata', () => {
+    expect(compareSemVer('1.0.0', '1.0.0-rc.1')).toBeGreaterThan(0);
+    expect(compareSemVer('1.0.0-rc.2', '1.0.0-rc.1')).toBeGreaterThan(0);
+    expect(compareSemVer('1.0.0-beta.11', '1.0.0-beta.2')).toBeGreaterThan(0);
+    expect(compareSemVer('1.0.0+build.2', '1.0.0+build.1')).toBe(0);
+  });
+
+  it('fails closed for invalid versions', () => {
+    expect(compareSemVer('latest', '1.0.0')).toBeNull();
+    expect(compareSemVer('1.1', '1.0.0')).toBeNull();
+    expect(compareSemVer('1.1.0', 'dev')).toBeNull();
+    expect(compareSemVer('1.1.0-rc.01', '1.1.0-rc.1')).toBeNull();
   });
 });
 

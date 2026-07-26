@@ -4,9 +4,8 @@
  * The in-app updater ships for Windows (Squirrel.Windows) and Apple Silicon
  * macOS (Squirrel.Mac). This suite pins three invariants:
  *
- *   1. win32 is byte-for-byte unchanged — start() schedules a check that hits
- *      the EXACT update.electronjs.org/<repo>/win32/<version> feed URL.
- *   2. darwin-arm64 polls its OWN feed segment and manifest file, so the two
+ *   1. win32 discovers updates directly from its GitHub release manifest.
+ *   2. darwin-arm64 polls its OWN manifest file, so the two
  *      platforms can never be served each other's artifacts.
  *   3. on every other platform (linux, Intel macOS — no build is produced) the
  *      updater is inert: no auto-check timer, UPDATE_CHECK resolves
@@ -24,8 +23,10 @@ import { join } from 'node:path';
 import { IPC } from '../../../shared/constants';
 
 const FAKE_VERSION = '9.9.9';
-const EXPECTED_WIN32_FEED = `https://update.electronjs.org/skflowne/fmux/win32/${FAKE_VERSION}`;
-const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/skflowne/fmux/darwin-arm64/${FAKE_VERSION}`;
+const EXPECTED_WIN32_MANIFEST =
+  'https://github.com/skflowne/fmux/releases/latest/download/update-manifest.json';
+const EXPECTED_DARWIN_MANIFEST =
+  'https://github.com/skflowne/fmux/releases/latest/download/update-manifest-darwin-arm64.json';
 
 /** Platforms with no in-app updater: [platform, arch]. */
 const UNSUPPORTED: ReadonlyArray<readonly [NodeJS.Platform, string]> = [
@@ -147,7 +148,7 @@ async function loadForPlatform(
 }
 
 describe('AutoUpdater platform gating', () => {
-  it('win32: start() schedules a check that hits the exact win32 feed URL (byte-identical)', async () => {
+  it('win32: start() schedules a check against the GitHub release manifest', async () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('win32');
 
@@ -157,11 +158,12 @@ describe('AutoUpdater platform gating', () => {
     // First check fires 15s after start.
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+    expect(requestUrls).toContain(EXPECTED_WIN32_MANIFEST);
+    expect(requestUrls.some((url) => url.includes('update.electronjs.org'))).toBe(false);
     updater.stop();
   });
 
-  it('win32: periodic timer keeps polling the win32 feed', async () => {
+  it('win32: periodic timer keeps polling the GitHub release manifest', async () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('win32');
 
@@ -171,11 +173,11 @@ describe('AutoUpdater platform gating', () => {
     const afterFirst = requestUrls.length;
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000); // one interval
     expect(requestUrls.length).toBeGreaterThan(afterFirst);
-    expect(requestUrls.every((u) => u === EXPECTED_WIN32_FEED)).toBe(true);
+    expect(requestUrls.every((u) => u === EXPECTED_WIN32_MANIFEST)).toBe(true);
     updater.stop();
   });
 
-  it('darwin-arm64: start() schedules a check that hits the darwin-arm64 feed URL', async () => {
+  it('darwin-arm64: start() schedules a check against its own GitHub manifest', async () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('darwin');
 
@@ -183,9 +185,9 @@ describe('AutoUpdater platform gating', () => {
     updater.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect(requestUrls).toContain(EXPECTED_DARWIN_FEED);
+    expect(requestUrls).toContain(EXPECTED_DARWIN_MANIFEST);
     // Never the Windows feed: the two platforms' artifacts must not cross.
-    expect(requestUrls).not.toContain(EXPECTED_WIN32_FEED);
+    expect(requestUrls).not.toContain(EXPECTED_WIN32_MANIFEST);
     updater.stop();
   });
 
@@ -262,7 +264,7 @@ describe('AutoUpdater platform gating', () => {
 // #502 — Squirrel's installer crashes when run while the app is still alive,
 // so "Restart to install" must actually restart: after launching the verified
 // installer, the app quits (normal quit = detach; daemon + sessions persist).
-// These tests drive the real two-step flow (feed → manifest → download →
+// These tests drive the real two-step flow (manifest → download →
 // sha256 verify) through the mocked net layer, then invoke UPDATE_INSTALL.
 describe('AutoUpdater #502 — quit after launching the installer', () => {
   const UPDATE_VERSION = '9.9.10';
@@ -271,12 +273,6 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
   const DOWNLOAD_URL = `https://github.com/skflowne/fmux/releases/download/v${UPDATE_VERSION}/fmux-${UPDATE_VERSION}.Setup.exe`;
 
   const downloadRoutes = (url: string) => {
-    if (url === EXPECTED_WIN32_FEED) {
-      return {
-        statusCode: 200,
-        body: Buffer.from(JSON.stringify({ name: `v${UPDATE_VERSION}`, notes: 'notes', url: DOWNLOAD_URL })),
-      };
-    }
     if (url.endsWith('/update-manifest.json')) {
       return {
         statusCode: 200,
@@ -389,12 +385,6 @@ describe('AutoUpdater darwin-arm64 install (Squirrel.Mac loopback feed)', () => 
   const DOWNLOAD_URL = `https://github.com/openwong2kim/wmux/releases/download/v${UPDATE_VERSION}/${ZIP_NAME}`;
 
   const darwinRoutes = (url: string) => {
-    if (url === EXPECTED_DARWIN_FEED) {
-      return {
-        statusCode: 200,
-        body: Buffer.from(JSON.stringify({ name: `v${UPDATE_VERSION}`, notes: 'notes', url: DOWNLOAD_URL })),
-      };
-    }
     if (url.endsWith('/update-manifest-darwin-arm64.json')) {
       return {
         statusCode: 200,

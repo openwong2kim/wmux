@@ -36,6 +36,62 @@ export function normalizeVersion(v: string): string {
   return v.trim().replace(/^v/i, '');
 }
 
+interface ParsedSemVer {
+  core: [bigint, bigint, bigint];
+  prerelease: string[];
+}
+
+function parseSemVer(raw: string): ParsedSemVer | null {
+  const match = normalizeVersion(raw).match(
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+  );
+  if (!match) return null;
+  const prerelease = match[4]?.split('.') ?? [];
+  if (prerelease.some((identifier) => /^\d+$/.test(identifier) && /^0\d+/.test(identifier))) {
+    return null;
+  }
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease,
+  };
+}
+
+/**
+ * Compare two SemVer strings. Returns a positive number when `candidate` is
+ * newer, zero when equivalent, a negative number when older, and null when
+ * either input is not valid SemVer.
+ */
+export function compareSemVer(candidate: string, current: string): number | null {
+  const a = parseSemVer(candidate);
+  const b = parseSemVer(current);
+  if (!a || !b) return null;
+
+  for (let i = 0; i < a.core.length; i++) {
+    if (a.core[i] > b.core[i]) return 1;
+    if (a.core[i] < b.core[i]) return -1;
+  }
+
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0;
+  if (a.prerelease.length === 0) return 1;
+  if (b.prerelease.length === 0) return -1;
+
+  const count = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let i = 0; i < count; i++) {
+    const ai = a.prerelease[i];
+    const bi = b.prerelease[i];
+    if (ai === undefined) return -1;
+    if (bi === undefined) return 1;
+    if (ai === bi) continue;
+
+    const aNumeric = /^\d+$/.test(ai);
+    const bNumeric = /^\d+$/.test(bi);
+    if (aNumeric && bNumeric) return BigInt(ai) > BigInt(bi) ? 1 : -1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return ai > bi ? 1 : -1;
+  }
+  return 0;
+}
+
 /**
  * Only https downloads from github.com (the release host) are accepted. The
  * release asset 302-redirects to objects.githubusercontent.com; we validate the

@@ -27,13 +27,13 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
-  // Mutable so a test can bump the offered release mid-run (supersede paths).
+  // Mutable so a test can bump the manifest release mid-run (supersede paths).
   const feed = { version: NEW_VERSION };
   const requestUrls: string[] = [];
   const ipcHandlers = new Map<string, (...a: unknown[]) => unknown>();
   const openPath = vi.fn(async (_p: string) => '');
 
-  // Route net.request by URL: feed → update JSON, manifest → manifest JSON,
+  // Route net.request by URL: manifest → discovery + integrity JSON,
   // download → 200 with Content-Length + body chunk.
   const request = vi.fn((url: string) => {
     requestUrls.push(url);
@@ -42,9 +42,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
       on(ev: string, cb: (arg: unknown) => void) { cbs[ev] = cb; return req; },
       end() {
         Promise.resolve().then(() => {
-          if (url.includes('update.electronjs.org')) {
-            respondJson(cbs, { name: feed.version, notes: 'notes', url: DL_URL });
-          } else if (url.includes('update-manifest.json')) {
+          if (url.includes('update-manifest.json')) {
             respondJson(cbs, { version: feed.version, setupExe: `fmux-${feed.version}.Setup.exe`, sha256: sha, url: DL_URL });
           } else {
             respondBody(cbs, INSTALLER_BODY);
@@ -118,7 +116,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock };
 }
 
-/** Flush queued microtasks so the chained net responses (feed→manifest→download) settle. */
+/** Flush queued microtasks so the chained manifest → download responses settle. */
 async function flush() { for (let i = 0; i < 50; i++) await Promise.resolve(); }
 
 /** Poll until `cond` holds (for real-timer waits like performInstall's 500ms session-save). */
@@ -136,7 +134,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
     (updater as { check: (oneShot?: boolean) => Promise<void> }).check();
 
   it('a background check auto-downloads, streams progress, and emits downloaded (no auto-install)', async () => {
-    const { AutoUpdater, sent, openPath, quit, win } = await loadWin32();
+    const { AutoUpdater, requestUrls, sent, openPath, quit, win } = await loadWin32();
     const updater = new AutoUpdater(() => win as never);
     updater.start();
 
@@ -148,6 +146,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(statuses).toContain(`${IPC.UPDATE_AVAILABLE}:available`);
     expect(statuses).toContain(`${IPC.UPDATE_DOWNLOAD}:downloading`);
     expect(statuses).toContain(`${IPC.UPDATE_AVAILABLE}:downloaded`);
+    expect(requestUrls.some((url) => url.includes('update.electronjs.org'))).toBe(false);
 
     const progress = sent.find((s) => s.channel === IPC.UPDATE_DOWNLOAD)!;
     expect(progress.data.percent).toBe(100);
@@ -156,6 +155,22 @@ describe('AutoUpdater two-step flow (win32)', () => {
     // still has to press "Restart to install".
     expect(openPath).not.toHaveBeenCalled();
     expect(quit).not.toHaveBeenCalled();
+  });
+
+  it('treats an equal manifest version as current without downloading', async () => {
+    const { AutoUpdater, feed, requestUrls, sent, win } = await loadWin32();
+    feed.version = FAKE_VERSION;
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    await backgroundCheck(updater);
+    await flush();
+
+    expect(sent.map((s) => `${s.channel}:${s.data.status}`))
+      .toContain(`${IPC.UPDATE_NOT_AVAILABLE}:not-available`);
+    expect(requestUrls).toEqual([
+      'https://github.com/skflowne/fmux/releases/latest/download/update-manifest.json',
+    ]);
   });
 
   it('a user-triggered check (UPDATE_CHECK) is one-shot: auto-installs once verified', async () => {
@@ -223,13 +238,22 @@ describe('AutoUpdater two-step flow (win32)', () => {
     const internals = updater as unknown as {
       isChecking: boolean;
       oneShotInstall: boolean;
-      pendingUpdate: { name: string; notes: string; url: string } | null;
+      pendingUpdate: { name: string; notes: string; manifest: unknown } | null;
       check: (oneShot?: boolean) => Promise<void>;
       downloadUpdate: () => Promise<void>;
     };
     // A background poll is already in flight (downloading), so isChecking is true.
     internals.isChecking = true;
-    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+    internals.pendingUpdate = {
+      name: NEW_VERSION,
+      notes: 'n',
+      manifest: {
+        version: NEW_VERSION,
+        fileName: `fmux-${NEW_VERSION}.Setup.exe`,
+        sha256: GOOD_SHA,
+        url: DL_URL,
+      },
+    };
 
     // Manual press lands mid-poll: guarded out of a second check, but the intent
     // is recorded (set before the isChecking guard).
@@ -253,12 +277,21 @@ describe('AutoUpdater two-step flow (win32)', () => {
     const internals = updater as unknown as {
       oneShotInstall: boolean;
       downloadedPath: string | null;
-      pendingUpdate: { name: string; notes: string; url: string } | null;
+      pendingUpdate: { name: string; notes: string; manifest: unknown } | null;
       check: (oneShot?: boolean) => Promise<void>;
     };
     // Pretend a background poll already downloaded + verified this version.
     internals.downloadedPath = 'C:/tmp/wmux-update-9.9.10.Setup.exe';
-    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+    internals.pendingUpdate = {
+      name: NEW_VERSION,
+      notes: 'n',
+      manifest: {
+        version: NEW_VERSION,
+        fileName: `fmux-${NEW_VERSION}.Setup.exe`,
+        sha256: GOOD_SHA,
+        url: DL_URL,
+      },
+    };
 
     // Manual press → fast path → performInstall, whose launch fails.
     await internals.check(true);

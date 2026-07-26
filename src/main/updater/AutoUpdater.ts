@@ -1,8 +1,9 @@
 /**
  * AutoUpdater
  *
- * update.electronjs.org-based auto-update system.
- * Checks for updates via Chromium's net module; installs via Squirrel's Update.exe.
+ * GitHub Releases-based auto-update system.
+ * Discovers and verifies updates from the CI-published manifest via Chromium's
+ * net module, then installs via Squirrel's Update.exe.
  *
  * Electron's built-in autoUpdater (Squirrel's .NET HttpWebRequest) fails on
  * GitHub's multiple 302 redirects and TLS 1.2, so Windows does not use it.
@@ -17,18 +18,22 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
-import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
+import {
+  compareSemVer,
+  digestsEqual,
+  isAllowedDownloadUrl,
+  normalizeVersion,
+  validateManifest,
+  type UpdateManifest,
+} from './verifyUpdate';
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 
 const REPO = 'skflowne/fmux';
-// update.electronjs.org keys releases by platform-arch. Only the two arches we
-// actually publish installers for are ever requested (see isUpdaterSupported).
 const isDarwin = process.platform === 'darwin';
-const UPDATE_PLATFORM = isDarwin ? 'darwin-arm64' : 'win32';
-const UPDATE_SERVER = `https://update.electronjs.org/${REPO}/${UPDATE_PLATFORM}/${app.getVersion()}`;
 // CI publishes a per-platform manifest (version + setupExe|file + sha256 + url)
 // as a release asset; the "latest" alias always points at the newest release.
-// The updater pins the artifact's SHA-256 against this before installing.
+// This is both the discovery record and the integrity pin, avoiding the stale
+// cache of a separate release-discovery service.
 const MANIFEST_FILE = isDarwin ? 'update-manifest-darwin-arm64.json' : 'update-manifest.json';
 const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/${MANIFEST_FILE}`;
 
@@ -48,7 +53,7 @@ const isUpdaterSupported =
 interface UpdateInfo {
   name: string;
   notes: string;
-  url: string;
+  manifest: UpdateManifest;
 }
 
 export class AutoUpdater {
@@ -189,12 +194,7 @@ export class AutoUpdater {
 
     let tempPath: string | null = null;
     try {
-      const manifestRaw = await this.fetchManifest();
-      const validated = validateManifest(manifestRaw, pending.name);
-      if (!validated.ok) {
-        throw new Error(`update manifest rejected: ${validated.reason}`);
-      }
-      tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
+      tempPath = await this.downloadAndVerify(pending.manifest, (percent) => {
         this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
       });
       if (this.pendingUpdate?.name !== pending.name) {
@@ -241,33 +241,31 @@ export class AutoUpdater {
   }
 
   private fetchUpdate(): Promise<UpdateInfo | null> {
-    return new Promise((resolve, reject) => {
-      const request = net.request(UPDATE_SERVER);
-      let body = '';
+    return this.fetchManifest().then((raw) => {
+      const offeredVersion = raw && typeof raw === 'object'
+        ? (raw as Record<string, unknown>).version
+        : undefined;
+      const validated = validateManifest(
+        raw,
+        typeof offeredVersion === 'string' ? offeredVersion : '',
+      );
+      if (!validated.ok) {
+        throw new Error(`update manifest rejected: ${validated.reason}`);
+      }
 
-      request.on('response', (response) => {
-        // 204 = no update available
-        if (response.statusCode === 204) {
-          resolve(null);
-          return;
-        }
-        if (response.statusCode !== 200) {
-          reject(new Error(`Update server returned ${response.statusCode}`));
-          return;
-        }
-        response.on('data', (chunk) => { body += chunk.toString(); });
-        response.on('end', () => {
-          try {
-            const data = JSON.parse(body) as UpdateInfo;
-            resolve(data);
-          } catch {
-            reject(new Error('Invalid JSON from update server'));
-          }
-        });
-      });
+      const comparison = compareSemVer(validated.manifest.version, app.getVersion());
+      if (comparison === null) {
+        throw new Error(
+          `update manifest has an invalid SemVer version: "${validated.manifest.version}"`,
+        );
+      }
+      if (comparison <= 0) return null;
 
-      request.on('error', (err) => reject(err));
-      request.end();
+      return {
+        name: `v${normalizeVersion(validated.manifest.version)}`,
+        notes: '',
+        manifest: validated.manifest,
+      };
     });
   }
 
