@@ -167,7 +167,9 @@ export class Watchdog {
    *   2. Already fired once → never fire again (the daemon is on its
    *      way down; firing twice would spam `onIdleShutdown` calls).
    *   3. Still inside grace window → too early to even ask.
-   *   4. Active connections OR live sessions → daemon is in use.
+   *   4. Active connections OR live sessions OR pending approvals → the
+   *      daemon is in use. A pending approval counts even with no client
+   *      attached: shutting down would strand the request nobody answered.
    *   5. Compute idle window from `lastDisconnectAt ?? startTime` —
    *      a daemon that booted and never saw a client counts grace +
    *      idleTimeout elapsed since boot.
