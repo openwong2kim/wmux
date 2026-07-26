@@ -7,6 +7,7 @@ import {
   updateCwd,
   updatePaneLocation,
 } from '../../ipc/handlers/metadata.handler';
+import { PTYBridge } from '../PTYBridge';
 
 vi.mock('electron', () => ({
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
@@ -88,6 +89,82 @@ describe('local pane location projection', () => {
       shell: 'pwsh.exe',
     });
     expect(getPaneLocationSnapshot(ptyId)!.generation).toBeGreaterThan(oldGeneration);
+    reset(ptyId);
+  });
+
+  it('does not publish or retain a late result after the pane ends', async () => {
+    const ptyId = 'local-ended';
+    reset(ptyId);
+    let resolve!: (distro: string | undefined) => void;
+    resolveWslDistro.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const received = vi.fn();
+    const unsubscribe = onPaneLocationUpdate(received);
+
+    updatePaneLocation(ptyId, {
+      domain: 'wsl',
+      cwd: '/home/me',
+      shell: 'wsl.exe',
+    });
+    expect(received).toHaveBeenCalledTimes(1);
+
+    removePaneLocation(ptyId);
+    resolve('Ubuntu');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getPaneLocationSnapshot(ptyId)).toBeUndefined();
+    expect(received).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    reset(ptyId);
+  });
+
+  it('ends the location generation when the local process exits naturally', async () => {
+    const ptyId = 'local-natural-exit';
+    reset(ptyId);
+    let resolve!: (distro: string | undefined) => void;
+    resolveWslDistro.mockReturnValue(new Promise((done) => { resolve = done; }));
+    let exit!: (info: { exitCode: number; signal?: number }) => void;
+    const process = {
+      pid: 123,
+      onData: vi.fn(),
+      onExit: vi.fn((listener) => { exit = listener; }),
+    };
+    const instance = { id: ptyId, process, shell: 'wsl.exe' };
+    const manager = {
+      get: vi.fn(() => instance),
+      remove: vi.fn(),
+      onDispose: vi.fn(),
+    };
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn() },
+    };
+    const bridge = new PTYBridge(
+      manager as never,
+      () => win as never,
+      undefined,
+      undefined,
+      removePaneLocation,
+    );
+    bridge.setupDataForwarding(ptyId);
+    const received = vi.fn();
+    const unsubscribe = onPaneLocationUpdate(received);
+
+    updatePaneLocation(ptyId, {
+      domain: 'wsl',
+      cwd: '/home/me',
+      shell: 'wsl.exe',
+    });
+    exit({ exitCode: 0 });
+    resolve('Ubuntu');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getPaneLocationSnapshot(ptyId)).toBeUndefined();
+    expect(received).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
     reset(ptyId);
   });
 });

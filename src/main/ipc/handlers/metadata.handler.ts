@@ -238,7 +238,7 @@ export async function runMetadataPollTick(
     const instance = ptyManager.get(ptyId);
     if (localPtyOwnership && !instance) {
       cwdMap.delete(ptyId);
-      paneIdentities.delete(ptyId);
+      removePaneLocation(ptyId);
       branchMap.delete(ptyId);
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
