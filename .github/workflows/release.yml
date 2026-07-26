@@ -65,6 +65,8 @@ jobs:
       - name: Replace unsigned Setup.exe with the signed one
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
+        env:
+          SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
         run: |
           $signed = Get-ChildItem "out/signed" -Recurse -Filter "*.Setup.exe" | Select-Object -First 1
           if (-not $signed) { Write-Error "SignPath returned no signed Setup.exe"; exit 1 }
@@ -78,7 +80,7 @@ jobs:
           # (release-signing), so a test-signed release still publishes.
           $sig = Get-AuthenticodeSignature $dest.FullName
           if (-not $sig.SignerCertificate) { Write-Error "Signed exe carries no signature: $($sig.Status)"; exit 1 }
-          if ('${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}' -eq 'release-signing' -and $sig.Status -ne 'Valid') {
+          if ($env:SIGNING_POLICY_SLUG -eq 'release-signing' -and $sig.Status -ne 'Valid') {
             Write-Error "Production signature is not Valid: $($sig.Status)"; exit 1
           }
           Write-Host "Signed Setup.exe in place (status=$($sig.Status), publisher: $($sig.SignerCertificate.Subject))"
@@ -106,9 +108,12 @@ jobs:
       # update.electronjs.org's JSON cannot carry a custom hash field, so this
       # side-car is fetched from the releases/latest/download/ alias.
       - name: Write update manifest
+        env:
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
+          SETUP_SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
-          $version  = "${{ steps.pkg.outputs.version }}"
-          $sha256   = "${{ steps.checksum.outputs.sha256 }}".ToLower()
+          $version  = $env:PKG_VERSION
+          $sha256   = "$env:SETUP_SHA256".ToLower()
           $setupExe = "wmux-$version.Setup.exe"
           $url      = "https://github.com/openwong2kim/wmux/releases/download/v$version/$setupExe"
           $manifest = [ordered]@{
@@ -125,8 +130,10 @@ jobs:
       # release notes are the real changelog (not just the auto PR-title line).
       # generate_release_notes still appends "What's Changed" + the compare link.
       - name: Extract release notes from CHANGELOG
+        env:
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
-          $version = "${{ steps.pkg.outputs.version }}"
+          $version = $env:PKG_VERSION
           $lines = Get-Content CHANGELOG.md
           $start = -1; $end = $lines.Count
           for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -153,8 +160,7 @@ jobs:
         continue-on-error: true
         # The version reaches the script through env rather than direct `${{ }}`
         # interpolation, so a crafted package.json version string is data to
-        # PowerShell instead of script text. (The surrounding steps still
-        # interpolate directly — pre-existing, out of scope for a release PR.)
+        # PowerShell instead of script text.
         env:
           PKG_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
@@ -200,9 +206,12 @@ jobs:
           draft: false
 
       - name: Build Chocolatey package
+        env:
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
+          SETUP_SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
-          $version = "${{ steps.pkg.outputs.version }}"
-          $sha256  = "${{ steps.checksum.outputs.sha256 }}"
+          $version = $env:PKG_VERSION
+          $sha256  = $env:SETUP_SHA256
           # Inject version into nuspec
           (Get-Content chocolatey/wmux.nuspec) -replace '\$version\$', $version | Set-Content chocolatey/wmux.nuspec
           # Inject checksum into install script
@@ -215,10 +224,11 @@ jobs:
       - name: Push to Chocolatey
         if: env.CHOCO_API_KEY != ''
         continue-on-error: true
-        run: choco push out/choco/wmux.${{ steps.pkg.outputs.version }}.nupkg --source https://push.chocolatey.org --api-key ${{ secrets.CHOCO_API_KEY }}
+        run: choco push "out/choco/wmux.$env:PKG_VERSION.nupkg" --source https://push.chocolatey.org --api-key $env:CHOCO_API_KEY
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
 
   winget:
     name: Publish to WinGet
