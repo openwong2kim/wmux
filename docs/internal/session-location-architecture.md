@@ -40,19 +40,37 @@ metadata work must never start a distribution merely to answer a poll.
 
 ## Live pane state
 
-Main-process metadata deliberately splits a live pane's state in
+Main-process metadata owns local-mode live pane state in
 `src/main/ipc/handlers/metadata.handler.ts`:
 
 - `paneIdentities` holds the cwd-independent shell and optional WSL
   distribution.
 - `cwdMap` holds the current cwd reported by the live shell.
+- `paneLocationSnapshots` publishes the combined location as an atomic
+  `{ generation, revision, location }` value.
 - `getPaneCommandTarget` combines them when a consumer needs to run a command.
 
-Create and reconnect paths must call `updatePaneLocation` before `updateCwd`.
-`updateCwd` synchronously notifies listeners, so reversing this order exposes a
-cwd without its domain identity. The daemon reconnect path also prefers the
-daemon's stored `location`; `resolveSessionLocation` supplies the legacy
-`{ cmd, cwd }` fallback.
+Each new local pane ID starts a new generation. Cwd changes and late WSL
+distribution enrichment increment its revision, and teardown cancels pending
+enrichment before deleting the snapshot. `PTYBridge` forwards cwd changes only
+through this owner; it does not separately publish raw cwd events that could
+race the atomic location.
+
+In daemon mode, `DaemonSession.location` is the durable owner. The daemon
+session manager applies the same generation/revision protocol, persists an
+accepted late enrichment before broadcasting it, and exposes the snapshot on
+create, list, and reconnect responses. The daemon event travels through
+`DaemonClient` and preload to the renderer as the same atomic value. Main does
+not resolve or reclassify daemon-owned panes.
+
+The renderer compares generation first and revision second. It queues an event
+that arrives before surface binding, and ignores a stale RPC response that
+arrives after a newer event. Projection ordering is reset after an authenticated
+daemon replacement because the replacement may start with lower generation
+numbers.
+
+The daemon reconnect path prefers the daemon's stored `location`;
+`resolveSessionLocation` supplies the legacy `{ cmd, cwd }` fallback.
 
 The renderer follows the same preference in
 `src/renderer/utils/focusedSurface.ts`: a surface's stored location is
@@ -66,13 +84,15 @@ not exist, so its defensive default uses case-sensitive POSIX behavior.
 
 ## WSL distribution discovery
 
-`src/main/pty/wslDistro.ts` resolves a pane's distribution in this order:
+`src/shared/wslDistro.ts` is the single resolver implementation. It receives
+the pane shell and resolves a distribution from `wsl.exe -l` variants, accepting
+a single registered or single running distribution only when the result is
+unambiguous. Spawn arguments and environment variables are not resolver inputs;
+there is no separate precedence path for producers to populate.
 
-1. an explicit `-d` or `--distribution` spawn argument;
-2. the pane's `WSL_DISTRO_NAME`;
-3. enumeration with `wsl.exe -l` variants;
-4. a single registered or single running distribution when that is
-   unambiguous.
+Local mode runs the resolver from the main metadata registry. Daemon mode runs
+it from the daemon session manager. Consumers receive the resulting stored
+location and must not invoke the resolver themselves.
 
 Enumeration never executes a command inside a distribution.
 `createWslRunner` owns the bytes-to-text and process policy; `defaultRunner` is
@@ -105,6 +125,9 @@ authority:
 
 Tests should exercise the boundary that owns each behavior. Parser and
 conversion cases belong in `src/shared/__tests__/sessionLocation.test.ts`;
-WSL byte decoding and process policy belong below the runner seam in
-`src/main/pty/__tests__/wslDistro.test.ts`; live identity/cwd ordering belongs
-at the registered PTY handler boundary.
+generation-aware enrichment belongs in
+`src/shared/__tests__/sessionLocationEnrichment.test.ts`; WSL byte decoding and
+process policy belong below the runner seam in
+`src/main/pty/__tests__/wslDistro.test.ts`; atomic projection and live
+identity/cwd ordering belong at the daemon manager, preload, renderer store, and
+registered PTY handler boundaries.
