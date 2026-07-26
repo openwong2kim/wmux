@@ -202,22 +202,6 @@ export function preparePtyLocation(
   return { spawnCwd: location.cwd, prefixArgs: [] };
 }
 
-/**
- * Shell+cwd form of `preparePtyLocation`, for spawn sites that hold a raw
- * (cmd, cwd) pair rather than a classified location. Delegates so the spawn
- * cwd stays computed in exactly one place.
- *
- * @deprecated Classify once and call `preparePtyLocation` directly.
- */
-export function splitWslCwd(
-  cmd: string,
-  cwd: string | undefined,
-  homeDir: string,
-): { spawnCwd: string | undefined; prefixArgs: string[] } {
-  if (!cwd) return { spawnCwd: cwd, prefixArgs: [] };
-  return preparePtyLocation(classifySessionLocation(cmd, cwd), homeDir);
-}
-
 export function resolveReplayLocation(
   shell: string,
   cwd: string,

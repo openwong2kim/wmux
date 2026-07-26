@@ -40,6 +40,7 @@ import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
 import {
   classifySessionLocation,
+  resolveSessionLocation,
   type SessionLocation,
 } from '../../shared/sessionLocation';
 
@@ -165,7 +166,7 @@ export function registerAllHandlers(
       }>;
       const session = sessions.find((candidate) => candidate.id === ptyId);
       if (!session || session.state === 'dead') return null;
-      return session.location ?? classifySessionLocation(session.cmd, session.cwd);
+      return resolveSessionLocation(session);
     }
     const instance = ptyManager.get(ptyId);
     const cwd = getCwd(ptyId);

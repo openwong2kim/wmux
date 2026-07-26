@@ -670,3 +670,77 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     }
   });
 });
+
+describe('WorkspaceSlice.loadSession — session-location backfill (issue #21)', () => {
+  // Editor surfaces carry `cwd: ''`, so they cannot classify themselves; their
+  // location comes from whoever opened them. Sessions saved before `location`
+  // existed have none, and a file-reading surface with no location reads
+  // nothing — the editor renders "Unable to read file" until reopened.
+  it('gives a legacy editor surface the location of the terminal it shares a pane with', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'LegacyEditor',
+      rootPane: {
+        id: 'pane-root',
+        type: 'leaf',
+        surfaces: [
+          { id: 'surface-term', ptyId: 'pty-1', cwd: '/home/me/proj', shell: 'wsl.exe' },
+          { id: 'surface-editor', surfaceType: 'editor', ptyId: '', cwd: '', editorFilePath: '/home/me/proj/a.ts' },
+        ],
+        activeSurfaceId: 'surface-editor',
+      },
+      activePaneId: 'pane-root',
+    } as unknown as Workspace;
+
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+    } as unknown as SessionData);
+
+    const surfaces = (store.getState().workspaces[0].rootPane as unknown as {
+      surfaces: { id: string; location?: { domain: string; cwd: string } }[];
+    }).surfaces;
+    const editor = surfaces.find((s) => s.id === 'surface-editor');
+    expect(editor?.location).toEqual({ domain: 'wsl', cwd: '/home/me/proj', shell: 'wsl.exe' });
+  });
+
+  it('leaves a surface that already has a location untouched', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'ExplicitLocation',
+      rootPane: {
+        id: 'pane-root',
+        type: 'leaf',
+        surfaces: [
+          { id: 'surface-term', ptyId: 'pty-1', cwd: 'C:\other', shell: 'pwsh.exe' },
+          {
+            id: 'surface-editor',
+            surfaceType: 'editor',
+            ptyId: '',
+            cwd: '',
+            editorFilePath: '/home/me/proj/a.ts',
+            location: { domain: 'wsl', cwd: '/home/me/proj', shell: 'wsl.exe' },
+          },
+        ],
+        activeSurfaceId: 'surface-editor',
+      },
+      activePaneId: 'pane-root',
+    } as unknown as Workspace;
+
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+    } as unknown as SessionData);
+
+    const surfaces = (store.getState().workspaces[0].rootPane as unknown as {
+      surfaces: { id: string; location?: { domain: string; cwd: string } }[];
+    }).surfaces;
+    expect(surfaces.find((s) => s.id === 'surface-editor')?.location).toEqual({
+      domain: 'wsl', cwd: '/home/me/proj', shell: 'wsl.exe',
+    });
+  });
+});

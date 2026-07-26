@@ -9,7 +9,7 @@ import {
   preparePtyLocation,
   resolveReplayLocation,
   resolveSessionLocation,
-  splitWslCwd,
+
   toHostAccessiblePath,
 } from '../sessionLocation';
 
@@ -139,21 +139,19 @@ describe('the guest-path guard (issue #21 AC 6)', () => {
 });
 
 describe('one spawn-cwd computation', () => {
+  const split = (shell: string, cwd: string) =>
+    preparePtyLocation(classifySessionLocation(shell, cwd), 'C:\\Users\\me');
+
   it('routes an MSYS cwd to its Windows path instead of handing node-pty /c/...', () => {
-    expect(splitWslCwd('C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x', 'C:\\Users\\me'))
+    expect(split('C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x'))
       .toEqual({ spawnCwd: 'C:\\dev\\x', prefixArgs: [] });
   });
 
-  it('agrees with preparePtyLocation for every domain', () => {
-    const cases = [
-      ['wsl.exe', '/home/me'],
-      ['C:\\Program Files\\Git\\bin\\bash.exe', '/c/dev/x'],
-      ['pwsh.exe', 'C:\\dev\\x'],
-    ] as const;
-    for (const [shell, cwd] of cases) {
-      expect(splitWslCwd(shell, cwd, 'C:\\Users\\me'))
-        .toEqual(preparePtyLocation(classifySessionLocation(shell, cwd), 'C:\\Users\\me'));
-    }
+  it('positions WSL with --cd and leaves a host path alone', () => {
+    expect(split('wsl.exe', '/home/me'))
+      .toEqual({ spawnCwd: 'C:\\Users\\me', prefixArgs: ['--cd', '/home/me'] });
+    expect(split('pwsh.exe', 'C:\\dev\\x'))
+      .toEqual({ spawnCwd: 'C:\\dev\\x', prefixArgs: [] });
   });
 });
 

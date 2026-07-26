@@ -5,7 +5,7 @@ import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
 import { applyWslPromptIntegration, isWslShell } from '../../shared/wslCwd';
-import { splitWslCwd } from '../../shared/sessionLocation';
+import { classifySessionLocation, preparePtyLocation } from '../../shared/sessionLocation';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
@@ -234,8 +234,11 @@ export class PTYManager {
     // cannot use it as the spawn cwd — ConPTY/CreateProcess only resolve
     // Windows paths. Give node-pty a safe Windows cwd (the caller's home)
     // and let `wsl.exe --cd <linuxpath>` do the actual positioning instead.
-    // No-op for every other shell/cwd combination (see wslCwd.ts).
-    const { spawnCwd, prefixArgs } = splitWslCwd(shell, cwd, os.homedir());
+    // An MSYS/Git Bash `/c/...` cwd is converted the same way; the shared
+    // module owns all three domains (see shared/sessionLocation.ts).
+    const { spawnCwd, prefixArgs } = cwd
+      ? preparePtyLocation(classifySessionLocation(shell, cwd), os.homedir())
+      : { spawnCwd: undefined as string | undefined, prefixArgs: [] as string[] };
 
     let ptyProcess: ReturnType<typeof pty.spawn>;
     try {

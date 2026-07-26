@@ -482,7 +482,7 @@ export function toWslMountPath(winPath: string): string {
 /**
  * Build the spawn injection for a `wsl.exe` launcher whose distro login shell
  * is bash. Produces `-- bash --rcfile <mnt-path> -i`, which — composed after
- * the daemon's `splitWslCwd` `--cd` prefix — spawns
+ * the daemon's `preparePtyLocation` `--cd` prefix — spawns
  * `wsl.exe [--cd <cwd>] -- bash --rcfile /mnt/c/…/wmux-shell-init.bash -i`.
  * The rcfile sources the user's own ~/.bashrc internally, so it is additive.
  *

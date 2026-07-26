@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { toHostAccessiblePath } from '../../shared/sessionLocation';
+import { hostLocation, toHostAccessiblePath } from '../../shared/sessionLocation';
 import {
   hostCommandTarget,
   preparePaneCommand,
@@ -220,10 +220,7 @@ export class GitContextWatcher extends EventEmitter {
             // `.git` may have just appeared — re-resolve and re-arm.
             // The watched host path is already resolved. Re-arm it without
             // reconstructing a WSL execution context.
-            this.update(sessionId, {
-              sessionId,
-              location: { domain: 'host', cwd: watch.cwd, shell: '' },
-            });
+            this.update(sessionId, { sessionId, location: hostLocation(watch.cwd) });
             return;
           }
           this.readAndEmit(sessionId, watch);

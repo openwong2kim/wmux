@@ -73,7 +73,7 @@ describe('GitSyncStatusCache', () => {
   it('isolates cache entries by domain and distro', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
-    await cache.get(host('D:\repo'));
+    await cache.get(host('D:\\repo'));
     await cache.get({
       sessionId: 'pty-ubuntu',
       location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },

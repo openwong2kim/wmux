@@ -29,7 +29,6 @@ import {
   updateCwd,
   updatePaneLocation,
 } from './metadata.handler';
-import { isWslShell, isLinuxLikeCwd } from '../../../shared/wslCwd';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
@@ -45,6 +44,7 @@ import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import {
   classifySessionLocation,
+  resolveSessionLocation,
   type SessionLocation,
 } from '../../../shared/sessionLocation';
 
@@ -207,12 +207,16 @@ const RESIZE_RETRY_DELAY_MS = 20;
  * Linux path, the UNC block would reject the legitimate `\\wsl$\...` /
  * `\\wsl.localhost\...` forms, and `fs.existsSync`/`fs.statSync` can never
  * see into the Linux filesystem from Windows. Bypass and return the cwd
- * unchanged — `splitWslCwd` (PTYManager / DaemonSessionManager) is what
- * actually turns it into a safe node-pty cwd + `wsl.exe --cd` prefix.
+ * unchanged — `preparePtyLocation` (PTYManager / DaemonSessionManager) is
+ * what actually turns it into a safe node-pty cwd + `wsl.exe --cd` prefix.
+ *
+ * Which domain a (shell, cwd) pair belongs to is not decided here: classifying
+ * it is the shared module's job, so a guest cwd is recognised for Git Bash as
+ * well as WSL rather than by a second local rule.
  */
 function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
   if (!cwd) return undefined;
-  if (shell && isWslShell(shell) && isLinuxLikeCwd(cwd)) return cwd;
+  if (shell && classifySessionLocation(shell, cwd).domain !== 'host') return cwd;
   const resolved = path.resolve(cwd);
   // Block UNC paths (e.g. \\server\share)
   if (resolved.startsWith('\\\\')) return undefined;
@@ -929,7 +933,7 @@ export function registerPTYHandlers(
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
         if (session.cwd) {
-          const location = session.location ?? classifySessionLocation(session.cmd, session.cwd);
+          const location = resolveSessionLocation({ ...session, cwd: session.cwd });
           // Identity first, then the cwd — see the create path. The pane is
           // live again from here, so its active-session context (and, for a
           // bare `wsl.exe` pane, its distro) is derived, not reconstructed.

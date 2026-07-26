@@ -7,6 +7,7 @@ import {
   readLastAssistantMessage,
   transcriptFileLives,
   endsWithQuestion,
+  __resetTranscriptProbeCache,
   type TranscriptCommandRunner,
 } from '../lastAssistantMessage';
 
@@ -227,6 +228,8 @@ describe('WSL transcript reads', () => {
     expect(options).toMatchObject({ timeout: 750, maxBuffer: 256 * 1024, windowsHide: true });
   });
 
+  beforeEach(() => __resetTranscriptProbeCache());
+
   it('fails softly when the bounded WSL command times out', () => {
     const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
       const err = new Error('timed out');
@@ -243,16 +246,16 @@ describe('WSL transcript reads', () => {
       location,
       activeSession: { sessionId: 'pty-1', active: true as const, distro: 'Debian' },
     };
-    expect(readLastAssistantMessage('/home/me/transcript.jsonl', mismatched, run)).toBeNull();
-    expect(transcriptFileLives('/home/me/transcript.jsonl', mismatched, run)).toBe(false);
+    expect(readLastAssistantMessage('/home/me/mismatch.jsonl', mismatched, run)).toBeNull();
+    expect(transcriptFileLives('/home/me/mismatch.jsonl', mismatched, run)).toBe(false);
     expect(run).not.toHaveBeenCalled();
   });
 
   it('treats only an explicit regular-file probe result as live', () => {
     const live = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1'));
     const unsafe = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('0'));
-    expect(transcriptFileLives('/home/me/transcript.jsonl', context, live)).toBe(true);
-    expect(transcriptFileLives('/home/me/transcript.jsonl', context, unsafe)).toBe(false);
+    expect(transcriptFileLives('/home/me/live.jsonl', context, live)).toBe(true);
+    expect(transcriptFileLives('/home/me/unsafe.jsonl', context, unsafe)).toBe(false);
   });
 });
 
@@ -318,5 +321,62 @@ describe('MSYS transcript paths', () => {
     expect(readLastAssistantMessage('/usr/local/session.jsonl', context)).toBeNull();
     expect(lstat).not.toHaveBeenCalled();
     lstat.mockRestore();
+  });
+});
+
+/**
+ * The daemon calls transcriptFileLives from its listSessions handler — a
+ * per-poll stat. On the WSL branch that spawns wsl.exe and blocks for up to
+ * 750 ms, so N WSL panes would stall the daemon event loop N × 750 ms on every
+ * poll, delaying PTY data forwarding and every other RPC.
+ */
+describe('WSL transcript probe caching', () => {
+  const location: SessionLocation = {
+    domain: 'wsl',
+    cwd: '/work/repo',
+    shell: 'wsl.exe',
+    distro: 'Ubuntu-24.04',
+  };
+  const context = {
+    location,
+    activeSession: { sessionId: 'pty-1', active: true as const, distro: 'Ubuntu-24.04' },
+  };
+
+  beforeEach(() => __resetTranscriptProbeCache());
+  afterEach(() => __resetTranscriptProbeCache());
+
+  it('resolves the first probe for real, then serves repeat polls from cache', () => {
+    const run = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1'));
+    for (let i = 0; i < 5; i += 1) {
+      expect(transcriptFileLives('/home/me/t.jsonl', context, run)).toBe(true);
+    }
+    // Without the cache this is 5 blocking wsl.exe spawns on one daemon poll.
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a negative answer too, so a dead transcript is not re-probed', () => {
+    const run = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('0'));
+    expect(transcriptFileLives('/home/me/gone.jsonl', context, run)).toBe(false);
+    expect(transcriptFileLives('/home/me/gone.jsonl', context, run)).toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches across transcript paths', () => {
+    const run = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1'));
+    transcriptFileLives('/home/me/a.jsonl', context, run);
+    transcriptFileLives('/home/me/b.jsonl', context, run);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('keys the cache per location, so two distros never share an answer', () => {
+    const ubuntu = { ...context };
+    const debian = {
+      location: { ...location, distro: 'Debian' },
+      activeSession: { sessionId: 'pty-2', active: true as const, distro: 'Debian' },
+    };
+    const live: TranscriptCommandRunner = () => Buffer.from('1');
+    const dead: TranscriptCommandRunner = () => Buffer.from('0');
+    expect(transcriptFileLives('/home/me/t.jsonl', ubuntu, live)).toBe(true);
+    expect(transcriptFileLives('/home/me/t.jsonl', debian, dead)).toBe(false);
   });
 });

@@ -41,9 +41,12 @@ describe('PTY_RECONNECT seeds cwd (source-level lock)', () => {
 
   it('calls updateCwd with the session cwd on reconnect', () => {
     expect(RECONNECT).toMatch(/if \(session\.cwd\) \{[\s\S]*?updateCwd\(id, session\.cwd\)/);
-    expect(RECONNECT).toMatch(
-      /const location = session\.location \?\? classifySessionLocation[\s\S]*?updatePaneLocation\(/,
-    );
+    // Locks that reconnect seeds the pane's location, not how the location is
+    // derived: the legacy `{cmd, cwd}` fallback is owned by
+    // `resolveSessionLocation` in shared/sessionLocation.ts and is unit-tested
+    // there. Pinning the old `?? classifySessionLocation` spelling here is what
+    // kept this call site on it after every other site had moved.
+    expect(RECONNECT).toMatch(/resolveSessionLocation\([\s\S]*?updatePaneLocation\(/);
   });
 });
 

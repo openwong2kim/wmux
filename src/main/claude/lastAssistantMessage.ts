@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import {
+  locationIdentity,
   prepareLocationCommand,
   toHostAccessiblePath,
   type ActiveSessionContext,
@@ -123,6 +124,102 @@ function runWslTranscriptOperation(
   }
 }
 
+/**
+ * WSL probe cache.
+ *
+ * The host branch of `transcriptFileLives` is one local `lstat`, but the WSL
+ * branch spawns `wsl.exe` and blocks for up to WSL_READ_TIMEOUT_MS. The daemon
+ * calls this from its `listSessions` handler — a per-poll stat — so N WSL panes
+ * would stall the daemon event loop N × 750 ms on every poll, delaying PTY data
+ * forwarding and every other RPC.
+ *
+ * A transcript appearing or being deleted is rare, so the first answer for a
+ * path is resolved for real and subsequent polls are served from cache while a
+ * refresh runs out of band. That keeps the call sites synchronous (resume
+ * eligibility decisions in the daemon are sync) without the repeated stall.
+ */
+const PROBE_TTL_MS = 30_000;
+const PROBE_CACHE_MAX = 256;
+interface ProbeEntry { lives: boolean; at: number; refreshing: boolean }
+const wslProbeCache = new Map<string, ProbeEntry>();
+
+function probeCacheKey(transcriptPath: string, context: TranscriptReadContext): string {
+  // The active session's distro participates in the answer (a mismatch against
+  // the location's own distro refuses to execute), so it participates in the key.
+  return [
+    locationIdentity(context.location),
+    context.activeSession?.distro ?? '',
+    transcriptPath,
+  ].join('\0');
+}
+
+function refreshWslProbe(
+  key: string,
+  transcriptPath: string,
+  context: TranscriptReadContext,
+): void {
+  const prepared = prepareLocationCommand(
+    context.location,
+    'python3',
+    ['-c', WSL_TRANSCRIPT_SCRIPT, 'probe', transcriptPath],
+    context.activeSession,
+  );
+  const entry = wslProbeCache.get(key);
+  if (!prepared.ok) {
+    if (entry) entry.refreshing = false;
+    return;
+  }
+  execFile(
+    prepared.file,
+    prepared.args,
+    { timeout: WSL_READ_TIMEOUT_MS, maxBuffer: TAIL_BYTES, windowsHide: true },
+    (error, stdout) => {
+      const current = wslProbeCache.get(key);
+      if (!current) return;
+      current.refreshing = false;
+      // A timeout or a spawn failure is not evidence the transcript is gone;
+      // keep the last known answer and try again on the next poll.
+      if (error && !stdout) return;
+      current.lives = stdout.toString() === '1';
+      current.at = Date.now();
+    },
+  );
+}
+
+function wslTranscriptLives(
+  transcriptPath: string,
+  context: TranscriptReadContext,
+  run: TranscriptCommandRunner,
+): boolean {
+  const key = probeCacheKey(transcriptPath, context);
+  const cached = wslProbeCache.get(key);
+  if (cached) {
+    // The out-of-band refresh always uses the real runner, so an injected one
+    // (a test) stays fully synchronous and never races a background spawn.
+    if (
+      Date.now() - cached.at >= PROBE_TTL_MS
+      && !cached.refreshing
+      && run === runTranscriptCommand
+    ) {
+      cached.refreshing = true;
+      refreshWslProbe(key, transcriptPath, context);
+    }
+    return cached.lives;
+  }
+  const lives = runWslTranscriptOperation(transcriptPath, 'probe', context, run)?.toString() === '1';
+  if (wslProbeCache.size >= PROBE_CACHE_MAX) {
+    const oldest = wslProbeCache.keys().next();
+    if (!oldest.done) wslProbeCache.delete(oldest.value);
+  }
+  wslProbeCache.set(key, { lives, at: Date.now(), refreshing: false });
+  return lives;
+}
+
+/** Test seam — the probe cache outlives a single call by design. */
+export function __resetTranscriptProbeCache(): void {
+  wslProbeCache.clear();
+}
+
 /** Safe, best-effort transcript liveness/type probe for recovery and UI use. */
 export function transcriptFileLives(
   transcriptPath: string,
@@ -130,7 +227,7 @@ export function transcriptFileLives(
   run: TranscriptCommandRunner = runTranscriptCommand,
 ): boolean {
   if (context?.location.domain === 'wsl') {
-    return runWslTranscriptOperation(transcriptPath, 'probe', context, run)?.toString() === '1';
+    return wslTranscriptLives(transcriptPath, context, run);
   }
   const hostPath = resolveHostTranscriptPath(transcriptPath, context);
   if (!hostPath) return false;

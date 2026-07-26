@@ -84,7 +84,7 @@ describe('PrStatusCache', () => {
   it('keys the cache by domain+distro+cwd+branch', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => 0, exec);
-    await cache.get(host('D:\repo'), 'main');
+    await cache.get(host('D:\\repo'), 'main');
     await cache.get({
       sessionId: 'pty-u',
       location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
@@ -95,7 +95,7 @@ describe('PrStatusCache', () => {
       location: { domain: 'wsl', cwd: '/repo', shell: 'wsl.exe', distro: 'Debian' },
       activeContext: { sessionId: 'pty-d', active: true, distro: 'Debian' },
     }, 'main');
-    await cache.get(host('D:\repo'), 'feat');
+    await cache.get(host('D:\\repo'), 'feat');
     expect(exec).toHaveBeenCalledTimes(4);
   });
 
