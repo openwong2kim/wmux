@@ -177,6 +177,11 @@ export class AsyncQueue {
     this.syncFallbacks.set(key, fallback);
   }
 
+  /** Remove a fallback registered for a one-shot queue entry. */
+  deleteSyncFallback(key: string): void {
+    this.syncFallbacks.delete(key);
+  }
+
   /** True when no task is pending and none is running. */
   get isIdle(): boolean {
     return !this.running && this.pending.size === 0;

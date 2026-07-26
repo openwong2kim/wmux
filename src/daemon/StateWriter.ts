@@ -91,6 +91,26 @@ export function scrubPersistedCredentials(baseDir: string): void {
 
 const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'state';
+let nextExactWriteId = 0;
+
+export type ExactStateWriteOutcome = 'written' | 'failed' | 'superseded';
+
+/**
+ * A state transition whose candidate must not become observable until its
+ * exact persisted representation has been accepted.
+ */
+export interface ExactStateTransaction {
+  /** Build the candidate from the latest accepted in-memory state. */
+  prepare: () => DaemonState | undefined;
+  /**
+   * Commit the already-written candidate and return the newest authoritative
+   * state, including unrelated changes that arrived while the write ran.
+   * Returning undefined rejects a stale candidate (for example after ID reuse).
+   */
+  commit: () => DaemonState | undefined;
+  /** Build the accepted state used to repair a candidate that became stale. */
+  current: () => DaemonState;
+}
 
 // Default suspended-session retention (hours). Suspended sessions persist
 // across daemon restarts so an interrupted shell can be resumed. Without a
@@ -226,9 +246,131 @@ export class StateWriter {
   }
 
   /**
-   * Replace every recovery reference to a synchronous candidate that was
-   * rejected after saveImmediate failed. An older async write may already be
-   * in flight; it must restore this rolled-back state, never the rejected one.
+   * Persist and commit one exact state transition synchronously.
+   *
+   * Failed attempts never install the candidate in pending/recovery state.
+   * On success, older queued work is superseded and an already-running async
+   * write observes the bumped epoch and restores the committed state.
+   */
+  writeExactImmediate(
+    transaction: ExactStateTransaction,
+    attempts = 1,
+  ): ExactStateWriteOutcome {
+    const candidate = transaction.prepare();
+    if (!candidate) return 'superseded';
+
+    for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+      try {
+        atomicWriteJSONSync(this.filePath, toPersistable(candidate), {
+          validate: StateWriter.isDaemonState,
+          rotationEnabled: true,
+        });
+
+        // Synchronous I/O cannot interleave with an async completion on this
+        // thread, so publish the epoch only after a successful write. Failed
+        // candidates must not make an older accepted write restore a stale
+        // lastImmediateState.
+        this.immediateEpoch++;
+        const committed = transaction.commit();
+        if (!committed) {
+          return this.restoreExactState(transaction.current(), 'superseded');
+        }
+
+        this.lastImmediateState = committed;
+        this.pendingState = null;
+        this.queue.clear();
+        return 'written';
+      } catch (err) {
+        console.error('[StateWriter] Failed to save exact state:', err);
+      }
+    }
+    return 'failed';
+  }
+
+  /**
+   * Persist and commit one exact state transition through the existing file
+   * queue without same-key coalescing. The returned outcome describes this
+   * candidate, not merely completion of a newer coalesced write.
+   */
+  async writeExactAsap(
+    transaction: ExactStateTransaction,
+  ): Promise<ExactStateWriteOutcome> {
+    const key = `state:exact:${++nextExactWriteId}`;
+    let outcome: ExactStateWriteOutcome = 'superseded';
+
+    const runSync = (): void => {
+      outcome = this.writeExactImmediate(transaction);
+    };
+    this.queue.setSyncFallback(key, runSync);
+
+    try {
+      await this.queue.enqueue(key, async () => {
+        const candidate = transaction.prepare();
+        if (!candidate) {
+          outcome = 'superseded';
+          return;
+        }
+
+        const epochAtStart = this.immediateEpoch;
+        try {
+          await atomicWriteJSON(this.filePath, toPersistable(candidate), {
+            validate: StateWriter.isDaemonState,
+            rotationEnabled: true,
+          });
+        } catch (err) {
+          console.error('[StateWriter] Failed to save exact state (async):', err);
+          outcome = 'failed';
+          return;
+        }
+
+        if (this.immediateEpoch !== epochAtStart) {
+          if (this.lastImmediateState !== null) {
+            outcome = this.restoreExactState(this.lastImmediateState, 'superseded');
+          } else {
+            outcome = 'superseded';
+          }
+          return;
+        }
+
+        const committed = transaction.commit();
+        if (!committed) {
+          outcome = this.restoreExactState(transaction.current(), 'superseded');
+          return;
+        }
+
+        // Preserve unrelated changes staged while the exact write was in
+        // flight, but ensure their pending representation includes the newly
+        // committed transition.
+        if (this.pendingState !== null) this.pendingState = committed;
+        outcome = 'written';
+      });
+      return outcome;
+    } finally {
+      this.queue.deleteSyncFallback(key);
+    }
+  }
+
+  private restoreExactState(
+    state: DaemonState,
+    restoredOutcome: ExactStateWriteOutcome,
+  ): ExactStateWriteOutcome {
+    try {
+      atomicWriteJSONSync(this.filePath, toPersistable(state), {
+        validate: StateWriter.isDaemonState,
+        rotationEnabled: true,
+      });
+      this.lastImmediateState = state;
+      if (this.pendingState !== null) this.pendingState = state;
+      return restoredOutcome;
+    } catch (err) {
+      console.error('[StateWriter] Failed to restore rejected exact state:', err);
+      return 'failed';
+    }
+  }
+
+  /**
+   * Compatibility for the existing daemon wiring. Removed when that wiring
+   * moves to SessionLocationTransaction in the next milestone.
    */
   recoverRejectedImmediateState(state: DaemonState): void {
     this.lastImmediateState = state;

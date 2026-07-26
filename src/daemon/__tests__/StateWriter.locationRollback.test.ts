@@ -52,36 +52,35 @@ afterEach(() => {
   tmpDir = '';
   io.asyncWrite.mockReset();
   io.syncWrite.mockReset();
+  vi.restoreAllMocks();
 });
 
-describe('StateWriter rejected location recovery', () => {
-  it('restores the rolled-back state after an older async write completes', async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-location-rollback-'));
+describe('StateWriter exact location recovery', () => {
+  it('keeps the previous accepted state after two failed exact writes and older async completion', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmux-location-rollback-'));
     writer = new StateWriter(tmpDir);
     let finishAsync!: () => void;
     io.asyncWrite.mockImplementationOnce(
       () => new Promise<void>((resolve) => { finishAsync = resolve; }),
     ).mockResolvedValue(undefined);
-    io.syncWrite
-      .mockImplementationOnce(() => { throw new Error('locked'); })
-      .mockImplementationOnce(() => { throw new Error('locked'); })
-      .mockImplementation(() => undefined);
+    io.syncWrite.mockImplementation(() => { throw new Error('locked'); });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     void writer.saveAsap(state());
     await vi.waitFor(() => expect(io.asyncWrite).toHaveBeenCalledOnce());
-    expect(writer.saveImmediate(state('Ubuntu'))).toBe(false);
-    expect(writer.saveImmediate(state('Ubuntu'))).toBe(false);
+    const outcome = writer.writeExactImmediate({
+      prepare: () => state('Ubuntu'),
+      commit: () => state('Ubuntu'),
+      current: () => state(),
+    }, 2);
 
-    writer.recoverRejectedImmediateState(state());
+    expect(outcome).toBe('failed');
     finishAsync();
-    await writer.flush();
-
-    const recoveredPayloads = io.syncWrite.mock.calls
-      .slice(2)
-      .map((call) => call[1] as DaemonState);
-    expect(recoveredPayloads.length).toBeGreaterThan(0);
-    for (const recovered of recoveredPayloads) {
-      expect(recovered.sessions[0].location).not.toHaveProperty('distro');
+    await vi.waitFor(() => expect(io.asyncWrite).toHaveBeenCalledOnce());
+    expect(io.syncWrite).toHaveBeenCalledTimes(2);
+    for (const call of io.syncWrite.mock.calls) {
+      expect((call[1] as DaemonState).sessions[0].location)
+        .toHaveProperty('distro', 'Ubuntu');
     }
   });
 });
