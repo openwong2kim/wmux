@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { getMcpBrokerPipeName } from '../../shared/constants';
+import { getMcpBrokerPipeName, getPluginTrustPath } from '../../shared/constants';
+import { NON_IDENTIFYING_CLIENT_NAMES } from '../../shared/rpc';
 import { MCP_TARGETS, type McpTarget } from '../../shared/mcpTargets';
 import {
   readAllTargetStatuses,
@@ -33,6 +34,11 @@ USAGE
 
 SUBCOMMANDS
   check        Show whether the wmux MCP server is registered in each agent config.
+  clients      List the MCP clients wmux has seen, by the clientName each one
+               reported. Use this when a client is stuck at "unconfirmed" and you
+               need the exact name to add to mcp.firstPartyClients in
+               ~/.wmux/config.json. Reads ~/.wmux/plugin-trust.json; the app does
+               not need to be running.
   register     Add the wmux entry to each installed agent's config.
                Note: written paths point at this CLI's own bundle layout — for a
                GUI re-register that uses the running app's resolved paths, use
@@ -86,6 +92,120 @@ function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
     console.log(`  wmux:   ${fmt(s.wmux)}`);
     console.log(`  config: ${s.configPath} (${formatModified(s.configModified)})`);
   }
+}
+
+// `wmux mcp clients` (issue #636) — answer "what name did wmux actually see?".
+//
+// A client whose reported clientName is not recognised sits at `unconfirmed`
+// under enforce mode, and the rejection alone never told the operator which
+// name to allowlist. Finding it used to mean reading plugin-trust.json by hand,
+// which is how a real agent ended up guessing its own name wrong. Reading the
+// file directly (rather than an RPC) keeps this usable when the app is closed —
+// which is exactly when someone is editing config.json.
+interface ObservedClient {
+  name: string;
+  version?: string;
+  status: string;
+  firstSeen?: number;
+  lastSeen?: number;
+  /** True when this name can never be added to mcp.firstPartyClients. */
+  nonIdentifying: boolean;
+}
+
+export function readObservedClients(trustPath: string): ObservedClient[] | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(trustPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw, (key, value) => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        return undefined;
+      }
+      return value;
+    });
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const plugins = (parsed as Record<string, unknown>).plugins;
+  if (!plugins || typeof plugins !== 'object') return [];
+  const out: ObservedClient[] = [];
+  for (const [key, value] of Object.entries(plugins as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const rec = value as Record<string, unknown>;
+    const name = typeof rec.name === 'string' && rec.name.length > 0 ? rec.name : key;
+    out.push({
+      name,
+      version: typeof rec.version === 'string' ? rec.version : undefined,
+      status: typeof rec.status === 'string' ? rec.status : 'unknown',
+      firstSeen: typeof rec.firstSeen === 'number' ? rec.firstSeen : undefined,
+      lastSeen: typeof rec.lastSeen === 'number' ? rec.lastSeen : undefined,
+      nonIdentifying: NON_IDENTIFYING_CLIENT_NAMES.has(name.toLowerCase()),
+    });
+  }
+  // Most recently seen first — the client the operator is debugging right now
+  // is almost always the last one that connected.
+  out.sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+  return out;
+}
+
+function formatSeen(ms: number | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return 'never';
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+function printClients(
+  clients: ObservedClient[] | null,
+  trustPath: string,
+  jsonMode: boolean,
+): void {
+  if (jsonMode) {
+    console.log(JSON.stringify({ trustPath, clients: clients ?? [] }, null, 2));
+    return;
+  }
+  if (clients === null) {
+    console.log(`No client records yet — ${trustPath} is missing or unreadable.`);
+    console.log('Connect an MCP client to wmux once, then run this again.');
+    return;
+  }
+  if (clients.length === 0) {
+    console.log(`No clients recorded yet — ${trustPath}`);
+    return;
+  }
+  for (const c of clients) {
+    const version = c.version ? ` v${c.version}` : '';
+    console.log(`${c.name}${version}`);
+    console.log(`  status:    ${c.status}`);
+    console.log(`  last seen: ${formatSeen(c.lastSeen)}`);
+    if (c.nonIdentifying) {
+      console.log(
+        '  NOT CONFIGURABLE: this is a generic default (an MCP SDK fallback or a',
+      );
+      console.log(
+        '  wmux-internal name), not an identity. Adding it to mcp.firstPartyClients',
+      );
+      console.log(
+        '  would recognise every client reporting it, so wmux refuses it. Fix the',
+      );
+      console.log(
+        "  client to send its own clientInfo.name instead.",
+      );
+    }
+  }
+  console.log(`\nSource: ${trustPath}`);
+  console.log(
+    'To recognise a client, add its exact name to mcp.firstPartyClients in',
+  );
+  console.log('~/.wmux/config.json, then restart wmux.');
 }
 
 // Full single-child MCP bundle candidates (the pre-broker layout). Used when the
@@ -199,6 +319,12 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       const all = readAllTargetStatuses(home);
       const ids = new Set<string>(targets.map((t) => t.id));
       printCheck(all.filter((s) => ids.has(s.id)), jsonMode);
+      return;
+    }
+
+    case 'clients': {
+      const trustPath = getPluginTrustPath();
+      printClients(readObservedClients(trustPath), trustPath, jsonMode);
       return;
     }
 
