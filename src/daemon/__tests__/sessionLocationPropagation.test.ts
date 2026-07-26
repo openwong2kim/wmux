@@ -36,7 +36,7 @@ describe('daemon session location propagation', () => {
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
     const events: Array<{ snapshot: SessionLocationSnapshot; reason: string }> = [];
-    manager.on('session:location', (event) => events.push(event));
+    manager.on('session:locationAccepted', (event) => events.push(event));
 
     manager.createSession({
       id: 'wsl-1',
@@ -74,7 +74,7 @@ describe('daemon session location propagation', () => {
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
     const events = vi.fn();
-    manager.on('session:location', events);
+    manager.on('session:locationAccepted', events);
 
     manager.createSession({
       id: 'wsl-1',

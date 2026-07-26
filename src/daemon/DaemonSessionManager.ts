@@ -613,7 +613,7 @@ export class DaemonSessionManager extends EventEmitter {
       // this, daemon mode (the default path) only kept cwd in daemon-local
       // meta and the UI never saw a change. Mirrors the session:prompt tee.
       this.emit('session:cwd', payload);
-      this.emit('session:location', {
+      this.emit('session:locationAccepted', {
         sessionId: params.id,
         snapshot: locationSnapshot,
         reason: 'cwd',
@@ -679,7 +679,7 @@ export class DaemonSessionManager extends EventEmitter {
         const current = this.sessions.get(params.id);
         if (!current) return;
         const snapshot = this.acceptLocation(current, enriched);
-        this.emit('session:location', {
+        this.emit('session:locationAccepted', {
           sessionId: params.id,
           snapshot,
           reason: 'enriched',

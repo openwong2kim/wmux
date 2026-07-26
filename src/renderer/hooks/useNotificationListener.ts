@@ -12,6 +12,7 @@ import {
 import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/paneTraversal';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
+import { resetSessionLocationProjections } from '../stores/sessionLocationProjection';
 
 /**
  * J3 §4 — whether cwd is inside task worktree boundary (best-effort, OSC-assisted). After
@@ -551,6 +552,9 @@ export function useNotificationListener() {
         useStore.getState().updateSurfaceLocation(ptyId, snapshot);
       },
     ) ?? (() => {});
+    const unsubLocationGeneration = window.electronAPI.daemon?.onConnected?.(() => {
+      resetSessionLocationProjections();
+    }) ?? (() => {});
 
     const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
       // OSC 0/2 window title (e.g. Claude Code `/rename`) → the tab title,
@@ -866,6 +870,7 @@ export function useNotificationListener() {
       unsubFocus();
       unsubCwd();
       unsubLocation();
+      unsubLocationGeneration();
       unsubTitle();
       unsubMeta();
       unsubActivePull();

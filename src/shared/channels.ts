@@ -362,12 +362,14 @@ export const HUMAN_MEMBER_ID = 'local-ui';
  * survives app upgrades by design, so a P5 renderer can find itself attached
  * to a pre-P5 daemon whose state still holds scattered per-workspace human
  * rows — posts would fail NOT_A_MEMBER with no explanation; ship review C1).
- * Bump ONLY when a new daemon load-time channel migration is a prerequisite
- * for renderer correctness.
+ * It also gates same-version daemon protocol changes: a dev rebuild does not
+ * replace its daemon by semver, so an incompatible control/event contract must
+ * bump this epoch to force replacement before the renderer connects.
  *
  * Epoch 1 = P5 unified human identity (ws-human row merge).
+ * Epoch 2 = atomic session-location snapshots/events (Issue #27).
  */
-export const CHANNELS_EPOCH = 1;
+export const CHANNELS_EPOCH = 2;
 
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */

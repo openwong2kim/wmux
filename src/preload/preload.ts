@@ -27,6 +27,9 @@ import {
 } from '../shared/sessionLocation';
 
 const projectedLocations = new Map<string, SessionLocationSnapshot>();
+ipcRenderer.on('daemon:connected', () => {
+  projectedLocations.clear();
+});
 
 function rememberProjectedLocation(
   ptyId: string,

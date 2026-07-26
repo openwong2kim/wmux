@@ -43,4 +43,11 @@ describe('session location projection ordering', () => {
       distro: 'Ubuntu',
     });
   });
+
+  it('accepts a lower generation after an authenticated daemon replacement reset', () => {
+    expect(rememberSessionLocation('pty-1', snapshot(100, 5, '/old'))).toBe(true);
+    resetSessionLocationProjections();
+    expect(rememberSessionLocation('pty-1', snapshot(1, 1, '/new'))).toBe(true);
+    expect(getRememberedSessionLocation('pty-1')).toEqual(snapshot(1, 1, '/new'));
+  });
 });

@@ -47,6 +47,7 @@ import {
   daemonSessionCommandTarget,
   daemonSessionLocation,
 } from './sessionCommandTarget';
+import { persistLocationEnrichment } from './sessionLocationPersistence';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, resumeBindingMatchesLocation } from '../shared/agentResume';
@@ -3541,7 +3542,7 @@ function wireEvents(
     stateWriter.saveAsap(buildState(sessionManager));
   });
 
-  sessionManager.on('session:location', (payload: {
+  sessionManager.on('session:locationAccepted', (payload: {
     sessionId: string;
     snapshot: SessionLocationSnapshot;
     reason: 'cwd' | 'enriched';
@@ -3550,7 +3551,21 @@ function wireEvents(
     // the projection so a consumer can never observe a location that the
     // daemon has not yet accepted into sessions.json state.
     if (payload.reason === 'enriched') {
-      stateWriter.saveImmediate(buildState(sessionManager));
+      // A distro answer is rare and becomes visible to every filesystem
+      // consumer at once. Require synchronous durability before publication.
+      // One immediate retry covers a transient replace/lock race; two failures
+      // suppress both the wire event and dependent-watcher re-drive.
+      const state = buildState(sessionManager);
+      const persisted = persistLocationEnrichment(
+        () => stateWriter.saveImmediate(state),
+      );
+      if (!persisted) {
+        log(
+          'error',
+          `session location enrichment persistence failed for ${payload.sessionId}; projection suppressed`,
+        );
+        return;
+      }
     } else {
       stateWriter.saveAsap(buildState(sessionManager));
     }
@@ -3560,6 +3575,7 @@ function wireEvents(
       data: payload.snapshot,
     };
     pipeServer.broadcast(event);
+    sessionManager.emit('session:location', payload);
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
@@ -3643,11 +3659,6 @@ function wireContextWatchers(
   const onCreated = (payload: { session: DaemonSession }) => {
     gitWatcher.update(payload.session.id, commandTargetFor(payload.session));
   };
-  const onCwd = (payload: { sessionId: string; cwd: string }) => {
-    const session = sessionManager.getSession(payload.sessionId)?.meta;
-    if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
-    else gitWatcher.remove(payload.sessionId);
-  };
   const onLocation = (payload: { sessionId: string }) => {
     const session = sessionManager.getSession(payload.sessionId)?.meta;
     if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
@@ -3657,7 +3668,6 @@ function wireContextWatchers(
     gitWatcher.remove(payload.id);
   };
   sessionManager.on('session:created', onCreated);
-  sessionManager.on('session:cwd', onCwd);
   sessionManager.on('session:location', onLocation);
   sessionManager.on('session:died', onGone);
   sessionManager.on('session:destroyed', onGone);
@@ -3671,7 +3681,6 @@ function wireContextWatchers(
 
   return () => {
     sessionManager.off('session:created', onCreated);
-    sessionManager.off('session:cwd', onCwd);
     sessionManager.off('session:location', onLocation);
     sessionManager.off('session:died', onGone);
     sessionManager.off('session:destroyed', onGone);
