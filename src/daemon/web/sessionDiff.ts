@@ -11,9 +11,9 @@ import { execFile } from 'node:child_process';
  *
  * Security posture (the whole reason this is a separate module):
  *   - READ-ONLY git only. Fixed argv: `rev-parse --is-inside-work-tree
- *     --show-toplevel`, `diff`, `diff --cached`, `status --porcelain`, and one
- *     `diff --no-index` per untracked file. Nothing here writes, fetches,
- *     checks out, or runs a hook.
+ *     --show-toplevel`, `config --list --name-only`, `diff`, `diff --cached`,
+ *     `status --porcelain`, and one `diff --no-index` per untracked file.
+ *     Nothing here writes, fetches, checks out, or runs a hook.
  *   - NO REF ARGUMENTS FROM THE CLIENT. There is no `?ref=`, no `?base=`, no
  *     pathspec. `git diff <ref>` accepts things that are not refs (`--output=`,
  *     `--ext-diff` with a configured driver), so the argv is a constant and the
@@ -92,8 +92,13 @@ export const UNTRACKED_DIFF_LIMIT = 20;
  *     `status --porcelain` (always repo-root relative) still listed them.
  *
  * These are belt to the braces of `--no-ext-diff --no-textconv` on the diff
- * commands themselves: the flags cover the `.gitattributes` drivers, the `-c`s
- * cover the config keys.
+ * commands themselves: the flags cover the `.gitattributes` DIFF drivers, the
+ * `-c`s cover the config keys.
+ *
+ * NOT sufficient on their own — see `filterOverrides`. `--no-ext-diff` and
+ * `--no-textconv` disable the diff-side drivers only; a `.gitattributes`
+ * `filter=` selects a CONTENT filter, and `filter.<name>.clean` runs while git
+ * converts working-tree content, which `git diff` and `git status` both do.
  */
 export const GIT_HARDENING_CONFIG: readonly string[] = [
   '-c', 'core.fsmonitor=false',
@@ -105,6 +110,80 @@ export const GIT_HARDENING_CONFIG: readonly string[] = [
 /** Prefix `GIT_HARDENING_CONFIG` onto a command's own arguments. */
 export function gitArgv(...args: string[]): string[] {
   return [...GIT_HARDENING_CONFIG, ...args];
+}
+
+/**
+ * The config keys whose VALUE is a command git will spawn to convert content.
+ * `smudge` never runs on a read path, but a repo that only sets `smudge` and
+ * `required` still has a filter git may complain about, and blanking all three
+ * is one rule instead of a case analysis.
+ */
+const FILTER_SUBKEYS = ['clean', 'smudge', 'process'] as const;
+
+/**
+ * Extract the filter names a config listing defines, from
+ * `git config --list --name-only -z` output.
+ *
+ * A key is `filter.<name>.<subkey>` and `<name>` MAY CONTAIN DOTS
+ * (`filter.my.weird.name.clean` is one filter called `my.weird.name`), so the
+ * name is everything between the first and last dot — not `split('.')[1]`.
+ * Exported for the test that pins that.
+ */
+export function parseFilterNames(configList: string): string[] {
+  const names = new Set<string>();
+  for (const key of configList.split('\0')) {
+    const k = key.trim();
+    if (!k.startsWith('filter.')) continue;
+    const lastDot = k.lastIndexOf('.');
+    if (lastDot <= 'filter.'.length - 1) continue;
+    const sub = k.slice(lastDot + 1);
+    if (sub !== 'required' && !(FILTER_SUBKEYS as readonly string[]).includes(sub)) continue;
+    const name = k.slice('filter.'.length, lastDot);
+    if (name) names.add(name);
+  }
+  return [...names];
+}
+
+/** `-c` overrides that disarm every named filter. */
+export function filterOverrideArgs(names: readonly string[]): string[] {
+  const args: string[] = [];
+  for (const n of names) {
+    for (const sub of FILTER_SUBKEYS) args.push('-c', `filter.${n}.${sub}=`);
+    // An empty command means "no filter". `required=true` would otherwise turn
+    // that into a hard error on every file the filter is attached to.
+    args.push('-c', `filter.${n}.required=false`);
+  }
+  return args;
+}
+
+/**
+ * Discover and disarm the repository's content filters, BEFORE anything reads
+ * working-tree content.
+ *
+ * WHY THIS IS NOT COVERED BY THE `-c`s ABOVE: a `.gitattributes` line
+ * `*.txt filter=pwn` plus a `filter.pwn.clean = <command>` in the repository's
+ * own `.git/config` makes `git diff` — the hardened one, with `--no-ext-diff
+ * --no-textconv` — execute that command while it converts the working-tree
+ * file for comparison. Verified on git 2.50: the marker file gets created.
+ * `--no-textconv` covers the `diff=` attribute; nothing on the argv covers
+ * `filter=`, and git offers no way to ignore the repository's own
+ * `.gitattributes`. So the only closure is to blank the config keys the
+ * attribute resolves to — which requires knowing their names, which means
+ * asking git for them first.
+ *
+ * `git config --list --name-only` reads config and prints KEY NAMES only; it
+ * converts no content and spawns nothing, so it is safe to run first. This
+ * FAILS CLOSED: if we cannot enumerate the filters we cannot claim to have
+ * disarmed them, so the request errors instead of running a diff we have not
+ * hardened.
+ */
+export async function resolveFilterOverrides(
+  cwd: string,
+  run: GitRunner,
+): Promise<{ ok: true; args: string[] } | { ok: false; detail: string }> {
+  const listed = await run(gitArgv('config', '--list', '--name-only', '-z'), cwd);
+  if (!listed.ok) return { ok: false, detail: firstLine(listed.stderr) };
+  return { ok: true, args: filterOverrideArgs(parseFilterNames(listed.stdout)) };
 }
 
 /**
@@ -225,6 +304,21 @@ export interface GitRunResult {
    * Optional, defaulting to true, so a test double stays three fields.
    */
   ran?: boolean;
+  /**
+   * git's own exit status, when it ran and produced one. Undefined when it
+   * never got to exit (spawn failure, our timeout, maxBuffer).
+   *
+   * Needed because `ok`/`ran` cannot express `--no-index`'s three-way answer:
+   * 0 = identical, 1 = there is a difference (the normal case here), >1 = git
+   * failed. Without the number, "could not access the file" reads exactly like
+   * "here is your patch".
+   *
+   * Optional for the same reason `ran` is: a test double that does not care
+   * about the distinction stays three fields, and ABSENT MEANS "no opinion",
+   * never "failed". The real runner sets it whenever `ran` is true, so the
+   * two are never both unknown on a real failure.
+   */
+  code?: number;
 }
 
 /**
@@ -252,6 +346,7 @@ export function createGitRunner(): GitRunner {
             // string ('ENOENT', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') when the
             // spawn or the plumbing failed. `killed` covers our own timeout.
             ran: !err || (typeof err.code === 'number' && err.killed !== true),
+            code: !err ? 0 : typeof err.code === 'number' && err.killed !== true ? err.code : undefined,
             stdout: typeof stdout === 'string' ? stdout : '',
             stderr: typeof stderr === 'string' ? stderr : err ? String(err.message) : '',
           });
@@ -334,7 +429,29 @@ export function capPatch(patch: string, maxBytes: number = DEFAULT_DIFF_CAP_BYTE
 
 export interface CollectDiffOptions {
   maxBytes?: number;
+  /**
+   * Overall wall clock for the untracked-file pass. See
+   * `UNTRACKED_TOTAL_BUDGET_MS`.
+   */
+  untrackedBudgetMs?: number;
+  /** Injectable clock, so the budget is testable without sleeping. */
+  now?: () => number;
 }
+
+/**
+ * Ceiling on the WHOLE untracked pass, on top of each invocation's own
+ * `GIT_TIMEOUT_MS`.
+ *
+ * Twenty sequential files × a five-second per-command timeout is a hundred
+ * seconds of one request, and two such requests hold both diff slots for that
+ * long — every other approval diff gets `busy` in the meantime, on a route
+ * whose whole point is answering an approval quickly. The per-command timeout
+ * bounds one stall; this bounds a repository that stalls on every file. Sized
+ * so the total request stays inside the same order of magnitude as the three
+ * top-level commands, and overrunning it is reported as `patchIncomplete`
+ * rather than as a clean empty patch.
+ */
+export const UNTRACKED_TOTAL_BUDGET_MS = 15_000;
 
 /**
  * Collect the diff for one working tree.
@@ -365,15 +482,45 @@ export async function collectSessionDiff(
   const lines = inside.stdout.split('\n');
   // A missing cwd, a bare repo and "not a repo at all" all land here. They are
   // one answer to the caller: there is no working tree to diff.
-  if (!inside.ok || lines[0]?.trim() !== 'true') {
+  //
+  // BUT ONLY THOSE. `rev-parse` also exits nonzero for a repository that
+  // EXISTS and is broken — `fatal: bad config line`, `detected dubious
+  // ownership`, unreadable metadata — and answering those with the 409 makes
+  // the phone say "this pane is not a git repository" about a directory that
+  // plainly is one, sending the human to look in the wrong place. A nonzero
+  // exit is therefore classified by what git said, and anything unrecognised
+  // is a server-side failure with the detail kept for the log.
+  if (!inside.ok) {
+    if (!isNotARepoStderr(inside.stderr)) {
+      return { ok: false, reason: 'git-failed', detail: firstLine(inside.stderr) };
+    }
+    return { ok: false, reason: 'not-a-git-repo' };
+  }
+  if (lines[0]?.trim() !== 'true') {
+    // Exit 0 saying "false" is the bare-repo answer: a real repository with no
+    // working tree, which is still "nothing to diff".
     return { ok: false, reason: 'not-a-git-repo' };
   }
   const root = lines[1]?.trim() || cwd;
 
+  // MUST precede every command below: those read working-tree CONTENT, which
+  // is when a configured clean/process filter would run. See
+  // `resolveFilterOverrides`.
+  const filters = await resolveFilterOverrides(cwd, run);
+  if (!filters.ok) {
+    return { ok: false, reason: 'git-failed', detail: filters.detail };
+  }
+  const argv = (...args: string[]): string[] => [
+    ...GIT_HARDENING_CONFIG,
+    ...filters.args,
+    ...args,
+  ];
+
+  const statusArgv = argv('status', '--porcelain', '-z', '--untracked-files=all');
   const [staged, unstaged, status] = await Promise.all([
-    run(gitArgv('diff', '--cached', '--no-ext-diff', '--no-textconv'), cwd),
-    run(gitArgv('diff', '--no-ext-diff', '--no-textconv'), cwd),
-    run(gitArgv('status', '--porcelain', '-z', '--untracked-files=all'), cwd),
+    run(argv('diff', '--cached', '--no-ext-diff', '--no-textconv'), cwd),
+    run(argv('diff', '--no-ext-diff', '--no-textconv'), cwd),
+    run(statusArgv, cwd),
   ]);
 
   // A repo with no commits yet makes `diff --cached` fail (no HEAD to compare
@@ -388,9 +535,24 @@ export async function collectSessionDiff(
   const parts = [staged.ok ? staged.stdout : '', unstaged.ok ? unstaged.stdout : ''];
   let incomplete = !staged.ok || !unstaged.ok;
 
-  const untracked = await collectUntrackedPatches(files, root, run);
+  const untracked = await collectUntrackedPatches(files, root, run, argv, opts);
   parts.push(untracked.patch);
   if (untracked.incomplete) incomplete = true;
+
+  // THE TREE MAY HAVE MOVED UNDER US. These commands are separate processes
+  // over a window that includes up to twenty more of them, and the agent whose
+  // work is being reviewed is still running: `git add` landing between the
+  // cached and worktree reads produces a change that is in NEITHER patch while
+  // `status` still lists the file — a changed file, an empty patch, and
+  // `patchIncomplete: false`, which the phone contract reads as "safe to
+  // approve, there is nothing to see". Re-running `status` after the whole
+  // collection is one cheap command that detects exactly that: if the tree
+  // reports the same state at both ends of the window, the patches in between
+  // describe it; if it does not, the answer is partial and says so. (Detect,
+  // not retry — a busy agent could lose a retry loop indefinitely, and a
+  // truthful partial answer beats a slow one on an approval screen.)
+  const recheck = await run(statusArgv, cwd);
+  if (!recheck.ok || recheck.stdout !== status.stdout) incomplete = true;
 
   const capped = capPatch(parts.join(''), opts.maxBytes ?? DEFAULT_DIFF_CAP_BYTES);
   return {
@@ -423,26 +585,66 @@ async function collectUntrackedPatches(
   files: readonly DiffFile[],
   root: string,
   run: GitRunner,
+  argv: (...args: string[]) => string[],
+  opts: CollectDiffOptions,
 ): Promise<{ patch: string; incomplete: boolean }> {
-  // Trailing '/' means git gave up and named a whole directory (unreadable, or
-  // a nested repo); there is no single file to render.
-  const paths = files.filter((f) => f.status === '??' && !f.path.endsWith('/')).map((f) => f.path);
+  const untracked = files.filter((f) => f.status === '??');
+  // Trailing '/' means git gave up and named a whole DIRECTORY (unreadable, or
+  // a nested repository); there is no single file to render a hunk from. It is
+  // still content the reviewer is not being shown while `files[]` advertises
+  // it, so skipping it is exactly the "partial patch presented as complete"
+  // case `patchIncomplete` exists for — even though no individual file failed.
+  const paths = untracked.filter((f) => !f.path.endsWith('/')).map((f) => f.path);
+  let incomplete = paths.length < untracked.length;
   const shown = paths.slice(0, UNTRACKED_DIFF_LIMIT);
-  let incomplete = paths.length > shown.length;
+  if (paths.length > shown.length) incomplete = true;
+
+  const now = opts.now ?? Date.now;
+  const budget = opts.untrackedBudgetMs ?? UNTRACKED_TOTAL_BUDGET_MS;
+  const deadline = now() + budget;
+
   const out: string[] = [];
   for (const p of shown) {
+    // Overall deadline, checked before spending another five-second timeout.
+    if (now() >= deadline) {
+      incomplete = true;
+      break;
+    }
     const r = await run(
-      gitArgv('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', p),
+      argv('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', p),
       root,
     );
-    // A timeout, an oversized file, or a git that does not accept /dev/null
-    // (Windows): say the patch is partial rather than silently dropping a file
-    // the reviewer can see in `files[]`. Empty stdout is NOT a failure — an
-    // empty new file genuinely has no hunk.
-    if (r.ran === false) incomplete = true;
+    // `--no-index` exits 1 whenever there IS a difference, which is every time
+    // here, so `ok` is meaningless and only the exit STATUS separates the
+    // answers: 0/1 are git describing the file, anything else is git failing to
+    // read it ("Could not access", a vanished file, a special file it will not
+    // open). Both that and never exiting at all (a timeout, an oversized file,
+    // a git that does not accept /dev/null on Windows) make the patch partial —
+    // say so rather than appending the empty stdout of a failure, which is
+    // indistinguishable from an empty new file that genuinely has no hunk.
+    if (r.ran === false || (r.code !== undefined && r.code > 1)) incomplete = true;
     else out.push(r.stdout);
   }
   return { patch: out.join(''), incomplete };
+}
+
+/**
+ * Does this `rev-parse` failure mean "there is no repository here", as opposed
+ * to "the repository here is broken"?
+ *
+ * Matched on git's message because the exit status does not distinguish them —
+ * both are 128. The list is the set of messages that genuinely mean the path
+ * has no usable repository; everything else (bad config, dubious ownership,
+ * unreadable objects) is a failure of an existing repo and must surface as one.
+ */
+function isNotARepoStderr(stderr: string): boolean {
+  const s = stderr.toLowerCase();
+  return (
+    s.includes('not a git repository') ||
+    s.includes('no such file or directory') ||
+    s.includes('cannot change to') ||
+    s.includes('does not exist')
+  );
 }
 
 /** git's stderr can be several lines; one is enough to say what went wrong. */
