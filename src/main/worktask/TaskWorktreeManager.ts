@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getGitExecEnv } from '../../shared/execEnv';
+import { resolveGitToplevel } from '../git/git';
 
 const execFileAsync = promisify(execFile);
 
@@ -182,15 +183,21 @@ export class TaskWorktreeManager {
     }
 
     // Confirm repo root (non-repo·missing git fail-closed). --show-toplevel fails on bare.
-    let repoRoot: string;
-    try {
-      const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], repoInput);
-      repoRoot = stdout.trim();
-      if (repoRoot.length === 0) {
-        return { ok: false, error: 'preflight: not a git repository (empty toplevel)' };
+    let gitFailed = false;
+    const repoRoot = await resolveGitToplevel(repoInput, async (args) => {
+      try {
+        const result = await this.runGit(args, repoInput);
+        return { ...result, code: 0 };
+      } catch (error) {
+        gitFailed = true;
+        return { stdout: '', stderr: String(error), code: 1 };
       }
-    } catch {
+    });
+    if (!repoRoot && gitFailed) {
       return { ok: false, error: `preflight: not a git repository or git unavailable: ${repoInput}` };
+    }
+    if (!repoRoot) {
+      return { ok: false, error: 'preflight: not a git repository (empty toplevel)' };
     }
 
     // Reject bare repo (§3 edge fail-closed).
