@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
+import type { SessionLocationSnapshot } from '../../../shared/sessionLocation';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -854,7 +855,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         isWorkspaceVisible={isWorkspaceVisible}
         isZoomHidden={isZoomHidden}
         onCloseSurface={handleCloseSurface}
-        onPtyCreated={(surfaceId, ptyId) => updateSurfacePtyId(pane.id, surfaceId, ptyId)}
+        onPtyCreated={(surfaceId, ptyId, locationSnapshot) =>
+          updateSurfacePtyId(pane.id, surfaceId, ptyId, locationSnapshot)}
         emptyMessage={t('pane.empty')}
       />
       </ErrorBoundary>
@@ -881,7 +883,11 @@ function SplitSurfaceView({
   isWorkspaceVisible: boolean;
   isZoomHidden?: boolean;
   onCloseSurface: (id: string) => void;
-  onPtyCreated: (surfaceId: string, ptyId: string) => void;
+  onPtyCreated: (
+    surfaceId: string,
+    ptyId: string,
+    locationSnapshot?: SessionLocationSnapshot,
+  ) => void;
   emptyMessage: string;
 }) {
   const terminals = useMemo(
@@ -956,7 +962,8 @@ function SplitSurfaceView({
               cwd={surface.cwd || undefined}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
-              onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
+              onPtyCreated={(ptyId, locationSnapshot) =>
+                onPtyCreated(surface.id, ptyId, locationSnapshot)}
               scrollbackFile={surface.scrollbackFile}
               workspaceId={workspaceId}
               surfaceId={surface.id}
@@ -990,7 +997,8 @@ function SplitSurfaceView({
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownTerminalId}
                 isWorkspaceVisible={isWorkspaceVisible}
-                onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
+                onPtyCreated={(ptyId, locationSnapshot) =>
+                  onPtyCreated(surface.id, ptyId, locationSnapshot)}
                 scrollbackFile={surface.scrollbackFile}
                 workspaceId={workspaceId}
                 surfaceId={surface.id}

@@ -4,6 +4,12 @@ import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
 import { createA2aSlice } from '../a2aSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
+import {
+  beginSessionLocationProjection,
+  getRememberedSessionLocation,
+  rememberSessionLocation,
+  resetSessionLocationProjections,
+} from '../../sessionLocationProjection';
 
 // Minimal store satisfying WorkspaceSlice + the pieces of UISlice the
 // setActiveWorkspace logic touches (multiviewIds). We don't pull in the
@@ -163,6 +169,32 @@ describe('removeWorkspace — A8: fail tasks delegated to a closed workspace', (
     store.getState().removeWorkspace(wsB.id);
     expect(store.getState().a2aTasks[done].status.state).toBe('completed'); // terminal untouched
     expect(store.getState().a2aTasks[toA].status.state).toBe('submitted'); // to A, untouched
+  });
+
+  it('releases every location projection owned by the removed workspace', () => {
+    resetSessionLocationProjections();
+    const wsA = createWorkspace('A');
+    const wsB = createWorkspace('B');
+    if (wsB.rootPane.type !== 'leaf') throw new Error('expected leaf');
+    wsB.rootPane.surfaces.push({
+      id: 'surface-b',
+      ptyId: 'pty-b',
+      title: 'B',
+      shell: 'pwsh.exe',
+      cwd: 'C:/live',
+      surfaceType: 'terminal',
+    });
+    beginSessionLocationProjection('pty-b');
+    rememberSessionLocation('pty-b', {
+      generation: 1,
+      revision: 1,
+      location: { domain: 'host', cwd: 'C:/live', shell: 'pwsh.exe' },
+    });
+    const store = createComboStore([wsA, wsB], wsA.id);
+
+    store.getState().removeWorkspace(wsB.id);
+
+    expect(getRememberedSessionLocation('pty-b')).toBeUndefined();
   });
 });
 

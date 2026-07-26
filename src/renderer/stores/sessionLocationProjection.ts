@@ -1,30 +1,34 @@
-import {
-  isSessionLocationSnapshotNewer,
-  type SessionLocationSnapshot,
-} from '../../shared/sessionLocation';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
+import { OrderedSessionLocationProjection } from '../../shared/orderedSessionLocationProjection';
 
-const snapshots = new Map<string, SessionLocationSnapshot>();
+const projection = new OrderedSessionLocationProjection();
+
+export function beginSessionLocationProjection(ptyId: string): boolean {
+  const authority = projection.beginDiscovery();
+  const lease = projection.begin(ptyId, authority);
+  projection.finishDiscovery(authority);
+  return lease !== undefined;
+}
 
 export function rememberSessionLocation(
   ptyId: string,
   snapshot: SessionLocationSnapshot,
 ): boolean {
-  const current = snapshots.get(ptyId);
-  if (!isSessionLocationSnapshotNewer(snapshot, current)) return false;
-  snapshots.set(ptyId, snapshot);
-  return true;
+  const lease = projection.lease(ptyId);
+  return lease ? projection.accept(ptyId, snapshot, lease) : false;
 }
 
 export function getRememberedSessionLocation(
   ptyId: string,
 ): SessionLocationSnapshot | undefined {
-  return snapshots.get(ptyId);
+  return projection.get(ptyId);
 }
 
 export function forgetSessionLocation(ptyId: string): void {
-  snapshots.delete(ptyId);
+  const lease = projection.lease(ptyId);
+  if (lease) projection.release(ptyId, lease);
 }
 
 export function resetSessionLocationProjections(): void {
-  snapshots.clear();
+  projection.reset();
 }

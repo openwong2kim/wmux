@@ -94,6 +94,14 @@ export class OrderedSessionLocationProjection {
     return this.projections.get(sessionId)?.snapshot;
   }
 
+  snapshots(): Array<[string, SessionLocationSnapshot]> {
+    const snapshots: Array<[string, SessionLocationSnapshot]> = [];
+    for (const [sessionId, state] of this.projections) {
+      if (state.snapshot) snapshots.push([sessionId, state.snapshot]);
+    }
+    return snapshots;
+  }
+
   retire(
     sessionId: string,
     generation: number,

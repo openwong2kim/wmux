@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
+import type { SessionLocationSnapshot } from '../../../shared/sessionLocation';
 import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
 import { resolveRespawnCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
@@ -20,7 +21,7 @@ interface TerminalProps {
   ptyId?: string;
   shell?: string;
   cwd?: string;
-  onPtyCreated?: (ptyId: string) => void;
+  onPtyCreated?: (ptyId: string, locationSnapshot?: SessionLocationSnapshot) => void;
   /** True when this surface tab is the selected tab inside its pane (drives
    *  keyboard focus, vi-copy mode, search bar). */
   isActive?: boolean;
@@ -160,7 +161,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       : respawnCwd === cwd ? 'surface'
       : 'global';
     console.log(`[Terminal] self-create PTY: shell=${shell}, cwd=${respawnCwd ?? '(home)'} source=${cwdSource} surfaceCwd=${cwd ?? '-'} cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
-    void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
+    void ipcInvokeRef.current<{ id: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot }>(() =>
       window.electronAPI.pty.create(withDefaultShell(withWorkspaceProfile({ shell, cwd: respawnCwd, cols, rows, workspaceId, surfaceId, spawnKind: 'user-shell' }, profile), defaultShell))
     ).then((result) => {
       // v2 RCA fix (adversarial review): release the latch once this create
@@ -181,7 +182,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         return;
       }
       setPtyId(result.data.id);
-      onPtyCreated?.(result.data.id);
+      onPtyCreated?.(result.data.id, result.data.locationSnapshot);
       // Heal the surface's tracked cwd to what main actually spawned in, so a
       // contaminated-home surface.cwd is corrected the moment it respawns and a
       // later split seeds from the real dir (issue #515). onPtyCreated binds the

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 import type { SessionLocationSnapshot } from '../../../../shared/sessionLocation';
-import { resetSessionLocationProjections } from '../../sessionLocationProjection';
+import {
+  getRememberedSessionLocation,
+  resetSessionLocationProjections,
+} from '../../sessionLocationProjection';
 import { createSurfaceSlice } from '../surfaceSlice';
 
 type TestState = {
@@ -17,6 +20,7 @@ function createHarness() {
   };
   const set = (updater: (state: TestState) => void) => updater(state);
   const slice = createSurfaceSlice(set as never, (() => state) as never, {} as never);
+  Object.assign(state, slice);
   return { state, slice };
 }
 
@@ -38,10 +42,17 @@ beforeEach(() => {
 });
 
 describe('surface location snapshot projection', () => {
-  it('repairs an event-before-binding race when the surface is added', () => {
+  it('adopts the create response only after the surface binding exists', () => {
     const { state, slice } = createHarness();
-    slice.updateSurfaceLocation('pty-1', snapshot(2, '/home/me/repo', 'Ubuntu'));
-    slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'wsl.exe', '/stale');
+    expect(slice.updateSurfaceLocation('pty-1', snapshot(1, '/too-early'))).toBe(false);
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'wsl.exe',
+      '/stale',
+      undefined,
+      snapshot(2, '/home/me/repo', 'Ubuntu'),
+    );
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
@@ -63,5 +74,24 @@ describe('surface location snapshot projection', () => {
       cwd: '/new',
       location: snapshot(3, '/new', 'Ubuntu').location,
     });
+  });
+
+  it('releases projection state before delayed delivery after close', () => {
+    const { state, slice } = createHarness();
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'wsl.exe',
+      '/initial',
+      undefined,
+      snapshot(1, '/live'),
+    );
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+
+    slice.closeSurface(pane.id, pane.surfaces[0].id);
+
+    expect(getRememberedSessionLocation('pty-1')).toBeUndefined();
+    expect(slice.updateSurfaceLocation('pty-1', snapshot(2, '/late'))).toBe(false);
   });
 });

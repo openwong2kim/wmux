@@ -27,6 +27,7 @@ import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
 
 // ---------------------------------------------------------------------------
 // Cold-park (TASK-9) daemon-backed read fallback
@@ -528,11 +529,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const paneId = newWs.activePaneId;
 
     let ptyId: string;
+    let locationSnapshot: SessionLocationSnapshot | undefined;
     try {
       const created = await window.electronAPI.pty.create(
         withDefaultShell({ workspaceId: newWsId }, useStore.getState().defaultShell)
       );
       ptyId = created.id;
+      locationSnapshot = created.locationSnapshot;
     } catch (err) {
       // Roll back: remove the empty workspace so we don't leave orphans.
       const rollback = useStore.getState();
@@ -550,7 +553,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       afterPty.setActiveWorkspace(previousActiveId);
       return { error: 'mcp.claimWorkspace: pane disappeared during PTY creation' };
     }
-    afterPty.addSurface(paneId, ptyId, '', '');
+    afterPty.addSurface(paneId, ptyId, '', '', undefined, locationSnapshot);
 
     // Restore focus to whatever the user was looking at before — claim must
     // never steal the active view.
@@ -580,6 +583,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const paneId = newWs.activePaneId;
 
     let ptyId: string;
+    let locationSnapshot: SessionLocationSnapshot | undefined;
     try {
       const created = await window.electronAPI.pty.create(
         withDefaultShell(
@@ -597,6 +601,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         ),
       );
       ptyId = created.id;
+      locationSnapshot = created.locationSnapshot;
     } catch (err) {
       const rollback = useStore.getState();
       rollback.removeWorkspace(newWsId);
@@ -612,7 +617,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       afterPty.setActiveWorkspace(previousActiveId);
       return { error: 'fanout.spawnWorkspace: pane disappeared during PTY creation' };
     }
-    afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
+    afterPty.addSurface(paneId, ptyId, '', cwd, newWsId, locationSnapshot);
 
     // Focus restore — fan-out spawn does not steal the user's screen.
     useStore.getState().setActiveWorkspace(previousActiveId);
@@ -715,7 +720,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     // #515: adopt the cwd main actually spawned in (validated/home-fallback
     // applied) so the surface tracks its real dir and later splits seed correctly.
-    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id);
+    freshAfterCreate.addSurface(
+      paneId,
+      ptyId,
+      shell,
+      created.cwd || cwd,
+      ws.id,
+      created.locationSnapshot,
+    );
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === ws.id);
@@ -951,7 +963,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     });
     if (afterSplit.splitCwdSeed[newPaneId]) afterSplit.clearSplitCwdSeed(newPaneId);
 
-    let created: { id: string; shell?: string; cwd?: string };
+    let created: {
+      id: string;
+      shell?: string;
+      cwd?: string;
+      locationSnapshot?: SessionLocationSnapshot;
+    };
     try {
       created = await window.electronAPI.pty.create(
         withDefaultShell(
@@ -984,7 +1001,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { ok: true, paneId: newPaneId };
     }
     const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
-    afterPty.addSurface(newPaneId, created.id, shellName, created.cwd || '', splitWs.id);
+    afterPty.addSurface(
+      newPaneId,
+      created.id,
+      shellName,
+      created.cwd || '',
+      splitWs.id,
+      created.locationSnapshot,
+    );
     return { ok: true, paneId: newPaneId, ptyId: created.id };
   }
 

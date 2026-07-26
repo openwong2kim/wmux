@@ -1,0 +1,48 @@
+import { describe, expect, it } from 'vitest';
+import { PreloadSessionLocationProjection } from '../sessionLocationProjection';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
+
+function snapshot(generation: number, revision: number): SessionLocationSnapshot {
+  return {
+    generation,
+    revision,
+    location: {
+      domain: 'wsl',
+      cwd: `/g${generation}/r${revision}`,
+      shell: 'wsl.exe',
+    },
+  };
+}
+
+describe('preload session location propagation', () => {
+  it('projects response snapshots and replays the accepted value', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const request = projection.beginDiscovery();
+    expect(projection.accept('pty-1', snapshot(4, 1), request)).toBe(true);
+    projection.finishDiscovery(request);
+
+    expect(projection.snapshots()).toEqual([['pty-1', snapshot(4, 1)]]);
+  });
+
+  it('settled dispose blocks only the closed id in an in-flight list response', () => {
+    const projection = new PreloadSessionLocationProjection();
+    expect(projection.acceptEvent('closed', snapshot(4, 1))).toBe(true);
+    const list = projection.beginDiscovery();
+
+    projection.release('closed');
+
+    expect(projection.accept('closed', snapshot(4, 2), list)).toBe(false);
+    expect(projection.accept('live', snapshot(1, 1), list)).toBe(true);
+    projection.finishDiscovery(list);
+    expect(projection.snapshots()).toEqual([['live', snapshot(1, 1)]]);
+  });
+
+  it('authenticated replacement reset fences a pre-reset response', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const oldRequest = projection.beginDiscovery();
+    projection.reset();
+
+    expect(projection.accept('pty-1', snapshot(100, 1), oldRequest)).toBe(false);
+    expect(projection.acceptEvent('pty-1', snapshot(1, 1))).toBe(true);
+  });
+});

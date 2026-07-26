@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  beginSessionLocationProjection,
+  forgetSessionLocation,
   getRememberedSessionLocation,
   rememberSessionLocation,
   resetSessionLocationProjections,
@@ -23,31 +25,22 @@ beforeEach(() => {
 });
 
 describe('session location projection ordering', () => {
-  it('rejects an older snapshot response after a newer pushed event', () => {
+  it('requires an explicit active binding before accepting delivery', () => {
+    expect(rememberSessionLocation('pty-1', snapshot(10, 2, '/new', 'Ubuntu'))).toBe(false);
+    expect(getRememberedSessionLocation('pty-1')).toBeUndefined();
+  });
+
+  it('stores accepted delivery for an explicitly bound pty', () => {
+    expect(beginSessionLocationProjection('pty-1')).toBe(true);
     expect(rememberSessionLocation('pty-1', snapshot(10, 2, '/new', 'Ubuntu'))).toBe(true);
-    expect(rememberSessionLocation('pty-1', snapshot(10, 1, '/old'))).toBe(false);
     expect(getRememberedSessionLocation('pty-1')).toEqual(snapshot(10, 2, '/new', 'Ubuntu'));
   });
 
-  it('rejects a delayed event from an older reused-id generation', () => {
-    expect(rememberSessionLocation('pty-1', snapshot(11, 1, '/new'))).toBe(true);
-    expect(rememberSessionLocation('pty-1', snapshot(10, 99, '/old', 'Stale'))).toBe(false);
-    expect(getRememberedSessionLocation('pty-1')).toEqual(snapshot(11, 1, '/new'));
-  });
-
-  it('accepts a late enrichment in the current generation', () => {
-    expect(rememberSessionLocation('pty-1', snapshot(10, 1, '/repo'))).toBe(true);
-    expect(rememberSessionLocation('pty-1', snapshot(10, 2, '/repo', 'Ubuntu'))).toBe(true);
-    expect(getRememberedSessionLocation('pty-1')?.location).toMatchObject({
-      cwd: '/repo',
-      distro: 'Ubuntu',
-    });
-  });
-
-  it('accepts a lower generation after an authenticated daemon replacement reset', () => {
-    expect(rememberSessionLocation('pty-1', snapshot(100, 5, '/old'))).toBe(true);
-    resetSessionLocationProjections();
-    expect(rememberSessionLocation('pty-1', snapshot(1, 1, '/new'))).toBe(true);
-    expect(getRememberedSessionLocation('pty-1')).toEqual(snapshot(1, 1, '/new'));
+  it('release prevents delayed delivery from implicitly rebinding', () => {
+    beginSessionLocationProjection('pty-1');
+    rememberSessionLocation('pty-1', snapshot(10, 1, '/live'));
+    forgetSessionLocation('pty-1');
+    expect(rememberSessionLocation('pty-1', snapshot(10, 2, '/late'))).toBe(false);
+    expect(getRememberedSessionLocation('pty-1')).toBeUndefined();
   });
 });

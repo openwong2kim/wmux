@@ -22,37 +22,51 @@ import type {
 } from '../shared/lanlink';
 import type { WebStartArgs, WebTerminalInfo } from '../shared/web';
 import {
-  isSessionLocationSnapshotNewer,
   type SessionLocationSnapshot,
 } from '../shared/sessionLocation';
+import {
+  type SessionLocationDiscoveryAuthority,
+} from '../shared/orderedSessionLocationProjection';
+import { PreloadSessionLocationProjection } from './sessionLocationProjection';
 
-const projectedLocations = new Map<string, SessionLocationSnapshot>();
+const projectedLocations = new PreloadSessionLocationProjection();
 ipcRenderer.on('daemon:connected', () => {
-  projectedLocations.clear();
+  projectedLocations.reset();
 });
 
 function rememberProjectedLocation(
   ptyId: string,
   snapshot: SessionLocationSnapshot,
+  authority: SessionLocationDiscoveryAuthority,
 ): boolean {
-  const current = projectedLocations.get(ptyId);
-  if (!isSessionLocationSnapshotNewer(snapshot, current)) return false;
-  projectedLocations.set(ptyId, snapshot);
-  return true;
+  return projectedLocations.accept(ptyId, snapshot, authority);
 }
 
 function projectLocationSnapshot(
   ptyId: string | undefined,
   snapshot: SessionLocationSnapshot | undefined,
+  authority: SessionLocationDiscoveryAuthority,
 ): void {
   if (!ptyId || !snapshot) return;
-  if (!rememberProjectedLocation(ptyId, snapshot)) return;
+  if (!rememberProjectedLocation(ptyId, snapshot, authority)) return;
   ipcRenderer.emit(
     IPC.LOCATION_CHANGED,
     {} as Electron.IpcRendererEvent,
     ptyId,
     snapshot,
+    true,
   );
+}
+
+function projectLocationEvent(
+  ptyId: string,
+  snapshot: SessionLocationSnapshot,
+): boolean {
+  return projectedLocations.acceptEvent(ptyId, snapshot);
+}
+
+function releaseProjectedLocation(ptyId: string): void {
+  projectedLocations.release(ptyId);
 }
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
@@ -81,34 +95,49 @@ const electronAPI = {
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
     create: async (options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean } }) => {
-      const result = await ipcRenderer.invoke(IPC.PTY_CREATE, options) as {
-        id: string;
-        shell?: string;
-        cwd?: string;
-        locationSnapshot?: SessionLocationSnapshot;
-      };
-      projectLocationSnapshot(result.id, result.locationSnapshot);
-      return result;
+      const authority = projectedLocations.beginDiscovery();
+      try {
+        const result = await ipcRenderer.invoke(IPC.PTY_CREATE, options) as {
+          id: string;
+          shell?: string;
+          cwd?: string;
+          locationSnapshot?: SessionLocationSnapshot;
+        };
+        projectLocationSnapshot(result.id, result.locationSnapshot, authority);
+        return result;
+      } finally {
+        projectedLocations.finishDiscovery(authority);
+      }
     },
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
     },
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
-    dispose: (id: string) =>
-      ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    dispose: async (id: string) => {
+      try {
+        return await ipcRenderer.invoke(IPC.PTY_DISPOSE, id);
+      } finally {
+        releaseProjectedLocation(id);
+      }
+    },
     // `supervision` (X8) is additive and present only on supervised daemon-mode
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
     list: async () => {
+      const authority = projectedLocations.beginDiscovery();
+      try {
       // `surfaceId` (axis B, reboot-reattach): present only on sessions created
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
-      const result = await ipcRenderer.invoke(IPC.PTY_LIST) as Array<{ id: string; shell: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
-      for (const session of result) {
-        projectLocationSnapshot(session.id, session.locationSnapshot);
+        const result = await ipcRenderer.invoke(IPC.PTY_LIST) as Array<{ id: string; shell: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
+        for (const session of result) {
+          projectLocationSnapshot(session.id, session.locationSnapshot, authority);
+        }
+        return result;
+      } finally {
+        projectedLocations.finishDiscovery(authority);
       }
-      return result;
     },
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
@@ -120,13 +149,18 @@ const electronAPI = {
     resources: (ptyIds: string[]) =>
       ipcRenderer.invoke(IPC.PANE_RESOURCES, ptyIds) as Promise<Record<string, { rss: number; image?: string }>>,
     reconnect: async (id: string) => {
+      const authority = projectedLocations.beginDiscovery();
+      try {
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
-      const result = await ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as { success: boolean; id?: string; shell?: string; locationSnapshot?: SessionLocationSnapshot; error?: string; code?: string; transient?: boolean };
-      projectLocationSnapshot(result.id, result.locationSnapshot);
-      return result;
+        const result = await ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as { success: boolean; id?: string; shell?: string; locationSnapshot?: SessionLocationSnapshot; error?: string; code?: string; transient?: boolean };
+        projectLocationSnapshot(result.id, result.locationSnapshot, authority);
+        return result;
+      } finally {
+        projectedLocations.finishDiscovery(authority);
+      }
     },
     // Phase 3 PR-B — live-pipe re-flush. Unlike `reconnect` (opens a fresh
     // socket), this re-runs the flush on the EXISTING session socket, so input
@@ -154,7 +188,8 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.PTY_DATA, listener); };
     },
     onExit: (callback: (id: string, exitCode: number) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, id: string, exitCode: number) => callback(id, exitCode);
+      const listener = (_event: Electron.IpcRendererEvent, id: string, exitCode: number) =>
+        callback(id, exitCode);
       ipcRenderer.on(IPC.PTY_EXIT, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_EXIT, listener); };
     },
@@ -298,12 +333,13 @@ const electronAPI = {
         _event: Electron.IpcRendererEvent,
         ptyId: string,
         snapshot: SessionLocationSnapshot,
+        alreadyProjected?: boolean,
       ) => {
-        rememberProjectedLocation(ptyId, snapshot);
+        if (!alreadyProjected && !projectLocationEvent(ptyId, snapshot)) return;
         callback(ptyId, snapshot);
       };
       ipcRenderer.on(IPC.LOCATION_CHANGED, listener);
-      for (const [ptyId, snapshot] of projectedLocations) {
+      for (const [ptyId, snapshot] of projectedLocations.snapshots()) {
         callback(ptyId, snapshot);
       }
       return () => { ipcRenderer.removeListener(IPC.LOCATION_CHANGED, listener); };

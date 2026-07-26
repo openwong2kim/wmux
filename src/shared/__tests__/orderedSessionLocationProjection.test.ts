@@ -126,4 +126,17 @@ describe('OrderedSessionLocationProjection', () => {
 
     expect(projection.begin('s1', discovery)).toBeUndefined();
   });
+
+  it('does not retain state for repeatedly closed unique ids', () => {
+    const projection = new OrderedSessionLocationProjection();
+    for (let index = 0; index < 100; index += 1) {
+      const id = `session-${index}`;
+      const lease = begin(projection, id);
+      projection.accept(id, snapshot(index + 1, 1), lease);
+      expect(projection.release(id, lease)).toBe(true);
+    }
+
+    expect(projection.retainedSize()).toBe(0);
+    expect(projection.snapshots()).toEqual([]);
+  });
 });

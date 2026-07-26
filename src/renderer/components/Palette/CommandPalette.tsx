@@ -14,6 +14,7 @@ import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import type { SessionLocationSnapshot } from '../../../shared/sessionLocation';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -242,13 +243,20 @@ export default function CommandPalette() {
           if (ws) {
             // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
             const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
-            void ipcInvoke<{ id: string; cwd?: string }>(() =>
+            void ipcInvoke<{ id: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot }>(() =>
               window.electronAPI.pty.create(withDefaultShell(withWorkspaceProfile({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, ws.profile), state.defaultShell))
             ).then((result) => {
               if (result.ok) {
                 // #515: adopt the cwd main actually spawned in (was '' → later
                 // splits seed from an empty cwd and fall back to home).
-                useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
+                useStore.getState().addSurface(
+                  ws.activePaneId,
+                  result.data.id,
+                  'Terminal',
+                  result.data.cwd || '',
+                  undefined,
+                  result.data.locationSnapshot,
+                );
               }
             });
           }

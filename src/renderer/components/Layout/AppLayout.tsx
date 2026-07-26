@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import type { SessionLocationSnapshot } from '../../../shared/sessionLocation';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
@@ -573,7 +574,7 @@ export default function AppLayout() {
     }
     const run = (async () => {
       try {
-        const listResult = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() =>
+        const listResult = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string; locationSnapshot?: SessionLocationSnapshot }[]>(() =>
           window.electronAPI.pty.list()
         );
         if (!listResult.ok) {
@@ -691,10 +692,10 @@ export default function AppLayout() {
           // payload. Rebind targets must come from the freshest snapshot — a
           // session that died between the two snapshots must not be picked
           // (review consensus: codex P2 + testing + adversarial).
-          let secondSnapshot: { id: string; surfaceId?: string; createdAt?: string }[] | null = null;
+          let secondSnapshot: { id: string; surfaceId?: string; createdAt?: string; locationSnapshot?: SessionLocationSnapshot }[] | null = null;
           const toClear = await resolvePtyIdsToClear(firstAbsent, {
             reList: async () => {
-              const r = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() => window.electronAPI.pty.list());
+              const r = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string; locationSnapshot?: SessionLocationSnapshot }[]>(() => window.electronAPI.pty.list());
               if (r.ok) secondSnapshot = r.data;
               return r.ok
                 ? { ok: true, ids: new Set(r.data.map((p: { id: string }) => p.id)) }
@@ -742,7 +743,15 @@ export default function AppLayout() {
             } else {
               console.warn(`[lifecycle] reconcile clearing ptyId=${a.stalePtyId} surface=${a.surfaceId} (absent from TWO daemon snapshots, no surface match) → Terminal self-create`);
             }
-            useStore.getState().updateSurfacePtyId(a.paneId, a.surfaceId, a.newPtyId);
+            const locationSnapshot = (secondSnapshot ?? activePtys)
+              .find((session) => session.id === a.newPtyId)
+              ?.locationSnapshot;
+            useStore.getState().updateSurfacePtyId(
+              a.paneId,
+              a.surfaceId,
+              a.newPtyId,
+              locationSnapshot,
+            );
           }
         }
         console.log(`[AppLayout] Reconcile cycle #${reconcileCycleRef.current} complete (${absentCandidates.length} absent candidate(s))`);
