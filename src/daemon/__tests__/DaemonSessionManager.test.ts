@@ -141,6 +141,32 @@ describe('DaemonSessionManager', () => {
     expect(meta?.spawnCwd).toBe(os.tmpdir());
   });
 
+  it('★ REPLAYS a given spawnCwd instead of re-deriving it from the live cwd', () => {
+    // Recovery and the supervised restart pass the LIVE meta.cwd back as `cwd`,
+    // so the pane comes back where the human left it. That value has been
+    // tracking OSC 7 — i.e. whatever the pane's own process claimed. Seeding
+    // spawnCwd from it would let a `cd`, or a forged OSC 7, become the
+    // immutable diff root the moment the daemon restarts, which is exactly the
+    // property the split exists to guarantee.
+    const original = os.tmpdir();
+    const osc7Moved = path.join(os.tmpdir(), 'osc7-said-so');
+    const replayed = manager.createSession({
+      id: 'replayed',
+      cmd: 'cmd.exe',
+      cwd: osc7Moved,
+      spawnCwd: original,
+    });
+    expect(replayed.cwd).toBe(osc7Moved);
+    expect(replayed.spawnCwd).toBe(original);
+  });
+
+  it('a brand-new session with no spawnCwd still gets one from its resolved cwd', () => {
+    // The pre-spawnCwd `sessions.json` case too: an absent field must not make
+    // the session spawnCwd-less forever.
+    const fresh = manager.createSession({ id: 'fresh', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(fresh.spawnCwd).toBe(os.tmpdir());
+  });
+
   it('resolves an OMITTED cmd to the default shell — the web spawn path relies on it', () => {
     // `wmux web`'s POST /api/sessions names no command on purpose: the default
     // shell is decided in exactly one place (platform tables, Store aliases,

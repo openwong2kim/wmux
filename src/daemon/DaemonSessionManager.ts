@@ -155,6 +155,20 @@ export class DaemonSessionManager extends EventEmitter {
     /** Absent means the home directory. */
     cwd?: string;
     /**
+     * The ORIGINAL spawn directory, replayed by recovery/restart.
+     *
+     * Only those paths pass it. A brand-new session omits it and `spawnCwd`
+     * is initialised from the resolved `cwd`, which at that moment is the
+     * directory we are actually spawning in. Recovery is different: it passes
+     * the LIVE `meta.cwd` as `cwd` (so the pane comes back where the human
+     * left it), and that value has been tracking OSC 7 — i.e. whatever the
+     * pane's own process claimed. Re-deriving `spawnCwd` from it would let a
+     * `cd`, or a forged OSC 7, become the immutable diff root across a daemon
+     * restart. Replaying the persisted value keeps the one property the diff
+     * route depends on: the pane's process cannot choose it.
+     */
+    spawnCwd?: string;
+    /**
      * The child environment. When provided it is treated as AUTHORITATIVE and
      * replayed verbatim — the caller (main process) has already run
      * buildSafeChildEnv + any workspace-profile overlay + forced identity, so
@@ -408,12 +422,14 @@ export class DaemonSessionManager extends EventEmitter {
       pid: ptyProcess.pid,
       cmd,
       cwd,
-      // Same value as `cwd` right now, and deliberately a second field: `cwd`
-      // is about to start tracking OSC 7 (see the bridge's 'cwd' handler) and
-      // will diverge the first time anything in the pane changes directory.
-      // Anything that ACTS on a pane's directory must read this one, which the
-      // pane's own process has no way to influence.
-      spawnCwd: cwd,
+      // Same value as `cwd` for a brand-new session, and deliberately a second
+      // field: `cwd` is about to start tracking OSC 7 (see the bridge's 'cwd'
+      // handler) and will diverge the first time anything in the pane changes
+      // directory. Anything that ACTS on a pane's directory must read this one,
+      // which the pane's own process has no way to influence — hence recovery
+      // replays the persisted value rather than letting the (by then
+      // OSC-7-tracked) `cwd` re-seed it. See `params.spawnCwd`.
+      spawnCwd: params.spawnCwd ?? cwd,
       env,
       cols,
       rows,
