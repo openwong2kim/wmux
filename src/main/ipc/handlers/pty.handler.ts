@@ -1346,7 +1346,12 @@ export function registerPTYHandlers(
       dataBatcher.flushSession(payload.sessionId);
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
-        win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1);
+        win.webContents.send(
+          IPC.PTY_EXIT,
+          payload.sessionId,
+          payload.exitCode ?? -1,
+          payload.locationGeneration,
+        );
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
       // Prune this session's pid-map anchor now that the shell is gone, so the

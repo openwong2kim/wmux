@@ -188,8 +188,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.PTY_DATA, listener); };
     },
     onExit: (callback: (id: string, exitCode: number) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, id: string, exitCode: number) =>
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        exitCode: number,
+        locationGeneration?: number,
+      ) => {
+        if (locationGeneration !== undefined) {
+          projectedLocations.retireAndRelease(id, locationGeneration);
+        }
         callback(id, exitCode);
+      };
       ipcRenderer.on(IPC.PTY_EXIT, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_EXIT, listener); };
     },

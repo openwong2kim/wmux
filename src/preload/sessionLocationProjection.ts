@@ -47,6 +47,17 @@ export class PreloadSessionLocationProjection {
     if (lease) this.owner.release(ptyId, lease);
   }
 
+  retireAndRelease(ptyId: string, generation: number): boolean {
+    const authority = this.owner.beginDiscovery();
+    try {
+      const lease = this.owner.begin(ptyId, authority);
+      if (!lease || !this.owner.retire(ptyId, generation, lease)) return false;
+      return this.owner.release(ptyId, lease);
+    } finally {
+      this.owner.finishDiscovery(authority);
+    }
+  }
+
   reset(): void {
     this.owner.reset();
   }

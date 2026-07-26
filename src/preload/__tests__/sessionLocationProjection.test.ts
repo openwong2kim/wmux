@@ -45,4 +45,20 @@ describe('preload session location propagation', () => {
     expect(projection.accept('pty-1', snapshot(100, 1), oldRequest)).toBe(false);
     expect(projection.acceptEvent('pty-1', snapshot(1, 1))).toBe(true);
   });
+
+  it('ordered exact-generation exit releases a closed session', () => {
+    const projection = new PreloadSessionLocationProjection();
+    expect(projection.acceptEvent('pty-1', snapshot(4, 1))).toBe(true);
+
+    expect(projection.retireAndRelease('pty-1', 4)).toBe(true);
+    expect(projection.snapshots()).toEqual([]);
+  });
+
+  it('stale exact-generation exit cannot release a newer reused session', () => {
+    const projection = new PreloadSessionLocationProjection();
+    expect(projection.acceptEvent('pty-1', snapshot(5, 1))).toBe(true);
+
+    expect(projection.retireAndRelease('pty-1', 4)).toBe(false);
+    expect(projection.snapshots()).toEqual([['pty-1', snapshot(5, 1)]]);
+  });
 });
