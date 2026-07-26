@@ -545,6 +545,13 @@ export function useNotificationListener() {
       }
     });
 
+    const unsubLocation = window.electronAPI.notification.onLocationChanged?.(
+      (ptyId, snapshot) => {
+        if (!ptyId) return;
+        useStore.getState().updateSurfaceLocation(ptyId, snapshot);
+      },
+    ) ?? (() => {});
+
     const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
       // OSC 0/2 window title (e.g. Claude Code `/rename`) → the tab title,
       // unless the user manually renamed this surface (titleLocked).
@@ -858,6 +865,7 @@ export function useNotificationListener() {
       unsubNotif();
       unsubFocus();
       unsubCwd();
+      unsubLocation();
       unsubTitle();
       unsubMeta();
       unsubActivePull();

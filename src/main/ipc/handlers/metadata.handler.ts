@@ -439,9 +439,17 @@ export function getCwd(ptyId: string): string | undefined {
  * (see wslDistro.ts), so it is safe to arm here for every WSL pane; it lands
  * asynchronously and the pane fails closed until it does.
  */
-export function updatePaneLocation(ptyId: string, location: SessionLocation): void {
+export function updatePaneLocation(
+  ptyId: string,
+  location: SessionLocation,
+  resolveDistro = true,
+): void {
   const distro = location.domain === 'wsl' ? location.distro : undefined;
   paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
+  if (!resolveDistro) {
+    paneLocationEnricher.cancel(ptyId);
+    return;
+  }
   void paneLocationEnricher.enrich(
     ptyId,
     () => {

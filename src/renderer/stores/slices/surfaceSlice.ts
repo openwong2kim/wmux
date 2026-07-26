@@ -7,8 +7,12 @@ import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveSessionLocation } from '../../../shared/sessionLocation';
-import type { SessionLocation } from '../../../shared/sessionLocation';
+import type { SessionLocation, SessionLocationSnapshot } from '../../../shared/sessionLocation';
 import { sessionLocationForSurface } from '../../utils/focusedSurface';
+import {
+  getRememberedSessionLocation,
+  rememberSessionLocation,
+} from '../sessionLocationProjection';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -46,6 +50,8 @@ export interface SurfaceSlice {
    * the tab tooltip rely on. No-op for an empty ptyId or an unknown pty.
    */
   updateSurfaceCwd: (ptyId: string, cwd: string) => void;
+  /** Apply an authoritative atomic cwd+location projection if it is newer. */
+  updateSurfaceLocation: (ptyId: string, snapshot: SessionLocationSnapshot) => void;
   /**
    * Persist the browser surface's current URL. Driven by BrowserPanel's
    * did-navigate events (user clicks, toolbar, MCP/CDP navigations alike), so
@@ -99,6 +105,11 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       const pane = findLeafPane(ws.rootPane, paneId);
       if (!pane) return;
       const surface = createSurface(ptyId, shell, cwd);
+      const remembered = getRememberedSessionLocation(ptyId);
+      if (remembered) {
+        surface.cwd = remembered.location.cwd;
+        surface.location = remembered.location;
+      }
       pane.surfaces.push(surface);
       pane.activeSurfaceId = surface.id;
     });
@@ -287,6 +298,11 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
         if (surface) {
           surface.ptyId = ptyId;
+          const remembered = getRememberedSessionLocation(ptyId);
+          if (remembered) {
+            surface.cwd = remembered.location.cwd;
+            surface.location = remembered.location;
+          }
           return;
         }
       }
@@ -339,6 +355,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       if (updateInPane(ws.rootPane)) return;
     }
   }),
+
+  updateSurfaceLocation: (ptyId, snapshot) => {
+    if (!ptyId || !rememberSessionLocation(ptyId, snapshot)) return;
+    set((state: StoreState) => {
+      for (const ws of state.workspaces) {
+        const updateInPane = (pane: Pane): boolean => {
+          if (pane.type === 'leaf') {
+            const surface = pane.surfaces.find((candidate) => candidate.ptyId === ptyId);
+            if (!surface) return false;
+            surface.cwd = snapshot.location.cwd;
+            surface.location = snapshot.location;
+            return true;
+          }
+          return pane.children.some(updateInPane);
+        };
+        if (updateInPane(ws.rootPane)) return;
+      }
+    });
+  },
 
   updateSurfaceTitleByPty: (ptyId, title) => set((state: StoreState) => {
     if (!ptyId) return;

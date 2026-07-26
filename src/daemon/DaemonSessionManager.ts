@@ -22,10 +22,19 @@ import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
+import { SessionLocationEnricher, type WslDistroResolver } from '../shared/sessionLocationEnrichment';
+import { resolveWslDistro } from '../shared/wslDistro';
+import type { SessionLocationSnapshot } from '../shared/sessionLocation';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
+let lastLocationGeneration = 0;
+
+function nextLocationGeneration(): number {
+  lastLocationGeneration = Math.max(lastLocationGeneration + 1, Date.now());
+  return lastLocationGeneration;
+}
 
 /** The daemon's own RPC auth-token namespace — must never reach a child shell. */
 const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
@@ -70,6 +79,9 @@ function stripReservedNamespace(env: Record<string, string>): Record<string, str
  */
 export interface ManagedSession {
   meta: DaemonSession;
+  /** Wire ordering identity; never persisted as session metadata. */
+  locationGeneration: number;
+  locationRevision: number;
   ptyProcess: IPty;
   ringBuffer: RingBuffer;
   bridge: DaemonPTYBridge;
@@ -129,6 +141,39 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 export class DaemonSessionManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
+  private readonly locationEnricher: SessionLocationEnricher;
+
+  constructor(
+    resolveDistro: WslDistroResolver = (shell) => resolveWslDistro({ shell }),
+  ) {
+    super();
+    this.locationEnricher = new SessionLocationEnricher(resolveDistro);
+  }
+
+  private locationSnapshot(managed: ManagedSession): SessionLocationSnapshot {
+    if (!managed.meta.location) {
+      throw new Error(`Session '${managed.meta.id}' has no normalized location`);
+    }
+    return {
+      generation: managed.locationGeneration,
+      revision: managed.locationRevision,
+      location: managed.meta.location,
+    };
+  }
+
+  private acceptLocation(
+    managed: ManagedSession,
+    location: SessionLocation,
+  ): SessionLocationSnapshot {
+    managed.meta.location = location;
+    managed.locationRevision += 1;
+    return this.locationSnapshot(managed);
+  }
+
+  getLocationSnapshot(id: string): SessionLocationSnapshot | undefined {
+    const managed = this.sessions.get(id);
+    return managed ? this.locationSnapshot(managed) : undefined;
+  }
 
   /**
    * Injected by daemon/index.ts (keeps this class free of platform/shutdown
@@ -499,6 +544,8 @@ export class DaemonSessionManager extends EventEmitter {
     const deferred = params.deferOutput === true;
     const managed: ManagedSession = {
       meta,
+      locationGeneration: nextLocationGeneration(),
+      locationRevision: 1,
       ptyProcess,
       ringBuffer,
       bridge,
@@ -560,11 +607,17 @@ export class DaemonSessionManager extends EventEmitter {
         ...resolveSessionLocation({ shell: meta.cmd, cwd: payload.cwd, location: meta.location }),
         cwd: payload.cwd,
       };
+      const locationSnapshot = this.acceptLocation(managed, meta.location);
       // Forward across the daemon→main boundary so the renderer can live-update
       // the per-surface cwd (tab tooltip + "Working directories" menu). Without
       // this, daemon mode (the default path) only kept cwd in daemon-local
       // meta and the UI never saw a change. Mirrors the session:prompt tee.
       this.emit('session:cwd', payload);
+      this.emit('session:location', {
+        sessionId: params.id,
+        snapshot: locationSnapshot,
+        reason: 'cwd',
+      });
     });
 
     bridge.on('title', (payload: { sessionId: string; title: string }) => {
@@ -619,6 +672,20 @@ export class DaemonSessionManager extends EventEmitter {
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
 
     this.emit('session:created', { session: { ...meta } });
+    void this.locationEnricher.enrich(
+      params.id,
+      () => this.sessions.get(params.id)?.meta.location,
+      (enriched) => {
+        const current = this.sessions.get(params.id);
+        if (!current) return;
+        const snapshot = this.acceptLocation(current, enriched);
+        this.emit('session:location', {
+          sessionId: params.id,
+          snapshot,
+          reason: 'enriched',
+        });
+      },
+    );
     return { ...meta };
   }
 
@@ -626,6 +693,7 @@ export class DaemonSessionManager extends EventEmitter {
     const managed = this.sessions.get(id);
     if (!managed) return;
 
+    this.locationEnricher.cancel(id);
     managed.bridge.cleanup();
     try {
       managed.ptyProcess.kill();
@@ -652,6 +720,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (managed.meta.state !== 'dead') {
       throw new Error(`removeTombstone('${id}'): session is '${managed.meta.state}', not 'dead'`);
     }
+    this.locationEnricher.cancel(id);
     this.sessions.delete(id);
     return true;
   }

@@ -46,6 +46,7 @@ import {
   classifySessionLocation,
   resolveSessionLocation,
   type SessionLocation,
+  type SessionLocationSnapshot,
 } from '../../../shared/sessionLocation';
 import { isWslUncPath } from '../../../shared/wslCwd';
 
@@ -316,11 +317,12 @@ export function registerPTYHandlers(
   let onDaemonFlushComplete:
     | ((payload: { sessionId: string; recoveredBytes: number }) => void)
     | null = null;
-  // Daemon-mode cwd forwarder. Same named-variable/cleanup discipline as
-  // flushComplete: the daemon detects cwd (OSC 7 / prompt) and emits
-  // session:cwd; we relay it to the renderer as IPC.CWD_CHANGED and refresh
-  // the main-side cwd cache, matching what local-mode PTYBridge does inline.
+  // Daemon-mode cwd cache feed. The atomic session:location projection below
+  // is the only renderer path; this legacy string event remains main-local.
   let onDaemonCwd: ((payload: { sessionId: string; cwd: string }) => void) | null = null;
+  let onDaemonLocation:
+    | ((payload: { sessionId: string; snapshot: SessionLocationSnapshot }) => void)
+    | null = null;
   // Daemon-mode title forwarder. The daemon detects OSC 0/2 and emits
   // session:title; we relay it to the renderer as IPC.TERMINAL_TITLE_CHANGED,
   // matching what local-mode PTYBridge does inline.
@@ -351,12 +353,25 @@ export function registerPTYHandlers(
       // pane's SessionLocation from this live feed (issue #21 I2), so there is
       // nothing to mirror into a second store here.
       updateCwd(payload.sessionId, payload.cwd);
-      const win = getWindow?.();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(IPC.CWD_CHANGED, payload.sessionId, payload.cwd);
-      }
     };
     daemonClient.on('session:cwd', onDaemonCwd);
+
+    onDaemonLocation = (payload: {
+      sessionId: string;
+      snapshot: SessionLocationSnapshot;
+    }) => {
+      updatePaneLocation(payload.sessionId, payload.snapshot.location, false);
+      updateCwd(payload.sessionId, payload.snapshot.location.cwd);
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(
+          IPC.LOCATION_CHANGED,
+          payload.sessionId,
+          payload.snapshot,
+        );
+      }
+    };
+    daemonClient.on('session:location', onDaemonLocation);
 
     onDaemonTitle = (payload: { sessionId: string; title: string }) => {
       const win = getWindow?.();
@@ -503,6 +518,10 @@ export function registerPTYHandlers(
         ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
         ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
       });
+      const locationSnapshot = (result as {
+        locationSnapshot?: SessionLocationSnapshot;
+      }).locationSnapshot;
+      const authoritativeLocation = locationSnapshot?.location ?? sessionLocation;
 
       // Attach to the session (makes daemon start the SessionPipe server)
       await daemonClient.rpc('daemon.attachSession', { id: sessionId });
@@ -552,8 +571,8 @@ export function registerPTYHandlers(
       // Register the pane's identity BEFORE seeding its cwd: updateCwd fires
       // the cwd listeners (localContextWatch's git watcher), and those read the
       // pane's command target — which does not exist until the identity is in.
-      updatePaneLocation(sessionId, sessionLocation);
-      updateCwd(sessionId, effectiveCwd);
+      updatePaneLocation(sessionId, authoritativeLocation, false);
+      updateCwd(sessionId, authoritativeLocation.cwd);
 
       // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
       // (the session id). The owning workspace is resolved live downstream,
@@ -563,7 +582,12 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      return { id: sessionId, shell, cwd: effectiveCwd };
+      return {
+        id: sessionId,
+        shell,
+        cwd: authoritativeLocation.cwd,
+        ...(locationSnapshot ? { locationSnapshot } : {}),
+      };
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
@@ -827,6 +851,8 @@ export function registerPTYHandlers(
         // stays unchanged (it already returns env verbatim).
         env?: Record<string, string>;
         createdAt?: string;
+        cwd?: string;
+        locationSnapshot?: SessionLocationSnapshot;
         // X8 — supervised sessions carry the sticky policy/status on meta and an
         // additive volatile runtime joined by the daemon's listSessions handler.
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
@@ -872,6 +898,8 @@ export function registerPTYHandlers(
           // v2 RCA fix (axis B-lite): create time for newest-wins duplicate
           // resolution in the renderer's rebind decision.
           ...(s.createdAt ? { createdAt: s.createdAt } : {}),
+          ...(s.cwd ? { cwd: s.cwd } : {}),
+          ...(s.locationSnapshot ? { locationSnapshot: s.locationSnapshot } : {}),
           ...(s.supervision
             ? {
                 supervision: {
@@ -916,6 +944,7 @@ export function registerPTYHandlers(
           pid?: number;
           cwd?: string;
           location?: SessionLocation;
+          locationSnapshot?: SessionLocationSnapshot;
         }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
@@ -935,12 +964,13 @@ export function registerPTYHandlers(
         // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
         // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
         if (session.cwd) {
-          const location = resolveSessionLocation({ ...session, cwd: session.cwd });
+          const location = session.locationSnapshot?.location
+            ?? resolveSessionLocation({ ...session, cwd: session.cwd });
           // Identity first, then the cwd — see the create path. The pane is
           // live again from here, so its active-session context (and, for a
           // bare `wsl.exe` pane, its distro) is derived, not reconstructed.
-          updatePaneLocation(id, location);
-          updateCwd(id, session.cwd);
+          updatePaneLocation(id, location, false);
+          updateCwd(id, location.cwd);
         }
 
         // Set up data forwarding BEFORE attachSession, not after. attachSession
@@ -1005,7 +1035,14 @@ export function registerPTYHandlers(
         // the historical RingBuffer replay can't be dropped — see that comment.)
 
         console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
-        return { success: true, id: session.id, shell: session.cmd };
+        return {
+          success: true,
+          id: session.id,
+          shell: session.cmd,
+          ...(session.locationSnapshot
+            ? { locationSnapshot: session.locationSnapshot }
+            : {}),
+        };
       } catch (err) {
         // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).
         // This is a transient infrastructure failure, NOT proof the session is
@@ -1308,6 +1345,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonCwd) {
         daemonClient.removeListener('session:cwd', onDaemonCwd);
+      }
+      if (onDaemonLocation) {
+        daemonClient.removeListener('session:location', onDaemonLocation);
       }
       if (onDaemonTitle) {
         daemonClient.removeListener('session:title', onDaemonTitle);

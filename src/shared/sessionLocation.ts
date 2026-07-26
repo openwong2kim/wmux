@@ -5,6 +5,31 @@ export type SessionLocation =
   | { domain: 'msys'; cwd: string; shell: string }
   | { domain: 'wsl'; cwd: string; shell: string; distro?: string };
 
+/**
+ * Atomic location projection for one live pane generation.
+ *
+ * `generation` changes when a session id is reused. `revision` increases for
+ * every accepted location within that generation. Consumers compare both
+ * fields so delayed events or invoke responses cannot restore an older cwd or
+ * distro.
+ */
+export interface SessionLocationSnapshot {
+  generation: number;
+  revision: number;
+  location: SessionLocation;
+}
+
+export function isSessionLocationSnapshotNewer(
+  next: SessionLocationSnapshot,
+  current: SessionLocationSnapshot | undefined,
+): boolean {
+  if (!current) return true;
+  if (next.generation !== current.generation) {
+    return next.generation > current.generation;
+  }
+  return next.revision > current.revision;
+}
+
 export interface ActiveSessionContext {
   sessionId: string;
   active: true;

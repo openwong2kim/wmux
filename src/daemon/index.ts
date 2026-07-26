@@ -42,6 +42,11 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonSession, DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import type { SessionLocationSnapshot } from '../shared/sessionLocation';
+import {
+  daemonSessionCommandTarget,
+  daemonSessionLocation,
+} from './sessionCommandTarget';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, resumeBindingMatchesLocation } from '../shared/agentResume';
@@ -56,7 +61,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { locationIdentity, resolveReplayLocation, resolveSessionLocation } from '../shared/sessionLocation';
+import { locationIdentity, resolveReplayLocation } from '../shared/sessionLocation';
 import { transcriptFileLives } from '../main/claude/lastAssistantMessage';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
@@ -506,14 +511,10 @@ function bindingTranscriptLives(
   if (!binding) return false;
   if (!binding.transcriptPath) return true;
   if (!session) return transcriptFileLives(binding.transcriptPath);
-  const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
+  const { location, activeContext } = daemonSessionCommandTarget(session);
   return transcriptFileLives(binding.transcriptPath, {
     location,
-    activeSession: {
-      sessionId: session.id,
-      active: true,
-      ...(location.domain === 'wsl' && location.distro ? { distro: location.distro } : {}),
-    },
+    activeSession: activeContext ?? { sessionId: session.id, active: true },
   });
 }
 
@@ -1529,7 +1530,11 @@ function registerRpcHandlers(
     triggerSnapshot();
 
     // Strip credential values from response (main uses pid etc. only). Replace with fresh env — live meta unchanged.
-    return { ...session, env: stripCredentialValues(session.env) };
+    return {
+      ...session,
+      env: stripCredentialValues(session.env),
+      locationSnapshot: sessionManager.getLocationSnapshot(session.id),
+    };
   });
 
   // daemon.destroySession
@@ -1835,7 +1840,11 @@ function registerRpcHandlers(
       // Replace with fresh env stripped of credential values — clients holding daemon token must not
       // read session credentials via RPC. s.env shares live in-memory meta.env reference so in-place
       // mutation forbidden (breaks spawn); stripCredentialValues returns fresh so replace only.
-      const base = { ...s, env: stripCredentialValues(s.env) };
+      const base = {
+        ...s,
+        env: stripCredentialValues(s.env),
+        locationSnapshot: sessionManager.getLocationSnapshot(s.id),
+      };
       // Capture the durable meta binding before stripping it — reused below to
       // surface a guard-passed binding for LIVE agent panes too, so the per-pane
       // resume affordance (Inspect/pane-header UUID + recovery) works ANY time, not
@@ -2063,11 +2072,7 @@ function registerRpcHandlers(
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
     if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
-    const sessionLocation = resolveSessionLocation({
-      cmd: managed.meta.cmd,
-      cwd: managed.meta.cwd,
-      location: managed.meta.location,
-    });
+    const sessionLocation = daemonSessionLocation(managed.meta);
     const p = {
       id,
       resumeBinding: {
@@ -3466,11 +3471,7 @@ function wireEvents(
         ...arbitration,
         ...(eventSession
           ? {
-              location: resolveSessionLocation({
-                cmd: eventSession.meta.cmd,
-                cwd: eventSession.meta.cwd,
-                location: eventSession.meta.location,
-              }),
+              location: daemonSessionLocation(eventSession.meta),
             }
           : {}),
       },
@@ -3540,6 +3541,27 @@ function wireEvents(
     stateWriter.saveAsap(buildState(sessionManager));
   });
 
+  sessionManager.on('session:location', (payload: {
+    sessionId: string;
+    snapshot: SessionLocationSnapshot;
+    reason: 'cwd' | 'enriched';
+  }) => {
+    // The durable record is the authority. Queue its write before publishing
+    // the projection so a consumer can never observe a location that the
+    // daemon has not yet accepted into sessions.json state.
+    if (payload.reason === 'enriched') {
+      stateWriter.saveImmediate(buildState(sessionManager));
+    } else {
+      stateWriter.saveAsap(buildState(sessionManager));
+    }
+    const event: DaemonEvent = {
+      type: 'location.changed',
+      sessionId: payload.sessionId,
+      data: payload.snapshot,
+    };
+    pipeServer.broadcast(event);
+  });
+
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
   // main can forward it to the renderer as IPC.TERMINAL_TITLE_CHANGED — same
   // shape as cwd.changed above.
@@ -3590,22 +3612,7 @@ function wireContextWatchers(
   const portWatcher = new PortWatcher(() =>
     sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
   );
-  const commandTargetFor = (session: DaemonSession) => {
-    const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
-    return {
-      sessionId: session.id,
-      location,
-      ...(location.domain === 'wsl' && location.distro
-        ? {
-            activeContext: {
-              sessionId: session.id,
-              active: true as const,
-              distro: location.distro,
-            },
-          }
-        : {}),
-    };
-  };
+  const commandTargetFor = daemonSessionCommandTarget;
 
   gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
     try {
@@ -3641,11 +3648,17 @@ function wireContextWatchers(
     if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
     else gitWatcher.remove(payload.sessionId);
   };
+  const onLocation = (payload: { sessionId: string }) => {
+    const session = sessionManager.getSession(payload.sessionId)?.meta;
+    if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
+    else gitWatcher.remove(payload.sessionId);
+  };
   const onGone = (payload: { id: string }) => {
     gitWatcher.remove(payload.id);
   };
   sessionManager.on('session:created', onCreated);
   sessionManager.on('session:cwd', onCwd);
+  sessionManager.on('session:location', onLocation);
   sessionManager.on('session:died', onGone);
   sessionManager.on('session:destroyed', onGone);
 
@@ -3659,6 +3672,7 @@ function wireContextWatchers(
   return () => {
     sessionManager.off('session:created', onCreated);
     sessionManager.off('session:cwd', onCwd);
+    sessionManager.off('session:location', onLocation);
     sessionManager.off('session:died', onGone);
     sessionManager.off('session:destroyed', onGone);
     portWatcher.stop();
