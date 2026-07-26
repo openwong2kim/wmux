@@ -494,10 +494,24 @@ interface AttentionEntry {
 /**
  * The one place tier is decided. `phase` is only consulted for approvals — the
  * create is the ask, everything after it is the echo of an ask that is done.
+ *
+ * `critical` is NOT uniformly `act`. The kind names the channel, not the
+ * severity: `CRITICAL_PATTERNS` carries two risk levels and the daemon puts
+ * both on it, so `DELETE FROM` and `kubectl delete` (`review`) arrive beside
+ * `rm -rf` and `terraform destroy` (`critical`). Waking a phone for the first
+ * pair at the same urgency as the second is how a person learns to ignore the
+ * channel — and it would contradict `hasCriticalRisk`, which already answers
+ * "is this the dangerous class?" with review-level excluded.
+ *
+ * Only the exact literal `'review'` softens the tier. An absent, unknown or
+ * malformed `riskLevel` stays `act`: the failure that matters is a destructive
+ * action delivered quietly, not an FYI delivered loudly. Note that this field
+ * is derived by the daemon from its own pattern table — a pane supplies the
+ * LINE, never the classification.
  */
 function tierFor(kind: EventKind, payload: Record<string, unknown>): EventTier {
   if (kind === 'notify') return 'info';
-  if (kind === 'critical') return 'act';
+  if (kind === 'critical') return payload['riskLevel'] === 'review' ? 'info' : 'act';
   return payload['phase'] === 'create' ? 'act' : 'info';
 }
 

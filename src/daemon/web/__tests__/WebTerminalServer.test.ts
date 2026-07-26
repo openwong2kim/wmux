@@ -1485,6 +1485,58 @@ describe('WebTerminalServer', () => {
     ]);
   });
 
+  it('★ a review-level critical signal is info, not act', async () => {
+    // The `critical` KIND names the channel, not the severity: CRITICAL_PATTERNS
+    // carries two risk levels and the daemon puts both on it, so `DELETE FROM`
+    // and `kubectl delete` arrive beside `rm -rf`. Waking a phone for the first
+    // pair at the urgency of the second is how a person learns to ignore the
+    // channel — and `hasCriticalRisk` already excludes review-level from "the
+    // dangerous class", so mapping both to `act` contradicts it.
+    const info = await startRO();
+    const token = info.token as string;
+    const em = sessionManager as unknown as EventEmitter;
+    em.emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'DELETE FROM', riskLevel: 'review' },
+    });
+    em.emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'kubectl delete', riskLevel: 'review' },
+    });
+    em.emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'terraform destroy', riskLevel: 'critical' },
+    });
+
+    const data = await backlog(token);
+    expect(data.events.map((e) => [e.action, e.tier])).toEqual([
+      ['DELETE FROM', 'info'],
+      ['kubectl delete', 'info'],
+      ['terraform destroy', 'act'],
+    ]);
+  });
+
+  it('★ an unrecognised or missing riskLevel stays act', async () => {
+    // Fail dangerous. The failure that matters is a destructive action
+    // delivered quietly, not an FYI delivered loudly — so only the exact
+    // literal 'review' softens the tier.
+    const info = await startRO();
+    const token = info.token as string;
+    const em = sessionManager as unknown as EventEmitter;
+    em.emit('session:critical', { sessionId: 's4', event: { action: 'no level' } });
+    em.emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'bogus', riskLevel: 'REVIEW' },
+    });
+    em.emit('session:critical', {
+      sessionId: 's4',
+      event: { action: 'object', riskLevel: { toString: 'review' } },
+    });
+
+    const data = await backlog(token);
+    expect(data.events.map((e) => e.tier)).toEqual(['act', 'act', 'act']);
+  });
+
   it('★ never lets a pane declare its own event non-urgent', async () => {
     const info = await startRO();
     const token = info.token as string;

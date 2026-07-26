@@ -158,8 +158,16 @@ pane-supplied payload can never shadow them.
 
 | Value | Meaning |
 | --- | --- |
-| `act` | someone is **blocked on a person**: an approval was raised (`phase: create`), or a critical signal fired |
-| `info` | FYI: a `notify`, or the lifecycle echo of an approval that is already over (`resolve` / `expire` / `supersede`) |
+| `act` | someone is **blocked on a person**: an approval was raised (`phase: create`), or a `critical`-risk signal fired |
+| `info` | FYI: a `notify`, a `review`-risk critical signal, or the lifecycle echo of an approval that is already over (`resolve` / `expire` / `supersede`) |
+
+The `critical` **kind** names the channel, not the severity: the daemon's
+pattern table carries two risk levels and puts both on it, so `DELETE FROM` and
+`kubectl delete` (`riskLevel: 'review'`) arrive beside `rm -rf` and `terraform
+destroy` (`riskLevel: 'critical'`). Only the latter are `act`. Anything other
+than the exact literal `'review'` — including an absent value — is treated as
+`act`, because the failure that matters is a destructive action delivered
+quietly.
 
 Server-authoritative, so urgency is decided in one place instead of re-derived
 by each client. Map it to your own platform's notification model — the daemon
