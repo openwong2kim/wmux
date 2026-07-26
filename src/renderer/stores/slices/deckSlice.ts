@@ -74,6 +74,9 @@ export interface DeckSlice {
    *  Transient — a fresh launch re-learns it on the next turn. */
   brainPtyIds: Record<string, string | null>;
   setBrainPtyId: (workspaceId: string, ptyId: string | null) => void;
+  /** Replace the whole map from main's snapshot (mount-time hydration — a
+   *  reloaded renderer missed every push that came before it subscribed). */
+  hydrateBrainPtyIds: (ptyIds: Record<string, string>) => void;
 
   /** P3b: the reboot-recovery greeting card was dismissed (or its recovery was
    *  launched) this session. Transient — a fresh launch re-evaluates from the
@@ -166,6 +169,11 @@ export const createDeckSlice: StateCreator<
   setBrainPtyId: (workspaceId, ptyId) =>
     set((state: StoreState) => {
       state.brainPtyIds[workspaceId] = ptyId;
+    }),
+
+  hydrateBrainPtyIds: (ptyIds) =>
+    set((state: StoreState) => {
+      state.brainPtyIds = { ...ptyIds };
     }),
 
   recoveryCardDismissed: false,

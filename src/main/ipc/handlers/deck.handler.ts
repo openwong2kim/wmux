@@ -116,6 +116,10 @@ export interface RegisterDeckHandlerOptions {
     workspaceId: string;
     fullPower?: boolean;
     vendor?: BrainVendor;
+    /** How an adapter announces (or retracts, with null) the terminal the deck
+     *  embeds. Passed to every factory — including an injected one — so the
+     *  embed plumbing is exercisable without a live daemon. */
+    onPtySpawned: (ptyId: string | null) => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -198,7 +202,14 @@ export function registerDeckHandler(
   // One-way push: which daemon session holds a workspace's embedded brain TUI
   // (`claude-pty` only; null retires it). Declared before createAdapter so the
   // default factory can hand it to a freshly spawned adapter.
+  // Main is the authority on which workspace currently has an embeddable
+  // terminal; the push below is only a notification. The renderer hydrates
+  // from this map on mount (DECK_BRAIN_PTY_LIST) because a reload drops
+  // everything it learned from earlier pushes.
+  const brainPtyIds = new Map<string, string>();
   const emitBrainPty = (workspaceId: string, ptyId: string | null): void => {
+    if (ptyId) brainPtyIds.set(workspaceId, ptyId);
+    else brainPtyIds.delete(workspaceId);
     const win = getWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send(IPC.DECK_BRAIN_PTY, { workspaceId, ptyId });
@@ -207,7 +218,13 @@ export function registerDeckHandler(
 
   const createAdapter =
     opts.createAdapter ??
-    ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean; vendor?: BrainVendor }) => {
+    ((adapterOpts: {
+      model?: string;
+      workspaceId: string;
+      fullPower?: boolean;
+      vendor?: BrainVendor;
+      onPtySpawned: (ptyId: string | null) => void;
+    }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
       // could — Hermes is simply the first configured spawn spec); everything
@@ -224,7 +241,7 @@ export function registerDeckHandler(
             workspaceId: adapterOpts.workspaceId,
             host: createBrainPtyHost(client),
             bridgePath: resolveBrainBridgePath(),
-            onPtySpawned: (ptyId) => emitBrainPty(adapterOpts.workspaceId, ptyId),
+            onPtySpawned: adapterOpts.onPtySpawned,
           });
         }
         console.warn(
@@ -345,6 +362,7 @@ export function registerDeckHandler(
       adapter: createAdapter({
         workspaceId,
         vendor,
+        onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -1409,6 +1427,15 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Embedded brain terminals: the renderer's mount-time hydration ────────
+  ipcMain.removeHandler(IPC.DECK_BRAIN_PTY_LIST);
+  ipcMain.handle(
+    IPC.DECK_BRAIN_PTY_LIST,
+    wrapHandler(IPC.DECK_BRAIN_PTY_LIST, async (): Promise<{ ptyIds: Record<string, string> }> => {
+      return { ptyIds: Object.fromEntries(brainPtyIds) };
+    }),
+  );
+
   // ── Global auto-wake switch (Settings toggle) ─────────────────────────────
   ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
   ipcMain.handle(
@@ -1764,6 +1791,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
     ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
     ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
+    ipcMain.removeHandler(IPC.DECK_BRAIN_PTY_LIST);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
     ipcMain.removeHandler(IPC.DECK_MODE_GET);

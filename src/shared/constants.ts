@@ -165,6 +165,14 @@ export const IPC = {
   //                   normalized BrainEvents) — the deck embeds that terminal
   //                   in place of the bubble list. `ptyId: null` retires it.
   DECK_BRAIN_PTY: 'deck:brainpty',
+  //   DECK_BRAIN_PTY_LIST (invoke) renderer → main: the CURRENT brain pty of
+  //                   every workspace. DECK_BRAIN_PTY is a one-way push, so a
+  //                   renderer reload (or a late-mounting subscriber) would
+  //                   otherwise never learn about a terminal that spawned
+  //                   before it was listening. Called once when useDeckStream
+  //                   mounts — the same hydrate-then-subscribe shape the other
+  //                   main-authoritative deck state uses.
+  DECK_BRAIN_PTY_LIST: 'deck:brainpty:list',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.

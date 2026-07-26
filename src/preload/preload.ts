@@ -591,6 +591,11 @@ const electronAPI = {
       ipcRenderer.on(IPC.DECK_STREAM, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
     },
+    // Mount-time hydration for the above: main's CURRENT brain pty per
+    // workspace. The push is one-way, so a reloaded renderer has no other way
+    // to learn about a terminal that spawned before it subscribed.
+    listBrainPtys: () =>
+      ipcRenderer.invoke(IPC.DECK_BRAIN_PTY_LIST) as Promise<{ ptyIds: Record<string, string> }>,
     // `claude-pty` brain only: the daemon session id of the embedded TUI for
     // one workspace (null retires it). Separate from onStream because it is
     // pane wiring, not conversation content.

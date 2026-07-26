@@ -36,10 +36,18 @@ import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 import type { BrainVendor } from '../../../../shared/types';
 
+function noop(): void {
+  /* the default fake never announces a terminal */
+}
+
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
   disposed = false;
-  constructor(public readonly vendor: BrainVendor | undefined, public readonly workspaceId: string) {}
+  constructor(
+    public readonly vendor: BrainVendor | undefined,
+    public readonly workspaceId: string,
+    public readonly announcePty: (ptyId: string | null) => void = noop,
+  ) {}
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   start(_opts: BrainStartOptions): void {
     /* nothing to prime in the fake */
@@ -72,7 +80,7 @@ const fakeWindow = {
 function register(): void {
   cleanup = registerDeckHandler(() => fakeWindow, {
     createAdapter: (opts) => {
-      const a = new FakeAdapter(opts.vendor, opts.workspaceId);
+      const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned);
       adapters.push(a);
       return a;
     },
@@ -81,6 +89,10 @@ function register(): void {
 
 const setVendor = (vendor: unknown) =>
   captured.get(IPC.DECK_BRAIN_VENDOR_SET)!({}, { vendor }) as Promise<{ vendor: BrainVendor }>;
+const listBrainPtys = () =>
+  captured.get(IPC.DECK_BRAIN_PTY_LIST)!({}, undefined) as Promise<{
+    ptyIds: Record<string, string>;
+  }>;
 const send = (workspaceId: string) =>
   captured.get(IPC.DECK_SEND)!({}, { workspaceId, text: 'hi' }) as Promise<{ ok: boolean }>;
 
@@ -131,5 +143,20 @@ describe('deck handler — brain vendor narrowing', () => {
       channel: IPC.DECK_BRAIN_PTY,
       payload: { workspaceId: 'ws-1', ptyId: null },
     });
+  });
+});
+
+describe('deck handler — embedded terminal hydration', () => {
+  it('serves the current brain pty ids to a renderer that just mounted', async () => {
+    // DECK_BRAIN_PTY is a one-way push: everything sent before the renderer
+    // subscribed (app start, a reload) is gone, so main has to be askable.
+    await setVendor('claude-pty');
+    await send('ws-1');
+    expect((await listBrainPtys()).ptyIds).toEqual({});
+    adapters[0].announcePty('brain-abc');
+    expect((await listBrainPtys()).ptyIds).toEqual({ 'ws-1': 'brain-abc' });
+    // A retraction clears it — a reloaded renderer must not embed a dead pty.
+    adapters[0].announcePty(null);
+    expect((await listBrainPtys()).ptyIds).toEqual({});
   });
 });
