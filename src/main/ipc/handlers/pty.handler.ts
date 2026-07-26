@@ -47,6 +47,7 @@ import {
   resolveSessionLocation,
   type SessionLocation,
 } from '../../../shared/sessionLocation';
+import { isWslUncPath } from '../../../shared/wslCwd';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -214,12 +215,13 @@ const RESIZE_RETRY_DELAY_MS = 20;
  * it is the shared module's job, so a guest cwd is recognised for Git Bash as
  * well as WSL rather than by a second local rule.
  */
-function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
+export function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
   if (!cwd) return undefined;
   if (shell && classifySessionLocation(shell, cwd).domain !== 'host') return cwd;
   const resolved = path.resolve(cwd);
-  // Block UNC paths (e.g. \\server\share)
-  if (resolved.startsWith('\\\\')) return undefined;
+  // Block ordinary UNC paths; Windows exposes WSL filesystems through two
+  // host-accessible UNC namespaces that still receive the checks below.
+  if (resolved.startsWith('\\\\') && !isWslUncPath(resolved)) return undefined;
   if (!fs.existsSync(resolved)) return undefined;
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) return undefined;
