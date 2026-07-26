@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A successful `wmux web --stop` now means the listener is off now and stays off after a daemon restart.** If Windows refuses to delete `web-state.json`, wmux securely replaces it with a disabled record that contains no bearer token; if neither operation succeeds, it still stops the live server but reports that persisted state could not be revoked instead of acknowledging a durable stop. The popover shows that real error instead of claiming the daemon is offline, and a Tailscale front is still removed once a fresh status check confirms the listener did stop. A reusable web token is now written only after its inode has been synchronously hardened, POSIX overwrites repair mode `0600`, and boot restore no longer rewrites an identical record merely to re-harden it — existing permissions are repaired asynchronously without freezing the daemon event loop. (#620)
 
+### Security
+
+- **A repository path from the Git tab is confined before any `git`/`gh` command runs in it.** The worktree, diff, and GitHub-PR IPC handlers used to validate a renderer-supplied `repoPath`/`worktreePath`/`cwd` as a non-empty string and then hand it straight to `git -C <path>` (or `gh` in that directory). The path now passes through the same sensitive-path guard that `fs:readFile`/`fs:writeFile` and `git:status` already use — it is canonicalized with `realpath` and rejected if it resolves into a blocked location (`~/.ssh`, `~/.aws`, `~/.gnupg`, credential stores, the auth-token files, …), so a request cannot make a git command operate inside a secret directory. This sits inside the same-user ceiling `docs/SECURITY.md §3` already accepts — it is a consistency fix that brings these handlers up to the confinement the filesystem handlers had, not a new boundary. (F2, #615)
+
 ## [3.36.0] — 2026-07-26
 
 ### Added

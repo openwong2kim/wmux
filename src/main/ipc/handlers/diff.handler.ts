@@ -12,6 +12,7 @@ import { join, isAbsolute, normalize, dirname } from 'node:path';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { git } from '../../git/git';
+import { resolveAccessiblePath } from './fs.handler';
 import {
   parseUnifiedDiff,
   reassemblePatch,
@@ -456,10 +457,13 @@ export function registerDiffHandlers(): () => void {
         if (typeof worktreePath !== 'string' || !worktreePath) {
           return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
         }
+        // F2 (#615): confine the renderer path before it reaches `git -C`.
+        const safeWt = await resolveAccessiblePath(worktreePath);
+        if (!safeWt) return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
         // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
         const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
         // mode 미지정/오값은 'task'(기존 계약). 'workspace'만 명시 분기.
-        return readDiff(worktreePath, head, mode === 'workspace' ? 'workspace' : 'task');
+        return readDiff(safeWt, head, mode === 'workspace' ? 'workspace' : 'task');
       },
     ),
   );
@@ -479,7 +483,10 @@ export function registerDiffHandlers(): () => void {
         cwd: unknown,
       ): Promise<{ ok: true; repoPath: string } | { ok: false }> => {
         if (typeof cwd !== 'string' || !cwd) return { ok: false };
-        const r = await git(['rev-parse', '--show-toplevel'], cwd);
+        // F2 (#615): confine the renderer path before it reaches `git -C`.
+        const safeCwd = await resolveAccessiblePath(cwd);
+        if (!safeCwd) return { ok: false };
+        const r = await git(['rev-parse', '--show-toplevel'], safeCwd);
         const top = r.code === 0 ? r.stdout.trim() : '';
         return top ? { ok: true, repoPath: top } : { ok: false };
       },
@@ -499,11 +506,14 @@ export function registerDiffHandlers(): () => void {
         if (typeof worktreePath !== 'string' || !worktreePath) {
           return { ok: false, error: 'worktreePath 필요', code: 'apply' };
         }
+        // F2 (#615): confine the renderer path before git/file writes touch it.
+        const safeWt = await resolveAccessiblePath(worktreePath);
+        if (!safeWt) return { ok: false, error: 'worktreePath 필요', code: 'apply' };
         const r = req as DiffApplyRequest;
         if (!r || !r.snapshot || !Array.isArray(r.selections)) {
           return { ok: false, error: 'applyHunks 요청 형식 오류', code: 'apply' };
         }
-        return applyHunks(r, worktreePath);
+        return applyHunks(r, safeWt);
       },
     ),
   );

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
 const captured = new Map<string, (...args: unknown[]) => unknown>();
@@ -26,7 +26,7 @@ function g(cwd: string, args: string[]): string {
 function makeRepo(): { base: string; repo: string; cleanup: () => void } {
   // realpathSync.native로 8.3 단축폼(CI Windows RUNNER~1)을 롱폼으로 정규화 —
   // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
-  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-wth-')));
+  const base = realpathSync.native(mkdtempSync(join(os.tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
   mkdirSync(repo);
   g(repo, ['init', '-q', '-b', 'main']);
@@ -178,5 +178,24 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     const r = (await list({}, join(scn.repo, 'sub'))) as ListRes;
     expect(r.ok).toBe(true);
     expect(r.worktrees!.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('F2 (#615) — a valid repo under home .ssh is still confine-rejected', async () => {
+    // Verifies resolveToplevel actually routes through fs.handler's sensitive-path
+    // blocklist. Relocate home to the test base, make <home>/.ssh/repo a real git
+    // repo, and assert the handler fail-softs despite it being a valid repo — the
+    // regression guard for the gap where an unconfined repoPath ran `git -C <path>`.
+    const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(scn.base);
+    try {
+      const sshRepo = join(scn.base, '.ssh', 'repo');
+      mkdirSync(dirname(sshRepo), { recursive: true });
+      mkdirSync(sshRepo);
+      g(sshRepo, ['init', '-q', '-b', 'main']);
+      const list = captured.get(IPC.WORKTREE_LIST)!;
+      const r = (await list({}, sshRepo)) as ListRes;
+      expect(r.ok).toBe(false);
+    } finally {
+      homeSpy.mockRestore();
+    }
   });
 });
