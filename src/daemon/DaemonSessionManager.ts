@@ -12,6 +12,7 @@ import { buildSpawnInjection, classifyShell, installShellIntegration } from './s
 import { expandTilde } from '../shared/expandTilde';
 import { applyWslPromptIntegration, isWslShell } from '../shared/wslCwd';
 import {
+  locationsEqual,
   preparePtyLocation,
   resolveSessionLocation,
   type SessionLocation,
@@ -96,6 +97,23 @@ export interface ManagedSession {
   deferred: boolean;
 }
 
+export interface DaemonSessionLocationCandidateInput {
+  sessionId: string;
+  generation: number;
+  reason: 'cwd' | 'enriched';
+  cwd?: string;
+  enriched?: SessionLocation;
+}
+
+export interface DaemonSessionLocationCandidate {
+  sessionId: string;
+  generation: number;
+  revision: number;
+  transactionId: number;
+  reason: 'cwd' | 'enriched';
+  location: SessionLocation;
+}
+
 /**
  * Time to wait between resizing a deferred PTY and unmuting its data
  * forwarding. ConPTY emits any output queued at the prior geometry
@@ -161,18 +179,85 @@ export class DaemonSessionManager extends EventEmitter {
     };
   }
 
-  private acceptLocation(
-    managed: ManagedSession,
-    location: SessionLocation,
-  ): SessionLocationSnapshot {
-    managed.meta.location = location;
-    managed.locationRevision += 1;
-    return this.locationSnapshot(managed);
-  }
-
   getLocationSnapshot(id: string): SessionLocationSnapshot | undefined {
     const managed = this.sessions.get(id);
     return managed ? this.locationSnapshot(managed) : undefined;
+  }
+
+  prepareLocationCandidate(
+    input: DaemonSessionLocationCandidateInput,
+    transactionId: number,
+  ): DaemonSessionLocationCandidate | undefined {
+    const managed = this.sessions.get(input.sessionId);
+    if (
+      !managed
+      || managed.locationGeneration !== input.generation
+      || managed.meta.state === 'dead'
+      || managed.meta.state === 'suspended'
+      || !managed.meta.location
+    ) return undefined;
+
+    const location: SessionLocation = input.reason === 'cwd'
+      ? {
+          ...resolveSessionLocation({
+            shell: managed.meta.cmd,
+            cwd: input.cwd ?? managed.meta.cwd,
+            location: managed.meta.location,
+          }),
+          cwd: input.cwd ?? managed.meta.cwd,
+        }
+      : {
+          ...managed.meta.location,
+          ...(input.enriched?.domain === 'wsl' && input.enriched.distro
+            ? { distro: input.enriched.distro }
+            : {}),
+        };
+    if (locationsEqual(managed.meta.location, location)) return undefined;
+
+    return {
+      sessionId: input.sessionId,
+      generation: input.generation,
+      revision: managed.locationRevision + 1,
+      transactionId,
+      reason: input.reason,
+      location,
+    };
+  }
+
+  listSessionsWithLocationCandidate(
+    candidate: DaemonSessionLocationCandidate,
+  ): DaemonSession[] | undefined {
+    const managed = this.sessions.get(candidate.sessionId);
+    if (
+      !managed
+      || managed.locationGeneration !== candidate.generation
+      || managed.locationRevision + 1 !== candidate.revision
+    ) return undefined;
+    return this.listSessions().map((session) => (
+      session.id === candidate.sessionId
+        ? { ...session, cwd: candidate.location.cwd, location: candidate.location }
+        : session
+    ));
+  }
+
+  commitLocationCandidate(
+    candidate: DaemonSessionLocationCandidate,
+    transactionId: number,
+  ): SessionLocationSnapshot | undefined {
+    const managed = this.sessions.get(candidate.sessionId);
+    if (
+      !managed
+      || candidate.transactionId !== transactionId
+      || managed.locationGeneration !== candidate.generation
+      || managed.locationRevision + 1 !== candidate.revision
+      || managed.meta.state === 'dead'
+      || managed.meta.state === 'suspended'
+    ) return undefined;
+
+    managed.meta.cwd = candidate.location.cwd;
+    managed.meta.location = candidate.location;
+    managed.locationRevision = candidate.revision;
+    return this.locationSnapshot(managed);
   }
 
   /**
@@ -602,25 +687,14 @@ export class DaemonSessionManager extends EventEmitter {
 
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       // Change-guard: OSC 7 / prompt scrape can re-report the SAME cwd on every
-      // prompt. Only act on a real change so the daemon/index.ts persistence
-      // write (and the renderer broadcast) fire on cd, not on every prompt —
-      // keeps the immediate cwd persistence cheap (no write amplification).
+      // prompt. Only stage a real change so persistence and publication fire
+      // on cd, not on every prompt.
       if (meta.cwd === payload.cwd) return;
-      meta.cwd = payload.cwd;
-      meta.location = {
-        ...resolveSessionLocation({ shell: meta.cmd, cwd: payload.cwd, location: meta.location }),
-        cwd: payload.cwd,
-      };
-      const locationSnapshot = this.acceptLocation(managed, meta.location);
-      // Forward across the daemon→main boundary so the renderer can live-update
-      // the per-surface cwd (tab tooltip + "Working directories" menu). Without
-      // this, daemon mode (the default path) only kept cwd in daemon-local
-      // meta and the UI never saw a change. Mirrors the session:prompt tee.
-      this.emit('session:cwd', payload);
-      this.emit('session:locationAccepted', {
+      this.emit('session:locationCandidate', {
         sessionId: params.id,
-        snapshot: locationSnapshot,
+        generation: managed.locationGeneration,
         reason: 'cwd',
+        cwd: payload.cwd,
       });
     });
 
@@ -690,23 +764,11 @@ export class DaemonSessionManager extends EventEmitter {
       (enriched) => {
         const current = this.sessions.get(params.id);
         if (!current) return;
-        const previousLocation = current.meta.location;
-        const previousRevision = current.locationRevision;
-        const snapshot = this.acceptLocation(current, enriched);
-        this.emit('session:locationAccepted', {
+        this.emit('session:locationCandidate', {
           sessionId: params.id,
-          snapshot,
+          generation: current.locationGeneration,
           reason: 'enriched',
-          rollback: () => {
-            const latest = this.sessions.get(params.id);
-            if (
-              !latest
-              || latest.locationGeneration !== snapshot.generation
-              || latest.locationRevision !== snapshot.revision
-            ) return;
-            latest.meta.location = previousLocation;
-            latest.locationRevision = previousRevision;
-          },
+          enriched,
         });
       },
     );

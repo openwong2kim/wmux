@@ -419,16 +419,6 @@ export class StateWriter {
     }
   }
 
-  /**
-   * Compatibility for the existing daemon wiring. Removed when that wiring
-   * moves to SessionLocationTransaction in the next milestone.
-   */
-  recoverRejectedImmediateState(state: DaemonState): void {
-    this.lastImmediateState = state;
-    this.pendingState = state;
-    void this.enqueueAsyncWrite();
-  }
-
   /** Debounced save — coalesces frequent updates (e.g. lastActivity) over 30s. */
   saveDebounced(state: DaemonState): void {
     this.pendingState = state;

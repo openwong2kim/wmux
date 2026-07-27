@@ -16,7 +16,10 @@ vi.mock('node-pty', () => ({
   spawn: () => new MockPty(),
 }));
 
-import { DaemonSessionManager } from '../DaemonSessionManager';
+import {
+  DaemonSessionManager,
+  type DaemonSessionLocationCandidateInput,
+} from '../DaemonSessionManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -25,6 +28,23 @@ function deferred<T>() {
 }
 
 const managers: DaemonSessionManager[] = [];
+
+function commitLocationCandidates(
+  manager: DaemonSessionManager,
+  onCommit: (event: {
+    snapshot: SessionLocationSnapshot;
+    reason: 'cwd' | 'enriched';
+  }) => void = () => {},
+): void {
+  let transactionId = 0;
+  manager.on('session:locationCandidate', (input: DaemonSessionLocationCandidateInput) => {
+    const id = ++transactionId;
+    const candidate = manager.prepareLocationCandidate(input, id);
+    if (!candidate) return;
+    const snapshot = manager.commitLocationCandidate(candidate, id);
+    if (snapshot) onCommit({ snapshot, reason: input.reason });
+  });
+}
 
 afterEach(() => {
   for (const manager of managers.splice(0)) manager.disposeAll();
@@ -76,7 +96,7 @@ describe('daemon session location propagation', () => {
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
     const events: Array<{ snapshot: SessionLocationSnapshot; reason: string }> = [];
-    manager.on('session:locationAccepted', (event) => events.push(event));
+    commitLocationCandidates(manager, (event) => events.push(event));
 
     manager.createSession({
       id: 'wsl-1',
@@ -114,7 +134,7 @@ describe('daemon session location propagation', () => {
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
     const events = vi.fn();
-    manager.on('session:locationAccepted', events);
+    manager.on('session:locationCandidate', events);
 
     manager.createSession({
       id: 'wsl-1',
@@ -134,7 +154,7 @@ describe('daemon session location propagation', () => {
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
     const events = vi.fn();
-    manager.on('session:locationAccepted', events);
+    manager.on('session:locationCandidate', events);
 
     manager.createSession({
       id: 'wsl-natural-exit',
@@ -155,7 +175,7 @@ describe('daemon session location propagation', () => {
       .not.toHaveProperty('distro');
   });
 
-  it('rolls an unpublished enrichment back out of later snapshots', async () => {
+  it('keeps a staged enrichment invisible until the transaction commits it', async () => {
     const distro = deferred<string | undefined>();
     const manager = new DaemonSessionManager(() => distro.promise);
     managers.push(manager);
@@ -165,23 +185,27 @@ describe('daemon session location propagation', () => {
       cwd: '/home/me/repo',
       location: { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe' },
     });
-    manager.on('session:locationAccepted', (event: {
-      reason: string;
-      rollback?: () => void;
-    }) => {
-      if (event.reason === 'enriched') event.rollback?.();
-    });
+    let input: DaemonSessionLocationCandidateInput | undefined;
+    manager.on('session:locationCandidate', (event) => { input = event; });
 
     distro.resolve('Ubuntu');
-    await vi.waitFor(() => {
-      expect(manager.getLocationSnapshot('wsl-rollback')?.revision).toBe(1);
-    });
+    await vi.waitFor(() => expect(input).toBeDefined());
 
     expect(initial.location).not.toHaveProperty('distro');
     expect(manager.getSession('wsl-rollback')?.meta.location)
       .not.toHaveProperty('distro');
     expect(manager.getLocationSnapshot('wsl-rollback')?.location)
       .not.toHaveProperty('distro');
+
+    const candidate = manager.prepareLocationCandidate(input!, 1)!;
+    expect(manager.listSessionsWithLocationCandidate(candidate)![0].location)
+      .toHaveProperty('distro', 'Ubuntu');
+    expect(manager.getLocationSnapshot('wsl-rollback')?.revision).toBe(1);
+
+    const committed = manager.commitLocationCandidate(candidate, 1)!;
+    expect(committed.revision).toBe(2);
+    expect(manager.getSession('wsl-rollback')?.meta.location)
+      .toHaveProperty('distro', 'Ubuntu');
   });
 
   it('orders a reused session id after its prior generation', async () => {
@@ -192,6 +216,7 @@ describe('daemon session location propagation', () => {
       .mockImplementationOnce(() => newResult.promise);
     const manager = new DaemonSessionManager(resolve);
     managers.push(manager);
+    commitLocationCandidates(manager);
 
     manager.createSession({
       id: 'wsl-1',

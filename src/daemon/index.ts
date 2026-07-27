@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadConfig, saveConfig, getWmuxDir } from './config';
-import { DaemonSessionManager } from './DaemonSessionManager';
+import {
+  DaemonSessionManager,
+  type DaemonSessionLocationCandidateInput,
+} from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
@@ -42,12 +45,14 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonSession, DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
-import type { SessionLocationSnapshot } from '../shared/sessionLocation';
 import {
   daemonSessionCommandTarget,
   daemonSessionLocation,
 } from './sessionCommandTarget';
-import { persistLocationEnrichment } from './sessionLocationPersistence';
+import {
+  SessionLocationTransaction,
+  submitDaemonSessionLocationCandidate,
+} from './sessionLocationPersistence';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, resumeBindingMatchesLocation } from '../shared/agentResume';
@@ -77,6 +82,7 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+let sessionLocationTransactionRef: SessionLocationTransaction | null = null;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -3525,10 +3531,8 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  // Working-directory change (OSC 7 / prompt scrape, detected in the daemon
-  // bridge). Broadcast so main can forward it to the renderer as
-  // IPC.CWD_CHANGED, giving daemon-mode panes the same live per-surface cwd
-  // the local path already had.
+  // The transaction publishes an accepted cwd before its matching location
+  // snapshot so existing clients retain their event order.
   sessionManager.on('session:cwd', (payload: { sessionId: string; cwd: string }) => {
     const event: DaemonEvent = {
       type: 'cwd.changed',
@@ -3536,59 +3540,53 @@ function wireEvents(
       data: payload.cwd,
     };
     pipeServer.broadcast(event);
-    // Persist the new cwd NOW but asynchronously (saveAsap, not
-    // saveImmediate). Recovery replays meta.cwd AND the X6 ② resume pill
-    // pastes `claude --continue`, which is cwd-scoped — so the cwd must not
-    // wait out the 30s debounce. But the write must not run synchronously
-    // either: at fleet scale (30 sessions) sessions.json grows to hundreds
-    // of KB and concurrent agents `cd` constantly, so the old sync write +
-    // .bak rotation stalled the event loop right when it was busiest — the
-    // stall pattern that starves daemon.ping and gets a live daemon
-    // force-respawned. saveAsap persists within ms via the coalescing
-    // queue; only a SIGKILL inside that window can lose the cwd, and the
-    // next lifecycle event re-persists it.
-    stateWriter.saveAsap(buildState(sessionManager));
   });
 
-  sessionManager.on('session:locationAccepted', (payload: {
-    sessionId: string;
-    snapshot: SessionLocationSnapshot;
-    reason: 'cwd' | 'enriched';
-    rollback?: () => void;
-  }) => {
-    // The durable record is the authority. Queue its write before publishing
-    // the projection so a consumer can never observe a location that the
-    // daemon has not yet accepted into sessions.json state.
-    if (payload.reason === 'enriched') {
-      // A distro answer is rare and becomes visible to every filesystem
-      // consumer at once. Require synchronous durability before publication.
-      // One immediate retry covers a transient replace/lock race; two failures
-      // suppress both the wire event and dependent-watcher re-drive.
-      const state = buildState(sessionManager);
-      const persisted = persistLocationEnrichment(
-        () => stateWriter.saveImmediate(state),
-        () => {
-          payload.rollback?.();
-          stateWriter.recoverRejectedImmediateState(buildState(sessionManager));
+  const locationTransactions = new SessionLocationTransaction(stateWriter);
+  sessionLocationTransactionRef = locationTransactions;
+  sessionManager.on('session:locationCandidate', (input: DaemonSessionLocationCandidateInput) => {
+    void submitDaemonSessionLocationCandidate(
+      locationTransactions,
+      sessionManager,
+      input,
+      () => buildState(sessionManager),
+      {
+        cwd: (sessionId, cwd) => {
+          sessionManager.emit('session:cwd', { sessionId, cwd });
         },
-      );
-      if (!persisted) {
+        location: (sessionId, snapshot, reason) => {
+          const event: DaemonEvent = {
+            type: 'location.changed',
+            sessionId,
+            data: snapshot,
+          };
+          pipeServer.broadcast(event);
+          sessionManager.emit('session:location', {
+            sessionId,
+            snapshot,
+            reason,
+          });
+        },
+      },
+    ).then((outcome) => {
+      if (outcome === 'failed') {
         log(
           'error',
-          `session location enrichment persistence failed for ${payload.sessionId}; projection suppressed`,
+          `session location ${input.reason} persistence failed for ${input.sessionId}; projection suppressed`,
         );
-        return;
+      } else if (outcome === 'publication-failed') {
+        log(
+          'error',
+          `session location ${input.reason} publication failed for ${input.sessionId}`,
+        );
       }
-    } else {
-      stateWriter.saveAsap(buildState(sessionManager));
-    }
-    const event: DaemonEvent = {
-      type: 'location.changed',
-      sessionId: payload.sessionId,
-      data: payload.snapshot,
-    };
-    pipeServer.broadcast(event);
-    sessionManager.emit('session:location', payload);
+    }).catch((err) => {
+      log(
+        'error',
+        `session location ${input.reason} transaction crashed for ${input.sessionId}:`,
+        err,
+      );
+    });
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
@@ -3877,6 +3875,10 @@ async function shutdown(
   sessionPipes.clear();
   phaseLog('pipeStops', pipeStopsStart, { count: pipeStops.length });
 
+  // Location candidates can still be queued behind an in-flight cwd write.
+  // Drain the transaction owner before snapshotting suspended sessions.
+  sessionLocationTransactionRef?.flushSync();
+
   // Dump scrollback buffers and mark live sessions as suspended for recovery
   const managedSessions = sessionManager.listManagedSessions();
   stateWriter.ensureBufferDir();
@@ -3929,6 +3931,7 @@ async function shutdown(
   phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
+  sessionLocationTransactionRef = null;
   channelStateWriter.dispose();
   principalStateWriter.dispose();
   // Event log snapshot flush (§6.4b) — drain pending projection snapshots durably.

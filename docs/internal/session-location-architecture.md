@@ -56,12 +56,13 @@ enrichment before deleting the snapshot. `PTYBridge` forwards cwd changes only
 through this owner; it does not separately publish raw cwd events that could
 race the atomic location.
 
-In daemon mode, `DaemonSession.location` is the durable owner. The daemon
-session manager applies the same generation/revision protocol, persists an
-accepted late enrichment before broadcasting it, and exposes the snapshot on
-create, list, and reconnect responses. The daemon event travels through
-`DaemonClient` and preload to the renderer as the same atomic value. Main does
-not resolve or reclassify daemon-owned panes.
+In daemon mode, `DaemonSession.location` is the durable record. The session
+location transaction stages generation/revision candidates outside that
+record, writes the exact candidate state, then commits and publishes it once.
+Both cwd changes and late enrichment use this boundary. The daemon exposes only
+committed snapshots on create, list, and reconnect responses. The daemon event
+travels through `DaemonClient` and preload to the renderer as the same atomic
+value. Main does not resolve or reclassify daemon-owned panes.
 
 The renderer compares generation first and revision second. It queues an event
 that arrives before surface binding, and ignores a stale RPC response that
@@ -81,12 +82,14 @@ response already in flight cannot resurrect that generation; the closed
 snapshot itself is discarded, and only a strictly newer generation or a daemon
 replacement reset can reuse the session ID.
 
-Late daemon enrichment is published only after a synchronous state write. If
-both the write and its single retry fail, the daemon rolls the candidate
-location and revision back before any later list response or cwd event can
-expose them. The rollback also replaces StateWriter's in-flight recovery
-payload, so an older asynchronous write cannot restore the rejected candidate
-after it finishes.
+Cwd candidates use an exact asynchronous write so frequent directory changes
+do not block the daemon loop. Late enrichment uses a synchronous write with one
+retry. Neither candidate mutates the session record before durability. Failed
+writes therefore need no rollback and publish nothing. A successful write
+commits the matching generation and revision before publication; ID reuse or a
+newer transaction supersedes stale work. StateWriter serializes exact writes
+with its existing queue, preserves unrelated pending metadata, and restores the
+newest committed state if an older asynchronous write completes afterward.
 
 The daemon reconnect path prefers the daemon's stored `location`;
 `resolveSessionLocation` supplies the legacy `{ cmd, cwd }` fallback.

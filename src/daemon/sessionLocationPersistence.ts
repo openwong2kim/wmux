@@ -3,6 +3,13 @@ import {
   type ExactStateTransaction,
   type ExactStateWriteOutcome,
 } from './StateWriter';
+import type {
+  DaemonSessionLocationCandidate,
+  DaemonSessionLocationCandidateInput,
+  DaemonSessionManager,
+} from './DaemonSessionManager';
+import type { SessionLocationSnapshot } from '../shared/sessionLocation';
+import type { DaemonState } from './types';
 
 export type SessionLocationDurability = 'asap' | 'immediate-retry';
 export type SessionLocationTransactionOutcome =
@@ -138,15 +145,49 @@ interface PendingTransaction {
   reject: (error: unknown) => void;
 }
 
+export interface DaemonSessionLocationPublication {
+  cwd: (sessionId: string, cwd: string) => void;
+  location: (
+    sessionId: string,
+    snapshot: SessionLocationSnapshot,
+    reason: 'cwd' | 'enriched',
+  ) => void;
+}
+
 /**
- * Compatibility for the existing daemon wiring. Removed when all producers
- * submit through SessionLocationTransaction in the next milestone.
+ * Concrete daemon transaction boundary shared by cwd and late enrichment.
+ * The manager only stages/commits; this function owns persistence and the
+ * post-commit publication order.
  */
-export function persistLocationEnrichment(
-  save: () => boolean,
-  rollback: () => void = () => {},
-): boolean {
-  if (save() || save()) return true;
-  rollback();
-  return false;
+export function submitDaemonSessionLocationCandidate(
+  transactions: SessionLocationTransaction,
+  manager: DaemonSessionManager,
+  input: DaemonSessionLocationCandidateInput,
+  buildCurrentState: () => DaemonState,
+  publication: DaemonSessionLocationPublication,
+): Promise<SessionLocationTransactionOutcome> {
+  let candidate: DaemonSessionLocationCandidate | undefined;
+  let snapshot: SessionLocationSnapshot | undefined;
+  return transactions.submit({
+    durability: input.reason === 'enriched' ? 'immediate-retry' : 'asap',
+    prepare: (transactionId) => {
+      candidate = manager.prepareLocationCandidate(input, transactionId);
+      if (!candidate) return undefined;
+      const sessions = manager.listSessionsWithLocationCandidate(candidate);
+      return sessions ? { ...buildCurrentState(), sessions } : undefined;
+    },
+    commit: (transactionId) => {
+      if (!candidate) return undefined;
+      snapshot = manager.commitLocationCandidate(candidate, transactionId);
+      return snapshot ? buildCurrentState() : undefined;
+    },
+    current: buildCurrentState,
+    publish: () => {
+      if (!snapshot) return;
+      if (input.reason === 'cwd') {
+        publication.cwd(input.sessionId, snapshot.location.cwd);
+      }
+      publication.location(input.sessionId, snapshot, input.reason);
+    },
+  });
 }
