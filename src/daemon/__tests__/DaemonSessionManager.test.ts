@@ -799,6 +799,46 @@ describe('DaemonSessionManager', () => {
       ]);
     });
 
+    it('derives exec fallback location from the actual host wrapper shell', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      const resolveDistro = vi.fn(async () => 'Ubuntu');
+      manager = new DaemonSessionManager(resolveDistro);
+
+      const session = manager.createSession({
+        id: 'wsl-exec-fallback',
+        cmd: 'wsl.exe',
+        cwd: 'C:\\repo',
+        env: { WSL_DISTRO_NAME: 'Debian' },
+        exec: { command: 'claude /loop' },
+        location: {
+          domain: 'wsl',
+          cwd: 'C:\\repo',
+          shell: 'wsl.exe',
+          distro: 'Debian',
+        },
+      });
+
+      expect(session.cmd).toBe(PWSH7);
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude /loop${PWSH_EXIT_TAIL}`,
+      ]);
+      expect(lastMockPty?.spawnEnv).toMatchObject({ WSL_DISTRO_NAME: 'Debian' });
+      expect(session.location).toEqual({
+        domain: 'host',
+        cwd: 'C:\\repo',
+        shell: PWSH7,
+      });
+      expect(manager.getLocationSnapshot('wsl-exec-fallback')).toEqual({
+        generation: expect.any(Number),
+        revision: 1,
+        location: session.location,
+      });
+      expect(resolveDistro).not.toHaveBeenCalled();
+    });
+
     it('resolves a bare "pwsh.exe" cmd through the Store alias when no traditional install exists', () => {
       existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
       lstatSpy.mockImplementation((p: fs.PathLike) => {

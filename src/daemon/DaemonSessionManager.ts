@@ -414,14 +414,6 @@ export class DaemonSessionManager extends EventEmitter {
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    // `cwd` above is canonical (tilde-expanded, defaulted); a supplied location
-    // must not carry a stale twin of it, so it is pinned here once and this is
-    // the value both `meta.location` and the spawn positioning below read.
-    let location: SessionLocation = {
-      ...resolveSessionLocation({ shell: cmd, cwd, location: params.location }),
-      cwd,
-    };
-
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
     // forced identity, and recovery replays the persisted (already-resolved)
@@ -483,6 +475,7 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
+    let execUsedFallback = false;
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,
@@ -497,6 +490,7 @@ export class DaemonSessionManager extends EventEmitter {
       let execArgs = buildExecArgs(cmd, launchCommand);
       if (!execArgs) {
         cmd = this.resolveExecFallbackShell();
+        execUsedFallback = true;
         execArgs = buildExecArgs(cmd, launchCommand);
       }
       if (!execArgs) {
@@ -537,6 +531,22 @@ export class DaemonSessionManager extends EventEmitter {
         console.warn('[DaemonSessionManager] shell integration unavailable:', err);
       }
     }
+
+    // Derive the owned location only after the spawn shell is final. A supplied
+    // location remains authoritative for ordinary creates and recovery, but it
+    // describes the requested shell and cannot survive an exec-wrapper fallback
+    // that replaces that shell with a host process.
+    //
+    // `cwd` is canonical (tilde-expanded, defaulted), so pin it once here; this
+    // is the value both `meta.location` and the spawn positioning below read.
+    let location: SessionLocation = {
+      ...resolveSessionLocation({
+        shell: cmd,
+        cwd,
+        location: execUsedFallback ? undefined : params.location,
+      }),
+      cwd,
+    };
 
     // Track B (WSL/Ubuntu cwd): when the pane lives in a guest (`wsl.exe` with
     // a Linux-style path or a `\\wsl$\...`/`\\wsl.localhost\...` UNC, or an
