@@ -171,6 +171,13 @@
         "firstPtyDataMs": 1207,
         "fcpMs": 665.2
       },
+      "best": {
+        "cdpReadyMs": 150,
+        "pipeReadyMs": 840,
+        "rendererReadyMs": 975,
+        "firstPtyDataMs": 1134,
+        "fcpMs": 653.6
+      },
       "medianRunCounts": {
         "cdpReadyMs": 3,
         "pipeReadyMs": 3,

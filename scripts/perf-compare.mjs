@@ -23,11 +23,37 @@ export const SCHEMA_VERSION = 1;
 // Gated metrics. `path` is a dot-path into the result JSON. A metric FAILS only
 // when current > baseline * ratio AND current > baseline + absMargin. `lower`
 // is which direction is "better" (all current metrics are lower-is-better).
+//
+// `baselineFallbackPath` (optional) is where the BASELINE's number is read when
+// it has nothing at `path`. It exists so moving a gate to a new estimator does
+// not silently ungate the metric against baselines blessed before the move: a
+// missing baseline number is status NEW, which gates nothing at all.
 export const GATES = [
+  // Best-of-N, not the median (#650). Cold start is measured on a shared CI
+  // runner whose interference is one-sided: a busy host makes boots slower and
+  // never faster, so the fastest of the N boots is the sample least polluted by
+  // the machine. The median flaked for exactly that reason — on 2026-07-27 a
+  // degraded windows-latest runner spent 2.2s just spawning the daemon process
+  // and 2.0s acquiring a file lock, which put the median at 2470ms against a
+  // 1207ms baseline on a commit that only changed web pairing-code length. The
+  // confirmation re-run (#570) could not save it: the re-run lands on the SAME
+  // runner, so a machine that is degraded for the whole job reproduces the red
+  // by construction. Best-of-N would have read 1442ms and passed, while a real
+  // regression — which slows every boot, not one of them — still trips both
+  // thresholds. The median is still measured, still published to the trend, and
+  // still reported (see tailRegressionNote) when it regresses on its own.
+  //
+  // The key is `coldFirstPtyDataBestMs`, NOT the old `coldFirstPtyDataMs`: the
+  // trend field is derived from this key, and reusing the old name would splice
+  // best-of-N values into a column that has carried medians since the trend
+  // began — a silent estimator change inside one series, which is the exact
+  // shape of drift #602 exists to prevent. The rename ends the old series and
+  // starts a new one, so a consumer sees a new column, never mixed statistics.
   {
-    key: 'coldFirstPtyDataMs',
-    label: 'coldStart.firstPtyDataMs',
-    path: 'scenarios.coldStart.median.firstPtyDataMs',
+    key: 'coldFirstPtyDataBestMs',
+    label: 'coldStart.firstPtyDataMs (best)',
+    path: 'scenarios.coldStart.best.firstPtyDataMs',
+    baselineFallbackPath: 'scenarios.coldStart.median.firstPtyDataMs',
     scenarioPath: 'scenarios.coldStart',
     ratio: 1.5,
     absMargin: 1000, // ms
@@ -250,7 +276,20 @@ export function compareResults(current, baseline, gates = GATES) {
   const results = [];
   for (const gate of gates) {
     const cur = getPath(current, gate.path);
-    const base = baseline == null ? undefined : getPath(baseline, gate.path);
+    let base = baseline == null ? undefined : getPath(baseline, gate.path);
+    // A baseline blessed before this gate moved estimators has no number at
+    // `path`. Read the older field rather than report NEW — NEW gates nothing,
+    // and a gate that quietly stops gating is the worst of the three outcomes.
+    // Every fallback in use is conservative by construction (the old median is
+    // >= the new best), so the substitute can only ever be more forgiving.
+    let baselineFallback = false;
+    if (!isNumber(base) && baseline != null && gate.baselineFallbackPath) {
+      const alt = getPath(baseline, gate.baselineFallbackPath);
+      if (isNumber(alt)) {
+        base = alt;
+        baselineFallback = true;
+      }
+    }
 
     const baseScenarioPresent =
       baseline != null && getPath(baseline, gate.scenarioPath) != null;
@@ -268,6 +307,7 @@ export function compareResults(current, baseline, gates = GATES) {
       status: 'SKIP',
       improved: false,
       note: '',
+      baselineFallback,
     };
 
     // Baseline has no usable number for this metric.
@@ -317,6 +357,19 @@ export function compareResults(current, baseline, gates = GATES) {
         r.improved = true;
         r.note = 'improved — consider refreshing baseline';
       }
+    }
+    if (baselineFallback) {
+      // Cross-estimator comparison (current best vs baseline median), so two
+      // adjustments: the improvement flag is suppressed — best sits below the
+      // median by construction, and "consider refreshing baseline" earned that
+      // way would be a statistical artifact, not an improvement — and on a FAIL
+      // the note must not say "re-bless", because blessing a baseline from a
+      // run that just failed the gate would launder the regression into it.
+      r.improved = false;
+      const from = r.status === 'FAIL'
+        ? `baseline read from \`${gate.baselineFallbackPath}\` — this baseline predates \`${gate.path}\`; fix the regression first, then re-bless`
+        : `baseline read from \`${gate.baselineFallbackPath}\` — this baseline predates \`${gate.path}\`, so re-bless it`;
+      r.note = r.note && !r.note.startsWith('improved') ? `${r.note}; ${from}` : from;
     }
     results.push(r);
   }
@@ -373,6 +426,47 @@ export function detectThrottled(current) {
     if (v === true) flags.push(sc);
   }
   return flags;
+}
+
+/**
+ * What best-of-N deliberately does not fail on: the middle boot got much slower
+ * while the fastest one did not.
+ *
+ * Gating on the fastest boot buys immunity to a runner that is degraded for the
+ * whole job, and it pays for it with the case where only SOME boots regress —
+ * a startup race, a retry that fires half the time. That case is real and worth
+ * a human look, it is just not worth failing a build on a machine nobody owns.
+ * So it is reported, never enforced: same double threshold as the gate, applied
+ * to the median, printed as a note when the gated best came back clean.
+ *
+ * Returns a string to print, or null when there is nothing to say.
+ */
+export function tailRegressionNote(current, baseline, gates = GATES) {
+  if (current == null || baseline == null) return null;
+  const flagged = [];
+  for (const gate of gates) {
+    if (!gate.baselineFallbackPath) continue; // only the best-of-N gates have a median twin
+    const medianPath = gate.baselineFallbackPath;
+    const curMedian = getPath(current, medianPath);
+    const baseMedian = getPath(baseline, medianPath);
+    const curBest = getPath(current, gate.path);
+    const baseBest = getPath(baseline, gate.path) ?? baseMedian;
+    if (!isNumber(curMedian) || !isNumber(baseMedian) || !isNumber(curBest) || !isNumber(baseBest)) continue;
+    const trips = (value, base) => value > base * gate.ratio && value > base + gate.absMargin;
+    if (trips(curMedian, baseMedian) && !trips(curBest, baseBest)) {
+      flagged.push(
+        `${gate.label}: the fastest boot is within bounds (${fmtValue(curBest, gate.unit)} vs `
+        + `${fmtValue(baseBest, gate.unit)}) but the median regressed `
+        + `(${fmtValue(curMedian, gate.unit)} vs ${fmtValue(baseMedian, gate.unit)})`,
+      );
+    }
+  }
+  if (flagged.length === 0) return null;
+  return (
+    `NOTE: ${flagged.join('; ')}. The gate reads the fastest boot on purpose (#650), so this does `
+    + 'not fail the build — but a regression only some boots hit is either a startup race or a '
+    + 'runner that was busy for part of the job. Check the per-run numbers in the uploaded artifact.'
+  );
 }
 
 export function hasFailure(results) {
@@ -678,6 +772,16 @@ async function main() {
   const recordOnly = ioRecordReason != null || evaluated.recordOnly;
   const recordReason = ioRecordReason ?? evaluated.recordReason;
   const allResults = evaluated.results;
+
+  // Tail-only regression (median red, best green). Reported, never gating. Also
+  // emitted as a workflow annotation: nobody opens a green job's summary, and a
+  // note whose entire audience is people who open green summaries reaches no
+  // one.
+  const tailNote = tailRegressionNote(current, evaluated.baseline);
+  if (tailNote) {
+    extraNotes.push(tailNote);
+    process.stdout.write(`::warning::${tailNote}\n`);
+  }
 
   // Human-readable table to stdout.
   if (recordOnly) {

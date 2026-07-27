@@ -270,6 +270,14 @@ function median(values) {
   const mid = Math.floor(s.length / 2);
   return round(s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2);
 }
+// Fastest of N. Boot latency noise on a shared runner is one-sided — nothing an
+// overloaded host does makes a boot faster — so the minimum is the sample least
+// contaminated by the machine, and it is what the cold-start gate reads.
+function best(values) {
+  const s = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
+  if (!s.length) return null;
+  return round(Math.min(...s));
+}
 async function waitFor(label, fn, timeoutMs, intervalMs = 100) {
   const start = Date.now();
   for (;;) {
@@ -1808,10 +1816,18 @@ process.on('exit', () => {
     const countOf = (vals) => vals.filter((v) => typeof v === 'number' && Number.isFinite(v)).length;
     const milestoneKeys = ['cdpReadyMs', 'pipeReadyMs', 'rendererReadyMs', 'firstPtyDataMs', 'fcpMs'];
     const medianEntry = (key) => median(runs.map((r) => r[key]));
+    const bestEntry = (key) => best(runs.map((r) => r[key]));
     const counts = Object.fromEntries(milestoneKeys.map((k) => [k, countOf(runs.map((r) => r[k]))]));
     RESULTS.scenarios.coldStart = {
       runs,
       median: Object.fromEntries(milestoneKeys.map((k) => [k, medianEntry(k)])),
+      // Both estimators are published, and they answer different questions. The
+      // median describes what a boot on this machine cost and is the number the
+      // trend carries. `best` is what the gate judges: a runner that is degraded
+      // for the whole job inflates every boot, and re-measuring on that same
+      // runner reproduces the inflation, so a median-of-3 can only tell "slow
+      // code" from "slow machine" when the machine is healthy (#650).
+      best: Object.fromEntries(milestoneKeys.map((k) => [k, bestEntry(k)])),
       medianRunCounts: counts,
     };
     for (const k of milestoneKeys) {
@@ -1820,7 +1836,9 @@ process.on('exit', () => {
       }
     }
     const med = RESULTS.scenarios.coldStart.median;
+    const bst = RESULTS.scenarios.coldStart.best;
     console.log(`coldStart median: firstPtyData=${med.firstPtyDataMs}ms renderer=${med.rendererReadyMs}ms`);
+    console.log(`coldStart best:   firstPtyData=${bst.firstPtyDataMs}ms renderer=${bst.rendererReadyMs}ms (gated)`);
 
     // ---- boot-phase attribution (S-A) ----
     // Median across runs for every mark seen in any run (key union — the

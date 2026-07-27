@@ -50,6 +50,7 @@ import {
   compareBoolGates,
   getPath,
   fmtValue,
+  tailRegressionNote,
 } from './perf-compare.mjs';
 import { LEGS, buildRetryPlan, legForGate } from './perf-legs.mjs';
 import { sameFileReason, claimNewFile, fileIdentity } from './perf-paths.mjs';
@@ -409,6 +410,16 @@ export function confirmGate({
     const which = outcome.unresolved.map((v) => `${v.label} (${v.status})`).join(', ');
     deps.log(`::error::Perf gate: the failure reproduced on a re-run — ${which}\n`);
     return { cleared: false };
+  }
+  // A green earned through this re-run must not report LESS than a plain green
+  // would have: the first-run path prints tailRegressionNote when the median
+  // regressed while the gated fastest boot did not, so the retry that clears a
+  // red gets the same check on ITS numbers. Reported, never gating — same
+  // contract as on the first run.
+  const tailNote = tailRegressionNote(outcome.retry, baseline);
+  if (tailNote) {
+    deps.log(`::warning::${tailNote}\n`);
+    appendSummary(summaryPath, `\n> [!NOTE]\n> ${tailNote}\n`, deps.log);
   }
   const which = outcome.verdicts.map((v) => v.label).join(', ');
   deps.log(

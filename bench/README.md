@@ -24,9 +24,19 @@ pre-announce targets."*
   port actually binds, informational only), `pipeReadyMs` (PipeServer accepting,
   polled concurrently from spawn), `rendererReadyMs` (`.xterm` mounted),
   `firstPtyDataMs` (first PTY data reaching the renderer — the gated one), and
-  `fcpMs` (First Contentful Paint; may be null). Run several times; the median
-  is gated, and `medianRunCounts` records how many runs contributed per
-  milestone so a degraded median is visible.
+  `fcpMs` (First Contentful Paint; may be null). Run several times; both
+  `coldStart.median` and `coldStart.best` (fastest boot) are recorded, and
+  `medianRunCounts` records how many runs contributed per milestone so a
+  degraded median is visible. **`best` is the gated one** (#650): runner
+  interference is one-sided — a busy CI host makes boots slower, never faster —
+  so the fastest boot is the sample least contaminated by the machine. The
+  median stays as the descriptive number and is reported separately when it
+  regresses on its own (see Gate semantics). For the trend this is an explicit
+  series fork: the `coldFirstPtyDataMs` column (a median since the trend began)
+  **ends** at #650 and `coldFirstPtyDataBestMs` starts, because splicing
+  best-of-N values into a median column would silently mix two estimators in
+  one series. A consumer sees the old column stop and a new one begin — never
+  mixed statistics under one name.
 - **RAM** — working-set bytes of the **full process tree**, including the
   detached daemon, at two states: idle with 1 pane (`idle1Pane`) and 8 panes
   (`panes8`). `appMetricsRaw` is captured for context but is **never gated**.
@@ -181,7 +191,7 @@ ordinary noise. Thresholds per metric:
 
 | metric | ratio | abs margin |
 | --- | --- | --- |
-| `coldStart.firstPtyDataMs` | 1.5 | 1000 ms |
+| `coldStart.best.firstPtyDataMs` | 1.5 | 1000 ms |
 | `inputLatency.echoMs.p95` | 1.5 | 10 ms |
 | `inputLatency.frameMs.p95` | 1.5 | 10 ms |
 | `inputLatency8.frameMs.p95` | 1.5 | 10 ms |
@@ -204,7 +214,17 @@ Other rules:
   the bootstrap path before `baseline-ci.json` exists.
 - **schemaVersion mismatch** between baseline and current → record-only, exit 0.
 - **Metric present in current but absent in baseline** → `NEW` (informational),
-  not a failure.
+  not a failure. A gate may name a `baselineFallbackPath` for the case where
+  the metric merely MOVED: `coldStart.best.firstPtyDataMs` reads
+  `coldStart.median.firstPtyDataMs` out of a baseline blessed before the
+  estimator changed, so a pre-#650 baseline keeps gating (conservatively — the
+  old median is never below the new best) instead of silently going `NEW`, and
+  the note says to re-bless.
+- **Tail-only regression** (the median trips both thresholds while the gated
+  fastest boot does not) → printed as a NOTE, never a failure. That case is a
+  startup race or a runner that was busy for part of the job; both deserve a
+  look at `runs[i]` in the artifact, neither deserves a red build on a machine
+  nobody owns.
 - **Improvement** (`current < baseline * 0.8`) → flagged "consider refreshing
   baseline".
 - **`throttled: true`** in an input-latency scenario → loud warning in the
@@ -226,6 +246,23 @@ It happens inside the compare process, not as a second CI step, and that is
 deliberate: the confirmation is handed the very numbers this invocation judged.
 There is no second read of the result file that could see different bytes, and
 no handshake file that could outlive its run and describe a different one.
+
+**What the re-run cannot answer**, and why the cold-start gate reads the fastest
+boot instead (#650): the re-run lands on the SAME runner. That covers a spike
+lasting seconds; it cannot cover a host that is degraded for the whole job. On
+2026-07-27 one was — the daemon needed 2.2s just to spawn its Node process and
+2.0s to take a file lock — and the red reproduced exactly as designed, on a
+commit whose entire diff was the length of a web pairing code. A confirmation on
+the same machine is a check on the code's determinism, not on the machine's
+fitness to measure.
+
+Stating the compounded trade plainly: best-of-N and the confirmation re-run
+multiply. A cold-start red now requires the fastest boot of the first run AND
+the fastest boot of the re-run to both trip the thresholds — a regression that
+slows a boot with probability p is caught with roughly p^(2N), so the gate is
+effectively for deterministic regressions. That is the deliberate posture: the
+probabilistic tail is covered by the tail note (a `::warning::` annotation on
+both the first run and a cleared re-run) and by the trend, not by a red build.
 
 **Only measurements are confirmed.** A red that includes a boolean correctness
 gate (`ime.pass`, `webglContextLoss.pass`) stands at once and is never re-run —

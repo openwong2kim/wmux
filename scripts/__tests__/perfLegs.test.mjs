@@ -216,7 +216,7 @@ describe('buildRetryPlan', () => {
   });
 
   it('re-runs several legs at once, in a stable order', () => {
-    const plan = buildRetryPlan({ ...base, failedKeys: ['hiddenFloodEchoP95Ms_N4', 'coldFirstPtyDataMs'] });
+    const plan = buildRetryPlan({ ...base, failedKeys: ['hiddenFloodEchoP95Ms_N4', 'coldFirstPtyDataBestMs'] });
     expect(plan.legs).toEqual(['coldStart', 'hiddenFlood']);
     expect(plan.benchArgs).toContain('--skip-input');
     expect(plan.benchArgs).not.toContain('--skip-cold');
