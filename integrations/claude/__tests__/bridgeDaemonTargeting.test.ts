@@ -59,6 +59,10 @@ beforeEach(() => {
   process.env.USERPROFILE = fakeHome;
   process.env.HOME = fakeHome;
   delete process.env.WMUX_HOOKS_TO_MAIN;
+  // Every path the bridge resolves is WMUX_DATA_SUFFIX-scoped, so a suffix
+  // leaking in from the runner's env would point these fixtures at a dir the
+  // test never wrote. The unsuffixed cases below are the production shape.
+  delete process.env.WMUX_DATA_SUFFIX;
 });
 
 afterAll(() => {
