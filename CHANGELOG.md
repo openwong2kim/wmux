@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A phone that is too old to talk to your daemon can now say so.** The phone API had no version on it, so once a mobile build ships it is pinned to whatever HTTP surface the daemon happens to serve — and a mismatch would have surfaced as routes failing one by one with no explanation. `GET /api/config`, the call a client already makes at connect, now reports the protocol the daemon speaks, the oldest one it still accepts, and the release it was spawned from. A client below the floor can show "update the app" instead of a broken screen. Nothing that already works changes: a daemon predating this simply has no version fields, which reads as the pre-handshake protocol, and a phone that ignores them behaves exactly as it does today.
+
 ## [3.37.1] — 2026-07-27
 
 ### Fixed

@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
+import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
@@ -356,7 +357,49 @@ describe('WebTerminalServer', () => {
     // Bearer header → 200
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ allowInput: false, allowUpload: false });
+    expect(await ok.json()).toMatchObject({ allowInput: false, allowUpload: false });
+  });
+
+  it('★ /api/config carries the phone protocol handshake', async () => {
+    // A shipped native client cannot be updated by the daemon, so the daemon
+    // has to say which contract it is speaking. This is the route the client
+    // already calls at connect time, and a daemon predating the handshake
+    // answers the same body with these three keys absent — which is how a
+    // client reads "protocol 0".
+    const info = await startRO();
+    const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.protocolVersion).toBe(PHONE_PROTOCOL_VERSION);
+    expect(body.minProtocolVersion).toBe(MIN_PHONE_PROTOCOL_VERSION);
+    // The floor can never exceed what the server itself speaks — that would
+    // lock out every client including a freshly built one.
+    expect(body.minProtocolVersion).toBeLessThanOrEqual(body.protocolVersion);
+    // Present and non-empty. The value is the launcher-injected release or the
+    // 'unknown' sentinel; tests run without the launcher, so both are valid and
+    // only the field's existence is contractual.
+    expect(typeof body.serverVersion).toBe('string');
+    expect(body.serverVersion.length).toBeGreaterThan(0);
+  });
+
+  it('★ the handshake survives a bind that refuses to pair', async () => {
+    // A plaintext non-loopback bind refuses to mint credentials, which is the
+    // one state where the server answers operator surfaces differently. An
+    // already-paired phone still reaches /api/config there, so the version
+    // fields must not be a property of the happy path only — a client that
+    // could not read them would report "update required" for a transport
+    // problem.
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
+    expect(server.status().pairRefusal?.reason).toBe('insecure-transport');
+
+    const res = await fetch(`http://127.0.0.1:${info.port}/api/config`, {
+      headers: bearer(info.token as string),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      protocolVersion: PHONE_PROTOCOL_VERSION,
+      minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
+    });
   });
 
   it('never lists the orchestrator brain as a pane', async () => {
@@ -2910,7 +2953,7 @@ describe('WebTerminalServer', () => {
   it('reports allowUpload on /api/config so the phone can hide the button', async () => {
     const info = await startUpload();
     const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
-    expect(await res.json()).toEqual({ allowInput: false, allowUpload: true });
+    expect(await res.json()).toMatchObject({ allowInput: false, allowUpload: true });
     // status() carries it too — that is what `wmux web --status` prints.
     expect(server.status().allowUpload).toBe(true);
   });
