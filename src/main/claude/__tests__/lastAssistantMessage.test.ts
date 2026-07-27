@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionLocation } from '../../../shared/sessionLocation';
+import { DEFAULT_PROBE_TTL_MS } from '../transcriptProbeCache';
 import {
   readLastAssistantMessage,
   transcriptFileLives,
@@ -286,9 +287,10 @@ describe('WSL transcript reads', () => {
     // cannot answer, and reporting absence there dropped the exact
     // `--resume <id>` and restarted the agent without its conversation.
     expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
-    // Nothing was recorded, so the next poll asks again rather than serving a
-    // guess for a full TTL.
+    // The *attempt* is recorded, not an answer — so repeat polls neither block
+    // on the guest again nor report absence.
     expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
+    expect(run).toHaveBeenCalledTimes(2); // one tail read, one probe
   });
 
   it('rejects a location/distro mismatch without executing anything', () => {
@@ -340,6 +342,40 @@ describe('WSL transcript reads', () => {
     }
   });
 
+  it('falls back to the host bridge when a refresh finds no guest python', async () => {
+    // The async half of the fallback was the copy that bypassed the injected
+    // runner, so nothing could reach it. Without it a refresh that loses guest
+    // Python never consults the bridge, and the stale answer just ages one TTL
+    // at a time forever.
+    vi.useFakeTimers();
+    const lstat = vi.spyOn(fs, 'lstatSync').mockReturnValue({ isFile: () => false } as fs.Stats);
+    try {
+      const prober = {
+        sync: vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1')),
+        async: vi.fn<AsyncTranscriptCommandRunner>().mockRejectedValue(
+          Object.assign(new Error('execvpe(python3) failed: No such file or directory'), {
+            stderr: Buffer.from('execvpe(python3) failed: No such file or directory'),
+          }),
+        ),
+      };
+
+      expect(transcriptFileLives('/home/me/fallback.jsonl', context, prober)).toBe(true);
+      vi.setSystemTime(Date.now() + DEFAULT_PROBE_TTL_MS + 1);
+      expect(transcriptFileLives('/home/me/fallback.jsonl', context, prober)).toBe(true);
+      await __whenTranscriptProbesIdle();
+
+      // The refresh consulted the bridge, which answered — so this is a real
+      // answer, not the assume-alive an unreachable outcome would have kept.
+      expect(lstat).toHaveBeenCalledWith(
+        '\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\fallback.jsonl',
+      );
+      expect(transcriptFileLives('/home/me/fallback.jsonl', context, prober)).toBe(false);
+    } finally {
+      lstat.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('drives the out-of-band refresh with a lone injected runner', async () => {
     // A caller that replaces only the synchronous runner must still never reach
     // a real wsl.exe when the TTL expires — the derived async half is what makes
@@ -353,7 +389,7 @@ describe('WSL transcript reads', () => {
       expect(transcriptFileLives('/home/me/lone.jsonl', context, run)).toBe(true);
       expect(run).toHaveBeenCalledTimes(1);
 
-      vi.setSystemTime(Date.now() + 31_000);
+      vi.setSystemTime(Date.now() + DEFAULT_PROBE_TTL_MS + 1);
       expect(transcriptFileLives('/home/me/lone.jsonl', context, run)).toBe(true);
       await __whenTranscriptProbesIdle();
 
@@ -375,7 +411,7 @@ describe('WSL transcript reads', () => {
       const prober = { sync, async };
 
       expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(true);
-      vi.setSystemTime(Date.now() + 31_000);
+      vi.setSystemTime(Date.now() + DEFAULT_PROBE_TTL_MS + 1);
 
       // The stale answer comes back without waiting for the refresh.
       expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(true);
