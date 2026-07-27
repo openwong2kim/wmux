@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
@@ -609,12 +610,19 @@ describe('WebTerminalServer', () => {
   });
 
   it('mints a fresh pairing code on each start', async () => {
-    const a = (await startRO()).pairCode as string;
-    await server.stop();
-    const b = (await startRO()).pairCode as string;
-    // Overwhelmingly likely to differ; assert format regardless.
-    expect(b).toMatch(pairCodePattern);
-    expect(a).toMatch(pairCodePattern);
+    let fill = 0;
+    const randomBytes = vi.spyOn(crypto, 'randomBytes').mockImplementation((size) => Buffer.alloc(size, fill++));
+    try {
+      const a = (await startRO()).pairCode as string;
+      await server.stop();
+      const b = (await startRO()).pairCode as string;
+      expect(a).toBe('AAAAAAAA');
+      expect(b).toBe('BBBBBBBB');
+      expect(a).toMatch(pairCodePattern);
+      expect(b).toMatch(pairCodePattern);
+    } finally {
+      randomBytes.mockRestore();
+    }
   });
 
   // ── critical / notify SSE tee ──────────────────────────────────────────────
