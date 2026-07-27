@@ -24,7 +24,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { TaskWorktreeManager } from './TaskWorktreeManager';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -177,7 +177,7 @@ export class TaskCloseService {
       const upstream = await execFileAsync(
         'git',
         ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
-        { cwd: worktreePath, timeout: 15000, env: getGitExecEnv() },
+        { cwd: worktreePath, timeout: 15000, env: getExecEnv() },
       ).then(
         () => true,
         () => false,
@@ -186,18 +186,18 @@ export class TaskCloseService {
         const { stdout } = await execFileAsync(
           'git',
           ['rev-list', '--count', '@{upstream}..HEAD'],
-          { cwd: worktreePath, timeout: 15000, env: getGitExecEnv() },
+          { cwd: worktreePath, timeout: 15000, env: getExecEnv() },
         );
         const n = parseInt(stdout.trim(), 10);
         return n > 0 ? { kind: 'ahead', count: n } : { kind: 'clean' };
       }
       // 원격이 아예 없는 로컬 전용 repo면 push 개념이 없다 — 경고 생략(오탐 방지).
-      const remotes = await execFileAsync('git', ['remote'], { cwd: worktreePath, timeout: 15000, env: getGitExecEnv() });
+      const remotes = await execFileAsync('git', ['remote'], { cwd: worktreePath, timeout: 15000, env: getExecEnv() });
       if (remotes.stdout.trim().length === 0) return { kind: 'clean' };
       const { stdout } = await execFileAsync(
         'git',
         ['rev-list', '--count', 'HEAD', '--not', '--remotes'],
-        { cwd: worktreePath, timeout: 15000, env: getGitExecEnv() },
+        { cwd: worktreePath, timeout: 15000, env: getExecEnv() },
       );
       const n = parseInt(stdout.trim(), 10);
       return n > 0 ? { kind: 'no-upstream-with-commits', count: n } : { kind: 'clean' };

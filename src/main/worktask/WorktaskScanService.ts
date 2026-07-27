@@ -28,7 +28,7 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getWmuxHomeDir } from '../../shared/constants';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 import { normalizeWorktreePath, WORKTASK_META_FILENAME, type WorkTaskMetaStamp } from '../../shared/workTask';
 import { metaDirForWorktree } from './TaskWorktreeManager';
 
@@ -288,7 +288,7 @@ async function defaultIsDirty(worktreePath: string): Promise<boolean> {
     cwd: worktreePath,
     timeout: 30000,
     windowsHide: true,
-    env: getGitExecEnv(),
+    env: getExecEnv(),
   });
   return stdout.trim().length > 0;
 }
