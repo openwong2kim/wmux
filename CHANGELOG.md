@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agents can now fan out.** Splitting one job into N isolated parallel tasks — each with its own git worktree on a fresh branch, its own workspace with an agent already running, and its own mission channel — required a human to open the GUI modal. It is now a tool, `fanout_start`, so an agent supervising a fleet can open one itself. A companion tool, `channel_mission_list`, lists the tasks you own so you can follow them; it reads the mission RPC that already existed. Fan-out takes far longer than one call can wait, so `fanout_start` returns as soon as it has accepted the work and you poll it by calling again with the same idempotency key.
+
+  What a caller may ask for is deliberately narrower than what the modal accepts, because the modal's fields were typed by a human and a tool call's are not. The agent command is not an input at all — it is interpolated into a shell line, so accepting one would be arbitrary command execution. Which workspace owns the tasks is resolved from the caller's verified terminal, not from anything the caller says, so no one can create tasks owned by someone else. The repository is the one the calling workspace is already in; naming any other is refused. Task count and prompt and title sizes are capped where the request arrives, not only deeper in. And like the existing background-execution path, fan-out is refused outright to anything that did not arrive over the local machine's own socket.
+
 ### Changed
 
 - **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)

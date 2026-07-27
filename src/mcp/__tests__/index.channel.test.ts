@@ -85,6 +85,7 @@ const channelAck = tools.get('channel_ack');
 const channelUnread = tools.get('channel_unread');
 const channelMissionStart = tools.get('channel_mission_start');
 const channelMissionClose = tools.get('channel_mission_close');
+const channelMissionList = tools.get('channel_mission_list');
 
 if (
   !channelCreate ||
@@ -98,7 +99,8 @@ if (
   !channelAck ||
   !channelUnread ||
   !channelMissionStart ||
-  !channelMissionClose
+  !channelMissionClose ||
+  !channelMissionList
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -140,10 +142,22 @@ describe('channel_* tools: registration', () => {
     expect(channelMissionClose).toBeDefined();
   });
 
-  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
-    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
-    // (fan-out) per §3 tool-surface minimalism.
-    expect(tools.get('channel_mission_list')).toBeUndefined();
+  it('registers channel_mission_list (J1 — the deferral ends with fan-out)', () => {
+    // J0 kept task.mission.list pipe-only per §3 tool-surface minimalism and
+    // deferred the tool to J1. J1 (fan-out on the wire) is the caller that
+    // needs it: fanout_start returns before the tasks exist, so this listing is
+    // how a caller follows what it spawned.
+    expect(tools.get('channel_mission_list')).toBeDefined();
+  });
+
+  it('channel_mission_list is owner-scoped by the resolved workspace', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    const res = await channelMissionList({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
+    expect(res.isError).toBeUndefined();
   });
 });
 

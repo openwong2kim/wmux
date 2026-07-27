@@ -467,3 +467,70 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     expect(res.error).toMatch(/exceeds cap/);
   });
 });
+
+// ─── Wire poll contract (fan-out on the pipe surface) ──────────────────────
+//
+// The pipe front door cannot answer a fan-out synchronously — the MCP client's
+// RPC deadline is 10s and a single task's spawn alone is allowed 30s — so it
+// accepts, runs detached, and lets the caller poll by re-sending the same
+// idempotency key. Both properties below exist to make that poll safe.
+describe('statusOf — the idempotency key as a poll handle', () => {
+  it('an unknown key reports unknown (so a first call may start it)', () => {
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake().port,
+      worktrees: makeWorktreesFake(),
+    });
+    expect(svc.statusOf('never-seen')).toEqual({ state: 'unknown' });
+  });
+
+  it('reports running while in flight, then done with the recorded result', async () => {
+    // Gate the renderer spawn so the run is observably mid-flight.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const renderer: FanOutRendererPort = {
+      spawnWorkspace: async () => {
+        await gate;
+        return { workspaceId: 'ws-task-1', ptyId: 'pty-1' };
+      },
+    };
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer,
+      worktrees: makeWorktreesFake(),
+    });
+
+    const inFlight = svc.start(baseReq({ titles: ['Only task'] }));
+    // Yield until the run reaches the gated spawn.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(svc.statusOf('fo-key-1')).toEqual({ state: 'running' });
+
+    release();
+    const result = await inFlight;
+    expect(svc.statusOf('fo-key-1')).toEqual({ state: 'done', result });
+  });
+
+  it('a THROWN run records a failed result instead of releasing the key', async () => {
+    // A released key would let the next poll RESTART a fan-out that had already
+    // spawned tasks — the one outcome the poll protocol must never produce.
+    const preflight = vi.fn(async () => {
+      throw new Error('disk exploded');
+    });
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake().port,
+      worktrees: { preflight } as any,
+    });
+
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/disk exploded/);
+    expect(svc.statusOf('fo-key-1')).toEqual({ state: 'done', result: res });
+
+    // A poll after the throw answers "done, failed" — it does not re-run.
+    expect(preflight).toHaveBeenCalledTimes(1);
+    const again = await svc.start(baseReq());
+    expect(again).toEqual(res);
+    expect(preflight).toHaveBeenCalledTimes(1);
+  });
+});
