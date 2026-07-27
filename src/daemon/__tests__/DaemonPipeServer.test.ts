@@ -381,33 +381,31 @@ describe('DaemonPipeServer', () => {
     const sockets: net.Socket[] = [];
     const closeCounts = { closed: 0, total: 40 };
 
-    await new Promise<void>((resolve) => {
-      let pending = closeCounts.total;
-      for (let i = 0; i < closeCounts.total; i++) {
-        const s = net.createConnection(pipeName);
-        sockets.push(s);
-        const markDone = () => {
-          pending--;
-          if (pending === 0) resolve();
-        };
-        s.on('close', () => {
-          closeCounts.closed++;
-          markDone();
-        });
-        s.on('error', () => {
-          markDone();
-        });
-      }
-      // Safety — resolve after 2s even if sockets linger
-      setTimeout(resolve, 2000);
-    });
+    let settled = 0;
+    for (let i = 0; i < closeCounts.total; i++) {
+      const s = net.createConnection(pipeName);
+      sockets.push(s);
+      s.on('close', () => { closeCounts.closed++; settled++; });
+      s.on('error', () => { settled++; });
+    }
+
+    // Wait for the outcome, not for a fixed span. The previous 2s safety timer
+    // was the assertion's real deadline: on a loaded runner fewer than half the
+    // excess sockets had been refused yet, and the test failed on runner speed
+    // rather than on the cap being broken.
+    const enoughRefused = () => closeCounts.closed >= closeCounts.total / 2;
+    await waitFor(
+      () => settled === closeCounts.total || enoughRefused(),
+      10_000,
+      'the per-second cap to refuse the excess connections',
+    );
 
     for (const s of sockets) s.destroy();
 
     // At least a handful of the excess connections must have been refused.
     // (We don't assert the exact number because accept() timing varies.)
     expect(closeCounts.closed).toBeGreaterThanOrEqual(closeCounts.total / 2);
-  });
+  }, 15_000);
 });
 
 // ============================================================
