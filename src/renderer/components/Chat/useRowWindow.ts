@@ -15,13 +15,30 @@
 // full list. Windowing is an optimization; it must never be the reason a row
 // is missing.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 /** Rows kept rendered above and below the measured viewport. */
 export const ROW_OVERSCAN = 20;
 
 /** Height assumed for a row that has not been measured yet, in px. */
 export const ESTIMATED_ROW_HEIGHT = 64;
+
+/**
+ * Vertical space between two rows, in px.
+ *
+ * This is the ONE source of truth for that spacing: ChatView applies it as the
+ * scroll container's `gap` instead of a Tailwind `gap-2.5`, because the offsets
+ * below have to agree with it exactly. While the gap lived only in a class,
+ * every skipped row made the spacers 10px short and the windowing coordinate
+ * system drifted further from the DOM the longer the conversation got.
+ */
+export const ROW_GAP = 10;
+
+/**
+ * How close to the bottom still counts as "following the live tail", in px.
+ * Above this the operator is reading history and the view must never yank.
+ */
+export const STICKY_BOTTOM_SLACK = 48;
 
 export interface RowWindow {
   /** First rendered row index, inclusive. */
@@ -44,12 +61,19 @@ const FULL_WINDOW = (count: number): RowWindow => ({
 /**
  * Pure slicing math. `heights[i]` is row i's height in px (measured or
  * estimated). Returns the rendered slice plus the two spacer heights.
+ *
+ * `gap` is the container's between-children spacing. Rows are separated by it,
+ * and so is each spacer from the row next to it — so a spacer standing in for
+ * n rows is `sum(heights) + gap * (n - 1)` tall: the n-th gap is the one the
+ * spacer itself contributes as a flex child. Defaults to 0 so the pure math
+ * stays callable without a layout assumption; the hook passes ROW_GAP.
  */
 export function computeRowWindow(
   heights: readonly number[],
   scrollTop: number,
   viewportHeight: number,
   overscan: number = ROW_OVERSCAN,
+  gap = 0,
 ): RowWindow {
   const count = heights.length;
   if (count === 0) return FULL_WINDOW(0);
@@ -69,7 +93,7 @@ export function computeRowWindow(
       if (first === -1) first = i;
       last = i;
     }
-    offset = rowBottom;
+    offset = rowBottom + gap;
   }
   // Scrolled past the end (heights shrank under a stale scrollTop): anchor on
   // the tail so the newest turn is what stays rendered.
@@ -82,9 +106,11 @@ export function computeRowWindow(
   const endIndex = Math.min(count, last + 1 + overscan);
 
   let padTop = 0;
-  for (let i = 0; i < startIndex; i += 1) padTop += Math.max(0, heights[i] ?? 0);
+  for (let i = 0; i < startIndex; i += 1) padTop += Math.max(0, heights[i] ?? 0) + gap;
+  if (startIndex > 0) padTop -= gap; // the spacer contributes the last gap itself
   let padBottom = 0;
-  for (let i = endIndex; i < count; i += 1) padBottom += Math.max(0, heights[i] ?? 0);
+  for (let i = endIndex; i < count; i += 1) padBottom += Math.max(0, heights[i] ?? 0) + gap;
+  if (endIndex < count) padBottom -= gap;
 
   return { startIndex, endIndex, padTop, padBottom };
 }
@@ -118,10 +144,17 @@ export function useRowWindow<T>(
   // Bumped when a measurement lands so the window recomputes with real heights.
   const [measureTick, setMeasureTick] = useState(0);
 
+  // Sticky tail: true while the operator is at (or within slack of) the bottom.
+  // Starts true so opening Chat lands on the NEWEST turn — the container used to
+  // mount at scrollTop 0, which showed the OLDEST row of the bounded tail.
+  const atBottomRef = useRef(true);
+
   const scrollRef = useCallback((el: HTMLElement | null) => {
     containerRef.current = el;
     if (el) {
       setViewportHeight(el.clientHeight);
+      el.scrollTop = el.scrollHeight;
+      atBottomRef.current = true;
       setScrollTop(el.scrollTop);
     }
   }, []);
@@ -132,6 +165,10 @@ export function useRowWindow<T>(
     if (!el) return;
     let frame = 0;
     const onScroll = (): void => {
+      // Read the tail-following decision synchronously: coalescing it into the
+      // frame callback would sample a scrollTop the appends may already have
+      // moved.
+      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICKY_BOTTOM_SLACK;
       if (frame) return; // coalesce to one recompute per frame
       frame = requestAnimationFrame(() => {
         frame = 0;
@@ -150,6 +187,17 @@ export function useRowWindow<T>(
       if (frame) cancelAnimationFrame(frame);
     };
   }, [rows.length]);
+
+  // Keep the newest turn on screen while the operator is following the tail —
+  // and ONLY then. Runs after appends (rows.length) and after a measurement
+  // resolved a row's real height (measureTick), both of which change the
+  // content height under a scrollTop that was already at the bottom.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el || !atBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+    setScrollTop(el.scrollTop);
+  }, [rows.length, measureTick]);
 
   const measureRow = useCallback(
     (id: string) => (el: HTMLElement | null): void => {
@@ -172,7 +220,7 @@ export function useRowWindow<T>(
   );
 
   const window_ = useMemo(
-    () => computeRowWindow(heights, scrollTop, viewportHeight, overscan),
+    () => computeRowWindow(heights, scrollTop, viewportHeight, overscan, ROW_GAP),
     [heights, scrollTop, viewportHeight, overscan],
   );
 

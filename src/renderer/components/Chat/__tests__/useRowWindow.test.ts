@@ -1,6 +1,6 @@
 // PR-9 row windowing — pure slicing math, including variable heights.
 import { describe, it, expect } from 'vitest';
-import { computeRowWindow, ROW_OVERSCAN, ESTIMATED_ROW_HEIGHT } from '../useRowWindow';
+import { computeRowWindow, ROW_OVERSCAN, ESTIMATED_ROW_HEIGHT, ROW_GAP } from '../useRowWindow';
 
 /** n rows of a uniform height. */
 const uniform = (n: number, h: number): number[] => Array.from({ length: n }, () => h);
@@ -118,6 +118,53 @@ describe('computeRowWindow — variable heights', () => {
     expect(w.startIndex).toBe(0);
     expect(w.padTop).toBe(0);
     expect(w.padTop + w.padBottom).toBeLessThanOrEqual(80);
+  });
+});
+
+// The scroll container separates every child by ROW_GAP. Offsets that ignore it
+// are short by one gap per hidden row, so the virtual content got progressively
+// shorter than the coordinate system the scroll math uses.
+describe('computeRowWindow — gap-inclusive offsets', () => {
+  const G = ROW_GAP;
+  /** Height of a run of n uniform rows as the DOM lays it out, gaps included. */
+  const run = (n: number, h: number): number => n * h + Math.max(0, n - 1) * G;
+
+  it('advances the intersection cursor by the gap between rows', () => {
+    // 40px rows + 10px gaps → row i spans [i*50, i*50+40).
+    const heights = uniform(100, 40);
+    // Viewport [500, 540) starts exactly at row 10's top (10 * 50).
+    const w = computeRowWindow(heights, 500, 40, 0, G);
+    expect(w.startIndex).toBe(10);
+    expect(w.endIndex).toBe(11);
+    // Without the gap the same scrollTop would land on row 12 — the drift.
+    expect(computeRowWindow(heights, 500, 40, 0, 0).startIndex).toBe(12);
+  });
+
+  it('pads for the skipped rows AND the gaps between them', () => {
+    const heights = uniform(100, 40);
+    const w = computeRowWindow(heights, 500, 40, 2, G);
+    expect(w.startIndex).toBe(8);
+    expect(w.endIndex).toBe(13);
+    // 8 skipped rows above: 8 heights + 7 inner gaps (the 8th gap is the one the
+    // spacer itself contributes as a flex child).
+    expect(w.padTop).toBe(run(8, 40));
+    expect(w.padBottom).toBe(run(100 - 13, 40));
+  });
+
+  it('reconstructs the exact DOM content height (spacers + rendered + gaps)', () => {
+    const heights = uniform(500, 40);
+    const w = computeRowWindow(heights, 40 * 200, 400, 20, G);
+    const renderedRows = w.endIndex - w.startIndex;
+    // Children = padTop spacer + rendered rows + padBottom spacer, all gapped.
+    const children = renderedRows + 2;
+    const laidOut = w.padTop + w.padBottom + renderedRows * 40 + (children - 1) * G;
+    expect(laidOut).toBe(run(500, 40));
+  });
+
+  it('adds no gap when nothing is skipped on that side', () => {
+    const w = computeRowWindow(uniform(10, 40), 0, 400, ROW_OVERSCAN, G);
+    expect(w.padTop).toBe(0);
+    expect(w.padBottom).toBe(0);
   });
 });
 

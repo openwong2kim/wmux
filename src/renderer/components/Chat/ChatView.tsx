@@ -24,7 +24,7 @@ import { DiffChip } from './DiffChip';
 import { ChatComposer } from './ChatComposer';
 import { TrustSeam } from './TrustSeam';
 import { foldToolRuns } from './foldToolRuns';
-import { useRowWindow } from './useRowWindow';
+import { useRowWindow, ROW_GAP } from './useRowWindow';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 
 export interface ChatViewProps {
@@ -115,12 +115,27 @@ export function ChatView({
   return (
     <div
       data-chat-view={surfaceId}
-      className="flex-1 min-h-0 flex-col overflow-hidden"
-      style={{ display: visible ? 'flex' : 'none' }}
+      className="min-h-0 overflow-hidden"
+      // The host is `<div className="flex-1 relative overflow-hidden">` (Pane's
+      // SplitSurfaceView) — a BLOCK box, not a flex column. `flex-1` on this
+      // root therefore did nothing: the view sized to its content, the inner
+      // `overflow-y-auto` never got shorter than its rows (so the wheel did
+      // nothing) and the composer + trust seam were pushed past the host's clip.
+      // Fill the pane box exactly, the same way TerminalComponent's root does.
+      style={{
+        display: visible ? 'flex' : 'none',
+        flexDirection: 'column',
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+      }}
     >
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2.5"
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col"
+        // Row spacing comes from ROW_GAP, not a `gap-2.5` class: the windowing
+        // spacers have to be computed from the same number.
+        style={{ gap: ROW_GAP }}
         data-chat-scroll
       >
         {cursor && cursor.headOffset > 0 && (
