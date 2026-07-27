@@ -423,9 +423,26 @@ jobs:
       # matching the host keeps a future deb822 runner's ubuntu.sources intact).
       - name: Install Linux build dependencies
         run: |
+          # A transient mirror error (Hash Sum mismatch, connection reset, a
+          # single 5xx mirror) is not a reason to ship a release without its
+          # .deb/.rpm/.AppImage. Acquire::Retries only retries a fetch inside one
+          # apt run, so wrap both operations in a bounded retry with backoff.
+          set -euo pipefail
+          apt_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 "$@"; then
+                return 0
+              fi
+              echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
+              sleep $((attempt * 15))
+            done
+            echo "apt-get $* failed after 3 attempts" >&2
+            return 1
+          }
           sudo bash -c 'grep -rlE "packages\.microsoft\.com|dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f'
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get install -y build-essential libxss1 rpm fakeroot
+          apt_retry update
+          apt_retry install -y build-essential libxss1 rpm fakeroot
 
       - name: Install dependencies
         run: npm ci
