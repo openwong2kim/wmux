@@ -2,6 +2,7 @@
 // persisted, and is then opened and rendered as a pane's conversation. These are
 // the cases that decide whether that is a projection or an arbitrary-file-read.
 
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -65,6 +66,27 @@ describe('checkTranscriptPath', () => {
     expect(checkTranscriptPath(wrongName, SID, env).ok).toBe(false);
     const outside = `C:\\Windows\\Temp\\${SID}.jsonl`;
     expect(checkTranscriptPath(outside, SID, env).ok).toBe(false);
+  });
+
+  it('accepts a not-yet-created transcript under a SYMLINKED root', () => {
+    // SessionStart fires before the `.jsonl` exists, so the path cannot be
+    // realpath'd — but the root often can be (macOS resolves /var → /private/var,
+    // and a symlinked home is common). Comparing the raw path against a resolved
+    // root would refuse a legitimate provisional capture and silently disable
+    // Chat View, so the nearest EXISTING ancestor is what gets resolved.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-guard-'));
+    try {
+      const projects = path.join(dir, 'projects', '-repo');
+      fs.mkdirSync(projects, { recursive: true });
+      const env = { CLAUDE_CONFIG_DIR: dir };
+      const notYet = path.join(projects, `${SID}.jsonl`);
+      expect(fs.existsSync(notYet)).toBe(false);
+      expect(checkTranscriptPath(notYet, SID, env)).toEqual({ ok: true, reason: '' });
+      // The ancestor walk must not widen containment.
+      expect(checkTranscriptPath(path.join(dir, `${SID}.jsonl`), SID, env).ok).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('always offers the home-directory root, plus the configured one', () => {

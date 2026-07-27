@@ -66,14 +66,34 @@ function isInside(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(root.endsWith('/') ? root : `${root}/`);
 }
 
-/** `realpath` when the path exists, the input otherwise (a not-yet-created
- *  transcript is legal — SessionStart fires before the `.jsonl` is written). */
+/** `realpath` when the path exists (a not-yet-created transcript is legal —
+ *  SessionStart fires before the `.jsonl` is written).
+ *
+ *  When it does not exist, the NEAREST EXISTING ANCESTOR is resolved and the
+ *  remainder kept lexical: containment still has to be judged on resolved
+ *  ground, and a home directory reached through a symlink (or macOS's
+ *  `/var` → `/private/var`) would otherwise make a legitimate provisional path
+ *  look like it sits outside the projects root, silently disabling Chat View. */
 function resolveIfPossible(value: string): string {
   try {
     return fs.realpathSync(value);
   } catch {
-    return value;
+    // Not created yet — fall through to the ancestor walk.
   }
+  const rest: string[] = [];
+  let current = value;
+  // Bounded: a pathological path must not turn containment into a long walk.
+  for (let i = 0; i < 64; i++) {
+    const parent = path.dirname(current);
+    if (!parent || parent === current) break;
+    rest.unshift(path.basename(current));
+    try {
+      return path.join(fs.realpathSync(parent), ...rest);
+    } catch {
+      current = parent;
+    }
+  }
+  return value;
 }
 
 /**

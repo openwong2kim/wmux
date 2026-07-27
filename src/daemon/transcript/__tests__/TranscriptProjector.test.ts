@@ -13,31 +13,53 @@ interface Harness {
   bindings: Map<string, ResumeBinding>;
   appends: { sessionId: string; data: TranscriptAppendData; clientIds: readonly string[] }[];
   dir: string;
+  /**
+   * The only place a transcript may legitimately live: the projector refuses to
+   * open anything outside `<CLAUDE_CONFIG_DIR>/projects`, so the harness sets
+   * that variable to a tmp dir and writes every fixture underneath it.
+   */
+  projects: string;
 }
 
 let harness: Harness;
 
 function binding(overrides: Partial<ResumeBinding> = {}): ResumeBinding {
-  return {
+  const merged: ResumeBinding = {
     agent: 'claude',
     sessionId: '920b9112-1111-4222-8333-444455556666',
     cwd: '/tmp/synthetic-repo',
     ts: 1,
     ...overrides,
   };
+  // A real transcript is always named `${agentSessionId}.jsonl` and the guard
+  // requires it, so derive the id from the file each test names.
+  if (overrides.transcriptPath && !overrides.sessionId) {
+    merged.sessionId = path.basename(overrides.transcriptPath).replace(/\.jsonl$/, '');
+  }
+  return merged;
+}
+
+/** Copy a checked-in fixture into the legal projects root and return its path. */
+function fixture(name: string): string {
+  const dest = path.join(harness.projects, name);
+  if (!fs.existsSync(dest)) fs.copyFileSync(path.join(FIXTURES, name), dest);
+  return dest;
 }
 
 beforeEach(() => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-projector-'));
+  const projects = path.join(dir, 'projects', '-synthetic-repo');
+  fs.mkdirSync(projects, { recursive: true });
   const bindings = new Map<string, ResumeBinding>();
   const appends: Harness['appends'] = [];
   const projector = new TranscriptProjector({
     getResumeBinding: (id) => bindings.get(id),
+    getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: dir }),
     emitAppend: (sessionId, data, clientIds) => appends.push({ sessionId, data, clientIds }),
     debounceMs: 1,
     pollMs: 50,
   });
-  harness = { projector, bindings, appends, dir };
+  harness = { projector, bindings, appends, dir, projects };
 });
 
 afterEach(() => {
@@ -64,7 +86,7 @@ describe('TranscriptProjector.status — the four unavailable reasons', () => {
   });
 
   it('unreadable when the transcript was purged', () => {
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(harness.dir, 'gone.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(harness.projects, 'gone.jsonl') }));
     expect(harness.projector.status('pty-1')).toEqual({
       available: false,
       reason: 'unreadable',
@@ -73,7 +95,7 @@ describe('TranscriptProjector.status — the four unavailable reasons', () => {
   });
 
   it('ok, with the agent session id derived from the basename', () => {
-    const file = path.join(FIXTURES, 'claude-basic.jsonl');
+    const file = fixture('claude-basic.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     const status = harness.projector.status('pty-1');
     expect(status.available).toBe(true);
@@ -95,13 +117,84 @@ describe('TranscriptProjector.status — the four unavailable reasons', () => {
   });
 });
 
+// The binding has several writers — the daemon's hook ingest (validated), the
+// `daemon.setResumeBinding` RPC that main's hooks.signal fallback calls with the
+// RAW payload path, main's resume spool, and the restored state file. Only the
+// first was ever checked, so the projector re-checks at the point of projection:
+// one choke point every read goes through, whichever writer put the path there.
+describe('TranscriptProjector — transcript path containment (every writer)', () => {
+  /** A binding no writer validated, exactly as an unchecked route would leave it. */
+  function poisoned(transcriptPath: string, sessionId?: string): ResumeBinding {
+    return {
+      agent: 'claude',
+      sessionId: sessionId ?? path.basename(transcriptPath).replace(/\.jsonl$/, ''),
+      cwd: '/tmp/synthetic-repo',
+      transcriptPath,
+      ts: 1,
+    };
+  }
+
+  it('refuses a path outside the Claude projects root on every read path', () => {
+    const secret = path.join(harness.dir, 'secret.jsonl');
+    fs.writeFileSync(secret, JSON.stringify({
+      type: 'user',
+      uuid: 's-1',
+      message: { role: 'user', content: 'private' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', poisoned(secret));
+
+    expect(harness.projector.status('pty-1')).toEqual({
+      available: false,
+      reason: 'unsafe-transcript-path',
+    });
+    expect(harness.projector.snapshot('pty-1')).toBeNull();
+    expect(harness.projector.codeBlock('pty-1', { srcOffset: 0, n: 1 })).toBeNull();
+  });
+
+  it('refuses a path inside the root whose basename is not the agent session id', () => {
+    const other = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', poisoned(other, 'a-different-session'));
+    expect(harness.projector.status('pty-1').reason).toBe('unsafe-transcript-path');
+    expect(harness.projector.snapshot('pty-1')).toBeNull();
+  });
+
+  it('never opens a refused path, even for a live subscriber being nudged', async () => {
+    const secret = path.join(harness.dir, 'secret.jsonl');
+    fs.writeFileSync(secret, JSON.stringify({
+      type: 'user',
+      uuid: 's-1',
+      message: { role: 'user', content: 'private' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', poisoned(secret));
+
+    const status = harness.projector.subscribe('c1', 'pty-1');
+    expect(status.available).toBe(false);
+    harness.projector.nudge('pty-1', 'agent.stop');
+    fs.appendFileSync(secret, JSON.stringify({
+      type: 'user',
+      uuid: 's-2',
+      message: { role: 'user', content: 'more private' },
+    }) + '\n', 'utf8');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await delay(40);
+    expect(harness.appends).toHaveLength(0);
+  });
+
+  it('follows a workspace-relocated CLAUDE_CONFIG_DIR rather than only the default root', () => {
+    // The env-derived root is the reason the check is not a hardcoded `~/.claude`
+    // compare: a workspace profile may relocate it per pane.
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
+    expect(harness.projector.status('pty-1').available).toBe(true);
+  });
+});
+
 describe('TranscriptProjector.snapshot', () => {
   it('returns null when the pane is not projectable', () => {
     expect(harness.projector.snapshot('pty-1')).toBeNull();
   });
 
   it('projects the tail of a real fixture', () => {
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(FIXTURES, 'claude-basic.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
     const page = harness.projector.snapshot('pty-1')!;
     expect(page.events.map((e) => e.kind)).toEqual([
       'user_text',
@@ -114,7 +207,7 @@ describe('TranscriptProjector.snapshot', () => {
   });
 
   it('keeps every response under the A3 byte budget', () => {
-    const file = path.join(harness.dir, 'fat.jsonl');
+    const file = path.join(harness.projects, 'fat.jsonl');
     const lines: string[] = [];
     for (let i = 0; i < 400; i++) {
       lines.push(JSON.stringify({
@@ -136,7 +229,7 @@ describe('TranscriptProjector.snapshot', () => {
 
 describe('TranscriptProjector.subscribe / unsubscribe — per (client, session)', () => {
   it('refcounts by client and tears the watch down with the last one', () => {
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(FIXTURES, 'claude-basic.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
     harness.projector.subscribe('c1', 'pty-1');
     harness.projector.subscribe('c2', 'pty-1');
     expect(harness.projector.watchCount).toBe(1);
@@ -155,7 +248,7 @@ describe('TranscriptProjector.subscribe / unsubscribe — per (client, session)'
   });
 
   it('dropClient removes that client from every pane it watched', () => {
-    const file = path.join(FIXTURES, 'claude-basic.jsonl');
+    const file = fixture('claude-basic.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     harness.bindings.set('pty-2', binding({ transcriptPath: file }));
     harness.projector.subscribe('c1', 'pty-1');
@@ -172,14 +265,14 @@ describe('TranscriptProjector.subscribe / unsubscribe — per (client, session)'
 
   it('unsubscribe for an unknown pane or client is a no-op', () => {
     expect(() => harness.projector.unsubscribe('c9', 'nope')).not.toThrow();
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(FIXTURES, 'claude-basic.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
     harness.projector.subscribe('c1', 'pty-1');
     harness.projector.unsubscribe('c9', 'pty-1');
     expect(harness.projector.watchCount).toBe(1);
   });
 
   it('dropPty removes the watch regardless of subscribers', () => {
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(FIXTURES, 'claude-basic.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
     harness.projector.subscribe('c1', 'pty-1');
     harness.projector.dropPty('pty-1');
     expect(harness.projector.watchCount).toBe(0);
@@ -197,7 +290,7 @@ describe('TranscriptProjector.nudge', () => {
   });
 
   it('emits an append (unicast to the subscriber) after a nudge', async () => {
-    const file = path.join(harness.dir, 'live.jsonl');
+    const file = path.join(harness.projects, 'live.jsonl');
     fs.writeFileSync(file, JSON.stringify({
       type: 'user',
       uuid: 'u-1',
@@ -219,7 +312,7 @@ describe('TranscriptProjector.nudge', () => {
   });
 
   it('a session_start nudge forces reset on the next append', async () => {
-    const file = path.join(harness.dir, 'reuse.jsonl');
+    const file = path.join(harness.projects, 'reuse.jsonl');
     fs.writeFileSync(file, JSON.stringify({
       type: 'user',
       uuid: 'u-1',
@@ -231,7 +324,7 @@ describe('TranscriptProjector.nudge', () => {
     await waitFor(() => harness.appends.length === 1);
 
     // A reused pane: new session, new file, same pane id.
-    const next = path.join(harness.dir, 'fresh.jsonl');
+    const next = path.join(harness.projects, 'fresh.jsonl');
     fs.writeFileSync(next, JSON.stringify({
       type: 'user',
       uuid: 'u-2',
@@ -249,8 +342,65 @@ describe('TranscriptProjector.nudge', () => {
     expect(texts).toEqual(['new conversation']);
   });
 
+  it('does NOT replay the previous conversation when the new session has no binding yet', async () => {
+    // The `/clear` shape: SessionStart fires before the new `.jsonl` exists, so
+    // its provisional capture carries no transcript path and the daemon refuses
+    // it — the PREVIOUS session's binding is still what the projector can see.
+    const file = path.join(harness.projects, 'first-session.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      type: 'user',
+      uuid: 'u-1',
+      message: { role: 'user', content: 'the previous conversation' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.subscribe('c1', 'pty-1');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length === 1);
+
+    harness.projector.nudge('pty-1', 'agent.session_start', 'second-session');
+    await delay(40);
+    // Nothing re-adopted: the old transcript must not be presented as the new
+    // session's, and repeated nudges must not sneak it back in either.
+    harness.projector.nudge('pty-1', 'agent.activity');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await delay(40);
+    expect(harness.appends).toHaveLength(1);
+
+    // The genuine binding refresh releases the hold.
+    const next = path.join(harness.projects, 'second-session.jsonl');
+    fs.writeFileSync(next, JSON.stringify({
+      type: 'user',
+      uuid: 'u-2',
+      message: { role: 'user', content: 'the new conversation' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: next, ts: 2 }));
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length === 2);
+    const second = harness.appends[1].data;
+    expect(second.reset).toBe(true);
+    expect(second.events.map((e) => (e.kind === 'user_text' ? e.text : ''))).toEqual([
+      'the new conversation',
+    ]);
+  });
+
+  it('keeps projecting when session_start RESUMES the session the binding names', async () => {
+    const file = path.join(harness.projects, 'resumed.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      type: 'user',
+      uuid: 'u-1',
+      message: { role: 'user', content: 'resumed conversation' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.subscribe('c1', 'pty-1');
+    harness.projector.nudge('pty-1', 'agent.session_start', 'resumed');
+    await waitFor(() => harness.appends.length === 1);
+    expect(harness.appends[0].data.events.map((e) => (e.kind === 'user_text' ? e.text : ''))).toEqual([
+      'resumed conversation',
+    ]);
+  });
+
   it('does not emit when nothing changed', async () => {
-    const file = path.join(harness.dir, 'idle.jsonl');
+    const file = path.join(harness.projects, 'idle.jsonl');
     fs.writeFileSync(file, JSON.stringify({
       type: 'user',
       uuid: 'u-1',
@@ -268,7 +418,7 @@ describe('TranscriptProjector.nudge', () => {
   });
 
   it('does nothing after dispose', async () => {
-    harness.bindings.set('pty-1', binding({ transcriptPath: path.join(FIXTURES, 'claude-basic.jsonl') }));
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
     harness.projector.subscribe('c1', 'pty-1');
     harness.projector.dispose();
     harness.projector.nudge('pty-1', 'agent.stop');
@@ -292,7 +442,7 @@ describe('TranscriptProjector — draining a burst (D3) and stalling on an overs
   }
 
   it('keeps reading until the cursor reaches EOF after a budget-limited append', async () => {
-    const file = path.join(harness.dir, 'burst.jsonl');
+    const file = path.join(harness.projects, 'burst.jsonl');
     // Start with one small entry so the first (snapshot) read is cheap, then
     // append far more than one budgeted read can carry.
     fs.writeFileSync(file, burst(1, 10, 'seed'), 'utf8');
@@ -324,7 +474,7 @@ describe('TranscriptProjector — draining a burst (D3) and stalling on an overs
   });
 
   it('does not emit or advance while an oversized entry is still unterminated', async () => {
-    const file = path.join(harness.dir, 'partial.jsonl');
+    const file = path.join(harness.projects, 'partial.jsonl');
     fs.writeFileSync(file, burst(1, 10, 'seed'), 'utf8');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     harness.projector.subscribe('c1', 'pty-1');
@@ -359,9 +509,8 @@ describe('TranscriptProjector — draining a burst (D3) and stalling on an overs
 });
 
 describe('TranscriptProjector.codeBlock — on-expand body fetch', () => {
-  const file = path.join(FIXTURES, 'code-and-diff.jsonl');
-
   it('re-extracts the body from the line the ref points at', () => {
+    const file = fixture('code-and-diff.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     const page = harness.projector.snapshot('pty-1')!;
     const event = page.events.find((e) => e.kind === 'assistant_text' && e.codeBlocks);
@@ -377,11 +526,13 @@ describe('TranscriptProjector.codeBlock — on-expand body fetch', () => {
   });
 
   it('refuses when the event id does not match the line at that offset', () => {
+    const file = fixture('code-and-diff.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     expect(harness.projector.codeBlock('pty-1', { srcOffset: 0, n: 1, eventId: 'someone-else' })).toBeNull();
   });
 
   it('refuses an out-of-range block handle and a bad offset', () => {
+    const file = fixture('code-and-diff.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     expect(harness.projector.codeBlock('pty-1', { srcOffset: 0, n: 99 })).toBeNull();
     expect(harness.projector.codeBlock('pty-1', { srcOffset: -1, n: 1 })).toBeNull();

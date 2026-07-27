@@ -64,6 +64,7 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
@@ -2309,7 +2310,24 @@ function registerRpcHandlers(
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
     if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
-    const p = { id, resumeBinding };
+    // The daemon's own hook ingest validates the claimed transcript path before
+    // it gets here, but this function is ALSO the body of the
+    // `daemon.setResumeBinding` RPC, and main's hooks.signal fallback calls that
+    // with the raw hook payload. Persisting an unchecked path would hand the
+    // projector (and the D5 liveness probe) a file nobody vetted, so drop the
+    // field here too — the rest of the binding is still worth keeping, exactly
+    // as on the hook path. TranscriptProjector re-checks at read time; this is
+    // the writer half of the same rule.
+    let vetted = resumeBinding;
+    if (vetted.transcriptPath) {
+      const check = checkTranscriptPath(vetted.transcriptPath, vetted.sessionId, managed.meta.env);
+      if (!check.ok) {
+        log('warn', `[resume] refused transcript path for ${id}: ${check.reason}`);
+        const { transcriptPath: _refused, ...rest } = vetted;
+        vetted = rest;
+      }
+    }
+    const p = { id, resumeBinding: vetted };
     // Resume-chip edge trigger: a hook reaching this RPC proves claude is
     // running in the pane RIGHT NOW — attach the process watch (no-op while a
     // live watch exists, so hook storms cost nothing). Runs before the
@@ -2394,6 +2412,9 @@ function registerRpcHandlers(
       // cwd→slug derivation (agentResume.ts rejects that mapping as
       // version-drift-prone, which is why the path is persisted at all).
       getResumeBinding: (id) => sessionManager.getSession(id)?.meta.resumeBinding,
+      // Only the transcript-path containment check reads this — a workspace
+      // profile may relocate CLAUDE_CONFIG_DIR per pane.
+      getSessionEnv: (id) => sessionManager.getSession(id)?.meta.env,
       // A6 — unicast. An append carries the pane's conversation content, so it
       // goes only to the sockets that subscribed; broadcast would hand every
       // authenticated pipe client the whole transcript AND put an oversized
@@ -2504,7 +2525,7 @@ function registerRpcHandlers(
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
-      onTranscriptNudge: (sessionId, kind) => projector.nudge(sessionId, kind),
+      onTranscriptNudge: (sessionId, kind, agentSessionId) => projector.nudge(sessionId, kind, agentSessionId),
     });
   }
   const ingest = hookIngest;
