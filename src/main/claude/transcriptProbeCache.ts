@@ -79,15 +79,21 @@ export interface TranscriptProbeCacheOptions {
 export interface TranscriptProbeCache {
   /**
    * Answer "does this transcript exist?" without ever blocking twice for the
-   * same key. `probeSync` runs at most once per key — on first sight — and
-   * `probeAsync` carries every later refresh.
+   * same cache entry. `probeSync` runs once per entry — on first sight, and
+   * again only if that entry is later evicted or reset away — and `probeAsync`
+   * carries every refresh.
    */
   lives(
     key: string,
     probeSync: () => ProbeOutcome,
     probeAsync: () => Promise<ProbeOutcome>,
   ): boolean;
-  /** Settle in-flight refreshes — for one key, or all of them. */
+  /**
+   * Settle in-flight refreshes — for one key, or all of them.
+   *
+   * The all-keys form drains refreshes whose entry has since been evicted or
+   * reset away, which a per-entry view cannot see.
+   */
   whenIdle(key?: string): Promise<void>;
   /** Read seam: the recorded answer, or null when no probe has answered yet. */
   answerFor(key: string): ProbeAnswer | null;
@@ -101,6 +107,12 @@ export function createTranscriptProbeCache(
   const max = options.max ?? DEFAULT_PROBE_CACHE_MAX;
   const clock = options.now ?? Date.now;
   const entries = new Map<string, ProbeEntry>();
+  /**
+   * Every refresh still running, including ones whose entry was evicted or reset
+   * away. Awaitability cannot hang off the entry alone: an eviction mid-refresh
+   * would drop the promise from view while the spawn is still live.
+   */
+  const inFlight = new Set<Promise<void>>();
   /** Bumped by `reset` so a refresh that resolves afterwards cannot write into
    *  the cache it no longer belongs to. */
   let generation = 0;
@@ -120,15 +132,24 @@ export function createTranscriptProbeCache(
     entry.answer = { lives: outcome.lives, at: entry.attemptedAt };
   }
 
-  /** FIFO, at insertion — the only place an entry is created, so the bound holds
-   *  for unanswered entries too. Map iteration is insertion-ordered and `record`
-   *  never re-inserts, so the first key is the oldest. */
+  /**
+   * FIFO, at insertion — the only place an entry is created, so the bound holds
+   * for unanswered entries too. Map iteration is insertion-ordered and `record`
+   * never re-inserts, so the first key is the oldest.
+   *
+   * Evicting a key whose refresh is still in flight costs one extra probe (the
+   * next sighting re-inserts and probes synchronously while the orphan finishes),
+   * which is why the orphan's write is generation-guarded rather than trusted.
+   *
+   * `attemptedAt` is stamped here rather than left at 0 so the retry throttle
+   * does not depend on `record` stamping it above its own early return.
+   */
   function insert(key: string, outcome: ProbeOutcome): void {
     if (entries.size >= max) {
       const oldest = entries.keys().next();
       if (!oldest.done) entries.delete(oldest.value);
     }
-    entries.set(key, { answer: null, attemptedAt: 0, pending: null });
+    entries.set(key, { answer: null, attemptedAt: clock(), pending: null });
     record(key, outcome);
   }
 
@@ -152,10 +173,12 @@ export function createTranscriptProbeCache(
         // A rejected probe is unreachable: keep the last known answer.
       }
     })().finally(() => {
+      inFlight.delete(pending);
       const current = entries.get(key);
       if (current?.pending === pending) current.pending = null;
     });
     entry.pending = pending;
+    inFlight.add(pending);
   }
 
   return {
@@ -171,10 +194,11 @@ export function createTranscriptProbeCache(
       return entry.answer ? entry.answer.lives : ASSUME_ALIVE_WHEN_UNPROVEN;
     },
     async whenIdle(key) {
-      const pending = key !== undefined
-        ? [entries.get(key)?.pending]
-        : [...entries.values()].map((entry) => entry.pending);
-      await Promise.all(pending.filter((p): p is Promise<void> => Boolean(p)));
+      if (key !== undefined) {
+        await entries.get(key)?.pending;
+        return;
+      }
+      await Promise.all([...inFlight]);
     },
     answerFor(key) {
       return entries.get(key)?.answer ?? null;

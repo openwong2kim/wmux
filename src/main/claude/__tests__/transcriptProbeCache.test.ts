@@ -56,20 +56,47 @@ describe('transcript probe cache', () => {
       expect(cache.lives('k', probe, never)).toBe(returned);
       // A second poll within the TTL is served from the recorded answer; with no
       // answer recorded there is nothing to serve, but it must still not block.
+      clock.advance(TTL - 1);
       expect(cache.lives('k', probe, never)).toBe(returned);
       expect(probe).toHaveBeenCalledTimes(1);
+      // Pinned to the probe's own moment, not to now — `answer.at` is what the
+      // TTL ages, and it must not be confused with the attempt timestamp.
       expect(cache.answerFor('k')).toEqual(cached ? { lives: returned, at: 1_000 } : null);
     });
   });
 
-  it('never re-enters the blocking probe once a key is known, even unanswered', () => {
+  it('throttles retries for a key that has never been answered for', async () => {
     const clock = testClock();
     const cache = makeCache(clock.now);
     const probe = vi.fn(() => unreachable);
+    const refresh = deferredProbe();
+
     // Ten daemon polls against a distro that cannot answer. Before the cache
     // recorded the *attempt* this was ten blocking 750 ms wsl.exe spawns — the
     // stall #26 existed to remove.
-    for (let i = 0; i < 10; i += 1) expect(cache.lives('k', probe, never)).toBe(true);
+    for (let i = 0; i < 10; i += 1) expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
+    // An entry with no answer has no answer timestamp to age, so the retry gate
+    // is the attempt. Without it every poll would re-spawn wsl.exe and keep an
+    // idle distro awake indefinitely.
+    expect(refresh.calls).not.toHaveBeenCalled();
+
+    clock.advance(TTL);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(refresh.calls).toHaveBeenCalledTimes(1);
+    // Single-flight holds on the unanswered path too: crossing the TTL again
+    // while the first attempt is still pending starts nothing new.
+    clock.advance(TTL);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(refresh.calls).toHaveBeenCalledTimes(1);
+
+    refresh.settle(unreachable);
+    await cache.whenIdle('k');
+    clock.advance(TTL);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(refresh.calls).toHaveBeenCalledTimes(2);
+    // Still never answered, so still never recorded as absent.
+    expect(cache.answerFor('k')).toBeNull();
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
@@ -77,25 +104,30 @@ describe('transcript probe cache', () => {
     const clock = testClock();
     const cache = makeCache(clock.now);
     const refresh = deferredProbe();
+    const probe = vi.fn(() => answered(true));
 
-    expect(cache.lives('k', () => answered(true), refresh.calls)).toBe(true);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
     clock.advance(TTL - 1);
-    expect(cache.lives('k', () => answered(true), refresh.calls)).toBe(true);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
     expect(refresh.calls).not.toHaveBeenCalled();
 
     clock.advance(1);
-    // The stale answer is returned synchronously while the refresh is still
-    // pending — that is the non-blocking property, asserted directly.
-    expect(cache.lives('k', () => answered(true), refresh.calls)).toBe(true);
+    // The stale answer is returned while the refresh is still pending, and the
+    // blocking probe is NOT re-entered — together that is the non-blocking
+    // property. A spy on the sync probe is what makes the second half real; its
+    // return value coincides with the cached one, so the boolean cannot show it.
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
     expect(refresh.calls).toHaveBeenCalledTimes(1);
 
     refresh.settle(answered(false));
     await cache.whenIdle('k');
-    expect(cache.lives('k', () => answered(true), refresh.calls)).toBe(false);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(false);
     // The refresh restamped the answer, so the next TTL window is quiet again.
     clock.advance(TTL - 1);
-    expect(cache.lives('k', () => answered(true), refresh.calls)).toBe(false);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(false);
     expect(refresh.calls).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('keeps at most one in-flight refresh per key', async () => {
@@ -129,8 +161,8 @@ describe('transcript probe cache', () => {
 
     // Not false: a timeout is not evidence the transcript is gone.
     expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 });
-    // The failed attempt is throttled, but the answer is not poisoned and the
-    // next window retries rather than waiting out a second full TTL.
+    // The answer is not poisoned, and the retry comes one TTL after the failed
+    // attempt — not one TTL after the stale answer, which would compound.
     clock.advance(TTL);
     cache.lives('k', () => answered(true), refresh.calls);
     expect(refresh.calls).toHaveBeenCalledTimes(2);
@@ -146,6 +178,31 @@ describe('transcript probe cache', () => {
     expect(cache.lives('k', () => answered(true), refresh)).toBe(true);
     await cache.whenIdle('k');
     expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 });
+  });
+
+  it('lets a later refresh answer a key that was never answered for', async () => {
+    const clock = testClock();
+    const cache = makeCache(clock.now);
+    const refresh = deferredProbe();
+    const probe = vi.fn(() => unreachable);
+
+    // The issue's failure scenario: a cold-booting distro cannot answer, so the
+    // exact `--resume <id>` is kept alive on trust.
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+    expect(cache.answerFor('k')).toBeNull();
+
+    clock.advance(TTL);
+    expect(cache.lives('k', probe, refresh.calls)).toBe(true);
+
+    // Once the distro is warm the refresh learns the truth. Assume-alive is a
+    // recovery, not a latch: an unproven key that a refresh proves dead must
+    // start reporting dead, or the earlier unreachable attempt has quietly
+    // become a permanent answer.
+    refresh.settle(answered(false));
+    await cache.whenIdle('k');
+    expect(cache.answerFor('k')).toEqual({ lives: false, at: 1_000 + TTL });
+    expect(cache.lives('k', probe, refresh.calls)).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('evicts the oldest entry at the cache cap, FIFO not LRU', () => {
@@ -168,21 +225,29 @@ describe('transcript probe cache', () => {
     expect(probe).toHaveBeenCalledTimes(5);
   });
 
-  it('drops in-flight refreshes on reset so one test cannot write into the next', async () => {
+  it('discards a refresh that resolves after a reset, even onto a re-probed key', async () => {
     const clock = testClock();
     const cache = makeCache(clock.now);
     const refresh = deferredProbe();
 
-    cache.lives('k', () => answered(true), refresh.calls);
+    cache.lives('k', () => answered(false), refresh.calls);
     clock.advance(TTL);
-    cache.lives('k', () => answered(true), refresh.calls);
+    cache.lives('k', () => answered(false), refresh.calls);
+    expect(refresh.calls).toHaveBeenCalledTimes(1);
+
     cache.reset();
+    // Re-probe the same key BEFORE the pre-reset refresh settles. Clearing the
+    // map alone does not protect this: `record` finds a live entry and would
+    // overwrite the fresh answer with the discarded generation's.
+    const probe = vi.fn(() => answered(true));
+    expect(cache.lives('k', probe, never)).toBe(true);
+
     refresh.settle(answered(false));
+    // The orphaned refresh is no longer reachable through its entry, so drain
+    // every in-flight probe rather than that key's.
     await cache.whenIdle();
 
-    // The late answer belongs to a discarded generation; the fresh cache probes
-    // for itself rather than inheriting it.
-    const probe = vi.fn(() => answered(true));
+    expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 + TTL });
     expect(cache.lives('k', probe, never)).toBe(true);
     expect(probe).toHaveBeenCalledTimes(1);
   });
