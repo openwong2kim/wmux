@@ -413,7 +413,8 @@ export class DaemonSessionManager extends EventEmitter {
     // stay literal and silently fall back to $HOME (or throw as an unreadable
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
-    let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    const resolvedCmd = this.resolveShellPath(params.cmd);
+    let cmd = resolvedCmd || this.getDefaultShell();
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
     // forced identity, and recovery replays the persisted (already-resolved)
@@ -475,7 +476,7 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
-    let execUsedFallback = false;
+    let execUsedFallback = Boolean(params.exec && !resolvedCmd);
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,

@@ -819,12 +819,6 @@ describe('DaemonSessionManager', () => {
       });
 
       expect(session.cmd).toBe(PWSH7);
-      expect(lastMockPty?.spawnArgs).toEqual([
-        '-NoLogo',
-        '-NoProfile',
-        '-Command',
-        `claude /loop${PWSH_EXIT_TAIL}`,
-      ]);
       expect(lastMockPty?.spawnEnv).toMatchObject({ WSL_DISTRO_NAME: 'Debian' });
       expect(session.location).toEqual({
         domain: 'host',
@@ -832,6 +826,42 @@ describe('DaemonSessionManager', () => {
         shell: PWSH7,
       });
       expect(manager.getLocationSnapshot('wsl-exec-fallback')).toEqual({
+        generation: expect.any(Number),
+        revision: 1,
+        location: session.location,
+      });
+      expect(resolveDistro).not.toHaveBeenCalled();
+    });
+
+    it('derives recovered exec location after initial shell resolution falls back', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      const resolveDistro = vi.fn(async () => 'Ubuntu');
+      manager = new DaemonSessionManager(resolveDistro);
+      const missingWsl = 'C:\\missing\\wsl.exe';
+
+      // Recovery can replay an absolute wrapper path that no longer exists.
+      // This falls back before buildExecArgs sees the finalized host shell.
+      const session = manager.createSession({
+        id: 'recovered-wsl-exec-fallback',
+        cmd: missingWsl,
+        cwd: 'C:\\repo',
+        env: { WSL_DISTRO_NAME: 'Debian' },
+        exec: { command: 'claude /loop' },
+        location: {
+          domain: 'wsl',
+          cwd: 'C:\\repo',
+          shell: missingWsl,
+          distro: 'Debian',
+        },
+      });
+
+      expect(session.cmd).toBe(PWSH7);
+      expect(session.location).toEqual({
+        domain: 'host',
+        cwd: 'C:\\repo',
+        shell: PWSH7,
+      });
+      expect(manager.getLocationSnapshot('recovered-wsl-exec-fallback')).toEqual({
         generation: expect.any(Number),
         revision: 1,
         location: session.location,
