@@ -799,6 +799,49 @@ async function processLiveness(pid: number): Promise<ProcessLiveness> {
   }
 }
 
+/**
+ * Kill a shell process and everything under it (#646).
+ *
+ * Used whenever we discover a shell that wmux has already stopped accounting
+ * for — a phantom PTY exit, or a persisted tombstone whose pid still answers.
+ * The whole TREE has to go, not just the shell: the thing actually burning RAM
+ * and API quota is the agent running inside it, and killing the shell alone
+ * would reparent that child and leave the orphan behind.
+ *
+ * Best-effort by construction. Failure is logged and swallowed: the caller is
+ * on its way to marking the session dead either way, and throwing here would
+ * cost the other sessions (the daemon's uncaughtException handler treats three
+ * repeats as fatal).
+ */
+async function reapProcessTree(pid: number, reason: string): Promise<void> {
+  try {
+    if (process.platform === 'win32') {
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
+      await execFileAsync(taskkill, ['/pid', String(pid), '/T', '/F'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+    } else {
+      // The PTY child leads its own process group, so the negative pid takes
+      // its descendants with it. If it somehow isn't a group leader (ESRCH /
+      // EPERM), fall back to the process alone rather than giving up.
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        process.kill(pid, 'SIGKILL');
+      }
+    }
+    log('info', `[reap] killed process tree for pid ${pid} (${reason})`);
+  } catch (err) {
+    log('warn', `[reap] failed to kill process tree for pid ${pid} (${reason}):`, err);
+  }
+}
+
 /** Check if a PID belongs to the shell process we originally spawned.
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
 async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
@@ -3464,6 +3507,42 @@ function wireEvents(
       sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
     }, SHUTDOWN_KILL_RECLASSIFY_MS);
     interruptedTimers.set(payload.id, timer);
+  });
+
+  // session:phantomExit → reap-and-die (#646).
+  //
+  // node-pty told us the PTY exited, but the shell pid is still alive: this is
+  // the ConPTY conout-socket-close path, not a death. The transport is gone for
+  // good (node-pty already destroyed its outSocket), so the shell is
+  // unreachable — but it and its agent child keep running, which is how users
+  // ended up with powershell.exe processes outliving their daemon by days.
+  //
+  // Policy: kill the tree ourselves, then run the ordinary death flow with a
+  // `phantom-exit` reason so the log says what happened. Deliberately NOT the
+  // session:interrupted (suspend) path: that respawns the session on recovery
+  // and would leave the still-live shell behind — exactly the orphan this fix
+  // exists to prevent. Reattaching to the live ConPTY instead of killing it is
+  // a separate piece of work (likely an upstream node-pty fix).
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number }) => {
+    log(
+      'info',
+      `[lifecycle] session:phantomExit id=${payload.id} pid=${payload.pid ?? '?'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} — PTY reported an exit with no code and no signal, but the pid is STILL ALIVE (node-pty conout-socket-close, see #646). Reaping the orphaned process tree, then marking dead.`,
+    );
+    const finish = () => {
+      const managed = sessionManager.getSession(payload.id);
+      // Destroyed meanwhile (user closed the pane) → the destroy path already
+      // did the teardown; announcing a death now would be a ghost event.
+      if (!managed) return;
+      managed.meta.state = 'dead';
+      managed.meta.exitCode = payload.exitCode;
+      sessionManager.emit('session:died', { ...payload, reason: 'phantom-exit' });
+      sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
+    };
+    if (payload.pid === undefined) {
+      finish();
+      return;
+    }
+    void reapProcessTree(payload.pid, `phantom exit of session ${payload.id}`).finally(finish);
   });
 
   // A pane the user closes while a reclassification is pending must not get a
