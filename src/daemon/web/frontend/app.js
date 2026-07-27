@@ -1465,7 +1465,7 @@
   // Trade a short single-use code for the real token (GET /api/pair, the only
   // unauthenticated API route). On success store the token and land on '/'.
   function showPairing() {
-    showOverlay('pair', 'Pair this device', 'Enter the 6-character code shown by wmux web.');
+    showOverlay('pair', 'Pair this device', 'Enter the 8-character code shown by wmux web.');
     setConn('error', 'no access');
     if (pairErr) pairErr.textContent = '';
     if (codeInput) { codeInput.value = ''; setTimeout(function () { codeInput.focus(); }, 50); }
@@ -1484,7 +1484,7 @@
       e.preventDefault();
       var code = (codeInput.value || '').trim().toUpperCase();
       if (pairErr) pairErr.textContent = '';
-      if (code.length !== 6) { if (pairErr) pairErr.textContent = 'Enter all 6 characters.'; return; }
+      if (code.length !== 8) { if (pairErr) pairErr.textContent = 'Enter all 8 characters.'; return; }
       fetch('/api/pair?code=' + encodeURIComponent(code)).then(function (r) {
         return r.json().then(function (body) { return { status: r.status, body: body }; });
       }).then(function (res) {
@@ -1497,10 +1497,6 @@
         var msg = 'Pairing failed.';
         if (res.body && res.body.error === 'expired') msg = 'This code has expired. Ask for a new one.';
         else if (res.body && res.body.error === 'too many attempts') msg = 'Too many attempts — the code is locked.';
-        else if (res.body && res.body.error === 'rate limited') {
-          var retrySeconds = Number(res.body.retryAfterSeconds) || 30;
-          msg = 'Pairing attempts are rate-limited — wait ' + retrySeconds + ' seconds and try again.';
-        }
         else if (res.body && typeof res.body.attemptsLeft === 'number') {
           msg = 'Wrong code — ' + res.body.attemptsLeft + ' attempt' + (res.body.attemptsLeft === 1 ? '' : 's') + ' left.';
         } else if (res.body && typeof res.body.detail === 'string' && res.body.detail) {
@@ -1558,7 +1554,7 @@
   // stored) — the operator explicitly navigated here to key in a code.
   if (location.pathname === '/pair') {
     showPairing();
-    // A scanned QR arrives as /pair?code=ABC123. Strip the code from the
+    // A scanned QR arrives as /pair?code=ABCD2345. Strip the code from the
     // address bar FIRST, before anything can fail: a code left parked in
     // history is the one write-down surface still open after the server's
     // Referrer-Policy: no-referrer, and it stays live for ten minutes if the

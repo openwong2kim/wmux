@@ -81,9 +81,9 @@ describe('webQrPayload', () => {
       webQrPayload({
         running: true,
         urls: ['https://box.tail1234.ts.net/?token=t'],
-        pairCode: 'ABC123',
+        pairCode: 'ABCD2345',
       }),
-    ).toBe('https://box.tail1234.ts.net/pair?code=ABC123');
+    ).toBe('https://box.tail1234.ts.net/pair?code=ABCD2345');
   });
 
   it('is empty without a code — a QR that still needs typing is a half-measure', () => {
@@ -93,7 +93,7 @@ describe('webQrPayload', () => {
   });
 
   it('is empty when no address is reachable', () => {
-    expect(webQrPayload({ running: true, urls: [], pairCode: 'ABC123' })).toBe('');
+    expect(webQrPayload({ running: true, urls: [], pairCode: 'ABCD2345' })).toBe('');
   });
 
   it('percent-encodes the code rather than trusting it', () => {
@@ -158,7 +158,7 @@ describe('WebPopoverBody — on state', () => {
     port: 7681,
     clients: 2,
     urls: ['http://127.0.0.1:7681/'],
-    pairCode: '482913',
+    pairCode: '48293576',
     // A code only reaches the operator once a device has been named. An
     // unnamed one is withheld on purpose — see the naming tests below.
     pendingDeviceName: 'my iPhone',
@@ -171,7 +171,7 @@ describe('WebPopoverBody — on state', () => {
     expect(html).toContain('web.viewers');
     expect(html).toContain('http://127.0.0.1:7681/');
     expect(html).toContain('web.copy');
-    expect(html).toContain('482913');
+    expect(html).toContain('48293576');
     expect(html).toContain('text-[22px]'); // pair code rendered large
     expect(html).toContain('web.pairValidity');
   });
@@ -254,7 +254,7 @@ describe('WebPopoverBody — on state', () => {
       info: { ...runningInfo, pendingDeviceName: undefined },
       deviceName: '',
     });
-    expect(html).not.toContain('482913');
+    expect(html).not.toContain('48293576');
     expect(html).toContain('web.nameHint');
     expect(html).toContain('web.showPairCode');
   });
@@ -267,7 +267,7 @@ describe('WebPopoverBody — on state', () => {
       info: runningInfo,
       t: (key: string) => (key === 'web.pairingAs' ? 'Pairing as {name}' : key),
     });
-    expect(html).toContain('482913');
+    expect(html).toContain('48293576');
     // The code outlives the moment the name was typed by ten minutes, and a
     // mis-labelled roster is only discovered when one entry of eight must go.
     expect(html).toContain('Pairing as my iPhone');
@@ -356,10 +356,10 @@ describe('WebPopoverBody — on state', () => {
     // A code shown next to "pairing is unavailable" is still a code someone
     // will read onto a phone. The whole fix is that it is not there.
     //
-    // Asserted against the FIXTURE's code (482913). An earlier version checked
-    // for 'ABC123', which this fixture never contains — so it passed no matter
-    // what the component rendered, leaving the regression it names unguarded.
-    expect(html).not.toContain('482913');
+    // Asserted against the FIXTURE's code (48293576). An earlier version checked
+    // a different hard-coded value, so it passed no matter what the component
+    // rendered and left the regression it names unguarded.
+    expect(html).not.toContain('48293576');
     expect(html).not.toContain('web.newPairCode');
   });
 

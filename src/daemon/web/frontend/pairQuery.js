@@ -5,7 +5,7 @@
  * attentionFormat.js. The parsing is the part worth testing: everything else on
  * this path is DOM wiring.
  *
- * A scanned QR arrives as `/pair?code=ABC123`, which is the whole point of the
+ * A scanned QR arrives as `/pair?code=ABCD2345`, which is the whole point of the
  * QR — the phone types nothing. The code is narrow enough to ride a URL
  * (single use, ten minutes, five attempts), but it is still a credential in a
  * place credentials get written down, so the caller strips it from the address
@@ -14,8 +14,8 @@
 (function (root) {
   'use strict';
 
-  /** Codes are six characters from the server's own alphabet: A-Z and 2-9. */
-  var CODE_RE = /^[A-Z0-9]{6}$/;
+  /** Exact server alphabet: base-32 without the ambiguous 0/O/1/I glyphs. */
+  var CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
 
   /**
    * Extract a usable code from a query string, or '' when there is none.

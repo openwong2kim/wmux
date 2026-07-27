@@ -35,6 +35,39 @@ refused before routing — a DNS-rebinding guard. Send the host you dialed.
 This is **not** treated as evidence of a secure transport anywhere. It used to
 be, for minting; that was removed, because the caller writes the header.
 
+### Protocol version
+
+`GET /api/config` is the first authenticated call a client makes, and it carries
+the handshake:
+
+| Field | Meaning |
+| --- | --- |
+| `protocolVersion` | the phone contract this daemon speaks |
+| `minProtocolVersion` | the oldest client contract it still accepts |
+| `serverVersion` | the release the daemon was spawned from — display and bug reports only, never compared |
+
+Read it once at connect, before anything else on the screen depends on a route
+answering.
+
+- **A missing `protocolVersion` is not an error.** A daemon predating the
+  handshake answers the same body with all three keys absent; read that as
+  protocol `0` and carry on exactly as before. Nothing that shipped before this
+  section changed shape.
+- **If your own protocol is below `minProtocolVersion`, stop and say so.** Show
+  an explicit "update required" state naming the app, not the daemon — the
+  operator's phone is the thing that has to move. Do not retry, do not fall
+  back: the server has deleted the shape you speak, so every later call is a
+  failure with a worse explanation attached.
+- **If `protocolVersion` is above yours, keep going.** The number moves only on
+  breaking changes, and the floor is what decides whether you are still served.
+  A newer daemon that still accepts you is the normal case, not a warning.
+- `serverVersion` is a string and may be the literal `unknown`. It is never a
+  compatibility input — the two numbers above are the whole gate.
+
+The version is deliberately not on a route of its own. A separate `/api/version`
+would be a second round trip that only pre-handshake daemons could fail, which
+is precisely the daemon the handshake exists to recognise.
+
 ---
 
 ## 2. Pairing
@@ -44,15 +77,16 @@ operator (desktop)                   phone
 ─────────────────────                ─────
 daemon.web.pairStart {name}
   → {code, expiresAt}
-        ── operator reads the 6-char code aloud ──▶
-                                     GET /api/pair?code=ABC123
+        ── operator shares the 8-char code ───────▶
+                                     GET /api/pair?code=ABCD2345
                                        → 200 {deviceId, deviceSecret, token}
 ```
 
 `GET /api/pair?code=` is the **only** unauthenticated API route.
 
-- Code: 6 characters, 10 minutes, single use, 5 attempts. The alphabet is
-  `A-Z2-9` minus `0 O 1 I`, so it survives being read aloud.
+- Code: 8 characters (40 bits), 10 minutes, single use, 5 attempts. The
+  32-character alphabet is `A-Z2-9` minus `0 O 1 I`, so it survives being read
+  aloud.
 - `Sec-Fetch-Site: cross-site` is refused with `403 {error: 'cross-site request
   refused'}` before the attempt counter is touched — this is the one
   unauthenticated route, so five guesses must not be burnable by an
@@ -62,13 +96,6 @@ daemon.web.pairStart {name}
 - A burned or expired code is replaced automatically, rate-limited to one
   regeneration per 30 s, so five wrong guesses cost the operator a short wait
   rather than a restart. The new code is read from the desktop.
-- One wrong code per TCP source may consume the five-attempt budget every 30 s.
-  Further submissions return `429` without comparing the code or spending
-  another attempt. This closes both the budget-burning path and a response-code
-  oracle during the cooldown. Source identity comes only from the TCP socket;
-  `Forwarded`, `X-Forwarded-For`, and similar caller-controlled headers are
-  ignored. Clients sharing a NAT or reverse proxy therefore share this short
-  cooldown.
 
 Responses:
 
@@ -79,7 +106,6 @@ Responses:
 | 403 | `{error: 'expired'}` | Code expired or burned; a fresh one is minted (rate-limited) for the operator to read |
 | 403 | `{error: 'too many attempts'}` | Attempts exhausted |
 | 403 | `{error: 'insecure-transport', detail}` | Plaintext non-loopback bind. `detail` is operator-facing prose; show it verbatim |
-| 429 | `{error: 'rate limited', retryAfterSeconds, attemptsLeft}` | This source already spent a wrong-code attempt inside the 30 s window; the code was not compared and the response also carries `Retry-After` |
 | 500 | `{error: 'pairing failed'}` | The roster could not be written. The code is **not** burned — the operator can retry |
 
 Store `token` and nothing else. `deviceSecret` is returned exactly once and is
@@ -213,7 +239,7 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload}
+GET /api/config    → {allowInput, allowUpload, protocolVersion, minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```

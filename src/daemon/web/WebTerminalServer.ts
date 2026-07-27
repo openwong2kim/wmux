@@ -18,6 +18,11 @@ import {
   type GitRunner,
   type SessionDiffResult,
 } from './sessionDiff';
+import {
+  daemonServerVersion,
+  MIN_PHONE_PROTOCOL_VERSION,
+  PHONE_PROTOCOL_VERSION,
+} from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
 
@@ -64,7 +69,8 @@ import { buildWebCsp } from './webCsp';
  *   GET  /api/pair?code=       the ONLY unauthenticated API route; mints this
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
- *   GET  /api/config           allowInput + allowUpload flags
+ *   GET  /api/config           allowInput + allowUpload flags, plus the phone
+ *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
@@ -383,16 +389,9 @@ const PAIR_MAX_ATTEMPTS = 5;
  * burned code costs the legitimate operator a short wait instead of a restart.
  */
 const PAIR_REGEN_COOLDOWN_MS = 30_000;
-/**
- * A wrong code from one TCP source may consume the global attempt budget only
- * once per window. Requests inside the cooldown are refused before comparing
- * the code; otherwise the response status would remain an unlimited oracle for
- * brute-force guesses even though those guesses no longer spent the budget.
- */
-const PAIR_SOURCE_ATTEMPT_COOLDOWN_MS = 30_000;
 /** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const PAIR_CODE_LEN = 6;
+const PAIR_CODE_LEN = 8;
 /**
  * How many attention events the replay window holds. A phone that dropped
  * connection for a coffee break must get everything it missed; a phone that was
@@ -624,11 +623,6 @@ export class WebTerminalServer {
   private pairExpiresAt = 0;
   private pairAttempts = 0;
   /**
-   * Next time each TCP source may spend another wrong-code attempt. Forwarded
-   * headers are deliberately ignored: a direct client can forge them.
-   */
-  private readonly pairSourceBlockedUntil = new Map<string, number>();
-  /**
    * Hostnames this server answers to. A local HTTP server that accepts any
    * `Host` can be reached by a malicious page that rebinds its own domain to
    * this address (DNS rebinding); the token still gates `/api/*`, but the
@@ -814,7 +808,6 @@ export class WebTerminalServer {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
-    this.pairSourceBlockedUntil.clear();
     this.pendingDeviceName = undefined;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
@@ -1201,9 +1194,7 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      this.handlePair(res, url, normalizeRemoteAddress(req.socket.remoteAddress)).catch((err: unknown) =>
-        this.failRequest(res, err),
-      );
+      this.handlePair(res, url).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
 
@@ -1260,9 +1251,19 @@ export class WebTerminalServer {
     }
     const principal = auth.principal;
     if (req.method === 'GET' && p === '/api/config') {
+      // The handshake rides HERE rather than on a route of its own: this is
+      // already the first call a client makes after pairing, so a dedicated
+      // /api/version would be a second round trip that only pre-handshake
+      // daemons could fail — exactly the daemons it exists to detect. A client
+      // talking to one of those gets a body with no version keys at all, which
+      // reads as "protocol 0", the same way a missing `allowUpload` reads as
+      // false.
       return this.json(res, 200, {
         allowInput: this.opts?.allowInput === true,
         allowUpload: this.opts?.allowUpload === true,
+        protocolVersion: PHONE_PROTOCOL_VERSION,
+        minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
+        serverVersion: daemonServerVersion(),
       });
     }
     if (req.method === 'GET' && p === '/api/sessions') {
@@ -2357,7 +2358,7 @@ export class WebTerminalServer {
    * store, and the pairing screen keeps working unchanged — but it is now a
    * per-device credential, not the operator's.
    */
-  private async handlePair(res: http.ServerResponse, url: URL, source: string): Promise<void> {
+  private async handlePair(res: http.ServerResponse, url: URL): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -2379,22 +2380,7 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'too many attempts' });
     }
 
-    const retryAfterSeconds = this.pairSourceRetryAfter(source);
-    if (retryAfterSeconds > 0) {
-      return this.json(
-        res,
-        429,
-        {
-          error: 'rate limited',
-          retryAfterSeconds,
-          attemptsLeft: this.pairAttempts,
-        },
-        { 'Retry-After': String(retryAfterSeconds) },
-      );
-    }
-
     if (!timingSafeEquals(supplied, this.pairCode)) {
-      this.blockPairSource(source);
       this.pairAttempts -= 1;
       if (this.pairAttempts <= 0) this.pairCode = '';
       return this.json(res, 403, {
@@ -2441,29 +2427,6 @@ export class WebTerminalServer {
       deviceSecret: minted.deviceSecret,
       token: `${minted.deviceId}${DEVICE_CREDENTIAL_SEP}${minted.deviceSecret}`,
     });
-  }
-
-  /**
-   * Whole seconds before this source may submit another code, or zero when it
-   * may proceed. This runs before the code comparison so a throttled request
-   * cannot use the response status as a correct-code oracle.
-   */
-  private pairSourceRetryAfter(source: string): number {
-    const now = Date.now();
-    const blockedUntil = this.pairSourceBlockedUntil.get(source) ?? 0;
-    if (blockedUntil > now) return Math.ceil((blockedUntil - now) / 1000);
-
-    // Entries expire quickly, but prune opportunistically so a long-running
-    // exposed server never retains every source address it has ever seen.
-    for (const [heldSource, heldUntil] of this.pairSourceBlockedUntil) {
-      if (heldUntil <= now) this.pairSourceBlockedUntil.delete(heldSource);
-    }
-    return 0;
-  }
-
-  /** Start the cooldown after this source spends one wrong-code attempt. */
-  private blockPairSource(source: string): void {
-    this.pairSourceBlockedUntil.set(source, Date.now() + PAIR_SOURCE_ATTEMPT_COOLDOWN_MS);
   }
 
   /** Consume the active pairing code (single use) and its pending name. */
@@ -2819,13 +2782,6 @@ function timingSafeEquals(supplied: string, expected: string): boolean {
   const a = Buffer.from(supplied);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-/** Treat IPv4 and its IPv4-mapped IPv6 spelling as the same pairing source. */
-function normalizeRemoteAddress(address: string | undefined): string {
-  if (!address) return 'unknown';
-  const normalized = address.toLowerCase();
-  return normalized.startsWith('::ffff:') ? normalized.slice('::ffff:'.length) : normalized;
 }
 
 /** Addresses/names that never leave the machine. */

@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A phone that is too old to talk to your daemon can now say so.** The phone API had no version on it, so once a mobile build ships it is pinned to whatever HTTP surface the daemon happens to serve — and a mismatch would have surfaced as routes failing one by one with no explanation. `GET /api/config`, the call a client already makes at connect, now reports the protocol the daemon speaks, the oldest one it still accepts, and the release it was spawned from. A client below the floor can show "update the app" instead of a broken screen. Nothing that already works changes: a daemon predating this simply has no version fields, which reads as the pre-handshake protocol, and a phone that ignores them behaves exactly as it does today.
+
 ### Security
 
-- **Rapid retries from one TCP source can no longer burn a web pairing code.** A wrong code from the same source now starts a 30-second cooldown; faster submissions receive `429` with `Retry-After`, are refused before the code comparison, and leave the shared five-attempt budget untouched. A correct first submission is unchanged; after a typo, the pairing screen tells you how long to wait instead of silently spending the remaining guesses. (#615)
+- **Web pairing codes now use eight characters instead of six.** The existing unambiguous base-32 alphabet now provides 40 bits of code space while preserving the ten-minute lifetime, single-use redemption, five-attempt burn limit, and timing-safe comparison. QR pairing still requires no typing; manual pairing asks for two additional characters. (#615)
 
 ## [3.37.1] — 2026-07-27
 

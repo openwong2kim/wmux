@@ -22,12 +22,12 @@ beforeAll(() => {
 
 describe('readPairCode', () => {
   it('reads the code a scanned QR delivers', () => {
-    expect(readPairCode('?code=ABC123')).toBe('ABC123');
+    expect(readPairCode('?code=ABCD2345')).toBe('ABCD2345');
   });
 
   it('normalises case and trims, because keyboards and copied links do both', () => {
-    expect(readPairCode('?code=abc123')).toBe('ABC123');
-    expect(readPairCode('?code=%20ABC123%20')).toBe('ABC123');
+    expect(readPairCode('?code=abcd2345')).toBe('ABCD2345');
+    expect(readPairCode('?code=%20ABCD2345%20')).toBe('ABCD2345');
   });
 
   it('★ REGRESSION: no query string means the manual form, exactly as before', () => {
@@ -43,8 +43,10 @@ describe('readPairCode', () => {
     // way forward; burning an attempt on garbage is not — five wrong tries lock
     // the code out entirely.
     expect(readPairCode('?code=SHORT')).toBe('');
-    expect(readPairCode('?code=TOOLONG12')).toBe('');
-    expect(readPairCode('?code=AB!123')).toBe('');
+    expect(readPairCode('?code=TOOLONG123')).toBe('');
+    expect(readPairCode('?code=AB!D2345')).toBe('');
+    expect(readPairCode('?code=ABCI2345')).toBe('');
+    expect(readPairCode('?code=ABCD2341')).toBe('');
     expect(readPairCode('?code=')).toBe('');
   });
 
@@ -59,11 +61,11 @@ describe('urlWithoutCode', () => {
     // A live code parked in history is the one write-down surface left after
     // Referrer-Policy: no-referrer. It cannot be un-scanned from a camera roll,
     // but it can be taken out of the browser.
-    expect(urlWithoutCode('/pair', '?code=ABC123')).toBe('/pair');
+    expect(urlWithoutCode('/pair', '?code=ABCD2345')).toBe('/pair');
   });
 
   it('keeps every other parameter', () => {
-    expect(urlWithoutCode('/pair', '?code=ABC123&next=%2Fa')).toBe('/pair?next=%2Fa');
+    expect(urlWithoutCode('/pair', '?code=ABCD2345&next=%2Fa')).toBe('/pair?next=%2Fa');
   });
 
   it('returns null when there is nothing to strip, so no history entry is pushed', () => {

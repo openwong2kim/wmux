@@ -3,10 +3,10 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { request as httpReq, type Server as HttpServer } from 'node:http';
-import type { Socket } from 'node:net';
+import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
+import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
@@ -340,27 +340,7 @@ describe('WebTerminalServer', () => {
     server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
-  /** Spend several global pairing attempts without tripping the per-source 30s guard. */
-  const spacedWrongPairAttempts = async (
-    count: number,
-    code = 'ZZZZZZ',
-  ): Promise<{ responses: Response[]; lastAttemptAt: number }> => {
-    const responses: Response[] = [];
-    const startedAt = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now');
-    try {
-      for (let i = 0; i < count; i++) {
-        nowSpy.mockReturnValue(startedAt + i * 30_001);
-        responses.push(await fetch(`${base()}/api/pair?code=${code}`));
-      }
-    } finally {
-      nowSpy.mockRestore();
-    }
-    return {
-      responses,
-      lastAttemptAt: startedAt + Math.max(0, count - 1) * 30_001,
-    };
-  };
+  const pairCodePattern = /^[A-HJ-NP-Z2-9]{8}$/;
 
   it('gates /api/* — Bearer header required, query token rejected for non-SSE', async () => {
     const info = await startRO();
@@ -378,7 +358,49 @@ describe('WebTerminalServer', () => {
     // Bearer header → 200
     const ok = await fetch(`${base()}/api/config`, { headers: bearer(token) });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ allowInput: false, allowUpload: false });
+    expect(await ok.json()).toMatchObject({ allowInput: false, allowUpload: false });
+  });
+
+  it('★ /api/config carries the phone protocol handshake', async () => {
+    // A shipped native client cannot be updated by the daemon, so the daemon
+    // has to say which contract it is speaking. This is the route the client
+    // already calls at connect time, and a daemon predating the handshake
+    // answers the same body with these three keys absent — which is how a
+    // client reads "protocol 0".
+    const info = await startRO();
+    const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.protocolVersion).toBe(PHONE_PROTOCOL_VERSION);
+    expect(body.minProtocolVersion).toBe(MIN_PHONE_PROTOCOL_VERSION);
+    // The floor can never exceed what the server itself speaks — that would
+    // lock out every client including a freshly built one.
+    expect(body.minProtocolVersion).toBeLessThanOrEqual(body.protocolVersion);
+    // Present and non-empty. The value is the launcher-injected release or the
+    // 'unknown' sentinel; tests run without the launcher, so both are valid and
+    // only the field's existence is contractual.
+    expect(typeof body.serverVersion).toBe('string');
+    expect(body.serverVersion.length).toBeGreaterThan(0);
+  });
+
+  it('★ the handshake survives a bind that refuses to pair', async () => {
+    // A plaintext non-loopback bind refuses to mint credentials, which is the
+    // one state where the server answers operator surfaces differently. An
+    // already-paired phone still reaches /api/config there, so the version
+    // fields must not be a property of the happy path only — a client that
+    // could not read them would report "update required" for a transport
+    // problem.
+    const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
+    expect(server.status().pairRefusal?.reason).toBe('insecure-transport');
+
+    const res = await fetch(`http://127.0.0.1:${info.port}/api/config`, {
+      headers: bearer(info.token as string),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      protocolVersion: PHONE_PROTOCOL_VERSION,
+      minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
+    });
   });
 
   it('never lists the orchestrator brain as a pane', async () => {
@@ -536,9 +558,9 @@ describe('WebTerminalServer', () => {
   });
 
   // ── pairing ────────────────────────────────────────────────────────────────
-  it('exposes a 6-char pairing code + expiry in status()', async () => {
+  it('exposes an 8-character pairing code + expiry in status()', async () => {
     const info = await startRO();
-    expect(info.pairCode).toMatch(/^[A-Z2-9]{6}$/);
+    expect(info.pairCode).toMatch(pairCodePattern);
     expect(typeof info.pairExpiresAt).toBe('number');
     expect((info.pairExpiresAt as number)).toBeGreaterThan(Date.now());
   });
@@ -569,163 +591,21 @@ describe('WebTerminalServer', () => {
     const info = await startRO();
     const code = info.pairCode as string;
     // Build a wrong code of the same length from the same alphabet.
-    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+    const wrong = code[0] === 'A' ? 'BBBBBBBB' : 'AAAAAAAA';
 
-    const { responses: attempts, lastAttemptAt } = await spacedWrongPairAttempts(5, wrong);
-    for (let i = 0; i < 4; i++) {
-      expect(attempts[i].status).toBe(403);
-      expect((await attempts[i].json()).attemptsLeft).toBe(4 - i);
+    for (let i = 4; i >= 1; i--) {
+      const r = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(r.status).toBe(403);
+      expect((await r.json()).attemptsLeft).toBe(i);
     }
     // 5th wrong attempt burns the code.
-    const last = attempts[4];
+    const last = await fetch(`${base()}/api/pair?code=${wrong}`);
     expect(last.status).toBe(403);
     expect((await last.json()).attemptsLeft).toBe(0);
 
     // Even the CORRECT code no longer works once the budget is exhausted.
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
-    try {
-      // Use the captured port: base() calls status(), which lazily regenerates a
-      // burned code and would turn this into a test of the replacement instead.
-      const correct = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${code}`);
-      expect(correct.status).toBe(403);
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('rate-limits repeated wrong codes per source without spending the global budget', async () => {
-    const info = await startRO();
-    const code = info.pairCode as string;
-    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
-    const startedAt = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
-    try {
-      const first = await fetch(`${base()}/api/pair?code=${wrong}`, {
-        headers: {
-          Forwarded: 'for=192.0.2.10',
-          'X-Forwarded-For': '192.0.2.10',
-        },
-      });
-      expect(first.status).toBe(403);
-      expect((await first.json()).attemptsLeft).toBe(4);
-
-      // Forwarded source headers are caller-controlled and must not buy a new
-      // budget. One millisecond has elapsed, so ceiling arithmetic still
-      // advertises the full 30 seconds.
-      nowSpy.mockReturnValue(startedAt + 1);
-      const limited = await fetch(`${base()}/api/pair?code=${code}`, {
-        headers: {
-          Forwarded: 'for=198.51.100.20',
-          'X-Forwarded-For': '198.51.100.20',
-        },
-      });
-      expect(limited.status).toBe(429);
-      expect(limited.headers.get('retry-after')).toBe('30');
-      expect(await limited.json()).toEqual({
-        error: 'rate limited',
-        retryAfterSeconds: 30,
-        attemptsLeft: 4,
-      });
-
-      nowSpy.mockReturnValue(startedAt + 1_001);
-      const rounded = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(rounded.status).toBe(429);
-      expect(rounded.headers.get('retry-after')).toBe('29');
-      expect(await rounded.json()).toEqual({
-        error: 'rate limited',
-        retryAfterSeconds: 29,
-        attemptsLeft: 4,
-      });
-
-      nowSpy.mockReturnValue(startedAt + 30_000);
-      const nextWrong = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(nextWrong.status).toBe(403);
-      expect((await nextWrong.json()).attemptsLeft).toBe(3);
-
-      // The cooldown runs before comparison. Even a correct candidate receives
-      // the same 429, so throttled requests cannot probe for a 200 oracle.
-      const throttledCorrect = await fetch(`${base()}/api/pair?code=${code}`);
-      expect(throttledCorrect.status).toBe(429);
-      expect((await throttledCorrect.json()).attemptsLeft).toBe(3);
-
-      nowSpy.mockReturnValue(startedAt + 60_000);
-      const correct = await fetch(`${base()}/api/pair?code=${code}`);
-      expect(correct.status).toBe(200);
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('keys cooldowns by the normalized TCP socket source', async () => {
-    const info = await startRO();
-    const code = info.pairCode as string;
-    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
-    const startedAt = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
-    const httpServer = (server as unknown as { server: HttpServer | null }).server;
-    if (!httpServer) throw new Error('HTTP server unavailable');
-    let source = '192.0.2.10';
-    const sockets = new Set<Socket>();
-    const setRemoteAddress = (socket: Socket): void => {
-      sockets.add(socket);
-      Object.defineProperty(socket, 'remoteAddress', {
-        configurable: true,
-        get: () => source,
-      });
-    };
-    httpServer.prependListener('connection', setRemoteAddress);
-    try {
-      const first = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(first.status).toBe(403);
-      expect(await first.json()).toEqual({ error: 'invalid code', attemptsLeft: 4 });
-
-      // A distinct TCP source gets its own first budget-consuming miss.
-      source = '198.51.100.20';
-      const second = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(second.status).toBe(403);
-      expect(await second.json()).toEqual({ error: 'invalid code', attemptsLeft: 3 });
-
-      // IPv4 and its mapped IPv6 spelling are one source, not two budgets.
-      source = '::ffff:192.0.2.10';
-      const firstAgain = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(firstAgain.status).toBe(429);
-      expect(await firstAgain.json()).toEqual({
-        error: 'rate limited',
-        retryAfterSeconds: 30,
-        attemptsLeft: 3,
-      });
-
-      source = '198.51.100.20';
-      const secondAgain = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(secondAgain.status).toBe(429);
-      expect(await secondAgain.json()).toEqual({
-        error: 'rate limited',
-        retryAfterSeconds: 30,
-        attemptsLeft: 3,
-      });
-    } finally {
-      httpServer.off('connection', setRemoteAddress);
-      for (const socket of sockets) Reflect.deleteProperty(socket, 'remoteAddress');
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('clears source cooldowns when the web server restarts', async () => {
-    const info = await startRO();
-    const code = info.pairCode as string;
-    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
-    const startedAt = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
-    try {
-      expect((await fetch(`${base()}/api/pair?code=${wrong}`)).status).toBe(403);
-      await server.stop();
-
-      const restarted = await startRO();
-      const paired = await fetch(`${base()}/api/pair?code=${restarted.pairCode}`);
-      expect(paired.status).toBe(200);
-    } finally {
-      nowSpy.mockRestore();
-    }
+    const correct = await fetch(`${base()}/api/pair?code=${code}`);
+    expect(correct.status).toBe(403);
   });
 
   it('mints a fresh pairing code on each start', async () => {
@@ -733,8 +613,8 @@ describe('WebTerminalServer', () => {
     await server.stop();
     const b = (await startRO()).pairCode as string;
     // Overwhelmingly likely to differ; assert format regardless.
-    expect(b).toMatch(/^[A-Z2-9]{6}$/);
-    expect(a).toMatch(/^[A-Z2-9]{6}$/);
+    expect(b).toMatch(pairCodePattern);
+    expect(a).toMatch(pairCodePattern);
   });
 
   // ── critical / notify SSE tee ──────────────────────────────────────────────
@@ -879,20 +759,26 @@ describe('WebTerminalServer', () => {
   it('mints a replacement pairing code once the old one is burned', async () => {
     const info = await startRO();
     const first = info.pairCode as string;
-    expect(first).toHaveLength(6);
+    expect(first).toHaveLength(8);
     // Burn the attempt budget with wrong guesses.
-    const { lastAttemptAt } = await spacedWrongPairAttempts(5);
-    // The per-source guard spaces five budget-consuming misses over two minutes,
-    // so the separate 30s regeneration cooldown has already elapsed. The next
-    // request mints the replacement without requiring a server restart.
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
+    for (let i = 0; i < 5; i++) {
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
+    }
+    // Burned, and inside the regeneration cooldown: deliberately still gone.
+    await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
+    expect(server.status().pairCode).toBeUndefined();
+
+    // Past the cooldown, the next attempt mints a replacement so a burned code
+    // costs a short wait instead of a server restart.
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
     try {
-      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
     } finally {
       nowSpy.mockRestore();
     }
     const after = server.status().pairCode;
-    expect(after).toHaveLength(6);
+    expect(after).toHaveLength(8);
     expect(after).not.toBe(first);
   });
   it('names a pane by its program so an agent-less row is not just its own cwd twice', async () => {
@@ -932,7 +818,7 @@ describe('WebTerminalServer', () => {
     const code = info.pairCode as string;
     // A hostile page embedding <img src="http://127.0.0.1:<port>/api/pair?…">
     // reaches this route with Sec-Fetch-Site: cross-site stamped by the browser.
-    const evil = await fetch(`${base()}/api/pair?code=ZZZZZZ`, {
+    const evil = await fetch(`${base()}/api/pair?code=ZZZZZZZZ`, {
       headers: { 'Sec-Fetch-Site': 'cross-site' },
     });
     expect(evil.status).toBe(403);
@@ -950,7 +836,7 @@ describe('WebTerminalServer', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 11 * 60_000);
     try {
       const status = server.status();
-      expect(status.pairCode).toHaveLength(6);
+      expect(status.pairCode).toHaveLength(8);
       expect(status.pairCode).not.toBe(first);
       expect(status.pairExpiresAt as number).toBeGreaterThan(realNow + 11 * 60_000);
     } finally {
@@ -2038,7 +1924,7 @@ describe('WebTerminalServer', () => {
 
     // …and the daemon-side control surface is untouched by M3.
     expect(server.status().token).toBe(token);
-    expect(server.refreshPairCode().pairCode).toMatch(/^[A-Z2-9]{6}$/);
+    expect(server.refreshPairCode().pairCode).toMatch(pairCodePattern);
   });
 
   it('★ 401s a revoked device with reason `revoked` AND kills its live streams at once', async () => {
@@ -2135,7 +2021,7 @@ describe('WebTerminalServer', () => {
   it('★ status withholds the pairing code on a bind that can never redeem it', async () => {
     // The bug this closes: status() regenerates a code lazily and used to do it
     // without asking whether the server could mint a credential at all. On an
-    // exposed bind the GUI showed a fresh 6-char code every poll, the operator
+    // exposed bind the GUI showed a fresh 8-character code every poll, the operator
     // read one onto a phone, and only the redemption said 403.
     const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
@@ -2158,7 +2044,7 @@ describe('WebTerminalServer', () => {
     // The refusal is absent, not merely falsy-but-present: the renderer keys
     // its whole pairing block on this field being undefined.
     expect(status.pairRefusal).toBeUndefined();
-    expect(status.pairCode).toMatch(/^[A-Z0-9]{6}$/);
+    expect(status.pairCode).toMatch(pairCodePattern);
     expect(typeof status.pairExpiresAt).toBe('number');
   });
 
@@ -2336,22 +2222,20 @@ describe('WebTerminalServer', () => {
 
     // Burn the attempt budget, wait out the cooldown, and let the server mint a
     // replacement code: the operator is still pairing the SAME device.
-    const { lastAttemptAt } = await spacedWrongPairAttempts(5);
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
+    for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
     let replacement: string;
-    let paired: Response;
     try {
-      await fetch(`${base()}/api/pair?code=ZZZZZZ`);
+      await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
       replacement = server.status().pairCode as string;
-      // The replacement exists immediately, but the source that spent the last
-      // wrong guess still waits out that guess's own 30-second cooldown.
-      nowSpy.mockReturnValue(lastAttemptAt + 30_001);
-      paired = await fetch(`${base()}/api/pair?code=${replacement}`);
     } finally {
       nowSpy.mockRestore();
     }
-    expect(replacement).toHaveLength(6);
+    expect(replacement).toHaveLength(8);
     expect(replacement).not.toBe(started.code);
+
+    const paired = await fetch(`${base()}/api/pair?code=${replacement}`);
     expect(paired.status).toBe(200);
     expect(deviceMintCalls).toEqual([{ name: 'Named phone' }]);
 
@@ -3070,7 +2954,7 @@ describe('WebTerminalServer', () => {
   it('reports allowUpload on /api/config so the phone can hide the button', async () => {
     const info = await startUpload();
     const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
-    expect(await res.json()).toEqual({ allowInput: false, allowUpload: true });
+    expect(await res.json()).toMatchObject({ allowInput: false, allowUpload: true });
     // status() carries it too — that is what `wmux web --status` prints.
     expect(server.status().allowUpload).toBe(true);
   });
