@@ -455,6 +455,131 @@ describe('ChatView', () => {
     });
   });
 
+  // ─── Markdown tables (2026-07-28) ───────────────────────────────────────
+  //
+  // Tables were the one construct still arriving as raw pipe soup. They render
+  // as a real <table> — and, because a pane can be narrow, inside their own
+  // horizontal scroller so a wide table can never widen the chat column.
+  describe('tables', () => {
+    const TABLE = [
+      '| file | lines | note |',
+      '| :--- | ---: | :---: |',
+      '| a.ts | 12 | **new** |',
+      '| b.ts | 3 |',
+    ].join('\n');
+
+    it('renders a real table with the right cells and alignment', () => {
+      seed([{ id: 'a1', kind: 'assistant_text', text: TABLE }]);
+      mount();
+      const table = container.querySelector('table')!;
+      expect(table).not.toBeNull();
+
+      const headers = [...table.querySelectorAll('th')];
+      expect(headers.map((h) => h.textContent)).toEqual(['file', 'lines', 'note']);
+      expect(headers.map((h) => (h as HTMLElement).style.textAlign)).toEqual([
+        'left',
+        'right',
+        'center',
+      ]);
+
+      const rows = [...table.querySelectorAll('tbody tr')];
+      expect(rows.map((r) => [...r.querySelectorAll('td')].map((c) => c.textContent))).toEqual([
+        ['a.ts', '12', 'new'],
+        // Ragged row: GFM pads the missing cell rather than dropping the row.
+        ['b.ts', '3', ''],
+      ]);
+      // Inline markdown inside a cell became structure, not literal markers.
+      expect(rows[0].querySelector('strong')!.textContent).toBe('new');
+    });
+
+    it('keeps a code chip alive inside a table cell', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: '| what | where |\n|---|---|\n| patch | \u0000code:1\u0000 |',
+          codeBlocks: [{ n: 1, lang: 'ts', lines: 9, path: 'src/a.ts' }],
+        },
+      ]);
+      mount();
+      expect(container.querySelector('td [data-chat-code-chip="1"]')).not.toBeNull();
+      // The invariant survives a table: still no <pre> until asked.
+      expect(container.querySelectorAll('pre')).toHaveLength(0);
+    });
+
+    it('falls back to literal text for an unknown code ref in a cell', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: '| what | where |\n|---|---|\n| patch | \u0000code:7\u0000 |',
+        },
+      ]);
+      mount();
+      const cells = [...container.querySelectorAll('td')].map((c) => c.textContent);
+      expect(cells).toEqual(['patch', 'code:7']);
+    });
+
+    it('injects nothing from adversarial cell content', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text:
+            '| a | b |\n|---|---|\n| <img src=x onerror="alert(1)"> | <script>alert(2)</script> |',
+        },
+      ]);
+      mount();
+      for (const tag of ['img', 'script', 'iframe', 'a']) {
+        expect(container.querySelectorAll(tag)).toHaveLength(0);
+      }
+      expect(container.textContent).toContain('<script>alert(2)</script>');
+    });
+
+    it('puts a wide table in a horizontal scroller instead of widening the row', () => {
+      const width = 14;
+      const cols = Array.from({ length: width }, (_, i) => `column-header-${i}`);
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: [
+            `| ${cols.join(' | ')} |`,
+            `| ${cols.map(() => '---').join(' | ')} |`,
+            `| ${cols.map((_, i) => `a-fairly-long-value-${i}`).join(' | ')} |`,
+          ].join('\n'),
+        },
+      ]);
+      mount();
+      const scroller = container.querySelector<HTMLElement>('[data-chat-md="table-scroll"]')!;
+      expect(scroller).not.toBeNull();
+      // The table lives INSIDE the scroller — that is what contains the width.
+      expect(scroller.querySelector('table')).not.toBeNull();
+      expect(scroller.style.overflowX).toBe('auto');
+      expect(scroller.style.maxWidth).toBe('100%');
+      expect(scroller.style.minWidth).toBe('0');
+      // Nothing on the table itself asks for a width the row would have to grow to.
+      const table = scroller.querySelector<HTMLElement>('table')!;
+      expect(table.style.width).toBe('');
+      expect(table.style.minWidth).toBe('');
+    });
+
+    it('leaves pipe-heavy prose as a paragraph, with no table at all', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: 'grep a | sort | uniq -c\nthen head -n 5 | tail',
+        },
+      ]);
+      mount();
+      expect(container.querySelectorAll('table')).toHaveLength(0);
+      expect(container.querySelector('[data-chat-md="paragraph"]')!.textContent).toBe(
+        'grep a | sort | uniq -c\nthen head -n 5 | tail',
+      );
+    });
+  });
+
   // ─── Speaker grouping (2026-07-28) ────────────────────────────────────────
   describe('speaker grouping', () => {
     it('prints ONE label for a run of the same speaker, across a tool line', () => {
