@@ -94,12 +94,20 @@ export class OrderedSessionLocationProjection {
     return this.projections.get(sessionId)?.snapshot;
   }
 
-  getForDiscovery(
+  resolveDiscoverySnapshot(
     sessionId: string,
+    candidate: SessionLocationSnapshot | undefined,
     authority: SessionLocationDiscoveryAuthority,
   ): SessionLocationSnapshot | undefined {
     const discovery = this.discoveries.get(authority);
     if (!discovery || discovery.blockedIds.has(sessionId)) return undefined;
+
+    if (candidate) {
+      const lease = this.begin(sessionId, authority);
+      if (!lease) return undefined;
+      this.accept(sessionId, candidate, lease);
+    }
+
     return this.projections.get(sessionId)?.snapshot;
   }
 

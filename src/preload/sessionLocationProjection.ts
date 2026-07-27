@@ -38,8 +38,11 @@ export class PreloadSessionLocationProjection {
     const { id, locationSnapshot } = response;
     if (!id) return { response, deliverable: false };
 
-    if (locationSnapshot) this.accept(id, locationSnapshot, authority);
-    const deliverableSnapshot = this.owner.getForDiscovery(id, authority);
+    const deliverableSnapshot = this.owner.resolveDiscoverySnapshot(
+      id,
+      locationSnapshot,
+      authority,
+    );
     return {
       response: {
         ...response,

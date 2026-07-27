@@ -86,7 +86,10 @@ describe('OrderedSessionLocationProjection', () => {
 
     projection.reset();
     expect(projection.begin('late', oldDiscovery)).toBeUndefined();
-    expect(projection.getForDiscovery('s1', oldDiscovery)).toBeUndefined();
+    expect(
+      projection.resolveDiscoverySnapshot('s1', snapshot(1, 1), oldDiscovery),
+    ).toBeUndefined();
+    expect(projection.retainedSize()).toBe(0);
     expect(projection.accept('s1', snapshot(1, 1), oldLease)).toBe(false);
 
     const newLease = begin(projection);
@@ -102,11 +105,90 @@ describe('OrderedSessionLocationProjection', () => {
     expect(projection.release('s1', lease)).toBe(true);
     expect(projection.retainedSize()).toBe(0);
     expect(projection.begin('s1', inFlight)).toBeUndefined();
-    expect(projection.getForDiscovery('s1', inFlight)).toBeUndefined();
+    expect(
+      projection.resolveDiscoverySnapshot('s1', snapshot(4, 2), inFlight),
+    ).toBeUndefined();
+    expect(projection.retainedSize()).toBe(0);
     expect(projection.accept('s1', snapshot(4, 2), lease)).toBe(false);
 
     const reusedLease = begin(projection);
     expect(projection.accept('s1', snapshot(5, 1), reusedLease)).toBe(true);
+  });
+
+  it.each([
+    ['equal', 2],
+    ['older', 1],
+  ] as const)('resolves an %s discovery candidate to the newest snapshot', (
+    _label,
+    candidateRevision,
+  ) => {
+    const projection = new OrderedSessionLocationProjection();
+    const discovery = projection.beginDiscovery();
+    const eventLease = begin(projection);
+    expect(projection.accept('s1', snapshot(4, 2), eventLease)).toBe(true);
+
+    expect(
+      projection.resolveDiscoverySnapshot(
+        's1',
+        snapshot(4, candidateRevision),
+        discovery,
+      ),
+    ).toEqual(snapshot(4, 2));
+  });
+
+  it('resolves a newer discovery candidate as the newest snapshot', () => {
+    const projection = new OrderedSessionLocationProjection();
+    const discovery = projection.beginDiscovery();
+    const eventLease = begin(projection);
+    expect(projection.accept('s1', snapshot(4, 2), eventLease)).toBe(true);
+
+    expect(
+      projection.resolveDiscoverySnapshot('s1', snapshot(4, 3), discovery),
+    ).toEqual(snapshot(4, 3));
+  });
+
+  it('resolves a discovery without a candidate to the retained snapshot', () => {
+    const projection = new OrderedSessionLocationProjection();
+    const discovery = projection.beginDiscovery();
+    const eventLease = begin(projection);
+    expect(projection.accept('s1', snapshot(4, 2), eventLease)).toBe(true);
+
+    expect(
+      projection.resolveDiscoverySnapshot('s1', undefined, discovery),
+    ).toEqual(snapshot(4, 2));
+  });
+
+  it('does not allocate projection state for a snapshot-less discovery', () => {
+    const projection = new OrderedSessionLocationProjection();
+    const discovery = projection.beginDiscovery();
+
+    expect(
+      projection.resolveDiscoverySnapshot('s1', undefined, discovery),
+    ).toBeUndefined();
+    expect(projection.retainedSize()).toBe(0);
+  });
+
+  it('does not resolve a candidate from a finished discovery', () => {
+    const projection = new OrderedSessionLocationProjection();
+    const discovery = projection.beginDiscovery();
+    projection.finishDiscovery(discovery);
+
+    expect(
+      projection.resolveDiscoverySnapshot('s1', snapshot(1, 1), discovery),
+    ).toBeUndefined();
+    expect(projection.retainedSize()).toBe(0);
+  });
+
+  it('does not resolve a candidate from a retired generation', () => {
+    const projection = new OrderedSessionLocationProjection();
+    const lease = begin(projection);
+    expect(projection.retire('s1', 4, lease)).toBe(true);
+    const discovery = projection.beginDiscovery();
+
+    expect(
+      projection.resolveDiscoverySnapshot('s1', snapshot(4, 99), discovery),
+    ).toBeUndefined();
+    expect(projection.get('s1')).toBeUndefined();
   });
 
   it('release blocks only its id in unrelated in-flight discovery', () => {

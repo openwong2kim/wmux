@@ -53,6 +53,21 @@ describe('preload session location propagation', () => {
     expect(projection.acceptEvent('pty-1', snapshot(1, 1))).toBe(true);
   });
 
+  it('leaves an idless response unchanged and undeliverable', () => {
+    const projection = new PreloadSessionLocationProjection();
+    const request = projection.beginDiscovery();
+    const response = {
+      locationSnapshot: undefined,
+      success: false,
+      error: 'missing session',
+    };
+
+    expect(projection.projectResponse(response, request)).toEqual({
+      response,
+      deliverable: false,
+    });
+  });
+
   it('strips a released id from a delayed list response without affecting peers', () => {
     const projection = new PreloadSessionLocationProjection();
     const request = projection.beginDiscovery();
@@ -70,31 +85,6 @@ describe('preload session location propagation', () => {
       request,
     )).toEqual({
       response: { id: 'live', locationSnapshot: snapshot(1, 1) },
-      deliverable: true,
-    });
-  });
-
-  it('replays a newer event when it overtakes a stale response before binding', () => {
-    const projection = new PreloadSessionLocationProjection();
-    const request = projection.beginDiscovery();
-    expect(projection.acceptEvent('pty-1', snapshot(4, 2))).toBe(true);
-
-    expect(projection.projectResponse(
-      { id: 'pty-1', locationSnapshot: snapshot(4, 1) },
-      request,
-    )).toEqual({
-      response: { id: 'pty-1', locationSnapshot: snapshot(4, 2) },
-      deliverable: true,
-    });
-  });
-
-  it('replays a retained event when the response has no snapshot', () => {
-    const projection = new PreloadSessionLocationProjection();
-    const request = projection.beginDiscovery();
-    expect(projection.acceptEvent('pty-1', snapshot(4, 2))).toBe(true);
-
-    expect(projection.projectResponse({ id: 'pty-1' }, request)).toEqual({
-      response: { id: 'pty-1', locationSnapshot: snapshot(4, 2) },
       deliverable: true,
     });
   });
