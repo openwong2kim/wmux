@@ -113,9 +113,6 @@ export function createTranscriptProbeCache(
    * would drop the promise from view while the spawn is still live.
    */
   const inFlight = new Set<Promise<void>>();
-  /** Bumped by `reset` so a refresh that resolves afterwards cannot write into
-   *  the cache it no longer belongs to. */
-  let generation = 0;
 
   /**
    * The only writer of `answer`.
@@ -137,12 +134,14 @@ export function createTranscriptProbeCache(
    * for unanswered entries too. Map iteration is insertion-ordered and `record`
    * never re-inserts, so the first key is the oldest.
    *
-   * Evicting a key whose refresh is still in flight costs one extra probe (the
-   * next sighting re-inserts and probes synchronously while the orphan finishes),
-   * which is why the orphan's write is generation-guarded rather than trusted.
+   * Evicting a key whose refresh is still in flight costs one extra probe: the
+   * next sighting re-inserts and probes synchronously while the orphan finishes.
+   * The orphan must not then write into the replacement, which is what the
+   * entry-identity check in `ensureRefresh` prevents.
    *
-   * `attemptedAt` is stamped here rather than left at 0 so the retry throttle
-   * does not depend on `record` stamping it above its own early return.
+   * `attemptedAt` is stamped here as well as in `record` — belt and braces, so a
+   * fresh entry is never one poll away from a refresh regardless of which writer
+   * ran last.
    */
   function insert(key: string, outcome: ProbeOutcome): void {
     if (entries.size >= max) {
@@ -164,11 +163,14 @@ export function createTranscriptProbeCache(
     // would keep waking an idle distro indefinitely.
     if (clock() - entry.attemptedAt < ttlMs) return;
     entry.attemptedAt = clock();
-    const epoch = generation;
     const pending: Promise<void> = (async () => {
       try {
         const outcome = await probeAsync();
-        if (epoch === generation) record(key, outcome);
+        // Write only into the entry this refresh was started for. A `reset`, or
+        // an eviction followed by a fresh probe, replaces that object — and a
+        // stale answer must not overwrite the newer one, least of all in the
+        // live-to-absent direction, nor restamp it with this older attempt.
+        if (entries.get(key) === entry) record(key, outcome);
       } catch {
         // A rejected probe is unreachable: keep the last known answer.
       }
@@ -204,7 +206,8 @@ export function createTranscriptProbeCache(
       return entries.get(key)?.answer ?? null;
     },
     reset() {
-      generation += 1;
+      // In-flight refreshes are deliberately left tracked so they stay
+      // awaitable; each one finds its entry gone and writes nothing.
       entries.clear();
     },
   };

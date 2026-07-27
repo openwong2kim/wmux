@@ -35,6 +35,12 @@ function deferredProbe() {
 const TTL = 30_000;
 const never = () => Promise.resolve<ProbeOutcome>(unreachable);
 
+/** Drain enough microtasks that an already-resolved promise would have won —
+ *  lets a test assert that something is genuinely still pending. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+}
+
 function makeCache(now: () => number, max = 256) {
   return createTranscriptProbeCache({ now, ttlMs: TTL, max });
 }
@@ -59,8 +65,8 @@ describe('transcript probe cache', () => {
       clock.advance(TTL - 1);
       expect(cache.lives('k', probe, never)).toBe(returned);
       expect(probe).toHaveBeenCalledTimes(1);
-      // Pinned to the probe's own moment, not to now — `answer.at` is what the
-      // TTL ages, and it must not be confused with the attempt timestamp.
+      // Still stamped at the probe's own moment: a cache hit serves the answer
+      // without restamping it, so the TTL keeps ageing from the real probe.
       expect(cache.answerFor('k')).toEqual(cached ? { lives: returned, at: 1_000 } : null);
     });
   });
@@ -225,6 +231,31 @@ describe('transcript probe cache', () => {
     expect(probe).toHaveBeenCalledTimes(5);
   });
 
+  it('discards a refresh whose key was evicted and re-probed while it ran', async () => {
+    const clock = testClock();
+    const cache = makeCache(clock.now, 1);
+    const refresh = deferredProbe();
+
+    expect(cache.lives('a', () => answered(true), refresh.calls)).toBe(true);
+    clock.advance(TTL);
+    cache.lives('a', () => answered(true), refresh.calls);
+    expect(refresh.calls).toHaveBeenCalledTimes(1);
+
+    // At the cap, so 'b' evicts 'a' while 'a' is still being refreshed.
+    cache.lives('b', () => answered(true), never);
+    // 'a' is gone, so the next sighting probes it for real again.
+    cache.lives('a', () => answered(true), never);
+
+    refresh.settle(answered(false));
+    await cache.whenIdle();
+
+    // The orphan belongs to the evicted entry. Letting it write would overwrite
+    // a newer answer in the live-to-absent direction and backdate it to the
+    // orphan's own attempt — both halves of the invariant, broken at once.
+    expect(cache.answerFor('a')).toEqual({ lives: true, at: 1_000 + TTL });
+    expect(cache.lives('a', () => answered(true), never)).toBe(true);
+  });
+
   it('discards a refresh that resolves after a reset, even onto a re-probed key', async () => {
     const clock = testClock();
     const cache = makeCache(clock.now);
@@ -236,6 +267,15 @@ describe('transcript probe cache', () => {
     expect(refresh.calls).toHaveBeenCalledTimes(1);
 
     cache.reset();
+    // Reset drops the entry but not the spawn, so the refresh stays tracked and
+    // awaitable. Asserted as a race: if the drain were empty it would resolve
+    // here, and every later assertion would pass without waiting for anything.
+    const drained = cache.whenIdle();
+    let drainedEarly = false;
+    void drained.then(() => { drainedEarly = true; });
+    await flushMicrotasks();
+    expect(drainedEarly).toBe(false);
+
     // Re-probe the same key BEFORE the pre-reset refresh settles. Clearing the
     // map alone does not protect this: `record` finds a live entry and would
     // overwrite the fresh answer with the discarded generation's.
@@ -243,9 +283,7 @@ describe('transcript probe cache', () => {
     expect(cache.lives('k', probe, never)).toBe(true);
 
     refresh.settle(answered(false));
-    // The orphaned refresh is no longer reachable through its entry, so drain
-    // every in-flight probe rather than that key's.
-    await cache.whenIdle();
+    await drained;
 
     expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 + TTL });
     expect(cache.lives('k', probe, never)).toBe(true);
