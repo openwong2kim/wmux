@@ -17,6 +17,7 @@ import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import {
   classifySessionLocation,
+  locationsEqual,
   type SessionLocation,
   type SessionLocationSnapshot,
 } from '../../../shared/sessionLocation';
@@ -108,14 +109,6 @@ let lastPaneLocationGeneration = 0;
 function nextPaneLocationGeneration(): number {
   lastPaneLocationGeneration = Math.max(lastPaneLocationGeneration + 1, Date.now());
   return lastPaneLocationGeneration;
-}
-
-function sameLocation(left: SessionLocation, right: SessionLocation): boolean {
-  return left.domain === right.domain
-    && left.cwd === right.cwd
-    && left.shell === right.shell
-    && (left.domain !== 'wsl' ? undefined : left.distro)
-      === (right.domain !== 'wsl' ? undefined : right.distro);
 }
 
 function publishPaneLocation(
@@ -460,7 +453,7 @@ export function updateCwd(ptyId: string, cwd: string): void {
   const previous = paneLocationSnapshots.get(ptyId);
   if (identity && previous) {
     const location = classifySessionLocation(identity.shell, cwd, identity.distro);
-    if (!sameLocation(location, previous.location)) {
+    if (!locationsEqual(location, previous.location)) {
       publishPaneLocation(ptyId, location);
     }
   }
