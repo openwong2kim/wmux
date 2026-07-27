@@ -91,6 +91,22 @@ export function isPhantomExit(
 }
 
 /**
+ * Can we PROVE the state file was written during the boot we are running in?
+ *
+ * Only a stored bootId that exists and matches counts. A missing stored bootId
+ * (pre-bootId build, or a lost/rewritten state file) proves nothing and must
+ * never be read as "no reboot happened" — that inversion is what would let
+ * tombstone reconciliation kill a recycled pid across a real reboot.
+ */
+export function isSameBootProven(
+  storedBootId: string | null | undefined,
+  currentBootId: string | null | undefined,
+): boolean {
+  if (storedBootId == null || currentBootId == null) return false;
+  return storedBootId === currentBootId;
+}
+
+/**
  * Boot-time counterpart of the guard: should this persisted tombstone be
  * reconciled — i.e. does a `dead` record still have a live process behind it?
  *
@@ -98,21 +114,24 @@ export function isPhantomExit(
  * `selectRecoverableSessions`: the eligibility policy is the part worth
  * unit-testing, and it must not require a daemon boot to exercise.
  *
- * The `rebooted` gate is the load-bearing safety check. After a reboot the
- * OS recycles pids freely, so a persisted pid that answers `kill(pid, 0)`
- * says nothing about OUR shell — it is probably some unrelated process, and
- * killing its tree would be catastrophic. Only when the bootId is unchanged
- * (same boot, no pid reuse possible for a pid we recorded this boot) is a
- * live pid behind a `dead` record provably our own orphan.
+ * `sameBootProven` is the load-bearing safety check, and it is deliberately
+ * phrased as POSITIVE proof rather than "not rebooted". After a reboot the OS
+ * recycles pids freely, so a persisted pid that answers `kill(pid, 0)` says
+ * nothing about OUR shell — it is probably some unrelated process, and killing
+ * its tree would be catastrophic. Absence of evidence is not proof: a state
+ * file written before bootIds were recorded has no bootId at all, which the
+ * old "rebooted" phrasing read as "no reboot happened" and would have
+ * authorized a kill across an actual reboot. The caller must pass true only
+ * when a stored bootId EXISTS and equals the current one.
  *
  * Old state files predating pid persistence, or records written before the
  * pid was known, simply have no pid — those are skipped, not guessed at.
  */
 export function shouldReconcileTombstone(
   session: { state: string; pid?: number },
-  opts: { rebooted: boolean; alive: (pid: number) => boolean },
+  opts: { sameBootProven: boolean; alive: (pid: number) => boolean },
 ): boolean {
-  if (opts.rebooted) return false;
+  if (!opts.sameBootProven) return false;
   if (session.state !== 'dead') return false;
   const pid = session.pid;
   if (pid === undefined || pid === null) return false;

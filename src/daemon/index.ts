@@ -42,7 +42,7 @@ import { AgentProcessTracker } from './AgentProcessTracker';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
-import { isPidAlive, shouldReconcileTombstone } from './phantomExit';
+import { isPidAlive, isSameBootProven, shouldReconcileTombstone } from './phantomExit';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
@@ -1032,6 +1032,13 @@ async function recoverSessions(
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
   const rebooted = state.bootId != null && state.bootId !== currentBootId;
+  // #646: `rebooted` is "we can prove a reboot happened", so a state file with
+  // no bootId at all (written by a pre-bootId build, or lost) reads as false —
+  // fine for the kill-stale-pid paths it was written for, fatal for tombstone
+  // reconciliation, which would then taskkill a recycled pid after a real
+  // reboot. Reconciliation needs the opposite claim: proof that we are on the
+  // SAME boot, which requires the bootId to exist AND match.
+  const sameBootProven = isSameBootProven(state.bootId, currentBootId);
   if (rebooted) {
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }
@@ -1073,10 +1080,10 @@ async function recoverSessions(
       // this fix a phantom PTY exit could write one while the shell kept
       // running, and because recovery skips dead records the orphan was
       // invisible to every census — reporters found shells outliving their
-      // daemon by 11–12 days. Reconcile here: same boot (so the pid cannot
-      // have been recycled), pid still alive, and it really is our shell →
-      // it is an orphan of that bug, so reap it.
-      if (shouldReconcileTombstone(session, { rebooted, alive: isPidAlive })) {
+      // daemon by 11–12 days. Reconcile here: PROVEN same boot (so the pid
+      // cannot have been recycled), pid still alive, and it really is our
+      // shell → it is an orphan of that bug, so reap it.
+      if (shouldReconcileTombstone(session, { sameBootProven, alive: isPidAlive })) {
         const pid = session.pid;
         if (await isOurShellProcess(pid, session.cmd)) {
           log('info', `[recovery] reconciled tombstone ${session.id}: pid ${pid} was still alive`);

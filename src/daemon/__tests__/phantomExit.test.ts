@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { isPhantomExit, isPidAlive, shouldReconcileTombstone } from '../phantomExit';
+import {
+  isPhantomExit,
+  isPidAlive,
+  isSameBootProven,
+  shouldReconcileTombstone,
+} from '../phantomExit';
 
 // Issue #646: node-pty's ConPTY conout-socket-close path emits `exit` with
 // `_agent.exitCode === undefined` (null on our side) while powershell.exe is
@@ -66,11 +71,34 @@ describe('isPidAlive', () => {
   });
 });
 
+describe('isSameBootProven', () => {
+  it('proves the same boot only when the stored id exists and matches', () => {
+    expect(isSameBootProven('boot-a', 'boot-a')).toBe(true);
+  });
+
+  it('a different boot id is a reboot', () => {
+    expect(isSameBootProven('boot-a', 'boot-b')).toBe(false);
+  });
+
+  it('a state file with no boot id proves nothing — never reconcile', () => {
+    // The original `rebooted` flag read this case as "no reboot happened",
+    // which would authorize killing a recycled pid across a real reboot.
+    expect(isSameBootProven(undefined, 'boot-a')).toBe(false);
+    expect(isSameBootProven(null, 'boot-a')).toBe(false);
+    expect(isSameBootProven('', 'boot-a')).toBe(false);
+  });
+
+  it('an unknown current boot id proves nothing either', () => {
+    expect(isSameBootProven('boot-a', null)).toBe(false);
+    expect(isSameBootProven(null, null)).toBe(false);
+  });
+});
+
 // Boot-time reconciliation: a `dead` record holding a live pid is the
 // persisted residue of the same bug, and it hid orphans from every census.
 describe('shouldReconcileTombstone', () => {
-  const alive = { rebooted: false, alive: () => true };
-  const dead = { rebooted: false, alive: () => false };
+  const alive = { sameBootProven: true, alive: () => true };
+  const dead = { sameBootProven: true, alive: () => false };
 
   it('reconciles a dead record whose pid is still alive within the same boot', () => {
     expect(shouldReconcileTombstone({ state: 'dead', pid: 20516 }, alive)).toBe(true);
@@ -80,9 +108,11 @@ describe('shouldReconcileTombstone', () => {
     expect(shouldReconcileTombstone({ state: 'dead', pid: 20516 }, dead)).toBe(false);
   });
 
-  it('never reconciles after a reboot — the pid may have been recycled', () => {
+  it('never reconciles without proof of the same boot — the pid may have been recycled', () => {
+    // Covers both a detected reboot AND a state file carrying no bootId at
+    // all: absence of evidence must not read as evidence of no reboot.
     expect(
-      shouldReconcileTombstone({ state: 'dead', pid: 20516 }, { rebooted: true, alive: () => true }),
+      shouldReconcileTombstone({ state: 'dead', pid: 20516 }, { sameBootProven: false, alive: () => true }),
     ).toBe(false);
   });
 
