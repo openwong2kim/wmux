@@ -1497,6 +1497,10 @@
         var msg = 'Pairing failed.';
         if (res.body && res.body.error === 'expired') msg = 'This code has expired. Ask for a new one.';
         else if (res.body && res.body.error === 'too many attempts') msg = 'Too many attempts — the code is locked.';
+        else if (res.body && res.body.error === 'rate limited') {
+          var retrySeconds = Number(res.body.retryAfterSeconds) || 30;
+          msg = 'Pairing attempts are rate-limited — wait ' + retrySeconds + ' seconds and try again.';
+        }
         else if (res.body && typeof res.body.attemptsLeft === 'number') {
           msg = 'Wrong code — ' + res.body.attemptsLeft + ' attempt' + (res.body.attemptsLeft === 1 ? '' : 's') + ' left.';
         } else if (res.body && typeof res.body.detail === 'string' && res.body.detail) {

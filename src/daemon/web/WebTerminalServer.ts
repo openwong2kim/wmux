@@ -383,6 +383,13 @@ const PAIR_MAX_ATTEMPTS = 5;
  * burned code costs the legitimate operator a short wait instead of a restart.
  */
 const PAIR_REGEN_COOLDOWN_MS = 30_000;
+/**
+ * A wrong code from one TCP source may consume the global attempt budget only
+ * once per window. Requests inside the cooldown are refused before comparing
+ * the code; otherwise the response status would remain an unlimited oracle for
+ * brute-force guesses even though those guesses no longer spent the budget.
+ */
+const PAIR_SOURCE_ATTEMPT_COOLDOWN_MS = 30_000;
 /** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIR_CODE_LEN = 6;
@@ -617,6 +624,11 @@ export class WebTerminalServer {
   private pairExpiresAt = 0;
   private pairAttempts = 0;
   /**
+   * Next time each TCP source may spend another wrong-code attempt. Forwarded
+   * headers are deliberately ignored: a direct client can forge them.
+   */
+  private readonly pairSourceBlockedUntil = new Map<string, number>();
+  /**
    * Hostnames this server answers to. A local HTTP server that accepts any
    * `Host` can be reached by a malicious page that rebinds its own domain to
    * this address (DNS rebinding); the token still gates `/api/*`, but the
@@ -802,6 +814,7 @@ export class WebTerminalServer {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
+    this.pairSourceBlockedUntil.clear();
     this.pendingDeviceName = undefined;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
@@ -1005,9 +1018,8 @@ export class WebTerminalServer {
    * fine, because that flag exists precisely to name the TLS front (`tailscale
    * serve`) that forwards to us.
    *
-   * `requestHost` is the Host of the redeeming request when there is one; with
-   * none (the operator-side pairStart) the question is only whether a front is
-   * configured at all.
+   * The redeeming request's `Host` is deliberately irrelevant here: the caller
+   * writes it. Only the server's bind can prove whether bytes stayed local.
    *
    * NOTE this refuses minting for a browser sitting at `127.0.0.1` on an
    * exposed server too. That is not an oversight: on a `0.0.0.0` bind the Host
@@ -1189,7 +1201,9 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      this.handlePair(res, url, hostname).catch((err: unknown) => this.failRequest(res, err));
+      this.handlePair(res, url, normalizeRemoteAddress(req.socket.remoteAddress)).catch((err: unknown) =>
+        this.failRequest(res, err),
+      );
       return;
     }
 
@@ -2343,7 +2357,7 @@ export class WebTerminalServer {
    * store, and the pairing screen keeps working unchanged — but it is now a
    * per-device credential, not the operator's.
    */
-  private async handlePair(res: http.ServerResponse, url: URL, requestHost: string): Promise<void> {
+  private async handlePair(res: http.ServerResponse, url: URL, source: string): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -2365,7 +2379,22 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'too many attempts' });
     }
 
+    const retryAfterSeconds = this.pairSourceRetryAfter(source);
+    if (retryAfterSeconds > 0) {
+      return this.json(
+        res,
+        429,
+        {
+          error: 'rate limited',
+          retryAfterSeconds,
+          attemptsLeft: this.pairAttempts,
+        },
+        { 'Retry-After': String(retryAfterSeconds) },
+      );
+    }
+
     if (!timingSafeEquals(supplied, this.pairCode)) {
+      this.blockPairSource(source);
       this.pairAttempts -= 1;
       if (this.pairAttempts <= 0) this.pairCode = '';
       return this.json(res, 403, {
@@ -2412,6 +2441,29 @@ export class WebTerminalServer {
       deviceSecret: minted.deviceSecret,
       token: `${minted.deviceId}${DEVICE_CREDENTIAL_SEP}${minted.deviceSecret}`,
     });
+  }
+
+  /**
+   * Whole seconds before this source may submit another code, or zero when it
+   * may proceed. This runs before the code comparison so a throttled request
+   * cannot use the response status as a correct-code oracle.
+   */
+  private pairSourceRetryAfter(source: string): number {
+    const now = Date.now();
+    const blockedUntil = this.pairSourceBlockedUntil.get(source) ?? 0;
+    if (blockedUntil > now) return Math.ceil((blockedUntil - now) / 1000);
+
+    // Entries expire quickly, but prune opportunistically so a long-running
+    // exposed server never retains every source address it has ever seen.
+    for (const [heldSource, heldUntil] of this.pairSourceBlockedUntil) {
+      if (heldUntil <= now) this.pairSourceBlockedUntil.delete(heldSource);
+    }
+    return 0;
+  }
+
+  /** Start the cooldown after this source spends one wrong-code attempt. */
+  private blockPairSource(source: string): void {
+    this.pairSourceBlockedUntil.set(source, Date.now() + PAIR_SOURCE_ATTEMPT_COOLDOWN_MS);
   }
 
   /** Consume the active pairing code (single use) and its pending name. */
@@ -2767,6 +2819,13 @@ function timingSafeEquals(supplied: string, expected: string): boolean {
   const a = Buffer.from(supplied);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Treat IPv4 and its IPv4-mapped IPv6 spelling as the same pairing source. */
+function normalizeRemoteAddress(address: string | undefined): string {
+  if (!address) return 'unknown';
+  const normalized = address.toLowerCase();
+  return normalized.startsWith('::ffff:') ? normalized.slice('::ffff:'.length) : normalized;
 }
 
 /** Addresses/names that never leave the machine. */

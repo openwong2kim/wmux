@@ -62,6 +62,10 @@ daemon.web.pairStart {name}
 - A burned or expired code is replaced automatically, rate-limited to one
   regeneration per 30 s, so five wrong guesses cost the operator a short wait
   rather than a restart. The new code is read from the desktop.
+- One wrong code per TCP source may consume the five-attempt budget every 30 s.
+  Further submissions return `429` without comparing the code or spending
+  another attempt. This closes both the budget-burning path and a response-code
+  oracle during the cooldown.
 
 Responses:
 
@@ -72,6 +76,7 @@ Responses:
 | 403 | `{error: 'expired'}` | Code expired or burned; a fresh one is minted (rate-limited) for the operator to read |
 | 403 | `{error: 'too many attempts'}` | Attempts exhausted |
 | 403 | `{error: 'insecure-transport', detail}` | Plaintext non-loopback bind. `detail` is operator-facing prose; show it verbatim |
+| 429 | `{error: 'rate limited', retryAfterSeconds, attemptsLeft}` | This source already spent a wrong-code attempt inside the 30 s window; the code was not compared and the response also carries `Retry-After` |
 | 500 | `{error: 'pairing failed'}` | The roster could not be written. The code is **not** burned — the operator can retry |
 
 Store `token` and nothing else. `deviceSecret` is returned exactly once and is

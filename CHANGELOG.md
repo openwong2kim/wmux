@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **"Check for updates" now works with auto-update switched off.** The toggle was wired through the one gate every check passes, so turning background polling off also turned the manual button into a no-op that reported "checking" and went silent — leaving reinstalling as the only way to update. The toggle now silences background polls only; pressing the button is an explicit request and always checks.
 
+### Security
+
+- **One device can no longer burn a web pairing code with a rapid burst of guesses.** A wrong code from the same TCP source now starts a 30-second cooldown; faster submissions receive `429` with `Retry-After`, are refused before the code comparison, and leave the shared five-attempt budget untouched. A correct first submission is unchanged; after a typo, the pairing screen tells you how long to wait instead of silently spending the remaining guesses. (#615)
+
 ## [3.37.0] — 2026-07-27
 
 ### Added

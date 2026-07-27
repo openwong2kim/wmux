@@ -339,6 +339,27 @@ describe('WebTerminalServer', () => {
     server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
+  /** Spend several global pairing attempts without tripping the per-source 30s guard. */
+  const spacedWrongPairAttempts = async (
+    count: number,
+    code = 'ZZZZZZ',
+  ): Promise<{ responses: Response[]; lastAttemptAt: number }> => {
+    const responses: Response[] = [];
+    const startedAt = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now');
+    try {
+      for (let i = 0; i < count; i++) {
+        nowSpy.mockReturnValue(startedAt + i * 30_001);
+        responses.push(await fetch(`${base()}/api/pair?code=${code}`));
+      }
+    } finally {
+      nowSpy.mockRestore();
+    }
+    return {
+      responses,
+      lastAttemptAt: startedAt + Math.max(0, count - 1) * 30_001,
+    };
+  };
 
   it('gates /api/* — Bearer header required, query token rejected for non-SSE', async () => {
     const info = await startRO();
@@ -549,19 +570,65 @@ describe('WebTerminalServer', () => {
     // Build a wrong code of the same length from the same alphabet.
     const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
 
-    for (let i = 4; i >= 1; i--) {
-      const r = await fetch(`${base()}/api/pair?code=${wrong}`);
-      expect(r.status).toBe(403);
-      expect((await r.json()).attemptsLeft).toBe(i);
+    const { responses: attempts, lastAttemptAt } = await spacedWrongPairAttempts(5, wrong);
+    for (let i = 0; i < 4; i++) {
+      expect(attempts[i].status).toBe(403);
+      expect((await attempts[i].json()).attemptsLeft).toBe(4 - i);
     }
     // 5th wrong attempt burns the code.
-    const last = await fetch(`${base()}/api/pair?code=${wrong}`);
+    const last = attempts[4];
     expect(last.status).toBe(403);
     expect((await last.json()).attemptsLeft).toBe(0);
 
     // Even the CORRECT code no longer works once the budget is exhausted.
-    const correct = await fetch(`${base()}/api/pair?code=${code}`);
-    expect(correct.status).toBe(403);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
+    try {
+      // Use the captured port: base() calls status(), which lazily regenerates a
+      // burned code and would turn this into a test of the replacement instead.
+      const correct = await fetch(`http://127.0.0.1:${info.port}/api/pair?code=${code}`);
+      expect(correct.status).toBe(403);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('rate-limits repeated wrong codes per source without spending the global budget', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+    const startedAt = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
+    try {
+      const first = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(first.status).toBe(403);
+      expect((await first.json()).attemptsLeft).toBe(4);
+
+      const limited = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBe('30');
+      expect(await limited.json()).toEqual({
+        error: 'rate limited',
+        retryAfterSeconds: 30,
+        attemptsLeft: 4,
+      });
+
+      nowSpy.mockReturnValue(startedAt + 30_000);
+      const nextWrong = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(nextWrong.status).toBe(403);
+      expect((await nextWrong.json()).attemptsLeft).toBe(3);
+
+      // The cooldown runs before comparison. Even a correct candidate receives
+      // the same 429, so throttled requests cannot probe for a 200 oracle.
+      const throttledCorrect = await fetch(`${base()}/api/pair?code=${code}`);
+      expect(throttledCorrect.status).toBe(429);
+      expect((await throttledCorrect.json()).attemptsLeft).toBe(3);
+
+      nowSpy.mockReturnValue(startedAt + 60_000);
+      const correct = await fetch(`${base()}/api/pair?code=${code}`);
+      expect(correct.status).toBe(200);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('mints a fresh pairing code on each start', async () => {
@@ -717,17 +784,11 @@ describe('WebTerminalServer', () => {
     const first = info.pairCode as string;
     expect(first).toHaveLength(6);
     // Burn the attempt budget with wrong guesses.
-    for (let i = 0; i < 5; i++) {
-      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
-    }
-    // Burned, and inside the regeneration cooldown: deliberately still gone.
-    await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
-    expect(server.status().pairCode).toBeUndefined();
-
-    // Past the cooldown, the next attempt mints a replacement so a burned code
-    // costs a short wait instead of a server restart.
-    const realNow = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+    const { lastAttemptAt } = await spacedWrongPairAttempts(5);
+    // The per-source guard spaces five budget-consuming misses over two minutes,
+    // so the separate 30s regeneration cooldown has already elapsed. The next
+    // request mints the replacement without requiring a server restart.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
     try {
       await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
     } finally {
@@ -2178,20 +2239,22 @@ describe('WebTerminalServer', () => {
 
     // Burn the attempt budget, wait out the cooldown, and let the server mint a
     // replacement code: the operator is still pairing the SAME device.
-    for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZ`);
-    const realNow = Date.now();
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+    const { lastAttemptAt } = await spacedWrongPairAttempts(5);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lastAttemptAt);
     let replacement: string;
+    let paired: Response;
     try {
       await fetch(`${base()}/api/pair?code=ZZZZZZ`);
       replacement = server.status().pairCode as string;
+      // The replacement exists immediately, but the source that spent the last
+      // wrong guess still waits out that guess's own 30-second cooldown.
+      nowSpy.mockReturnValue(lastAttemptAt + 30_001);
+      paired = await fetch(`${base()}/api/pair?code=${replacement}`);
     } finally {
       nowSpy.mockRestore();
     }
     expect(replacement).toHaveLength(6);
     expect(replacement).not.toBe(started.code);
-
-    const paired = await fetch(`${base()}/api/pair?code=${replacement}`);
     expect(paired.status).toBe(200);
     expect(deviceMintCalls).toEqual([{ name: 'Named phone' }]);
 
