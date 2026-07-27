@@ -65,7 +65,10 @@ daemon.web.pairStart {name}
 - One wrong code per TCP source may consume the five-attempt budget every 30 s.
   Further submissions return `429` without comparing the code or spending
   another attempt. This closes both the budget-burning path and a response-code
-  oracle during the cooldown.
+  oracle during the cooldown. Source identity comes only from the TCP socket;
+  `Forwarded`, `X-Forwarded-For`, and similar caller-controlled headers are
+  ignored. Clients sharing a NAT or reverse proxy therefore share this short
+  cooldown.
 
 Responses:
 
