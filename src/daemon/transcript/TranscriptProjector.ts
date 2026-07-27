@@ -308,6 +308,27 @@ export class TranscriptProjector {
   }
 
   /**
+   * The pane's binding changed OUTSIDE the hook path — `TranscriptDiscovery`
+   * found `<agentSessionId>.jsonl` before any `agent.stop` carried a path. Same
+   * tail as `nudge`, minus the session_start bookkeeping: re-read the binding
+   * and push whatever is there.
+   *
+   * Deliberately does NOT clear `staleAgentSessionId`: `refreshPath` is still
+   * the one place that decides whether the standing binding is the held-stale
+   * one, so a discovery that somehow re-produced the OLD id is refused exactly
+   * as a hook refresh of it would be.
+   *
+   * A no-op when nobody is subscribed — availability itself is answered by
+   * `status()`, which re-reads the binding on every call.
+   */
+  rebind(sessionId: string): void {
+    const state = this.watches.get(sessionId);
+    if (!state || this.disposed) return;
+    this.refreshPath(sessionId, state);
+    this.schedule(sessionId, state);
+  }
+
+  /**
    * The body of one code block, re-extracted from the transcript line it came
    * from. Bodies are never broadcast (A3) and never cached: the ref carries the
    * source offset, so this is a single bounded read.

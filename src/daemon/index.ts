@@ -66,6 +66,7 @@ import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
@@ -94,6 +95,12 @@ let hookIngest: HookIngest | null = null;
 // lifecycle wiring in wireEvents has to reach the same instance to drop a dead
 // pane's watch.
 let transcriptProjector: TranscriptProjector | null = null;
+
+// Chat View — the bounded search that makes Chat available WITHOUT waiting for
+// the first turn to end (F9). Module-scoped for the same reason as the
+// projector: registerRpcHandlers builds it, and the lifecycle wiring in
+// wireEvents has to reach the same instance to abandon a dead pane's search.
+let transcriptDiscovery: TranscriptDiscovery | null = null;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -2342,6 +2349,26 @@ function registerRpcHandlers(
     if (prev && typeof p.resumeBinding.ts === 'number' && p.resumeBinding.ts < prev.ts) {
       return true;
     }
+    // Chat View — F9 early availability. A SessionStart proves claude is running
+    // and names the transcript (`<agentSessionId>.jsonl`) but carries no path,
+    // so without this the pane stays `no-transcript-path` until the first
+    // agent.stop and the operator has to spend a whole turn to open Chat.
+    // TranscriptDiscovery looks the file up BY NAME under the Claude projects
+    // root and adopts it the moment it appears — no cwd→slug derivation, and the
+    // adopted path re-enters through this very function, so it clears exactly
+    // the same guard a hook-supplied path does.
+    //
+    // Placed after the ts-stale guard (an out-of-order old capture must not
+    // start a search for a session that has moved on) and BEFORE the
+    // provisional-capture guard below, which drops the SessionStart outright on
+    // a reused pane — the `/clear` case where discovery matters most.
+    if (p.resumeBinding.transcriptPath) {
+      // The hook is authoritative. Once it has delivered a real path there is
+      // nothing left to discover.
+      transcriptDiscovery?.cancel(id);
+    } else if (p.resumeBinding.agent === DISCOVERABLE_AGENT) {
+      transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd);
+    }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
     // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
     // Don't let that provisional capture overwrite an existing transcript-derived
@@ -2440,6 +2467,34 @@ function registerRpcHandlers(
     pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
   }
   const projector = transcriptProjector;
+
+  // Chat View — F9 early availability. Guarded like the projector: a second
+  // registerRpcHandlers call must not mint a second searcher, or the first
+  // one's fs.watch handles and poll timers would be orphaned with no owner.
+  if (!transcriptDiscovery) {
+    transcriptDiscovery = new TranscriptDiscovery({
+      // Resolved from the PANE's env, not the daemon's — a workspace profile may
+      // relocate CLAUDE_CONFIG_DIR, which moves the root both the scan and the
+      // containment check have to use.
+      getSessionEnv: (id) => sessionManager.getSession(id)?.meta.env,
+      onFound: ({ sessionId, agentSessionId, transcriptPath, cwd }) => {
+        // Re-enter through the normal writer so the discovered path is vetted,
+        // sticky-merged, and saveImmediate'd exactly like a hook-supplied one.
+        applyResumeBinding(sessionId, {
+          agent: DISCOVERABLE_AGENT,
+          sessionId: agentSessionId,
+          cwd,
+          transcriptPath,
+          ts: Date.now(),
+        });
+        // `status()` re-reads the binding on every call, so availability flips
+        // on its own; this is only for a Chat surface that is ALREADY open and
+        // would otherwise wait for the next hook nudge to notice the path.
+        transcriptProjector?.rebind(sessionId);
+      },
+      log: (level, message) => log(level, message),
+    });
+  }
 
   // D7 — the transcript RPCs are the one part of this surface that returns a
   // pane's full CONVERSATION, and the design note that justified keeping Chat
@@ -3566,8 +3621,10 @@ function wireEvents(
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
     hookIngest?.dropPty(payload.id);
-    // Chat View: the pane is gone, so its transcript watch has no reader left.
+    // Chat View: the pane is gone, so its transcript watch has no reader left...
     transcriptProjector?.dropPty(payload.id);
+    // ...and nothing left to discover a transcript FOR.
+    transcriptDiscovery?.cancel(payload.id);
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -3961,6 +4018,7 @@ function wireEvents(
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     transcriptProjector?.dropPty(payload.id); // Chat View: ...and the transcript watch
+    transcriptDiscovery?.cancel(payload.id); // Chat View: ...and any pending discovery
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
@@ -4155,6 +4213,8 @@ async function shutdown(
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
   transcriptProjector?.dispose();
+  // Same for the discovery searches — unref'd watch handles and poll timers.
+  transcriptDiscovery?.dispose();
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.
