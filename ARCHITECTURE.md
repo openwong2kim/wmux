@@ -72,6 +72,7 @@ src/
 │   ├── playwright/    Browser automation tools (30+ Playwright tools)
 │   └── a2a/           wmux-a2a MCP server (company mode comms)
 ├── daemon/            Background daemon (session persistence)
+│   └── transcript/    TranscriptProjector — Chat View's transcript-to-TurnEvent projection
 ├── preload/           Electron contextBridge (IPC exposure)
 ├── shared/            Types, RPC definitions, constants, security utils
 └── cli/               Command-line interface

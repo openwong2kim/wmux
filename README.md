@@ -145,7 +145,8 @@ winget install openwong2kim.wmux
 | `Ctrl+K` | Command palette | `Ctrl+I` | Notifications |
 | `Ctrl+F` | Search (regex) | `Ctrl+M` | Scroll bookmark |
 | `Ctrl+Shift+X` | Vi copy mode | `Ctrl+,` | Settings |
-| Right-click | Smart copy / paste / link menu | `F12` | Browser DevTools |
+| `Ctrl+Shift+J` | Chat View toggle (agent panes) | `F12` | Browser DevTools |
+| Right-click | Smart copy / paste / link menu | | |
 
 <sub>On **macOS**, app shortcuts live on `⌘` instead of `Ctrl` (so `Ctrl+C`, `Ctrl+D`, and friends pass through to the shell as you'd expect).</sub>
 
