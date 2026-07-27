@@ -8,6 +8,7 @@ import {
   detectThrottled,
   hasFailure,
   historyLine,
+  tailRegressionNote,
   evaluateRun,
   BOOL_GATES,
   GATES,
@@ -19,6 +20,9 @@ import {
 function makeResult(overrides = {}) {
   const o = {
     coldFirstPtyDataMs: 500,
+    // The gated estimator (#650). Defaults to the median so a test that only
+    // moves `coldFirstPtyDataMs` still moves the number the gate reads.
+    coldFirstPtyDataBestMs: undefined,
     echoP95: 8,
     frameP95: 8,
     frame8P95: 12,
@@ -43,7 +47,13 @@ function makeResult(overrides = {}) {
     schemaVersion: o.schemaVersion,
     meta: { appVersion: '3.1.1', commit: 'abc1234', mode: 'ci', cpuModel: 'Test CPU' },
     scenarios: {
-      coldStart: { median: { firstPtyDataMs: o.coldFirstPtyDataMs } },
+      coldStart: {
+        median: { firstPtyDataMs: o.coldFirstPtyDataMs },
+        best: {
+          firstPtyDataMs:
+            o.coldFirstPtyDataBestMs === undefined ? o.coldFirstPtyDataMs : o.coldFirstPtyDataBestMs,
+        },
+      },
       inputLatency: {
         throttled: o.throttled,
         echoMs: { p95: o.echoP95 },
@@ -179,6 +189,7 @@ describe('compareResults — missing current metric', () => {
     const base = makeResult();
     const cur = makeResult();
     cur.scenarios.coldStart.median.firstPtyDataMs = null;
+    cur.scenarios.coldStart.best.firstPtyDataMs = null; // no boot produced a number
     expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs').status).toBe('FAIL');
   });
 
@@ -209,6 +220,65 @@ describe('compareResults — missing baseline metric is NEW not FAIL', () => {
     const results = compareResults(cur, null);
     expect(hasFailure(results)).toBe(false);
     for (const r of results) expect(['NEW', 'SKIP']).toContain(r.status);
+  });
+});
+
+// The 2026-07-27 false red: a windows-latest runner degraded for the whole job
+// (2.2s to spawn the daemon process, 2.0s to take a file lock) put the median at
+// 2470ms against a 1207ms baseline on a commit that only widened web pairing
+// codes. The confirmation re-run lands on the same runner, so it reproduced.
+describe('compareResults — cold start gates the fastest boot (#650)', () => {
+  it('PASSES a job-wide slow runner where the median alone would have failed', () => {
+    // Real numbers from run 30254659860: boots 1442 / 9154 / 2470ms.
+    const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
+    const cur = makeResult({ coldFirstPtyDataMs: 2470, coldFirstPtyDataBestMs: 1442 });
+    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs');
+    expect(r.status).toBe('PASS');
+    expect(r.current).toBe(1442);
+  });
+
+  it('still FAILS a regression that slows every boot', () => {
+    const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
+    const cur = makeResult({ coldFirstPtyDataMs: 2600, coldFirstPtyDataBestMs: 2500 });
+    expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs').status).toBe('FAIL');
+  });
+
+  it('reads the baseline median when the baseline predates best-of-N, rather than going NEW', () => {
+    const base = makeResult({ coldFirstPtyDataMs: 1207 });
+    delete base.scenarios.coldStart.best; // baseline blessed before the estimator moved
+    const cur = makeResult({ coldFirstPtyDataMs: 2600, coldFirstPtyDataBestMs: 2500 });
+    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs');
+    expect(r.status).toBe('FAIL'); // NEW here would mean the metric stopped being gated
+    expect(r.baseline).toBe(1207);
+    expect(r.baselineFallback).toBe(true);
+    expect(r.note).toMatch(/re-bless/i);
+  });
+});
+
+describe('tailRegressionNote — what best-of-N stops failing on', () => {
+  it('reports a median regression the gate let through', () => {
+    const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
+    const cur = makeResult({ coldFirstPtyDataMs: 2470, coldFirstPtyDataBestMs: 1442 });
+    const note = tailRegressionNote(cur, base);
+    expect(note).toMatch(/median regressed/);
+    // Reported, not enforced — the gate result stays green.
+    expect(hasFailure(compareResults(cur, base))).toBe(false);
+  });
+
+  it('says nothing when the median is within bounds', () => {
+    const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
+    const cur = makeResult({ coldFirstPtyDataMs: 1300, coldFirstPtyDataBestMs: 1200 });
+    expect(tailRegressionNote(cur, base)).toBeNull();
+  });
+
+  it('says nothing when the gate itself went red — the FAIL already covers it', () => {
+    const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
+    const cur = makeResult({ coldFirstPtyDataMs: 2600, coldFirstPtyDataBestMs: 2500 });
+    expect(tailRegressionNote(cur, base)).toBeNull();
+  });
+
+  it('says nothing without a baseline', () => {
+    expect(tailRegressionNote(makeResult(), null)).toBeNull();
   });
 });
 
