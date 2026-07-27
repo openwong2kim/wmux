@@ -105,7 +105,10 @@ export function createTranscriptProbeCache(
 ): TranscriptProbeCache {
   const ttlMs = options.ttlMs ?? DEFAULT_PROBE_TTL_MS;
   const max = options.max ?? DEFAULT_PROBE_CACHE_MAX;
-  const clock = options.now ?? Date.now;
+  // Read through to the global on every call rather than capturing `Date.now`
+  // once — the reference is captured at module load, which a caller that
+  // controls time later could not then influence.
+  const clock = options.now ?? (() => Date.now());
   const entries = new Map<string, ProbeEntry>();
   /**
    * Every refresh still running, including ones whose entry was evicted or reset

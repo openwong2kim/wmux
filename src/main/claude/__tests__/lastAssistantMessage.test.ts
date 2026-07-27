@@ -8,6 +8,8 @@ import {
   transcriptFileLives,
   endsWithQuestion,
   __resetTranscriptProbeCache,
+  __whenTranscriptProbesIdle,
+  type AsyncTranscriptCommandRunner,
   type TranscriptCommandRunner,
 } from '../lastAssistantMessage';
 
@@ -254,9 +256,15 @@ describe('WSL transcript reads', () => {
         text: 'Proceed?',
         endsWithQuestion: true,
       });
-      expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
       expect(lstat).toHaveBeenCalledWith(uncPath);
       expect(open.mock.calls[0][0]).toBe(uncPath);
+      // Isolate the probe from the tail read above. Without this the UNC
+      // assertions are already satisfied by readLastAssistantMessage, so a probe
+      // that silently stopped falling back — and returned "unproven" instead of
+      // consulting the bridge — would still pass.
+      lstat.mockClear();
+      expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
+      expect(lstat).toHaveBeenCalledWith(uncPath);
     } finally {
       lstat.mockRestore();
       open.mockRestore();
@@ -266,14 +274,21 @@ describe('WSL transcript reads', () => {
     }
   });
 
-  it('fails softly when the bounded WSL command times out', () => {
+  it('treats a timed-out probe as unproven, not as absent', () => {
     const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
       const err = new Error('timed out');
       Object.assign(err, { code: 'ETIMEDOUT' });
       throw err;
     });
+    // A tail read still fails softly — there is no message to report.
     expect(readLastAssistantMessage('/home/me/transcript.jsonl', context, run)).toBeNull();
-    expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(false);
+    // Existence is different. A WSL distro cold-booting past the 750 ms budget
+    // cannot answer, and reporting absence there dropped the exact
+    // `--resume <id>` and restarted the agent without its conversation.
+    expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
+    // Nothing was recorded, so the next poll asks again rather than serving a
+    // guess for a full TTL.
+    expect(transcriptFileLives('/home/me/transcript.jsonl', context, run)).toBe(true);
   });
 
   it('rejects a location/distro mismatch without executing anything', () => {
@@ -285,6 +300,48 @@ describe('WSL transcript reads', () => {
     expect(readLastAssistantMessage('/home/me/mismatch.jsonl', mismatched, run)).toBeNull();
     expect(transcriptFileLives('/home/me/mismatch.jsonl', mismatched, run)).toBe(false);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('treats an unresolved distribution as unproven, unlike a mismatch', () => {
+    const run = vi.fn<TranscriptCommandRunner>();
+    // A WSL pane recovered after a reboot knows it is WSL but has not resolved
+    // *which* distribution yet. That refusal happens before anything can look at
+    // the file, so unlike a mismatch it is not evidence the transcript is gone —
+    // and reading it as absence is what dropped the exact `--resume <id>`.
+    const unresolved = {
+      location: { domain: 'wsl' as const, cwd: '/work/repo', shell: 'wsl.exe' },
+      activeSession: { sessionId: 'pty-3', active: true as const },
+    };
+    expect(transcriptFileLives('/home/me/unresolved.jsonl', unresolved, run)).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a stale answer out of band through the injected runner', async () => {
+    // The refresh used to be gated on the runner being the production function,
+    // so an injected one could never drive it and none of this was reachable.
+    vi.useFakeTimers();
+    try {
+      const sync = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('1'));
+      const async = vi.fn<AsyncTranscriptCommandRunner>().mockResolvedValue(Buffer.from('0'));
+      const prober = { sync, async };
+
+      expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(true);
+      vi.setSystemTime(Date.now() + 31_000);
+
+      // The stale answer comes back without waiting for the refresh.
+      expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(true);
+      expect(async).toHaveBeenCalledTimes(1);
+      // One command constructor for both paths: the refresh spells the same
+      // file, args and bounds as the blocking probe did.
+      expect(async.mock.calls[0]).toEqual(sync.mock.calls[0]);
+
+      await __whenTranscriptProbesIdle();
+      expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(false);
+      // Still exactly one blocking probe across all three polls.
+      expect(sync).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('treats only an explicit regular-file probe result as live', () => {
