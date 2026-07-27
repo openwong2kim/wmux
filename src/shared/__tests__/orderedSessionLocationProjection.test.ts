@@ -170,13 +170,16 @@ describe('OrderedSessionLocationProjection', () => {
 
   it('does not resolve a candidate from a finished discovery', () => {
     const projection = new OrderedSessionLocationProjection();
+    const lease = begin(projection);
+    expect(projection.accept('s1', snapshot(4, 2), lease)).toBe(true);
     const discovery = projection.beginDiscovery();
     projection.finishDiscovery(discovery);
 
     expect(
-      projection.resolveDiscoverySnapshot('s1', snapshot(1, 1), discovery),
+      projection.resolveDiscoverySnapshot('s1', snapshot(4, 3), discovery),
     ).toBeUndefined();
-    expect(projection.retainedSize()).toBe(0);
+    expect(projection.get('s1')).toEqual(snapshot(4, 2));
+    expect(projection.retainedSize()).toBe(1);
   });
 
   it('does not resolve a candidate from a retired generation', () => {
