@@ -70,6 +70,69 @@ describe('peers — per-peer store', () => {
     expect(store().nextSendSeq('u1')).toBe(3); // persisted across reload
   });
 
+  // ── #658: a pairing that cannot be saved must not survive in memory ─────────
+  describe('upsertPaired is atomic', () => {
+    it('keeps no peer when the ACL fail-closed branch throws', () => {
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        let hardenOk = true;
+        const s = new PeerStore(dir, {
+          reHarden: () => hardenOk,
+          secureWrite: (p, d) => fs.writeFileSync(p, d),
+        });
+        hardenOk = false; // now persist() unlinks the file and throws (C12)
+        expect(() => s.upsertPaired(mkResult('u1'))).toThrow(/owner-only ACL/);
+        // listPeers reads THIS map — the half-pair in #658 was memory saying yes
+        // over a file that had just been deleted.
+        expect(s.get('u1')).toBeNull();
+        expect(s.list()).toEqual([]);
+      } finally {
+        if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      }
+    });
+
+    it('keeps no peer when the atomic write itself throws', () => {
+      // The ACL branch is only one way persist() fails; a failed rename leaves no
+      // primary file at all, since the previous one was already moved to .bak.
+      // The rollback has to hold for the invariant, not for one branch.
+      const s = store();
+      const peerDir = path.join(dir, 'lanlink');
+      fs.chmodSync(peerDir, 0o500); // r-x: no temp file can be created
+      try {
+        expect(() => s.upsertPaired(mkResult('u1'))).toThrow();
+        expect(s.list()).toEqual([]);
+      } finally {
+        fs.chmodSync(peerDir, 0o700);
+      }
+    });
+
+    it('does NOT roll back a revoke or a burn — that direction is fail-open', () => {
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        let hardenOk = true;
+        const s = new PeerStore(dir, {
+          reHarden: () => hardenOk,
+          secureWrite: (p, d) => fs.writeFileSync(p, d),
+        });
+        s.upsertPaired(mkResult('u1'));
+        s.upsertPaired(mkResult('u2'));
+        hardenOk = false;
+        // Restoring these would keep delivering to a peer the user just removed,
+        // and would stop a burn from ever reaching the threshold.
+        expect(() => s.revoke('u1')).toThrow(/owner-only ACL/);
+        expect(s.get('u1')).toBeNull();
+        for (let i = 0; i < PEER_BURN_THRESHOLD; i++) {
+          expect(() => s.noteSteadyStateAuthFail('u2')).toThrow(/owner-only ACL/);
+        }
+        expect(s.get('u2')).toBeNull(); // burned
+      } finally {
+        if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      }
+    });
+  });
+
   it('get(__proto__) is null (Map-backed, C20)', () => {
     expect(store().get('__proto__')).toBeNull();
     expect(store().get('constructor')).toBeNull();

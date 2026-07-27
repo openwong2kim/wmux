@@ -107,7 +107,26 @@ export async function pairWithPeer(opts: PairJoinOptions): Promise<PairResult> {
     const pake2 = await stream.next(PAKE2);
     const { confirm, pending } = await ini.onPake2(pake2);
     socket.write(encodeFrame(CONFIRM, confirm));
-    const firstAead = await stream.next(AEAD_RECORD);
+    // A close HERE — after the peer accepted our CONFIRM but before it confirmed
+    // back — is the one that cost two teams hours in #658. The bare 'connection
+    // closed' reads like a transport fault, so they went looking below lanlink;
+    // the actual cause was the peer failing to save the pairing. Name the two
+    // possibilities rather than the symptom. (Not a wire-level error frame: the
+    // responder has no authenticated channel to send one on yet, and a cleartext
+    // one would be both a PIN oracle and injectable.)
+    let firstAead: Buffer;
+    try {
+      firstAead = await stream.next(AEAD_RECORD);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'connection closed') {
+        throw new Error(
+          'LanLink pairing: the peer hung up after accepting the PIN but before confirming — ' +
+            'it most likely failed to save the pairing (check the peer daemon log), ' +
+            'or the connection dropped. Neither side is paired.',
+        );
+      }
+      throw err;
+    }
     // Responder sends respMac via the s2c direction; joiner opens it as s2c.
     const respMac = new AeadOpener(pending.sessionKeys.s2cKey, 2).open(firstAead);
     const result = ini.verifyRespMac(respMac, pending);
