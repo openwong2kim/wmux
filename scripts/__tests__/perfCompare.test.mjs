@@ -190,7 +190,7 @@ describe('compareResults — missing current metric', () => {
     const cur = makeResult();
     cur.scenarios.coldStart.median.firstPtyDataMs = null;
     cur.scenarios.coldStart.best.firstPtyDataMs = null; // no boot produced a number
-    expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs').status).toBe('FAIL');
+    expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataBestMs').status).toBe('FAIL');
   });
 
   it('SKIPS (does not FAIL) when the scenario is absent in BOTH baseline and current', () => {
@@ -232,7 +232,7 @@ describe('compareResults — cold start gates the fastest boot (#650)', () => {
     // Real numbers from run 30254659860: boots 1442 / 9154 / 2470ms.
     const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
     const cur = makeResult({ coldFirstPtyDataMs: 2470, coldFirstPtyDataBestMs: 1442 });
-    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs');
+    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataBestMs');
     expect(r.status).toBe('PASS');
     expect(r.current).toBe(1442);
   });
@@ -240,18 +240,30 @@ describe('compareResults — cold start gates the fastest boot (#650)', () => {
   it('still FAILS a regression that slows every boot', () => {
     const base = makeResult({ coldFirstPtyDataMs: 1207, coldFirstPtyDataBestMs: 1134 });
     const cur = makeResult({ coldFirstPtyDataMs: 2600, coldFirstPtyDataBestMs: 2500 });
-    expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs').status).toBe('FAIL');
+    expect(verdictFor(compareResults(cur, base), 'coldFirstPtyDataBestMs').status).toBe('FAIL');
   });
 
   it('reads the baseline median when the baseline predates best-of-N, rather than going NEW', () => {
     const base = makeResult({ coldFirstPtyDataMs: 1207 });
     delete base.scenarios.coldStart.best; // baseline blessed before the estimator moved
     const cur = makeResult({ coldFirstPtyDataMs: 2600, coldFirstPtyDataBestMs: 2500 });
-    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataMs');
+    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataBestMs');
     expect(r.status).toBe('FAIL'); // NEW here would mean the metric stopped being gated
     expect(r.baseline).toBe(1207);
     expect(r.baselineFallback).toBe(true);
-    expect(r.note).toMatch(/re-bless/i);
+    expect(r.note).toMatch(/fix the regression first/i); // never "re-bless" on a red
+  });
+
+  it('suppresses the improvement flag under fallback — best vs median is not an improvement', () => {
+    // current best 950 < baseline median 1207 * 0.8: would flag improved on a
+    // same-estimator comparison, but here the drop is the estimator change.
+    const base = makeResult({ coldFirstPtyDataMs: 1207 });
+    delete base.scenarios.coldStart.best;
+    const cur = makeResult({ coldFirstPtyDataMs: 1000, coldFirstPtyDataBestMs: 950 });
+    const r = verdictFor(compareResults(cur, base), 'coldFirstPtyDataBestMs');
+    expect(r.status).toBe('PASS');
+    expect(r.improved).toBe(false);
+    expect(r.note).toMatch(/re-bless/i); // a green fallback does say re-bless
   });
 });
 
@@ -361,16 +373,29 @@ describe('historyLine — the trend record (#602)', () => {
 
   // Field names are the series identity for lines already accumulated. Renaming
   // a gate key silently forks the series, so pin the pre-#602 names explicitly.
+  //
+  // One deliberate fork so far (#650): the cold-start gate moved from the
+  // median to the fastest boot, and `coldFirstPtyDataMs` — a median series
+  // since the trend began — must NOT continue under the new estimator. That
+  // series ends; `coldFirstPtyDataBestMs` starts. Both directions are pinned
+  // below: the ended name stays gone (reintroducing it would splice best-of-N
+  // values into a median column) and the new name exists.
   it('keeps the field names the pre-#602 lines already use', () => {
     const rec = record();
     for (const name of [
-      'coldFirstPtyDataMs', 'echoP95Ms', 'frameP95Ms', 'frame8P95Ms',
+      'echoP95Ms', 'frameP95Ms', 'frame8P95Ms',
       'ramIdleBytes', 'ram8Bytes',
       'frameBudgetP95Ms_N4', 'frameBudgetP95Ms_N8', 'frameBudgetP95Ms_N16',
       'imePass', 'webglContextLossPass',
     ]) {
       expect(Object.hasOwn(rec, name), `dropped legacy trend field ${name}`).toBe(true);
     }
+  });
+
+  it('the cold-start series fork (#650) is explicit: old name ended, new name live', () => {
+    const rec = record();
+    expect(Object.hasOwn(rec, 'coldFirstPtyDataMs'), 'coldFirstPtyDataMs ended at #650 — reusing it would mix estimators in one series').toBe(false);
+    expect(Object.hasOwn(rec, 'coldFirstPtyDataBestMs')).toBe(true);
   });
 
   it('records the four hiddenFlood values that were missing entirely', () => {

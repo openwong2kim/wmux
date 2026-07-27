@@ -31,11 +31,12 @@ pre-announce targets."*
   interference is one-sided — a busy CI host makes boots slower, never faster —
   so the fastest boot is the sample least contaminated by the machine. The
   median stays as the descriptive number and is reported separately when it
-  regresses on its own (see Gate semantics). Note for anyone reading the trend:
-  the `coldFirstPtyDataMs` series is derived from the gate path, so lines
-  written from #650 onward carry the fastest boot where earlier lines carried
-  the median — the two are within a few percent on a healthy runner and far
-  apart on a bad one, which is the whole point.
+  regresses on its own (see Gate semantics). For the trend this is an explicit
+  series fork: the `coldFirstPtyDataMs` column (a median since the trend began)
+  **ends** at #650 and `coldFirstPtyDataBestMs` starts, because splicing
+  best-of-N values into a median column would silently mix two estimators in
+  one series. A consumer sees the old column stop and a new one begin — never
+  mixed statistics under one name.
 - **RAM** — working-set bytes of the **full process tree**, including the
   detached daemon, at two states: idle with 1 pane (`idle1Pane`) and 8 panes
   (`panes8`). `appMetricsRaw` is captured for context but is **never gated**.
@@ -254,6 +255,14 @@ lasting seconds; it cannot cover a host that is degraded for the whole job. On
 commit whose entire diff was the length of a web pairing code. A confirmation on
 the same machine is a check on the code's determinism, not on the machine's
 fitness to measure.
+
+Stating the compounded trade plainly: best-of-N and the confirmation re-run
+multiply. A cold-start red now requires the fastest boot of the first run AND
+the fastest boot of the re-run to both trip the thresholds — a regression that
+slows a boot with probability p is caught with roughly p^(2N), so the gate is
+effectively for deterministic regressions. That is the deliberate posture: the
+probabilistic tail is covered by the tail note (a `::warning::` annotation on
+both the first run and a cleared re-run) and by the trend, not by a red build.
 
 **Only measurements are confirmed.** A red that includes a boolean correctness
 gate (`ime.pass`, `webglContextLoss.pass`) stands at once and is never re-run —

@@ -418,6 +418,39 @@ describe('confirmGate', () => {
     expect(base(ctx).cleared).toBe(false);
     expect(ctx.logs.join('')).toContain('The gate stays red');
   });
+
+  // #650: a clear earned through the re-run must not report LESS than a plain
+  // green. The retry's fastest boot recovered (so the gate clears) while its
+  // median stayed regressed — the tail note fires on the retry's numbers.
+  it('prints the tail note when the retry clears on its fastest boot with the median still red', () => {
+    const cold = (medianMs, bestMs) => ({
+      schemaVersion: 1,
+      meta: { commit: 'abc1234', mode: 'ci', config: { coldRuns: 3, inputSamples: 80, inputSamples8: 40, frameBudgetPanes: [4, 8, 16], hiddenFloodAgents: [4, 8] } },
+      scenarios: { coldStart: { median: { firstPtyDataMs: medianMs }, best: { firstPtyDataMs: bestMs } } },
+    });
+    const coldBaseline = cold(1207, 1134);
+    const coldCurrent = cold(2470, 2470); // best red on the first run
+    const coldRetry = cold(2282, 1442); // best recovers; median still trips both thresholds
+    const curBytes = Buffer.from(JSON.stringify(coldCurrent));
+    const basBytes = Buffer.from(JSON.stringify(coldBaseline));
+    const ctx = depsFor({
+      files: { [RETRY]: coldRetry },
+      bytes: { [CURRENT]: curBytes, [BASELINE]: basBytes, [RETRY]: Buffer.from('{}') },
+    });
+    const out = confirmGate({
+      current: coldCurrent,
+      baseline: coldBaseline,
+      results: verdictOf(coldCurrent, coldBaseline),
+      currentJson: CURRENT,
+      currentBytes: curBytes,
+      baselineJson: BASELINE,
+      baselineBytes: basBytes,
+      retryJson: RETRY,
+      deps: ctx.deps,
+    });
+    expect(out.cleared).toBe(true);
+    expect(ctx.logs.join('')).toContain('median regressed');
+  });
 });
 
 // End to end through the shipped gate: perf-compare decides, confirms, and

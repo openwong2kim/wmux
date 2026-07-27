@@ -42,8 +42,15 @@ export const GATES = [
   // regression — which slows every boot, not one of them — still trips both
   // thresholds. The median is still measured, still published to the trend, and
   // still reported (see tailRegressionNote) when it regresses on its own.
+  //
+  // The key is `coldFirstPtyDataBestMs`, NOT the old `coldFirstPtyDataMs`: the
+  // trend field is derived from this key, and reusing the old name would splice
+  // best-of-N values into a column that has carried medians since the trend
+  // began — a silent estimator change inside one series, which is the exact
+  // shape of drift #602 exists to prevent. The rename ends the old series and
+  // starts a new one, so a consumer sees a new column, never mixed statistics.
   {
-    key: 'coldFirstPtyDataMs',
+    key: 'coldFirstPtyDataBestMs',
     label: 'coldStart.firstPtyDataMs (best)',
     path: 'scenarios.coldStart.best.firstPtyDataMs',
     baselineFallbackPath: 'scenarios.coldStart.median.firstPtyDataMs',
@@ -352,8 +359,17 @@ export function compareResults(current, baseline, gates = GATES) {
       }
     }
     if (baselineFallback) {
-      const from = `baseline read from \`${gate.baselineFallbackPath}\` — this baseline predates \`${gate.path}\`, so re-bless it`;
-      r.note = r.note ? `${r.note}; ${from}` : from;
+      // Cross-estimator comparison (current best vs baseline median), so two
+      // adjustments: the improvement flag is suppressed — best sits below the
+      // median by construction, and "consider refreshing baseline" earned that
+      // way would be a statistical artifact, not an improvement — and on a FAIL
+      // the note must not say "re-bless", because blessing a baseline from a
+      // run that just failed the gate would launder the regression into it.
+      r.improved = false;
+      const from = r.status === 'FAIL'
+        ? `baseline read from \`${gate.baselineFallbackPath}\` — this baseline predates \`${gate.path}\`; fix the regression first, then re-bless`
+        : `baseline read from \`${gate.baselineFallbackPath}\` — this baseline predates \`${gate.path}\`, so re-bless it`;
+      r.note = r.note && !r.note.startsWith('improved') ? `${r.note}; ${from}` : from;
     }
     results.push(r);
   }
@@ -757,9 +773,15 @@ async function main() {
   const recordReason = ioRecordReason ?? evaluated.recordReason;
   const allResults = evaluated.results;
 
-  // Tail-only regression (median red, best green). Reported, never gating.
+  // Tail-only regression (median red, best green). Reported, never gating. Also
+  // emitted as a workflow annotation: nobody opens a green job's summary, and a
+  // note whose entire audience is people who open green summaries reaches no
+  // one.
   const tailNote = tailRegressionNote(current, evaluated.baseline);
-  if (tailNote) extraNotes.push(tailNote);
+  if (tailNote) {
+    extraNotes.push(tailNote);
+    process.stdout.write(`::warning::${tailNote}\n`);
+  }
 
   // Human-readable table to stdout.
   if (recordOnly) {
