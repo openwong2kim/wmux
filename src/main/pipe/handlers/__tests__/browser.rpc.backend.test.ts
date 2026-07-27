@@ -68,6 +68,7 @@ const TARGET = {
   webContentsId: 42,
   targetId: 'target-1',
   wsUrl: 'ws://127.0.0.1/devtools/page/target-1',
+  workspaceId: 'ws-1',
 };
 
 function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: boolean } = {}): Harness {
@@ -259,6 +260,29 @@ describe('browser backend fork (#517)', () => {
       const res = await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' });
       const result = (res as { result?: { workspaceBackend?: string } }).result;
       expect(result?.workspaceBackend).toBe(backend);
+    });
+
+    it('does not wait for builtin target registration in external mode', async () => {
+      vi.useFakeTimers();
+      try {
+        const { router, cdp } = register({ backend: 'external', hasTarget: false });
+        const responsePromise = dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' });
+
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(vi.getTimerCount()).toBe(0);
+        expect(cdp.listTargets).toHaveBeenCalledTimes(1);
+        await expect(responsePromise).resolves.toMatchObject({
+          result: {
+            workspaceBackend: 'external',
+            targetsScoped: true,
+            targets: [],
+          },
+        });
+      } finally {
+        await vi.runOnlyPendingTimersAsync();
+        vi.useRealTimers();
+      }
     });
   });
 });
