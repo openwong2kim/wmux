@@ -183,6 +183,37 @@ describe('chat.handler — reconnect safety', () => {
   });
 });
 
+describe('chat.handler — CHAT_OPEN_GATES (the composer-gate seed)', () => {
+  it('narrows the registry list to the ptyIds with a PENDING request', async () => {
+    const { dc, rpc } = makeDaemon({
+      pending: [
+        { id: 'a1', sessionId: 'pty-1' },
+        { id: 'a2', sessionId: 'pty-3' },
+        // A duplicate pane and a malformed row must not reach the renderer as
+        // two locks or as an undefined key.
+        { id: 'a3', sessionId: 'pty-1' },
+        { id: 'a4' },
+      ],
+      recentlyResolved: [{ id: 'a0', sessionId: 'pty-9' }],
+    });
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+
+    expect(await getHandler(IPC.CHAT_OPEN_GATES)(fakeEvent)).toEqual(['pty-1', 'pty-3']);
+    expect(rpc).toHaveBeenCalledWith('daemon.approvals.list', {});
+  });
+
+  it('answers with an empty list in local mode rather than throwing', async () => {
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => null });
+    expect(await getHandler(IPC.CHAT_OPEN_GATES)(fakeEvent)).toEqual([]);
+  });
+
+  it('survives a registry that answers with no pending array', async () => {
+    const { dc } = makeDaemon({});
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+    expect(await getHandler(IPC.CHAT_OPEN_GATES)(fakeEvent)).toEqual([]);
+  });
+});
+
 describe('chat.handler — local (non-daemon) mode', () => {
   it('answers local-mode without reaching for a daemon', async () => {
     registerChatHandlers({ getWindow: () => null, getDaemonClient: () => null });

@@ -654,8 +654,12 @@ export function useNotificationListener() {
           activity,
           pendingQuestion,
         });
-        if (gateAction === 'lock') state.lockSurfaceNeedsInput(ptyId);
-        else if (gateAction === 'unlock') state.unlockSurfaceNeedsInput(ptyId);
+        // Both transitions name the `signal` source. A turn boundary is
+        // evidence about the REGEX-derived lock only: an approval the registry
+        // still holds must survive it, or a parallel tool's PostToolUse landing
+        // mid-approval unlocks the composer over a live permission menu (A8).
+        if (gateAction === 'lock') state.lockSurfaceNeedsInput(ptyId, 'signal');
+        else if (gateAction === 'unlock') state.unlockSurfaceNeedsInput(ptyId, 'signal');
         if (typeof rest.agentStatus === 'string') {
           state.setSurfaceAgentStatus(ptyId, rest.agentStatus as AgentStatus);
           // Byte-based per-PTY 'running' (daemon ActivityMonitor) is otherwise
@@ -892,12 +896,40 @@ export function useNotificationListener() {
     const unsubChatGate = window.electronAPI.chat?.onGate?.((ptyId, gate) => {
       if (!ptyId) return;
       const s = useStore.getState();
-      if (gate?.kind === 'open') s.lockSurfaceNeedsInput(ptyId);
-      else s.unlockSurfaceNeedsInput(ptyId);
+      if (gate?.kind === 'open') s.lockSurfaceNeedsInput(ptyId, 'approval');
+      else s.unlockSurfaceNeedsInput(ptyId, 'approval');
     });
+
+    // …and the seed for it. `onGate` only reports TRANSITIONS, so a renderer
+    // reload or a daemon reconnect during an open approval would leave the
+    // composer unlocked over a live permission menu — fail-open on the one path
+    // where that means keystrokes select a menu option. The composer renders
+    // locked until this resolves (paneSlice.composerGateSeeded).
+    const seedGate = (): void => {
+      const openGates = window.electronAPI.chat?.openGates;
+      if (!openGates) {
+        // Older preload with no seed available: mark seeded so the composer is
+        // not locked forever, and fall back to the transition-only behaviour.
+        useStore.getState().seedComposerGate([]);
+        return;
+      }
+      void openGates()
+        .then((ptyIds) => { useStore.getState().seedComposerGate(ptyIds ?? []); })
+        .catch(() => {
+          // A failed seed must not leave the composer permanently disabled; the
+          // approval.gate stream still arms the lock for anything that opens
+          // from here on.
+          useStore.getState().seedComposerGate([]);
+        });
+    };
+    seedGate();
+    // A reconnect means the daemon may have resolved or opened approvals while
+    // main was not relaying, so the seed is re-run rather than trusted once.
+    const unsubDaemonConnected = window.electronAPI.daemon?.onConnected?.(() => { seedGate(); });
 
     return () => {
       unsubChatGate?.();
+      unsubDaemonConnected?.();
       unsubNotif();
       unsubFocus();
       unsubCwd();

@@ -136,7 +136,8 @@ describe('TerminalOrChat — the render switch', () => {
 
   it('threads the composer gate, question, agent identity and both callbacks', () => {
     useStore.setState((s) => {
-      s.surfaceNeedsInput[PTY] = true;
+      s.composerGateSeeded = true;
+      s.surfaceNeedsInput[PTY] = { approval: true };
       s.surfacePendingQuestion[PTY] = 'Which file should I delete?';
       s.surfaceAgent[PTY] = { name: 'Claude Code', status: 'running' };
     });
@@ -156,5 +157,30 @@ describe('TerminalOrChat — the render switch', () => {
     });
     mount(surface({ chatMode: true }));
     expect(chat()!.getAttribute('data-agent-status')).toBe('');
+  });
+});
+
+describe('Pane chat surface — the gate is fail-closed until it is seeded', () => {
+  // `approval.gate` carries transitions only. Before the open-approval snapshot
+  // lands, "no lock recorded" and "no lock exists" are indistinguishable, and
+  // the wrong guess renders a usable composer over a live permission menu.
+  it('renders the composer locked while the open-approval seed is outstanding', () => {
+    useStore.setState((s) => { s.composerGateSeeded = false; });
+    mount(surface({ chatMode: true }));
+    expect(chat()!.getAttribute('data-needs-input')).toBe('true');
+  });
+
+  it('unlocks once the seed reports no open approval for the pane', () => {
+    useStore.setState((s) => { s.composerGateSeeded = false; });
+    mount(surface({ chatMode: true }));
+    act(() => { useStore.getState().seedComposerGate([]); });
+    expect(chat()!.getAttribute('data-needs-input')).toBe('false');
+  });
+
+  it('stays locked when the seed names this pane', () => {
+    useStore.setState((s) => { s.composerGateSeeded = false; });
+    mount(surface({ chatMode: true }));
+    act(() => { useStore.getState().seedComposerGate([PTY]); });
+    expect(chat()!.getAttribute('data-needs-input')).toBe('true');
   });
 });

@@ -9,6 +9,7 @@ import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import { ChatView } from '../Chat/ChatView';
+import { isComposerLocked } from '../../stores/slices/paneSlice';
 import { keepWarmSet } from '../../chat/keepWarmLru';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
@@ -896,7 +897,13 @@ export function TerminalOrChat({
 }) {
   const ptyId = surface.ptyId;
   const chatMode = !!surface.chatMode && !!ptyId;
-  const needsInput = useStore((s) => (ptyId ? !!s.surfaceNeedsInput[ptyId] : false));
+  // Locked while EITHER source holds the gate, and — fail-closed — while the
+  // open-approval snapshot has not arrived yet. Before the seed existed, a
+  // renderer reload during an open permission menu rendered a fully usable
+  // composer over it, because `approval.gate` only carries transitions.
+  const gateSeeded = useStore((s) => s.composerGateSeeded);
+  const gateLocked = useStore((s) => (ptyId ? isComposerLocked(s.surfaceNeedsInput[ptyId]) : false));
+  const needsInput = !gateSeeded || gateLocked;
   const pendingQuestion = useStore((s) => (ptyId ? s.surfacePendingQuestion[ptyId] : undefined));
   const agentEntry = useStore((s) => (ptyId ? s.surfaceAgent[ptyId] : undefined));
   const setSurfaceChatMode = useStore((s) => s.setSurfaceChatMode);

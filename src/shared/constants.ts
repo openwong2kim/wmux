@@ -286,6 +286,14 @@ export const IPC = {
   //                    permission menu). A separate channel keeps lock and
   //                    unlock provably independent of any byte heuristic.
   CHAT_GATE: 'chat:gate',
+  //   CHAT_OPEN_GATES  (invoke) renderer → main: the ptyIds that currently hold
+  //                    an OPEN ApprovalRegistry request. CHAT_GATE only reports
+  //                    transitions, so a renderer that reloads (or a daemon that
+  //                    reconnects) while an approval is already open would never
+  //                    hear about it and would render an UNLOCKED composer over
+  //                    a live permission menu. This is the seed that closes that
+  //                    window; the composer stays locked until it answers.
+  CHAT_OPEN_GATES: 'chat:open-gates',
   //   WORKSPACE_MIRROR_PUSH (send) renderer → main: a fire-and-forget full
   //   snapshot of the workspace tree + per-pane agent status. Feeds the
   //   main-process WorkspaceMirror so routing / hook resolution can be served

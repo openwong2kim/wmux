@@ -155,6 +155,28 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
     ),
   );
 
+  // G2 seed. `daemon.approvals.list` is the registry's own authoritative view;
+  // main narrows it to the ptyIds with a PENDING request, which is all the gate
+  // needs (the question text rides METADATA_UPDATE). Local mode has no registry,
+  // so the honest answer is "nothing open".
+  ipcMain.removeHandler(IPC.CHAT_OPEN_GATES);
+  ipcMain.handle(
+    IPC.CHAT_OPEN_GATES,
+    wrapHandler(IPC.CHAT_OPEN_GATES, async (): Promise<string[]> => {
+      const daemon = getDaemonClient();
+      if (!daemon) return [];
+      const res = (await daemon.rpc('daemon.approvals.list', {})) as {
+        pending?: { sessionId?: unknown }[];
+      } | null;
+      const pending = Array.isArray(res?.pending) ? res.pending : [];
+      const ids = new Set<string>();
+      for (const req of pending) {
+        if (typeof req?.sessionId === 'string' && req.sessionId) ids.add(req.sessionId);
+      }
+      return [...ids];
+    }),
+  );
+
   // Push leg. The daemon already unicasts appends to subscribed sockets only, so
   // there is no per-pane filtering to redo here: whatever arrives is something
   // this renderer asked for. The ptyId rides as its own argument (not folded
@@ -186,5 +208,6 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
     ipcMain.removeHandler(IPC.CHAT_SUBSCRIBE);
     ipcMain.removeHandler(IPC.CHAT_UNSUBSCRIBE);
     ipcMain.removeHandler(IPC.CHAT_CODE_BLOCK);
+    ipcMain.removeHandler(IPC.CHAT_OPEN_GATES);
   };
 }

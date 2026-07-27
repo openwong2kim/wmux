@@ -75,9 +75,14 @@ export function ChatComposer({
     if (text.trim().length === 0) return;
     // Synchronous re-check: the gate may have engaged since the last render.
     if (needsInputRef.current) return;
-    submitBracketedPasteToPty(ptyId, text, undefined, {
+    // The same guard now covers the PAYLOAD write as well as the deferred
+    // Enter — the payload used to go out unconditionally at call time.
+    const written = submitBracketedPasteToPty(ptyId, text, undefined, {
       submitGuard: () => !needsInputRef.current,
     });
+    // Nothing was written, so nothing is echoed: an optimistic row for a message
+    // the gate refused would read as sent and never be answered.
+    if (!written) return;
     onSend(text);
     setValue('');
   }, [value, ptyId, onSend]);

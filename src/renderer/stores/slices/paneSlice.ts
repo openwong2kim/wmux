@@ -16,6 +16,26 @@ import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
 
+/**
+ * Where a composer lock came from. Kept apart because they have different
+ * lifetimes and different authority:
+ *   - `approval` is the daemon ApprovalRegistry, hook-authoritative. It clears
+ *     ONLY when the registry says the request closed, or when the pane is torn
+ *     down. No renderer-side heuristic may release it.
+ *   - `signal` is `agent.awaiting_input`, a screen-scrape regex
+ *     (AgentDetector). Trusted to LOCK (defense in depth) and released by a
+ *     turn-boundary metadata payload — which is exactly the trust level a regex
+ *     deserves and exactly why it must not be able to release `approval`.
+ */
+export type ComposerLockSource = 'approval' | 'signal';
+
+export type ComposerLockSources = { [K in ComposerLockSource]?: true };
+
+/** Composer is locked while ANY source holds it. */
+export function isComposerLocked(sources: ComposerLockSources | undefined): boolean {
+  return !!sources && (sources.approval === true || sources.signal === true);
+}
+
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
 // (TODOS.md "Pane split max depth/count guard"). 20 leaves keeps a runaway
@@ -158,10 +178,35 @@ export interface PaneSlice {
   // turn-end hook arriving (`agent.stop` / `agent.activity`). Never a byte
   // heuristic, never pane focus.
   //
+  // The two sources are tracked SEPARATELY, and that separation is the whole
+  // invariant. A single boolean let a turn-boundary metadata payload clear a
+  // lock the registry still held: a parallel tool's PostToolUse lands mid-
+  // approval, `activity` is present, and the composer unlocked while the
+  // permission menu was still on screen — the exact A8 violation the lock was
+  // written to prevent. Now the registry's lock clears only when the registry
+  // says so (or the pane is torn down), and the regex-derived lock is the only
+  // one a metadata payload can touch.
+  //
   // Transient — never persisted (buildSessionData is an allowlist and omits it).
-  surfaceNeedsInput: Record<string, true>;
-  lockSurfaceNeedsInput: (ptyId: string) => void;
-  unlockSurfaceNeedsInput: (ptyId: string) => void;
+  surfaceNeedsInput: Record<string, ComposerLockSources>;
+  lockSurfaceNeedsInput: (ptyId: string, source: ComposerLockSource) => void;
+  unlockSurfaceNeedsInput: (ptyId: string, source: ComposerLockSource) => void;
+  // Has the open-approval snapshot been fetched yet this session?
+  //
+  // The gate only ever learned about FUTURE approval.gate events, so a renderer
+  // reload (or a daemon reconnect) with an approval already open left the
+  // composer unlocked — fail-OPEN, on the one path where failing open means
+  // keystrokes land in a permission menu. The composer therefore renders locked
+  // until this is true, and `seedComposerGate` sets it from the daemon's
+  // authoritative list.
+  composerGateSeeded: boolean;
+  /**
+   * Reconcile the approval half of the gate against the daemon's open-approval
+   * list, and mark the gate seeded. Panes in the list gain the approval lock;
+   * panes that hold one but are absent from the list lose it (a resolve that
+   * happened while this renderer was not listening).
+   */
+  seedComposerGate: (openPtyIds: readonly string[]) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -337,6 +382,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfaceActivityAt: {},
   surfacePendingQuestion: {},
   surfaceNeedsInput: {},
+  composerGateSeeded: false,
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -374,14 +420,37 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     else delete state.surfacePendingQuestion[ptyId];
   }),
 
-  lockSurfaceNeedsInput: (ptyId) => set((state: StoreState) => {
+  lockSurfaceNeedsInput: (ptyId, source) => set((state: StoreState) => {
     if (!ptyId) return;
-    state.surfaceNeedsInput[ptyId] = true;
+    const sources = state.surfaceNeedsInput[ptyId] ?? {};
+    sources[source] = true;
+    state.surfaceNeedsInput[ptyId] = sources;
   }),
 
-  unlockSurfaceNeedsInput: (ptyId) => set((state: StoreState) => {
+  unlockSurfaceNeedsInput: (ptyId, source) => set((state: StoreState) => {
     if (!ptyId) return;
-    delete state.surfaceNeedsInput[ptyId];
+    const sources = state.surfaceNeedsInput[ptyId];
+    if (!sources) return;
+    // Only the named source is released. A metadata turn boundary clearing
+    // `signal` must leave an open approval's `approval` lock exactly where it
+    // was — that is the A8 invariant.
+    delete sources[source];
+    if (!sources.approval && !sources.signal) delete state.surfaceNeedsInput[ptyId];
+  }),
+
+  seedComposerGate: (openPtyIds) => set((state: StoreState) => {
+    const open = new Set(openPtyIds.filter(Boolean));
+    for (const ptyId of open) {
+      const sources = state.surfaceNeedsInput[ptyId] ?? {};
+      sources.approval = true;
+      state.surfaceNeedsInput[ptyId] = sources;
+    }
+    for (const [ptyId, sources] of Object.entries(state.surfaceNeedsInput)) {
+      if (open.has(ptyId) || !sources.approval) continue;
+      delete sources.approval;
+      if (!sources.signal) delete state.surfaceNeedsInput[ptyId];
+    }
+    state.composerGateSeeded = true;
   }),
 
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {

@@ -178,4 +178,15 @@ export interface ChatBridgeApi {
    * a permission menu for ten minutes.
    */
   onGate: (callback: (ptyId: string, gate: { kind: 'open' | 'closed' }) => void) => () => void;
+  /**
+   * The ptyIds that hold an OPEN approval right now.
+   *
+   * `onGate` is transition-only, so on mount and on every daemon reconnect the
+   * gate has to be SEEDED from this before the composer may be enabled —
+   * otherwise a reload during an open permission menu renders an unlocked
+   * composer over it. Returns an empty list in local mode (no registry, no
+   * approvals) — never throws, because the caller's fallback for a throw would
+   * be to guess.
+   */
+  openGates: () => Promise<string[]>;
 }

@@ -421,6 +421,8 @@ const electronAPI = {
       ipcRenderer.on(IPC.CHAT_APPEND, listener);
       return () => { ipcRenderer.removeListener(IPC.CHAT_APPEND, listener); };
     },
+    /** ptyIds holding an OPEN approval right now — the gate seed (fail-closed). */
+    openGates: () => ipcRenderer.invoke(IPC.CHAT_OPEN_GATES) as Promise<string[]>,
     /** Composer-gate transitions (approval opened/closed). Returns an unsubscribe fn. */
     onGate: (callback: (ptyId: string, gate: { kind: 'open' | 'closed' }) => void) => {
       const listener = (
