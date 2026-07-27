@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
@@ -340,6 +341,7 @@ describe('WebTerminalServer', () => {
     server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const pairCodePattern = /^[A-HJ-NP-Z2-9]{8}$/;
 
   it('gates /api/* — Bearer header required, query token rejected for non-SSE', async () => {
     const info = await startRO();
@@ -557,9 +559,9 @@ describe('WebTerminalServer', () => {
   });
 
   // ── pairing ────────────────────────────────────────────────────────────────
-  it('exposes a 6-char pairing code + expiry in status()', async () => {
+  it('exposes an 8-character pairing code + expiry in status()', async () => {
     const info = await startRO();
-    expect(info.pairCode).toMatch(/^[A-Z2-9]{6}$/);
+    expect(info.pairCode).toMatch(pairCodePattern);
     expect(typeof info.pairExpiresAt).toBe('number');
     expect((info.pairExpiresAt as number)).toBeGreaterThan(Date.now());
   });
@@ -590,7 +592,7 @@ describe('WebTerminalServer', () => {
     const info = await startRO();
     const code = info.pairCode as string;
     // Build a wrong code of the same length from the same alphabet.
-    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+    const wrong = code[0] === 'A' ? 'BBBBBBBB' : 'AAAAAAAA';
 
     for (let i = 4; i >= 1; i--) {
       const r = await fetch(`${base()}/api/pair?code=${wrong}`);
@@ -608,12 +610,19 @@ describe('WebTerminalServer', () => {
   });
 
   it('mints a fresh pairing code on each start', async () => {
-    const a = (await startRO()).pairCode as string;
-    await server.stop();
-    const b = (await startRO()).pairCode as string;
-    // Overwhelmingly likely to differ; assert format regardless.
-    expect(b).toMatch(/^[A-Z2-9]{6}$/);
-    expect(a).toMatch(/^[A-Z2-9]{6}$/);
+    let fill = 0;
+    const randomBytes = vi.spyOn(crypto, 'randomBytes').mockImplementation((size) => Buffer.alloc(size, fill++));
+    try {
+      const a = (await startRO()).pairCode as string;
+      await server.stop();
+      const b = (await startRO()).pairCode as string;
+      expect(a).toBe('AAAAAAAA');
+      expect(b).toBe('BBBBBBBB');
+      expect(a).toMatch(pairCodePattern);
+      expect(b).toMatch(pairCodePattern);
+    } finally {
+      randomBytes.mockRestore();
+    }
   });
 
   // ── critical / notify SSE tee ──────────────────────────────────────────────
@@ -758,13 +767,13 @@ describe('WebTerminalServer', () => {
   it('mints a replacement pairing code once the old one is burned', async () => {
     const info = await startRO();
     const first = info.pairCode as string;
-    expect(first).toHaveLength(6);
+    expect(first).toHaveLength(8);
     // Burn the attempt budget with wrong guesses.
     for (let i = 0; i < 5; i++) {
-      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
     }
     // Burned, and inside the regeneration cooldown: deliberately still gone.
-    await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+    await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
     expect(server.status().pairCode).toBeUndefined();
 
     // Past the cooldown, the next attempt mints a replacement so a burned code
@@ -772,12 +781,12 @@ describe('WebTerminalServer', () => {
     const realNow = Date.now();
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
     try {
-      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZZZ`);
     } finally {
       nowSpy.mockRestore();
     }
     const after = server.status().pairCode;
-    expect(after).toHaveLength(6);
+    expect(after).toHaveLength(8);
     expect(after).not.toBe(first);
   });
   it('names a pane by its program so an agent-less row is not just its own cwd twice', async () => {
@@ -817,7 +826,7 @@ describe('WebTerminalServer', () => {
     const code = info.pairCode as string;
     // A hostile page embedding <img src="http://127.0.0.1:<port>/api/pair?…">
     // reaches this route with Sec-Fetch-Site: cross-site stamped by the browser.
-    const evil = await fetch(`${base()}/api/pair?code=ZZZZZZ`, {
+    const evil = await fetch(`${base()}/api/pair?code=ZZZZZZZZ`, {
       headers: { 'Sec-Fetch-Site': 'cross-site' },
     });
     expect(evil.status).toBe(403);
@@ -835,7 +844,7 @@ describe('WebTerminalServer', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 11 * 60_000);
     try {
       const status = server.status();
-      expect(status.pairCode).toHaveLength(6);
+      expect(status.pairCode).toHaveLength(8);
       expect(status.pairCode).not.toBe(first);
       expect(status.pairExpiresAt as number).toBeGreaterThan(realNow + 11 * 60_000);
     } finally {
@@ -1923,7 +1932,7 @@ describe('WebTerminalServer', () => {
 
     // …and the daemon-side control surface is untouched by M3.
     expect(server.status().token).toBe(token);
-    expect(server.refreshPairCode().pairCode).toMatch(/^[A-Z2-9]{6}$/);
+    expect(server.refreshPairCode().pairCode).toMatch(pairCodePattern);
   });
 
   it('★ 401s a revoked device with reason `revoked` AND kills its live streams at once', async () => {
@@ -2020,7 +2029,7 @@ describe('WebTerminalServer', () => {
   it('★ status withholds the pairing code on a bind that can never redeem it', async () => {
     // The bug this closes: status() regenerates a code lazily and used to do it
     // without asking whether the server could mint a credential at all. On an
-    // exposed bind the GUI showed a fresh 6-char code every poll, the operator
+    // exposed bind the GUI showed a fresh 8-character code every poll, the operator
     // read one onto a phone, and only the redemption said 403.
     const info = await server.start({ port: 0, host: '0.0.0.0', allowInput: false, allowUpload: false });
     expect(info.running).toBe(true);
@@ -2043,7 +2052,7 @@ describe('WebTerminalServer', () => {
     // The refusal is absent, not merely falsy-but-present: the renderer keys
     // its whole pairing block on this field being undefined.
     expect(status.pairRefusal).toBeUndefined();
-    expect(status.pairCode).toMatch(/^[A-Z0-9]{6}$/);
+    expect(status.pairCode).toMatch(pairCodePattern);
     expect(typeof status.pairExpiresAt).toBe('number');
   });
 
@@ -2221,17 +2230,17 @@ describe('WebTerminalServer', () => {
 
     // Burn the attempt budget, wait out the cooldown, and let the server mint a
     // replacement code: the operator is still pairing the SAME device.
-    for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZ`);
+    for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
     const realNow = Date.now();
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
     let replacement: string;
     try {
-      await fetch(`${base()}/api/pair?code=ZZZZZZ`);
+      await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
       replacement = server.status().pairCode as string;
     } finally {
       nowSpy.mockRestore();
     }
-    expect(replacement).toHaveLength(6);
+    expect(replacement).toHaveLength(8);
     expect(replacement).not.toBe(started.code);
 
     const paired = await fetch(`${base()}/api/pair?code=${replacement}`);

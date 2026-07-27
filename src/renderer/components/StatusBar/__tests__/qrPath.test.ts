@@ -33,7 +33,7 @@ function hasFinder(g: ReturnType<typeof grid>, r0: number, c0: number): boolean 
   return true;
 }
 
-const REAL_PAYLOAD = 'https://desktop-abc123.tail1234.ts.net/pair?code=V9CBNL';
+const REAL_PAYLOAD = 'https://desktop-abc123.tail1234.ts.net/pair?code=V9CBNL27';
 
 describe('buildQrPath', () => {
   it('returns null for nothing to encode', () => {
@@ -77,9 +77,9 @@ describe('buildQrPath', () => {
   });
 
   it('grows the symbol for a longer address instead of failing', () => {
-    const short = buildQrPath('https://a.ts.net/pair?code=ABC123')!;
+    const short = buildQrPath('https://a.ts.net/pair?code=ABCD2345')!;
     const long = buildQrPath(
-      `https://${'a'.repeat(60)}.some-long-tailnet-name.ts.net/pair?code=ABC123`,
+      `https://${'a'.repeat(60)}.some-long-tailnet-name.ts.net/pair?code=ABCD2345`,
     )!;
     expect(long.size).toBeGreaterThan(short.size);
   });

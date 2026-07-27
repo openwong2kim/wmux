@@ -391,7 +391,7 @@ const PAIR_MAX_ATTEMPTS = 5;
 const PAIR_REGEN_COOLDOWN_MS = 30_000;
 /** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const PAIR_CODE_LEN = 6;
+const PAIR_CODE_LEN = 8;
 /**
  * How many attention events the replay window holds. A phone that dropped
  * connection for a coffee break must get everything it missed; a phone that was
@@ -1011,9 +1011,8 @@ export class WebTerminalServer {
    * fine, because that flag exists precisely to name the TLS front (`tailscale
    * serve`) that forwards to us.
    *
-   * `requestHost` is the Host of the redeeming request when there is one; with
-   * none (the operator-side pairStart) the question is only whether a front is
-   * configured at all.
+   * The redeeming request's `Host` is deliberately irrelevant here: the caller
+   * writes it. Only the server's bind can prove whether bytes stayed local.
    *
    * NOTE this refuses minting for a browser sitting at `127.0.0.1` on an
    * exposed server too. That is not an oversight: on a `0.0.0.0` bind the Host
@@ -1195,7 +1194,7 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      this.handlePair(res, url, hostname).catch((err: unknown) => this.failRequest(res, err));
+      this.handlePair(res, url).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
 
@@ -2359,7 +2358,7 @@ export class WebTerminalServer {
    * store, and the pairing screen keeps working unchanged — but it is now a
    * per-device credential, not the operator's.
    */
-  private async handlePair(res: http.ServerResponse, url: URL, requestHost: string): Promise<void> {
+  private async handlePair(res: http.ServerResponse, url: URL): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Shells orphaned by that bug are now cleaned up at startup.** Because the pane had already been written off, nothing ever reaped those processes — one report found shells still running eleven and twelve days after the daemon that spawned them had gone. On startup wmux now checks its own records of closed panes: if one still points at a running process, and the machine has not rebooted since (so the process id can't belong to something else), and it really is the shell wmux started, it is shut down and noted in the log. Anything uncertain is left alone.
 
+### Security
+
+- **Web pairing codes now use eight characters instead of six.** The existing unambiguous base-32 alphabet now provides 40 bits of code space while preserving the ten-minute lifetime, single-use redemption, five-attempt burn limit, and timing-safe comparison. QR pairing still requires no typing; manual pairing asks for two additional characters. (#615)
+
 ## [3.37.1] — 2026-07-27
 
 ### Fixed

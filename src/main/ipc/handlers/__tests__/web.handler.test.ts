@@ -137,7 +137,7 @@ describe('web.handler — forwarding', () => {
       tailscale: true,
       urls: ['https://box.tail1234.ts.net/?token=t', 'http://127.0.0.1:7681/?token=t'],
       allowedHosts: ['box.tail1234.ts.net'],
-      pairCode: 'ABC123',
+      pairCode: 'ABCD2345',
     };
 
     it('★ a vanished front stops the https address being advertised', async () => {
@@ -245,7 +245,7 @@ describe('web.handler — forwarding', () => {
           tailscale: false,
           urls: ['https://box.tail1234.ts.net/?token=t', 'http://127.0.0.1:7681/?token=t'],
           allowedHosts: ['box.tail1234.ts.net'],
-          pairCode: 'ABC123',
+          pairCode: 'ABCD2345',
         },
         exec,
       );

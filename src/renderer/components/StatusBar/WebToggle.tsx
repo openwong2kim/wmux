@@ -108,7 +108,7 @@ export function webBindLabel(info: WebTerminalInfo): string {
 
 /**
  * The address to type on the phone: origin + `/pair`, with NO token in it —
- * that is the whole point of the pairing code (a 6-char code instead of a
+ * that is the whole point of the pairing code (an 8-character code instead of a
  * 36-char UUID). When exposed we prefer a reachable LAN/tailnet address over
  * loopback, because 127.0.0.1 means nothing on another device.
  */
@@ -330,7 +330,7 @@ export function WebPopoverBody({
 
       {/* Path 2 — another device. This is what the pairing code exists for:
           typing a 36-char token on a phone keyboard is miserable, so the phone
-          opens a token-free /pair address and enters six characters instead. */}
+          opens a token-free /pair address and enters eight characters instead. */}
       <div className="flex flex-col gap-1">
         <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
           {t('web.onPhone')}

@@ -78,12 +78,12 @@
         <button id="ov-to-pair" class="ov-alt" type="button">Have a pairing code instead?</button>
       </form>
 
-      <!-- Pairing screen: 6-char single-use code typed on the phone. -->
+      <!-- Pairing screen: 8-char single-use code typed on the phone. -->
       <form id="ov-pair" autocomplete="off">
         <label for="ov-code">Pairing code</label>
-        <input id="ov-code" type="text" inputmode="text" maxlength="6"
+        <input id="ov-code" type="text" inputmode="text" maxlength="8"
                autocomplete="one-time-code" autocapitalize="characters"
-               autocorrect="off" spellcheck="false" placeholder="ABC123" />
+               autocorrect="off" spellcheck="false" placeholder="ABCD2345" />
         <div id="ov-pair-err" role="alert"></div>
         <button id="ov-pair-go" type="submit">Pair</button>
         <button id="ov-to-token" class="ov-alt" type="button">Have a token instead?</button>

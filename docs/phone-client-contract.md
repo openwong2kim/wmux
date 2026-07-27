@@ -77,15 +77,16 @@ operator (desktop)                   phone
 ─────────────────────                ─────
 daemon.web.pairStart {name}
   → {code, expiresAt}
-        ── operator reads the 6-char code aloud ──▶
-                                     GET /api/pair?code=ABC123
+        ── operator shares the 8-char code ───────▶
+                                     GET /api/pair?code=ABCD2345
                                        → 200 {deviceId, deviceSecret, token}
 ```
 
 `GET /api/pair?code=` is the **only** unauthenticated API route.
 
-- Code: 6 characters, 10 minutes, single use, 5 attempts. The alphabet is
-  `A-Z2-9` minus `0 O 1 I`, so it survives being read aloud.
+- Code: 8 characters (40 bits), 10 minutes, single use, 5 attempts. The
+  32-character alphabet is `A-Z2-9` minus `0 O 1 I`, so it survives being read
+  aloud.
 - `Sec-Fetch-Site: cross-site` is refused with `403 {error: 'cross-site request
   refused'}` before the attempt counter is touched — this is the one
   unauthenticated route, so five guesses must not be burnable by an
