@@ -92,10 +92,13 @@ describe('peers — per-peer store', () => {
       }
     });
 
-    it('keeps no peer when the atomic write itself throws', () => {
-      // The ACL branch is only one way persist() fails; a failed rename leaves no
-      // primary file at all, since the previous one was already moved to .bak.
-      // The rollback has to hold for the invariant, not for one branch.
+    // POSIX-only: the failure is induced with a read-only directory, and Windows
+    // ignores the POSIX mode bits, so there the write simply succeeds. The ACL
+    // test above covers the rollback on both platforms (it stubs the platform);
+    // this one exists to show the rollback holds for a DIFFERENT persist() branch
+    // — a failed atomic write, which leaves no primary file at all because the
+    // previous one was already renamed to .bak.
+    it.skipIf(process.platform === 'win32')('keeps no peer when the atomic write itself throws', () => {
       const s = store();
       const peerDir = path.join(dir, 'lanlink');
       fs.chmodSync(peerDir, 0o500); // r-x: no temp file can be created
