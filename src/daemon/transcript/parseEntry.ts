@@ -37,8 +37,9 @@ import type {
  * transcript prose (Claude Code writes JSON-escaped UTF-8 text), so a
  * renderer's split on this marker can never cut real content in half.
  */
-export const CODE_MARKER_PREFIX = '\u0000code:';
-export const CODE_MARKER_SUFFIX = '\u0000';
+const NUL = '\u0000';
+export const CODE_MARKER_PREFIX = `${NUL}code:`;
+export const CODE_MARKER_SUFFIX = NUL;
 
 /** Hard cap on the prose we keep per text event. A single 2MB paste must not
  *  become a 2MB wire payload (A3's byte budget is enforced upstream, but the
@@ -144,7 +145,7 @@ function parseUserEntry(
     // Claude Code records tool results as `user` entries too, so "has text" —
     // not "type is user" — is what marks a human turn (the isHumanTurn rule).
     if (!clean) return empty;
-    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(clean), ...tsOf(ts) };
+    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(clean)), ...tsOf(ts) };
     return single(ev, empty);
   }
 
@@ -171,7 +172,7 @@ function parseUserEntry(
     const ev: UserTextEvent = {
       id: baseId,
       kind: 'user_text',
-      text: capText(prose),
+      text: capText(stripNul(prose)),
       ...(hasImage ? { hasImage: true } : {}),
       ...tsOf(ts),
     };
@@ -336,11 +337,18 @@ function assistantText(
  * which is what Claude Code's own renderer does with a truncated response.
  */
 export function extractCodeBlocks(
-  text: string,
+  raw: string,
   offsetHint: number,
 ): { text: string; refs: CodeBlockRef[]; bodies: Map<number, string> } {
   const refs: CodeBlockRef[] = [];
   const bodies = new Map<number, string>();
+  // The marker's safety rests entirely on NUL not occurring in prose. Prose is
+  // assistant-authored, so "cannot occur" is a claim about an untrusted string:
+  // a response containing a literal NUL could otherwise forge a marker (making
+  // arbitrary prose render as somebody else's code chip) or split one the parser
+  // wrote. Strip it FIRST, so every NUL downstream is one this function put
+  // there.
+  const text = stripNul(raw);
   if (!text.includes('```') && !text.includes('~~~')) {
     return { text, refs, bodies };
   }
@@ -438,6 +446,11 @@ function tsOf(ts: number | undefined): { ts?: number } {
 
 function capText(text: string): string {
   return text.length > MAX_TEXT_CHARS ? `${text.slice(0, MAX_TEXT_CHARS)}…` : text;
+}
+
+/** Remove NUL from untrusted prose. See the note in `extractCodeBlocks`. */
+function stripNul(text: string): string {
+  return text.includes(NUL) ? text.split(NUL).join('') : text;
 }
 
 function metaEvent(

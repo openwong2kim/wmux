@@ -31,6 +31,28 @@ function entry(i: number, padBytes = 400): string {
   });
 }
 
+/** One entry whose single line is larger than the read cap. */
+function hugeEntry(): string {
+  return JSON.stringify({
+    type: 'assistant',
+    uuid: 'huge-1',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'y'.repeat(TAIL_BYTES + 5000) }] },
+  });
+}
+
+/** Is `offset` immediately after a newline (or 0)? The cursor-integrity rule. */
+function isBoundary(file: string, offset: number): boolean {
+  if (offset === 0) return true;
+  const fd = fs.openSync(file, 'r');
+  try {
+    const probe = Buffer.alloc(1);
+    fs.readSync(fd, probe, 0, 1, offset - 1);
+    return probe[0] === 0x0a;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function writeEntries(file: string, count: number): void {
   const chunks: string[] = [];
   for (let i = 0; i < count; i++) chunks.push(entry(i));
@@ -119,20 +141,20 @@ describe('readTranscriptPage — file far larger than the cap', () => {
     expect(offset).toBe(size);
   });
 
-  it('advances past a single entry larger than the cap instead of livelocking', () => {
+  it('skips a COMPLETE entry larger than the cap, visibly, landing on a boundary', () => {
     const file = path.join(dir, 'huge-line.jsonl');
-    const huge = JSON.stringify({
-      type: 'assistant',
-      uuid: 'huge-1',
-      message: { role: 'assistant', content: [{ type: 'text', text: 'y'.repeat(TAIL_BYTES + 5000) }] },
-    });
-    fs.writeFileSync(file, huge + '\n' + entry(1) + '\n', 'utf8');
+    fs.writeFileSync(file, hugeEntry() + '\n' + entry(1) + '\n', 'utf8');
 
     const first = readTranscriptDelta(file, 0)!;
-    // No complete line fit in the window, so the reader skipped the window
-    // rather than returning the same offset forever.
-    expect(first.events).toEqual([]);
-    expect(first.cursor.tailOffset).toBeGreaterThan(0);
+    // D1(a) — the row is unreadable, but the conversation SAYS so. Returning
+    // zero events left a permanent silent hole instead.
+    expect(first.stalled).toBeUndefined();
+    expect(first.events).toEqual([
+      { id: '0:oversized', kind: 'meta', subtype: 'unknown', label: 'oversized entry skipped' },
+    ]);
+    // D1(b) — and the cursor lands on a real line boundary, so the consumer's
+    // boundary check does not fail and reset the view on every later read.
+    expect(isBoundary(file, first.cursor.tailOffset)).toBe(true);
 
     let offset = first.cursor.tailOffset;
     let guard = 0;
@@ -143,6 +165,84 @@ describe('readTranscriptPage — file far larger than the cap', () => {
       offset = next.cursor.tailOffset;
     }
     expect(offset).toBe(size);
+  });
+
+  it('STALLS instead of advancing while an oversized entry is unterminated', () => {
+    const file = path.join(dir, 'partial-huge.jsonl');
+    // No trailing newline: the writer is still mid-entry.
+    fs.writeFileSync(file, hugeEntry(), 'utf8');
+
+    const stalled = readTranscriptDelta(file, 0)!;
+    expect(stalled.stalled).toBe(true);
+    expect(stalled.events).toEqual([]);
+    // The cursor did NOT move into the middle of the record — that is what used
+    // to make every subsequent read fail its boundary check and reset the rows.
+    expect(stalled.cursor.tailOffset).toBe(0);
+
+    // Once the newline lands, the same read makes progress.
+    fs.appendFileSync(file, '\n' + entry(1) + '\n', 'utf8');
+    const after = readTranscriptDelta(file, 0)!;
+    expect(after.stalled).toBeUndefined();
+    expect(after.cursor.tailOffset).toBeGreaterThan(0);
+    expect(isBoundary(file, after.cursor.tailOffset)).toBe(true);
+  });
+
+  it('keeps headOffset strictly decreasing when the record before it is oversized', () => {
+    const file = path.join(dir, 'huge-then-small.jsonl');
+    // Small entries, then an oversized one, then more small ones: paging
+    // backward has to cross the oversized record without stalling on it.
+    const head = [entry(0), entry(1)].join('\n');
+    fs.writeFileSync(file, `${head}\n${hugeEntry()}\n${entry(2)}\n${entry(3)}\n`, 'utf8');
+
+    let cursor = readTranscriptPage(file)!.cursor.headOffset;
+    let guard = 0;
+    const seen = new Set<number>([cursor]);
+    while (cursor > 0 && guard++ < 400) {
+      const page = readTranscriptPage(file, { before: cursor })!;
+      expect(page.cursor.headOffset).toBeLessThan(cursor);
+      cursor = page.cursor.headOffset;
+      expect(seen.has(cursor)).toBe(false);
+      seen.add(cursor);
+    }
+    // D1(c) — "Load earlier" reaches the head of the file instead of returning
+    // the same empty page forever.
+    expect(cursor).toBe(0);
+  });
+
+  it('keeps byte offsets exact across multibyte and invalid UTF-8', () => {
+    const file = path.join(dir, 'utf8.jsonl');
+    // Multibyte prose plus a raw invalid byte in a line the parser will reject.
+    // Both used to decode to U+FFFD and skew every offset that followed.
+    const multibyte = JSON.stringify({
+      type: 'assistant',
+      uuid: 'mb-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: '한글 프롬프트 🇰🇷 émoji' }] },
+    });
+    const parts = [
+      Buffer.from(multibyte + '\n', 'utf8'),
+      Buffer.from([0x7b, 0x22, 0xff, 0xfe, 0x22, 0x7d, 0x0a]), // {"<bad>"} + \n
+      Buffer.from(entry(9) + '\n', 'utf8'),
+    ];
+    fs.writeFileSync(file, Buffer.concat(parts));
+    const size = fs.statSync(file).size;
+
+    const delta = readTranscriptDelta(file, 0)!;
+    // The cursor is a byte offset, so it must land exactly on EOF — a
+    // string-length derived offset overshoots or undershoots here.
+    expect(delta.cursor.tailOffset).toBe(size);
+    // And a code block's srcOffset must point at the line it came from.
+    const withCode = JSON.stringify({
+      type: 'assistant',
+      uuid: 'mb-2',
+      message: { role: 'assistant', content: [{ type: 'text', text: '설명\n```ts\nconst a = 1;\n```' }] },
+    });
+    fs.appendFileSync(file, withCode + '\n', 'utf8');
+    const next = readTranscriptDelta(file, size)!;
+    const codeEvent = next.events.find((e) => e.kind === 'assistant_text' && e.codeBlocks);
+    expect(codeEvent).toBeDefined();
+    if (codeEvent && codeEvent.kind === 'assistant_text') {
+      expect(codeEvent.codeBlocks?.[0].srcOffset).toBe(size);
+    }
   });
 });
 

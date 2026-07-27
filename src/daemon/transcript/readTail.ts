@@ -23,6 +23,7 @@
 import fs from 'node:fs';
 import { parseTranscriptLine } from './parseEntry';
 import type {
+  MetaEvent,
   TranscriptCursor,
   TranscriptPage,
   TurnEvent,
@@ -33,6 +34,14 @@ export const TAIL_BYTES = 256 * 1024;
 
 /** Cap on the single-line read that answers an on-expand code-body fetch. */
 const LINE_READ_BYTES = 512 * 1024;
+
+/**
+ * How far past the cursor we will hunt for the newline that terminates an
+ * oversized record. Bounded because the hunt is the only unbounded-looking read
+ * in this file: an 8MB ceiling covers any plausible single transcript entry and
+ * still costs at most 32 bounded reads.
+ */
+const MAX_OVERSIZED_SCAN_BYTES = 8 * 1024 * 1024;
 
 export interface ReadPageOptions {
   /**
@@ -48,6 +57,15 @@ export interface TranscriptDelta {
   cursor: TranscriptCursor;
   /** The file shrank or rotated — the caller must re-snapshot, not append. */
   reset: boolean;
+  /**
+   * The read consumed NOTHING because an oversized record at the cursor has no
+   * newline yet: the writer is still mid-entry (or the entry is past the bounded
+   * hunt). The cursor is unchanged on purpose — advancing into an unterminated
+   * record would land it mid-line, where `isLineBoundary` fails on every
+   * subsequent read and the consumer resets its view in a loop. Callers should
+   * back off rather than re-read immediately.
+   */
+  stalled?: boolean;
 }
 
 /**
@@ -91,7 +109,16 @@ export function readTranscriptPage(
   // drop. A read from 0 has no fragment.
   const truncatedHead = start > 0;
   const scanned = scanLines(raw, start, { dropTrailingPartial: true, skipHead: truncatedHead });
-  const headOffset = truncatedHead ? scanned.firstOffset : 0;
+  let headOffset = truncatedHead ? scanned.firstOffset : 0;
+  // D1(c) — when the last complete record before `end` is OVERSIZED, the window
+  // holds the fragment plus at most that record's terminating newline, so
+  // `firstOffset` lands at `end` itself. The caller pages backward with
+  // `before = headOffset`, so an unchanged head offset means "Load earlier"
+  // returns the same empty page forever. Fall back to the window start, which is
+  // strictly smaller than `end` and therefore always makes progress; the
+  // fragment it points into is dropped by the same `skipHead` rule on the next
+  // read.
+  if (truncatedHead && headOffset >= end) headOffset = start;
 
   return {
     events: scanned.events,
@@ -148,14 +175,35 @@ export function readTranscriptDelta(
   // `from` is a line boundary the caller got from a previous cursor, so there
   // is no partial head here — dropping one would silently lose an entry.
   const scanned = scanLines(raw, from, { dropTrailingPartial: true, skipHead: false });
-  // A window that is FULL and holds no line terminator means one entry is
-  // larger than the read cap. Advancing past it loses that single entry;
-  // standing still would re-read the same window on every nudge forever, which
-  // is the worse failure. Bounded loss beats a livelock.
-  const tailOffset = scanned.tailOffset === from && capped ? from + raw.length : scanned.tailOffset;
+
+  let events = scanned.events;
+  let tailOffset = scanned.tailOffset;
+  let stalled = false;
+
+  if (scanned.tailOffset === from && capped) {
+    // A window that is FULL and holds no line terminator means one entry is
+    // larger than the read cap. Neither of the two obvious moves is acceptable:
+    // advancing by `raw.length` lands the cursor INSIDE the record (the
+    // line-boundary check then fails on every later read and the consumer
+    // resets its rows in a flicker loop, D1(b)), and silently dropping the
+    // record loses conversation content with nothing on screen to say so
+    // (D1(a)).
+    //
+    // So: hunt for the record's terminating newline. Found ⇒ the record is
+    // complete, and we skip exactly it, leaving one `meta` row that says a row
+    // was skipped and a cursor that is still a true line boundary. Not found ⇒
+    // the writer is mid-entry; hold the cursor and let the caller back off.
+    const nl = findNextNewline(transcriptPath, from, stat.size);
+    if (nl === null) {
+      stalled = true;
+    } else {
+      events = [oversizedSkipped(from)];
+      tailOffset = nl + 1;
+    }
+  }
 
   return {
-    events: scanned.events,
+    events,
     cursor: {
       headOffset: from,
       tailOffset,
@@ -163,7 +211,39 @@ export function readTranscriptDelta(
       mtimeMs: stat.mtimeMs,
     },
     reset: false,
+    ...(stalled ? { stalled: true } : {}),
   };
+}
+
+/**
+ * The visible receipt for D1(a): a single entry too large to page is dropped,
+ * but the conversation says so rather than developing a silent hole.
+ */
+function oversizedSkipped(offset: number): MetaEvent {
+  return {
+    id: `${offset}:oversized`,
+    kind: 'meta',
+    subtype: 'unknown',
+    label: 'oversized entry skipped',
+  };
+}
+
+/**
+ * Byte offset of the first `\n` at or after `from`, or `null` when there is none
+ * within `MAX_OVERSIZED_SCAN_BYTES` (or the file simply has not been written
+ * that far yet). Reads in TAIL_BYTES chunks so the hunt stays bounded per read.
+ */
+function findNextNewline(transcriptPath: string, from: number, fileSize: number): number | null {
+  const limit = Math.min(fileSize, from + MAX_OVERSIZED_SCAN_BYTES);
+  let at = from;
+  while (at < limit) {
+    const chunk = readRange(transcriptPath, at, Math.min(TAIL_BYTES, limit - at));
+    if (chunk === null || chunk.length === 0) return null;
+    const nl = chunk.indexOf(0x0a);
+    if (nl !== -1) return at + nl;
+    at += chunk.length;
+  }
+  return null;
 }
 
 /**
@@ -308,40 +388,50 @@ interface ScannedLines {
  * Split a byte window into lines and parse each one, tracking byte offsets so
  * every event carries a stable id and every code block a re-fetchable offset.
  *
- * Offsets are computed from BYTE lengths, not string lengths — a transcript is
- * UTF-8 and any non-ASCII prose would otherwise skew every offset after it.
+ * Newlines are located as BYTE indexes on the Buffer and each complete line is
+ * decoded on its own. Deriving offsets from a whole-window `toString()` was
+ * wrong in two ways that both skew every offset after the first occurrence, and
+ * therefore every `tailOffset` cursor and every code block's `srcOffset`:
+ *   - a multibyte sequence split across the window edge decodes to U+FFFD, whose
+ *     re-encoded length (3 bytes) is not the length of the bytes it stood for;
+ *   - an invalid byte anywhere in the window decodes to U+FFFD the same way,
+ *     and a transcript containing one is exactly the corrupt-file case this
+ *     reader is supposed to survive.
+ * Byte indexes have neither problem: the offsets never depend on what the
+ * decoder made of the bytes.
  */
 function scanLines(
   raw: Buffer,
   windowStart: number,
   opts: { dropTrailingPartial: boolean; skipHead: boolean },
 ): ScannedLines {
-  const text = raw.toString('utf8');
-  const parts = text.split('\n');
-  // The last element is the text after the final newline: '' for a clean file,
-  // a half-written entry otherwise. Either way it is not a complete line.
-  const complete = opts.dropTrailingPartial ? parts.slice(0, -1) : parts;
-
   const events: TurnEvent[] = [];
-  let offset = windowStart;
   let firstOffset = windowStart;
   let tailOffset = windowStart;
   const { skipHead } = opts;
 
-  for (let i = 0; i < complete.length; i++) {
-    const line = complete[i];
-    const lineBytes = Buffer.byteLength(line, 'utf8') + 1; // + '\n'
-    const lineOffset = offset;
-    offset += lineBytes;
+  let cursor = 0;
+  let lineIndex = 0;
+  while (cursor < raw.length) {
+    const nl = raw.indexOf(0x0a, cursor);
+    // No terminator left: the remainder is '' for a clean file and a
+    // half-written entry otherwise. Either way it is not a complete line.
+    if (nl === -1 && opts.dropTrailingPartial) break;
+    const lineEnd = nl === -1 ? raw.length : nl;
+    const next = nl === -1 ? raw.length : nl + 1;
+    const lineOffset = windowStart + cursor;
+    const advanced = windowStart + next;
     // A mid-file seek lands inside a line; that fragment is dropped, and the
     // first COMPLETE line is the one after it.
-    if (skipHead && i === 0) {
-      firstOffset = offset;
-      tailOffset = offset;
-      continue;
+    if (skipHead && lineIndex === 0) {
+      firstOffset = advanced;
+      tailOffset = advanced;
+    } else {
+      events.push(...parseTranscriptLine(raw.toString('utf8', cursor, lineEnd), lineOffset));
+      tailOffset = advanced;
     }
-    events.push(...parseTranscriptLine(line, lineOffset));
-    tailOffset = offset;
+    cursor = next;
+    lineIndex += 1;
   }
 
   return { events, firstOffset, tailOffset };

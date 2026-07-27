@@ -8,6 +8,18 @@ import { getDaemonAuthTokenPath } from '../shared/constants';
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
 /**
+ * Unflushed bytes on one socket past which that client is treated as STALLED.
+ *
+ * `socket.write` returning false is advisory in Node: the data is queued anyway
+ * and the writable buffer has no ceiling. A subscriber that stops reading (a
+ * hung renderer, a paused process, a phone on a dead link) would therefore grow
+ * the daemon's heap by one full payload per append, indefinitely. Above this cap
+ * per-subscriber events are REFUSED — `sendTo` returns false, and the caller's
+ * contract is to drop that client's subscription rather than keep buffering.
+ */
+export const SUBSCRIBER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+
+/**
  * Which connected client an RPC arrived on. Handlers that fan data back out to
  * ONE subscriber (rather than to every client) need this: `broadcast` writes to
  * all sockets, and full conversation content must reach only the client that
@@ -66,6 +78,9 @@ export class DaemonPipeServer {
   // `sendTo` resolves an id → socket while the RPC path needs socket → id.
   private readonly clientIds = new Map<net.Socket, string>();
   private readonly socketsByClientId = new Map<string, net.Socket>();
+  // Clients that claimed the first-party role (see `markFirstParty`). Dies with
+  // the socket, so a reconnecting app must re-identify.
+  private readonly firstPartyClients = new Set<string>();
   private nextClientId = 1;
   private readonly clientCloseHandlers: ((clientId: string) => void)[] = [];
   private globalRate = { count: 0, resetAt: 0 };
@@ -294,6 +309,7 @@ export class DaemonPipeServer {
           this.rateLimits.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
+          this.firstPartyClients.delete(clientId);
           // Per-client subscriptions must die with the socket; a refcount that
           // outlives a renderer reload leaks whatever the subscription holds.
           for (const handler of this.clientCloseHandlers) {
@@ -349,6 +365,7 @@ export class DaemonPipeServer {
     this.connectedSockets.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
+    this.firstPartyClients.clear();
 
     return new Promise<void>((resolve) => {
       this.server!.close(() => {
@@ -400,6 +417,7 @@ export class DaemonPipeServer {
     this.rateLimits.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
+    this.firstPartyClients.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;
@@ -417,12 +435,38 @@ export class DaemonPipeServer {
   sendTo(clientId: string, event: unknown): boolean {
     const socket = this.socketsByClientId.get(clientId);
     if (!socket || socket.destroyed) return false;
+    // Refuse rather than queue once this client is behind. See
+    // SUBSCRIBER_BACKPRESSURE_BYTES: the caller drops the subscription on false,
+    // which is the only bound Node's writable buffer gives us.
+    if (socket.writableLength > SUBSCRIBER_BACKPRESSURE_BYTES) return false;
     try {
       socket.write(JSON.stringify(event) + '\n');
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Mark this client as the first-party app process (the Electron main process).
+   *
+   * The control pipe has exactly one credential — the daemon auth token — and
+   * every client that can read the token file presents the same one, so this is
+   * a CLASSIFICATION, not an authentication: it separates the app's own socket
+   * from the CLI/MCP sockets that never claim the role. That is enough for the
+   * transcript RPCs, whose threat model is "an MCP tool wired into some other
+   * agent should not be able to read a pane's whole conversation by accident or
+   * by prompt injection" — not "a local attacker who already stole the token".
+   * A token holder that lies here gains exactly what a token holder already had
+   * before this method existed.
+   */
+  markFirstParty(clientId: string): void {
+    if (clientId) this.firstPartyClients.add(clientId);
+  }
+
+  /** Did this client claim the first-party role? See `markFirstParty`. */
+  isFirstParty(clientId: string): boolean {
+    return this.firstPartyClients.has(clientId);
   }
 
   /**

@@ -257,4 +257,51 @@ describe('extractCodeBlocks', () => {
     const out = extractCodeBlocks('use ```code``` inline', 0);
     expect(out.refs).toHaveLength(0);
   });
+
+  // The marker's whole safety argument is "NUL cannot occur in prose". Prose is
+  // assistant-authored, i.e. untrusted, so the parser has to MAKE that true
+  // instead of assuming it: a response carrying a literal NUL could otherwise
+  // forge a marker (arbitrary prose rendering as a code chip) or split one the
+  // parser wrote.
+  it('strips NUL out of prose before it inserts any marker', () => {
+    const forged = `harmless\u0000code:99\u0000 text`;
+    const out = extractCodeBlocks(forged, 0);
+    expect(out.refs).toHaveLength(0);
+    expect(out.text).toBe('harmlesscode:99 text');
+    expect(out.text.includes('\u0000')).toBe(false);
+  });
+
+  it('strips NUL that sits next to a real fence too', () => {
+    const out = extractCodeBlocks(`a\u0000code:7\u0000\n\`\`\`ts\nx\n\`\`\`\nb`, 0);
+    expect(out.refs.map((r) => r.n)).toEqual([1]);
+    // Exactly one marker survives, and it is the one this function wrote.
+    const markers = out.text.split('\u0000').length - 1;
+    expect(markers).toBe(2);
+    expect(out.text).toContain(`${CODE_MARKER_PREFIX}1${CODE_MARKER_SUFFIX}`);
+    expect(out.text).not.toContain('code:7\u0000');
+  });
+});
+
+describe('parseTranscriptLine — NUL in transcript prose (marker spoofing)', () => {
+  it('never emits a NUL the parser did not write, for user or assistant text', () => {
+    const assistant = parseTranscriptLine(JSON.stringify({
+      type: 'assistant',
+      uuid: 'a-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'x\u0000code:1\u0000y' }] },
+    }), 0);
+    expect(assistant).toHaveLength(1);
+    if (assistant[0].kind === 'assistant_text') {
+      expect(assistant[0].codeBlocks).toBeUndefined();
+      expect(assistant[0].text.includes('\u0000')).toBe(false);
+    }
+
+    const user = parseTranscriptLine(JSON.stringify({
+      type: 'user',
+      uuid: 'u-1',
+      message: { role: 'user', content: 'p\u0000code:1\u0000q' },
+    }), 0);
+    if (user[0].kind === 'user_text') {
+      expect(user[0].text.includes('\u0000')).toBe(false);
+    }
+  });
 });

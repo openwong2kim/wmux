@@ -66,8 +66,32 @@ const MIN_READ_BYTES = 8 * 1024;
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_POLL_MS = 3000;
 
+/**
+ * D3 — delay between the budgeted reads that drain a burst. Long enough to hand
+ * the event loop back between two 128KB reads (the daemon serves every pane on
+ * this loop), short enough that a large burst still lands in one visible beat
+ * instead of waiting for the next fs event.
+ */
+const DRAIN_DELAY_MS = 10;
+
+/**
+ * D1(b) — ceiling on the backoff applied while an oversized record at the
+ * cursor has no terminating newline yet. Every nudge would otherwise re-run the
+ * same fruitless read.
+ */
+const MAX_STALL_BACKOFF_MS = 5000;
+
 /** Only Claude Code publishes a transcript wmux can project today. */
 const SUPPORTED_AGENT = 'claude';
+
+/** One budget-fitted read, ready to become an append event. */
+interface BudgetedRead {
+  events: TurnEvent[];
+  cursor: TranscriptPage['cursor'];
+  reset: boolean;
+  /** See `TranscriptDelta.stalled` — nothing was consumed; back off. */
+  stalled?: boolean;
+}
 
 interface WatchState {
   /** Subscribers, keyed by pipe clientId. Empty ⇒ tear the watch down. */
@@ -86,6 +110,11 @@ interface WatchState {
   lastMtimeMs: number;
   /** Inode of the file the cursor belongs to; a change means it was replaced. */
   lastIno: number;
+  /**
+   * Consecutive reads that consumed nothing because an oversized record at the
+   * cursor is still unterminated. Drives the D1(b) backoff.
+   */
+  stallCount: number;
 }
 
 export class TranscriptProjector {
@@ -181,6 +210,7 @@ export class TranscriptProjector {
         lastSize: -1,
         lastMtimeMs: -1,
         lastIno: -1,
+        stallCount: 0,
       };
       this.watches.set(sessionId, state);
     }
@@ -325,6 +355,7 @@ export class TranscriptProjector {
     state.lastSize = -1;
     state.lastMtimeMs = -1;
     state.lastIno = -1;
+    state.stallCount = 0;
     // Re-arm on the new file's directory (usually the same one, but a `/clear`
     // can move a session into a different project slug).
     this.disarmWatch(state);
@@ -388,12 +419,17 @@ export class TranscriptProjector {
 
   /** Trailing debounce: an append is many small writes, and we want one read. */
   private schedule(sessionId: string, state: WatchState): void {
+    this.scheduleIn(sessionId, state, this.debounceMs);
+  }
+
+  /** `schedule` with an explicit delay — the drain and backoff paths. */
+  private scheduleIn(sessionId: string, state: WatchState, delayMs: number): void {
     if (this.disposed) return;
     if (state.debounce) clearTimeout(state.debounce);
     state.debounce = setTimeout(() => {
       state.debounce = null;
       this.readAndEmit(sessionId, state);
-    }, this.debounceMs);
+    }, delayMs);
     // Never hold the daemon open for a pending transcript read.
     state.debounce.unref?.();
   }
@@ -424,10 +460,23 @@ export class TranscriptProjector {
     }
 
     const first = state.tailOffset < 0;
+    const previousTail = state.tailOffset;
     const budgeted = first
       ? this.readSnapshotForAppend(state)
       : this.readDeltaForAppend(state);
     if (!budgeted) return;
+
+    if (budgeted.stalled) {
+      // D1(b) — an oversized record with no newline yet. The cursor deliberately
+      // did not move, so re-reading at the debounce interval would spin on every
+      // nudge (and a mid-turn agent nudges often). Back off geometrically until
+      // the writer finishes the record; any real append resets the counter.
+      state.stallCount += 1;
+      const delay = Math.min(this.debounceMs * 2 ** state.stallCount, MAX_STALL_BACKOFF_MS);
+      this.scheduleIn(sessionId, state, delay);
+      return;
+    }
+    state.stallCount = 0;
 
     const reset = state.forceReset || first || budgeted.reset;
     // "Nothing changed" is the common case (a watch fires on mtime too), and a
@@ -435,6 +484,7 @@ export class TranscriptProjector {
     // to clear a conversation that was replaced.
     if (budgeted.events.length === 0 && !reset) {
       state.tailOffset = budgeted.cursor.tailOffset;
+      this.maybeDrain(sessionId, state, budgeted.cursor, previousTail);
       return;
     }
 
@@ -452,12 +502,36 @@ export class TranscriptProjector {
     } catch (err) {
       this.deps.log?.('warn', `[transcript] append emit failed for ${sessionId}: ${String(err)}`);
     }
+    this.maybeDrain(sessionId, state, budgeted.cursor, previousTail);
+  }
+
+  /**
+   * D3 — a read fitted to the A3 byte budget stops short of EOF, and the next
+   * fs event may be a whole turn away (a burst is written faster than the
+   * debounce, and the hook nudge for the turn has already fired). Keep reading
+   * until the cursor reaches the size we just observed.
+   *
+   * Two guards keep this from becoming a busy loop: the cursor must have
+   * ADVANCED (a read that consumed nothing never reschedules — that case is
+   * either the stall path or a no-op read), and the drain rides the same single
+   * debounce timer, so an fs event arriving mid-drain simply replaces it.
+   */
+  private maybeDrain(
+    sessionId: string,
+    state: WatchState,
+    cursor: TranscriptPage['cursor'],
+    previousTail: number,
+  ): void {
+    if (this.disposed || state.clients.size === 0) return;
+    if (cursor.tailOffset <= previousTail) return;
+    if (cursor.tailOffset >= cursor.fileSize) return;
+    this.scheduleIn(sessionId, state, DRAIN_DELAY_MS);
   }
 
   /** First read after subscribe / reset: a bounded tail, fitted to the budget. */
   private readSnapshotForAppend(
     state: WatchState,
-  ): { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset: boolean } | null {
+  ): BudgetedRead | null {
     const page = this.fit((maxBytes) => {
       const p = readTranscriptPage(state.transcriptPath, { maxBytes });
       return p && { events: p.events, cursor: p.cursor, reset: false };
@@ -467,10 +541,15 @@ export class TranscriptProjector {
 
   private readDeltaForAppend(
     state: WatchState,
-  ): { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset: boolean } | null {
+  ): BudgetedRead | null {
     return this.fit((maxBytes) => {
       const delta = readTranscriptDelta(state.transcriptPath, state.tailOffset, maxBytes);
-      return delta && { events: delta.events, cursor: delta.cursor, reset: delta.reset };
+      return delta && {
+        events: delta.events,
+        cursor: delta.cursor,
+        reset: delta.reset,
+        ...(delta.stalled ? { stalled: true } : {}),
+      };
     });
   }
 

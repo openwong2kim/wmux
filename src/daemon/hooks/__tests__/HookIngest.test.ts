@@ -7,6 +7,15 @@ import {
 } from '../HookIngest';
 import type { AgentSignal, AgentSignalKind } from '../../../shared/hooks/signal-types';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import os from 'node:os';
+import path from 'node:path';
+
+// A transcript path the guard accepts: inside the real Claude projects root and
+// named after the agent session id. Built from `os.homedir()` so the test is
+// portable (the guard resolves the root the same way).
+function projectsPath(agentSessionId: string): string {
+  return path.join(os.homedir(), '.claude', 'projects', '-repo', `${agentSessionId}.jsonl`);
+}
 
 function makeSignal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {
@@ -303,7 +312,7 @@ describe('HookIngest', () => {
         ptyId: 'pty-a',
         kind: 'agent.session_start',
         agentSessionId: 'origin-1',
-        payload: { permissionMode: 'bypassPermissions', transcript_path: '/t/origin-1.jsonl' },
+        payload: { permissionMode: 'bypassPermissions', transcript_path: projectsPath('origin-1') },
       }));
       expect(fixture.bindings).toEqual([{
         ptyId: 'pty-a',
@@ -312,10 +321,67 @@ describe('HookIngest', () => {
           sessionId: 'origin-1',
           cwd: '/repo',
           permissionMode: 'bypassPermissions',
-          transcriptPath: '/t/origin-1.jsonl',
+          transcriptPath: projectsPath('origin-1'),
           ts: 1_000,
         },
       }]);
+    });
+
+    // The envelope is authenticated but not trusted: an unvalidated
+    // transcript_path is a daemon-side arbitrary-file-read whose contents are
+    // rendered as the pane's conversation. Refusal must cost the path only —
+    // never the binding and never the signal.
+    it('refuses a transcript_path outside the Claude projects root', () => {
+      const res = ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.stop',
+        agentSessionId: 'origin-1',
+        payload: { transcript_path: '/etc/origin-1.jsonl' },
+      }));
+      expect(res).toEqual({ ok: true });
+      expect(fixture.bindings).toHaveLength(1);
+      expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
+      expect(fixture.bindings[0].binding.sessionId).toBe('origin-1');
+    });
+
+    it('refuses a transcript_path whose basename is not the agent session id', () => {
+      ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.stop',
+        agentSessionId: 'origin-1',
+        payload: { transcript_path: projectsPath('someone-else') },
+      }));
+      expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
+    });
+
+    it('refuses a traversal that climbs out of the projects root', () => {
+      ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.stop',
+        agentSessionId: 'origin-1',
+        payload: {
+          transcript_path: path.join(
+            os.homedir(), '.claude', 'projects', '..', '..', 'origin-1.jsonl',
+          ),
+        },
+      }));
+      expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
+    });
+
+    it('accepts a projects root relocated by CLAUDE_CONFIG_DIR in the pane env', () => {
+      const f = makeDeps([session({
+        id: 'pty-a',
+        env: { WMUX_WORKSPACE_ID: 'ws-1', CLAUDE_CONFIG_DIR: '/opt/claude-cfg' },
+      })]);
+      const i = new HookIngest(f.deps);
+      i.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.stop',
+        agentSessionId: 'origin-1',
+        payload: { transcript_path: '/opt/claude-cfg/projects/-repo/origin-1.jsonl' },
+      }));
+      expect(f.bindings[0].binding.transcriptPath)
+        .toBe('/opt/claude-cfg/projects/-repo/origin-1.jsonl');
     });
 
     it('drops an unknown permission mode instead of persisting it', () => {

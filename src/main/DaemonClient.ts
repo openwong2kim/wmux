@@ -106,6 +106,7 @@ export class DaemonClient extends EventEmitter {
         this.controlPipe = socket;
         this.connected = true;
         this.setupControlPipe(socket);
+        this.identifyAsFirstParty();
         finish({ ok: true });
       });
 
@@ -118,6 +119,23 @@ export class DaemonClient extends EventEmitter {
         console.warn(`[lifecycle] DaemonClient.connect error code=${err?.code ?? '?'} pipe=${this.pipeName} msg=${err?.message ?? String(err)}`);
         finish({ ok: false, code: err?.code });
       });
+    });
+  }
+
+  /**
+   * Claim the first-party role on the freshly-opened control pipe.
+   *
+   * The daemon restricts the transcript RPCs (a pane's full conversation) to the
+   * client that claims this, so it has to be the FIRST thing written on the
+   * socket: RPC lines are processed in arrival order and the daemon marks the
+   * client synchronously, so every later RPC on this socket sees the role set.
+   * Fire-and-forget on purpose — a daemon too old to know the method answers
+   * "Unknown method", which costs Chat View and nothing else, and must not fail
+   * the connect the whole app depends on.
+   */
+  private identifyAsFirstParty(): void {
+    this.rpc('daemon.client.identify', { role: 'main' }).catch(() => {
+      // Older daemon, or the socket died between connect and this write.
     });
   }
 

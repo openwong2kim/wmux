@@ -2400,7 +2400,16 @@ function registerRpcHandlers(
       // payload on sockets that never asked for it.
       emitAppend: (sessionId, data, clientIds) => {
         const event: DaemonEvent = { type: 'transcript.appended', sessionId, data };
-        for (const clientId of clientIds) pipeServer.sendTo(clientId, event);
+        for (const clientId of clientIds) {
+          // D6 — `sendTo` refuses once a client's unflushed buffer passes
+          // SUBSCRIBER_BACKPRESSURE_BYTES. Buffering for a subscriber that
+          // stopped reading is unbounded heap growth in the always-on process,
+          // so a stalled subscriber loses its subscription instead. It can
+          // re-subscribe (and will re-snapshot) whenever it drains.
+          if (pipeServer.sendTo(clientId, event)) continue;
+          log('warn', `[transcript] dropping subscription for ${clientId} on ${sessionId}: client gone or not draining`);
+          transcriptProjector?.unsubscribe(clientId, sessionId);
+        }
       },
       log: (level, message) => log(level, message),
     });
@@ -2411,18 +2420,49 @@ function registerRpcHandlers(
   }
   const projector = transcriptProjector;
 
-  pipeServer.onRpc('daemon.transcript.status', async (params) => {
+  // D7 — the transcript RPCs are the one part of this surface that returns a
+  // pane's full CONVERSATION, and the design note that justified keeping Chat
+  // off the main pipe ("adding methods there hands Chat to any authenticated MCP
+  // client") is only true if these methods actually check who is asking. They
+  // are therefore restricted to the client that identified itself as the app's
+  // own process; the CLI's and MCP's existing RPCs are untouched, and a client
+  // that never identifies simply sees Chat View as unavailable.
+  //
+  // Honest scope: this is a classification over one shared token, not a second
+  // credential (see DaemonPipeServer.markFirstParty). It removes the accidental
+  // and prompt-injection paths, not a local attacker holding the token.
+  const firstPartyOnly = (clientId: string, method: string): boolean => {
+    if (pipeServer.isFirstParty(clientId)) return true;
+    log('warn', `[transcript] refused ${method} from non-first-party client ${clientId}`);
+    return false;
+  };
+
+  pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
+    const role = typeof params['role'] === 'string' ? params['role'] : '';
+    if (role !== 'main') return { ok: false };
+    pipeServer.markFirstParty(ctx.clientId);
+    return { ok: true };
+  });
+
+  pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'status')) {
+      return { available: false, reason: 'not-authorized' };
+    }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return projector.status(id);
   });
 
-  pipeServer.onRpc('daemon.transcript.snapshot', async (params) => {
+  pipeServer.onRpc('daemon.transcript.snapshot', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'snapshot')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const before = typeof params['before'] === 'number' ? params['before'] : undefined;
     return projector.snapshot(id, before === undefined ? undefined : { before });
   });
 
   pipeServer.onRpc('daemon.transcript.subscribe', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'subscribe')) {
+      return { ok: false, status: { available: false, reason: 'not-authorized' } };
+    }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
     return { ok: true, status: projector.subscribe(ctx.clientId, id) };
@@ -2438,7 +2478,8 @@ function registerRpcHandlers(
   // bodies would blow past main's control-buffer cap and take an unrelated
   // event down with it). The chip carries `{n, lines, lang, path, srcOffset}`
   // and the body is fetched here, on expand, as a single bounded line read.
-  pipeServer.onRpc('daemon.transcript.codeBlock', async (params) => {
+  pipeServer.onRpc('daemon.transcript.codeBlock', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'codeBlock')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const srcOffset = typeof params['srcOffset'] === 'number' ? params['srcOffset'] : -1;
     const n = typeof params['n'] === 'number' ? params['n'] : -1;

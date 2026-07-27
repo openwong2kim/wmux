@@ -277,6 +277,87 @@ describe('TranscriptProjector.nudge', () => {
   });
 });
 
+describe('TranscriptProjector — draining a burst (D3) and stalling on an oversized entry (D1)', () => {
+  /** `count` synthetic user turns, each padded so the set exceeds the budget. */
+  function burst(count: number, pad = 2000, prefix = 'burst'): string {
+    const lines: string[] = [];
+    for (let i = 0; i < count; i++) {
+      lines.push(JSON.stringify({
+        type: 'user',
+        uuid: `${prefix}-${String(i).padStart(5, '0')}`,
+        message: { role: 'user', content: `turn ${i} ${'x'.repeat(pad)}` },
+      }));
+    }
+    return lines.join('\n') + '\n';
+  }
+
+  it('keeps reading until the cursor reaches EOF after a budget-limited append', async () => {
+    const file = path.join(harness.dir, 'burst.jsonl');
+    // Start with one small entry so the first (snapshot) read is cheap, then
+    // append far more than one budgeted read can carry.
+    fs.writeFileSync(file, burst(1, 10, 'seed'), 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.subscribe('c1', 'pty-1');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length === 1);
+
+    // One write, one nudge: without the drain the newest turns would sit unread
+    // until the NEXT fs event, which on a finished turn may never come.
+    fs.appendFileSync(file, burst(400), 'utf8');
+    const size = fs.statSync(file).size;
+    harness.projector.nudge('pty-1', 'agent.stop');
+
+    await waitFor(() => {
+      const last = harness.appends[harness.appends.length - 1];
+      return last.data.cursor.tailOffset === size;
+    });
+    // It genuinely took more than one budgeted payload to get there, and each
+    // one stayed under the budget.
+    expect(harness.appends.length).toBeGreaterThan(2);
+    for (const a of harness.appends) {
+      expect(Buffer.byteLength(JSON.stringify(a.data.events), 'utf8')).toBeLessThanOrEqual(BUDGET_BYTES);
+    }
+    // Every turn arrived exactly once, in order.
+    const ids = harness.appends.flatMap((a) => a.data.events.map((e) => e.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain('burst-00399');
+  });
+
+  it('does not emit or advance while an oversized entry is still unterminated', async () => {
+    const file = path.join(harness.dir, 'partial.jsonl');
+    fs.writeFileSync(file, burst(1, 10, 'seed'), 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.subscribe('c1', 'pty-1');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length === 1);
+    const settled = harness.appends[0].data.cursor.tailOffset;
+
+    // A single entry larger than the read cap, with no newline yet.
+    const huge = JSON.stringify({
+      type: 'user',
+      uuid: 'huge-1',
+      message: { role: 'user', content: 'y'.repeat(400 * 1024) },
+    });
+    fs.appendFileSync(file, huge, 'utf8');
+
+    // Repeated nudges (a mid-turn agent nudges often) must not spin: nothing is
+    // emitted and the cursor stays on the last good boundary.
+    for (let i = 0; i < 5; i++) harness.projector.nudge('pty-1', 'agent.activity');
+    await delay(60);
+    expect(harness.appends).toHaveLength(1);
+    expect(harness.appends[0].data.cursor.tailOffset).toBe(settled);
+
+    // The newline releases it, and the skipped row is VISIBLE rather than a hole.
+    fs.appendFileSync(file, '\n', 'utf8');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length === 2);
+    const labels = harness.appends[1].data.events
+      .filter((e) => e.kind === 'meta')
+      .map((e) => (e.kind === 'meta' ? e.label : ''));
+    expect(labels).toContain('oversized entry skipped');
+  });
+});
+
 describe('TranscriptProjector.codeBlock — on-expand body fetch', () => {
   const file = path.join(FIXTURES, 'code-and-diff.jsonl');
 
