@@ -6,11 +6,11 @@
 // the small subset an agent actually writes in prose and nothing else:
 //
 //   bold · italic · inline code · unordered/ordered lists · headings ·
-//   links (kept as TEXT, never navigable) · blockquotes
+//   links (kept as TEXT, never navigable) · blockquotes · GFM pipe tables
 //
 // Deliberately NOT supported: fenced code blocks (the daemon projector already
 // extracts those into `CodeBlockRef` markers, which stay chips — the "zero <pre>
-// in the initial chat DOM" invariant depends on it), tables, images, HTML.
+// in the initial chat DOM" invariant depends on it), images, HTML.
 //
 // Safety contract: this produces a NODE TREE, never a string of markup. The
 // renderer builds React elements from it, so transcript prose — which is
@@ -44,11 +44,25 @@ export interface ListItem {
   children: InlineNode[];
 }
 
+/** Column alignment from the delimiter row. `null` = unspecified (renders left). */
+export type TableAlign = 'left' | 'center' | 'right' | null;
+
+/** One cell's inline content. Cells are inline-only — no nested blocks. */
+export type TableCell = InlineNode[];
+
 export type Block =
   | { type: 'paragraph'; children: InlineNode[] }
   | { type: 'heading'; level: number; children: InlineNode[] }
   | { type: 'list'; ordered: boolean; items: ListItem[] }
-  | { type: 'quote'; children: InlineNode[] };
+  | { type: 'quote'; children: InlineNode[] }
+  | {
+      type: 'table';
+      /** One entry per column; length is the table's width. */
+      align: TableAlign[];
+      header: TableCell[];
+      /** Body rows, each already normalized to `align.length` cells. */
+      rows: TableCell[][];
+    };
 
 const isWordChar = (ch: string | undefined): boolean =>
   ch !== undefined && /[A-Za-z0-9]/.test(ch);
@@ -182,6 +196,132 @@ const ORDERED = /^(\s*)\d{1,9}[.)]\s+(.+)$/;
 
 const indentDepth = (indent: string): number => Math.min(2, Math.floor(indent.length / 2));
 
+// ─── GFM pipe tables ────────────────────────────────────────────────────────
+//
+// A table is a header line, a delimiter line, and zero or more body lines.
+// Detection is anchored on the DELIMITER: prose full of pipes ("a | b | c")
+// stays a paragraph unless the very next line is a valid delimiter whose cell
+// count matches the header's. That is what keeps ordinary text from being
+// swallowed by a construct it never asked for.
+
+/** `---`, `:---`, `---:`, `:---:` — one delimiter cell. */
+const DELIM_CELL = /^:?-+:?$/;
+
+/** A delimiter line may only be made of pipes, dashes, colons and spaces. */
+const DELIM_LINE = /^[\s|:-]+$/;
+
+/** True when the line carries a pipe that is not backslash-escaped. */
+function hasUnescapedPipe(line: string): boolean {
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === '\\') {
+      i += 1;
+      continue;
+    }
+    if (line[i] === '|') return true;
+  }
+  return false;
+}
+
+/**
+ * Split one table line into raw cell strings.
+ *
+ * GFM splits on pipes BEFORE inline parsing, so `\|` is the only way to keep a
+ * pipe inside a cell — and it lands there as a literal `|`. A `\\` pair is left
+ * intact so the inline parser sees exactly what the author wrote. Leading and
+ * trailing pipes are borders, not empty cells.
+ */
+function splitTableRow(line: string): string[] {
+  const src = line.trim();
+  const cells: string[] = [];
+  let buf = '';
+  let i = src[0] === '|' ? 1 : 0;
+  for (; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '\\') {
+      const next = src[i + 1];
+      if (next === '|') {
+        buf += '|';
+        i += 1;
+        continue;
+      }
+      if (next === '\\') {
+        buf += '\\\\';
+        i += 1;
+        continue;
+      }
+      buf += ch;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(buf.trim());
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  // A trailing border pipe already closed the last cell; only real content (or
+  // a line with no pipe at all) opens another one.
+  if (buf.trim() !== '' || cells.length === 0) cells.push(buf.trim());
+  return cells;
+}
+
+/** Alignments for a delimiter line, or null when it is not one. */
+function parseDelimiterRow(line: string, expected: number): TableAlign[] | null {
+  if (!DELIM_LINE.test(line) || !line.includes('|')) return null;
+  const cells = splitTableRow(line);
+  // GFM: a width mismatch means this was never a table.
+  if (cells.length !== expected) return null;
+  const align: TableAlign[] = [];
+  for (const cell of cells) {
+    if (!DELIM_CELL.test(cell)) return null;
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    align.push(right ? (left ? 'center' : 'right') : left ? 'left' : null);
+  }
+  return align;
+}
+
+/** GFM ragged rows: a short row pads with empty cells, a long one drops extras. */
+function normalizeRow(cells: readonly string[], width: number): TableCell[] {
+  const out: TableCell[] = [];
+  for (let c = 0; c < width; c += 1) out.push(parseInline(cells[c] ?? ''));
+  return out;
+}
+
+/**
+ * Try to read a table starting at `lines[start]`. Returns the block and the
+ * index of the first line AFTER it, or null when this is not a table.
+ */
+function tryParseTable(
+  lines: readonly string[],
+  start: number,
+): { block: Block; next: number } | null {
+  const headerLine = lines[start];
+  const delimLine = lines[start + 1];
+  if (delimLine === undefined || !hasUnescapedPipe(headerLine)) return null;
+  const header = splitTableRow(headerLine);
+  const align = parseDelimiterRow(delimLine, header.length);
+  if (!align) return null;
+
+  const rows: TableCell[][] = [];
+  let i = start + 2;
+  for (; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === '') break;
+    // Deliberate narrowing of GFM: a body line with no pipe is ordinary prose,
+    // not a one-cell row. GFM would absorb it; silently eating the paragraph
+    // after a table is the worse failure on this surface.
+    if (!hasUnescapedPipe(line)) break;
+    if (HEADING.test(line) || QUOTE.test(line)) break;
+    rows.push(normalizeRow(splitTableRow(line), align.length));
+  }
+
+  return {
+    block: { type: 'table', align, header: normalizeRow(header, align.length), rows },
+    next: i,
+  };
+}
+
 /**
  * Parse prose into blocks. Anything unrecognized stays a paragraph, so no input
  * can be "invalid" — the worst case is that a line renders exactly as written.
@@ -216,7 +356,8 @@ export function parseMarkdown(text: string): Block[] {
     blocks.push({ type: 'quote', children: parseInline(joined) });
   };
 
-  for (const line of lines) {
+  for (let ln = 0; ln < lines.length; ln += 1) {
+    const line = lines[ln];
     if (line.trim() === '') {
       flushPara();
       flushList();
@@ -232,6 +373,17 @@ export function parseMarkdown(text: string): Block[] {
       continue;
     }
     flushQuote();
+
+    // Before headings/lists/paragraphs: a table opens on its own header line,
+    // and the delimiter check below is what makes the attempt safe to try here.
+    const table = tryParseTable(lines, ln);
+    if (table) {
+      flushPara();
+      flushList();
+      blocks.push(table.block);
+      ln = table.next - 1; // the loop's own step lands on `next`
+      continue;
+    }
 
     const heading = HEADING.exec(line);
     if (heading) {

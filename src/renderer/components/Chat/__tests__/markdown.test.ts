@@ -6,7 +6,7 @@
 // must never swallow the rest of a message.
 
 import { describe, it, expect } from 'vitest';
-import { parseMarkdown, parseInline, type InlineNode } from '../markdown';
+import { parseMarkdown, parseInline, type Block, type InlineNode } from '../markdown';
 
 /** Flatten a node tree back to the text a reader would see. */
 function plain(nodes: InlineNode[]): string {
@@ -140,5 +140,143 @@ describe('parseMarkdown', () => {
   it('returns nothing for empty prose', () => {
     expect(parseMarkdown('')).toEqual([]);
     expect(parseMarkdown('\n\n')).toEqual([]);
+  });
+});
+
+// ─── GFM pipe tables (2026-07-28) ───────────────────────────────────────────
+//
+// Detection is anchored on the DELIMITER row, which is what keeps ordinary
+// prose full of pipes from being swallowed by a table it never asked for.
+
+describe('parseMarkdown — tables', () => {
+  /** The visible text of a table, row by row (header first). */
+  function grid(block: Block): string[][] {
+    if (block.type !== 'table') throw new Error(`expected a table, got ${block.type}`);
+    return [block.header, ...block.rows].map((row) => row.map(plain));
+  }
+
+  it('parses a basic table into a header and body rows', () => {
+    const blocks = parseMarkdown('| a | b |\n|---|---|\n| 1 | 2 |');
+    expect(blocks.map((b) => b.type)).toEqual(['table']);
+    expect(grid(blocks[0])).toEqual([
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
+  });
+
+  it('reads alignment off the delimiter row', () => {
+    const blocks = parseMarkdown(
+      '| l | c | r | d |\n| :--- | :---: | ---: | --- |\n| 1 | 2 | 3 | 4 |',
+    );
+    expect(blocks[0].type === 'table' && blocks[0].align).toEqual(['left', 'center', 'right', null]);
+  });
+
+  it('tolerates spaces in the delimiter row', () => {
+    const blocks = parseMarkdown('| a | b |\n|  :---  |  ---:  |\n| 1 | 2 |');
+    expect(blocks[0].type === 'table' && blocks[0].align).toEqual(['left', 'right']);
+  });
+
+  it('accepts tables with no outer pipes', () => {
+    const blocks = parseMarkdown('a | b\n--- | ---\n1 | 2');
+    expect(grid(blocks[0])).toEqual([
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
+  });
+
+  it('keeps an escaped pipe inside its cell, as a literal pipe', () => {
+    const blocks = parseMarkdown('| pattern | note |\n|---|---|\n| a \\| b | alternation |');
+    expect(grid(blocks[0])[1]).toEqual(['a | b', 'alternation']);
+  });
+
+  it('pads a short row and truncates a long one (GFM)', () => {
+    const blocks = parseMarkdown('| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |');
+    expect(grid(blocks[0])).toEqual([
+      ['a', 'b', 'c'],
+      ['1', '', ''],
+      ['1', '2', '3'],
+    ]);
+  });
+
+  it('parses inline markdown inside cells, including projector code refs', () => {
+    const blocks = parseMarkdown(
+      '| what | where |\n|---|---|\n| **bold** `code()` | \u0000code:3\u0000 |',
+    );
+    if (blocks[0].type !== 'table') throw new Error('expected a table');
+    const [what, where] = blocks[0].rows[0];
+    expect(what.map((n) => n.type)).toEqual(['strong', 'text', 'code']);
+    expect(plain(what)).toBe('bold code()');
+    expect(where[0]).toEqual({ type: 'codeRef', n: 3, literal: 'code:3' });
+  });
+
+  it('renders a link inside a cell as text, never as a target', () => {
+    const blocks = parseMarkdown('| doc |\n|---|\n| [readme](./README.md) |');
+    if (blocks[0].type !== 'table') throw new Error('expected a table');
+    expect(blocks[0].rows[0][0][0]).toEqual({
+      type: 'link',
+      text: 'readme',
+      href: './README.md',
+    });
+  });
+
+  it('leaves pipe-containing prose alone when there is no delimiter row', () => {
+    const blocks = parseMarkdown('run a | b | c and then\nsomething else | here');
+    expect(blocks.map((b) => b.type)).toEqual(['paragraph']);
+    expect(blocks[0].type === 'paragraph' && plain(blocks[0].children)).toBe(
+      'run a | b | c and then\nsomething else | here',
+    );
+  });
+
+  it('is not a table when the delimiter width disagrees with the header', () => {
+    expect(parseMarkdown('| a | b | c |\n|---|---|').map((b) => b.type)).toEqual(['paragraph']);
+  });
+
+  it('is not a table when the delimiter row is not made of dashes', () => {
+    expect(parseMarkdown('| a | b |\n| x | y |').map((b) => b.type)).toEqual(['paragraph']);
+  });
+
+  it('sits between other blocks without eating them', () => {
+    const blocks = parseMarkdown(
+      '## Results\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nAnd that is the summary.',
+    );
+    expect(blocks.map((b) => b.type)).toEqual(['heading', 'table', 'paragraph']);
+    expect(blocks[2].type === 'paragraph' && plain(blocks[2].children)).toBe(
+      'And that is the summary.',
+    );
+  });
+
+  it('ends at the first pipe-less line, so a trailing paragraph survives', () => {
+    const blocks = parseMarkdown('| a |\n|---|\n| 1 |\nplain trailing prose');
+    expect(blocks.map((b) => b.type)).toEqual(['table', 'paragraph']);
+    expect(blocks[1].type === 'paragraph' && plain(blocks[1].children)).toBe(
+      'plain trailing prose',
+    );
+  });
+
+  it('interrupts a paragraph and closes an open list', () => {
+    expect(parseMarkdown('intro line\n| a | b |\n|---|---|\n| 1 | 2 |').map((b) => b.type)).toEqual(
+      ['paragraph', 'table'],
+    );
+    expect(parseMarkdown('- item\n| a | b |\n|---|---|\n| 1 | 2 |').map((b) => b.type)).toEqual([
+      'list',
+      'table',
+    ]);
+  });
+
+  it('parses a table that is the last block with no trailing newline', () => {
+    const blocks = parseMarkdown('text\n\n| a | b |\n|---|---|\n| 1 | 2 |');
+    expect(blocks.map((b) => b.type)).toEqual(['paragraph', 'table']);
+    expect(grid(blocks[1])[1]).toEqual(['1', '2']);
+  });
+
+  it('accepts a header-only table with no body rows', () => {
+    const blocks = parseMarkdown('| a | b |\n|---|---|');
+    expect(blocks[0].type === 'table' && blocks[0].rows).toEqual([]);
+  });
+
+  it('never throws on adversarial pipe soup', () => {
+    for (const src of ['|', '||', '|\n|', '|---|', '\\|', '| a |\n|-|\n|', '|:|\n|:|']) {
+      expect(() => parseMarkdown(src)).not.toThrow();
+    }
   });
 });

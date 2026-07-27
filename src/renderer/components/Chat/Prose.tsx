@@ -33,6 +33,31 @@ const QUOTE_STYLE: React.CSSProperties = {
   borderLeft: '2px solid color-mix(in srgb, var(--text-main) 14%, transparent)',
 };
 
+// DESIGN.md: a table is machine-ish evidence living in prose, so it stays
+// quiet — 1px hairlines, NO fills anywhere (the header row is differentiated by
+// weight alone, per the no-wash rule), tabular figures so numeric columns line
+// up. Every colour is a color-mix on a token, so light themes inherit.
+const TABLE_STYLE: React.CSSProperties = {
+  borderCollapse: 'collapse',
+  fontVariantNumeric: 'tabular-nums',
+};
+
+const TABLE_CELL_STYLE: React.CSSProperties = {
+  border: '1px solid color-mix(in srgb, var(--text-main) 12%, transparent)',
+};
+
+/**
+ * Layout containment. A chat pane can be narrow and a table's minimum width is
+ * the sum of its columns' min-content widths — which can exceed the row. The
+ * table scrolls INSIDE this box; `maxWidth: 100%` is what stops it widening the
+ * row (and, through it, the pane), so the page never scrolls sideways.
+ */
+const TABLE_SCROLL_STYLE: React.CSSProperties = {
+  maxWidth: '100%',
+  overflowX: 'auto',
+  minWidth: 0,
+};
+
 function renderInline(
   nodes: InlineNode[],
   keyPrefix: string,
@@ -133,6 +158,42 @@ function renderBlock(
           ))}
         </ul>
       );
+    case 'table':
+      return (
+        <div key={key} data-chat-md="table-scroll" style={TABLE_SCROLL_STYLE}>
+          <table data-chat-md="table" style={TABLE_STYLE}>
+            <thead>
+              <tr>
+                {block.header.map((cell, c) => (
+                  <th
+                    key={`${key}.h${c}`}
+                    scope="col"
+                    className="px-2 py-1 align-top font-semibold text-[var(--text-main)] break-words"
+                    style={{ ...TABLE_CELL_STYLE, textAlign: block.align[c] ?? 'left' }}
+                  >
+                    {renderInline(cell, `${key}.h${c}`, renderCodeRef)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr key={`${key}.r${r}`}>
+                  {row.map((cell, c) => (
+                    <td
+                      key={`${key}.r${r}.${c}`}
+                      className="px-2 py-1 align-top break-words"
+                      style={{ ...TABLE_CELL_STYLE, textAlign: block.align[c] ?? 'left' }}
+                    >
+                      {renderInline(cell, `${key}.r${r}.${c}`, renderCodeRef)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
     case 'quote':
       return (
         <blockquote
@@ -157,7 +218,9 @@ function renderBlock(
 export function Prose({ text, renderCodeRef, className }: ProseProps): React.ReactElement {
   const blocks = React.useMemo(() => parseMarkdown(text), [text]);
   return (
-    <div className={`flex flex-col gap-1.5 ${className ?? ''}`} data-chat-text>
+    // `min-w-0`: a table's min-content width must never be able to push the
+    // prose column (and with it the pane) wider than its container.
+    <div className={`flex flex-col gap-1.5 min-w-0 ${className ?? ''}`} data-chat-text>
       {blocks.map((block, i) => renderBlock(block, `b${i}`, renderCodeRef))}
     </div>
   );
