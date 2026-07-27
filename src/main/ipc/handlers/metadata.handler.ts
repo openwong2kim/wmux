@@ -449,12 +449,17 @@ export function registerMetadataHandlers(
 }
 
 export function updateCwd(ptyId: string, cwd: string): void {
-  if (!isPlausibleCwd(cwd)) return;
-  cwdMap.set(ptyId, cwd);
   const identity = paneIdentities.get(ptyId);
+  const location = identity
+    ? classifySessionLocation(identity.shell, cwd, identity.distro)
+    : undefined;
+  const validationPlatform = location?.domain === 'wsl'
+    ? 'linux'
+    : process.platform;
+  if (!isPlausibleCwd(cwd, validationPlatform)) return;
+  cwdMap.set(ptyId, cwd);
   const previous = paneLocationSnapshots.get(ptyId);
-  if (identity && previous) {
-    const location = classifySessionLocation(identity.shell, cwd, identity.distro);
+  if (location && previous) {
     if (!locationsEqual(location, previous.location)) {
       publishPaneLocation(ptyId, location);
     }

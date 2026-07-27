@@ -48,22 +48,38 @@ describe('local pane location projection', () => {
     {
       name: 'relative cwd',
       platform: 'win32',
-      initialCwd: 'C:\\repo',
       rejectedCwd: 'relative/path',
-      shell: 'pwsh.exe',
+      location: {
+        domain: 'host' as const,
+        cwd: 'C:\\repo',
+        shell: 'pwsh.exe',
+      },
     },
     {
       name: 'Windows cwd on macOS',
       platform: 'darwin',
-      initialCwd: '/Users/me/repo',
       rejectedCwd: 'C:\\repo',
-      shell: '/bin/zsh',
+      location: {
+        domain: 'host' as const,
+        cwd: '/Users/me/repo',
+        shell: '/bin/zsh',
+      },
+    },
+    {
+      name: 'Windows cwd in WSL',
+      platform: 'win32',
+      rejectedCwd: 'C:\\repo',
+      location: {
+        domain: 'wsl' as const,
+        cwd: '/home/me/repo',
+        shell: 'wsl.exe',
+        distro: 'Ubuntu',
+      },
     },
   ])('rejects $name before changing accepted pane state', ({
     platform,
-    initialCwd,
     rejectedCwd,
-    shell,
+    location,
   }) => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -75,12 +91,8 @@ describe('local pane location projection', () => {
     const unsubscribeCwd = onCwdUpdate(cwdUpdates);
 
     try {
-      updatePaneLocation(ptyId, {
-        domain: 'host',
-        cwd: initialCwd,
-        shell,
-      });
-      updateCwd(ptyId, initialCwd);
+      updatePaneLocation(ptyId, location);
+      updateCwd(ptyId, location.cwd);
       const acceptedSnapshot = getPaneLocationSnapshot(ptyId);
       const acceptedTarget = getPaneCommandTarget(ptyId);
       locationUpdates.mockClear();
@@ -88,7 +100,7 @@ describe('local pane location projection', () => {
 
       updateCwd(ptyId, rejectedCwd);
 
-      expect(getCwd(ptyId)).toBe(initialCwd);
+      expect(getCwd(ptyId)).toBe(location.cwd);
       expect(getPaneCommandTarget(ptyId)).toEqual(acceptedTarget);
       expect(getPaneLocationSnapshot(ptyId)).toBe(acceptedSnapshot);
       expect(locationUpdates).not.toHaveBeenCalled();

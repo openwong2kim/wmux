@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 import type { SessionLocationSnapshot } from '../../../../shared/sessionLocation';
 import {
@@ -40,6 +40,11 @@ function snapshot(revision: number, cwd: string, distro?: string): SessionLocati
 
 beforeEach(() => {
   resetSessionLocationProjections();
+  vi.stubGlobal('window', { electronAPI: { platform: 'win32' } });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('surface location snapshot projection', () => {
@@ -96,6 +101,62 @@ describe('surface location snapshot projection', () => {
     expect(pane.surfaces[0]).toMatchObject({
       cwd: '/home/me/repo',
       location: snapshot(1, '/home/me/repo', 'Ubuntu').location,
+    });
+    expect(getRememberedSessionLocation('pty-1')).toEqual(
+      snapshot(1, '/home/me/repo', 'Ubuntu'),
+    );
+  });
+
+  it('rejects a Windows cwd for a WSL snapshot on win32', () => {
+    const { state, slice } = createHarness();
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'wsl.exe',
+      '/home/me/repo',
+      undefined,
+      snapshot(1, '/home/me/repo', 'Ubuntu'),
+    );
+
+    expect(slice.updateSurfaceLocation('pty-1', snapshot(2, 'C:\\repo', 'Ubuntu')))
+      .toBe(false);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces[0]).toMatchObject({
+      cwd: '/home/me/repo',
+      location: snapshot(1, '/home/me/repo', 'Ubuntu').location,
+    });
+    expect(getRememberedSessionLocation('pty-1')).toEqual(
+      snapshot(1, '/home/me/repo', 'Ubuntu'),
+    );
+  });
+
+  it('uses the exposed renderer platform for host snapshots', () => {
+    const { state, slice } = createHarness();
+    const hostSnapshot = (revision: number, cwd: string): SessionLocationSnapshot => ({
+      generation: 100,
+      revision,
+      location: { domain: 'host', cwd, shell: 'pwsh.exe' },
+    });
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'pwsh.exe',
+      'C:\\repo',
+      undefined,
+      hostSnapshot(1, 'C:\\repo'),
+    );
+
+    expect(slice.updateSurfaceLocation('pty-1', hostSnapshot(2, 'D:\\repo'))).toBe(true);
+    window.electronAPI.platform = 'darwin';
+    expect(slice.updateSurfaceLocation('pty-1', hostSnapshot(3, 'E:\\repo'))).toBe(false);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces[0]).toMatchObject({
+      cwd: 'D:\\repo',
+      location: hostSnapshot(2, 'D:\\repo').location,
     });
   });
 

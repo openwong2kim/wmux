@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { preparePaneCommand } from '../../git/paneCommand';
 import {
   updateCwd,
@@ -44,9 +44,16 @@ function reset(ptyId: string): void {
   removePaneLocation(ptyId);
 }
 
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
 beforeEach(() => {
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   resolveWslDistro.mockReset();
   resolveWslDistro.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
 });
 
 describe('I2 — a pane location follows the pane cwd', () => {

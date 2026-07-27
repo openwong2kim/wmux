@@ -16,6 +16,17 @@ import {
   rememberSessionLocation,
 } from '../sessionLocationProjection';
 
+function rendererPlatform(): NodeJS.Platform {
+  return window.electronAPI.platform;
+}
+
+function isPlausibleSurfaceLocation(location: SessionLocation): boolean {
+  return isPlausibleCwd(
+    location.cwd,
+    location.domain === 'wsl' ? 'linux' : rendererPlatform(),
+  );
+}
+
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
    * callers (e.g. the pane.split background-workspace path, #236) target a
@@ -338,7 +349,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ptyId) return;
     // Prompt-scrape false-positive defense — legacy daemon scraped impossible path shapes
     // from screen text (e.g. "C:\…" on Mac) must not overwrite existing cwd.
-    if (!isPlausibleCwd(cwd)) return;
+    if (!isPlausibleCwd(cwd, rendererPlatform())) return;
     for (const ws of state.workspaces) {
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {
@@ -368,7 +379,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfaceLocation: (ptyId, snapshot) => {
     if (!ptyId) return false;
-    if (!isPlausibleCwd(snapshot.location.cwd)) return false;
+    if (!isPlausibleSurfaceLocation(snapshot.location)) return false;
     const hasActiveBinding = get().workspaces.some((ws) => {
       const hasPty = (pane: Pane): boolean => pane.type === 'leaf'
         ? pane.surfaces.some((surface) => surface.ptyId === ptyId)
