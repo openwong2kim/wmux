@@ -84,8 +84,10 @@ jobs:
               if sudo apt-get -o Acquire::Retries=3 "$@"; then
                 return 0
               fi
-              echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
-              sleep $((attempt * 15))
+              if [ "$attempt" -lt 3 ]; then
+                echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
+                sleep $((attempt * 15))
+              fi
             done
             echo "apt-get $* failed after 3 attempts" >&2
             return 1

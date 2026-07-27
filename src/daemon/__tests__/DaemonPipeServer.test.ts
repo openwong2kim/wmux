@@ -381,12 +381,21 @@ describe('DaemonPipeServer', () => {
     const sockets: net.Socket[] = [];
     const closeCounts = { closed: 0, total: 40 };
 
+    // A refused socket emits `error` AND then `close`, so counting both events
+    // would settle one socket twice and let the wait below finish while half
+    // the sockets are still in flight. Terminal state is tracked per socket.
+    const terminal = new Set<net.Socket>();
     let settled = 0;
     for (let i = 0; i < closeCounts.total; i++) {
       const s = net.createConnection(pipeName);
       sockets.push(s);
-      s.on('close', () => { closeCounts.closed++; settled++; });
-      s.on('error', () => { settled++; });
+      const markSettled = () => {
+        if (terminal.has(s)) return;
+        terminal.add(s);
+        settled++;
+      };
+      s.on('close', () => { closeCounts.closed++; markSettled(); });
+      s.on('error', markSettled);
     }
 
     // Wait for the outcome, not for a fixed span. The previous 2s safety timer
