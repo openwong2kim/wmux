@@ -13,6 +13,7 @@ import {
 } from '../../events/publisher';
 import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
+import { dropToggle } from '../../chat/keepWarmLru';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
 
@@ -676,6 +677,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
               delete state.chatSeq[s.ptyId];
               delete state.chatNeedsResnapshot[s.ptyId];
               delete state.chatPending[s.ptyId];
+              // PR-9 keep-warm LRU: a closed pane must not hold a warm slot —
+              // dead MRU entries push live chat panes out of the first N.
+              if (Array.isArray(state.chatToggleOrder)) {
+                state.chatToggleOrder = dropToggle(state.chatToggleOrder, s.ptyId);
+              }
             }
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];

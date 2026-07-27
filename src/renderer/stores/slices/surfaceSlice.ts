@@ -254,6 +254,12 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       delete state.chatSeq[closedPtyId];
       delete state.chatNeedsResnapshot[closedPtyId];
       delete state.chatPending[closedPtyId];
+      // PR-9 keep-warm LRU: a dead pane left in the toggle order occupies one of
+      // the N warm slots forever, so with keep-warm on, LIVE chat panes get
+      // unmounted and replayed in its place.
+      if (Array.isArray(state.chatToggleOrder)) {
+        state.chatToggleOrder = dropToggle(state.chatToggleOrder, closedPtyId);
+      }
     }
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).

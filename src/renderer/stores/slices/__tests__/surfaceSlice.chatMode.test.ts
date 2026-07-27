@@ -135,3 +135,31 @@ describe('A9④ — closeSurface drops the pane Chat projection window', () => {
     expect(store.getState().chatEvents[PTY]).toBeUndefined();
   });
 });
+
+// PR-9 keep-warm LRU: `chatToggleOrder` is the MRU list the keep-warm window is
+// computed from, so a ptyId that outlives its pane sits in one of the N warm
+// slots forever and pushes a LIVE chat pane out — it gets unmounted and replayed
+// on toggle-back. Every teardown that clears the projection maps must drop it.
+describe('A9④ — teardown also drops the keep-warm toggle entry', () => {
+  it('closeSurface drops the closed ptyId from chatToggleOrder', () => {
+    store.getState().setChatStatus(PTY, { available: true, reason: 'ok' });
+    store.getState().setSurfaceChatMode(SURFACE_ID, true);
+    expect(store.getState().chatToggleOrder).toEqual([PTY]);
+
+    const root = store.getState().workspaces[0].rootPane;
+    store.getState().closeSurface(root.id, SURFACE_ID);
+
+    expect(store.getState().chatToggleOrder).toEqual([]);
+  });
+
+  it('leaves other panes’ entries alone', () => {
+    store.getState().setChatStatus(PTY, { available: true, reason: 'ok' });
+    store.getState().setSurfaceChatMode(SURFACE_ID, true);
+    store.setState((s) => { s.chatToggleOrder = ['pty-other', PTY]; });
+
+    const root = store.getState().workspaces[0].rootPane;
+    store.getState().closeSurface(root.id, SURFACE_ID);
+
+    expect(store.getState().chatToggleOrder).toEqual(['pty-other']);
+  });
+});

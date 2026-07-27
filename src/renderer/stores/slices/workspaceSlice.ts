@@ -11,6 +11,7 @@ import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
+import { dropToggle } from '../../chat/keepWarmLru';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -387,6 +388,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           delete state.chatSeq[pid];
           delete state.chatNeedsResnapshot[pid];
           delete state.chatPending[pid];
+          // PR-9 keep-warm LRU: same as the pane/surface teardowns — a ptyId
+          // that no longer exists must not keep one of the N warm slots.
+          if (Array.isArray(state.chatToggleOrder)) {
+            state.chatToggleOrder = dropToggle(state.chatToggleOrder, pid);
+          }
         }
       }
       state.workspaces.splice(idx, 1);
