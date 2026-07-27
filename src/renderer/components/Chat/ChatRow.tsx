@@ -75,10 +75,32 @@ function SpeakerLabel({ children, self }: { children: React.ReactNode; self: boo
   );
 }
 
+/**
+ * Raised card treatment for the operator's own turn (DESIGN.md "gpui-style
+ * control surfacing"): faint surface fill + a text-main hairline + the top 1px
+ * inset highlight, 7px card radius. Deliberately NOT a coloured bubble — the
+ * "amber never fills areas" / no-wash rules are untouched, and every value is a
+ * color-mix on a token so light themes (hinomaru/taegeuk) inherit it.
+ */
+const USER_CARD_STYLE: React.CSSProperties = {
+  background: 'color-mix(in srgb, var(--bg-surface) 72%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--text-main) 10%, transparent)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent)',
+  borderRadius: 7,
+};
+
 function UserRow({ event, pending }: { event: UserTextEvent; pending?: boolean }): React.ReactElement {
   const t = useT();
   return (
-    <div className="flex flex-col gap-0.5" data-chat-row="user" data-chat-pending={pending ? '1' : undefined}>
+    <div
+      // Right-aligned and width-capped: chat convention for the human's own
+      // messages (owner decision 2026-07-28). Agent turns stay left/full-width.
+      className="flex flex-col gap-0.5 items-end ml-auto w-fit max-w-[78%] px-2.5 py-1.5"
+      style={USER_CARD_STYLE}
+      data-chat-row="user"
+      data-chat-align="right"
+      data-chat-pending={pending ? '1' : undefined}
+    >
       <SpeakerLabel self>{t('chat.you')}</SpeakerLabel>
       <div
         className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words ${
@@ -116,7 +138,11 @@ function AssistantRow({
   const orphans = (event.codeBlocks ?? []).filter((b) => !referenced.has(b.n));
 
   return (
-    <div className="flex flex-col gap-0.5" data-chat-row={event.thinking ? 'thinking' : 'assistant'}>
+    <div
+      className="flex flex-col gap-0.5"
+      data-chat-row={event.thinking ? 'thinking' : 'assistant'}
+      data-chat-align="full"
+    >
       <SpeakerLabel self={false}>{agentName || t('chat.agent')}</SpeakerLabel>
       <div
         className={

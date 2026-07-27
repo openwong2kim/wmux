@@ -21,6 +21,9 @@ import type { TurnEvent } from '../../../../shared/transcript/turnEvents';
 
 const PTY = 'pty-chat';
 
+/** Explicit no-op (an empty arrow body is an ESLint error in this repo). */
+const noop = (): void => undefined;
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -46,7 +49,7 @@ function mount(props: Partial<React.ComponentProps<typeof ChatView>> = {}): void
         surfaceId: 'surf-1',
         workspaceId: 'ws-1',
         isActive: true,
-        onJumpToTerminal: () => {},
+        onJumpToTerminal: noop,
         ...props,
       }),
     );
@@ -57,7 +60,7 @@ describe('ChatView', () => {
   beforeEach(() => {
     useStore.getState().clearChatSurface(PTY);
     (window as unknown as { electronAPI: unknown }).electronAPI = {
-      pty: { write: () => {} },
+      pty: { write: noop },
     };
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -301,5 +304,179 @@ describe('ChatView', () => {
     mount({ visible: false });
     const view = container.querySelector<HTMLElement>('[data-chat-view]')!;
     expect(view.style.display).toBe('none');
+  });
+
+  // ─── Conversation layout (owner decision 2026-07-28) ──────────────────────
+  // The human's own turns are right-aligned in a width-capped RAISED card; the
+  // agent stays left and full width. Not a coloured bubble: the card is the
+  // design system's existing raised treatment, so the no-wash rule holds.
+  describe('conversation alignment', () => {
+    it('right-aligns and width-caps the user turn, leaves the agent full width', () => {
+      seed([
+        { id: 'u1', kind: 'user_text', text: 'refactor the reader' },
+        { id: 'a1', kind: 'assistant_text', text: 'on it' },
+      ]);
+      mount({ agentName: 'claude-1' });
+      const user = container.querySelector<HTMLElement>('[data-chat-row="user"]')!;
+      const agent = container.querySelector<HTMLElement>('[data-chat-row="assistant"]')!;
+      expect(user.getAttribute('data-chat-align')).toBe('right');
+      expect(agent.getAttribute('data-chat-align')).toBe('full');
+      // Pushed to the right edge and capped well under the row width.
+      expect(user.className).toContain('ml-auto');
+      expect(user.className).toMatch(/max-w-\[7[58]%\]/);
+      expect(agent.className).not.toContain('ml-auto');
+      expect(agent.className).not.toContain('max-w');
+    });
+
+    it('gives the user turn the RAISED treatment — hairline + inset highlight, no colour fill', () => {
+      seed([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
+      mount();
+      const user = container.querySelector<HTMLElement>('[data-chat-row="user"]')!;
+      expect(user.style.borderRadius).toBe('7px'); // card radius
+      expect(user.style.border).toContain('var(--text-main)');
+      expect(user.style.boxShadow).toContain('inset 0 1px 0');
+      // Tokens only, and no accent wash — amber never fills areas.
+      expect(user.style.background).toContain('var(--bg-surface)');
+      expect(user.getAttribute('style')).not.toContain('--accent');
+      expect(user.getAttribute('style')).not.toMatch(/#[0-9a-f]{3,8}/i);
+    });
+
+    it('leaves machine evidence left and full width (tool runs, diff chips, trust seam)', () => {
+      seed([
+        { id: 'u1', kind: 'tool_use', toolUseId: 't1', name: 'Bash', argSummary: 'git diff' },
+        { id: 'r1', kind: 'tool_result', toolUseId: 't1', ok: true, bytes: 4096, diffLike: true },
+      ]);
+      mount();
+      for (const sel of ['[data-chat-tool-run]', '[data-chat-diff-chip]', '[data-chat-trust-seam]']) {
+        const el = container.querySelector<HTMLElement>(sel)!;
+        expect(el).not.toBeNull();
+        expect(el.closest('[data-chat-align="right"]')).toBeNull();
+      }
+    });
+  });
+
+  // ─── Layout containment + the live tail ───────────────────────────────────
+  // The host is a BLOCK box (`flex-1 relative overflow-hidden` in Pane), so a
+  // `flex-1` root sized to its content: the wheel did nothing and the composer
+  // was pushed past the host's clip.
+  describe('scroll containment and sticky tail', () => {
+    // jsdom does no layout, so the container's geometry is stubbed. The setter
+    // clamps like a browser, which is what `scrollTop = scrollHeight` relies on.
+    let clientHeight = 300;
+    let contentHeight = 1000;
+    const tops = new WeakMap<Element, number>();
+    const isScroller = (el: Element): boolean => el.hasAttribute('data-chat-scroll');
+
+    beforeEach(() => {
+      clientHeight = 300;
+      contentHeight = 1000;
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+        configurable: true,
+        get(this: HTMLElement) { return isScroller(this) ? clientHeight : 0; },
+      });
+      Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+        configurable: true,
+        get(this: HTMLElement) { return isScroller(this) ? contentHeight : 0; },
+      });
+      Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+        configurable: true,
+        get(this: HTMLElement) { return tops.get(this) ?? 0; },
+        set(this: HTMLElement, v: number) {
+          const max = isScroller(this) ? Math.max(0, contentHeight - clientHeight) : 0;
+          tops.set(this, Math.max(0, Math.min(v, max)));
+        },
+      });
+    });
+
+    afterEach(() => {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
+    });
+
+    const manyRows = (n: number): TurnEvent[] =>
+      Array.from({ length: n }, (_, i) => ({ id: `u${i}`, kind: 'user_text' as const, text: `turn ${i}` }));
+
+    const scroller = (): HTMLElement => container.querySelector<HTMLElement>('[data-chat-scroll]')!;
+
+    it('sizes the root to the pane box, not to its content', () => {
+      seed(manyRows(40));
+      mount();
+      const view = container.querySelector<HTMLElement>('[data-chat-view]')!;
+      expect(view.style.height).toBe('100%');
+      expect(view.style.display).toBe('flex');
+      expect(view.style.flexDirection).toBe('column');
+      // `flex-1` was the bug: the host is not a flex column, so it resolved to
+      // auto height. It must not come back.
+      expect(view.className).not.toContain('flex-1');
+      // …and the row list is the part that scrolls, bounded by that root.
+      expect(scroller().className).toContain('overflow-y-auto');
+      expect(scroller().className).toContain('min-h-0');
+      // The composer and the trust seam are siblings of the scroller, so they
+      // are pinned inside the same bounded box rather than pushed past the clip.
+      const view2 = scroller().parentElement!;
+      expect(view2.querySelector('[data-chat-trust-seam]')).not.toBeNull();
+      expect(view2.querySelector('[data-chat-input]')).not.toBeNull();
+    });
+
+    it('opens on the NEWEST turn instead of the oldest row of the window', () => {
+      seed(manyRows(40));
+      mount();
+      expect(scroller().scrollTop).toBe(contentHeight - clientHeight);
+    });
+
+    it('stays pinned to the bottom when a turn appends while following the tail', () => {
+      seed(manyRows(40));
+      mount();
+      contentHeight = 1400;
+      act(() => {
+        useStore.getState().applyChatAppend(PTY, {
+          seq: 2,
+          events: [{ id: 'new', kind: 'user_text', text: 'newest' }],
+          cursor: { headOffset: 0, tailOffset: 600, fileSize: 600, mtimeMs: 2 },
+        });
+      });
+      expect(scroller().scrollTop).toBe(1400 - 300);
+    });
+
+    it('does NOT yank the view when the operator has scrolled up to read history', () => {
+      seed(manyRows(40));
+      mount();
+      act(() => {
+        scroller().scrollTop = 120;
+        scroller().dispatchEvent(new Event('scroll'));
+      });
+      contentHeight = 1400;
+      act(() => {
+        useStore.getState().applyChatAppend(PTY, {
+          seq: 2,
+          events: [{ id: 'new', kind: 'user_text', text: 'newest' }],
+          cursor: { headOffset: 0, tailOffset: 600, fileSize: 600, mtimeMs: 2 },
+        });
+      });
+      expect(scroller().scrollTop).toBe(120);
+    });
+
+    it('resumes following the tail once the operator scrolls back down', () => {
+      seed(manyRows(40));
+      mount();
+      act(() => {
+        scroller().scrollTop = 120;
+        scroller().dispatchEvent(new Event('scroll'));
+      });
+      act(() => {
+        scroller().scrollTop = contentHeight - clientHeight;
+        scroller().dispatchEvent(new Event('scroll'));
+      });
+      contentHeight = 1400;
+      act(() => {
+        useStore.getState().applyChatAppend(PTY, {
+          seq: 3,
+          events: [{ id: 'new2', kind: 'user_text', text: 'newest' }],
+          cursor: { headOffset: 0, tailOffset: 700, fileSize: 700, mtimeMs: 3 },
+        });
+      });
+      expect(scroller().scrollTop).toBe(1400 - 300);
+    });
   });
 });
