@@ -244,3 +244,121 @@ describe('chat.handler — local (non-daemon) mode', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 });
+
+// The daemon subscription is owned by MAIN's control socket, so the daemon's own
+// per-client teardown never fires for a renderer that went away — main is still
+// connected. These are the two consequences that has to be handled here.
+describe('chat.handler — subscription lifecycle', () => {
+  interface FakeWebContents {
+    id: number;
+    listeners: Map<string, ((...a: unknown[]) => void)[]>;
+    on: (event: string, fn: (...a: unknown[]) => void) => void;
+    off: (event: string, fn: (...a: unknown[]) => void) => void;
+    isDestroyed: () => boolean;
+    emit: (event: string, ...args: unknown[]) => void;
+  }
+
+  function makeSender(id: number): FakeWebContents {
+    const listeners = new Map<string, ((...a: unknown[]) => void)[]>();
+    return {
+      id,
+      listeners,
+      on(event, fn) { listeners.set(event, [...(listeners.get(event) ?? []), fn]); },
+      off(event, fn) {
+        listeners.set(event, (listeners.get(event) ?? []).filter((f) => f !== fn));
+      },
+      isDestroyed: () => false,
+      emit(event, ...args) { for (const fn of [...(listeners.get(event) ?? [])]) fn(...args); },
+    };
+  }
+
+  function eventFrom(wc: FakeWebContents): Electron.IpcMainInvokeEvent {
+    return { sender: wc } as unknown as Electron.IpcMainInvokeEvent;
+  }
+
+  it('unsubscribes the panes a DESTROYED renderer held, without any IPC from it', async () => {
+    const { dc, rpc } = makeDaemon({ ok: true, status: { available: true, reason: 'ok' } });
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+    const wc = makeSender(1);
+
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(wc), 'pty-1');
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(wc), 'pty-2');
+    rpc.mockClear();
+
+    // Reload/close/crash: the React effect that would have unsubscribed is gone.
+    wc.emit('destroyed');
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-1' });
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-2' });
+  });
+
+  it('treats a crash and a main-frame reload the same way', async () => {
+    const { dc, rpc } = makeDaemon({ ok: true, status: { available: true, reason: 'ok' } });
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+
+    const crashed = makeSender(1);
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(crashed), 'pty-1');
+    rpc.mockClear();
+    crashed.emit('render-process-gone');
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-1' });
+
+    const reloaded = makeSender(2);
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(reloaded), 'pty-3');
+    rpc.mockClear();
+    // An in-page (same-document) navigation is NOT a teardown.
+    reloaded.emit('did-start-navigation', {}, 'app://x#hash', true, true);
+    expect(rpc).not.toHaveBeenCalled();
+    // A sub-frame navigation is not one either.
+    reloaded.emit('did-start-navigation', {}, 'app://iframe', false, false);
+    expect(rpc).not.toHaveBeenCalled();
+    // A real main-frame reload is.
+    reloaded.emit('did-start-navigation', {}, 'app://index.html', false, true);
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-3' });
+  });
+
+  it('refcounts per pane: one consumer leaving must not kill the other stream', async () => {
+    const { dc, rpc } = makeDaemon({ ok: true, status: { available: true, reason: 'ok' } });
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+    const a = makeSender(1);
+    const b = makeSender(2);
+
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(a), 'pty-1');
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(b), 'pty-1');
+    rpc.mockClear();
+
+    expect(await getHandler(IPC.CHAT_UNSUBSCRIBE)(eventFrom(a), 'pty-1')).toEqual({ ok: true });
+    expect(rpc).not.toHaveBeenCalled();
+
+    await getHandler(IPC.CHAT_UNSUBSCRIBE)(eventFrom(b), 'pty-1');
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-1' });
+  });
+
+  it('still forwards the unsubscribe when the last holder is destroyed instead', async () => {
+    const { dc, rpc } = makeDaemon({ ok: true, status: { available: true, reason: 'ok' } });
+    registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+    const a = makeSender(1);
+    const b = makeSender(2);
+
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(a), 'pty-1');
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(b), 'pty-1');
+    rpc.mockClear();
+
+    a.emit('destroyed');
+    expect(rpc).not.toHaveBeenCalled();
+    b.emit('destroyed');
+    expect(rpc).toHaveBeenCalledWith('daemon.transcript.unsubscribe', { id: 'pty-1' });
+  });
+
+  it('detaches its renderer listeners on cleanup (daemon reconnect swap)', async () => {
+    const { dc, rpc } = makeDaemon({ ok: true, status: { available: true, reason: 'ok' } });
+    const cleanup = registerChatHandlers({ getWindow: () => null, getDaemonClient: () => dc });
+    const wc = makeSender(1);
+    await getHandler(IPC.CHAT_SUBSCRIBE)(eventFrom(wc), 'pty-1');
+
+    cleanup();
+    rpc.mockClear();
+    wc.emit('destroyed');
+    // The subscriptions belonged to the socket being swapped out; the stale
+    // closure must not fire an RPC on the new one.
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});

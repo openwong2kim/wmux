@@ -11,6 +11,7 @@ import { TranscriptProjector } from '../TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
 
+let root: string;
 let dir: string;
 let file: string;
 let projector: TranscriptProjector;
@@ -29,6 +30,9 @@ function entry(id: string, text: string): string {
 function makeProjector(opts?: { pollMs?: number }): TranscriptProjector {
   return new TranscriptProjector({
     getResumeBinding: (id) => bindings.get(id),
+    // The projector refuses any transcript outside `<CLAUDE_CONFIG_DIR>/projects`,
+    // so the tmp tree stands in for a relocated Claude config dir.
+    getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: root }),
     emitAppend: (_sessionId, data, clientIds) => appends.push({ data, clientIds }),
     debounceMs: 40,
     ...(opts?.pollMs ? { pollMs: opts.pollMs } : {}),
@@ -36,7 +40,9 @@ function makeProjector(opts?: { pollMs?: number }): TranscriptProjector {
 }
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-projector-watch-'));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-projector-watch-'));
+  dir = path.join(root, 'projects', '-synthetic-repo');
+  fs.mkdirSync(dir, { recursive: true });
   file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, entry('e-1', 'first line'), 'utf8');
   appends = [];
@@ -48,7 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   projector.dispose();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 describe('fs.watch — append', () => {

@@ -176,7 +176,12 @@ export interface HookIngestDeps {
    *
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
-  onTranscriptNudge?: (sessionId: string, kind: AgentSignalKind) => void;
+  onTranscriptNudge?: (
+    sessionId: string,
+    kind: AgentSignalKind,
+    /** The signal's own agent session id, when it carried one. */
+    agentSessionId?: string,
+  ) => void;
 }
 
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
@@ -510,7 +515,7 @@ export class HookIngest {
     // and is wrapped because a projector failure must not turn into a fatal
     // hook — the bridge treats an RPC error as one.
     try {
-      this.deps.onTranscriptNudge?.(sessionId, signal.kind);
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }

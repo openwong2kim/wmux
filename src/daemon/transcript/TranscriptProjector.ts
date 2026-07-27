@@ -44,6 +44,7 @@ import {
   transcriptBasename,
   transcriptSessionId,
 } from './readTail';
+import { checkTranscriptPath } from '../hooks/transcriptPathGuard';
 import type { AgentSignalKind, CodeBlockRequest, TranscriptProjectorDeps } from './types';
 import type {
   TranscriptAppendData,
@@ -115,6 +116,11 @@ interface WatchState {
    * cursor is still unterminated. Drives the D1(b) backoff.
    */
   stallCount: number;
+  /**
+   * The agent session id a `session_start` nudge invalidated. While it is set,
+   * the binding it names must NOT be re-adopted — see `nudge`.
+   */
+  staleAgentSessionId: string | null;
 }
 
 export class TranscriptProjector {
@@ -122,6 +128,8 @@ export class TranscriptProjector {
   private readonly debounceMs: number;
   private readonly pollMs: number;
   private readonly watches = new Map<string, WatchState>();
+  /** Keys already logged by `warnOnce`. */
+  private readonly warned = new Set<string>();
   private disposed = false;
 
   constructor(deps: TranscriptProjectorDeps) {
@@ -211,6 +219,7 @@ export class TranscriptProjector {
         lastMtimeMs: -1,
         lastIno: -1,
         stallCount: 0,
+        staleAgentSessionId: null,
       };
       this.watches.set(sessionId, state);
     }
@@ -260,14 +269,38 @@ export class TranscriptProjector {
    *     line is on screen by the time the composer locks.
    *   agent.session_start — a reused pane must not keep showing the previous
    *     conversation, so the next append is forced to `reset:true`.
+   *
+   * `agentSessionId` is the id the signal itself carried (the #12235-safe
+   * transcript-derived one). Only `session_start` uses it, and only to tell a
+   * genuinely NEW session apart from a resume of the standing one.
    */
-  nudge(sessionId: string, kind: AgentSignalKind): void {
+  nudge(sessionId: string, kind: AgentSignalKind, agentSessionId?: string): void {
     const state = this.watches.get(sessionId);
     if (!state || this.disposed) return;
     if (kind === 'agent.session_start') {
       state.forceReset = true;
       state.tailOffset = -1;
       state.transcriptPath = '';
+      // A SessionStart in a REUSED pane (`/clear`, or a fresh claude in the same
+      // pane) fires before its `.jsonl` exists, so it carries no transcript path
+      // and daemon/index.ts refuses the provisional capture — which leaves the
+      // PREVIOUS session's binding standing. Clearing the path above and then
+      // letting `refreshPath` re-read that same binding would re-adopt the old
+      // transcript and force-reset the client with the finished conversation
+      // presented as the new session's, until the first Stop of the new session
+      // lands. So remember which binding was just invalidated and refuse to
+      // re-adopt it; a genuine binding refresh (a different agent session, or
+      // one whose transcript path finally arrived) releases the hold.
+      //
+      // A resume of the SAME agent session is the one case where the standing
+      // binding is still the right one, and the signal's own agentSessionId is
+      // what distinguishes it. A caller that supplies no id gets the old
+      // behaviour — it has told us nothing to hold ON.
+      const current = this.resolvePath(sessionId);
+      const currentId = current.ok ? current.agentSessionId : '';
+      state.staleAgentSessionId = agentSessionId && currentId && currentId !== agentSessionId
+        ? currentId
+        : null;
     }
     // A binding that only just arrived (or changed session) is picked up here.
     this.refreshPath(sessionId, state);
@@ -328,7 +361,9 @@ export class TranscriptProjector {
 
   private resolvePath(
     sessionId: string,
-  ): { ok: true; transcriptPath: string } | { ok: false; reason: string } {
+  ):
+    | { ok: true; transcriptPath: string; agentSessionId: string }
+    | { ok: false; reason: string } {
     let binding;
     try {
       binding = this.deps.getResumeBinding(sessionId);
@@ -338,7 +373,43 @@ export class TranscriptProjector {
     if (!binding) return { ok: false, reason: 'no-binding' };
     if (binding.agent !== SUPPORTED_AGENT) return { ok: false, reason: 'not-claude' };
     if (!binding.transcriptPath) return { ok: false, reason: 'no-transcript-path' };
-    return { ok: true, transcriptPath: binding.transcriptPath };
+    // The containment guard belongs HERE, at the single point every read goes
+    // through, not only on the hook path that happens to be validated today.
+    // The binding has several writers — the daemon's own hook ingest, the
+    // `daemon.setResumeBinding` RPC (which main's hooks.signal fallback calls
+    // with the raw payload path), main's resume spool, and the restored state
+    // file — and any one of them landing an unchecked path would otherwise turn
+    // the projector back into "open this file and render it as a conversation".
+    // Refusal degrades exactly like a missing path: Chat View is unavailable.
+    const check = checkTranscriptPath(
+      binding.transcriptPath,
+      binding.sessionId,
+      this.deps.getSessionEnv?.(sessionId),
+    );
+    if (!check.ok) {
+      this.warnOnce(
+        `${sessionId} ${binding.transcriptPath}`,
+        `[transcript] refused transcript path for ${sessionId}: ${check.reason}`,
+      );
+      return { ok: false, reason: 'unsafe-transcript-path' };
+    }
+    return {
+      ok: true,
+      transcriptPath: binding.transcriptPath,
+      agentSessionId: binding.sessionId,
+    };
+  }
+
+  /**
+   * `resolvePath` runs on every read (watch events, polls, nudges), so a refused
+   * path must not log once per beat. Keyed by pane+path and bounded, because the
+   * daemon outlives every pane it ever ran.
+   */
+  private warnOnce(key: string, message: string): void {
+    if (this.warned.has(key)) return;
+    if (this.warned.size >= 256) this.warned.clear();
+    this.warned.add(key);
+    this.deps.log?.('warn', message);
   }
 
   /**
@@ -347,6 +418,13 @@ export class TranscriptProjector {
    */
   private refreshPath(sessionId: string, state: WatchState): void {
     const resolved = this.resolvePath(sessionId);
+    if (resolved.ok && state.staleAgentSessionId) {
+      // The binding a session_start invalidated is still the one on file — the
+      // provisional capture for the NEW session was refused for having no
+      // transcript path. Keep waiting rather than replay the old conversation.
+      if (resolved.agentSessionId === state.staleAgentSessionId) return;
+      state.staleAgentSessionId = null;
+    }
     const next = resolved.ok ? resolved.transcriptPath : '';
     if (next === state.transcriptPath) return;
     state.transcriptPath = next;

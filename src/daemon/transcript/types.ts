@@ -16,6 +16,13 @@ export interface TranscriptProjectorDeps {
    */
   getResumeBinding: (sessionId: string) => ResumeBinding | undefined;
   /**
+   * The pane's environment, consulted ONLY by the transcript-path containment
+   * check: a workspace profile may set `CLAUDE_CONFIG_DIR`, which relocates the
+   * projects root a legitimate transcript lives under. Absent ⇒ the process
+   * environment and the default `~/.claude/projects` are used.
+   */
+  getSessionEnv?: (sessionId: string) => Record<string, string> | undefined;
+  /**
    * Deliver an append to the listed clients ONLY (A6 — unicast, not
    * broadcast). A transcript append carries the pane's full conversation
    * content, so it must never reach a client that did not subscribe, and

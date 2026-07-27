@@ -55,6 +55,15 @@ export interface CodeBlockRef {
    * Absent only when the producer could not attribute an offset.
    */
   srcOffset?: number;
+  /**
+   * The stored body was CUT at the daemon's per-block character cap, so what an
+   * expand returns is a prefix of the block `lines` describes. Set only when it
+   * happened; absent means the body is complete.
+   *
+   * Load-bearing rather than cosmetic: without it a user copies a shortened
+   * body out of the chip with nothing saying so.
+   */
+  truncated?: boolean;
 }
 
 export interface AssistantTextEvent extends TurnEventBase {
