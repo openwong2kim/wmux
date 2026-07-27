@@ -145,6 +145,36 @@ describe('execution-context env builders', () => {
   });
 });
 
+describe('CLAUDE_CODE_CHILD_SESSION (transcript-killer marker)', () => {
+  // wmux itself is often launched from inside a Claude Code session, so this
+  // marker rides in on process.env. A pane's claude that sees it stops writing
+  // a transcript — no error, no banner — which kills the Stop hook's
+  // transcript_path, `--resume`, and Chat View. A pane is never a child
+  // session, so it must never inherit the marker.
+  const base = {
+    PATH: '/usr/bin',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CONFIG_DIR: '/home/u/.claude',
+  };
+
+  it('is stripped from BOTH spawn policies', () => {
+    expect(buildInteractiveShellEnv(base).CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+    expect(buildGatedAutomationEnv(base).CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+  });
+
+  it('is classified INTERNAL (case-insensitive), not credential', () => {
+    expect(isInternalEnvKey('CLAUDE_CODE_CHILD_SESSION')).toBe(true);
+    expect(isInternalEnvKey('claude_code_child_session')).toBe(true);
+    expect(isCredentialEnvKey('CLAUDE_CODE_CHILD_SESSION')).toBe(false);
+  });
+
+  it('leaves other CLAUDE_* vars alone — CLAUDE_CONFIG_DIR is user-set', () => {
+    expect(buildInteractiveShellEnv(base).CLAUDE_CONFIG_DIR).toBe('/home/u/.claude');
+    expect(buildGatedAutomationEnv(base).CLAUDE_CONFIG_DIR).toBe('/home/u/.claude');
+    expect(isInternalEnvKey('CLAUDE_CONFIG_DIR')).toBe(false);
+  });
+});
+
 describe('case-insensitive matching (lower/mixed-case bypass fix)', () => {
   it('matches lowercase credential + internal names', () => {
     expect(isCredentialEnvKey('github_token')).toBe(true);

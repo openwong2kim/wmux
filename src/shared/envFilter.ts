@@ -31,6 +31,19 @@ const INTERNAL_PATTERNS: ReadonlyArray<RegExp> = [
 const INTERNAL_EXACT: ReadonlySet<string> = new Set([
   'NODE_OPTIONS',
   'ELECTRON_RUN_AS_NODE',
+  // Inherited-parent marker, not a wmux var, but the same class of leak: wmux
+  // is routinely launched FROM a Claude Code session, so its process.env can
+  // carry CLAUDE_CODE_CHILD_SESSION. A `claude` that sees it treats itself as a
+  // nested invocation and stops persisting a transcript — silently, with no
+  // error. The Stop hook then fires with no `transcript_path`, `--resume` can
+  // never find the session, and Chat View is permanently unreachable while the
+  // UI promises it "opens after this agent's first turn completes". Empirically
+  // 100% broken with the marker / 100% reliable without it (ClaudePtyBrainAdapter
+  // scrubBrainSpawnEnv proved this for brain ptys; ordinary panes had no such
+  // guard). A pane is a fresh top-level terminal, never a child session, so the
+  // marker is meaningless there — strip it for human shells too. Only this exact
+  // key: CLAUDE_CONFIG_DIR and friends are user-set and must pass through.
+  'CLAUDE_CODE_CHILD_SESSION',
 ]);
 
 // ── CREDENTIAL: gated 스폰에서만 strip ───────────────────────────────────
