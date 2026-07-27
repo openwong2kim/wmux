@@ -25,10 +25,12 @@ describe('getExecEnv', () => {
       expect(env.PATH).toContain('/opt/homebrew/bin');
       expect(env.PATH).toContain('/usr/local/bin');
       expect(env.PATH).toContain('/usr/bin'); // preserves the existing PATH
-      // ~/.local/bin: per-user CLI installs (the tailscale shim case, 2026-07-27)
+      // ~/.local/bin: per-user CLI installs (the tailscale shim case, 2026-07-27).
+      // Substring match, not split(':') — on a Windows CI runner (isMac mocked
+      // true) path.join yields C:\Users\..., whose drive colon breaks the split.
       const { default: os } = await import('node:os');
       const { default: path } = await import('node:path');
-      expect((env.PATH ?? '').split(':')).toContain(path.join(os.homedir(), '.local', 'bin'));
+      expect(env.PATH).toContain(path.join(os.homedir(), '.local', 'bin'));
     } finally {
       process.env.PATH = originalPath;
     }
