@@ -3,7 +3,8 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { request as httpReq } from 'node:http';
+import { request as httpReq, type Server as HttpServer } from 'node:http';
+import type { Socket } from 'node:net';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 
@@ -655,57 +656,56 @@ describe('WebTerminalServer', () => {
     }
   });
 
-  it('tracks the cooldown by the actual TCP source', async () => {
+  it('keys cooldowns by the normalized TCP socket source', async () => {
     const info = await startRO();
     const code = info.pairCode as string;
     const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
-    const requestPair = (localAddress: string) =>
-      new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
-        const req = httpReq(
-          {
-            host: '127.0.0.1',
-            port: info.port as number,
-            path: `/api/pair?code=${encodeURIComponent(wrong)}`,
-            localAddress,
-          },
-          (res) => {
-            let body = '';
-            res.setEncoding('utf8');
-            res.on('data', (chunk) => { body += chunk; });
-            res.on('end', () => {
-              resolve({
-                status: res.statusCode ?? 0,
-                body: JSON.parse(body) as Record<string, unknown>,
-              });
-            });
-          },
-        );
-        req.on('error', reject);
-        req.end();
-      });
-
     const startedAt = Date.now();
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
-    try {
-      const first = await requestPair('127.0.0.1');
-      expect(first).toEqual({ status: 403, body: { error: 'invalid code', attemptsLeft: 4 } });
-
-      // 127/8 is loopback on every supported OS. A distinct TCP source gets its
-      // own first budget-consuming miss instead of inheriting 127.0.0.1's wait.
-      const second = await requestPair('127.0.0.2');
-      expect(second).toEqual({ status: 403, body: { error: 'invalid code', attemptsLeft: 3 } });
-
-      const firstAgain = await requestPair('127.0.0.1');
-      expect(firstAgain).toEqual({
-        status: 429,
-        body: { error: 'rate limited', retryAfterSeconds: 30, attemptsLeft: 3 },
+    const httpServer = (server as unknown as { server: HttpServer | null }).server;
+    if (!httpServer) throw new Error('HTTP server unavailable');
+    let source = '192.0.2.10';
+    const sockets = new Set<Socket>();
+    const setRemoteAddress = (socket: Socket): void => {
+      sockets.add(socket);
+      Object.defineProperty(socket, 'remoteAddress', {
+        configurable: true,
+        get: () => source,
       });
-      const secondAgain = await requestPair('127.0.0.2');
-      expect(secondAgain).toEqual({
-        status: 429,
-        body: { error: 'rate limited', retryAfterSeconds: 30, attemptsLeft: 3 },
+    };
+    httpServer.prependListener('connection', setRemoteAddress);
+    try {
+      const first = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(first.status).toBe(403);
+      expect(await first.json()).toEqual({ error: 'invalid code', attemptsLeft: 4 });
+
+      // A distinct TCP source gets its own first budget-consuming miss.
+      source = '198.51.100.20';
+      const second = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(second.status).toBe(403);
+      expect(await second.json()).toEqual({ error: 'invalid code', attemptsLeft: 3 });
+
+      // IPv4 and its mapped IPv6 spelling are one source, not two budgets.
+      source = '::ffff:192.0.2.10';
+      const firstAgain = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(firstAgain.status).toBe(429);
+      expect(await firstAgain.json()).toEqual({
+        error: 'rate limited',
+        retryAfterSeconds: 30,
+        attemptsLeft: 3,
+      });
+
+      source = '198.51.100.20';
+      const secondAgain = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(secondAgain.status).toBe(429);
+      expect(await secondAgain.json()).toEqual({
+        error: 'rate limited',
+        retryAfterSeconds: 30,
+        attemptsLeft: 3,
       });
     } finally {
+      httpServer.off('connection', setRemoteAddress);
+      for (const socket of sockets) Reflect.deleteProperty(socket, 'remoteAddress');
       nowSpy.mockRestore();
     }
   });
