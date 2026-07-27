@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GitSyncStatus } from '../../shared/types';
 import { normalizeWorktreePath } from '../../shared/workTask';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -125,7 +125,7 @@ export class GitSyncStatusCache {
         {
           cwd,
           timeout: GIT_TIMEOUT_MS,
-          env: { ...getGitExecEnv(), GIT_OPTIONAL_LOCKS: '0', NO_COLOR: '1' },
+          env: { ...getExecEnv(), GIT_OPTIONAL_LOCKS: '0', NO_COLOR: '1' },
           windowsHide: true,
           // A pathological repo (thousands of untracked files) must truncate,
           // not reject — 10 MB covers ~100k paths.

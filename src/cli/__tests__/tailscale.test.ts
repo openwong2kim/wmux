@@ -469,12 +469,16 @@ describe('removeTailscaleServe', () => {
 });
 
 describe('tailscaleCandidates', () => {
-  it('offers the Windows install path as a fallback for a PATH-less shell', () => {
+  it('offers the desktop-app install path as a fallback for a PATH-less environment', () => {
     const candidates = tailscaleCandidates();
     expect(candidates.length).toBeGreaterThan(0);
     if (process.platform === 'win32') {
       expect(candidates[0]).toBe('tailscale.exe');
       expect(candidates[1]).toMatch(/Tailscale[\\/]tailscale\.exe$/);
+    } else if (process.platform === 'darwin') {
+      // The GUI process sees launchd's minimal PATH, so a bare `tailscale` is
+      // tried first and the app-bundle CLI is the fallback (2026-07-27).
+      expect(candidates).toEqual(['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']);
     } else {
       expect(candidates).toEqual(['tailscale']);
     }

@@ -17,7 +17,7 @@ import { join, dirname, basename, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { git } from './git';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 import { branchToDirName } from '../../shared/worktreeParse';
 
 const execFileAsync = promisify(execFile);
@@ -134,7 +134,7 @@ export async function resolveBaseFromGit(cwd: string): Promise<string | null> {
 
 /** Env that blocks gh interactivity (login prompt, pager). Includes the mac GUI PATH fix. */
 function ghEnv(): NodeJS.ProcessEnv {
-  return { ...getGitExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+  return { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
 }
 
 /** Default branch via `gh repo view` (same pattern as TaskPrService). null on failure/absence. */
@@ -201,7 +201,7 @@ export async function readMergeState(worktreePath: string): Promise<{ merging: b
 
 // ── verify runner─────────────────────────────────────────────────────────────
 
-/** npm.cmd on Windows. On the mac GUI, node/npm (Homebrew) are resolved via getGitExecEnv PATH. */
+/** npm.cmd on Windows. On the mac GUI, node/npm (Homebrew) are resolved via getExecEnv PATH. */
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 export interface VerifyStep {
@@ -242,7 +242,7 @@ export async function runVerify(
         timeout: opts?.timeoutMs ?? VERIFY_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
-        env: getGitExecEnv(),
+        env: getExecEnv(),
         signal: opts?.signal,
         // Windows: npm is `npm.cmd`, and Node refuses to spawn a `.cmd`/`.bat` via
         // execFile without a shell (CVE-2024-27980 mitigation → `spawn EINVAL`). Without

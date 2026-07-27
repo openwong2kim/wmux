@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +15,7 @@ export class MetadataCollector {
       const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd,
         timeout: 3000,
-        env: getGitExecEnv(),
+        env: getExecEnv(),
       });
       const branch = stdout.trim();
       return branch || undefined;
