@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 import { createSurfaceSlice } from '../surfaceSlice';
 
@@ -25,6 +25,14 @@ function createHarness() {
   const slice = createSurfaceSlice(set as never, (() => state) as never, {} as never);
   return { state, slice };
 }
+
+beforeEach(() => {
+  vi.stubGlobal('window', { electronAPI: { platform: process.platform } });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
   it('lands the surface in a background workspace when workspaceId is given', () => {
