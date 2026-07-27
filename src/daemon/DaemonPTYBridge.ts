@@ -260,10 +260,20 @@ export class DaemonPTYBridge extends EventEmitter {
     this.dataDisposable = () => onDataDisposable.dispose();
 
     // PTY exit handler. Capture `signal` alongside exitCode: a clean shell
-    // exit carries a numeric exitCode and no signal, whereas a terminated
-    // process (ConPTY torn down, killed) shows up as a signal or a null
-    // exitCode. That distinction is what the silent-death investigation needs
-    // to tell "the shell exited on its own" from "something killed it".
+    // exit carries a numeric exitCode and no signal, whereas a killed process
+    // reports the signal that killed it. That distinction is what the
+    // silent-death investigation needs to tell "the shell exited on its own"
+    // from "something killed it".
+    //
+    // A NULL exitCode with no signal is neither (#646). It is node-pty's
+    // conout-socket-close path: the Windows agent's exit handler runs with
+    // `_agent.exitCode === undefined` when the socket drops, and the shell may
+    // well still be running. This comment used to call that shape the
+    // involuntary-teardown signature, which contradicted the classifier in
+    // shutdownKill.ts (only 0x40010004 / our own shutdown flag qualify) — and
+    // the classifier is what runs, so null was treated as a voluntary exit and
+    // buried a live shell. Consumers must not infer a death from a null code
+    // alone; see phantomExit.ts for the liveness check that settles it.
     const onExitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
       this.emit('exit', { sessionId, exitCode, signal });
     });
