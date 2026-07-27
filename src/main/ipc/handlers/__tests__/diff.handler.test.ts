@@ -658,3 +658,112 @@ describe('diff:resolveRepo — cwd 정규화', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+// ── Guards for the README's adoption claim: hunks are picked individually, and
+//    the all-or-nothing part is the apply of that selection (not the whole diff).
+describe('diff:applyHunks — per-hunk selection granularity and selection-wide atomicity', () => {
+  // Local fixture: one file long enough that two distant edits land in two hunks
+  // at the default -U3. The shared makeScenario files are too short to split.
+  function makeMultiHunkScenario() {
+    const base = mkdtempSync(join(tmpdir(), 'wmux-diffh-mh-'));
+    const repoRoot = join(base, 'repo');
+    mkdirSync(repoRoot);
+    g(repoRoot, ['init', '-q', '-b', 'main']);
+    g(repoRoot, ['config', 'user.email', 't@t']);
+    g(repoRoot, ['config', 'user.name', 't']);
+    g(repoRoot, ['config', 'core.autocrlf', 'false']);
+    const baseText = `${Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join('\n')}\n`;
+    writeFileSync(join(repoRoot, 'long.txt'), baseText);
+    g(repoRoot, ['add', '-A']);
+    g(repoRoot, ['commit', '-q', '-m', 'base']);
+    const worktreePath = join(base, 'wt');
+    g(repoRoot, ['worktree', 'add', '-q', '-b', 'wtask/mh', worktreePath, 'HEAD']);
+    writeFileSync(
+      join(worktreePath, 'long.txt'),
+      baseText.replace('L2\n', 'TOP\n').replace('L19\n', 'BOTTOM\n'),
+    );
+    return {
+      repoRoot,
+      worktreePath,
+      baseText,
+      cleanup: () => rmSync(base, { recursive: true, force: true }),
+    };
+  }
+
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('한 파일의 hunk 부분 선택 — 선택한 hunk만 타겟에 반영, 나머지는 미반영', async () => {
+    const mh = makeMultiHunkScenario();
+    try {
+      const read = captured.get(IPC.DIFF_READ)!;
+      const r = (await read({}, mh.worktreePath, '')) as {
+        ok: boolean;
+        files: Array<{ path: string; hunks: unknown[] }>;
+        snapshot: DiffApplyRequest['snapshot'];
+      };
+      expect(r.ok).toBe(true);
+      const lf = r.files.find((f) => f.path === 'long.txt')!;
+      expect(lf.hunks.length).toBe(2);
+
+      // Adopt only the second hunk.
+      const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+      const res = (await apply(
+        {},
+        { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'long.txt', hunkIndices: [1] }] },
+        mh.worktreePath,
+      )) as { ok: boolean };
+      expect(res.ok).toBe(true);
+
+      const target = readFileSync(join(mh.repoRoot, 'long.txt'), 'utf8');
+      expect(target).toBe(mh.baseText.replace('L19\n', 'BOTTOM\n'));
+      // The unselected hunk in the same file did not come across.
+      expect(target).not.toContain('TOP');
+    } finally {
+      mh.cleanup();
+    }
+  });
+
+  it('선택 전체가 원자적 — 선택 중 한 파일이 적용 불가면 나머지 파일도 미반영', async () => {
+    // Diverge b.txt in the target and commit it, so it is clean (the dirty gate
+    // does not fire) but no longer matches the context the worktree hunk carries.
+    writeFileSync(join(scn.repoRoot, 'b.txt'), 'b1\nDIVERGED\nb3\n');
+    g(scn.repoRoot, ['add', '-A']);
+    g(scn.repoRoot, ['commit', '-q', '-m', 'diverge b']);
+
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, '')) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    expect(r.ok).toBe(true);
+    expect(r.files.map((f) => f.path)).toContain('b.txt');
+
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [
+          { path: 'a.txt', hunkIndices: [0] },
+          { path: 'b.txt', hunkIndices: [0] },
+        ],
+      },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string };
+    expect(res.ok).toBe(false);
+    // Rejected by the combined --check gate, not by drift (the snapshot was read
+    // after the diverging commit) and not by the dirty gate (the target is clean).
+    expect(res.code).toBe('probe');
+    // a.txt would have applied on its own — the whole selection is rejected,
+    // so the target is left exactly as it was.
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe('a1\na2\na3\na4\na5\n');
+  });
+});
