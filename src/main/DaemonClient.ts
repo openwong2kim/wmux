@@ -2,6 +2,7 @@ import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
+import type { SessionLocationSnapshot } from '../shared/sessionLocation';
 import type {
   LanLinkInboxPollResult,
   LanLinkStatus,
@@ -541,18 +542,31 @@ export class DaemonClient extends EventEmitter {
       // metadata + notification + toast, critical → approval request.
       switch (event.type) {
         case 'session.died': {
-          const data = event.data as { exitCode?: number | null } | null;
+          const data = event.data as {
+            exitCode?: number | null;
+            locationGeneration?: number;
+          } | null;
           this.emit('session:died', {
             sessionId: event.sessionId,
             exitCode: data?.exitCode ?? null,
+            ...(data?.locationGeneration !== undefined
+              ? { locationGeneration: data.locationGeneration }
+              : {}),
           });
           break;
         }
-        case 'session.destroyed':
+        case 'session.destroyed': {
+          const data = event.data as { locationGeneration?: number } | null;
           // pty:dispose path — distinct from session.died (natural exit).
           // Notification router treats both the same: clear agentStatus.
-          this.emit('session:destroyed', { sessionId: event.sessionId });
+          this.emit('session:destroyed', {
+            sessionId: event.sessionId,
+            ...(data?.locationGeneration !== undefined
+              ? { locationGeneration: data.locationGeneration }
+              : {}),
+          });
           break;
+        }
         case 'session.restarted': {
           // X8 — the PaneSupervisor re-created this session under the same id
           // with a fresh PTY. pty.handler re-attaches via the existing
@@ -626,6 +640,12 @@ export class DaemonClient extends EventEmitter {
           // renderer (via pty.handler) as IPC.CWD_CHANGED for live per-surface
           // cwd. event.data is the resolved cwd string.
           this.emit('session:cwd', { sessionId: event.sessionId, cwd: event.data as string });
+          break;
+        case 'location.changed':
+          this.emit('session:location', {
+            sessionId: event.sessionId,
+            snapshot: event.data as SessionLocationSnapshot,
+          });
           break;
         case 'title.changed':
           // OSC 0/2 window title detected daemon-side; surfaced to the renderer

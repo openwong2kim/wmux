@@ -4,6 +4,12 @@ import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
 import { createWorkspace, type Workspace, type Surface, type SessionData } from '../../../../shared/types';
 import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
+import {
+  beginSessionLocationProjection,
+  getRememberedSessionLocation,
+  rememberSessionLocation,
+  resetSessionLocationProjections,
+} from '../../sessionLocationProjection';
 
 // Minimal store that satisfies PaneSlice dependencies. Includes a `pushToast`
 // stub because splitPane calls it via get() when the leaf cap is hit.
@@ -38,6 +44,7 @@ describe('PaneSlice', () => {
   let store: ReturnType<typeof createTestStore>;
 
   beforeEach(() => {
+    resetSessionLocationProjections();
     store = createTestStore();
   });
 
@@ -622,9 +629,21 @@ describe('PaneSlice', () => {
         if (leaf) leaf.surfaces.push({ id: 'surf-ct', ptyId: 'pty-closetest', title: 'x', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
       });
       store.getState().setSurfaceAgent('pty-closetest', 'Claude Code', 'running');
+      beginSessionLocationProjection('pty-closetest');
+      rememberSessionLocation('pty-closetest', {
+        generation: 1,
+        revision: 1,
+        location: { domain: 'host', cwd: 'C:/live', shell: 'pwsh.exe' },
+      });
       expect(store.getState().surfaceAgent['pty-closetest']).toBeTruthy();
       store.getState().closePane(closing.id);
       expect(store.getState().surfaceAgent['pty-closetest']).toBeUndefined();
+      expect(getRememberedSessionLocation('pty-closetest')).toBeUndefined();
+      expect(rememberSessionLocation('pty-closetest', {
+        generation: 1,
+        revision: 2,
+        location: { domain: 'host', cwd: 'C:/late', shell: 'pwsh.exe' },
+      })).toBe(false);
     });
   });
 

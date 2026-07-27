@@ -116,7 +116,10 @@ import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
-import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
+import {
+  broadcastMetadataUpdate,
+  removePaneLocation,
+} from './ipc/handlers/metadata.handler';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, logLine } from './util/logSink';
 import { ActiveWorkPowerBlocker } from './power/ActiveWorkPowerBlocker';
@@ -357,7 +360,10 @@ const ptyBridge = new PTYBridge(
   () => mainWindow,
   () => hookSignalRouter,
   (ptyId, type) => activeWorkPowerBlocker.localPromptBoundary(ptyId, type),
-  (ptyId) => activeWorkPowerBlocker.localSessionEnded(ptyId),
+  (ptyId) => {
+    activeWorkPowerBlocker.localSessionEnded(ptyId);
+    removePaneLocation(ptyId);
+  },
 );
 const autoUpdater = new AutoUpdater(() => mainWindow);
 

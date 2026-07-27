@@ -15,10 +15,18 @@ import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
-import { classifySessionLocation, type SessionLocation } from '../../../shared/sessionLocation';
+import {
+  classifySessionLocation,
+  createSessionCommandTarget,
+  locationsEqual,
+  type SessionLocation,
+  type SessionLocationSnapshot,
+} from '../../../shared/sessionLocation';
 import { resolveWslDistro } from '../../pty/wslDistro';
+import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 import { resolveGitToplevel } from '../../git/git';
+import { isPlausibleSessionCwd } from '../../../shared/cwdShape';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -92,6 +100,49 @@ interface PaneIdentity {
   distro?: string;
 }
 const paneIdentities = new Map<string, PaneIdentity>();
+const paneLocationEnricher = new SessionLocationEnricher(
+  (shell) => resolveWslDistro({ shell }),
+);
+const paneLocationSnapshots = new Map<string, SessionLocationSnapshot>();
+type PaneLocationListener = (ptyId: string, snapshot: SessionLocationSnapshot) => void;
+const paneLocationListeners = new Set<PaneLocationListener>();
+let lastPaneLocationGeneration = 0;
+
+function nextPaneLocationGeneration(): number {
+  lastPaneLocationGeneration = Math.max(lastPaneLocationGeneration + 1, Date.now());
+  return lastPaneLocationGeneration;
+}
+
+function publishPaneLocation(
+  ptyId: string,
+  location: SessionLocation,
+  newGeneration = false,
+): SessionLocationSnapshot {
+  const previous = paneLocationSnapshots.get(ptyId);
+  const snapshot: SessionLocationSnapshot = {
+    generation: newGeneration || !previous
+      ? nextPaneLocationGeneration()
+      : previous.generation,
+    revision: newGeneration || !previous ? 1 : previous.revision + 1,
+    location,
+  };
+  paneLocationSnapshots.set(ptyId, snapshot);
+  for (const listener of paneLocationListeners) {
+    try { listener(ptyId, snapshot); } catch { /* projection errors must not break PTY flow */ }
+  }
+  return snapshot;
+}
+
+export function onPaneLocationUpdate(listener: PaneLocationListener): () => void {
+  paneLocationListeners.add(listener);
+  return () => { paneLocationListeners.delete(listener); };
+}
+
+export function getPaneLocationSnapshot(
+  ptyId: string,
+): SessionLocationSnapshot | undefined {
+  return paneLocationSnapshots.get(ptyId);
+}
 
 // Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
 // (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
@@ -182,7 +233,7 @@ export async function runMetadataPollTick(
     const instance = ptyManager.get(ptyId);
     if (localPtyOwnership && !instance) {
       cwdMap.delete(ptyId);
-      paneIdentities.delete(ptyId);
+      removePaneLocation(ptyId);
       branchMap.delete(ptyId);
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
@@ -399,7 +450,18 @@ export function registerMetadataHandlers(
 }
 
 export function updateCwd(ptyId: string, cwd: string): void {
+  const identity = paneIdentities.get(ptyId);
+  const location = identity
+    ? classifySessionLocation(identity.shell, cwd, identity.distro)
+    : undefined;
+  if (!isPlausibleSessionCwd(cwd, location?.domain ?? 'host', process.platform)) return;
   cwdMap.set(ptyId, cwd);
+  const previous = paneLocationSnapshots.get(ptyId);
+  if (location && previous) {
+    if (!locationsEqual(location, previous.location)) {
+      publishPaneLocation(ptyId, location);
+    }
+  }
   for (const listener of cwdListeners) {
     try { listener(ptyId, cwd); } catch { /* listener errors must not break PTY flow */ }
   }
@@ -435,23 +497,42 @@ export function getCwd(ptyId: string): string | undefined {
  * (see wslDistro.ts), so it is safe to arm here for every WSL pane; it lands
  * asynchronously and the pane fails closed until it does.
  */
-export function updatePaneLocation(ptyId: string, location: SessionLocation): void {
+export function updatePaneLocation(
+  ptyId: string,
+  location: SessionLocation,
+  resolveDistro = true,
+): void {
   const distro = location.domain === 'wsl' ? location.distro : undefined;
   paneIdentities.set(ptyId, { shell: location.shell, ...(distro ? { distro } : {}) });
-  if (location.domain !== 'wsl' || distro) return;
-  void resolveWslDistro({ shell: location.shell })
-    .then((resolved) => {
-      if (!resolved) return;
+  if (!resolveDistro) {
+    paneLocationEnricher.cancel(ptyId);
+    paneLocationSnapshots.delete(ptyId);
+    return;
+  }
+  publishPaneLocation(ptyId, location, true);
+  void paneLocationEnricher.enrich(
+    ptyId,
+    () => {
       const current = paneIdentities.get(ptyId);
-      // The pane may have been closed, or re-registered with a real distro,
-      // while the enumeration was in flight.
-      if (!current || current.shell !== location.shell || current.distro) return;
-      paneIdentities.set(ptyId, { ...current, distro: resolved });
-    })
-    .catch(() => { /* unresolved distro is a fail-closed state, not an error */ });
+      if (!current) return undefined;
+      return classifySessionLocation(
+        current.shell,
+        cwdMap.get(ptyId) ?? location.cwd,
+        current.distro,
+      );
+    },
+    (enriched) => {
+      const current = paneIdentities.get(ptyId);
+      if (!current || enriched.domain !== 'wsl' || !enriched.distro) return;
+      paneIdentities.set(ptyId, { ...current, distro: enriched.distro });
+      publishPaneLocation(ptyId, enriched);
+    },
+  );
 }
 
 export function removePaneLocation(ptyId: string): void {
+  paneLocationEnricher.cancel(ptyId);
+  paneLocationSnapshots.delete(ptyId);
   paneIdentities.delete(ptyId);
 }
 
@@ -470,16 +551,7 @@ export function getPaneCommandTarget(ptyId: string): PaneCommandTarget | undefin
   const cwd = cwdMap.get(ptyId);
   if (!identity || !cwd) return undefined;
   const location = classifySessionLocation(identity.shell, cwd, identity.distro);
-  if (location.domain !== 'wsl') return { sessionId: ptyId, location };
-  return {
-    sessionId: ptyId,
-    location,
-    activeContext: {
-      sessionId: ptyId,
-      active: true,
-      ...(location.distro ? { distro: location.distro } : {}),
-    },
-  };
+  return createSessionCommandTarget(ptyId, location);
 }
 
 export function getBranch(ptyId: string): string | undefined {

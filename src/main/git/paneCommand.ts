@@ -1,17 +1,14 @@
 import {
+  createSessionCommandTarget,
   hostLocation,
   locationIdentity,
   prepareLocationCommand,
-  type ActiveSessionContext,
   type LocationError,
+  type SessionCommandTarget,
   type SessionLocation,
 } from '../../shared/sessionLocation';
 
-export interface PaneCommandTarget {
-  sessionId: string;
-  location: SessionLocation;
-  activeContext?: ActiveSessionContext;
-}
+export type PaneCommandTarget = SessionCommandTarget;
 
 export function paneCommandIdentity(target: PaneCommandTarget): string {
   return locationIdentity(target.location);
@@ -36,8 +33,5 @@ export function preparePaneCommand(
 }
 
 export function hostCommandTarget(cwd: string): PaneCommandTarget {
-  return {
-    sessionId: `host:${cwd}`,
-    location: hostLocation(cwd),
-  };
+  return createSessionCommandTarget(`host:${cwd}`, hostLocation(cwd));
 }

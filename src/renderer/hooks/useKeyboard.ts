@@ -7,6 +7,7 @@ import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ut
 import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -482,14 +483,21 @@ export function useKeyboard() {
           // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
           // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
           const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
-          void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
+          void ipcInvokeRef.current<{ id: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot }>(() =>
             window.electronAPI.pty.create(withDefaultShell(withWorkspaceProfile({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, ws.profile), state.defaultShell))
           ).then((result) => {
             if (result.ok) {
               // #515: adopt the cwd main actually spawned in so the surface
               // tracks its real dir from the start (was '' → later splits seed
               // from an empty cwd and fall back to home).
-              store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
+              store.getState().addSurface(
+                ws.activePaneId,
+                result.data.id,
+                'Terminal',
+                result.data.cwd || '',
+                undefined,
+                result.data.locationSnapshot,
+              );
             }
             // On failure useIpc already surfaced a toast — nothing to do here.
           });

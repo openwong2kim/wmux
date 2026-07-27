@@ -2,20 +2,34 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
-import { isPlausibleCwd } from '../../../shared/cwdShape';
+import { isPlausibleCwd, isPlausibleSessionCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveSessionLocation } from '../../../shared/sessionLocation';
-import type { SessionLocation } from '../../../shared/sessionLocation';
+import type { SessionLocation, SessionLocationSnapshot } from '../../../shared/sessionLocation';
 import { sessionLocationForSurface } from '../../utils/focusedSurface';
+import {
+  beginSessionLocationProjection,
+  forgetSessionLocation,
+  getRememberedSessionLocation,
+  rememberSessionLocation,
+} from '../sessionLocationProjection';
+
+function rendererPlatform(): NodeJS.Platform {
+  return window.electronAPI.platform;
+}
+
+function isPlausibleSurfaceLocation(location: SessionLocation): boolean {
+  return isPlausibleSessionCwd(location.cwd, location.domain, rendererPlatform());
+}
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
    * callers (e.g. the pane.split background-workspace path, #236) target a
    * non-active workspace — defaults to the active one, so existing positional
    * callers are unchanged. */
-  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
+  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string, locationSnapshot?: SessionLocationSnapshot) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string, location?: SessionLocation) => void;
   /** J2 — add diff review surface. Only taskId persisted (diff content is derived).
@@ -34,7 +48,7 @@ export interface SurfaceSlice {
   setActiveSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
   nextSurface: (paneId: string) => void;
   prevSurface: (paneId: string) => void;
-  updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
+  updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string, locationSnapshot?: SessionLocationSnapshot) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
   /**
@@ -46,6 +60,8 @@ export interface SurfaceSlice {
    * the tab tooltip rely on. No-op for an empty ptyId or an unknown pty.
    */
   updateSurfaceCwd: (ptyId: string, cwd: string) => void;
+  /** Apply an authoritative atomic cwd+location projection if it is newer. */
+  updateSurfaceLocation: (ptyId: string, snapshot: SessionLocationSnapshot) => boolean;
   /**
    * Persist the browser surface's current URL. Driven by BrowserPanel's
    * did-navigate events (user clicks, toolbar, MCP/CDP navigations alike), so
@@ -91,7 +107,7 @@ function persistBindingNow(get: () => StoreState): void {
 }
 
 export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], SurfaceSlice> = (set, get) => ({
-  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => {
+  addSurface: (paneId, ptyId, shell, cwd, workspaceId, locationSnapshot) => {
     set((state: StoreState) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
       const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
@@ -102,6 +118,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       pane.surfaces.push(surface);
       pane.activeSurfaceId = surface.id;
     });
+    if (locationSnapshot) get().updateSurfaceLocation(ptyId, locationSnapshot);
     persistBindingNow(get);
   },
 
@@ -219,14 +236,16 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  closeSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
-    if (!ws) return;
-    const pane = findLeafPane(ws.rootPane, paneId);
-    if (!pane) return;
+  closeSurface: (paneId, surfaceId, workspaceId) => {
+    let closedPtyId = '';
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
+      if (!ws) return;
+      const pane = findLeafPane(ws.rootPane, paneId);
+      if (!pane) return;
 
-    const idx = pane.surfaces.findIndex((s) => s.id === surfaceId);
-    if (idx === -1) return;
+      const idx = pane.surfaces.findIndex((s) => s.id === surfaceId);
+      if (idx === -1) return;
 
     // Part A: drop per-surface agent identity so the surfaceAgent map doesn't
     // retain a label for a PTY that no longer has a surface. (surfaceAgent is
@@ -235,21 +254,23 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // activity line (surfaceActivity, also paneSlice-owned, keyed by ptyId) is
     // the OTHER real teardown site — clear it here too so a closed surface's
     // last activity string doesn't survive on a re-used ptyId.
-    const closedPtyId = pane.surfaces[idx].ptyId;
-    if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
-    if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
+      closedPtyId = pane.surfaces[idx].ptyId;
+      if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
+      if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
     // Drop the pending question too: a leaked entry would let a REUSED ptyId
     // inherit a dead pane's question and read as blocked from birth.
-    if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
-    if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
+      if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
+      if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: evict onExhausted mapping when this ptyId is destroyed (prevent unbounded growth / reused ptyId pollution).
-    if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
+      if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
 
-    pane.surfaces.splice(idx, 1);
-    if (pane.activeSurfaceId === surfaceId) {
-      pane.activeSurfaceId = pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '';
-    }
-  }),
+      pane.surfaces.splice(idx, 1);
+      if (pane.activeSurfaceId === surfaceId) {
+        pane.activeSurfaceId = pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '';
+      }
+    });
+    if (closedPtyId) forgetSessionLocation(closedPtyId);
+  },
 
   setActiveSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
@@ -279,18 +300,31 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = pane.surfaces[(idx - 1 + pane.surfaces.length) % pane.surfaces.length].id;
   }),
 
-  updateSurfacePtyId: (paneId, surfaceId, ptyId) => {
+  updateSurfacePtyId: (paneId, surfaceId, ptyId, locationSnapshot) => {
+    let previousPtyId = '';
+    let bindingUpdated = false;
     set((state: StoreState) => {
       for (const ws of state.workspaces) {
         const pane = findLeafPane(ws.rootPane, paneId);
         if (!pane) continue;
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
         if (surface) {
+          previousPtyId = surface.ptyId;
           surface.ptyId = ptyId;
+          bindingUpdated = true;
           return;
         }
       }
     });
+    if (!bindingUpdated) return;
+    if (previousPtyId && previousPtyId !== ptyId) {
+      forgetSessionLocation(previousPtyId);
+    }
+    if (ptyId) {
+      beginSessionLocationProjection(ptyId);
+      const remembered = locationSnapshot ?? getRememberedSessionLocation(ptyId);
+      if (remembered) get().updateSurfaceLocation(ptyId, remembered);
+    }
     persistBindingNow(get);
   },
 
@@ -312,7 +346,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ptyId) return;
     // Prompt-scrape false-positive defense — legacy daemon scraped impossible path shapes
     // from screen text (e.g. "C:\…" on Mac) must not overwrite existing cwd.
-    if (!isPlausibleCwd(cwd)) return;
+    if (!isPlausibleCwd(cwd, rendererPlatform())) return;
     for (const ws of state.workspaces) {
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {
@@ -339,6 +373,36 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       if (updateInPane(ws.rootPane)) return;
     }
   }),
+
+  updateSurfaceLocation: (ptyId, snapshot) => {
+    if (!ptyId) return false;
+    if (!isPlausibleSurfaceLocation(snapshot.location)) return false;
+    const hasActiveBinding = get().workspaces.some((ws) => {
+      const hasPty = (pane: Pane): boolean => pane.type === 'leaf'
+        ? pane.surfaces.some((surface) => surface.ptyId === ptyId)
+        : pane.children.some(hasPty);
+      return hasPty(ws.rootPane);
+    });
+    if (!hasActiveBinding) return false;
+    beginSessionLocationProjection(ptyId);
+    if (!rememberSessionLocation(ptyId, snapshot)) return false;
+    set((state: StoreState) => {
+      for (const ws of state.workspaces) {
+        const updateInPane = (pane: Pane): boolean => {
+          if (pane.type === 'leaf') {
+            const surface = pane.surfaces.find((candidate) => candidate.ptyId === ptyId);
+            if (!surface) return false;
+            surface.cwd = snapshot.location.cwd;
+            surface.location = snapshot.location;
+            return true;
+          }
+          return pane.children.some(updateInPane);
+        };
+        if (updateInPane(ws.rootPane)) return;
+      }
+    });
+    return true;
+  },
 
   updateSurfaceTitleByPty: (ptyId, title) => set((state: StoreState) => {
     if (!ptyId) return;

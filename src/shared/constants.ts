@@ -76,6 +76,7 @@ export const IPC = {
   // all leave the window alive with nothing on the other end of send()).
   NOTIFICATION_LISTENER_READY: 'notification:listener-ready',
   CWD_CHANGED: 'notification:cwd-changed',
+  LOCATION_CHANGED: 'notification:location-changed',
   /** J3 §3: initialCommand retries exhausted (prompt not fired) — payload: sessionId. */
   PTY_INITIAL_CMD_EXHAUSTED: 'notification:initial-cmd-exhausted',
   GIT_BRANCH_CHANGED: 'notification:git-branch-changed',

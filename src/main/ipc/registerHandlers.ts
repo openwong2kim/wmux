@@ -15,7 +15,10 @@ import { registerPTYHandlers } from './handlers/pty.handler';
 // autosave overwrites the previous scrollback files on disk.
 import { registerShellHandlers } from './handlers/shell.handler';
 import { registerFontHandlers } from './handlers/fonts.handler';
-import { getCwd, registerMetadataHandlers } from './handlers/metadata.handler';
+import {
+  getPaneCommandTarget,
+  registerMetadataHandlers,
+} from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
@@ -39,7 +42,6 @@ import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
 import {
-  classifySessionLocation,
   resolveSessionLocation,
   type SessionLocation,
 } from '../../shared/sessionLocation';
@@ -168,10 +170,7 @@ export function registerAllHandlers(
       if (!session || session.state === 'dead') return null;
       return resolveSessionLocation(session);
     }
-    const instance = ptyManager.get(ptyId);
-    const cwd = getCwd(ptyId);
-    if (!instance || !cwd) return null;
-    return classifySessionLocation(instance.shell, cwd);
+    return getPaneCommandTarget(ptyId)?.location ?? null;
   });
   const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {

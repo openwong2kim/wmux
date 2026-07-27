@@ -6,6 +6,7 @@ import {
   type ReplacementDeps,
   type ReplacementOutcome,
 } from '../daemonReplacement';
+import { CHANNELS_EPOCH } from '../../../shared/channels';
 import type { ProcessLiveness } from '../../../shared/processLiveness';
 
 // ---------------------------------------------------------------------------
@@ -15,7 +16,7 @@ import type { ProcessLiveness } from '../../../shared/processLiveness';
 
 describe('isDaemonOlder', () => {
   const APP = '3.17.0';
-  const EPOCH = 2;
+  const EPOCH = CHANNELS_EPOCH;
 
   it('missing field entirely → positively old (pre-B′ daemon) → replace', () => {
     expect(isDaemonOlder({}, APP, EPOCH).older).toBe(true);
@@ -51,7 +52,8 @@ describe('isDaemonOlder', () => {
   });
 
   it('same core + older channelsEpoch → replace (dev-window schema bump)', () => {
-    const v = isDaemonOlder({ spawnedByVersion: APP, channelsEpoch: 1 }, APP, EPOCH);
+    expect(EPOCH).toBeGreaterThan(1);
+    const v = isDaemonOlder({ spawnedByVersion: APP, channelsEpoch: EPOCH - 1 }, APP, EPOCH);
     expect(v.older).toBe(true);
   });
 

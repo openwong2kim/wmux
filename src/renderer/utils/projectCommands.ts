@@ -10,6 +10,7 @@ import { useStore } from '../stores';
 import { withDefaultShell, withWorkspaceProfile, withRoleBinding } from './ptyCreateOptions';
 import { probeProjectConfig } from './projectConfigProbe';
 import type { WmuxProjectCommand } from '../../shared/wmuxProjectConfig';
+import type { SessionLocationSnapshot } from '../../shared/sessionLocation';
 
 export interface RunProjectCommandResult {
   ok: boolean;
@@ -66,14 +67,21 @@ export async function runProjectCommand(
         roleBinding,
         paneRoleName,
       ),
-    ) as { id: string; shell?: string; cwd?: string };
+    ) as { id: string; shell?: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot };
     const fresh = useStore.getState();
     // Workspace might have been closed during the await.
     if (!fresh.workspaces.some((w) => w.id === workspaceId)) {
       void window.electronAPI.pty.dispose(created.id).catch(() => undefined);
       return { ok: false, reason: 'no-workspace' };
     }
-    fresh.addSurface(paneId, created.id, command.title, created.cwd || project.root);
+    fresh.addSurface(
+      paneId,
+      created.id,
+      command.title,
+      created.cwd || project.root,
+      undefined,
+      created.locationSnapshot,
+    );
     return { ok: true };
   } catch (err) {
     useStore.getState().pushToast({

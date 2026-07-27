@@ -31,6 +31,7 @@ import {
   PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
 } from '../../../shared/wmuxProjectConfig';
 import type { Pane, PaneLeaf } from '../../../shared/types';
+import type { SessionLocationSnapshot } from '../../../shared/sessionLocation';
 
 type LeafPane = PaneLeaf;
 
@@ -175,7 +176,7 @@ export function EmptyLeafFunnel() {
         // in renderer tests that stub only the APIs they exercise.
         void window.electronAPI?.metadata?.setRole?.(paneId, wsId, projectSeed.role);
       }
-      void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
+      void ipcInvoke<{ id: string; shell?: string; cwd?: string; locationSnapshot?: SessionLocationSnapshot }>(() =>
         window.electronAPI.pty.create(
           withRoleBinding(
             withWorkspaceProfile(
@@ -215,7 +216,14 @@ export function EmptyLeafFunnel() {
         const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
         // v2 RCA fix (axis A): the immediate persist now lives INSIDE addSurface
         // (surfaceSlice centralization) so every binding call site gets it.
-        addSurface(paneId, created.id, shellName, created.cwd || '');
+        addSurface(
+          paneId,
+          created.id,
+          shellName,
+          created.cwd || '',
+          undefined,
+          created.locationSnapshot,
+        );
         // Set initial CWD in workspace metadata from first pane
         if (created.cwd) {
           const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;

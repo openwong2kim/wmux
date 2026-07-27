@@ -290,7 +290,6 @@ export class PTYBridge {
           oscCwdSeen = true;
           const cwd = parseOsc7Cwd(event.data);
           updateCwd(ptyId, cwd);
-          win.webContents.send(IPC.CWD_CHANGED, ptyId, cwd);
           break;
         }
         case 9:
@@ -615,7 +614,6 @@ export class PTYBridge {
         if (detectedCwd !== lastDetectedCwd) {
           lastDetectedCwd = detectedCwd;
           updateCwd(ptyId, detectedCwd);
-          win.webContents.send(IPC.CWD_CHANGED, ptyId, detectedCwd);
         }
         promptBuffer = '';
       }

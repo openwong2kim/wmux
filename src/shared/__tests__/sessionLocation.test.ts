@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifySessionLocation,
+  createSessionCommandTarget,
   hostLocation,
   locationIdentity,
   locationsEqual,
@@ -11,6 +12,8 @@ import {
   resolveSessionLocation,
   toHostAccessiblePath,
   toWslGuestPath,
+  type SessionCommandTarget,
+  type SessionLocation,
 } from '../sessionLocation';
 
 /**
@@ -76,6 +79,43 @@ describe('session location classification and identity', () => {
       hostLocation('/x/a'),
       'linux',
     )).toBe(false);
+  });
+});
+
+describe('shared live-session command target', () => {
+  it.each([
+    [
+      'host',
+      { domain: 'host', cwd: 'C:\\repo', shell: 'pwsh.exe' },
+      undefined,
+    ],
+    [
+      'msys',
+      { domain: 'msys', cwd: '/c/repo', shell: 'bash.exe' },
+      undefined,
+    ],
+    [
+      'WSL with a distro',
+      { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe', distro: 'Ubuntu' },
+      { sessionId: 'session-1', active: true, distro: 'Ubuntu' },
+    ],
+    [
+      'WSL without a distro',
+      { domain: 'wsl', cwd: '/home/me/repo', shell: 'wsl.exe' },
+      { sessionId: 'session-1', active: true },
+    ],
+  ] as const)('constructs the %s target', (_label, location, activeContext) => {
+    const target = createSessionCommandTarget(
+      'session-1',
+      location as SessionLocation,
+    ) satisfies SessionCommandTarget;
+
+    expect(target).toEqual({
+      sessionId: 'session-1',
+      location,
+      ...(activeContext ? { activeContext } : {}),
+    });
+    expect(target.location).toBe(location);
   });
 });
 

@@ -12,9 +12,11 @@ import { buildSpawnInjection, classifyShell, installShellIntegration } from './s
 import { expandTilde } from '../shared/expandTilde';
 import { applyWslPromptIntegration, isWslShell } from '../shared/wslCwd';
 import {
+  locationsEqual,
   preparePtyLocation,
   resolveSessionLocation,
   type SessionLocation,
+  type SessionLocationSnapshot,
 } from '../shared/sessionLocation';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
@@ -22,10 +24,18 @@ import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
+import { SessionLocationEnricher, type WslDistroResolver } from '../shared/sessionLocationEnrichment';
+import { distroFromPaneContext, resolveWslDistro } from '../shared/wslDistro';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
+let lastLocationGeneration = 0;
+
+function nextLocationGeneration(): number {
+  lastLocationGeneration = Math.max(lastLocationGeneration + 1, Date.now());
+  return lastLocationGeneration;
+}
 
 /** The daemon's own RPC auth-token namespace — must never reach a child shell. */
 const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
@@ -70,6 +80,11 @@ function stripReservedNamespace(env: Record<string, string>): Record<string, str
  */
 export interface ManagedSession {
   meta: DaemonSession;
+  /** Wire ordering identity; never persisted as session metadata. */
+  locationGeneration: number;
+  locationRevision: number;
+  /** Last cwd observed from the producer, including a staged candidate. */
+  locationProducerCwd: string;
   ptyProcess: IPty;
   ringBuffer: RingBuffer;
   bridge: DaemonPTYBridge;
@@ -82,6 +97,23 @@ export interface ManagedSession {
    * `false` for the rest of the session's lifetime.
    */
   deferred: boolean;
+}
+
+export interface DaemonSessionLocationCandidateInput {
+  sessionId: string;
+  generation: number;
+  reason: 'cwd' | 'enriched';
+  cwd?: string;
+  enriched?: SessionLocation;
+}
+
+export interface DaemonSessionLocationCandidate {
+  sessionId: string;
+  generation: number;
+  revision: number;
+  transactionId: number;
+  reason: 'cwd' | 'enriched';
+  location: SessionLocation;
 }
 
 /**
@@ -129,6 +161,121 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 export class DaemonSessionManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
+  private readonly locationEnricher: SessionLocationEnricher;
+
+  constructor(
+    resolveDistro: WslDistroResolver = (shell) => resolveWslDistro({ shell }),
+  ) {
+    super();
+    this.locationEnricher = new SessionLocationEnricher(resolveDistro);
+  }
+
+  private locationSnapshot(managed: ManagedSession): SessionLocationSnapshot {
+    if (!managed.meta.location) {
+      throw new Error(`Session '${managed.meta.id}' has no normalized location`);
+    }
+    return {
+      generation: managed.locationGeneration,
+      revision: managed.locationRevision,
+      location: managed.meta.location,
+    };
+  }
+
+  getLocationSnapshot(id: string): SessionLocationSnapshot | undefined {
+    const managed = this.sessions.get(id);
+    return managed ? this.locationSnapshot(managed) : undefined;
+  }
+
+  prepareLocationCandidate(
+    input: DaemonSessionLocationCandidateInput,
+    transactionId: number,
+  ): DaemonSessionLocationCandidate | undefined {
+    const managed = this.sessions.get(input.sessionId);
+    if (
+      !managed
+      || managed.locationGeneration !== input.generation
+      || managed.meta.state === 'dead'
+      || managed.meta.state === 'suspended'
+      || !managed.meta.location
+    ) return undefined;
+
+    const location: SessionLocation = input.reason === 'cwd'
+      ? {
+          ...resolveSessionLocation({
+            shell: managed.meta.cmd,
+            cwd: input.cwd ?? managed.meta.cwd,
+            location: managed.meta.location,
+          }),
+          cwd: input.cwd ?? managed.meta.cwd,
+        }
+      : {
+          ...managed.meta.location,
+          ...(input.enriched?.domain === 'wsl' && input.enriched.distro
+            ? { distro: input.enriched.distro }
+            : {}),
+        };
+    if (locationsEqual(managed.meta.location, location)) return undefined;
+
+    return {
+      sessionId: input.sessionId,
+      generation: input.generation,
+      revision: managed.locationRevision + 1,
+      transactionId,
+      reason: input.reason,
+      location,
+    };
+  }
+
+  listSessionsWithLocationCandidate(
+    candidate: DaemonSessionLocationCandidate,
+  ): DaemonSession[] | undefined {
+    const managed = this.sessions.get(candidate.sessionId);
+    if (
+      !managed
+      || managed.locationGeneration !== candidate.generation
+      || managed.locationRevision + 1 !== candidate.revision
+    ) return undefined;
+    return this.listSessions().map((session) => (
+      session.id === candidate.sessionId
+        ? { ...session, cwd: candidate.location.cwd, location: candidate.location }
+        : session
+    ));
+  }
+
+  commitLocationCandidate(
+    candidate: DaemonSessionLocationCandidate,
+    transactionId: number,
+  ): SessionLocationSnapshot | undefined {
+    const managed = this.sessions.get(candidate.sessionId);
+    if (
+      !managed
+      || candidate.transactionId !== transactionId
+      || managed.locationGeneration !== candidate.generation
+      || managed.locationRevision + 1 !== candidate.revision
+      || managed.meta.state === 'dead'
+      || managed.meta.state === 'suspended'
+    ) return undefined;
+
+    managed.meta.cwd = candidate.location.cwd;
+    managed.meta.location = candidate.location;
+    managed.locationRevision = candidate.revision;
+    return this.locationSnapshot(managed);
+  }
+
+  settleLocationCandidate(
+    input: DaemonSessionLocationCandidateInput,
+    accepted: boolean,
+  ): void {
+    if (input.reason !== 'cwd' || accepted) return;
+    const managed = this.sessions.get(input.sessionId);
+    if (
+      managed
+      && managed.locationGeneration === input.generation
+      && managed.locationProducerCwd === input.cwd
+    ) {
+      managed.locationProducerCwd = managed.meta.cwd;
+    }
+  }
 
   /**
    * Injected by daemon/index.ts (keeps this class free of platform/shutdown
@@ -266,15 +413,8 @@ export class DaemonSessionManager extends EventEmitter {
     // stay literal and silently fall back to $HOME (or throw as an unreadable
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
-    let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    // `cwd` above is canonical (tilde-expanded, defaulted); a supplied location
-    // must not carry a stale twin of it, so it is pinned here once and this is
-    // the value both `meta.location` and the spawn positioning below read.
-    const location: SessionLocation = {
-      ...resolveSessionLocation({ shell: cmd, cwd, location: params.location }),
-      cwd,
-    };
-
+    const resolvedCmd = this.resolveShellPath(params.cmd);
+    let cmd = resolvedCmd || this.getDefaultShell();
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
     // forced identity, and recovery replays the persisted (already-resolved)
@@ -336,6 +476,7 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
+    let execUsedFallback = Boolean(params.exec && !resolvedCmd);
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,
@@ -350,6 +491,7 @@ export class DaemonSessionManager extends EventEmitter {
       let execArgs = buildExecArgs(cmd, launchCommand);
       if (!execArgs) {
         cmd = this.resolveExecFallbackShell();
+        execUsedFallback = true;
         execArgs = buildExecArgs(cmd, launchCommand);
       }
       if (!execArgs) {
@@ -391,6 +533,22 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
+    // Derive the owned location only after the spawn shell is final. A supplied
+    // location remains authoritative for ordinary creates and recovery, but it
+    // describes the requested shell and cannot survive an exec-wrapper fallback
+    // that replaces that shell with a host process.
+    //
+    // `cwd` is canonical (tilde-expanded, defaulted), so pin it once here; this
+    // is the value both `meta.location` and the spawn positioning below read.
+    let location: SessionLocation = {
+      ...resolveSessionLocation({
+        shell: cmd,
+        cwd,
+        location: execUsedFallback ? undefined : params.location,
+      }),
+      cwd,
+    };
+
     // Track B (WSL/Ubuntu cwd): when the pane lives in a guest (`wsl.exe` with
     // a Linux-style path or a `\\wsl$\...`/`\\wsl.localhost\...` UNC, or an
     // MSYS `/c/...` path), node-pty cannot use that as the spawn cwd —
@@ -414,6 +572,10 @@ export class DaemonSessionManager extends EventEmitter {
       const prepared = preparePtyLocation(location, os.homedir());
       spawnCwd = prepared.spawnCwd;
       spawnArgs = [...prepared.prefixArgs, ...spawnArgs];
+    }
+    if (location.domain === 'wsl' && !location.distro) {
+      const discoveredDistro = distroFromPaneContext({ shell: cmd, args: spawnArgs, env });
+      if (discoveredDistro) location = { ...location, distro: discoveredDistro };
     }
 
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
@@ -499,6 +661,9 @@ export class DaemonSessionManager extends EventEmitter {
     const deferred = params.deferOutput === true;
     const managed: ManagedSession = {
       meta,
+      locationGeneration: nextLocationGeneration(),
+      locationRevision: 1,
+      locationProducerCwd: meta.cwd,
       ptyProcess,
       ringBuffer,
       bridge,
@@ -551,20 +716,16 @@ export class DaemonSessionManager extends EventEmitter {
 
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       // Change-guard: OSC 7 / prompt scrape can re-report the SAME cwd on every
-      // prompt. Only act on a real change so the daemon/index.ts persistence
-      // write (and the renderer broadcast) fire on cd, not on every prompt —
-      // keeps the immediate cwd persistence cheap (no write amplification).
-      if (meta.cwd === payload.cwd) return;
-      meta.cwd = payload.cwd;
-      meta.location = {
-        ...resolveSessionLocation({ shell: meta.cmd, cwd: payload.cwd, location: meta.location }),
+      // prompt. Only stage a real change so persistence and publication fire
+      // on cd, not on every prompt.
+      if (managed.locationProducerCwd === payload.cwd) return;
+      managed.locationProducerCwd = payload.cwd;
+      this.emit('session:locationCandidate', {
+        sessionId: params.id,
+        generation: managed.locationGeneration,
+        reason: 'cwd',
         cwd: payload.cwd,
-      };
-      // Forward across the daemon→main boundary so the renderer can live-update
-      // the per-surface cwd (tab tooltip + "Working directories" menu). Without
-      // this, daemon mode (the default path) only kept cwd in daemon-local
-      // meta and the UI never saw a change. Mirrors the session:prompt tee.
-      this.emit('session:cwd', payload);
+      });
     });
 
     bridge.on('title', (payload: { sessionId: string; title: string }) => {
@@ -583,6 +744,7 @@ export class DaemonSessionManager extends EventEmitter {
       // as 'dead' purged exactly the in-use sessions from recovery. Classified
       // exits suspend instead — recovery replays them under the same id.
       const involuntary = this.involuntaryExitClassifier(payload.exitCode, payload.signal);
+      this.locationEnricher.cancel(params.id);
       meta.state = involuntary ? 'suspended' : 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
@@ -598,6 +760,7 @@ export class DaemonSessionManager extends EventEmitter {
         signal: payload.signal,
         cmd: meta.cmd,
         lastActivityMsAgo,
+        locationGeneration: managed.locationGeneration,
       };
       if (involuntary) {
         this.emit('session:interrupted', forensics);
@@ -619,6 +782,26 @@ export class DaemonSessionManager extends EventEmitter {
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
 
     this.emit('session:created', { session: { ...meta } });
+    void this.locationEnricher.enrich(
+      params.id,
+      () => {
+        const current = this.sessions.get(params.id);
+        if (!current || current.meta.state === 'dead' || current.meta.state === 'suspended') {
+          return undefined;
+        }
+        return current.meta.location;
+      },
+      (enriched) => {
+        const current = this.sessions.get(params.id);
+        if (!current) return;
+        this.emit('session:locationCandidate', {
+          sessionId: params.id,
+          generation: current.locationGeneration,
+          reason: 'enriched',
+          enriched,
+        });
+      },
+    );
     return { ...meta };
   }
 
@@ -626,14 +809,21 @@ export class DaemonSessionManager extends EventEmitter {
     const managed = this.sessions.get(id);
     if (!managed) return;
 
+    const locationGeneration = managed.locationGeneration;
+    this.locationEnricher.cancel(id);
     managed.bridge.cleanup();
     try {
       managed.ptyProcess.kill();
     } catch {
       /* already dead */
     }
+    this.emit('session:destroying', { id, locationGeneration });
     this.sessions.delete(id);
     this.emit('session:destroyed', { id });
+  }
+
+  deactivateSessionLocation(id: string): void {
+    this.locationEnricher.cancel(id);
   }
 
   /**
@@ -652,6 +842,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (managed.meta.state !== 'dead') {
       throw new Error(`removeTombstone('${id}'): session is '${managed.meta.state}', not 'dead'`);
     }
+    this.locationEnricher.cancel(id);
     this.sessions.delete(id);
     return true;
   }

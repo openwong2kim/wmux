@@ -15,6 +15,7 @@ import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
+import { forgetSessionLocation } from '../sessionLocationProjection';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
@@ -494,6 +495,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   closePane: (paneId, workspaceId) => {
     let event: { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null } | null = null;
+    const closedPtyIds: string[] = [];
     // R2: snapshot the principal coordinates of live agent panes in the closing
     // subtree outside the transaction — they must be collected before set()
     // clears surfaceAgent. Capture autoName too (review I5): legacy rows that
@@ -509,6 +511,9 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const subtree = parentSnap?.children.find((c) => c.id === paneId);
       if (wsSnap && subtree) {
         for (const leaf of getLeafPanes(subtree)) {
+          for (const surface of leaf.surfaces) {
+            if (surface.ptyId) closedPtyIds.push(surface.ptyId);
+          }
           const agentSurface = leaf.surfaces.find(
             (sf) => sf.surfaceType !== 'browser' && !!sf.ptyId && !!s.surfaceAgent[sf.ptyId]?.name,
           );
@@ -609,6 +614,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       };
     });
     if (event) {
+      for (const ptyId of closedPtyIds) forgetSessionLocation(ptyId);
       const e = event as { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null };
       publishPaneClosed(e.wsId, e.closedPaneId);
       if (e.newActiveId) {

@@ -1,5 +1,9 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
+import {
+  forgetSessionLocation,
+  resetSessionLocationProjections,
+} from '../sessionLocationProjection';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
@@ -312,6 +316,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // protection, nonexistent id).
       const willRemove =
         get().workspaces.length > 1 && get().workspaces.some((w: Workspace) => w.id === id);
+      const removedPtyIds: string[] = [];
+      if (willRemove) {
+        const removed = get().workspaces.find((w: Workspace) => w.id === id);
+        const collect = (pane: Pane): void => {
+          if (pane.type === 'leaf') {
+            for (const surface of pane.surfaces) {
+              if (surface.ptyId) removedPtyIds.push(surface.ptyId);
+            }
+          } else {
+            for (const child of pane.children) collect(child);
+          }
+        };
+        if (removed) collect(removed.rootPane);
+      }
       set((state: StoreState) => {
         if (state.workspaces.length <= 1) return;
         const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
@@ -396,6 +414,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // production store it always exists — same convention as the
       // paneNotificationRing guard).
       if (willRemove) {
+        for (const ptyId of removedPtyIds) forgetSessionLocation(ptyId);
         void get().purgeMembershipDaemon?.({ workspaceId: id });
         void get().principalMarkStaleWorkspaceDaemon?.(id);
       }
@@ -893,9 +912,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     // covered (floating pane, bookmarks, token data, company members).
     // After this runs, Terminal.tsx self-create sees externalPtyId='' on
     // mount and creates fresh PTYs — the well-tested new-pane path.
-    clearSurfacePtyIdByPty: (ptyId: string) => set((state: StoreState) => {
-      if (!ptyId) return;
-      const walk = (pane: Pane) => {
+    clearSurfacePtyIdByPty: (ptyId: string) => {
+      set((state: StoreState) => {
+        if (!ptyId) return;
+        const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
             // Utility surfaces (git·review) have no pty — explicitly exclude defensively.
@@ -907,10 +927,13 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           for (const child of pane.children) walk(child);
         }
       };
-      for (const ws of state.workspaces) walk(ws.rootPane);
-    }),
+        for (const ws of state.workspaces) walk(ws.rootPane);
+      });
+      if (ptyId) forgetSessionLocation(ptyId);
+    },
 
-    clearAllPtyState: () => set((state: StoreState) => {
+    clearAllPtyState: () => {
+      set((state: StoreState) => {
       // 1. Terminal surface ptyId across all workspaces + nested split panes.
       const walkAndClearPtyIds = (pane: Pane) => {
         if (pane.type === 'leaf') {
@@ -940,6 +963,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           }
         }
       }
-    }),
+      });
+      resetSessionLocationProjections();
+    },
   };
 };

@@ -14,6 +14,7 @@ import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
 import { isWindows } from '../../shared/platform';
 import { ShellDetector } from '../../shared/ShellDetector';
+import { distroFromPaneContext } from '../../shared/wslDistro';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -21,6 +22,8 @@ export interface PTYInstance {
   id: string;
   process: pty.IPty;
   shell: string;
+  /** Non-secret identity fact extracted from the actual WSL spawn context. */
+  wslDistro?: string;
   /**
    * Workspace this PTY belongs to. Captured at create time so the EventBus
    * can scope process.* events without consulting the renderer state.
@@ -240,9 +243,15 @@ export class PTYManager {
       ? preparePtyLocation(classifySessionLocation(shell, cwd), os.homedir())
       : { spawnCwd: undefined as string | undefined, prefixArgs: [] as string[] };
 
+    const spawnArgs = [...prefixArgs, ...hookInjection.args];
+    const wslDistro = distroFromPaneContext({
+      shell,
+      args: spawnArgs,
+      env: hookInjection.env,
+    });
     let ptyProcess: ReturnType<typeof pty.spawn>;
     try {
-      ptyProcess = pty.spawn(shell, [...prefixArgs, ...hookInjection.args], {
+      ptyProcess = pty.spawn(shell, spawnArgs, {
         name: 'xterm-256color',
         cols: options?.cols || 80,
         rows: options?.rows || 24,
@@ -259,6 +268,7 @@ export class PTYManager {
       id,
       process: ptyProcess,
       shell,
+      ...(wslDistro ? { wslDistro } : {}),
       ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
     };
     this.instances.set(id, instance);

@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadConfig, saveConfig, getWmuxDir } from './config';
-import { DaemonSessionManager } from './DaemonSessionManager';
+import {
+  DaemonSessionManager,
+  type DaemonSessionLocationCandidateInput,
+} from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
@@ -42,6 +45,14 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonSession, DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import {
+  daemonSessionCommandTarget,
+  daemonSessionLocation,
+} from './sessionCommandTarget';
+import {
+  SessionLocationTransaction,
+  submitDaemonSessionLocationCandidate,
+} from './sessionLocationPersistence';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, resumeBindingMatchesLocation } from '../shared/agentResume';
@@ -56,7 +67,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { locationIdentity, resolveReplayLocation, resolveSessionLocation } from '../shared/sessionLocation';
+import { locationIdentity, resolveReplayLocation } from '../shared/sessionLocation';
 import { transcriptFileLives } from '../main/claude/lastAssistantMessage';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
@@ -71,6 +82,7 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+let sessionLocationTransactionRef: SessionLocationTransaction | null = null;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -506,14 +518,10 @@ function bindingTranscriptLives(
   if (!binding) return false;
   if (!binding.transcriptPath) return true;
   if (!session) return transcriptFileLives(binding.transcriptPath);
-  const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
+  const { location, activeContext } = daemonSessionCommandTarget(session);
   return transcriptFileLives(binding.transcriptPath, {
     location,
-    activeSession: {
-      sessionId: session.id,
-      active: true,
-      ...(location.domain === 'wsl' && location.distro ? { distro: location.distro } : {}),
-    },
+    activeSession: activeContext ?? { sessionId: session.id, active: true },
   });
 }
 
@@ -1514,6 +1522,7 @@ function registerRpcHandlers(
       // should already handle this via PTY onExit, but this is a safety net
       const managed = sessionManager.getSession(session.id);
       if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
+        sessionManager.deactivateSessionLocation(session.id);
         managed.meta.state = 'dead';
         sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
       }
@@ -1529,7 +1538,11 @@ function registerRpcHandlers(
     triggerSnapshot();
 
     // Strip credential values from response (main uses pid etc. only). Replace with fresh env — live meta unchanged.
-    return { ...session, env: stripCredentialValues(session.env) };
+    return {
+      ...session,
+      env: stripCredentialValues(session.env),
+      locationSnapshot: sessionManager.getLocationSnapshot(session.id),
+    };
   });
 
   // daemon.destroySession
@@ -1835,7 +1848,11 @@ function registerRpcHandlers(
       // Replace with fresh env stripped of credential values — clients holding daemon token must not
       // read session credentials via RPC. s.env shares live in-memory meta.env reference so in-place
       // mutation forbidden (breaks spawn); stripCredentialValues returns fresh so replace only.
-      const base = { ...s, env: stripCredentialValues(s.env) };
+      const base = {
+        ...s,
+        env: stripCredentialValues(s.env),
+        locationSnapshot: sessionManager.getLocationSnapshot(s.id),
+      };
       // Capture the durable meta binding before stripping it — reused below to
       // surface a guard-passed binding for LIVE agent panes too, so the per-pane
       // resume affordance (Inspect/pane-header UUID + recovery) works ANY time, not
@@ -2063,11 +2080,7 @@ function registerRpcHandlers(
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
     if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
-    const sessionLocation = resolveSessionLocation({
-      cmd: managed.meta.cmd,
-      cwd: managed.meta.cwd,
-      location: managed.meta.location,
-    });
+    const sessionLocation = daemonSessionLocation(managed.meta);
     const p = {
       id,
       resumeBinding: {
@@ -3180,7 +3193,7 @@ function wireEvents(
   // repeats as fatal and shuts the whole daemon down, killing every other
   // session as collateral damage. Per-step isolation ensures one session's
   // exit can't cascade into a mass kill.
-  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string }) => {
+  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string; locationGeneration?: number }) => {
     // OBSERVABILITY: PTY deaths were previously unlogged — a session could
     // vanish (e.g. powershell exiting -1 under a TUI like claude) with zero
     // trace in the daemon log, making root-cause impossible. Log the forensics
@@ -3194,11 +3207,18 @@ function wireEvents(
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
     hookIngest?.dropPty(payload.id);
+    const locationGeneration = payload.locationGeneration
+      ?? sessionManager.getLocationSnapshot(payload.id)?.generation;
     try {
       const event: DaemonEvent = {
         type: 'session.died',
         sessionId: payload.id,
-        data: { exitCode: payload.exitCode },
+        data: {
+          exitCode: payload.exitCode,
+          ...(locationGeneration !== undefined
+            ? { locationGeneration }
+            : {}),
+        },
       };
       pipeServer.broadcast(event);
     } catch (err) {
@@ -3466,11 +3486,7 @@ function wireEvents(
         ...arbitration,
         ...(eventSession
           ? {
-              location: resolveSessionLocation({
-                cmd: eventSession.meta.cmd,
-                cwd: eventSession.meta.cwd,
-                location: eventSession.meta.location,
-              }),
+              location: daemonSessionLocation(eventSession.meta),
             }
           : {}),
       },
@@ -3515,10 +3531,8 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  // Working-directory change (OSC 7 / prompt scrape, detected in the daemon
-  // bridge). Broadcast so main can forward it to the renderer as
-  // IPC.CWD_CHANGED, giving daemon-mode panes the same live per-surface cwd
-  // the local path already had.
+  // The transaction publishes an accepted cwd before its matching location
+  // snapshot so existing clients retain their event order.
   sessionManager.on('session:cwd', (payload: { sessionId: string; cwd: string }) => {
     const event: DaemonEvent = {
       type: 'cwd.changed',
@@ -3526,18 +3540,53 @@ function wireEvents(
       data: payload.cwd,
     };
     pipeServer.broadcast(event);
-    // Persist the new cwd NOW but asynchronously (saveAsap, not
-    // saveImmediate). Recovery replays meta.cwd AND the X6 ② resume pill
-    // pastes `claude --continue`, which is cwd-scoped — so the cwd must not
-    // wait out the 30s debounce. But the write must not run synchronously
-    // either: at fleet scale (30 sessions) sessions.json grows to hundreds
-    // of KB and concurrent agents `cd` constantly, so the old sync write +
-    // .bak rotation stalled the event loop right when it was busiest — the
-    // stall pattern that starves daemon.ping and gets a live daemon
-    // force-respawned. saveAsap persists within ms via the coalescing
-    // queue; only a SIGKILL inside that window can lose the cwd, and the
-    // next lifecycle event re-persists it.
-    stateWriter.saveAsap(buildState(sessionManager));
+  });
+
+  const locationTransactions = new SessionLocationTransaction(stateWriter);
+  sessionLocationTransactionRef = locationTransactions;
+  sessionManager.on('session:locationCandidate', (input: DaemonSessionLocationCandidateInput) => {
+    void submitDaemonSessionLocationCandidate(
+      locationTransactions,
+      sessionManager,
+      input,
+      () => buildState(sessionManager),
+      {
+        cwd: (sessionId, cwd) => {
+          sessionManager.emit('session:cwd', { sessionId, cwd });
+        },
+        location: (sessionId, snapshot, reason) => {
+          const event: DaemonEvent = {
+            type: 'location.changed',
+            sessionId,
+            data: snapshot,
+          };
+          pipeServer.broadcast(event);
+          sessionManager.emit('session:location', {
+            sessionId,
+            snapshot,
+            reason,
+          });
+        },
+      },
+    ).then((outcome) => {
+      if (outcome === 'failed') {
+        log(
+          'error',
+          `session location ${input.reason} persistence failed for ${input.sessionId}; projection suppressed`,
+        );
+      } else if (outcome === 'publication-failed') {
+        log(
+          'error',
+          `session location ${input.reason} publication failed for ${input.sessionId}`,
+        );
+      }
+    }).catch((err) => {
+      log(
+        'error',
+        `session location ${input.reason} transaction crashed for ${input.sessionId}:`,
+        err,
+      );
+    });
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
@@ -3555,6 +3604,13 @@ function wireEvents(
   // Explicit destroy (pty:dispose path): distinct from session:died (natural
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).
+  const destroyingLocationGenerations = new Map<string, number>();
+  sessionManager.on('session:destroying', (payload: {
+    id: string;
+    locationGeneration: number;
+  }) => {
+    destroyingLocationGenerations.set(payload.id, payload.locationGeneration);
+  });
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
@@ -3562,8 +3618,11 @@ function wireEvents(
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
-      data: null,
+      data: {
+        locationGeneration: destroyingLocationGenerations.get(payload.id),
+      },
     };
+    destroyingLocationGenerations.delete(payload.id);
     pipeServer.broadcast(event);
   });
 }
@@ -3590,22 +3649,7 @@ function wireContextWatchers(
   const portWatcher = new PortWatcher(() =>
     sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
   );
-  const commandTargetFor = (session: DaemonSession) => {
-    const location = resolveSessionLocation({ cmd: session.cmd, cwd: session.cwd, location: session.location });
-    return {
-      sessionId: session.id,
-      location,
-      ...(location.domain === 'wsl' && location.distro
-        ? {
-            activeContext: {
-              sessionId: session.id,
-              active: true as const,
-              distro: location.distro,
-            },
-          }
-        : {}),
-    };
-  };
+  const commandTargetFor = daemonSessionCommandTarget;
 
   gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
     try {
@@ -3636,7 +3680,7 @@ function wireContextWatchers(
   const onCreated = (payload: { session: DaemonSession }) => {
     gitWatcher.update(payload.session.id, commandTargetFor(payload.session));
   };
-  const onCwd = (payload: { sessionId: string; cwd: string }) => {
+  const onLocation = (payload: { sessionId: string }) => {
     const session = sessionManager.getSession(payload.sessionId)?.meta;
     if (session) gitWatcher.update(payload.sessionId, commandTargetFor(session));
     else gitWatcher.remove(payload.sessionId);
@@ -3645,7 +3689,7 @@ function wireContextWatchers(
     gitWatcher.remove(payload.id);
   };
   sessionManager.on('session:created', onCreated);
-  sessionManager.on('session:cwd', onCwd);
+  sessionManager.on('session:location', onLocation);
   sessionManager.on('session:died', onGone);
   sessionManager.on('session:destroyed', onGone);
 
@@ -3658,7 +3702,7 @@ function wireContextWatchers(
 
   return () => {
     sessionManager.off('session:created', onCreated);
-    sessionManager.off('session:cwd', onCwd);
+    sessionManager.off('session:location', onLocation);
     sessionManager.off('session:died', onGone);
     sessionManager.off('session:destroyed', onGone);
     portWatcher.stop();
@@ -3831,6 +3875,10 @@ async function shutdown(
   sessionPipes.clear();
   phaseLog('pipeStops', pipeStopsStart, { count: pipeStops.length });
 
+  // Location candidates can still be queued behind an in-flight cwd write.
+  // Drain the transaction owner before snapshotting suspended sessions.
+  sessionLocationTransactionRef?.flushSync();
+
   // Dump scrollback buffers and mark live sessions as suspended for recovery
   const managedSessions = sessionManager.listManagedSessions();
   stateWriter.ensureBufferDir();
@@ -3883,6 +3931,7 @@ async function shutdown(
   phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
+  sessionLocationTransactionRef = null;
   channelStateWriter.dispose();
   principalStateWriter.dispose();
   // Event log snapshot flush (§6.4b) — drain pending projection snapshots durably.
@@ -4773,6 +4822,7 @@ async function main(): Promise<void> {
       if (dumpsCompleted) return;
       // Synchronous-only — dump what we can before process dies.
       try {
+        sessionLocationTransactionRef?.flushSync();
         const managed = sessionManager.listManagedSessions();
         stateWriter.ensureBufferDir();
         for (const m of managed) {

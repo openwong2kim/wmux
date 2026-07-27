@@ -112,17 +112,20 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).not.toMatch(/setImmediate\([^)]*saveImmediate/);
   });
 
-  it('session:cwd handler persists via saveAsap (immediate persist, async write)', () => {
-    // 30-session scaling: the cwd persist moved from saveImmediate (sync
-    // write on the event loop — stalls daemon.ping under fleet-wide `cd`
-    // churn) to saveAsap (persists within ms via the coalescing queue).
-    // The X6 contract this test guards is "cwd must NOT wait out the 30s
-    // debounce" — saveAsap still honors that; a revert to saveDebounced
-    // (or dropping the persist) re-opens the reboot race and fails here.
+  it('cwd candidates use the exact asynchronous transaction policy', () => {
+    // Cwd remains nonblocking at the bridge boundary, but publication waits
+    // for the transaction owner's exact ASAP write.
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
-    const body = extractEventHandlerBody(src, 'session:cwd');
-    expect(body).toMatch(/stateWriter\.saveAsap\(/);
-    expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
+    const body = extractEventHandlerBody(src, 'session:locationCandidate');
+    expect(body).toMatch(/submitDaemonSessionLocationCandidate/);
+    const transactionSource = fs.readFileSync(
+      path.join(__dirname, '..', 'sessionLocationPersistence.ts'),
+      'utf-8',
+    );
+    expect(transactionSource).toMatch(
+      /input\.reason === 'enriched' \? 'immediate-retry' : 'asap'/,
+    );
+    expect(body).not.toMatch(/saveDebounced|saveImmediate/);
   });
 
   it('useTerminal onData guards clearResumeHint against focus reports (CSI I / CSI O)', () => {
@@ -143,15 +146,19 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).toMatch(/\\x1b\[O/);
   });
 
-  it('bridge cwd handler has a change-guard so the immediate write only fires on real cd', () => {
+  it('bridge cwd handler deduplicates against producer order, not committed state', () => {
     const mgrPath = path.join(__dirname, '..', 'DaemonSessionManager.ts');
     const src = fs.readFileSync(mgrPath, 'utf-8');
     const lines = src.split('\n');
     const startIdx = lines.findIndex((l) => l.includes("bridge.on('cwd'"));
     expect(startIdx).toBeGreaterThan(-1);
     const body = lines.slice(startIdx, startIdx + 12).join('\n');
-    // Same cwd must early-return before mutating meta / emitting / persisting.
-    expect(body).toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
+    // Committed meta intentionally lags durability. Deduplicating against the
+    // producer cursor preserves /old → /new → /old reversals.
+    expect(body).toMatch(
+      /if \(managed\.locationProducerCwd === payload\.cwd\) return;/,
+    );
+    expect(body).not.toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
   });
 
   // --- X6 ③ all-pane reliability guards (Rung 0/1/3) ------------------------

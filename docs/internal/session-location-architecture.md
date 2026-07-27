@@ -40,19 +40,59 @@ metadata work must never start a distribution merely to answer a poll.
 
 ## Live pane state
 
-Main-process metadata deliberately splits a live pane's state in
+Main-process metadata owns local-mode live pane state in
 `src/main/ipc/handlers/metadata.handler.ts`:
 
 - `paneIdentities` holds the cwd-independent shell and optional WSL
   distribution.
 - `cwdMap` holds the current cwd reported by the live shell.
+- `paneLocationSnapshots` publishes the combined location as an atomic
+  `{ generation, revision, location }` value.
 - `getPaneCommandTarget` combines them when a consumer needs to run a command.
 
-Create and reconnect paths must call `updatePaneLocation` before `updateCwd`.
-`updateCwd` synchronously notifies listeners, so reversing this order exposes a
-cwd without its domain identity. The daemon reconnect path also prefers the
-daemon's stored `location`; `resolveSessionLocation` supplies the legacy
-`{ cmd, cwd }` fallback.
+Each new local pane ID starts a new generation. Cwd changes and late WSL
+distribution enrichment increment its revision, and teardown cancels pending
+enrichment before deleting the snapshot. `PTYBridge` forwards cwd changes only
+through this owner; it does not separately publish raw cwd events that could
+race the atomic location.
+
+In daemon mode, `DaemonSession.location` is the durable record. The session
+location transaction stages generation/revision candidates outside that
+record, writes the exact candidate state, then commits and publishes it once.
+Both cwd changes and late enrichment use this boundary. The daemon exposes only
+committed snapshots on create, list, and reconnect responses. The daemon event
+travels through `DaemonClient` and preload to the renderer as the same atomic
+value. Main does not resolve or reclassify daemon-owned panes.
+
+The renderer compares generation first and revision second. It queues an event
+that arrives before surface binding, and ignores a stale RPC response that
+arrives after a newer event. Main applies the same gate before changing its
+command-target registry, so metadata consumers cannot regress even when an
+enrichment event overtakes a create, list, or reconnect response. Projection
+ordering is reset after an authenticated daemon replacement because the
+replacement may start with lower generation numbers. An accepted renderer
+snapshot also drives the owning workspace cwd and task-worktree departure state;
+stale snapshots drive none of those side effects.
+
+Closing a daemon session retires rather than deletes its main-process ordering
+watermark. The daemon carries the exact generation on both natural-death and
+explicit-destroy events, including destroys initiated by another authenticated
+client and cases where main has not received the first snapshot yet. An RPC
+response already in flight cannot resurrect that generation; the closed
+snapshot itself is discarded, and only a strictly newer generation or a daemon
+replacement reset can reuse the session ID.
+
+Cwd candidates use an exact asynchronous write so frequent directory changes
+do not block the daemon loop. Late enrichment uses a synchronous write with one
+retry. Neither candidate mutates the session record before durability. Failed
+writes therefore need no rollback and publish nothing. A successful write
+commits the matching generation and revision before publication; ID reuse or a
+newer transaction supersedes stale work. StateWriter serializes exact writes
+with its existing queue, preserves unrelated pending metadata, and restores the
+newest committed state if an older asynchronous write completes afterward.
+
+The daemon reconnect path prefers the daemon's stored `location`;
+`resolveSessionLocation` supplies the legacy `{ cmd, cwd }` fallback.
 
 The renderer follows the same preference in
 `src/renderer/utils/focusedSurface.ts`: a surface's stored location is
@@ -66,13 +106,16 @@ not exist, so its defensive default uses case-sensitive POSIX behavior.
 
 ## WSL distribution discovery
 
-`src/main/pty/wslDistro.ts` resolves a pane's distribution in this order:
+`src/shared/wslDistro.ts` is the single resolver implementation. It first reads
+the actual spawn arguments (`-d` / `--distribution`) and child
+`WSL_DISTRO_NAME` captured by the local PTY manager or daemon session manager.
+When the pane carries neither fact, it resolves from `wsl.exe -l` variants,
+accepting a single registered or single running distribution only when the
+result is unambiguous.
 
-1. an explicit `-d` or `--distribution` spawn argument;
-2. the pane's `WSL_DISTRO_NAME`;
-3. enumeration with `wsl.exe -l` variants;
-4. a single registered or single running distribution when that is
-   unambiguous.
+Local mode runs the resolver from the main metadata registry. Daemon mode runs
+it from the daemon session manager. Consumers receive the resulting stored
+location and must not invoke the resolver themselves.
 
 Enumeration never executes a command inside a distribution.
 `createWslRunner` owns the bytes-to-text and process policy; `defaultRunner` is
@@ -105,6 +148,9 @@ authority:
 
 Tests should exercise the boundary that owns each behavior. Parser and
 conversion cases belong in `src/shared/__tests__/sessionLocation.test.ts`;
-WSL byte decoding and process policy belong below the runner seam in
-`src/main/pty/__tests__/wslDistro.test.ts`; live identity/cwd ordering belongs
-at the registered PTY handler boundary.
+generation-aware enrichment belongs in
+`src/shared/__tests__/sessionLocationEnrichment.test.ts`; WSL byte decoding and
+process policy belong below the runner seam in
+`src/main/pty/__tests__/wslDistro.test.ts`; atomic projection and live
+identity/cwd ordering belong at the daemon manager, preload, renderer store, and
+registered PTY handler boundaries.
