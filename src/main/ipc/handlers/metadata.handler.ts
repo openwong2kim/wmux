@@ -25,6 +25,7 @@ import { resolveWslDistro } from '../../pty/wslDistro';
 import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 import { resolveGitToplevel } from '../../git/git';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -448,6 +449,7 @@ export function registerMetadataHandlers(
 }
 
 export function updateCwd(ptyId: string, cwd: string): void {
+  if (!isPlausibleCwd(cwd)) return;
   cwdMap.set(ptyId, cwd);
   const identity = paneIdentities.get(ptyId);
   const previous = paneLocationSnapshots.get(ptyId);

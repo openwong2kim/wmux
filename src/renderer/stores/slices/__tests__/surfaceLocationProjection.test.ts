@@ -77,6 +77,28 @@ describe('surface location snapshot projection', () => {
     });
   });
 
+  it('rejects an implausible atomic snapshot without changing the surface', () => {
+    const { state, slice } = createHarness();
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'wsl.exe',
+      '/home/me/repo',
+      undefined,
+      snapshot(1, '/home/me/repo', 'Ubuntu'),
+    );
+
+    expect(slice.updateSurfaceLocation('pty-1', snapshot(2, 'relative/path', 'Ubuntu')))
+      .toBe(false);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces[0]).toMatchObject({
+      cwd: '/home/me/repo',
+      location: snapshot(1, '/home/me/repo', 'Ubuntu').location,
+    });
+  });
+
   it('releases projection state before delayed delivery after close', () => {
     const { state, slice } = createHarness();
     slice.addSurface(

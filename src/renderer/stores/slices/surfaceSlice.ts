@@ -368,6 +368,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfaceLocation: (ptyId, snapshot) => {
     if (!ptyId) return false;
+    if (!isPlausibleCwd(snapshot.location.cwd)) return false;
     const hasActiveBinding = get().workspaces.some((ws) => {
       const hasPty = (pane: Pane): boolean => pane.type === 'leaf'
         ? pane.surfaces.some((surface) => surface.ptyId === ptyId)

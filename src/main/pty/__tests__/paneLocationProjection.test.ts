@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getCwd,
+  getPaneCommandTarget,
   getPaneLocationSnapshot,
+  onCwdUpdate,
   onPaneLocationUpdate,
   removeCwd,
   removePaneLocation,
@@ -41,6 +44,63 @@ beforeEach(() => {
 });
 
 describe('local pane location projection', () => {
+  it.each([
+    {
+      name: 'relative cwd',
+      platform: 'win32',
+      initialCwd: 'C:\\repo',
+      rejectedCwd: 'relative/path',
+      shell: 'pwsh.exe',
+    },
+    {
+      name: 'Windows cwd on macOS',
+      platform: 'darwin',
+      initialCwd: '/Users/me/repo',
+      rejectedCwd: 'C:\\repo',
+      shell: '/bin/zsh',
+    },
+  ])('rejects $name before changing accepted pane state', ({
+    platform,
+    initialCwd,
+    rejectedCwd,
+    shell,
+  }) => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    const ptyId = `local-rejected-${platform}`;
+    reset(ptyId);
+    const locationUpdates = vi.fn();
+    const cwdUpdates = vi.fn();
+    const unsubscribeLocation = onPaneLocationUpdate(locationUpdates);
+    const unsubscribeCwd = onCwdUpdate(cwdUpdates);
+
+    try {
+      updatePaneLocation(ptyId, {
+        domain: 'host',
+        cwd: initialCwd,
+        shell,
+      });
+      updateCwd(ptyId, initialCwd);
+      const acceptedSnapshot = getPaneLocationSnapshot(ptyId);
+      const acceptedTarget = getPaneCommandTarget(ptyId);
+      locationUpdates.mockClear();
+      cwdUpdates.mockClear();
+
+      updateCwd(ptyId, rejectedCwd);
+
+      expect(getCwd(ptyId)).toBe(initialCwd);
+      expect(getPaneCommandTarget(ptyId)).toEqual(acceptedTarget);
+      expect(getPaneLocationSnapshot(ptyId)).toBe(acceptedSnapshot);
+      expect(locationUpdates).not.toHaveBeenCalled();
+      expect(cwdUpdates).not.toHaveBeenCalled();
+    } finally {
+      unsubscribeLocation();
+      unsubscribeCwd();
+      reset(ptyId);
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  });
+
   it('publishes a distro extracted by the spawn producer without enumeration', () => {
     const ptyId = 'local-explicit-wsl';
     reset(ptyId);
