@@ -484,7 +484,16 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls, ipcHandlers, ipcListeners } = await loadForPlatform('win32');
 
-    const updater = new AutoUpdater(() => null);
+    // Capture renderer events so the test can assert the check RAN TO
+    // COMPLETION, not merely that a request left the building.
+    const sent: Array<{ channel: string; data: Record<string, unknown> }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string, data: Record<string, unknown>) => { sent.push({ channel, data }); },
+      },
+    };
+    const updater = new AutoUpdater(() => win as never);
     updater.start();
 
     // User turns auto-update OFF before the first scheduled check fires.
@@ -497,9 +506,15 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     // A manual "check for updates" press is an explicit request: it must work
     // with the toggle off — otherwise the toggle bricks the only update path.
     const reply = await ipcHandlers.get(IPC.UPDATE_CHECK)!();
-    await vi.advanceTimersByTimeAsync(0);
     expect(reply).toEqual({ status: 'checking' });
+    // The unrouted feed URL answers 204 (up to date): the check must complete
+    // and report not-available — a check that fired and then died would leave
+    // no terminal event and fail here.
+    await vi.waitFor(() => {
+      expect(sent.some((m) => m.channel === IPC.UPDATE_NOT_AVAILABLE)).toBe(true);
+    });
     expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
 
     updater.stop();
   });
