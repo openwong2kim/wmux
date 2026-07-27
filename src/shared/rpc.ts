@@ -583,7 +583,14 @@ export interface DaemonEvent {
     // workspaceId = affected member ws, memberId, unread, mentionUnread).
     // Main surfaces it directly (toast + OS notification) AND tees it onto
     // the EventBus as WmuxEvent `channel.nudgeExhausted` for orchestrators.
-    | 'channel.nudgeExhausted';
+    | 'channel.nudgeExhausted'
+    // Chat View (P1) — a subscribed pane's transcript grew. UNICAST, not
+    // broadcast: `data` is TranscriptAppendData and carries the pane's
+    // conversation content, so the daemon writes it only to the sockets that
+    // called `daemon.transcript.subscribe` (see DaemonPipeServer.sendTo).
+    // `data.reset` means the file rotated or a new session started and the
+    // consumer must REPLACE its rows rather than append them.
+    | 'transcript.appended';
   sessionId: string;
   data: unknown;
 }

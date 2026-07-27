@@ -64,6 +64,7 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { PushSender } from './push/PushSender';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
@@ -86,6 +87,12 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+
+// Chat View P1 — the daemon-side transcript projection. Module-scoped for the
+// same reason as hookIngest: registerRpcHandlers constructs it, and the
+// lifecycle wiring in wireEvents has to reach the same instance to drop a dead
+// pane's watch.
+let transcriptProjector: TranscriptProjector | null = null;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -2374,6 +2381,72 @@ function registerRpcHandlers(
   // HookSignalResponse — both validated inside HookIngest, which never throws
   // (the bridge runs on a 2s budget inside the agent's process and treats an
   // RPC error as a fatal hook).
+  // Chat View P1 — daemon.transcript.*. Same class of token-only string method
+  // as daemon.hooks.* / daemon.approvals.*: deliberately NOT in the RpcMethod
+  // union or methodCapabilityMap, so they add no gen-api-reference surface.
+  //
+  // Guarded like hookIngest: a second registerRpcHandlers call must not mint a
+  // second projector, or the first one's fs.watch handles and poll timers would
+  // be orphaned with no owner to tear them down.
+  if (!transcriptProjector) {
+    transcriptProjector = new TranscriptProjector({
+      // The persisted binding is the ONLY source of the transcript path — no
+      // cwd→slug derivation (agentResume.ts rejects that mapping as
+      // version-drift-prone, which is why the path is persisted at all).
+      getResumeBinding: (id) => sessionManager.getSession(id)?.meta.resumeBinding,
+      // A6 — unicast. An append carries the pane's conversation content, so it
+      // goes only to the sockets that subscribed; broadcast would hand every
+      // authenticated pipe client the whole transcript AND put an oversized
+      // payload on sockets that never asked for it.
+      emitAppend: (sessionId, data, clientIds) => {
+        const event: DaemonEvent = { type: 'transcript.appended', sessionId, data };
+        for (const clientId of clientIds) pipeServer.sendTo(clientId, event);
+      },
+      log: (level, message) => log(level, message),
+    });
+    // A4 — subscriptions are keyed by (clientId, sessionId), so a renderer that
+    // reloads without unsubscribing must not leave its watchers behind.
+    const projectorForClose = transcriptProjector;
+    pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
+  }
+  const projector = transcriptProjector;
+
+  pipeServer.onRpc('daemon.transcript.status', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return projector.status(id);
+  });
+
+  pipeServer.onRpc('daemon.transcript.snapshot', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const before = typeof params['before'] === 'number' ? params['before'] : undefined;
+    return projector.snapshot(id, before === undefined ? undefined : { before });
+  });
+
+  pipeServer.onRpc('daemon.transcript.subscribe', async (params, ctx) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
+    return { ok: true, status: projector.subscribe(ctx.clientId, id) };
+  });
+
+  pipeServer.onRpc('daemon.transcript.unsubscribe', async (params, ctx) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    if (id) projector.unsubscribe(ctx.clientId, id);
+    return { ok: true };
+  });
+
+  // A3 — code bodies never ride an append event (one 256KB tail re-encoded with
+  // bodies would blow past main's control-buffer cap and take an unrelated
+  // event down with it). The chip carries `{n, lines, lang, path, srcOffset}`
+  // and the body is fetched here, on expand, as a single bounded line read.
+  pipeServer.onRpc('daemon.transcript.codeBlock', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const srcOffset = typeof params['srcOffset'] === 'number' ? params['srcOffset'] : -1;
+    const n = typeof params['n'] === 'number' ? params['n'] : -1;
+    const eventId = typeof params['eventId'] === 'string' ? params['eventId'] : undefined;
+    if (!id) return null;
+    return projector.codeBlock(id, { srcOffset, n, ...(eventId ? { eventId } : {}) });
+  });
+
   if (!hookIngest) {
     hookIngest = new HookIngest({
       listLiveSessions: () => sessionManager.listLiveSessions(),
@@ -2387,6 +2460,10 @@ function registerRpcHandlers(
       // approval request. Wired here, on the daemon-internal path, because this
       // is where provenance and the dedup decision are both already known.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+      // Chat View P1 — the tail nudge rides the existing hook signals rather
+      // than a new hook. Fired for every resolved kind; a no-op for panes with
+      // no Chat surface open.
+      onTranscriptNudge: (sessionId, kind) => projector.nudge(sessionId, kind),
     });
   }
   const ingest = hookIngest;
@@ -3427,6 +3504,8 @@ function wireEvents(
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
     hookIngest?.dropPty(payload.id);
+    // Chat View: the pane is gone, so its transcript watch has no reader left.
+    transcriptProjector?.dropPty(payload.id);
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -3819,6 +3898,7 @@ function wireEvents(
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
+    transcriptProjector?.dropPty(payload.id); // Chat View: ...and the transcript watch
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
@@ -4009,6 +4089,10 @@ async function shutdown(
   // process open; clearing it just keeps a shutdown from logging one last
   // rolling summary on the way out.
   hookIngest?.dispose();
+
+  // Close every transcript fs.watch and poll timer. All of them are unref'd so
+  // none held the process open; this just avoids a read firing mid-shutdown.
+  transcriptProjector?.dispose();
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.

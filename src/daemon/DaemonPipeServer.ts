@@ -7,7 +7,21 @@ import { getDaemonAuthTokenPath } from '../shared/constants';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
-type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+/**
+ * Which connected client an RPC arrived on. Handlers that fan data back out to
+ * ONE subscriber (rather than to every client) need this: `broadcast` writes to
+ * all sockets, and full conversation content must reach only the client that
+ * asked for it.
+ */
+export interface RpcClientContext {
+  /** Opaque, stable for the life of the socket. See `sendTo` / `onClientClose`. */
+  clientId: string;
+}
+
+type RpcHandler = (
+  params: Record<string, unknown>,
+  ctx: RpcClientContext,
+) => Promise<unknown>;
 
 /** Action a reclaim probe implies, distinguishing a live owner from a zombie. */
 export type ReclaimOutcome = 'live-owner' | 'reclaimed' | 'unreclaimable';
@@ -48,6 +62,12 @@ export class DaemonPipeServer {
   private readonly handlers = new Map<string, RpcHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
+  // Per-client identity for unicast delivery. Both directions are kept because
+  // `sendTo` resolves an id → socket while the RPC path needs socket → id.
+  private readonly clientIds = new Map<net.Socket, string>();
+  private readonly socketsByClientId = new Map<string, net.Socket>();
+  private nextClientId = 1;
+  private readonly clientCloseHandlers: ((clientId: string) => void)[] = [];
   private globalRate = { count: 0, resetAt: 0 };
   private connectionRate = { count: 0, resetAt: 0 };
 
@@ -266,9 +286,23 @@ export class DaemonPipeServer {
           return;
         }
         this.connectedSockets.add(socket);
+        const clientId = `c${this.nextClientId++}`;
+        this.clientIds.set(socket, clientId);
+        this.socketsByClientId.set(clientId, socket);
         socket.on('close', () => {
           this.connectedSockets.delete(socket);
           this.rateLimits.delete(socket);
+          this.clientIds.delete(socket);
+          this.socketsByClientId.delete(clientId);
+          // Per-client subscriptions must die with the socket; a refcount that
+          // outlives a renderer reload leaks whatever the subscription holds.
+          for (const handler of this.clientCloseHandlers) {
+            try {
+              handler(clientId);
+            } catch {
+              // A subscriber's cleanup must never break the close path.
+            }
+          }
           // Record the moment we dropped to zero clients so the Watchdog
           // idle-shutdown timer has an anchor. We re-stamp on every drop
           // to zero (not just the first), so a flapping reconnect cycle
@@ -313,6 +347,8 @@ export class DaemonPipeServer {
       socket.destroy();
     }
     this.connectedSockets.clear();
+    this.clientIds.clear();
+    this.socketsByClientId.clear();
 
     return new Promise<void>((resolve) => {
       this.server!.close(() => {
@@ -362,9 +398,39 @@ export class DaemonPipeServer {
     }
     this.connectedSockets.clear();
     this.rateLimits.clear();
+    this.clientIds.clear();
+    this.socketsByClientId.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;
+  }
+
+  /**
+   * Deliver an event to ONE client. Returns false when that client is gone.
+   *
+   * The counterpart to `broadcast` for per-subscriber payloads: a transcript
+   * append carries the pane's full conversation content, which must not reach
+   * clients that never subscribed to it — and keeping it off those sockets also
+   * keeps one oversized payload from pushing an unrelated client's control
+   * buffer past its cap.
+   */
+  sendTo(clientId: string, event: unknown): boolean {
+    const socket = this.socketsByClientId.get(clientId);
+    if (!socket || socket.destroyed) return false;
+    try {
+      socket.write(JSON.stringify(event) + '\n');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Register a callback for "this client's socket closed". Used to drop
+   * per-client state (subscriptions) that a bare refcount would leak.
+   */
+  onClientClose(handler: (clientId: string) => void): void {
+    this.clientCloseHandlers.push(handler);
   }
 
   /** Broadcast an event to all connected clients as a newline-delimited JSON message. */
@@ -480,7 +546,7 @@ export class DaemonPipeServer {
     }
 
     // Dispatch to handler
-    this.dispatch(request)
+    this.dispatch(request, this.clientIds.get(socket) ?? '')
       .then((response) => {
         if (!socket.destroyed) {
           socket.write(JSON.stringify(response) + '\n');
@@ -494,7 +560,7 @@ export class DaemonPipeServer {
       });
   }
 
-  private async dispatch(request: RpcRequest): Promise<RpcResponse> {
+  private async dispatch(request: RpcRequest, clientId: string): Promise<RpcResponse> {
     if (!request || typeof request.id !== 'string' || typeof request.method !== 'string') {
       return { id: request?.id || '', ok: false, error: 'Invalid RPC request: missing id or method' };
     }
@@ -508,7 +574,7 @@ export class DaemonPipeServer {
     }
 
     try {
-      const result = await handler(request.params ?? {});
+      const result = await handler(request.params ?? {}, { clientId });
       return { id: request.id, ok: true, result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

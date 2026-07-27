@@ -5,7 +5,7 @@ import {
   type HookAgentEventData,
   type HookIngestSession,
 } from '../HookIngest';
-import type { AgentSignal } from '../../../shared/hooks/signal-types';
+import type { AgentSignal, AgentSignalKind } from '../../../shared/hooks/signal-types';
 import type { ResumeBinding } from '../../../shared/agentResume';
 
 function makeSignal(overrides: Partial<AgentSignal> = {}): AgentSignal {
@@ -33,6 +33,7 @@ function session(overrides: Partial<HookIngestSession> & { id: string }): HookIn
 function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
   const emitted: Array<{ sessionId: string; data: HookAgentEventData }> = [];
   const bindings: Array<{ ptyId: string; binding: ResumeBinding }> = [];
+  const nudges: Array<{ sessionId: string; kind: AgentSignalKind }> = [];
   let clock = 10_000;
   const deps = {
     listLiveSessions: () => sessions,
@@ -42,6 +43,9 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
     applyResumeBinding: (ptyId: string, binding: ResumeBinding) => {
       bindings.push({ ptyId, binding });
     },
+    onTranscriptNudge: (sessionId: string, kind: AgentSignalKind) => {
+      nudges.push({ sessionId, kind });
+    },
     log: () => { /* silent in tests */ },
     now: () => clock,
   };
@@ -49,6 +53,7 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
     deps,
     emitted,
     bindings,
+    nudges,
     advance: (ms: number) => { clock += ms; },
   };
 }
@@ -333,6 +338,67 @@ describe('HookIngest', () => {
       f.deps.applyResumeBinding = () => { throw new Error('state write failed'); };
       const i = new HookIngest(f.deps);
       expect(i.handle(makeSignal({ ptyId: 'pty-a', agentSessionId: 'origin-1' }))).toEqual({ ok: true });
+      expect(f.emitted).toHaveLength(1);
+    });
+  });
+
+  describe('transcript nudge (Chat View)', () => {
+    // All five kinds a resolved signal can carry. Chat View needs every one:
+    // the stop kinds are turn boundaries (and the first nudge that can carry a
+    // freshly-captured transcriptPath), activity is the mid-turn liveness
+    // nudge, awaiting_input puts the last assistant line on screen before the
+    // composer locks, and session_start invalidates a reused pane's rows.
+    const kinds: AgentSignalKind[] = [
+      'agent.stop',
+      'agent.subagent_stop',
+      'agent.activity',
+      'agent.awaiting_input',
+      'agent.session_start',
+    ];
+
+    for (const kind of kinds) {
+      it(`fires for ${kind}`, () => {
+        const f = makeDeps();
+        const i = new HookIngest(f.deps);
+        i.handle(makeSignal({ ptyId: 'pty-a', kind, agentSessionId: 'origin-1' }));
+        expect(f.nudges).toEqual([{ sessionId: 'pty-a', kind }]);
+      });
+    }
+
+    it('fires AFTER the resume binding is captured, so the path is available', () => {
+      const order: string[] = [];
+      const f = makeDeps();
+      f.deps.applyResumeBinding = () => { order.push('binding'); };
+      f.deps.onTranscriptNudge = () => { order.push('nudge'); };
+      const i = new HookIngest(f.deps);
+      i.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.stop',
+        agentSessionId: 'origin-1',
+        payload: { transcript_path: '/t/origin-1.jsonl' },
+      }));
+      expect(order).toEqual(['binding', 'nudge']);
+    });
+
+    it('does NOT fire for an unresolved signal', () => {
+      const f = makeDeps([session({ id: 'pty-a', cwd: '/elsewhere', env: {} })]);
+      const i = new HookIngest(f.deps);
+      expect(i.handle(makeSignal({ cwd: '/nowhere' })).reason).toBe('no-workspace-match');
+      expect(f.nudges).toHaveLength(0);
+    });
+
+    it('does NOT fire for an invalid envelope', () => {
+      const f = makeDeps();
+      const i = new HookIngest(f.deps);
+      i.handle({ kind: 'nope' });
+      expect(f.nudges).toHaveLength(0);
+    });
+
+    it('does not lose the signal when the nudge throws', () => {
+      const f = makeDeps();
+      f.deps.onTranscriptNudge = () => { throw new Error('projector exploded'); };
+      const i = new HookIngest(f.deps);
+      expect(i.handle(makeSignal({ ptyId: 'pty-a' }))).toEqual({ ok: true });
       expect(f.emitted).toHaveLength(1);
     });
   });

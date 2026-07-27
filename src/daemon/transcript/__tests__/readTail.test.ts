@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import {
   TAIL_BYTES,
+  isLineBoundary,
   readTranscriptDelta,
   readTranscriptLineAt,
   readTranscriptPage,
@@ -172,6 +173,29 @@ describe('readTranscriptLineAt', () => {
 
   it('returns null at or past EOF', () => {
     expect(readTranscriptLineAt(file, fs.statSync(file).size)).toBeNull();
+  });
+});
+
+describe('isLineBoundary — cursor integrity', () => {
+  const file = path.join(FIXTURES, 'claude-basic.jsonl');
+
+  it('offset 0 and every real line start are boundaries', () => {
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    expect(isLineBoundary(file, 0)).toBe(true);
+    let offset = 0;
+    for (const line of lines.slice(0, -1)) {
+      offset += Buffer.byteLength(line, 'utf8') + 1;
+      expect(isLineBoundary(file, offset)).toBe(true);
+    }
+  });
+
+  it('a mid-line offset is not a boundary', () => {
+    expect(isLineBoundary(file, 10)).toBe(false);
+  });
+
+  it('an offset past EOF and a missing file are not boundaries', () => {
+    expect(isLineBoundary(file, fs.statSync(file).size + 10)).toBe(false);
+    expect(isLineBoundary(path.join(os.tmpdir(), 'wmux-absent-9f.jsonl'), 5)).toBe(false);
   });
 });
 

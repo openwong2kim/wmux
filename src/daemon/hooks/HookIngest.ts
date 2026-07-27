@@ -163,6 +163,19 @@ export interface HookIngestDeps {
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
   approvals?: ApprovalHookSink;
+  /**
+   * Chat View — tell the TranscriptProjector that this pane's transcript may
+   * have grown. Fired for EVERY resolved signal, including the non-emit kinds:
+   * `agent.activity` is the mid-turn liveness nudge, `agent.session_start`
+   * invalidates a reused pane's cached conversation, and the stop kinds are the
+   * first nudge that can carry a freshly-captured `transcriptPath`.
+   *
+   * Fired AFTER the resume-binding capture above, because that capture is what
+   * makes the path available at all. Cheap when nobody is subscribed.
+   *
+   * Optional: only the daemon supplies it, and no hook behaviour depends on it.
+   */
+  onTranscriptNudge?: (sessionId: string, kind: AgentSignalKind) => void;
 }
 
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
@@ -471,6 +484,15 @@ export class HookIngest {
         // reboot, never the signal itself.
         this.deps.log?.('warn', `[hooks] resume binding failed for ${sessionId}: ${String(err)}`);
       }
+    }
+
+    // Chat View tail nudge. Rides every resolved signal rather than a new hook,
+    // and is wrapped because a projector failure must not turn into a fatal
+    // hook — the bridge treats an RPC error as one.
+    try {
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
 
     // A2/A3 — metadata-only kinds ride the SAME agent.event family rather than

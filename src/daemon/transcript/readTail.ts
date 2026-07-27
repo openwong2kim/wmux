@@ -186,6 +186,25 @@ export function readTranscriptLineAt(transcriptPath: string, offset: number): st
 }
 
 /**
+ * Is `offset` still a line boundary in this file?
+ *
+ * Cursor-integrity check for the one rewrite neither a size comparison nor an
+ * inode comparison catches: a transcript truncated and rewritten IN PLACE to a
+ * length past the old cursor. Reading forward from a stale offset would then
+ * splice the middle of an unrelated entry into the conversation. A single byte
+ * read answers it: offset 0 is always a boundary, and any other valid cursor has
+ * a newline immediately before it.
+ */
+export function isLineBoundary(transcriptPath: string, offset: number): boolean {
+  if (offset <= 0) return true;
+  const stat = statRegularFile(transcriptPath);
+  if (!stat) return false;
+  if (offset > stat.size) return false;
+  const raw = readRange(transcriptPath, offset - 1, 1);
+  return raw !== null && raw.length === 1 && raw[0] === 0x0a;
+}
+
+/**
  * Basename of a transcript path, correct for BOTH separators on BOTH platforms.
  *
  * `path.basename` is separator-aware only for the HOST platform, so a Windows
@@ -213,9 +232,23 @@ export function transcriptSessionId(transcriptPath: string): string {
 // internals
 // ---------------------------------------------------------------------------
 
-interface RegularFileStat {
+export interface RegularFileStat {
   size: number;
   mtimeMs: number;
+  /**
+   * Inode (0 where the platform does not report one). A changed inode at the
+   * same path means the file was REPLACED, which a size comparison misses when
+   * the replacement is larger than the old cursor.
+   */
+  ino: number;
+}
+
+/**
+ * Size + mtime of a transcript, or `null` when the path is not a readable
+ * regular file. The cheap availability probe: a status RPC must not parse.
+ */
+export function statTranscript(transcriptPath: string): RegularFileStat | null {
+  return statRegularFile(transcriptPath);
 }
 
 /**
@@ -228,7 +261,7 @@ function statRegularFile(transcriptPath: string): RegularFileStat | null {
   try {
     const st = fs.lstatSync(transcriptPath);
     if (!st.isFile()) return null;
-    return { size: st.size, mtimeMs: st.mtimeMs };
+    return { size: st.size, mtimeMs: st.mtimeMs, ino: Number(st.ino) || 0 };
   } catch {
     return null;
   }
