@@ -316,6 +316,55 @@ describe('WSL transcript reads', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('treats an unmappable host path as unproven when guest python is missing', () => {
+    // The command runs on the active context's distro, but the host bridge can
+    // only map a path when the DURABLE location carries one. So this pane reaches
+    // the guest, loses the one dependency, and then cannot fall back either.
+    const lstat = vi.spyOn(fs, 'lstatSync');
+    const run = vi.fn<TranscriptCommandRunner>().mockImplementation(() => {
+      throw Object.assign(new Error('execvpe(python3) failed: No such file or directory'), {
+        stderr: Buffer.from('execvpe(python3) failed: No such file or directory'),
+      });
+    });
+    const contextOnlyDistro = {
+      location: { domain: 'wsl' as const, cwd: '/work/repo', shell: 'wsl.exe' },
+      activeSession: { sessionId: 'pty-4', active: true as const, distro: 'Ubuntu-24.04' },
+    };
+    try {
+      // Failing to map a guest path to a host one is not evidence of absence.
+      expect(transcriptFileLives('/home/me/unmappable.jsonl', contextOnlyDistro, run)).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(lstat).not.toHaveBeenCalled();
+    } finally {
+      lstat.mockRestore();
+    }
+  });
+
+  it('drives the out-of-band refresh with a lone injected runner', async () => {
+    // A caller that replaces only the synchronous runner must still never reach
+    // a real wsl.exe when the TTL expires — the derived async half is what makes
+    // deleting the old production-vs-test identity gate safe.
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn<TranscriptCommandRunner>()
+        .mockReturnValueOnce(Buffer.from('1'))
+        .mockReturnValue(Buffer.from('0'));
+
+      expect(transcriptFileLives('/home/me/lone.jsonl', context, run)).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + 31_000);
+      expect(transcriptFileLives('/home/me/lone.jsonl', context, run)).toBe(true);
+      await __whenTranscriptProbesIdle();
+
+      // The refresh used the injected runner, and its answer landed.
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(transcriptFileLives('/home/me/lone.jsonl', context, run)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('refreshes a stale answer out of band through the injected runner', async () => {
     // The refresh used to be gated on the runner being the production function,
     // so an injected one could never drive it and none of this was reachable.
@@ -331,9 +380,16 @@ describe('WSL transcript reads', () => {
       // The stale answer comes back without waiting for the refresh.
       expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(true);
       expect(async).toHaveBeenCalledTimes(1);
-      // One command constructor for both paths: the refresh spells the same
-      // file, args and bounds as the blocking probe did.
-      expect(async.mock.calls[0]).toEqual(sync.mock.calls[0]);
+      // One command constructor for both paths: the refresh spells the same file
+      // and args as the blocking probe did. The bounds are the same frozen object
+      // by construction, so they are asserted on their own rather than compared.
+      expect(async.mock.calls[0][0]).toBe(sync.mock.calls[0][0]);
+      expect(async.mock.calls[0][1]).toEqual(sync.mock.calls[0][1]);
+      expect(async.mock.calls[0][2]).toMatchObject({
+        timeout: 750,
+        maxBuffer: 256 * 1024,
+        windowsHide: true,
+      });
 
       await __whenTranscriptProbesIdle();
       expect(transcriptFileLives('/home/me/stale.jsonl', context, prober)).toBe(false);

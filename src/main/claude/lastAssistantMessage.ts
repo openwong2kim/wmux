@@ -107,13 +107,15 @@ const defaultProber: TranscriptProber = {
 };
 
 /**
- * Accept either half-seam for backwards compatibility with call sites that only
- * inject a synchronous runner.
+ * Accept either half of the seam.
  *
- * A lone injected runner also drives the refresh, on a microtask — so a caller
- * that replaced the command execution never reaches a real `wsl.exe`, and the
- * decision rests on the shape of what was passed rather than on comparing it to
- * the production function.
+ * No production caller injects anything — the daemon and the hook RPC both take
+ * the default pair — so the lone-runner form exists for callers that replace
+ * command execution wholesale, i.e. tests. Such a caller drives the refresh with
+ * its own runner on a microtask, which is what keeps a test off a real
+ * `wsl.exe`. The trade to know: a caller that injected only a synchronous runner
+ * would run refreshes synchronously too, so a production call site must pass
+ * both halves or none.
  */
 function toProber(run?: TranscriptCommandRunner | TranscriptProber): TranscriptProber {
   if (!run) return defaultProber;
@@ -220,11 +222,13 @@ const WSL_TRANSCRIPT_SCRIPT = [
   ' pass',
 ].join('\n');
 
-const TRANSCRIPT_COMMAND_OPTIONS: TranscriptCommandOptions = {
+/** Frozen because it is handed to injected runners: a runner that mutated it
+ *  would silently change the bounds of every later probe and tail read. */
+const TRANSCRIPT_COMMAND_OPTIONS: Readonly<TranscriptCommandOptions> = Object.freeze({
   timeout: WSL_READ_TIMEOUT_MS,
   maxBuffer: TAIL_BYTES,
   windowsHide: true,
-};
+});
 
 /**
  * The one place a guest transcript command is constructed.
@@ -261,15 +265,19 @@ function outcomeForRefusal(error: LocationError): ProbeOutcome {
   return { status: 'unreachable' };
 }
 
-/** The one rule for a probe that threw: only a missing guest Python earns the
- *  host fallback, and everything else is unproven rather than absent. */
+/**
+ * The one rule for a probe that threw: only a missing guest Python earns the
+ * host fallback, and everything else is unproven rather than absent.
+ *
+ * `stderr` needs no parameter — both runners leave it on the error, which
+ * `missingGuestPython` already reads.
+ */
 function outcomeForProbeFailure(
   error: unknown,
-  stderr: Buffer | string | undefined,
   transcriptPath: string,
   context: TranscriptReadContext,
 ): ProbeOutcome {
-  if (missingGuestPython(error, stderr)) return hostWslProbeOutcome(transcriptPath, context);
+  if (missingGuestPython(error)) return hostWslProbeOutcome(transcriptPath, context);
   return { status: 'unreachable' };
 }
 
@@ -289,7 +297,7 @@ function probeWslTranscript(
   try {
     return outcomeForProbeOutput(run(prepared.file, prepared.args, TRANSCRIPT_COMMAND_OPTIONS));
   } catch (error) {
-    return outcomeForProbeFailure(error, undefined, transcriptPath, context);
+    return outcomeForProbeFailure(error, transcriptPath, context);
   }
 }
 
@@ -305,12 +313,7 @@ async function probeWslTranscriptAsync(
       await run(prepared.file, prepared.args, TRANSCRIPT_COMMAND_OPTIONS),
     );
   } catch (error) {
-    return outcomeForProbeFailure(
-      error,
-      (error as { stderr?: Buffer | string } | null)?.stderr,
-      transcriptPath,
-      context,
-    );
+    return outcomeForProbeFailure(error, transcriptPath, context);
   }
 }
 
