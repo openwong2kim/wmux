@@ -42,6 +42,7 @@ import { AgentProcessTracker } from './AgentProcessTracker';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
+import { isPidAlive, shouldReconcileTombstone } from './phantomExit';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
@@ -1067,7 +1068,25 @@ async function recoverSessions(
   }
 
   for (const session of state.sessions) {
-    if (session.state === 'dead') continue;
+    if (session.state === 'dead') {
+      // #646: a tombstone is supposed to mean "the process is gone". Before
+      // this fix a phantom PTY exit could write one while the shell kept
+      // running, and because recovery skips dead records the orphan was
+      // invisible to every census — reporters found shells outliving their
+      // daemon by 11–12 days. Reconcile here: same boot (so the pid cannot
+      // have been recycled), pid still alive, and it really is our shell →
+      // it is an orphan of that bug, so reap it.
+      if (shouldReconcileTombstone(session, { rebooted, alive: isPidAlive })) {
+        const pid = session.pid;
+        if (await isOurShellProcess(pid, session.cmd)) {
+          log('info', `[recovery] reconciled tombstone ${session.id}: pid ${pid} was still alive`);
+          await reapProcessTree(pid, `tombstone reconciliation of session ${session.id}`);
+        } else {
+          log('warn', `[recovery] tombstone ${session.id} holds live pid ${pid}, but it is not our shell (${session.cmd}) — skipping kill`);
+        }
+      }
+      continue;
+    }
     // Cap-skipped: leave session untouched in state.sessions. It will be
     // re-evaluated on the next launch.
     if (!recoverableIds.has(session.id)) continue;

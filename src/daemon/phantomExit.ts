@@ -40,6 +40,13 @@
  * EPERM means the process EXISTS but belongs to another user — alive for our
  * purposes (the point is "is this pid still occupied", and treating EPERM as
  * dead would let a genuine orphan through). ESRCH is the only real "gone".
+ *
+ * Known Windows caveat: `kill(pid, 0)` can succeed for a pid whose process has
+ * already exited, so this probe leans towards "alive". Both callers are built
+ * for that. At exit time a false positive costs nothing — the session still
+ * ends up dead, just via the reap path, and the reap of an absent pid is a
+ * no-op. At boot the reconciliation pass additionally confirms the pid really
+ * is our shell before killing anything.
  */
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
