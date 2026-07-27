@@ -398,6 +398,41 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(awaiting).toBeDefined();
   });
 
+  it.each([
+    // Captured verbatim off a live pane's ring buffer during the Chat View
+    // dogfood (2026-07-27). Claude Code lays the prompt out with
+    // cursor-absolute moves rather than spaces; ANSI_STRIP removes the escape
+    // AND the gap it stood for, so the line reaching the patterns has words
+    // run together. A literal-space pattern can never match these.
+    ['\r\x1b[2B Do you want to\x1b[17Gproceed?\r', 'Do you want toproceed?'],
+    ['\r\x1b[1C\x1b[1BDo\x1b[5Gyou want to\x1b[17Gproceed?\r', 'Doyou want toproceed?'],
+  ])('emits awaiting_input for a cursor-positioned "Do you want to proceed?" (%j)', (raw) => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData(raw);
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
+  it('emits awaiting_input for a cursor-positioned "Allow tool use for X"', () => {
+    // Same cursor-move hazard as the captured `proceed` lines above.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('\r\x1b[1B Allow tool use\x1b[16Gfor\x1b[20GBash?\r');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
   it('does NOT emit awaiting_input for conversational "Allow tool use for X" mentions mid-sentence', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
