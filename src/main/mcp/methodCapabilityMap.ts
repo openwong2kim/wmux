@@ -422,6 +422,12 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // J1 §5 — 물질화 커밋. start/close와 동일 mutation 등급(a2a.channel.send).
   // 단조 물질화·배타 불변식·owner|CEO authz는 데몬 WorkTaskService에서 강제.
   'task.mission.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  // Fan-out spawns N missions (and their channels) in one call, so it sits at
+  // the same grade as the task.mission.start it calls N times. The capability
+  // only decides whether a plugin may REACH the surface; the origin allowlist,
+  // the server-resolved caller identity, the repo confinement and the fixed
+  // agent command are enforced in the handler (pipe/handlers/fanout.rpc.ts).
+  'task.fanout.start': { capability: 'a2a.channel.send', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

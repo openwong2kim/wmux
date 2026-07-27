@@ -545,4 +545,24 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       return callRpc('task.mission.close' as RpcMethod, params);
     },
   );
+
+  // ── channel_mission_list (WorkTask J0 read) ───────────────────────
+  // The read half of the mission surface: every WorkTask this workspace owns,
+  // with the materialised branch / worktreePath / paneGroupId fields. J0 shipped
+  // the RPC on the pipe but no tool over it, which left fan-out callers with no
+  // way to see what they spawned — this is that tool, and it is why fanout_start
+  // needs no status RPC of its own (fan-out tasks are born owned by the caller,
+  // and this listing is owner-scoped).
+  server.tool(
+    'channel_mission_list',
+    'List the missions (WorkTasks) your workspace owns, open and closed. Each entry carries taskId, title, status, its mission channel id, and — once materialised — the git branch, worktree path, and the workspace id of the pane group running it. This is how you follow a fan-out: after fanout_start reports "accepted", poll here to watch each task appear and materialise. Owner-scoped: you only ever see your own missions.',
+    {},
+    async () => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callRpc('task.mission.list' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+      });
+    },
+  );
 }

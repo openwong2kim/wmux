@@ -62,6 +62,8 @@ import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
+import { createFanOutService } from './worktask/createFanOutService';
+import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
@@ -613,6 +615,11 @@ const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager, browserBackendStore);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
+// J1 fan-out, shared by both front doors. Constructed ONCE here (idempotency is
+// an instance property of FanOutService) and injected into the pipe RPC handler
+// below and the renderer IPC handler further down.
+const fanOutService = createFanOutService(() => daemonClient, () => mainWindow);
+registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
 registerUiPluginRpc(rpcRouter, () => mainWindow);
@@ -632,8 +639,11 @@ registerProjectConfigHandlers();
 registerChannelLocalHandlers(() => daemonClient);
 // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
 // invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
-// 동일 renderer-trusted 신원, 파이프 미노출).
-registerFanOutHandler(() => daemonClient, () => mainWindow);
+// 동일 renderer-trusted 신원).
+// The SAME instance also backs the pipe/MCP surface (task.fanout.start,
+// registered above): the §2 G1 idempotency LRU is an instance field, so a
+// second instance would accept one key twice and fan out twice.
+registerFanOutHandler(fanOutService);
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).

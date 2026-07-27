@@ -17,6 +17,7 @@ import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
+import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1369,6 +1370,14 @@ registerChannelTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
   getSenderPtyId: () => MY_PTY_ID,
 });
+
+// === Fan-out tool (J1 on the wire) ===
+// Same provenance rule as the channel tools above, and for the same reason:
+// task.fanout.start derives the caller's workspace AND repository from this
+// ptyId, so it MUST stay MY_PTY_ID (walk-hit only). Feeding the weak
+// WMUX_PTY_ID env hint here would let a spoofable env var choose which
+// workspace's repository gets N new worktrees. No hit → fan-out fails closed.
+registerFanOutTools(server, { getSenderPtyId: () => MY_PTY_ID });
 
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /

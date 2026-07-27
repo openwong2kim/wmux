@@ -257,11 +257,17 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // re-nudges, so denying it to agents would re-ping them forever.
   'a2a.channel.ack',
   'a2a.channel.unread',
-  // WorkTask mission channels (J0) — the two mutating tools the bundled server
-  // exposes (channel_mission_start / channel_mission_close). task.mission.list
-  // is pipe-only in J0 (not an MCP tool), so it is deliberately absent here.
+  // WorkTask mission channels (J0) — the mutating tools the bundled server
+  // exposes (channel_mission_start / channel_mission_close), plus the read
+  // (channel_mission_list) that is also how a fan-out caller polls the tasks it
+  // spawned.
   'task.mission.start',
   'task.mission.close',
+  'task.mission.list',
+  // Fan-out (J1) on the wire — the fanout_start tool. Every dangerous input is
+  // server-derived in the handler, so the grant is to ATTEMPT the call; an
+  // unverifiable caller still fails closed.
+  'task.fanout.start',
   // company mode (all wmux.internal — undeclarable, hence the need for this list)
   'company.a2a.whoami',
   'company.a2a.send',
