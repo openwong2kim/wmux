@@ -1,0 +1,11 @@
+﻿{"type": "user", "uuid": "3c3c0000-0000-4000-8000-000000000001", "timestamp": "2026-07-27T10:00:00.000Z", "message": {"role": "user", "content": "bom-prefixed but otherwise fine"}}
+this line is not JSON at all
+[1,2,3]
+null
+
+   
+{"type": "assistant", "uuid": "3c3c0000-0000-4000-8000-000000000002", "timestamp": "2026-07-27T10:00:01.000Z"}
+{"type":"user","message":{"role":"user","content":"unterminated
+42
+"a bare json string"
+{"type": "user", "uuid": "3c3c0000-0000-4000-8000-000000000003", "timestamp": "not-a-date", "message": {"role": "user", "content": "timestamp is junk"}}
