@@ -151,6 +151,47 @@ describe('local pane location projection', () => {
     }
   });
 
+  it('does not publish a new snapshot for a semantically equivalent cwd', () => {
+    const ptyId = 'local-equivalent-cwd';
+    reset(ptyId);
+    const received = vi.fn();
+    const unsubscribe = onPaneLocationUpdate(received);
+
+    try {
+      updatePaneLocation(ptyId, {
+        domain: 'wsl',
+        cwd: '/home/me/repo',
+        shell: 'wsl.exe',
+        distro: 'Ubuntu',
+      });
+      const initial = getPaneLocationSnapshot(ptyId)!;
+      received.mockClear();
+
+      updateCwd(ptyId, '/home/me/repo/');
+
+      expect(getPaneLocationSnapshot(ptyId)).toBe(initial);
+      expect(received).not.toHaveBeenCalled();
+
+      updateCwd(ptyId, '/home/me/other');
+
+      const changed = getPaneLocationSnapshot(ptyId)!;
+      expect(changed).toMatchObject({
+        generation: initial.generation,
+        revision: initial.revision + 1,
+        location: {
+          domain: 'wsl',
+          cwd: '/home/me/other',
+          distro: 'Ubuntu',
+        },
+      });
+      expect(received).toHaveBeenCalledOnce();
+      expect(received).toHaveBeenCalledWith(ptyId, changed);
+    } finally {
+      unsubscribe();
+      reset(ptyId);
+    }
+  });
+
   it('publishes a distro extracted by the spawn producer without enumeration', () => {
     const ptyId = 'local-explicit-wsl';
     reset(ptyId);
