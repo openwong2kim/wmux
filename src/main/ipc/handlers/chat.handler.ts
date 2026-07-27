@@ -17,7 +17,7 @@
 // resolves without effect. A missing daemon must disable the Chat toggle, never
 // throw at the renderer.
 
-import { ipcMain, type BrowserWindow } from 'electron';
+import { ipcMain, type BrowserWindow, type WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
@@ -50,6 +50,84 @@ function readPtyId(value: unknown): string {
 
 export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
   const { getWindow, getDaemonClient } = deps;
+
+  // ─── Subscription ownership ────────────────────────────────────────────────
+  //
+  // The daemon subscription is held by MAIN's long-lived control socket, so the
+  // daemon's own per-client teardown (socket close) never fires for a renderer
+  // that went away — main is still connected. Two consequences the daemon
+  // cannot fix for us:
+  //
+  //   1. A renderer destroyed (reload, crash, window close, navigation) before
+  //      its React effect could call CHAT_UNSUBSCRIBE leaks the subscription:
+  //      the daemon keeps an fs watch armed and keeps pushing appends for a pane
+  //      nobody is viewing, for the life of the daemon.
+  //   2. Two consumers subscribing the SAME pane share one daemon subscription,
+  //      so the first unsubscribe would kill the other's stream.
+  //
+  // Both are the same bookkeeping: which webContents hold each ptyId. The daemon
+  // is told to unsubscribe only when that set empties.
+  const subscribers = new Map<string, Set<number>>();
+  /** webContents we attached teardown listeners to, so dispose can detach. */
+  const watched = new Map<number, { wc: WebContents; detach: () => void }>();
+
+  /** Tell the daemon to drop a pane. Fire-and-forget: teardown is best-effort. */
+  const forwardUnsubscribe = (ptyId: string): void => {
+    const daemon = getDaemonClient();
+    if (!daemon) return;
+    void Promise.resolve(daemon.rpc('daemon.transcript.unsubscribe', { id: ptyId }))
+      .catch(() => { /* daemon down: it dropped main's subscriptions anyway */ });
+  };
+
+  /** Drop every pane one renderer held, forwarding only the ones that hit zero. */
+  const releaseAll = (wcId: number): void => {
+    for (const [ptyId, holders] of subscribers) {
+      if (!holders.delete(wcId)) continue;
+      if (holders.size === 0) {
+        subscribers.delete(ptyId);
+        forwardUnsubscribe(ptyId);
+      }
+    }
+    watched.get(wcId)?.detach();
+    watched.delete(wcId);
+  };
+
+  /**
+   * Attach teardown once per renderer. `destroyed` covers a closed window,
+   * `render-process-gone` a crash, and a main-frame cross-document navigation
+   * covers a reload — in every case the React effect that would have
+   * unsubscribed is already gone.
+   */
+  const watch = (wc: WebContents, wcId: number): void => {
+    if (watched.has(wcId) || typeof wc?.on !== 'function') return;
+    const onGone = (): void => releaseAll(wcId);
+    const onNavigate = (
+      _event: unknown,
+      _url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean,
+    ): void => {
+      if (isMainFrame && !isInPlace) releaseAll(wcId);
+    };
+    wc.on('destroyed', onGone);
+    wc.on('render-process-gone', onGone);
+    wc.on('did-start-navigation', onNavigate as never);
+    watched.set(wcId, {
+      wc,
+      detach: () => {
+        if (wc.isDestroyed?.()) return;
+        wc.off?.('destroyed', onGone);
+        wc.off?.('render-process-gone', onGone);
+        wc.off?.('did-start-navigation', onNavigate as never);
+      },
+    });
+  };
+
+  /** The invoking renderer's id. -1 stands in when there is no sender (tests). */
+  const senderId = (e: Electron.IpcMainInvokeEvent): number => {
+    const wc = e?.sender as WebContents | undefined;
+    return typeof wc?.id === 'number' ? wc.id : -1;
+  };
 
   // Every ipcMain.handle is preceded by removeHandler: registerAllHandlers runs
   // again on a daemon reconnect, and a second bare handle() for the same channel
@@ -98,12 +176,21 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
     wrapHandler(
       IPC.CHAT_SUBSCRIBE,
       async (
-        _e: Electron.IpcMainInvokeEvent,
+        e: Electron.IpcMainInvokeEvent,
         ptyId: unknown,
       ): Promise<{ ok: boolean; status: TranscriptStatus }> => {
         const daemon = getDaemonClient();
         const id = readPtyId(ptyId);
         if (!daemon || !id) return { ok: false, status: LOCAL_MODE_STATUS };
+        const wcId = senderId(e);
+        const wc = e?.sender as WebContents | undefined;
+        if (wc) watch(wc, wcId);
+        const holders = subscribers.get(id) ?? new Set<number>();
+        holders.add(wcId);
+        subscribers.set(id, holders);
+        // Forwarded on every call, not just the first: the daemon keys its
+        // subscription by main's client id (so this is idempotent) and answers
+        // with the current status, which each consumer needs.
         return (await daemon.rpc('daemon.transcript.subscribe', { id })) as {
           ok: boolean;
           status: TranscriptStatus;
@@ -117,10 +204,18 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
     IPC.CHAT_UNSUBSCRIBE,
     wrapHandler(
       IPC.CHAT_UNSUBSCRIBE,
-      async (_e: Electron.IpcMainInvokeEvent, ptyId: unknown): Promise<{ ok: boolean }> => {
+      async (e: Electron.IpcMainInvokeEvent, ptyId: unknown): Promise<{ ok: boolean }> => {
         const daemon = getDaemonClient();
         const id = readPtyId(ptyId);
         if (!daemon || !id) return { ok: false };
+        const holders = subscribers.get(id);
+        if (holders) {
+          holders.delete(senderId(e));
+          // Another consumer is still watching this pane — dropping the daemon
+          // subscription here would kill its stream too.
+          if (holders.size > 0) return { ok: true };
+          subscribers.delete(id);
+        }
         return (await daemon.rpc('daemon.transcript.unsubscribe', { id })) as { ok: boolean };
       },
     ),
@@ -201,6 +296,12 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
   daemonClient?.on('session:approvalGate', onApprovalGate);
 
   return () => {
+    // The handlers are about to be replaced (daemon reconnect swap). Detach the
+    // renderer listeners so they cannot fire into a dead closure; the daemon
+    // subscriptions themselves belong to the socket being swapped out.
+    for (const [, entry] of watched) entry.detach();
+    watched.clear();
+    subscribers.clear();
     daemonClient?.off('session:transcript', onTranscript);
     daemonClient?.off('session:approvalGate', onApprovalGate);
     ipcMain.removeHandler(IPC.CHAT_STATUS);
