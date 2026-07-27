@@ -168,6 +168,9 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     fs.writeFileSync(entryPath(), '// entry', 'utf8');
     vi.mocked(canConnectBrokerPipe).mockReset();
     delete process.env.WMUX_MCP_BROKER;
+    // These cases are the UNSUFFIXED (production) instance — the only one that
+    // owns the global agent configs. See the suffix describe block below.
+    delete process.env.WMUX_DATA_SUFFIX;
   });
   afterEach(() => {
     delete process.env.WMUX_MCP_BROKER;
@@ -208,6 +211,58 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     await new McpRegistrar().register('tok');
     expect(canConnectBrokerPipe).not.toHaveBeenCalled();
     expect(registeredPath()).toBe(entryPath());
+  });
+});
+
+describe('McpRegistrar.register (suffixed instance leaves global configs alone)', () => {
+  // A dev / worktree build boots with WMUX_DATA_SUFFIX set. `~/.claude.json`,
+  // `~/.codex/config.toml` and `~/.gemini/settings.json` are single GLOBAL
+  // files with no per-instance variant, so before this guard merely booting a
+  // dev build repointed the user's real `wmux` entry at that build's script —
+  // which dangled once the worktree was deleted (two dogfooders restored these
+  // by hand, 2026-07-27).
+  const distDir = () => path.join(tmpHome, 'dist', 'mcp', 'mcp');
+
+  beforeEach(() => {
+    fs.mkdirSync(distDir(), { recursive: true });
+    fs.writeFileSync(path.join(distDir(), 'entry.js'), '// entry', 'utf8');
+    process.env.WMUX_DATA_SUFFIX = '-dev';
+  });
+  afterEach(() => {
+    delete process.env.WMUX_DATA_SUFFIX;
+  });
+
+  it('does not create ~/.claude.json', async () => {
+    await new McpRegistrar().register('tok');
+    expect(fs.existsSync(claudeJson())).toBe(false);
+  });
+
+  it('leaves an EXISTING registration byte-for-byte intact', async () => {
+    const original = JSON.stringify(
+      { mcpServers: { wmux: { command: 'node', args: ['/Applications/wmux/mcp-bundle/index.js'] } } },
+    );
+    fs.writeFileSync(claudeJson(), original, 'utf8');
+    fs.mkdirSync(path.dirname(codexToml()), { recursive: true });
+    const codexOriginal = '[mcp_servers.wmux]\ncommand = "node"\nargs = ["/Applications/wmux/mcp-bundle/index.js"]\n';
+    fs.writeFileSync(codexToml(), codexOriginal, 'utf8');
+
+    await new McpRegistrar().register('tok');
+
+    expect(fs.readFileSync(claudeJson(), 'utf8')).toBe(original);
+    expect(fs.readFileSync(codexToml(), 'utf8')).toBe(codexOriginal);
+  });
+
+  it('still writes the auth token — the dev instance stays usable', async () => {
+    const { secureWriteTokenFile } = await import('../../../shared/security');
+    vi.mocked(secureWriteTokenFile).mockClear();
+    await new McpRegistrar().register('tok');
+    expect(secureWriteTokenFile).toHaveBeenCalledWith(expect.any(String), 'tok');
+  });
+
+  it('an empty suffix is production — the write still happens', async () => {
+    process.env.WMUX_DATA_SUFFIX = '';
+    await new McpRegistrar().register('tok');
+    expect(target(new McpRegistrar().getStatus(), 'claude').wmux.registered).toBe(true);
   });
 });
 

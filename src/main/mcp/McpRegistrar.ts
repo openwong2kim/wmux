@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { getAuthTokenPath } from '../../shared/constants';
+import { dataSuffix, getAuthTokenPath } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
@@ -164,6 +164,30 @@ export class McpRegistrar {
       } else {
         secureWriteTokenFile(this.authTokenPath, authToken);
         console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
+      }
+
+      // A suffixed instance does NOT own the user's global agent configs.
+      //
+      // `~/.claude.json`, `~/.codex/config.toml` and `~/.gemini/settings.json`
+      // are single, GLOBAL files — there is no per-instance variant of them, so
+      // a suffixed instance has nowhere correct to write. Before this guard,
+      // merely booting a dev / worktree build rewrote the user's real `wmux`
+      // MCP entry to point at that build's `dist/mcp/mcp/entry.js`, which then
+      // dangled the moment the worktree was deleted. Two dogfooders had to
+      // restore these files by hand (2026-07-27).
+      //
+      // Only the CONFIG WRITE is skipped — the auth token above is written to
+      // the suffix-aware `getAuthTokenPath()`, so the dev instance's own pipe
+      // stays usable. `wmux mcp register` (an explicit user action, and a
+      // separate code path in src/cli/commands/mcp.ts) remains the escape hatch
+      // for anyone who really does want a dev build registered globally.
+      const suffix = dataSuffix();
+      if (suffix) {
+        console.log(
+          `[McpRegistrar] instance suffix '${suffix}' — leaving the user's global agent `
+          + 'configs untouched (run `wmux mcp register` to override)',
+        );
+        return;
       }
 
       const mcpScript = this.getMcpScriptPath(useShim);
