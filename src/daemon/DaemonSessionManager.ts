@@ -16,6 +16,7 @@ import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
+import { isPhantomExit, isPidAlive } from './phantomExit';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -118,6 +119,13 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
+ *  - 'session:phantomExit'  → { id, pid, exitCode, signal, cmd, lastActivityMsAgo }
+ *      A PTY exit that reported no exit code and no signal while the shell pid
+ *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
+ *      phantomExit.ts / issue #646). Mechanism only: no state is set and no
+ *      death is announced here. daemon/index.ts owns the policy — it reaps the
+ *      orphaned process tree and then runs the normal death flow, matching how
+ *      the session:interrupted policy lives there too.
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
 export class DaemonSessionManager extends EventEmitter {
@@ -562,6 +570,34 @@ export class DaemonSessionManager extends EventEmitter {
       // as 'dead' purged exactly the in-use sessions from recovery. Classified
       // exits suspend instead — recovery replays them under the same id.
       const involuntary = this.involuntaryExitClassifier(payload.exitCode, payload.signal);
+      // #646: a code-less, signal-less exit whose pid is still alive is not a
+      // death at all — it is node-pty's conout-socket-close path firing while
+      // powershell.exe keeps running. Believing it tombstoned the session and
+      // orphaned the live shell + agent. Checked BEFORE the dead/suspended
+      // classification because both of those record an exit that didn't happen.
+      const phantom =
+        !involuntary && isPhantomExit(payload.exitCode, payload.signal, meta.pid, isPidAlive);
+      const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
+      if (phantom) {
+        // Log the payload verbatim: the native-layer investigation needs the
+        // exact shape node-pty handed us, not our interpretation of it.
+        console.log(
+          `[DaemonSessionManager] phantom PTY exit for ${params.id} (pid ${meta.pid} still alive) — raw node-pty payload: ${JSON.stringify(payload)}`,
+        );
+        // The bridge's PTY object is unusable either way (its outSocket is
+        // already destroyed), so release its timers/listeners here. State and
+        // the death announcement are the policy layer's call.
+        managed.bridge.cleanup();
+        this.emit('session:phantomExit', {
+          id: params.id,
+          pid: meta.pid,
+          exitCode: payload.exitCode,
+          signal: payload.signal,
+          cmd: meta.cmd,
+          lastActivityMsAgo,
+        });
+        return;
+      }
       meta.state = involuntary ? 'suspended' : 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
@@ -570,7 +606,6 @@ export class DaemonSessionManager extends EventEmitter {
       // exited: code/signal, the shell, and how long it had been idle before
       // dying. Silent PTY deaths (no log, no recorded exitCode) made the
       // "powershell exits -1 under claude" report undiagnosable.
-      const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
       const forensics = {
         id: params.id,
         exitCode: payload.exitCode,
