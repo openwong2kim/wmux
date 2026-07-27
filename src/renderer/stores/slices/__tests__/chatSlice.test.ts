@@ -91,7 +91,8 @@ describe('chatSlice', () => {
         cursor: cursor(0, 40),
       });
       expect(store.getState().chatEvents['pty-a'].map((e) => e.id)).toEqual(['u9']);
-      expect(store.getState().chatSeq['pty-a']).toBe(7);
+      // The reset's own seq is NOT adopted — see the resync-loop suite below.
+      expect(store.getState().chatSeq['pty-a']).toBeUndefined();
     });
 
     it('marks needs-resnapshot on a seq gap but keeps the tail moving', () => {
@@ -276,5 +277,58 @@ describe('chatSlice', () => {
       'utf-8',
     );
     expect(src).not.toMatch(/state\.chat(Events|Cursor|Status|Seq|Pending|NeedsResnapshot)\b/);
+  });
+});
+
+describe('chatSlice — the seq baseline after a reset (the resync loop)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  beforeEach(() => { store = createTestStore(); });
+
+  // The loop this suite exists for: `useChatProjection`'s seed applies a
+  // SYNTHETIC `seq: 0` with `reset: true`, while the projector's own watch
+  // counter keeps climbing. Adopting the seed's seq made the very next live
+  // append (seq 8, say) look like a six-frame gap → needs-resnapshot → another
+  // seed at seq 0 → forever.
+  it('a synthetic seed seq does not make the next live append look like a gap', () => {
+    store.getState().applyChatAppend('pty-a', {
+      seq: 0,
+      reset: true,
+      events: [userText('u1', 'seeded')],
+      cursor: cursor(0, 100),
+    });
+    expect(store.getState().chatSeq['pty-a']).toBeUndefined();
+
+    store.getState().applyChatAppend('pty-a', {
+      seq: 8,
+      events: [userText('u2', 'live')],
+      cursor: cursor(0, 140),
+    });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBeFalsy();
+    expect(store.getState().chatSeq['pty-a']).toBe(8);
+    expect(store.getState().chatEvents['pty-a'].map((e) => e.id)).toEqual(['u1', 'u2']);
+  });
+
+  it('still catches a REAL gap between two consecutive live appends', () => {
+    store.getState().applyChatAppend('pty-a', { seq: 0, reset: true, events: [], cursor: cursor(0, 10) });
+    store.getState().applyChatAppend('pty-a', { seq: 8, events: [userText('u2', 'a')], cursor: cursor(0, 20) });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBeFalsy();
+    store.getState().applyChatAppend('pty-a', { seq: 10, events: [userText('u3', 'b')], cursor: cursor(0, 30) });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBe(true);
+  });
+
+  it('re-baselines again after the resnapshot that a gap triggered', () => {
+    store.getState().applyChatAppend('pty-a', { seq: 4, events: [userText('u1', 'a')], cursor: cursor(0, 10) });
+    store.getState().applyChatAppend('pty-a', { seq: 9, events: [userText('u2', 'b')], cursor: cursor(0, 20) });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBe(true);
+
+    store.getState().applyChatAppend('pty-a', {
+      seq: 0,
+      reset: true,
+      events: [userText('u2', 'b')],
+      cursor: cursor(0, 20),
+    });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBe(false);
+    store.getState().applyChatAppend('pty-a', { seq: 11, events: [userText('u3', 'c')], cursor: cursor(0, 30) });
+    expect(store.getState().chatNeedsResnapshot['pty-a']).toBe(false);
   });
 });

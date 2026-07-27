@@ -130,7 +130,14 @@ export const createChatSlice: StateCreator<
       // exists at these offsets.
       draft.chatEvents[ptyId] = capRows([...data.events]);
       draft.chatCursor[ptyId] = data.cursor;
-      draft.chatSeq[ptyId] = data.seq;
+      // The seq is CLEARED, not adopted. A seed synthesizes `seq: 0` while the
+      // projector's own watch counter keeps climbing, so adopting the reset's
+      // seq made every subsequent live append look like a gap — which set
+      // `chatNeedsResnapshot`, which produced another seed with `seq: 0`, and
+      // the pane resnapshotted forever. Undefined means "the next append
+      // establishes the baseline"; gap detection resumes from the append after
+      // that, which is where real gaps are observable anyway.
+      delete draft.chatSeq[ptyId];
       draft.chatNeedsResnapshot[ptyId] = false;
       draft.chatPending[ptyId] = reconcilePending(draft.chatPending[ptyId] ?? [], data.events, now);
       return;

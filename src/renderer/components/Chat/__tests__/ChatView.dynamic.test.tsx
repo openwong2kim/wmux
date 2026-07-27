@@ -110,7 +110,11 @@ describe('ChatView', () => {
     expect(pre.textContent).toBe('line1\nline2\nline3');
   });
 
-  it('accepts the backtick marker form too (projector delimiter tolerance)', () => {
+  // The backtick marker form is REJECTED. It used to be accepted "for delimiter
+  // tolerance", but backticks are ordinary prose: that made assistant-authored
+  // text able to drive the marker parser, which is a forgery primitive in a view
+  // whose whole job is to show the user what the agent actually said.
+  it('ignores the backtick marker form — prose cannot forge a code chip', () => {
     seed([
       {
         id: 'a1',
@@ -120,10 +124,46 @@ describe('ChatView', () => {
       },
     ]);
     mount();
-    const chip = container.querySelector('[data-chat-code-chip="2"]')!;
-    expect(chip).not.toBeNull();
-    // The marker is consumed, not left as literal garbage in the prose.
-    expect(container.querySelector('[data-chat-text]')!.textContent).not.toContain('code:2');
+    // No chip is minted from the prose…
+    expect(container.querySelector('[data-chat-text] [data-chat-code-chip="2"]')).toBeNull();
+    // …the text stays exactly as the agent wrote it…
+    expect(container.querySelector('[data-chat-text]')!.textContent).toContain('`code:2`');
+    // …and the real block is still reachable, as an unreferenced one.
+    expect(container.querySelector('[data-chat-code-chip="2"]')).not.toBeNull();
+  });
+
+  it('cannot be made to HIDE prose with a forged marker for a block that does not exist', () => {
+    seed([
+      {
+        id: 'a1',
+        kind: 'assistant_text',
+        text: 'ignore this: `code:9` and this too',
+      },
+    ]);
+    mount();
+    const text = container.querySelector('[data-chat-text]')!.textContent;
+    expect(text).toContain('ignore this: `code:9` and this too');
+    expect(container.querySelector('[data-chat-code-chip="9"]')).toBeNull();
+  });
+
+  it('renders an UNKNOWN NUL marker as literal text instead of dropping it', () => {
+    // A real projector marker whose block did not survive (truncated page,
+    // rotated file). Silently deleting the run would remove content the user is
+    // reading with no sign anything was there.
+    seed([
+      {
+        id: 'a1',
+        kind: 'assistant_text',
+        text: 'before \u0000code:4\u0000 after',
+        codeBlocks: [{ n: 1, lines: 2 }],
+      },
+    ]);
+    mount();
+    const text = container.querySelector('[data-chat-text]')!.textContent!;
+    expect(text).toContain('before');
+    expect(text).toContain('after');
+    expect(text).toContain('code:4');
+    expect(container.querySelector('[data-chat-code-chip="4"]')).toBeNull();
   });
 
   it('renders a diff-shaped result as a chip, never inline', () => {

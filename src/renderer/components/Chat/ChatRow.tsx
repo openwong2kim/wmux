@@ -26,14 +26,20 @@ export interface ChatRowProps {
 }
 
 /**
- * Inline code marker emitted by the daemon projector in place of a fenced
- * block. Tolerates both delimiter forms the P1 spec used (NUL-wrapped and
- * backtick-wrapped) so a projector-side delimiter choice cannot silently leave
- * markers as visible garbage in the prose.
+ * Inline code marker emitted by the daemon projector in place of a fenced block.
+ *
+ * NUL-delimited ONLY. The backtick form used to be accepted as well, "so a
+ * projector-side delimiter choice cannot leave markers as visible garbage" — but
+ * backticks are ordinary prose an assistant writes constantly, so that fallback
+ * let assistant-authored text drive this parser: `` `code:2` `` in a reply
+ * either forged a chip pointing at some other block or, with no matching block,
+ * DELETED that run of prose from the row. NUL cannot appear in prose (the
+ * projector strips it from every text event before inserting its own markers),
+ * which is the entire basis for treating a marker as trustworthy.
  */
-const CODE_MARKER = /(?:\u0000|`)\s*code:(\d+)\s*(?:\u0000|`)/g;
+const CODE_MARKER = /\u0000code:(\d+)\u0000/g;
 
-type Segment = { text: string } | { blockN: number };
+type Segment = { text: string } | { blockN: number; literal: string };
 
 /** Split prose into text runs and code-block handles, in order. */
 export function splitCodeMarkers(text: string): Segment[] {
@@ -43,7 +49,11 @@ export function splitCodeMarkers(text: string): Segment[] {
   let m: RegExpExecArray | null;
   while ((m = CODE_MARKER.exec(text)) !== null) {
     if (m.index > last) out.push({ text: text.slice(last, m.index) });
-    out.push({ blockN: Number(m[1]) });
+    // `literal` is what the row shows if the ref turns out to be unknown. A
+    // marker whose block is missing must never make text disappear — a
+    // truncated page or a rotated file is exactly when the user needs to see
+    // that something was there.
+    out.push({ blockN: Number(m[1]), literal: m[0].split('\u0000').join('') });
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push({ text: text.slice(last) });
@@ -119,7 +129,9 @@ function AssistantRow({
         {segments.map((seg, i) => {
           if ('text' in seg) return <React.Fragment key={`t${i}`}>{seg.text}</React.Fragment>;
           const block = blocks.get(seg.blockN);
-          if (!block) return null;
+          // Unknown ref → show the marker as plain text rather than swallowing
+          // the row's content.
+          if (!block) return <React.Fragment key={`u${i}`}>{seg.literal}</React.Fragment>;
           return (
             <CodeChip
               key={`c${seg.blockN}`}

@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from 'react';
 import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
+import { useChatAvailability } from '../../hooks/useChatAvailability';
 import {
   buildExportPayload,
   buildPaneMarkdown,
@@ -158,6 +159,11 @@ export default function SurfaceTabs({
   const leaf = findPane(workspace.rootPane, paneId);
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
   const activeSurface = surfaces.find((s) => s.id === activeSurfaceId) ?? surfaces[0];
+  // The probe that FILLS `chatStatus`. It has to run here, on the terminal
+  // surface: the only other writer mounts inside ChatView, which cannot render
+  // until this very status says available — a closed loop that made Chat View
+  // unreachable from a cold start.
+  useChatAvailability(activeSurface?.ptyId ?? '');
   const activeSlug = activeSurface?.ptyId ? surfaceAgent[activeSurface.ptyId]?.slug : undefined;
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabelMap[paneId], paneAutoName);
