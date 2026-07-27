@@ -189,5 +189,14 @@ export function submitDaemonSessionLocationCandidate(
       }
       publication.location(input.sessionId, snapshot, input.reason);
     },
+  }).then((outcome) => {
+    manager.settleLocationCandidate(
+      input,
+      outcome === 'written' || outcome === 'publication-failed',
+    );
+    return outcome;
+  }, (err) => {
+    manager.settleLocationCandidate(input, false);
+    throw err;
   });
 }

@@ -4822,6 +4822,7 @@ async function main(): Promise<void> {
       if (dumpsCompleted) return;
       // Synchronous-only — dump what we can before process dies.
       try {
+        sessionLocationTransactionRef?.flushSync();
         const managed = sessionManager.listManagedSessions();
         stateWriter.ensureBufferDir();
         for (const m of managed) {

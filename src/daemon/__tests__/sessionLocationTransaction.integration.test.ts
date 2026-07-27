@@ -141,6 +141,67 @@ describe('daemon session location transaction boundary', () => {
     expect(events).toEqual([]);
   });
 
+  it('preserves a rapid cwd reversal while the first write is pending', async () => {
+    const firstWrite = deferred<void>();
+    io.asyncWrite.mockImplementationOnce(() => firstWrite.promise);
+    wireCandidates();
+    manager.createSession({
+      id: 'wsl-1',
+      cmd: 'wsl.exe',
+      cwd: '/home/me/old',
+      location: { domain: 'wsl', cwd: '/home/me/old', shell: 'wsl.exe' },
+    });
+
+    manager.getSession('wsl-1')!.bridge.emit('cwd', {
+      sessionId: 'wsl-1',
+      cwd: '/home/me/new',
+    });
+    manager.getSession('wsl-1')!.bridge.emit('cwd', {
+      sessionId: 'wsl-1',
+      cwd: '/home/me/old',
+    });
+    await vi.waitFor(() => expect(io.asyncWrite).toHaveBeenCalledOnce());
+
+    firstWrite.resolve();
+    await transactions.flush();
+
+    expect(manager.getSession('wsl-1')!.meta.cwd).toBe('/home/me/old');
+    expect(manager.getLocationSnapshot('wsl-1')!.revision).toBe(3);
+    expect(events).toEqual([
+      'cwd.changed',
+      'location.changed',
+      'cwd.changed',
+      'location.changed',
+    ]);
+  });
+
+  it('allows the latest cwd to retry after its failed write', async () => {
+    io.asyncWrite.mockRejectedValueOnce(new Error('disk full'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    wireCandidates();
+    manager.createSession({
+      id: 'wsl-1',
+      cmd: 'wsl.exe',
+      cwd: '/home/me/old',
+      location: { domain: 'wsl', cwd: '/home/me/old', shell: 'wsl.exe' },
+    });
+
+    manager.getSession('wsl-1')!.bridge.emit('cwd', {
+      sessionId: 'wsl-1',
+      cwd: '/home/me/new',
+    });
+    await transactions.flush();
+    manager.getSession('wsl-1')!.bridge.emit('cwd', {
+      sessionId: 'wsl-1',
+      cwd: '/home/me/new',
+    });
+    await transactions.flush();
+
+    expect(io.asyncWrite).toHaveBeenCalledTimes(2);
+    expect(manager.getSession('wsl-1')!.meta.cwd).toBe('/home/me/new');
+    expect(events).toEqual(['cwd.changed', 'location.changed']);
+  });
+
   it('publishes one enrichment only after retry success', async () => {
     const distro = deferred<string | undefined>();
     manager.disposeAll();

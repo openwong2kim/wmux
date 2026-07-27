@@ -146,15 +146,19 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).toMatch(/\\x1b\[O/);
   });
 
-  it('bridge cwd handler has a change-guard so the immediate write only fires on real cd', () => {
+  it('bridge cwd handler deduplicates against producer order, not committed state', () => {
     const mgrPath = path.join(__dirname, '..', 'DaemonSessionManager.ts');
     const src = fs.readFileSync(mgrPath, 'utf-8');
     const lines = src.split('\n');
     const startIdx = lines.findIndex((l) => l.includes("bridge.on('cwd'"));
     expect(startIdx).toBeGreaterThan(-1);
     const body = lines.slice(startIdx, startIdx + 12).join('\n');
-    // Same cwd must early-return before mutating meta / emitting / persisting.
-    expect(body).toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
+    // Committed meta intentionally lags durability. Deduplicating against the
+    // producer cursor preserves /old → /new → /old reversals.
+    expect(body).toMatch(
+      /if \(managed\.locationProducerCwd === payload\.cwd\) return;/,
+    );
+    expect(body).not.toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
   });
 
   // --- X6 ③ all-pane reliability guards (Rung 0/1/3) ------------------------

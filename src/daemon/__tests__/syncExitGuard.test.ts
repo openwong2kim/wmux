@@ -48,6 +48,15 @@ describe('A4 — sync exit handler guard (source-level invariants)', () => {
     expect(exitBlock).not.toMatch(/fs\.writeFileSync\(\s*dumpPath/);
   });
 
+  it('drains staged locations before reading managed sessions', () => {
+    const exitIdx = src.indexOf("process.on('exit',");
+    const exitBlock = src.slice(exitIdx, exitIdx + 2000);
+    const drainIdx = exitBlock.indexOf('sessionLocationTransactionRef?.flushSync()');
+    const sessionsIdx = exitBlock.indexOf('sessionManager.listManagedSessions()');
+    expect(drainIdx).toBeGreaterThanOrEqual(0);
+    expect(sessionsIdx).toBeGreaterThan(drainIdx);
+  });
+
   it('main() sweeps stale tmp dumps via RingBuffer.cleanupStaleTmpFiles at startup', () => {
     expect(src).toMatch(/RingBuffer\.cleanupStaleTmpFiles\(\s*stateWriter\.getBufferDir\(\)\s*\)/);
   });

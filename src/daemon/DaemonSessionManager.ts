@@ -83,6 +83,8 @@ export interface ManagedSession {
   /** Wire ordering identity; never persisted as session metadata. */
   locationGeneration: number;
   locationRevision: number;
+  /** Last cwd observed from the producer, including a staged candidate. */
+  locationProducerCwd: string;
   ptyProcess: IPty;
   ringBuffer: RingBuffer;
   bridge: DaemonPTYBridge;
@@ -258,6 +260,21 @@ export class DaemonSessionManager extends EventEmitter {
     managed.meta.location = candidate.location;
     managed.locationRevision = candidate.revision;
     return this.locationSnapshot(managed);
+  }
+
+  settleLocationCandidate(
+    input: DaemonSessionLocationCandidateInput,
+    accepted: boolean,
+  ): void {
+    if (input.reason !== 'cwd' || accepted) return;
+    const managed = this.sessions.get(input.sessionId);
+    if (
+      managed
+      && managed.locationGeneration === input.generation
+      && managed.locationProducerCwd === input.cwd
+    ) {
+      managed.locationProducerCwd = managed.meta.cwd;
+    }
   }
 
   /**
@@ -635,6 +652,7 @@ export class DaemonSessionManager extends EventEmitter {
       meta,
       locationGeneration: nextLocationGeneration(),
       locationRevision: 1,
+      locationProducerCwd: meta.cwd,
       ptyProcess,
       ringBuffer,
       bridge,
@@ -689,7 +707,8 @@ export class DaemonSessionManager extends EventEmitter {
       // Change-guard: OSC 7 / prompt scrape can re-report the SAME cwd on every
       // prompt. Only stage a real change so persistence and publication fire
       // on cd, not on every prompt.
-      if (meta.cwd === payload.cwd) return;
+      if (managed.locationProducerCwd === payload.cwd) return;
+      managed.locationProducerCwd = payload.cwd;
       this.emit('session:locationCandidate', {
         sessionId: params.id,
         generation: managed.locationGeneration,
