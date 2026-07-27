@@ -133,18 +133,19 @@ function parseUserEntry(
 ): ParsedTranscriptLine {
   const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
 
-  // `isMeta` entries are Claude Code talking to itself: local-command caveats
-  // and slash-command echoes. They are NOT human turns, and rendering them as
-  // one would put words in the user's mouth.
-  const text = typeof content === 'string' ? content : '';
-  const meta = classifyMetaUser(entry, text);
-  if (meta) return single(metaEvent(baseId, ts, meta.subtype, meta.label), empty);
-
   if (typeof content === 'string') {
-    const clean = content.trim();
+    const meta = classifyMetaUser(entry, content);
+    if (meta) return single(metaEvent(baseId, ts, meta.subtype, meta.label), empty);
+    const clean = stripSystemReminders(content);
     // Claude Code records tool results as `user` entries too, so "has text" —
     // not "type is user" — is what marks a human turn (the isHumanTurn rule).
-    if (!clean) return empty;
+    if (!clean) {
+      // The whole message WAS the injected reminder. An empty `user_text` would
+      // render as a blank "You" card, so it degrades to a quiet meta row.
+      return content.trim()
+        ? single(metaEvent(baseId, ts, 'system_reminder', 'System reminder'), empty)
+        : empty;
+    }
     const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(clean)), ...tsOf(ts) };
     return single(ev, empty);
   }
@@ -168,17 +169,64 @@ function parseUserEntry(
     // Any other block type (including invented ones) is skipped silently — R1.
   }
   const prose = parts.join('\n').trim();
-  if (prose || hasImage) {
-    const ev: UserTextEvent = {
-      id: baseId,
-      kind: 'user_text',
-      text: capText(stripNul(prose)),
-      ...(hasImage ? { hasImage: true } : {}),
-      ...tsOf(ts),
-    };
-    out.push(ev);
+  // Only classify when there IS prose: a bare tool-result entry keeps its
+  // previous shape (results only, no chip) even if it carries `isMeta`.
+  const meta = prose ? classifyMetaUser(entry, prose) : null;
+  if (meta) {
+    out.push(metaEvent(`${baseId}#${out.length}`, ts, meta.subtype, meta.label));
+  } else {
+    const clean = stripSystemReminders(prose);
+    if (clean || hasImage) {
+      const ev: UserTextEvent = {
+        id: baseId,
+        kind: 'user_text',
+        text: capText(stripNul(clean)),
+        ...(hasImage ? { hasImage: true } : {}),
+        ...tsOf(ts),
+      };
+      out.push(ev);
+    } else if (prose) {
+      out.push(metaEvent(`${baseId}#${out.length}`, ts, 'system_reminder', 'System reminder'));
+    }
   }
   return { events: reid(out, baseId), bodies: new Map() };
+}
+
+/**
+ * Claude Code injects machinery into `role:'user'` transcript entries, so a
+ * user entry is only a HUMAN turn once these are excluded. Matching is an
+ * explicit allowlist of known tags rather than "opens with any `<tag>`": a
+ * person can legitimately paste XML or start a message with `<div>`, and
+ * stealing those turns would be a worse misattribution than the one this
+ * table fixes.
+ *
+ * Measured over the six most recent transcripts on a dogfood machine
+ * (103 non-meta user entries carrying text): 64 real prose, 26
+ * `task-notification`, 7 `command-name`, 3 `local-command-stdout`, 3
+ * `command-message` — roughly a third of the "You" rows were not the user.
+ */
+const INJECTED_USER_TAGS: ReadonlyArray<{
+  tag: string;
+  subtype: MetaEvent['subtype'];
+  label: string;
+}> = [
+  // Subagent-completion payload (`<task-id>`, `<output-file>`, `<status>`,
+  // `<result>`). Kept as a VISIBLE row rather than dropped: the operator does
+  // care that a subagent returned — the agent's next moves only make sense
+  // with it — they just must not see it as their own message.
+  { tag: 'task-notification', subtype: 'subagent', label: 'Subagent finished' },
+  { tag: 'command-name', subtype: 'slash_command', label: 'slash command' },
+  { tag: 'command-message', subtype: 'slash_command', label: 'slash command' },
+  { tag: 'command-args', subtype: 'slash_command', label: 'slash command args' },
+  { tag: 'local-command-stdout', subtype: 'command_output', label: 'Local command output' },
+  { tag: 'local-command-caveat', subtype: 'caveat', label: 'Local command caveat' },
+  { tag: 'system-reminder', subtype: 'system_reminder', label: 'System reminder' },
+];
+
+/** Contents of the first `<tag>…</tag>`, or '' — used only for meta labels. */
+function innerTag(text: string, tag: string): string {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text);
+  return match ? match[1].trim() : '';
 }
 
 /**
@@ -190,19 +238,43 @@ function classifyMetaUser(
   entry: Record<string, unknown>,
   text: string,
 ): { subtype: MetaEvent['subtype']; label: string } | null {
+  // Leading whitespace only — the tag must OPEN the entry. A reminder appended
+  // to a real message is stripped by `stripSystemReminders` instead, so the
+  // human's own words still render.
   const head = text.trimStart();
-  const command = /<command-name>([^<]*)<\/command-name>/.exec(head);
-  if (command) {
-    const name = command[1].trim();
-    return { subtype: 'slash_command', label: name || 'slash command' };
-  }
-  if (head.startsWith('<local-command-caveat>')) {
-    return { subtype: 'caveat', label: 'Local command caveat' };
+  for (const known of INJECTED_USER_TAGS) {
+    if (!head.startsWith(`<${known.tag}>`)) continue;
+    return { subtype: known.subtype, label: injectedLabel(head, known.tag) || known.label };
   }
   if (entry['isMeta'] === true) {
     return { subtype: 'caveat', label: 'Session note' };
   }
   return null;
+}
+
+/** A more specific label than the tag's default, when the payload carries one. */
+function injectedLabel(head: string, tag: string): string {
+  if (tag === 'task-notification') {
+    // `<summary>` reads as `Agent "X" finished`, which is exactly the row.
+    return innerTag(head, 'summary');
+  }
+  if (tag === 'command-name' || tag === 'command-message') {
+    return innerTag(head, tag);
+  }
+  return '';
+}
+
+/**
+ * Drop `<system-reminder>` blocks appended to an otherwise real user message.
+ * The human's words must render; the reminder must not. Returns the trimmed
+ * remainder, which the caller treats as "no human content" when empty.
+ *
+ * An UNCLOSED reminder is left alone on purpose — the parser would otherwise
+ * have to guess where it ends and could swallow real prose.
+ */
+function stripSystemReminders(text: string): string {
+  if (!text.includes('<system-reminder>')) return text.trim();
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
 }
 
 function toolResultEvent(

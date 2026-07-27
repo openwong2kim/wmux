@@ -104,6 +104,93 @@ describe('parseTranscriptLine — meta-user.jsonl (never a human turn)', () => {
   });
 });
 
+describe('parseTranscriptLine — injected-user.jsonl (machinery is never "You")', () => {
+  const events = parseFixture('injected-user.jsonl');
+
+  it('maps every known injected shape to meta and leaves the real turns alone', () => {
+    expect(events.map((e) => e.kind)).toEqual([
+      'meta', // task-notification
+      'meta', // command-message
+      'meta', // local-command-stdout
+      'user_text', // real prose + trailing system-reminder
+      'meta', // system-reminder only
+      'user_text', // opens with <div>
+      'user_text', // opens with JSON
+      'meta', // task-notification, array-shaped content
+      'user_text', // array-shaped prose + trailing system-reminder
+      'user_text', // unknown <task-notification-ish> tag
+    ]);
+  });
+
+  it('labels a task-notification off its summary and never leaks the result body', () => {
+    expect(events[0].kind === 'meta' && events[0].subtype).toBe('subagent');
+    expect(events[0].kind === 'meta' && events[0].label).toBe('Agent "synthetic worker" finished');
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain('export const synthetic = true;');
+    expect(serialized).not.toContain('synthetic-task-0001');
+  });
+
+  it('classifies command-message and local-command-stdout', () => {
+    expect(events[1].kind === 'meta' && events[1].subtype).toBe('slash_command');
+    expect(events[1].kind === 'meta' && events[1].label).toBe('synthetic-command is running');
+    expect(events[2].kind === 'meta' && events[2].subtype).toBe('command_output');
+    expect(events[2].kind === 'meta' && events[2].label).toBe('Local command output');
+    expect(JSON.stringify(events)).not.toContain('synthetic stdout line one');
+  });
+
+  it('keeps the human prose and drops a trailing system-reminder', () => {
+    expect(events[3].kind === 'user_text' && events[3].text).toBe('please rename the widget');
+    expect(events[8].kind === 'user_text' && events[8].text).toBe('ship it');
+    expect(JSON.stringify(events)).not.toContain('do not mention this block');
+  });
+
+  it('degrades a reminder-only message to meta rather than a blank You card', () => {
+    expect(events[4].kind === 'meta' && events[4].subtype).toBe('system_reminder');
+    expect(events.some((e) => e.kind === 'user_text' && e.text === '')).toBe(false);
+  });
+
+  it('does NOT steal a human message that merely opens with a tag or JSON', () => {
+    expect(events[5].kind === 'user_text' && events[5].text).toContain('why does this markup break');
+    expect(events[6].kind === 'user_text' && events[6].text).toContain('json pasted as the first');
+    // Allowlist match is exact — a tag that only looks similar stays a turn.
+    expect(events[9].kind === 'user_text' && events[9].text).toContain('not a known tag');
+  });
+
+  it('keeps every row id and the surrounding ordering unchanged', () => {
+    expect(events).toHaveLength(10);
+    expect(events[0].id).toBe('eeee0000-0000-4000-8000-000000000001');
+    expect(events[7].id).toBe('eeee0000-0000-4000-8000-000000000008');
+    expect(events[0].ts).toBe(Date.parse('2026-07-27T10:00:00.000Z'));
+  });
+
+  it('keeps tool results when an injected block shares the entry', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      uuid: 'mixed-1',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_mixed', content: 'ok' },
+          { type: 'text', text: '<local-command-stdout>noise</local-command-stdout>' },
+        ],
+      },
+    });
+    const mixed = parseTranscriptLine(line, 0);
+    expect(mixed.map((e) => e.kind)).toEqual(['tool_result', 'meta']);
+    expect(mixed.some((e) => e.kind === 'user_text')).toBe(false);
+  });
+
+  it('leaves an UNCLOSED system-reminder alone rather than guessing its end', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      uuid: 'unclosed-1',
+      message: { role: 'user', content: 'real words <system-reminder>truncated' },
+    });
+    const out = parseTranscriptLine(line, 0);
+    expect(out[0].kind === 'user_text' && out[0].text).toBe('real words <system-reminder>truncated');
+  });
+});
+
 describe('parseTranscriptLine — tool-error.jsonl', () => {
   const events = parseFixture('tool-error.jsonl');
 

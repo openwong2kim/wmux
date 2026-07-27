@@ -100,7 +100,21 @@ export interface ToolResultEvent extends TurnEventBase {
 
 export interface MetaEvent extends TurnEventBase {
   kind: 'meta';
-  subtype: 'session_start' | 'slash_command' | 'caveat' | 'subagent' | 'unknown';
+  /**
+   * Extend ADDITIVELY only — several clients switch on this value.
+   *
+   * `command_output` and `system_reminder` name the Claude Code machinery that
+   * is injected into `role:'user'` entries; without them those payloads render
+   * as if the operator had typed them.
+   */
+  subtype:
+    | 'session_start'
+    | 'slash_command'
+    | 'caveat'
+    | 'subagent'
+    | 'command_output'
+    | 'system_reminder'
+    | 'unknown';
   label: string;
 }
 
