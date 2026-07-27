@@ -69,6 +69,13 @@ export interface AtomicWriteOptions {
    * FlushFileBuffers까지만 보장).
    */
   durable?: boolean;
+
+  /**
+   * Test seam for the win32 commit-rename retry (see
+   * `RENAME_RETRY_DELAYS_MS`). Production code never passes this;
+   * tests use it to drive the retry loop without sleeping for real.
+   */
+  renameRetry?: RenameRetryPolicy;
 }
 
 export interface AtomicReadOptions<T> {
@@ -103,6 +110,19 @@ export interface AtomicReadOptions<T> {
   quarantineOnCorruption?: boolean;
 }
 
+/**
+ * Retry policy for the final tmp → target rename. `delaysMs.length`
+ * is the number of retries after the first attempt, so total attempts
+ * are `delaysMs.length + 1`.
+ */
+export interface RenameRetryPolicy {
+  delaysMs?: readonly number[];
+  /** Sync sleep used by `atomicWriteJSONSync`. */
+  sleepSync?: (ms: number) => void;
+  /** Async sleep used by `atomicWriteJSON`. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────
 
 const JSON_INDENT = 2;
@@ -135,6 +155,108 @@ function makeTmpPath(targetPath: string): string {
 
 function bakPathFor(targetPath: string): string {
   return `${targetPath}.bak`;
+}
+
+/**
+ * Windows real-time antivirus scanners briefly open a handle on a
+ * file right after it is written, and a rename whose destination is
+ * held that way fails with EPERM/EACCES/EBUSY. The window is short
+ * (tens of ms), so a bounded backoff turns an intermittent hard
+ * failure into a slightly slower success.
+ *
+ * This matters more than a normal transient because of the ordering:
+ * by the time we rename tmp → target, the previous primary has
+ * ALREADY been moved to `.bak`. A failure here therefore leaves the
+ * caller with no primary file at all, which is how a half-written
+ * pairing survives a restart (#658).
+ *
+ * Only the final commit rename is retried, and only on win32 — POSIX
+ * rename does not fail this way, so behaviour off Windows is
+ * byte-identical to before. Total added stall is capped at 310ms,
+ * which the sync path (daemon event loop) can absorb.
+ */
+const RENAME_RETRY_DELAYS_MS: readonly number[] = [10, 20, 40, 80, 160];
+
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+function isTransientRenameError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+}
+
+/** Sleep without burning CPU or yielding the event loop. */
+function sleepSyncDefault(ms: number): void {
+  const shared = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(shared), 0, 0, ms);
+}
+
+function sleepDefault(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function warnRenameRetriesExhausted(targetPath: string, attempts: number): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[atomicWrite] Commit rename to "${targetPath}" still failing after ` +
+      `${attempts} attempts (antivirus may be holding the file).`,
+  );
+}
+
+/**
+ * Run the commit rename, retrying transient win32 handle contention.
+ * On final failure the ORIGINAL error is rethrown unchanged — callers
+ * branch on `err.code`.
+ */
+function commitRenameSync(
+  tmp: string,
+  targetPath: string,
+  policy: RenameRetryPolicy | undefined,
+): void {
+  const delays = policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS;
+  const sleep = policy?.sleepSync ?? sleepSyncDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, targetPath);
+      return;
+    } catch (err) {
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err);
+      if (!retryable) {
+        if (i > 0) warnRenameRetriesExhausted(targetPath, i + 1);
+        throw err;
+      }
+      sleep(delays[i]);
+    }
+  }
+}
+
+async function commitRename(
+  tmp: string,
+  targetPath: string,
+  policy: RenameRetryPolicy | undefined,
+): Promise<void> {
+  const delays = policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS;
+  const sleep = policy?.sleep ?? sleepDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      await fsp.rename(tmp, targetPath);
+      return;
+    } catch (err) {
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err);
+      if (!retryable) {
+        if (i > 0) warnRenameRetriesExhausted(targetPath, i + 1);
+        throw err;
+      }
+      await sleep(delays[i]);
+    }
+  }
 }
 
 function ensureDirSync(filePath: string): void {
@@ -322,8 +444,8 @@ export async function atomicWriteJSON(
       }
     }
 
-    // 4. Atomic rename tmp → target.
-    await fsp.rename(tmp, targetPath);
+    // 4. Atomic rename tmp → target (retried on win32 AV contention).
+    await commitRename(tmp, targetPath, opts.renameRetry);
 
     // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
     if (opts.durable) {
@@ -496,7 +618,7 @@ export function atomicWriteJSONSync(
       }
     }
 
-    fs.renameSync(tmp, targetPath);
+    commitRenameSync(tmp, targetPath, opts.renameRetry);
 
     // §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
     if (opts.durable) {
