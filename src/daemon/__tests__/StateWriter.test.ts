@@ -175,6 +175,11 @@ describe('StateWriter', () => {
       state: 'dead',
       lastActivity: new Date(now - 25 * 60 * 60 * 1000).toISOString(),
       deadTtlHours: 24,
+      // #646: an expired tombstone is now kept while its pid still answers, so
+      // this fixture needs a pid that can never be alive — otherwise the
+      // default 12345 could be a real process on the test machine and this
+      // assertion would pass or fail depending on who is running it.
+      pid: 0,
     });
     // Dead session from 1 hour ago with 24h TTL — should survive
     const recent = makeSession({
@@ -194,6 +199,56 @@ describe('StateWriter', () => {
     expect(ids).not.toContain('expired');
     expect(ids).toContain('recent-dead');
     expect(ids).toContain('alive');
+  });
+
+  // #646: pruning ran BEFORE recovery's reconciliation pass, so a tombstone
+  // written over a still-running shell — the exact 11-12-day orphans in the
+  // report — was dropped before anything could reap its process.
+  it('load KEEPS an expired DEAD session whose pid is still alive (#646)', () => {
+    const now = Date.now();
+    const orphan = makeSession({
+      id: 'orphan-tombstone',
+      state: 'dead',
+      lastActivity: new Date(now - 25 * 60 * 60 * 1000).toISOString(),
+      deadTtlHours: 24,
+      pid: process.pid, // guaranteed alive
+    });
+
+    writer.saveImmediate(makeState([orphan]));
+
+    expect(writer.load().sessions.map((s) => s.id)).toContain('orphan-tombstone');
+  });
+
+  it('load drops a live-pid DEAD session once past the hard cap (#646)', () => {
+    const now = Date.now();
+    // 7x the record's own 24h TTL is the cap; 8 days is past it. Without the
+    // cap a recycled pid could keep a tombstone on disk indefinitely.
+    const ancient = makeSession({
+      id: 'ancient-tombstone',
+      state: 'dead',
+      lastActivity: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      deadTtlHours: 24,
+      pid: process.pid,
+    });
+
+    writer.saveImmediate(makeState([ancient]));
+
+    expect(writer.load().sessions.map((s) => s.id)).not.toContain('ancient-tombstone');
+  });
+
+  it('load still prunes an expired DEAD session with no usable pid (#646)', () => {
+    const now = Date.now();
+    const noPid = makeSession({
+      id: 'no-pid-tombstone',
+      state: 'dead',
+      lastActivity: new Date(now - 25 * 60 * 60 * 1000).toISOString(),
+      deadTtlHours: 24,
+      pid: undefined as unknown as number, // legacy record
+    });
+
+    writer.saveImmediate(makeState([noPid]));
+
+    expect(writer.load().sessions.map((s) => s.id)).not.toContain('no-pid-tombstone');
   });
 
   it('load prunes SUSPENDED sessions past 7-day TTL (v2.8.1 hotfix)', () => {

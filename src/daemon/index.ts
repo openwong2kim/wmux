@@ -3603,8 +3603,8 @@ function wireEvents(
   // unreachable — but it and its agent child keep running, which is how users
   // ended up with powershell.exe processes outliving their daemon by days.
   //
-  // Policy: kill the tree ourselves, then run the ordinary death flow with a
-  // `phantom-exit` reason so the log says what happened. Deliberately NOT the
+  // Policy: run the ordinary death flow with a `phantom-exit` reason so the
+  // log says what happened, then kill the tree. Deliberately NOT the
   // session:interrupted (suspend) path: that respawns the session on recovery
   // and would leave the still-live shell behind — exactly the orphan this fix
   // exists to prevent. Reattaching to the live ConPTY instead of killing it is
@@ -3617,31 +3617,34 @@ function wireEvents(
       'info',
       `[lifecycle] session:phantomExit id=${payload.id} pid=${payload.pid ?? '?'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} rawPtyPayload=${payload.raw ?? '?'} — PTY reported an exit with no code and no signal, but the pid is STILL ALIVE (node-pty conout-socket-close, see #646). Reaping the orphaned process tree, then marking dead.`,
     );
-    const finish = () => {
-      const managed = sessionManager.getSession(payload.id);
-      // Destroyed meanwhile (user closed the pane) → the destroy path already
-      // did the teardown; announcing a death now would be a ghost event.
-      if (!managed) return;
+    // Mark dead SYNCHRONOUSLY, before the reap. The reap shells out to
+    // taskkill and can take seconds; leaving the session 'attached' for that
+    // window meant a graceful shutdown landing in it would persist the session
+    // as 'suspended', and the next boot would faithfully respawn a pane over a
+    // shell we had just reaped. Nothing about the death depends on the kill
+    // succeeding — the transport is gone either way — so the kill runs in the
+    // background afterwards.
+    const managed = sessionManager.getSession(payload.id);
+    // Destroyed meanwhile (user closed the pane) → the destroy path already
+    // did the teardown, so announcing a death now would be a ghost event. The
+    // process still has to go, so this only skips the bookkeeping.
+    if (managed) {
       managed.meta.state = 'dead';
       managed.meta.exitCode = payload.exitCode;
       sessionManager.emit('session:died', { ...payload, reason: 'phantom-exit' });
       sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
-    };
-    if (payload.pid === undefined) {
-      finish();
-      return;
     }
+    if (payload.pid === undefined) return;
     // Identity-check even here, where the exit event just named this pid: the
     // shell could have exited for real between the event and this probe, and
     // the pid could already belong to something else. If it cannot be
-    // confirmed the kill is skipped — but the session still dies, because a
-    // pane whose transport is gone is over either way.
+    // confirmed the kill is skipped — the session is already dead regardless.
     void reapIfIdentityConfirmed({
       pid: payload.pid,
       cmd: payload.cmd ?? '',
       storedStartTime: payload.pidStartTime,
       reason: `phantom exit of session ${payload.id}`,
-    }).finally(finish);
+    });
   });
 
   // A pane the user closes while a reclassification is pending must not get a

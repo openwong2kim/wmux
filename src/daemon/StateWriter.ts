@@ -11,6 +11,7 @@ import {
 } from './util/atomicWrite';
 import { AsyncQueue } from './util/AsyncQueue';
 import { stripCredentialValues } from '../shared/envFilter';
+import { isPidAlive } from './phantomExit';
 
 /**
  * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
@@ -113,6 +114,13 @@ const SUSPENDED_TTL_HOURS_DEFAULT = 7 * 24;
 // workday gap and kills overnight orphans; the per-instance config
 // (config.session.detachedTtlHours) overrides this at the daemon.
 const DETACHED_TTL_HOURS_DEFAULT = 8;
+
+// #646: how far past its own deadTtlHours a tombstone may be kept alive while
+// its pid still answers, so recovery's reconciliation pass can still find and
+// reap the orphaned shell. 7x turns the default 24 h tombstone into a week,
+// which covers the reported 11-12-day orphans' daemon-restart cadence without
+// letting a record live forever on the strength of a recycled pid.
+const DEAD_TOMBSTONE_LIVE_PID_TTL_MULTIPLIER = 7;
 
 /**
  * Persists DaemonState (sessions.json) to disk using the shared
@@ -343,7 +351,8 @@ export class StateWriter {
     }
 
     // Prune expired sessions. Three paths:
-    //   - dead: per-session TTL (s.deadTtlHours)
+    //   - dead: per-session TTL (s.deadTtlHours), extended while the recorded
+    //     pid is still alive so #646's reconciliation pass can still reap it.
     //   - suspended: this.suspendedTtlHours (configurable, default 7d —
     //     v2.8.1 hotfix; see top of this file for the accumulation incident
     //     this prevents).
@@ -381,7 +390,23 @@ export class StateWriter {
       }
       const sinceMs = now - new Date(s.lastActivity).getTime();
       if (s.state === 'dead') {
-        return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
+        const ttlMs = s.deadTtlHours * 60 * 60 * 1000;
+        if (sinceMs < ttlMs) return true;
+        // #646: a tombstone is supposed to mean the process is gone, but a
+        // phantom PTY exit could write one over a still-running shell. Pruning
+        // it here would drop the only record of that pid before recovery's
+        // reconciliation pass ever sees it, and nothing would ever reap the
+        // process — which is precisely how the reported orphans survived 11-12
+        // days. So keep an expired tombstone alive as long as its pid is.
+        //
+        // Bounded, because pid liveness stops meaning anything after a reboot
+        // or a pid recycle: past the hard cap the record is dropped regardless.
+        // Recovery only acts on it within the same proven boot anyway, so the
+        // cap costs nothing real and stops a recycled pid from immortalising a
+        // record.
+        const hardCapMs = ttlMs * DEAD_TOMBSTONE_LIVE_PID_TTL_MULTIPLIER;
+        if (sinceMs >= hardCapMs) return false;
+        return typeof s.pid === 'number' && isPidAlive(s.pid);
       }
       if (s.state === 'suspended') {
         return sinceMs < this.suspendedTtlHours * 60 * 60 * 1000;
