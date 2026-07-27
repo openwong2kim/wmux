@@ -373,15 +373,20 @@ export function extractCodeBlocks(
     }
     n += 1;
     const { lang, path } = parseFenceInfo(info);
+    const joined = body.join('\n');
+    // `lines` describes the WHOLE block, so a body cut at the cap would render
+    // as if it were complete and be copied out of the chip that way. The ref
+    // carries the fact.
+    const truncated = joined.length > MAX_BODY_CHARS;
     refs.push({
       n,
       lines: body.length,
       ...(lang ? { lang } : {}),
       ...(path ? { path } : {}),
       srcOffset: offsetHint,
+      ...(truncated ? { truncated: true } : {}),
     });
-    const joined = body.join('\n');
-    bodies.set(n, joined.length > MAX_BODY_CHARS ? joined.slice(0, MAX_BODY_CHARS) : joined);
+    bodies.set(n, truncated ? joined.slice(0, MAX_BODY_CHARS) : joined);
     out.push(`${CODE_MARKER_PREFIX}${n}${CODE_MARKER_SUFFIX}`);
     i = j; // skip the closing fence (or land past the end for an unclosed one)
   }

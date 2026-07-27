@@ -179,6 +179,35 @@ describe('parseTranscriptLine — code-and-diff.jsonl', () => {
     expect(third.text).not.toContain('unclosed fence');
   });
 
+  it('marks a body cut at the per-block cap, and leaves an intact one unmarked', () => {
+    // `lines` describes the whole block either way, so without the flag an
+    // expanded chip presents a shortened body as if it were the complete one and
+    // the user copies incomplete code with no warning.
+    const huge = 'x'.repeat(300 * 1024);
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'trunc-1',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `here:\n\`\`\`ts\n${huge}\nconst tail = 1;\n\`\`\`\n` }],
+      },
+    });
+    const parsed = parseTranscriptLineDetailed(line, 0);
+    const event = parsed.events[0];
+    if (event.kind !== 'assistant_text') throw new Error('expected assistant_text');
+    expect(event.codeBlocks?.[0].truncated).toBe(true);
+    expect(event.codeBlocks?.[0].lines).toBe(2);
+    // The stored body really is only the prefix — the flag is not decorative.
+    const body = parsed.bodies.get(event.id)?.get(1) ?? '';
+    expect(body.length).toBe(256 * 1024);
+    expect(body).not.toContain('const tail = 1;');
+
+    // An ordinary block carries no flag at all (the field stays absent).
+    const small = events[0];
+    if (small.kind !== 'assistant_text') throw new Error('expected assistant_text');
+    expect(small.codeBlocks?.[0].truncated).toBeUndefined();
+  });
+
   it('flags diff-shaped tool output and only when it OPENS as a diff', () => {
     const diff = events[3];
     const log = events[4];
