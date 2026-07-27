@@ -23,6 +23,7 @@ import type {
   TranscriptStatus,
   TurnEvent,
 } from '../../../shared/transcript/turnEvents';
+import type { Pane } from '../../../shared/types';
 
 /** Per-pane row cap. Head-dropped (oldest first) — the newest turn always wins. */
 export const MAX_ROWS_IN_MEMORY = 2000;
@@ -166,6 +167,24 @@ export const createChatSlice: StateCreator<
 
   setChatStatus: (ptyId, status) => set((draft: StoreState) => {
     draft.chatStatus[ptyId] = status;
+    // A9③ — a persisted `chatMode:true` surface whose pane respawned as an agent
+    // that publishes no transcript would sit on a permanently empty Chat view
+    // with the toggle disabled, i.e. no way back. Availability is the gate in
+    // both directions, so an unavailable status forces the view mode off.
+    // Guarded for the minimal test stores composed without the surface slice.
+    if (status.available || !draft.workspaces) return;
+    for (const ws of draft.workspaces) {
+      const clearInPane = (pane: Pane): void => {
+        if (pane.type === 'leaf') {
+          for (const surface of pane.surfaces) {
+            if (surface.ptyId === ptyId && surface.chatMode) delete surface.chatMode;
+          }
+          return;
+        }
+        for (const child of pane.children) clearInPane(child);
+      };
+      clearInPane(ws.rootPane);
+    }
   }),
 
   pushChatPending: (ptyId, text) => set((draft: StoreState) => {

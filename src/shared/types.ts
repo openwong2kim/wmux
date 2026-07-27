@@ -53,6 +53,19 @@ export interface Surface {
   shell: string;
   cwd: string;
   surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review';
+  /**
+   * Chat View (plan D1/D6) — this terminal surface renders as a conversation
+   * instead of an xterm. A VIEW MODE, not a surface type: a Surface is 1:1 with
+   * a ptyId, so a Chat "surface" would either duplicate the PTY or have none,
+   * and keeping the xterm mounted-but-hidden is only coherent if Chat and
+   * Terminal are two renderings of ONE surface.
+   *
+   * Persisted (it rides buildSessionData's `...surface` spread like titleLocked),
+   * but forced back to false when the pane's agent turns out not to publish a
+   * transcript (A9③) — a restored `true` must never strand a pane on an empty
+   * Chat view.
+   */
+  chatMode?: boolean;
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;

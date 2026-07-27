@@ -573,6 +573,7 @@ export const en = {
   'settings.sc.renameWorkspace': 'Rename workspace',
   'settings.sc.highlightPane': 'Highlight active pane',
   'settings.sc.floatingPane': 'Toggle floating terminal',
+  'settings.sc.toggleChatView': 'Toggle Terminal / Chat view',
   'settings.shortcutsNotAvailable': 'Built-in shortcut customization is not yet available.',
   'settings.aboutTagline': 'Windows native AI agent terminal',
   'settings.builtWith': 'Built with',
@@ -1260,6 +1261,10 @@ export const en = {
   'chat.unavailable.notClaude': "Chat View needs a structured transcript; this agent doesn't publish one yet.",
   'chat.unavailable.noTranscriptPath': "Chat View opens after this agent's first turn completes.",
   'chat.unavailable.generic': 'Chat View is unavailable for this pane.',
+  'chat.viewMode.terminal': 'Terminal',
+  'chat.viewMode.chat': 'Chat',
+  'chat.viewMode.label': 'Pane view mode',
+  'chat.toggle': 'Toggle Terminal / Chat view',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',

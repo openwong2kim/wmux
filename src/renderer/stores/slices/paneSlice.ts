@@ -597,6 +597,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             // "parked on a question" from birth, with no event able to clear it
             // (the registry never held a request for the new pane).
             delete state.surfaceNeedsInput[s.ptyId];
+            // A9④ — the Chat projection window for a pane that no longer exists.
+            // Inlined rather than calling clearChatSurface(): that action opens
+            // its own set() and this teardown is already inside one.
+            if (state.chatEvents) {
+              delete state.chatEvents[s.ptyId];
+              delete state.chatCursor[s.ptyId];
+              delete state.chatStatus[s.ptyId];
+              delete state.chatSeq[s.ptyId];
+              delete state.chatNeedsResnapshot[s.ptyId];
+              delete state.chatPending[s.ptyId];
+            }
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap

@@ -375,6 +375,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
         for (const pid of collectPtyIds(removedWs.rootPane)) delete state.surfaceNeedsInput[pid];
       }
+      // A9④ — same sweep for the Chat projection windows of the removed panes.
+      if (state.chatEvents) {
+        const removedWs = state.workspaces[idx];
+        const collectPtyIds = (p: Pane): string[] =>
+          p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
+        for (const pid of collectPtyIds(removedWs.rootPane)) {
+          delete state.chatEvents[pid];
+          delete state.chatCursor[pid];
+          delete state.chatStatus[pid];
+          delete state.chatSeq[pid];
+          delete state.chatNeedsResnapshot[pid];
+          delete state.chatPending[pid];
+        }
+      }
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;

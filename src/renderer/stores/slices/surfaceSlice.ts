@@ -33,6 +33,17 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  /**
+   * Chat View toggle (plan PR-8) — flip ONE surface between the terminal and the
+   * chat rendering. Not a new tab: `Surface.chatMode` is a view mode on the
+   * surface that already owns the ptyId.
+   *
+   * Turning it ON is refused unless `chatStatus[ptyId]?.available` — a pane whose
+   * agent publishes no transcript would render an empty view with no way to
+   * explain itself, and the toggle in SurfaceTabs is disabled for exactly that
+   * reason. Turning it OFF is always allowed (it is the escape hatch).
+   */
+  setSurfaceChatMode: (surfaceId: string, on: boolean) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
   /**
    * Update the live working directory of the surface bound to `ptyId`. Driven
@@ -232,6 +243,17 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // pending question — a leaked lock would follow a reused ptyId with nothing
     // able to clear it.
     if (closedPtyId && state.surfaceNeedsInput) delete state.surfaceNeedsInput[closedPtyId];
+    // A9④ — drop this pane's Chat projection window (chatSlice-owned, keyed by
+    // ptyId). Inlined for the same reason as the paneSlice site: we are already
+    // inside a set(), and clearChatSurface opens its own.
+    if (closedPtyId && state.chatEvents) {
+      delete state.chatEvents[closedPtyId];
+      delete state.chatCursor[closedPtyId];
+      delete state.chatStatus[closedPtyId];
+      delete state.chatSeq[closedPtyId];
+      delete state.chatNeedsResnapshot[closedPtyId];
+      delete state.chatPending[closedPtyId];
+    }
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
@@ -292,6 +314,33 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           const surface = pane.surfaces.find((s) => s.id === surfaceId);
           if (surface) { surface.title = title; surface.titleLocked = true; return true; }
           return false;
+        }
+        return pane.children.some(updateInPane);
+      };
+      if (updateInPane(ws.rootPane)) return;
+    }
+  }),
+
+  setSurfaceChatMode: (surfaceId, on) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      const updateInPane = (pane: Pane): boolean => {
+        if (pane.type === 'leaf') {
+          const surface = pane.surfaces.find((s) => s.id === surfaceId);
+          if (!surface) return false;
+          if (on) {
+            // A9③ — availability is the gate in BOTH directions: on toggle-on
+            // here, and as a forced flip-off wherever chatStatus turns
+            // unavailable (a persisted `chatMode:true` whose pane respawned as
+            // an unsupported agent).
+            const status = state.chatStatus?.[surface.ptyId];
+            if (!surface.ptyId || !status?.available) return true;
+            surface.chatMode = true;
+          } else {
+            // Deleted rather than set to false so a terminal-mode surface
+            // serializes exactly as it did before this field existed.
+            delete surface.chatMode;
+          }
+          return true;
         }
         return pane.children.some(updateInPane);
       };

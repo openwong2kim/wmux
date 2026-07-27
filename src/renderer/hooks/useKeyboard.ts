@@ -461,6 +461,28 @@ export function useKeyboard() {
         return;
       }
 
+      // Cmd/Ctrl+Shift+J: toggle the active surface between Terminal and Chat
+      // (plan PR-8). A VIEW MODE flip on one surface — not a new tab. Gated on
+      // chatStatus like the SurfaceTabs segment, so the chord cannot strand a
+      // pane on an empty Chat view that its agent can never fill.
+      if (cmdOrCtrl && shift && !alt && (key === 'J' || code === 'KeyJ')) {
+        e.preventDefault();
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (!ws) return;
+        const leaf = findLeaf(ws.rootPane, ws.activePaneId);
+        if (!leaf) return;
+        const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+        if (!surface || !surface.ptyId) return;
+        if (surface.surfaceType && surface.surfaceType !== 'terminal') return;
+        if (surface.chatMode) {
+          state.setSurfaceChatMode(surface.id, false);
+        } else if (state.chatStatus[surface.ptyId]?.available) {
+          state.setSurfaceChatMode(surface.id, true);
+        }
+        return;
+      }
+
       // Ctrl+T: New surface
       if (cmdOrCtrl && !shift && !alt && key === 't') {
         e.preventDefault();

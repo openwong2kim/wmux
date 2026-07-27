@@ -3891,6 +3891,7 @@ function TabShortcuts() {
     'Ctrl+Shift+W', 'Ctrl+Shift+D', 'Ctrl+Shift+L', 'Ctrl+Shift+X',
     'Ctrl+Shift+H', 'Ctrl+Shift+R', 'Ctrl+Shift+U', 'Ctrl+Shift+O',
     'Ctrl+Shift+]', 'Ctrl+Shift+[', 'Ctrl+Shift+M', 'Ctrl+Shift+Q',
+    'Ctrl+Shift+J',
   ]);
 
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
@@ -3913,6 +3914,7 @@ function TabShortcuts() {
     { keys: shortcutLabel('Ctrl+Shift+R'),   description: t('settings.sc.renameWorkspace') },
     { keys: shortcutLabel('Ctrl+Shift+H'),   description: t('settings.sc.highlightPane') },
     { keys: shortcutLabel('Ctrl+`'),         description: t('settings.sc.floatingPane') },
+    { keys: shortcutLabel('Ctrl+Shift+J'),   description: t('settings.sc.toggleChatView') },
   ];
 
   return (

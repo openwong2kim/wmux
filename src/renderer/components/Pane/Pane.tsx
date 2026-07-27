@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
-import type { PaneLeaf, Workspace } from '../../../shared/types';
+import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -8,6 +8,7 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
+import { ChatView } from '../Chat/ChatView';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
@@ -862,6 +863,129 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   );
 }
 
+/**
+ * One terminal surface, rendered as either the xterm or the Chat projection
+ * (plan PR-8 / D1 — two renderings of ONE surface, not two surfaces).
+ *
+ * When `chatMode` is on the xterm stays MOUNTED at `visible={false}`: unmounting
+ * would be safe for the PTY (Terminal.tsx only disposes a pty it created itself)
+ * but a remount pays a full ring-buffer replay, and PR-9 owns that trade with a
+ * keep-warm LRU. Until then, toggle-back is instant.
+ */
+export function TerminalOrChat({
+  surface,
+  workspaceId,
+  isActive,
+  visible,
+  isWorkspaceVisible,
+  onPtyCreated,
+}: {
+  surface: Surface;
+  workspaceId: string;
+  isActive: boolean;
+  /** The pane's own visibility decision (the terminal|browser split path). */
+  visible?: boolean;
+  isWorkspaceVisible: boolean;
+  onPtyCreated: (ptyId: string) => void;
+}) {
+  const ptyId = surface.ptyId;
+  const chatMode = !!surface.chatMode && !!ptyId;
+  const needsInput = useStore((s) => (ptyId ? !!s.surfaceNeedsInput[ptyId] : false));
+  const pendingQuestion = useStore((s) => (ptyId ? s.surfacePendingQuestion[ptyId] : undefined));
+  const agentEntry = useStore((s) => (ptyId ? s.surfaceAgent[ptyId] : undefined));
+  const setSurfaceChatMode = useStore((s) => s.setSurfaceChatMode);
+
+  const onJumpToTerminal = useCallback(() => {
+    setSurfaceChatMode(surface.id, false);
+  }, [setSurfaceChatMode, surface.id]);
+
+  // A3: code bodies never ride an append event, so an expand is a bounded
+  // re-read of the ONE transcript line the block came from. CodeChip only knows
+  // `(eventId, n)`; the byte offset lives on the CodeBlockRef in the store.
+  const onFetchBody = useCallback(
+    async (eventId: string, n: number): Promise<string> => {
+      const chat = window.electronAPI.chat;
+      if (!chat?.codeBlock || !ptyId) throw new Error('chat bridge unavailable');
+      const events = useStore.getState().chatEvents[ptyId] ?? [];
+      const event = events.find((e) => e.id === eventId);
+      const block = event && event.kind === 'assistant_text'
+        ? event.codeBlocks?.find((b) => b.n === n)
+        : undefined;
+      if (block?.srcOffset === undefined) throw new Error('no source offset for this block');
+      const res = await chat.codeBlock({ ptyId, srcOffset: block.srcOffset, n, eventId });
+      if (!res) throw new Error('code block unavailable');
+      return res.body;
+    },
+    [ptyId],
+  );
+
+  // Diff-shaped tool output opens the EXISTING workspace-diff surface — never
+  // inline (PRD §4.2). Main normalizes the pane's cwd to its worktree toplevel;
+  // a non-git cwd simply opens nothing.
+  const onOpenDiff = useCallback(() => {
+    const cwd = surface.cwd;
+    if (!cwd) return;
+    void window.electronAPI.diff.resolveRepo(cwd).then((res) => {
+      if (!res.ok) return;
+      const state = useStore.getState();
+      const hostPaneId = state.workspaces
+        .flatMap((ws) => leafPanesOf(ws))
+        .find((leaf) => leaf.surfaces.some((s) => s.id === surface.id))?.id;
+      if (!hostPaneId) return;
+      state.addWorkspaceDiffSurface(hostPaneId, res.repoPath);
+    });
+  }, [surface.cwd, surface.id]);
+
+  // ChatView's status vocabulary is narrower than AgentStatus (no awaiting_input
+  // — that is the `needsInput` gate's job, not a status line's).
+  const chatAgentStatus = agentEntry?.status === 'running'
+    || agentEntry?.status === 'idle'
+    || agentEntry?.status === 'complete'
+    ? agentEntry.status
+    : undefined;
+
+  return (
+    <>
+      <TerminalComponent
+        ptyId={ptyId || undefined}
+        cwd={surface.cwd || undefined}
+        isActive={isActive && !chatMode}
+        // Chat mode hides the xterm but keeps it mounted; otherwise the caller's
+        // own visibility decision stands (undefined = visible, as before).
+        {...(chatMode ? { visible: false } : visible === undefined ? {} : { visible })}
+        isWorkspaceVisible={isWorkspaceVisible}
+        onPtyCreated={onPtyCreated}
+        scrollbackFile={surface.scrollbackFile}
+        workspaceId={workspaceId}
+        surfaceId={surface.id}
+      />
+      {chatMode && (
+        <ChatView
+          ptyId={ptyId}
+          surfaceId={surface.id}
+          workspaceId={workspaceId}
+          isActive={isActive}
+          visible
+          onJumpToTerminal={onJumpToTerminal}
+          needsInput={needsInput}
+          {...(pendingQuestion ? { pendingQuestion } : {})}
+          {...(chatAgentStatus ? { agentStatus: chatAgentStatus } : {})}
+          {...(agentEntry?.name ? { agentName: agentEntry.name } : {})}
+          onFetchBody={onFetchBody}
+          onOpenDiff={onOpenDiff}
+        />
+      )}
+    </>
+  );
+}
+
+/** Leaf panes of one workspace — local helper for the diff-surface host lookup. */
+function leafPanesOf(ws: Workspace): PaneLeaf[] {
+  const walk = (pane: Workspace['rootPane']): PaneLeaf[] =>
+    pane.type === 'leaf' ? [pane] : pane.children.flatMap(walk);
+  return walk(ws.rootPane);
+}
+
 /** Renders surfaces with a resizable split when both terminals and browsers coexist */
 function SplitSurfaceView({
   pane,
@@ -949,16 +1073,13 @@ function SplitSurfaceView({
               verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
             />
           ) : (
-            <TerminalComponent
+            <TerminalOrChat
               key={surface.id}
-              ptyId={surface.ptyId || undefined}
-              cwd={surface.cwd || undefined}
+              surface={surface}
+              workspaceId={workspaceId}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-              scrollbackFile={surface.scrollbackFile}
-              workspaceId={workspaceId}
-              surfaceId={surface.id}
             />
           ),
         )}
@@ -982,17 +1103,14 @@ function SplitSurfaceView({
         <Panel defaultSize={50} minSize={20}>
           <div className="h-full w-full relative overflow-hidden">
             {terminals.map((surface) => (
-              <TerminalComponent
+              <TerminalOrChat
                 key={surface.id}
-                ptyId={surface.ptyId || undefined}
-                cwd={surface.cwd || undefined}
+                surface={surface}
+                workspaceId={workspaceId}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownTerminalId}
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-                scrollbackFile={surface.scrollbackFile}
-                workspaceId={workspaceId}
-                surfaceId={surface.id}
               />
             ))}
           </div>
