@@ -599,16 +599,40 @@ describe('WebTerminalServer', () => {
     const startedAt = Date.now();
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
     try {
-      const first = await fetch(`${base()}/api/pair?code=${wrong}`);
+      const first = await fetch(`${base()}/api/pair?code=${wrong}`, {
+        headers: {
+          Forwarded: 'for=192.0.2.10',
+          'X-Forwarded-For': '192.0.2.10',
+        },
+      });
       expect(first.status).toBe(403);
       expect((await first.json()).attemptsLeft).toBe(4);
 
-      const limited = await fetch(`${base()}/api/pair?code=${wrong}`);
+      // Forwarded source headers are caller-controlled and must not buy a new
+      // budget. One millisecond has elapsed, so ceiling arithmetic still
+      // advertises the full 30 seconds.
+      nowSpy.mockReturnValue(startedAt + 1);
+      const limited = await fetch(`${base()}/api/pair?code=${code}`, {
+        headers: {
+          Forwarded: 'for=198.51.100.20',
+          'X-Forwarded-For': '198.51.100.20',
+        },
+      });
       expect(limited.status).toBe(429);
       expect(limited.headers.get('retry-after')).toBe('30');
       expect(await limited.json()).toEqual({
         error: 'rate limited',
         retryAfterSeconds: 30,
+        attemptsLeft: 4,
+      });
+
+      nowSpy.mockReturnValue(startedAt + 1_001);
+      const rounded = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(rounded.status).toBe(429);
+      expect(rounded.headers.get('retry-after')).toBe('29');
+      expect(await rounded.json()).toEqual({
+        error: 'rate limited',
+        retryAfterSeconds: 29,
         attemptsLeft: 4,
       });
 
@@ -626,6 +650,79 @@ describe('WebTerminalServer', () => {
       nowSpy.mockReturnValue(startedAt + 60_000);
       const correct = await fetch(`${base()}/api/pair?code=${code}`);
       expect(correct.status).toBe(200);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('tracks the cooldown by the actual TCP source', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+    const requestPair = (localAddress: string) =>
+      new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
+        const req = httpReq(
+          {
+            host: '127.0.0.1',
+            port: info.port as number,
+            path: `/api/pair?code=${encodeURIComponent(wrong)}`,
+            localAddress,
+          },
+          (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => { body += chunk; });
+            res.on('end', () => {
+              resolve({
+                status: res.statusCode ?? 0,
+                body: JSON.parse(body) as Record<string, unknown>,
+              });
+            });
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+
+    const startedAt = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
+    try {
+      const first = await requestPair('127.0.0.1');
+      expect(first).toEqual({ status: 403, body: { error: 'invalid code', attemptsLeft: 4 } });
+
+      // 127/8 is loopback on every supported OS. A distinct TCP source gets its
+      // own first budget-consuming miss instead of inheriting 127.0.0.1's wait.
+      const second = await requestPair('127.0.0.2');
+      expect(second).toEqual({ status: 403, body: { error: 'invalid code', attemptsLeft: 3 } });
+
+      const firstAgain = await requestPair('127.0.0.1');
+      expect(firstAgain).toEqual({
+        status: 429,
+        body: { error: 'rate limited', retryAfterSeconds: 30, attemptsLeft: 3 },
+      });
+      const secondAgain = await requestPair('127.0.0.2');
+      expect(secondAgain).toEqual({
+        status: 429,
+        body: { error: 'rate limited', retryAfterSeconds: 30, attemptsLeft: 3 },
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('clears source cooldowns when the web server restarts', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+    const startedAt = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
+    try {
+      expect((await fetch(`${base()}/api/pair?code=${wrong}`)).status).toBe(403);
+      await server.stop();
+
+      const restarted = await startRO();
+      const paired = await fetch(`${base()}/api/pair?code=${restarted.pairCode}`);
+      expect(paired.status).toBe(200);
     } finally {
       nowSpy.mockRestore();
     }
