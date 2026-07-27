@@ -26,6 +26,7 @@ import type {
   TranscriptPage,
   TranscriptStatus,
 } from '../../../shared/transcript/turnEvents';
+import type { ApprovalGateData } from '../../../shared/rpc';
 
 /** The answer every read gives when main owns the PTYs itself. */
 const LOCAL_MODE_STATUS: TranscriptStatus = { available: false, reason: 'local-mode' };
@@ -166,8 +167,20 @@ export function registerChatHandlers(deps: ChatHandlerDeps): () => void {
   };
   daemonClient?.on('session:transcript', onTranscript);
 
+  // Composer gate leg (PR-6). Same relay, different payload: the daemon's
+  // ApprovalRegistry says a pane's request opened or closed, and the renderer
+  // turns that into the hard composer lock. Nothing here interprets the event —
+  // main must not add a heuristic on top of a hook-authoritative signal.
+  const onApprovalGate = (payload: { sessionId: string; data: ApprovalGateData }): void => {
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send(IPC.CHAT_GATE, payload.sessionId, payload.data);
+  };
+  daemonClient?.on('session:approvalGate', onApprovalGate);
+
   return () => {
     daemonClient?.off('session:transcript', onTranscript);
+    daemonClient?.off('session:approvalGate', onApprovalGate);
     ipcMain.removeHandler(IPC.CHAT_STATUS);
     ipcMain.removeHandler(IPC.CHAT_SNAPSHOT);
     ipcMain.removeHandler(IPC.CHAT_SUBSCRIBE);

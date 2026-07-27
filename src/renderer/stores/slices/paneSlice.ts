@@ -137,6 +137,31 @@ export interface PaneSlice {
   // Transient — never persisted (buildSessionData allowlist excludes it).
   surfacePendingQuestion: Record<string, string>;
   setSurfacePendingQuestion: (ptyId: string, question: string | null) => void;
+  // Chat View composer gate (plan PR-6, amendments A1/A2/A8), keyed by ptyId.
+  // Presence = LOCKED: a blind PTY write would land in an arrow-key permission
+  // menu and select an option, so the Chat composer removes its textarea.
+  //
+  // This map is deliberately NOT derived from `surfaceAgentStatus`, and the two
+  // must never be merged:
+  //   - `'waiting'` is Claude Code's IDLE footer ("Ready for input"), so gating
+  //     on it would lock every idle pane, permanently (A1);
+  //   - byte-silence `idle` (ActivityMonitor, 5s) fires ~15s into every
+  //     permission menu, because a menu emits no bytes — an agentStatus-cleared
+  //     gate therefore unlocks itself on a timer while the menu is still up (A2);
+  //   - `surfaceAgentStatus` is focus-clearing by design, which would unlock the
+  //     composer at exactly the moment the user is about to type.
+  //
+  // LOCK sources (defense in depth, A8): an ApprovalRegistry request opening
+  // (hook-authoritative) OR an `agent.awaiting_input` signal arriving (a screen-
+  // scrape regex — trusted to lock, never to unlock).
+  // UNLOCK sources ONLY: the registry resolving/expiring the request, or a
+  // turn-end hook arriving (`agent.stop` / `agent.activity`). Never a byte
+  // heuristic, never pane focus.
+  //
+  // Transient — never persisted (buildSessionData is an allowlist and omits it).
+  surfaceNeedsInput: Record<string, true>;
+  lockSurfaceNeedsInput: (ptyId: string) => void;
+  unlockSurfaceNeedsInput: (ptyId: string) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -311,6 +336,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfaceActivity: {},
   surfaceActivityAt: {},
   surfacePendingQuestion: {},
+  surfaceNeedsInput: {},
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -346,6 +372,16 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // this field, so an answered pane drops its question on its next turn end.
     if (question) state.surfacePendingQuestion[ptyId] = question;
     else delete state.surfacePendingQuestion[ptyId];
+  }),
+
+  lockSurfaceNeedsInput: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    state.surfaceNeedsInput[ptyId] = true;
+  }),
+
+  unlockSurfaceNeedsInput: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    delete state.surfaceNeedsInput[ptyId];
   }),
 
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {
@@ -557,6 +593,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
             delete state.surfacePendingQuestion[s.ptyId];
+            // Chat View gate: a leaked lock would make a REUSED ptyId read as
+            // "parked on a question" from birth, with no event able to clear it
+            // (the registry never held a request for the new pane).
+            delete state.surfaceNeedsInput[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap

@@ -228,6 +228,10 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // Drop the pending question too: a leaked entry would let a REUSED ptyId
     // inherit a dead pane's question and read as blocked from birth.
     if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
+    // Chat View gate (paneSlice-owned, keyed by ptyId): same reasoning as the
+    // pending question — a leaked lock would follow a reused ptyId with nothing
+    // able to clear it.
+    if (closedPtyId && state.surfaceNeedsInput) delete state.surfaceNeedsInput[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];

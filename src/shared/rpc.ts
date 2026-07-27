@@ -590,9 +590,29 @@ export interface DaemonEvent {
     // called `daemon.transcript.subscribe` (see DaemonPipeServer.sendTo).
     // `data.reset` means the file rotated or a new session started and the
     // consumer must REPLACE its rows rather than append them.
-    | 'transcript.appended';
+    | 'transcript.appended'
+    // Chat View composer gate (PR-6) — one pane's ApprovalRegistry request
+    // opened or closed. `data` is ApprovalGateData ({ kind, approvalId }); the
+    // agent-authored question text is deliberately NOT carried, because the only
+    // consumer needs open/closed and the text already rides METADATA_UPDATE's
+    // `pendingQuestion`. Broadcast (not unicast) is safe: the payload says no
+    // more than `daemon.approvals.list` already answers for any authenticated
+    // client, and every desktop renderer needs the gate for every pane.
+    | 'approval.gate';
   sessionId: string;
   data: unknown;
+}
+
+/**
+ * `approval.gate` payload — the hook-authoritative composer gate (plan A1/A2).
+ *
+ * 'open' means a pane is parked on a question and a blind PTY write would press
+ * a key into a menu. 'closed' covers resolve / expire / supersede alike: all
+ * three mean the registry no longer holds a request for that pane.
+ */
+export interface ApprovalGateData {
+  kind: 'open' | 'closed';
+  approvalId: string;
 }
 
 // NOTE: 'session.destroyed' is broadcast when the renderer/MCP explicitly

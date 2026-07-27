@@ -366,6 +366,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
         for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
       }
+      // Chat View composer gate (paneSlice-owned, keyed by ptyId): workspace
+      // close is the third real teardown site alongside closePane/closeSurface,
+      // so a lock cannot outlive the pane that earned it (A9④/PR-6).
+      if (state.surfaceNeedsInput) {
+        const removedWs = state.workspaces[idx];
+        const collectPtyIds = (p: Pane): string[] =>
+          p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
+        for (const pid of collectPtyIds(removedWs.rootPane)) delete state.surfaceNeedsInput[pid];
+      }
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;

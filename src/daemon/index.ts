@@ -56,7 +56,7 @@ import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
-import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import type { ApprovalGateData, DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
@@ -4363,6 +4363,23 @@ async function main(): Promise<void> {
     );
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // Chat View composer gate (plan PR-6, A1/A2). The desktop composer must lock
+  // on a real approval and unlock ONLY when the registry says the request is
+  // gone — never on a byte-silence `idle`, which fires ~15s into every
+  // permission menu because a menu emits no bytes. The registry is the only
+  // hook-authoritative source of that transition, so it gets its own daemon
+  // event instead of being inferred from agentStatus downstream.
+  approvalRegistry.onEvent((event) => {
+    const gate: ApprovalGateData = {
+      kind: event.type === 'create' ? 'open' : 'closed',
+      approvalId: event.request.id,
+    };
+    pipeServer.broadcast({
+      type: 'approval.gate',
+      sessionId: event.request.sessionId,
+      data: gate,
+    } as DaemonEvent);
+  });
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
   // cannot cascade into session-state failure. The service receives

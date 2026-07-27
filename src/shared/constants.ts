@@ -277,6 +277,15 @@ export const IPC = {
   CHAT_UNSUBSCRIBE: 'chat:unsubscribe',
   CHAT_CODE_BLOCK: 'chat:codeblock',
   CHAT_APPEND: 'chat:append',
+  //   CHAT_GATE        (push)   main → renderer: one pane's ApprovalRegistry
+  //                    request opened or closed (plan PR-6). Carried on its OWN
+  //                    channel rather than folded into METADATA_UPDATE on
+  //                    purpose: METADATA_UPDATE is the agentStatus stream, and
+  //                    agentStatus is exactly what amendment A2 disqualifies as
+  //                    a gate source (byte-silence `idle` fires ~15s into every
+  //                    permission menu). A separate channel keeps lock and
+  //                    unlock provably independent of any byte heuristic.
+  CHAT_GATE: 'chat:gate',
   //   WORKSPACE_MIRROR_PUSH (send) renderer → main: a fire-and-forget full
   //   snapshot of the workspace tree + per-pane agent status. Feeds the
   //   main-process WorkspaceMirror so routing / hook resolution can be served

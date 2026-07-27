@@ -421,6 +421,16 @@ const electronAPI = {
       ipcRenderer.on(IPC.CHAT_APPEND, listener);
       return () => { ipcRenderer.removeListener(IPC.CHAT_APPEND, listener); };
     },
+    /** Composer-gate transitions (approval opened/closed). Returns an unsubscribe fn. */
+    onGate: (callback: (ptyId: string, gate: { kind: 'open' | 'closed' }) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        ptyId: string,
+        gate: { kind: 'open' | 'closed' },
+      ) => callback(ptyId, gate);
+      ipcRenderer.on(IPC.CHAT_GATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.CHAT_GATE, listener); };
+    },
   } satisfies import('../shared/transcript/turnEvents').ChatBridgeApi,
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace

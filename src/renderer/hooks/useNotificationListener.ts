@@ -13,6 +13,7 @@ import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/pa
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
+import { composerGateFromMetadata } from './composerGateFromMetadata';
 
 /**
  * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
@@ -644,6 +645,17 @@ export function useNotificationListener() {
         // blink for attention. setSurfaceAgentStatus itself filters to the
         // attention statuses and clears on running/idle, so a plain CWD/git
         // metadata update (no agentStatus) is a no-op here.
+        // Chat View composer gate (plan PR-6, A1/A2/A8) — the defense-in-depth
+        // half; the authoritative half is IPC.CHAT_GATE below. The rule is a pure
+        // function so it can be tested against the payloads that matter (a
+        // byte-silence `idle`, Claude's `waiting` footer, a real turn boundary).
+        const gateAction = composerGateFromMetadata({
+          agentStatus: rest.agentStatus,
+          activity,
+          pendingQuestion,
+        });
+        if (gateAction === 'lock') state.lockSurfaceNeedsInput(ptyId);
+        else if (gateAction === 'unlock') state.unlockSurfaceNeedsInput(ptyId);
         if (typeof rest.agentStatus === 'string') {
           state.setSurfaceAgentStatus(ptyId, rest.agentStatus as AgentStatus);
           // Byte-based per-PTY 'running' (daemon ActivityMonitor) is otherwise
@@ -866,7 +878,26 @@ export function useNotificationListener() {
       window.electronAPI.usage.setEnabled(true);
     }
 
+    // Chat View composer gate (plan PR-6) — the AUTHORITATIVE half. The daemon
+    // ApprovalRegistry is hook-sourced and expires on turn-ended / session-start
+    // / pane-gone, so 'closed' is the only unlock this app fully trusts; the
+    // metadata-derived rules above are the regex-sourced defense-in-depth half
+    // (A8: allowed to lock, never trusted to unlock on their own).
+    //
+    // Subscribed at app lifetime rather than inside ChatView: the lock has to be
+    // armed already when a user toggles into Chat on a pane that has been parked
+    // on a permission menu since before the surface existed.
+    // Feature-detected — an older preload bundle has no `chat` surface, and a
+    // missing gate must degrade to "no lock", not to a crash at mount.
+    const unsubChatGate = window.electronAPI.chat?.onGate?.((ptyId, gate) => {
+      if (!ptyId) return;
+      const s = useStore.getState();
+      if (gate?.kind === 'open') s.lockSurfaceNeedsInput(ptyId);
+      else s.unlockSurfaceNeedsInput(ptyId);
+    });
+
     return () => {
+      unsubChatGate?.();
       unsubNotif();
       unsubFocus();
       unsubCwd();

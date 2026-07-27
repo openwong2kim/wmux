@@ -170,4 +170,12 @@ export interface ChatBridgeApi {
   }) => Promise<{ body: string } | null>;
   /** Live projector deltas for every subscribed pane. Returns an unsubscribe fn. */
   onAppend: (callback: (ptyId: string, data: TranscriptAppendData) => void) => () => void;
+  /**
+   * Composer-gate transitions from the daemon ApprovalRegistry (plan PR-6).
+   *
+   * App-lifetime, NOT scoped to an open Chat surface: the lock has to already be
+   * armed the moment a user toggles into Chat on a pane that has been parked on
+   * a permission menu for ten minutes.
+   */
+  onGate: (callback: (ptyId: string, gate: { kind: 'open' | 'closed' }) => void) => () => void;
 }

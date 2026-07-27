@@ -610,6 +610,12 @@ export class DaemonClient extends EventEmitter {
         case 'transcript.appended':
           this.emit('session:transcript', { sessionId: event.sessionId, data: event.data });
           break;
+        // Chat View composer gate (PR-6). The ApprovalRegistry is the only
+        // hook-authoritative "this pane is parked on a question" source; every
+        // byte-derived status downstream of here is disqualified for the gate.
+        case 'approval.gate':
+          this.emit('session:approvalGate', { sessionId: event.sessionId, data: event.data });
+          break;
         case 'agent.critical':
           this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
           break;
