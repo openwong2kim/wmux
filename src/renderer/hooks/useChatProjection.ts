@@ -54,22 +54,30 @@ export interface ChatProjectionControls {
 export function useChatProjection(ptyId: string, enabled: boolean): ChatProjectionControls {
   // Guards every async continuation: a pane can be closed (or the surface
   // toggled back) while a status/snapshot promise is still in flight.
-  const liveRef = useRef(true);
+  //
+  // A GENERATION, not a boolean. A shared `live` flag was resurrected by the
+  // next effect run — a `seed(oldPtyId)` awaiting mid-flight across a ptyId swap
+  // saw `true` again and resumed, leaking a daemon watcher on the old pane and
+  // writing its rows over the new one. Every effect run and every cleanup bumps
+  // the counter, so a continuation is only allowed to finish for the run that
+  // started it.
+  const genRef = useRef(0);
 
-  const seed = useCallback(async (id: string): Promise<void> => {
+  const seed = useCallback(async (id: string, gen: number): Promise<void> => {
     const chat = getChatBridge();
     if (!chat) return;
+    const alive = (): boolean => genRef.current === gen;
     const status = await chat.status?.(id).catch(() => undefined);
-    if (!liveRef.current) return;
+    if (!alive()) return;
     if (status) useStore.getState().setChatStatus(id, status);
     // No positive availability signal (probe failed, or an older preload that
     // has no `status` at all) → never subscribe blind. A watcher the daemon
     // holds for a pane that cannot project is pure leak.
     if (!status?.available) return;
     await chat.subscribe?.(id).catch(() => undefined);
-    if (!liveRef.current) return;
+    if (!alive()) return;
     const page = await chat.snapshot?.(id).catch(() => null);
-    if (!liveRef.current || !page) return;
+    if (!alive() || !page) return;
     // A snapshot is authoritative for the whole visible window, so it lands as
     // a reset — not an append onto whatever the store happened to hold.
     useStore.getState().applyChatAppend(id, {
@@ -81,13 +89,13 @@ export function useChatProjection(ptyId: string, enabled: boolean): ChatProjecti
   }, []);
 
   useEffect(() => {
-    liveRef.current = true;
+    const gen = (genRef.current += 1);
     if (!enabled || !ptyId) return;
 
     const chat = getChatBridge();
     if (!chat) return;
 
-    void seed(ptyId);
+    void seed(ptyId, gen);
 
     const offAppend = chat.onAppend?.((incomingPtyId, data) => {
       if (incomingPtyId !== ptyId) return;
@@ -101,7 +109,7 @@ export function useChatProjection(ptyId: string, enabled: boolean): ChatProjecti
       globalThis as { window?: { electronAPI?: { daemon?: { onConnected?: (cb: () => void) => () => void } } } }
     ).window?.electronAPI?.daemon;
     const offConnected = daemon?.onConnected?.(() => {
-      if (liveRef.current) void seed(ptyId);
+      if (genRef.current === gen) void seed(ptyId, gen);
     });
 
     const sweep = setInterval(() => {
@@ -109,7 +117,7 @@ export function useChatProjection(ptyId: string, enabled: boolean): ChatProjecti
     }, PENDING_SWEEP_MS);
 
     return () => {
-      liveRef.current = false;
+      genRef.current += 1;
       clearInterval(sweep);
       offAppend?.();
       offConnected?.();
@@ -120,16 +128,17 @@ export function useChatProjection(ptyId: string, enabled: boolean): ChatProjecti
   const loadEarlier = useCallback(async (): Promise<void> => {
     const chat = getChatBridge();
     if (!chat || !ptyId) return;
+    const gen = genRef.current;
     const head = useStore.getState().chatCursor[ptyId]?.headOffset;
     if (head === undefined || head <= 0) return; // nothing older to fetch
     const page = await chat.snapshot?.(ptyId, head).catch(() => null);
-    if (!liveRef.current || !page) return;
+    if (genRef.current !== gen || !page) return;
     useStore.getState().prependChatPage(ptyId, page);
   }, [ptyId]);
 
   const resnapshot = useCallback(async (): Promise<void> => {
     if (!ptyId) return;
-    await seed(ptyId);
+    await seed(ptyId, genRef.current);
   }, [ptyId, seed]);
 
   return { loadEarlier, resnapshot };

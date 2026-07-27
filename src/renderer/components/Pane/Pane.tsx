@@ -988,7 +988,9 @@ export function TerminalOrChat({
           surfaceId={surface.id}
           workspaceId={workspaceId}
           isActive={isActive}
-          visible
+          // The caller's visibility decision, same as the terminal branch: in a
+          // split a pane holds several surfaces and only one is shown.
+          visible={visible ?? true}
           onJumpToTerminal={onJumpToTerminal}
           needsInput={needsInput}
           {...(pendingQuestion ? { pendingQuestion } : {})}

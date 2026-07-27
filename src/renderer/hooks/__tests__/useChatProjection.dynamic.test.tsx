@@ -232,6 +232,45 @@ describe('useChatProjection', () => {
     await unmount();
   });
 
+  // The liveness token used to be ONE ref shared by every effect run: the
+  // cleanup set it false and the very next run set it back to true, so a
+  // `seed(oldPtyId)` awaiting across a ptyId swap resumed — subscribing a
+  // watcher on the pane we just left and writing its rows over the new one.
+  it('does not resurrect an in-flight seed for the OLD pane after a ptyId swap', async () => {
+    const h = installBridge({});
+    // Hold the first pane's status probe open across the swap.
+    let releaseA: (v: TranscriptStatus) => void = () => {};
+    h.status.mockImplementationOnce(
+      () => new Promise<TranscriptStatus>((resolve) => { releaseA = resolve; }),
+    );
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(Probe, { ptyId: 'pty-a', enabled: true }));
+    });
+    // Swap the pane before pty-a's probe answers.
+    await act(async () => {
+      root.render(React.createElement(Probe, { ptyId: 'pty-b', enabled: true }));
+    });
+    h.subscribe.mockClear();
+    h.snapshot.mockClear();
+
+    await act(async () => {
+      releaseA({ available: true, reason: 'ok' });
+    });
+
+    // The stale continuation is dead: no watcher for pty-a, no rows for pty-a.
+    expect(h.subscribe).not.toHaveBeenCalledWith('pty-a');
+    expect(h.snapshot).not.toHaveBeenCalledWith('pty-a');
+    expect(useStore.getState().chatStatus['pty-a']).toBeUndefined();
+    expect(useStore.getState().chatEvents['pty-a']).toBeUndefined();
+    // …and the live pane is unaffected.
+    expect(useStore.getState().chatEvents['pty-b'].map((e) => e.id)).toEqual(['u1']);
+    await unmount();
+  });
+
   it('survives a rejecting bridge without throwing', async () => {
     const h = installBridge({});
     h.status.mockRejectedValueOnce(new Error('pipe down'));
