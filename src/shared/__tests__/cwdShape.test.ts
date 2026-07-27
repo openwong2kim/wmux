@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPlausibleCwd } from '../cwdShape';
+import { isPlausibleCwd, isPlausibleSessionCwd } from '../cwdShape';
 
 // Regression (2026-07-21): a pane's cwd was stored as the literal string "path"
 // — a prompt-scrape false positive that the old win32 rule ("any non-empty
@@ -47,5 +47,19 @@ describe('isPlausibleCwd — absolute-shape guard', () => {
 
   it('rejects a ~-prefixed non-anchor token (e.g. "~foo" is a username ref, not a cwd we track)', () => {
     expect(isPlausibleCwd('~foo/bar', 'linux')).toBe(false);
+  });
+});
+
+describe('isPlausibleSessionCwd — location-domain guard', () => {
+  it('accepts WSL POSIX and namespace UNC paths on win32', () => {
+    expect(isPlausibleSessionCwd('/home/me', 'wsl', 'win32')).toBe(true);
+    expect(isPlausibleSessionCwd('\\\\wsl$\\Ubuntu\\home\\me', 'wsl', 'win32')).toBe(true);
+    expect(isPlausibleSessionCwd('\\\\wsl.localhost\\Ubuntu\\home\\me', 'wsl', 'win32'))
+      .toBe(true);
+  });
+
+  it('rejects drive paths and unrelated UNC paths for WSL', () => {
+    expect(isPlausibleSessionCwd('C:\\repo', 'wsl', 'win32')).toBe(false);
+    expect(isPlausibleSessionCwd('\\\\server\\share', 'wsl', 'win32')).toBe(false);
   });
 });

@@ -132,6 +132,28 @@ describe('surface location snapshot projection', () => {
     );
   });
 
+  it('accepts a WSL namespace UNC snapshot on win32', () => {
+    const { state, slice } = createHarness();
+    slice.addSurface(
+      state.workspaces[0].rootPane.id,
+      'pty-1',
+      'wsl.exe',
+      '/home/me/repo',
+      undefined,
+      snapshot(1, '/home/me/repo', 'Ubuntu'),
+    );
+    const uncSnapshot = snapshot(2, '\\\\wsl$\\Ubuntu\\home\\me\\repo', 'Ubuntu');
+
+    expect(slice.updateSurfaceLocation('pty-1', uncSnapshot)).toBe(true);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces[0]).toMatchObject({
+      cwd: uncSnapshot.location.cwd,
+      location: uncSnapshot.location,
+    });
+  });
+
   it('uses the exposed renderer platform for host snapshots', () => {
     const { state, slice } = createHarness();
     const hostSnapshot = (revision: number, cwd: string): SessionLocationSnapshot => ({

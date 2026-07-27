@@ -113,6 +113,44 @@ describe('local pane location projection', () => {
     }
   });
 
+  it.each([
+    '\\\\wsl$\\Ubuntu\\home\\me\\repo',
+    '\\\\wsl.localhost\\Ubuntu\\home\\me\\repo',
+  ])('accepts a WSL namespace cwd: %s', (cwd) => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const ptyId = `local-wsl-unc-${cwd.includes('localhost') ? 'localhost' : 'dollar'}`;
+    reset(ptyId);
+    const received = vi.fn();
+    const unsubscribe = onPaneLocationUpdate(received);
+
+    try {
+      updatePaneLocation(ptyId, {
+        domain: 'wsl',
+        cwd: '/home/me',
+        shell: 'wsl.exe',
+        distro: 'Ubuntu',
+      });
+      updateCwd(ptyId, '/home/me');
+      const accepted = getPaneLocationSnapshot(ptyId)!;
+      received.mockClear();
+
+      updateCwd(ptyId, cwd);
+
+      expect(getCwd(ptyId)).toBe(cwd);
+      expect(getPaneLocationSnapshot(ptyId)).toMatchObject({
+        generation: accepted.generation,
+        revision: accepted.revision + 1,
+        location: { domain: 'wsl', cwd, distro: 'Ubuntu' },
+      });
+      expect(received).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+      reset(ptyId);
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  });
+
   it('publishes a distro extracted by the spawn producer without enumeration', () => {
     const ptyId = 'local-explicit-wsl';
     reset(ptyId);

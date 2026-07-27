@@ -2,7 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
-import { isPlausibleCwd } from '../../../shared/cwdShape';
+import { isPlausibleCwd, isPlausibleSessionCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -21,10 +21,7 @@ function rendererPlatform(): NodeJS.Platform {
 }
 
 function isPlausibleSurfaceLocation(location: SessionLocation): boolean {
-  return isPlausibleCwd(
-    location.cwd,
-    location.domain === 'wsl' ? 'linux' : rendererPlatform(),
-  );
+  return isPlausibleSessionCwd(location.cwd, location.domain, rendererPlatform());
 }
 
 export interface SurfaceSlice {

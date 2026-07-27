@@ -25,7 +25,7 @@ import { resolveWslDistro } from '../../pty/wslDistro';
 import { SessionLocationEnricher } from '../../../shared/sessionLocationEnrichment';
 import type { PaneCommandTarget } from '../../git/paneCommand';
 import { resolveGitToplevel } from '../../git/git';
-import { isPlausibleCwd } from '../../../shared/cwdShape';
+import { isPlausibleSessionCwd } from '../../../shared/cwdShape';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -453,10 +453,7 @@ export function updateCwd(ptyId: string, cwd: string): void {
   const location = identity
     ? classifySessionLocation(identity.shell, cwd, identity.distro)
     : undefined;
-  const validationPlatform = location?.domain === 'wsl'
-    ? 'linux'
-    : process.platform;
-  if (!isPlausibleCwd(cwd, validationPlatform)) return;
+  if (!isPlausibleSessionCwd(cwd, location?.domain ?? 'host', process.platform)) return;
   cwdMap.set(ptyId, cwd);
   const previous = paneLocationSnapshots.get(ptyId);
   if (location && previous) {

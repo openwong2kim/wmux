@@ -1,3 +1,5 @@
+import { isWslUncPath } from './wslCwd';
+
 // cwd plausibility check — guards against prompt-scraping false positives (shared).
 //
 // Background (2026-07-20): the prompt scraper mistook a string like "PS C:\…>"
@@ -25,4 +27,19 @@ export function isPlausibleCwd(
   // win32 also allows WSL POSIX paths — both shapes pass.
   if (platform === 'win32') return true;
   return !isWinShape;
+}
+
+/**
+ * Whether a cwd can exist in the pane's filesystem domain.
+ *
+ * WSL accepts Linux-shaped paths plus its two Windows namespace UNC forms,
+ * but never drive paths or unrelated UNC shares.
+ */
+export function isPlausibleSessionCwd(
+  cwd: string,
+  domain: 'host' | 'msys' | 'wsl',
+  platform: NodeJS.Platform | string = typeof process !== 'undefined' ? process.platform : 'linux',
+): boolean {
+  if (domain !== 'wsl') return isPlausibleCwd(cwd, platform);
+  return isWslUncPath(cwd) || isPlausibleCwd(cwd, 'linux');
 }
