@@ -15,6 +15,7 @@ import type {
 } from '../../../shared/transcript/turnEvents';
 import { useT } from '../../hooks/useT';
 import { CodeChip } from './CodeChip';
+import { Prose } from './Prose';
 
 export interface ChatRowProps {
   event: TurnEvent;
@@ -22,6 +23,12 @@ export interface ChatRowProps {
   agentName?: string;
   /** Optimistic composer echo — rendered at reduced emphasis until it lands. */
   pending?: boolean;
+  /**
+   * False when the row continues the previous speaker's turn — consecutive
+   * events from one speaker read as ONE turn under ONE label (a tool run
+   * between two assistant texts does not restart it).
+   */
+  showSpeaker?: boolean;
   onFetchBody?: (eventId: string, n: number) => Promise<string>;
 }
 
@@ -89,26 +96,40 @@ const USER_CARD_STYLE: React.CSSProperties = {
   borderRadius: 7,
 };
 
-function UserRow({ event, pending }: { event: UserTextEvent; pending?: boolean }): React.ReactElement {
+function UserRow({
+  event,
+  pending,
+  showSpeaker = true,
+}: {
+  event: UserTextEvent;
+  pending?: boolean;
+  showSpeaker?: boolean;
+}): React.ReactElement {
   const t = useT();
   return (
     <div
       // Right-aligned and width-capped: chat convention for the human's own
       // messages (owner decision 2026-07-28). Agent turns stay left/full-width.
-      className="flex flex-col gap-0.5 items-end ml-auto w-fit max-w-[78%] px-2.5 py-1.5"
-      style={USER_CARD_STYLE}
+      //
+      // The cap is 88%, not 78%: at 78% a long paste wrapped much earlier than
+      // the agent's reply next to it and the human side read as a footnote.
+      // Short lines still size to their content (`w-fit`), with a floor so a
+      // one-word message is a card rather than a chip.
+      className="flex flex-col gap-1 items-end ml-auto w-fit min-w-[6rem] max-w-[88%]"
       data-chat-row="user"
       data-chat-align="right"
       data-chat-pending={pending ? '1' : undefined}
     >
-      <SpeakerLabel self>{t('chat.you')}</SpeakerLabel>
-      <div
-        className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words ${
-          pending ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'
-        }`}
-        data-chat-text
-      >
-        {event.text}
+      {/* The label sits ABOVE the card, on the same baseline grammar as the
+          agent's — inside the card's top-right it read as cramped chrome. */}
+      {showSpeaker && <SpeakerLabel self>{t('chat.you')}</SpeakerLabel>}
+      <div className="w-full px-3 py-2" style={USER_CARD_STYLE} data-chat-user-card>
+        <Prose
+          text={event.text}
+          className={`text-[13px] leading-relaxed ${
+            pending ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'
+          }`}
+        />
       </div>
       {pending && (
         <span className="text-[11px] font-mono text-[var(--text-muted)]" role="status">
@@ -122,52 +143,49 @@ function UserRow({ event, pending }: { event: UserTextEvent; pending?: boolean }
 function AssistantRow({
   event,
   agentName,
+  showSpeaker = true,
   onFetchBody,
 }: {
   event: AssistantTextEvent;
   agentName?: string;
+  showSpeaker?: boolean;
   onFetchBody?: (eventId: string, n: number) => Promise<string>;
 }): React.ReactElement {
   const t = useT();
   const blocks = new Map<number, CodeBlockRef>((event.codeBlocks ?? []).map((b) => [b.n, b]));
-  const segments = splitCodeMarkers(event.text);
   const referenced = new Set<number>();
-  for (const s of segments) if ('blockN' in s) referenced.add(s.blockN);
+  for (const s of splitCodeMarkers(event.text)) if ('blockN' in s) referenced.add(s.blockN);
   // Blocks the prose never referenced still exist in the transcript — append
   // them rather than losing evidence to a marker mismatch.
   const orphans = (event.codeBlocks ?? []).filter((b) => !referenced.has(b.n));
 
+  // Marker → chip. Returning null (unknown block) makes Prose fall back to the
+  // literal marker text, so a truncated page never deletes a run of prose.
+  const renderCodeRef = (n: number): React.ReactNode => {
+    const block = blocks.get(n);
+    if (!block) return null;
+    return <CodeChip eventId={event.id} block={block} onFetchBody={onFetchBody} />;
+  };
+
   return (
     <div
-      className="flex flex-col gap-0.5"
+      // Full width by contract, minus a right gutter: without it the agent ran
+      // edge-to-edge while the human's card stopped at 88%, and the two sides
+      // read as two unrelated column treatments instead of one conversation.
+      className="flex flex-col gap-1 pr-[10%]"
       data-chat-row={event.thinking ? 'thinking' : 'assistant'}
       data-chat-align="full"
     >
-      <SpeakerLabel self={false}>{agentName || t('chat.agent')}</SpeakerLabel>
-      <div
+      {showSpeaker && <SpeakerLabel self={false}>{agentName || t('chat.agent')}</SpeakerLabel>}
+      <Prose
+        text={event.text}
+        renderCodeRef={renderCodeRef}
         className={
           event.thinking
-            ? 'text-[11px] font-mono leading-relaxed text-[var(--text-muted)] whitespace-pre-wrap break-words'
-            : 'text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words'
+            ? 'text-[11px] font-mono leading-relaxed text-[var(--text-muted)]'
+            : 'text-[13px] leading-relaxed text-[var(--text-main)]'
         }
-        data-chat-text
-      >
-        {segments.map((seg, i) => {
-          if ('text' in seg) return <React.Fragment key={`t${i}`}>{seg.text}</React.Fragment>;
-          const block = blocks.get(seg.blockN);
-          // Unknown ref → show the marker as plain text rather than swallowing
-          // the row's content.
-          if (!block) return <React.Fragment key={`u${i}`}>{seg.literal}</React.Fragment>;
-          return (
-            <CodeChip
-              key={`c${seg.blockN}`}
-              eventId={event.id}
-              block={block}
-              onFetchBody={onFetchBody}
-            />
-          );
-        })}
-      </div>
+      />
       {orphans.length > 0 && (
         <div className="flex flex-col items-start gap-0.5">
           {orphans.map((block) => (
@@ -192,10 +210,25 @@ function MetaRow({ event }: { event: MetaEvent }): React.ReactElement {
   );
 }
 
-export function ChatRow({ event, agentName, pending, onFetchBody }: ChatRowProps): React.ReactElement | null {
-  if (event.kind === 'user_text') return <UserRow event={event} pending={pending} />;
+export function ChatRow({
+  event,
+  agentName,
+  pending,
+  showSpeaker = true,
+  onFetchBody,
+}: ChatRowProps): React.ReactElement | null {
+  if (event.kind === 'user_text') {
+    return <UserRow event={event} pending={pending} showSpeaker={showSpeaker} />;
+  }
   if (event.kind === 'assistant_text') {
-    return <AssistantRow event={event} agentName={agentName} onFetchBody={onFetchBody} />;
+    return (
+      <AssistantRow
+        event={event}
+        agentName={agentName}
+        showSpeaker={showSpeaker}
+        onFetchBody={onFetchBody}
+      />
+    );
   }
   if (event.kind === 'meta') return <MetaRow event={event} />;
   // tool_use / tool_result never reach here — foldToolRuns owns them.
