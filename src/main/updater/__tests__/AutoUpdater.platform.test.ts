@@ -478,3 +478,61 @@ describe('AutoUpdater darwin-arm64 install (Squirrel.Mac loopback feed)', () => 
     expect(loaded.nativeUpdater.quitAndInstall).not.toHaveBeenCalled();
   });
 });
+
+describe('AutoUpdater — the auto-update toggle gates background polls only', () => {
+  it('toggle off: background polls stop, but a manual UPDATE_CHECK still hits the feed', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcHandlers, ipcListeners } = await loadForPlatform('win32');
+
+    // Capture renderer events so the test can assert the check RAN TO
+    // COMPLETION, not merely that a request left the building.
+    const sent: Array<{ channel: string; data: Record<string, unknown> }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string, data: Record<string, unknown>) => { sent.push({ channel, data }); },
+      },
+    };
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    // User turns auto-update OFF before the first scheduled check fires.
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
+
+    // Neither the 15s first check nor a full 30-min interval may touch the network.
+    await vi.advanceTimersByTimeAsync(15_000 + 30 * 60 * 1000);
+    expect(requestUrls).toHaveLength(0);
+
+    // A manual "check for updates" press is an explicit request: it must work
+    // with the toggle off — otherwise the toggle bricks the only update path.
+    const reply = await ipcHandlers.get(IPC.UPDATE_CHECK)!();
+    expect(reply).toEqual({ status: 'checking' });
+    // The unrouted feed URL answers 204 (up to date): the check must complete
+    // and report not-available — a check that fired and then died would leave
+    // no terminal event and fail here.
+    await vi.waitFor(() => {
+      expect(sent.some((m) => m.channel === IPC.UPDATE_NOT_AVAILABLE)).toBe(true);
+    });
+    expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+
+    updater.stop();
+  });
+
+  it('toggle back on: background polling resumes at the next interval', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcListeners } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null);
+    updater.start();
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(requestUrls).toHaveLength(0);
+
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, true);
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+    expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
+
+    updater.stop();
+  });
+});
