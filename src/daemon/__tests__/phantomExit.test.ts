@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
+  classifyReapIdentity,
   isPhantomExit,
   isPidAlive,
   isSameBootProven,
+  mayReap,
   shouldReconcileTombstone,
 } from '../phantomExit';
 
@@ -68,6 +70,57 @@ describe('isPidAlive', () => {
     expect(isPidAlive(0)).toBe(false);
     expect(isPidAlive(-1)).toBe(false);
     expect(isPidAlive(Number.NaN)).toBe(false);
+  });
+});
+
+// Both reaping paths kill a whole process TREE, and Windows recycles pids
+// aggressively while a tombstone can outlive its shell by deadTtlHours. The
+// creation time is what separates "our orphan" from "a stranger's shell".
+describe('classifyReapIdentity', () => {
+  const T1 = '20260727142800.123456+540';
+  const T2 = '20260727150000.000000+540';
+
+  it('a matching recorded creation time is proof', () => {
+    expect(
+      classifyReapIdentity({ storedStartTime: T1, currentStartTime: T1, looksLikeOurShell: true }),
+    ).toBe('start-time');
+  });
+
+  it('a recorded time overrides the executable-name match when it disagrees', () => {
+    // The recycled-pid case: a brand new powershell.exe wearing our old pid
+    // passes the name check, so the name check must not get a vote here.
+    expect(
+      classifyReapIdentity({ storedStartTime: T1, currentStartTime: T2, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('an unreadable current creation time never counts as a match', () => {
+    expect(
+      classifyReapIdentity({ storedStartTime: T1, currentStartTime: null, looksLikeOurShell: true }),
+    ).toBe('unconfirmed');
+  });
+
+  it('falls back to the executable-name heuristic only when nothing was recorded', () => {
+    // Pre-fix tombstones have no creation time; accepting the weaker evidence
+    // is what lets existing orphans be cleaned up at all.
+    expect(
+      classifyReapIdentity({ storedStartTime: undefined, currentStartTime: T1, looksLikeOurShell: true }),
+    ).toBe('heuristic');
+    expect(
+      classifyReapIdentity({ storedStartTime: null, currentStartTime: null, looksLikeOurShell: true }),
+    ).toBe('heuristic');
+  });
+
+  it('no recorded time and not our shell means no evidence at all', () => {
+    expect(
+      classifyReapIdentity({ storedStartTime: undefined, currentStartTime: T1, looksLikeOurShell: false }),
+    ).toBe('unconfirmed');
+  });
+
+  it('only an unconfirmed identity blocks the kill', () => {
+    expect(mayReap('start-time')).toBe(true);
+    expect(mayReap('heuristic')).toBe(true);
+    expect(mayReap('unconfirmed')).toBe(false);
   });
 });
 

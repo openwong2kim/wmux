@@ -91,6 +91,88 @@ export function isPhantomExit(
 }
 
 /**
+ * The OS-reported creation time of a pid, or null if it cannot be read.
+ *
+ * A pid on its own is not an identity — Windows recycles pids aggressively and
+ * a tombstone can outlive its shell by `deadTtlHours`, so "pid 20516 is alive"
+ * says nothing about WHICH process is alive. (pid, startTime) is effectively
+ * unique: the OS cannot hand the same pid to a second process at the same
+ * instant. Recording it at spawn and comparing it before a kill is what stops
+ * reconciliation from taskkill-ing an innocent shell that inherited the pid.
+ *
+ * Null on ANY failure — probe error, timeout, unparseable output, process
+ * already gone. Callers must treat null as "identity unknown", never as a
+ * match, since the whole point is to withhold the kill when unsure.
+ */
+export async function getProcessStartTime(pid: number): Promise<string | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const path = await import('node:path');
+    const execFileAsync = promisify(execFile);
+    if (process.platform === 'win32') {
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const wmic = path.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
+      const { stdout } = await execFileAsync(
+        wmic,
+        ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
+        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+      );
+      // "CreationDate=20260727142800.123456+540"
+      const match = String(stdout).match(/CreationDate=(\S+)/i);
+      const value = match?.[1]?.trim();
+      return value ? value : null;
+    }
+    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 3000,
+    });
+    const value = String(stdout).trim();
+    return value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How confidently can we say the process behind `pid` is the one we spawned?
+ *
+ *  - `start-time`   — the recorded creation time matches what the OS reports
+ *                     now. (pid, startTime) is unique, so this is proof.
+ *  - `heuristic`    — no creation time was recorded (a tombstone written by a
+ *                     build predating it), but the executable still looks like
+ *                     our shell. Weaker: any `powershell.exe` passes. Accepted
+ *                     only so pre-existing orphans can still be cleaned up.
+ *  - `unconfirmed`  — a creation time was recorded and does NOT match (the pid
+ *                     belongs to something else now), or nothing corroborates
+ *                     the pid at all. Never kill on this.
+ *
+ * A recorded start time is authoritative when present: if it disagrees, the
+ * executable-name heuristic must not be allowed to override it — that is
+ * exactly the recycled-pid case (`powershell.exe` reborn under the same pid).
+ */
+export type ReapIdentity = 'start-time' | 'heuristic' | 'unconfirmed';
+
+export function classifyReapIdentity(opts: {
+  storedStartTime?: string | null;
+  currentStartTime: string | null;
+  looksLikeOurShell: boolean;
+}): ReapIdentity {
+  if (opts.storedStartTime) {
+    return opts.currentStartTime !== null && opts.currentStartTime === opts.storedStartTime
+      ? 'start-time'
+      : 'unconfirmed';
+  }
+  return opts.looksLikeOurShell ? 'heuristic' : 'unconfirmed';
+}
+
+/** Is this identity level strong enough to authorize killing the tree? */
+export function mayReap(identity: ReapIdentity): boolean {
+  return identity !== 'unconfirmed';
+}
+
+/**
  * Can we PROVE the state file was written during the boot we are running in?
  *
  * Only a stored bootId that exists and matches counts. A missing stored bootId

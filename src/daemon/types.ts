@@ -26,6 +26,22 @@ export interface DaemonSession {
   createdAt: string;        // ISO 8601
   lastActivity: string;     // ISO 8601
   pid: number;              // child process PID
+  /**
+   * OS-reported creation time of `pid`, as the platform prints it (Windows
+   * WMIC `CreationDate`, posix `ps -o lstart=`). Opaque — only ever compared
+   * for equality against a fresh reading of the same pid.
+   *
+   * A pid alone is not an identity: Windows recycles pids aggressively and a
+   * tombstone can outlive its shell by `deadTtlHours`, so a later "pid is
+   * alive" check can be answering about a completely different process.
+   * (pid, pidStartTime) is unique, and #646's reaping paths kill a process
+   * tree — they must not fire on a recycled pid.
+   *
+   * Optional: filled in asynchronously just after spawn (so it is absent for
+   * the first moments of a session's life), and absent entirely from records
+   * written before this field existed. Consumers must degrade, not guess.
+   */
+  pidStartTime?: string;
   cmd: string;              // executed command
   /**
    * LIVE working directory. Updated at runtime from the OSC 7 sequences the
