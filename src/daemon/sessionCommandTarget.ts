@@ -1,11 +1,9 @@
-import type { ActiveSessionContext, SessionLocation } from '../shared/sessionLocation';
+import {
+  createSessionCommandTarget,
+  type SessionCommandTarget,
+  type SessionLocation,
+} from '../shared/sessionLocation';
 import type { DaemonSession } from './types';
-
-export interface DaemonSessionCommandTarget {
-  sessionId: string;
-  location: SessionLocation;
-  activeContext?: ActiveSessionContext;
-}
 
 /** Read the normalized durable location without reclassifying live state. */
 export function daemonSessionLocation(
@@ -20,18 +18,6 @@ export function daemonSessionLocation(
 /** Sole daemon-side constructor for a live session command target. */
 export function daemonSessionCommandTarget(
   session: Pick<DaemonSession, 'id' | 'location'>,
-): DaemonSessionCommandTarget {
-  const location = daemonSessionLocation(session);
-  if (location.domain !== 'wsl') {
-    return { sessionId: session.id, location };
-  }
-  return {
-    sessionId: session.id,
-    location,
-    activeContext: {
-      sessionId: session.id,
-      active: true,
-      ...(location.distro ? { distro: location.distro } : {}),
-    },
-  };
+): SessionCommandTarget {
+  return createSessionCommandTarget(session.id, daemonSessionLocation(session));
 }

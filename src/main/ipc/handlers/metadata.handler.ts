@@ -17,6 +17,7 @@ import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import {
   classifySessionLocation,
+  createSessionCommandTarget,
   locationsEqual,
   type SessionLocation,
   type SessionLocationSnapshot,
@@ -550,16 +551,7 @@ export function getPaneCommandTarget(ptyId: string): PaneCommandTarget | undefin
   const cwd = cwdMap.get(ptyId);
   if (!identity || !cwd) return undefined;
   const location = classifySessionLocation(identity.shell, cwd, identity.distro);
-  if (location.domain !== 'wsl') return { sessionId: ptyId, location };
-  return {
-    sessionId: ptyId,
-    location,
-    activeContext: {
-      sessionId: ptyId,
-      active: true,
-      ...(location.distro ? { distro: location.distro } : {}),
-    },
-  };
+  return createSessionCommandTarget(ptyId, location);
 }
 
 export function getBranch(ptyId: string): string | undefined {
