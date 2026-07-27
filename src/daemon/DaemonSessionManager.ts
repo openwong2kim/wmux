@@ -119,13 +119,15 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
- *  - 'session:phantomExit'  → { id, pid, exitCode, signal, cmd, lastActivityMsAgo }
+ *  - 'session:phantomExit'  → { id, pid, exitCode, signal, cmd, lastActivityMsAgo, raw }
  *      A PTY exit that reported no exit code and no signal while the shell pid
  *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
  *      phantomExit.ts / issue #646). Mechanism only: no state is set and no
  *      death is announced here. daemon/index.ts owns the policy — it reaps the
  *      orphaned process tree and then runs the normal death flow, matching how
- *      the session:interrupted policy lives there too.
+ *      the session:interrupted policy lives there too. `raw` is the verbatim
+ *      node-pty payload, forwarded so the daemon log records the exact shape
+ *      the native layer produced (this class cannot reach that logger).
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
 export class DaemonSessionManager extends EventEmitter {
@@ -579,11 +581,6 @@ export class DaemonSessionManager extends EventEmitter {
         !involuntary && isPhantomExit(payload.exitCode, payload.signal, meta.pid, isPidAlive);
       const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
       if (phantom) {
-        // Log the payload verbatim: the native-layer investigation needs the
-        // exact shape node-pty handed us, not our interpretation of it.
-        console.log(
-          `[DaemonSessionManager] phantom PTY exit for ${params.id} (pid ${meta.pid} still alive) — raw node-pty payload: ${JSON.stringify(payload)}`,
-        );
         // The bridge's PTY object is unusable either way (its outSocket is
         // already destroyed), so release its timers/listeners here. State and
         // the death announcement are the policy layer's call.
@@ -595,6 +592,11 @@ export class DaemonSessionManager extends EventEmitter {
           signal: payload.signal,
           cmd: meta.cmd,
           lastActivityMsAgo,
+          // Carried, not logged here: this class has no access to the daemon's
+          // file logger, and a console.log would never reach the daemon log
+          // the native-layer investigation actually reads. index.ts prints it
+          // on the [lifecycle] line.
+          raw: JSON.stringify(payload),
         });
         return;
       }

@@ -3542,10 +3542,13 @@ function wireEvents(
   // and would leave the still-live shell behind — exactly the orphan this fix
   // exists to prevent. Reattaching to the live ConPTY instead of killing it is
   // a separate piece of work (likely an upstream node-pty fix).
-  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number }) => {
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
+    // `raw` is the verbatim node-pty payload — printed as-is because the
+    // native-layer investigation needs the exact shape node-pty produced, not
+    // our reading of it.
     log(
       'info',
-      `[lifecycle] session:phantomExit id=${payload.id} pid=${payload.pid ?? '?'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} — PTY reported an exit with no code and no signal, but the pid is STILL ALIVE (node-pty conout-socket-close, see #646). Reaping the orphaned process tree, then marking dead.`,
+      `[lifecycle] session:phantomExit id=${payload.id} pid=${payload.pid ?? '?'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} rawPtyPayload=${payload.raw ?? '?'} — PTY reported an exit with no code and no signal, but the pid is STILL ALIVE (node-pty conout-socket-close, see #646). Reaping the orphaned process tree, then marking dead.`,
     );
     const finish = () => {
       const managed = sessionManager.getSession(payload.id);
