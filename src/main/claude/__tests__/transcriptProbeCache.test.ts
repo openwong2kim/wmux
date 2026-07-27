@@ -97,7 +97,7 @@ describe('transcript probe cache', () => {
     expect(refresh.calls).toHaveBeenCalledTimes(1);
 
     refresh.settle(unreachable);
-    await cache.whenIdle('k');
+    await cache.whenIdle();
     clock.advance(TTL);
     expect(cache.lives('k', probe, refresh.calls)).toBe(true);
     expect(refresh.calls).toHaveBeenCalledTimes(2);
@@ -127,7 +127,7 @@ describe('transcript probe cache', () => {
     expect(refresh.calls).toHaveBeenCalledTimes(1);
 
     refresh.settle(answered(false));
-    await cache.whenIdle('k');
+    await cache.whenIdle();
     expect(cache.lives('k', probe, refresh.calls)).toBe(false);
     // The refresh restamped the answer, so the next TTL window is quiet again.
     clock.advance(TTL - 1);
@@ -147,7 +147,7 @@ describe('transcript probe cache', () => {
     expect(refresh.calls).toHaveBeenCalledTimes(1);
 
     refresh.settle(answered(true));
-    await cache.whenIdle('k');
+    await cache.whenIdle();
     // The flag clears, so a later TTL crossing refreshes again.
     clock.advance(TTL);
     cache.lives('k', () => answered(true), refresh.calls);
@@ -163,7 +163,7 @@ describe('transcript probe cache', () => {
     clock.advance(TTL);
     cache.lives('k', () => answered(true), refresh.calls);
     refresh.settle(unreachable);
-    await cache.whenIdle('k');
+    await cache.whenIdle();
 
     // Not false: a timeout is not evidence the transcript is gone.
     expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 });
@@ -182,7 +182,7 @@ describe('transcript probe cache', () => {
     expect(cache.lives('k', () => answered(true), refresh)).toBe(true);
     clock.advance(TTL);
     expect(cache.lives('k', () => answered(true), refresh)).toBe(true);
-    await cache.whenIdle('k');
+    await cache.whenIdle();
     expect(cache.answerFor('k')).toEqual({ lives: true, at: 1_000 });
   });
 
@@ -205,7 +205,7 @@ describe('transcript probe cache', () => {
     // start reporting dead, or the earlier unreachable attempt has quietly
     // become a permanent answer.
     refresh.settle(answered(false));
-    await cache.whenIdle('k');
+    await cache.whenIdle();
     expect(cache.answerFor('k')).toEqual({ lives: false, at: 1_000 + TTL });
     expect(cache.lives('k', probe, refresh.calls)).toBe(false);
     expect(probe).toHaveBeenCalledTimes(1);

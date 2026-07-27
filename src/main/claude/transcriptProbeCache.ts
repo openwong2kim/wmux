@@ -89,12 +89,13 @@ export interface TranscriptProbeCache {
     probeAsync: () => Promise<ProbeOutcome>,
   ): boolean;
   /**
-   * Settle in-flight refreshes — for one key, or all of them.
+   * Settle every in-flight refresh.
    *
-   * The all-keys form drains refreshes whose entry has since been evicted or
-   * reset away, which a per-entry view cannot see.
+   * Deliberately not per-key: a refresh whose entry was evicted or reset away is
+   * no longer reachable through that entry, and those are the ones a caller most
+   * needs to wait for.
    */
-  whenIdle(key?: string): Promise<void>;
+  whenIdle(): Promise<void>;
   /** Read seam: the recorded answer, or null when no probe has answered yet. */
   answerFor(key: string): ProbeAnswer | null;
   reset(): void;
@@ -198,11 +199,7 @@ export function createTranscriptProbeCache(
       ensureRefresh(key, entry, probeAsync);
       return entry.answer ? entry.answer.lives : ASSUME_ALIVE_WHEN_UNPROVEN;
     },
-    async whenIdle(key) {
-      if (key !== undefined) {
-        await entries.get(key)?.pending;
-        return;
-      }
+    async whenIdle() {
       await Promise.all([...inFlight]);
     },
     answerFor(key) {

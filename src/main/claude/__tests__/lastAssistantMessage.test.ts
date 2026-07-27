@@ -553,15 +553,40 @@ describe('WSL transcript probe caching', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
-  it('keys the cache per location, so two distros never share an answer', () => {
-    const ubuntu = { ...context };
-    const debian = {
-      location: { ...location, distro: 'Debian' },
-      activeSession: { sessionId: 'pty-2', active: true as const, distro: 'Debian' },
-    };
-    const live: TranscriptCommandRunner = () => Buffer.from('1');
-    const dead: TranscriptCommandRunner = () => Buffer.from('0');
-    expect(transcriptFileLives('/home/me/t.jsonl', ubuntu, live)).toBe(true);
-    expect(transcriptFileLives('/home/me/t.jsonl', debian, dead)).toBe(false);
+  // Both halves of the key are pinned separately. Varying them together — as
+  // this once did — leaves either component deletable with the suite green,
+  // and dropping either one lets two panes share a single answer.
+  const live: TranscriptCommandRunner = () => Buffer.from('1');
+
+  it("keys the cache on the durable location's distro", () => {
+    const dead = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('0'));
+    // The daemon's fallback passes an active context with no distro at all
+    // (index.ts:520-524), so for those calls the distro lives only on the
+    // location — and two distros must still not share an answer.
+    const withoutContextDistro = (distro: string) => ({
+      location: { ...location, distro },
+      activeSession: { sessionId: 'pty-1', active: true as const },
+    });
+    expect(transcriptFileLives('/home/me/t.jsonl', withoutContextDistro('Ubuntu-24.04'), live))
+      .toBe(true);
+    expect(transcriptFileLives('/home/me/t.jsonl', withoutContextDistro('Debian'), dead))
+      .toBe(false);
+    expect(dead).toHaveBeenCalledTimes(1);
+  });
+
+  it("keys the cache on the active session's distro", () => {
+    const dead = vi.fn<TranscriptCommandRunner>().mockReturnValue(Buffer.from('0'));
+    // The mirror case: a durable location that never resolved a distribution,
+    // with the distro supplied by the live session. The location identities are
+    // then identical, so only the active distro can keep the panes apart.
+    const withoutLocationDistro = (distro: string) => ({
+      location: { domain: 'wsl' as const, cwd: '/work/repo', shell: 'wsl.exe' },
+      activeSession: { sessionId: 'pty-1', active: true as const, distro },
+    });
+    expect(transcriptFileLives('/home/me/t.jsonl', withoutLocationDistro('Ubuntu-24.04'), live))
+      .toBe(true);
+    expect(transcriptFileLives('/home/me/t.jsonl', withoutLocationDistro('Debian'), dead))
+      .toBe(false);
+    expect(dead).toHaveBeenCalledTimes(1);
   });
 });
