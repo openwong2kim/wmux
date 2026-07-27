@@ -165,19 +165,44 @@ export class PeerStore {
       recvHighWater: 0,
       sendSeq: 0,
     };
-    // Enforce the cap BEFORE committing a NEW peer (fail-closed): if the store is
-    // full and there is no evictable slot, REJECT the pairing rather than overflow.
-    if (!this.map.has(rec.peerUuid) && this.map.size >= PEER_CAP) {
-      const victim = this.pickEvictable(rec.peerUuid);
-      if (!victim) {
-        throw new Error('LanLink peer store is full — revoke a peer before pairing a new one');
+    // Mutate and persist as ONE unit (#658). persist() can throw several ways on
+    // win32 — the C12 fail-closed unlink when the owner-DACL cannot be applied,
+    // and a failed atomic rename, which leaves no primary file at all because the
+    // previous one was already moved aside. Whichever fires, the map used to keep
+    // the record: listPeers() reads memory, not disk, so the responder reported a
+    // healthy pairing over a file that was gone, while the same throw unwound into
+    // pump() and closed the socket before the joiner was ever confirmed. A
+    // permanent half-pair that looked like success on exactly one side.
+    //
+    // The snapshot is DEEP because the other mutators edit records in place.
+    const snapshot = new Map<string, PeerRecord>();
+    for (const [uuid, existing] of this.map) snapshot.set(uuid, { ...existing });
+    try {
+      // Enforce the cap BEFORE committing a NEW peer (fail-closed): if the store is
+      // full and there is no evictable slot, REJECT the pairing rather than overflow.
+      if (!this.map.has(rec.peerUuid) && this.map.size >= PEER_CAP) {
+        const victim = this.pickEvictable(rec.peerUuid);
+        if (!victim) {
+          throw new Error('LanLink peer store is full — revoke a peer before pairing a new one');
+        }
+        this.map.delete(victim.peerUuid);
       }
-      this.map.delete(victim.peerUuid);
+      this.map.set(rec.peerUuid, rec);
+      this.persist();
+    } catch (err) {
+      this.map = snapshot;
+      throw err;
     }
-    this.map.set(rec.peerUuid, rec);
-    this.persist();
     return rec;
   }
+
+  // NOTE: only upsertPaired rolls back. The other mutators must NOT — rolling a
+  // revoke(), a burn (noteSteadyStateAuthFail) or a receive high-water back would
+  // be fail-OPEN: it would restore access the caller asked to remove, let a host
+  // that cannot persist never reach PEER_BURN_THRESHOLD, and reopen the C8 replay
+  // gate for an authenticated-but-hostile peer. Those keep their in-memory effect
+  // and let the persist failure surface instead. Granting access is the only
+  // direction where memory running ahead of disk is the dangerous one.
 
   /**
    * Reserve the next monotonic send sequence for a peer (sender side of C8 dedup).
@@ -278,8 +303,15 @@ export class PeerStore {
       // Fail closed: never leave the long-term secrets broad-readable.
       try {
         fs.unlinkSync(this.filePath);
-      } catch {
-        /* best-effort */
+      } catch (unlinkErr) {
+        // Secrets are on disk under an ACL we could neither tighten nor remove.
+        // upsertPaired rolls its in-memory copy back, so this file now holds a
+        // record memory does not — and it returns on the next start. Nothing here
+        // can fix that; make sure it is not silent.
+        console.error(
+          '[LanLinkPeerStore] could not remove an un-hardened peer file — secrets remain on disk:',
+          unlinkErr,
+        );
       }
       throw new Error('LanLink peer store: could not apply owner-only ACL — refusing to persist secrets');
     }

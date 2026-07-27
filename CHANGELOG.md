@@ -5,6 +5,18 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)
+
+### Fixed
+
+- **A `lanlink` pairing that cannot be saved no longer leaves one machine paired to a peer that has never heard of it.** If writing the peer file failed, the machine accepting the pairing had already added the peer in memory — so it went on listing a healthy peer over a file that was gone, while the same failure dropped the connection before it could confirm anything to the other side. The machine that started the pairing got `connection closed`, saved nothing, and had no way back: sending to that peer failed locally as unknown, and messages from it were dropped for lack of a secret to read them with. Reproduced by two teams across both role directions, on Windows. Saving is now all-or-nothing — if the write fails, the in-memory copy goes back with it, so neither side is left holding a pairing the other cannot honour. Revoking a peer and burning a misbehaving one deliberately keep their in-memory effect even when the write fails, because restoring those would keep delivering to a peer the user just removed. Note this fixes the *silent, permanent half-pair*, not whatever made the write fail: on a host where the peer file cannot be written, pairing still fails — but now it fails on both sides. (#658)
+
+- **A `lanlink` peer that hangs up mid-pairing now says what that probably means.** The joiner reported a bare `connection closed`, which reads like a transport fault — so both teams that hit the bug above went looking underneath lanlink, at firewalls and MTU and the overlay network, when the peer had simply failed to save the pairing. The message now names the two real possibilities and states that neither side ended up paired. No wire format changes: the responder has no authenticated channel to send a reason on at that point, and a cleartext one would both leak whether the PIN was right and be forgeable by anyone on the network. (#658)
+
 ## [3.37.2] — 2026-07-28
 
 ### Changed

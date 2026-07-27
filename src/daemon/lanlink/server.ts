@@ -321,9 +321,16 @@ export class LanLinkServer {
 
   /** Revoke + destroy live connections of that peer (C13). */
   revokePeer(peerUuid: string): void {
-    this.deps.peers.revoke(peerUuid);
-    for (const conn of [...this.conns]) {
-      if (conn.peerUuid === peerUuid) this.destroy(conn);
+    try {
+      this.deps.peers.revoke(peerUuid);
+    } finally {
+      // In a finally: a store that could not WRITE the revocation still dropped
+      // the peer from memory, and cutting its live connections is the half of C13
+      // that takes effect immediately. Letting the throw skip this loop would
+      // leave a revoked peer streaming records into the inbox.
+      for (const conn of [...this.conns]) {
+        if (conn.peerUuid === peerUuid) this.destroy(conn);
+      }
     }
   }
 
@@ -511,9 +518,31 @@ export class LanLinkServer {
     }
     // Success: persist the peer, establish AEAD, send respMac as the first record.
     // (The PAKE slot was already released when onHello's scrypt settled.)
-    this.deps.peers.upsertPaired(r.result);
+    //
+    // The commit can throw — a win32 owner-DACL failure makes the store refuse to
+    // hold secrets (C12 fail-closed), a failed atomic rename does the same, and a
+    // full store rejects the pairing outright. It is atomic since #658, so a throw
+    // leaves NO in-memory record and both sides stay unpaired. Catch it here so
+    // the failure is logged as a pairing outcome rather than unwinding into
+    // pump()'s broad wall, where it was indistinguishable from a wire error.
+    try {
+      this.deps.peers.upsertPaired(r.result);
+    } catch (err) {
+      console.error('[LanLinkServer] pairing commit failed, not pairing:', err instanceof Error ? err.message : err);
+      this.destroy(conn);
+      return;
+    }
     this.establishAead(conn, r.result.peerUuid, r.sessionKeys);
-    this.send(conn, AEAD_RECORD, conn.sealer!.seal(r.respMac));
+    // seal() inside the try: it is evaluated as an ARGUMENT to send(), so a throw
+    // here would escape send()'s own catch and unwind into the frame dispatcher.
+    let record: Buffer;
+    try {
+      record = conn.sealer!.seal(r.respMac);
+    } catch {
+      this.destroy(conn);
+      return;
+    }
+    this.send(conn, AEAD_RECORD, record);
   }
 
   private onReconnectHello(conn: Conn, body: Buffer): void {
