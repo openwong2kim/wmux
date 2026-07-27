@@ -56,12 +56,17 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+// Registered param shapes, captured alongside the handlers — fanout_start's
+// contract is as much about which parameters are ABSENT as about its behavior.
+const shapes = new Map<string, Record<string, unknown>>();
+
 // Minimal McpServer stand-in that captures each registered tool's handler.
 function collectTools(): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
-    tool: (name: string, _desc: string, _schema: unknown, handler: ToolHandler) => {
+    tool: (name: string, _desc: string, schema: unknown, handler: ToolHandler) => {
       tools.set(name, handler);
+      if (schema && typeof schema === 'object') shapes.set(name, schema as Record<string, unknown>);
     },
   };
   // The tools need a way to resolve a workspaceId. The real index.ts injects
@@ -140,10 +145,25 @@ describe('channel_* tools: registration', () => {
     expect(channelMissionClose).toBeDefined();
   });
 
-  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
-    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
-    // (fan-out) per §3 tool-surface minimalism.
-    expect(tools.get('channel_mission_list')).toBeUndefined();
+  it('registers channel_mission_list (the read half of the fan-out surface)', () => {
+    // J0 deliberately left task.mission.list pipe-only. The fan-out MCP surface
+    // (plans/fanout-mcp-surface-2026-07-28.md D7) needs it: an agent that starts
+    // a fan-out has no other way to learn what each task became (status, branch,
+    // worktree path). The daemon filters on the server-resolved
+    // verifiedWorkspaceId, so it can only ever return the caller's own missions.
+    expect(tools.get('channel_mission_list')).toBeDefined();
+  });
+
+  it('registers fanout_start without repo_path or agent_cmd parameters', () => {
+    // The two omissions ARE the security contract: the repo is derived from the
+    // calling pane's cwd (so an agent cannot create worktrees in an arbitrary
+    // repo), and agent_cmd reaches an unquoted shell interpolation main-side.
+    const fanoutStart = tools.get('fanout_start');
+    expect(fanoutStart).toBeDefined();
+    const shape = shapes.get('fanout_start') ?? {};
+    expect(Object.keys(shape).sort()).toEqual(
+      ['idempotency_key', 'member_id', 'prompt', 'task_prompts', 'titles'],
+    );
   });
 });
 

@@ -21,12 +21,20 @@ type GetWindow = () => BrowserWindow | null;
 /** 스폰은 몇 초 걸릴 수 있으니 렌더러 spawn 타임아웃을 넉넉히(PTY 생성 포함). */
 const SPAWN_TIMEOUT_MS = 30000;
 
-export function registerFanOutHandler(
+/**
+ * Build the process-lifetime FanOutService.
+ *
+ * MUST be called once per process and the instance shared by every caller
+ * (renderer IPC + pipe RPC). The service owns two pieces of state that break
+ * when duplicated: the §2 G1 idempotency LRU, and a TaskWorktreeManager whose
+ * serial queue is what keeps concurrent `git worktree add` off the same repo.
+ * Two instances = two queues = the race that queue exists to prevent.
+ */
+export function createFanOutService(
   getDaemonClient: () => DaemonClient | null,
   getWindow: GetWindow,
-): () => void {
-  // 프로세스 수명 단일 인스턴스 — 멱등 LRU가 재호출 사이에 유지돼야 한다.
-  const service = new FanOutService({
+): FanOutService {
+  return new FanOutService({
     daemon: {
       rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
         const dc = getDaemonClient();
@@ -47,7 +55,9 @@ export function registerFanOutHandler(
       },
     },
   });
+}
 
+export function registerFanOutHandler(service: FanOutService): () => void {
   ipcMain.removeHandler(IPC.FANOUT_START);
   ipcMain.handle(
     IPC.FANOUT_START,

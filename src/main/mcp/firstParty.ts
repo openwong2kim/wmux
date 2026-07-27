@@ -257,11 +257,16 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // re-nudges, so denying it to agents would re-ping them forever.
   'a2a.channel.ack',
   'a2a.channel.unread',
-  // WorkTask mission channels (J0) — the two mutating tools the bundled server
-  // exposes (channel_mission_start / channel_mission_close). task.mission.list
-  // is pipe-only in J0 (not an MCP tool), so it is deliberately absent here.
+  // WorkTask mission channels (J0) — the mutating tools the bundled server
+  // exposes (channel_mission_start / channel_mission_close), plus the
+  // owner-scoped read behind channel_mission_list.
   'task.mission.start',
   'task.mission.close',
+  'task.mission.list',
+  // Fan-out (fanout_start). The repo is derived server-side from the caller's
+  // own pane and the spawn is execute-approval gated — see
+  // plans/fanout-mcp-surface-2026-07-28.md.
+  'task.fanout.start',
   // company mode (all wmux.internal — undeclarable, hence the need for this list)
   'company.a2a.whoami',
   'company.a2a.send',

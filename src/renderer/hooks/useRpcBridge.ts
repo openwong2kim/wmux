@@ -559,6 +559,26 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     return { ptyId, workspaceId: newWsId, workspaceName: newWs.name };
   }
 
+  if (method === 'fanout.requestApproval') {
+    // 파이프/MCP fan-out의 승인 게이트(plans/fanout-mcp-surface-2026-07-28.md D5).
+    // 새 게이트가 아니라 기존 A2A execute 게이트 재사용 — 같은 큐·같은 30s
+    // auto-deny·같은 전역 auto-approve 토글을 그대로 탄다. 렌더러 다이얼로그가
+    // 시작하는 fan-out(FanOutDialog)은 사람 클릭이 곧 승인이라 이 경로를 타지 않는다.
+    const callerWsId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    const repoPath = typeof params.repoPath === 'string' ? params.repoPath : '';
+    const taskCount = typeof params.taskCount === 'number' ? params.taskCount : 0;
+    const promptPreview = typeof params.promptPreview === 'string' ? params.promptPreview : '';
+    const approved = await requestExecuteApproval({
+      taskId: 'fan-out',
+      senderWorkspaceId: callerWsId,
+      receiverWorkspaceId: callerWsId,
+      messagePreview: promptPreview,
+      cwd: repoPath || null,
+      fanout: { taskCount, repoPath },
+    });
+    return { approved };
+  }
+
   if (method === 'fanout.spawnWorkspace') {
     // J1 §2 ③ — fan-out 태스크의 전용 워크스페이스 + 에이전트 페인 스폰. main의
     // FanOutService가 sendToRenderer로 호출한다. mcp.claimWorkspace와 동형이나

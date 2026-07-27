@@ -19,6 +19,9 @@ export function requestExecuteApproval(input: {
   receiverWorkspaceId: string;
   messagePreview: string;
   cwd: string | null;
+  /** Set by the fan-out RPC path so the dialog describes what actually
+   *  happens (N new worktree workspaces, not one spawn in this workspace). */
+  fanout?: { taskCount: number; repoPath: string };
 }): Promise<boolean> {
   if (useStore.getState().a2aAutoApproveExecute) return Promise.resolve(true);
 
@@ -44,6 +47,7 @@ export function requestExecuteApproval(input: {
       messagePreview: input.messagePreview,
       cwd: input.cwd,
       expiresAt,
+      ...(input.fanout ? { fanout: input.fanout } : {}),
     });
   });
 }

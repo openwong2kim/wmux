@@ -105,7 +105,7 @@ winget install openwong2kim.wmux
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
-| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **84 tools** (browser, terminal, panes, channels, A2A) register themselves, scoped to the workspace that called them. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **86 tools** (browser, terminal, panes, channels, A2A, fan-out) register themselves, scoped to the workspace that called them. |
 
 ---
 

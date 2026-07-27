@@ -49,6 +49,14 @@ export interface PendingExecuteApproval {
   cwd: string | null;
   /** Epoch ms when the prompt auto-denies. */
   expiresAt: number;
+  /**
+   * Present when the prompt is a fan-out request from the pipe/MCP surface
+   * rather than an A2A `execute:true` send. Same queue, same timer, same
+   * auto-approve toggle — the dialog only swaps its copy, because the A2A
+   * wording ("spawn a Claude CLI in this workspace") misdescribes a fan-out,
+   * which spawns into N NEW worktree workspaces.
+   */
+  fanout?: { taskCount: number; repoPath: string };
 }
 
 export interface A2aSlice {

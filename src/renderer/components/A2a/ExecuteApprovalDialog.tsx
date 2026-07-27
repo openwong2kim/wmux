@@ -34,6 +34,11 @@ export default function ExecuteApprovalDialog() {
   // implies an inter-workspace handoff and reads as harmless; be explicit so the
   // user isn't social-engineered into waving through a self-spawned bypass agent.
   const sameWs = !!approval.senderWorkspaceId && approval.senderWorkspaceId === approval.receiverWorkspaceId;
+  // Fan-out from the pipe/MCP surface. The A2A copy below says "in this
+  // workspace", which is wrong for a fan-out (N NEW worktree workspaces) in a
+  // security-relevant way — so the fan-out branch states the count and the repo
+  // instead of letting the user wave through a misdescribed spawn.
+  const fanout = approval.fanout;
   const remainingMs = Math.max(0, approval.expiresAt - now);
   const remainingSec = Math.ceil(remainingMs / 1000);
 
@@ -61,11 +66,17 @@ export default function ExecuteApprovalDialog() {
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            Background execution requested
+            {fanout ? 'Fan-out requested' : 'Background execution requested'}
           </p>
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
-          {sameWs ? (
+          {fanout ? (
+            <>
+              An agent wants to fan out{' '}
+              <span style={{ color: 'var(--accent-red)' }}>{fanout.taskCount} isolated task{fanout.taskCount === 1 ? '' : 's'}</span>
+              {' '}— each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.
+            </>
+          ) : sameWs ? (
             <>
               An agent in <span style={{ color: 'var(--accent-red)' }}>this workspace</span> wants to spawn
               another autonomous Claude CLI with{' '}
@@ -82,12 +93,22 @@ export default function ExecuteApprovalDialog() {
           className="text-xs font-mono flex flex-col gap-1 p-3 rounded-md"
           style={{ backgroundColor: 'var(--bg-mantle)', color: 'var(--text-sub2)' }}
         >
-          <div><span style={{ color: 'var(--text-subtle)' }}>from:</span> {senderName}</div>
-          <div><span style={{ color: 'var(--text-subtle)' }}>to:</span> {receiverName}</div>
-          {approval.cwd ? (
-            <div><span style={{ color: 'var(--text-subtle)' }}>cwd:</span> {approval.cwd}</div>
-          ) : null}
-          <div><span style={{ color: 'var(--text-subtle)' }}>task:</span> {approval.taskId}</div>
+          {fanout ? (
+            <>
+              <div><span style={{ color: 'var(--text-subtle)' }}>caller:</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>repo:</span> {fanout.repoPath}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>tasks:</span> {fanout.taskCount}</div>
+            </>
+          ) : (
+            <>
+              <div><span style={{ color: 'var(--text-subtle)' }}>from:</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>to:</span> {receiverName}</div>
+              {approval.cwd ? (
+                <div><span style={{ color: 'var(--text-subtle)' }}>cwd:</span> {approval.cwd}</div>
+              ) : null}
+              <div><span style={{ color: 'var(--text-subtle)' }}>task:</span> {approval.taskId}</div>
+            </>
+          )}
         </div>
         <div
           className="text-xs font-mono p-3 rounded-md whitespace-pre-wrap break-words"

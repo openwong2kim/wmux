@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An agent can now start a fan-out, not just a human.** Fan-out — one prompt split into N isolated tasks, each with its own git worktree, branch, workspace, agent pane and private mission channel — existed only behind the in-app dialog, so the MCP surface wmux exposes to other agents could not reach its flagship journey. The new `fanout_start` tool does, and `channel_mission_list` reports back what each task became: status, branch, worktree path, and the workspace it runs in. The repository is deliberately **not** a parameter: it is derived from the working directory of the pane the calling agent is anchored to, so an agent can only ever fan out over the repo it is already working in, and passing a path is rejected rather than quietly ignored. The agent command is likewise not a parameter, because the value is interpolated into a shell command. Every fan-out started this way asks the user first, through the same approval prompt (and the same auto-approve setting) that already gates agents spawning background agents; the in-app dialog is unchanged and still needs no prompt, since clicking it is the approval.
+
 ### Changed
 
 - **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)
