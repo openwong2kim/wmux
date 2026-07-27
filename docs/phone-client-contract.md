@@ -35,6 +35,39 @@ refused before routing — a DNS-rebinding guard. Send the host you dialed.
 This is **not** treated as evidence of a secure transport anywhere. It used to
 be, for minting; that was removed, because the caller writes the header.
 
+### Protocol version
+
+`GET /api/config` is the first authenticated call a client makes, and it carries
+the handshake:
+
+| Field | Meaning |
+| --- | --- |
+| `protocolVersion` | the phone contract this daemon speaks |
+| `minProtocolVersion` | the oldest client contract it still accepts |
+| `serverVersion` | the release the daemon was spawned from — display and bug reports only, never compared |
+
+Read it once at connect, before anything else on the screen depends on a route
+answering.
+
+- **A missing `protocolVersion` is not an error.** A daemon predating the
+  handshake answers the same body with all three keys absent; read that as
+  protocol `0` and carry on exactly as before. Nothing that shipped before this
+  section changed shape.
+- **If your own protocol is below `minProtocolVersion`, stop and say so.** Show
+  an explicit "update required" state naming the app, not the daemon — the
+  operator's phone is the thing that has to move. Do not retry, do not fall
+  back: the server has deleted the shape you speak, so every later call is a
+  failure with a worse explanation attached.
+- **If `protocolVersion` is above yours, keep going.** The number moves only on
+  breaking changes, and the floor is what decides whether you are still served.
+  A newer daemon that still accepts you is the normal case, not a warning.
+- `serverVersion` is a string and may be the literal `unknown`. It is never a
+  compatibility input — the two numbers above are the whole gate.
+
+The version is deliberately not on a route of its own. A separate `/api/version`
+would be a second round trip that only pre-handshake daemons could fail, which
+is precisely the daemon the handshake exists to recognise.
+
 ---
 
 ## 2. Pairing
@@ -205,7 +238,7 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload}
+GET /api/config    → {allowInput, allowUpload, protocolVersion, minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```

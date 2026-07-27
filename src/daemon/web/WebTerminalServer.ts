@@ -18,6 +18,11 @@ import {
   type GitRunner,
   type SessionDiffResult,
 } from './sessionDiff';
+import {
+  daemonServerVersion,
+  MIN_PHONE_PROTOCOL_VERSION,
+  PHONE_PROTOCOL_VERSION,
+} from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
 
@@ -64,7 +69,8 @@ import { buildWebCsp } from './webCsp';
  *   GET  /api/pair?code=       the ONLY unauthenticated API route; mints this
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
- *   GET  /api/config           allowInput + allowUpload flags
+ *   GET  /api/config           allowInput + allowUpload flags, plus the phone
+ *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
@@ -1246,9 +1252,19 @@ export class WebTerminalServer {
     }
     const principal = auth.principal;
     if (req.method === 'GET' && p === '/api/config') {
+      // The handshake rides HERE rather than on a route of its own: this is
+      // already the first call a client makes after pairing, so a dedicated
+      // /api/version would be a second round trip that only pre-handshake
+      // daemons could fail — exactly the daemons it exists to detect. A client
+      // talking to one of those gets a body with no version keys at all, which
+      // reads as "protocol 0", the same way a missing `allowUpload` reads as
+      // false.
       return this.json(res, 200, {
         allowInput: this.opts?.allowInput === true,
         allowUpload: this.opts?.allowUpload === true,
+        protocolVersion: PHONE_PROTOCOL_VERSION,
+        minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
+        serverVersion: daemonServerVersion(),
       });
     }
     if (req.method === 'GET' && p === '/api/sessions') {
