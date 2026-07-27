@@ -42,6 +42,14 @@ import { AgentProcessTracker } from './AgentProcessTracker';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
+import {
+  classifyReapIdentity,
+  getProcessStartTime,
+  isPidAlive,
+  isSameBootProven,
+  mayReap,
+  shouldReconcileTombstone,
+} from './phantomExit';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
@@ -799,6 +807,99 @@ async function processLiveness(pid: number): Promise<ProcessLiveness> {
   }
 }
 
+/**
+ * Kill a shell process and everything under it (#646).
+ *
+ * Used whenever we discover a shell that wmux has already stopped accounting
+ * for — a phantom PTY exit, or a persisted tombstone whose pid still answers.
+ * The whole TREE has to go, not just the shell: the thing actually burning RAM
+ * and API quota is the agent running inside it, and killing the shell alone
+ * would reparent that child and leave the orphan behind.
+ *
+ * Best-effort by construction. Failure is logged and swallowed: the caller is
+ * on its way to marking the session dead either way, and throwing here would
+ * cost the other sessions (the daemon's uncaughtException handler treats three
+ * repeats as fatal).
+ */
+async function reapProcessTree(pid: number, reason: string): Promise<void> {
+  try {
+    if (process.platform === 'win32') {
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
+      await execFileAsync(taskkill, ['/pid', String(pid), '/T', '/F'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+    } else {
+      // The PTY child leads its own process group, so the negative pid takes
+      // its descendants with it. If it somehow isn't a group leader (ESRCH /
+      // EPERM), fall back to the process alone rather than giving up.
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        process.kill(pid, 'SIGKILL');
+      }
+    }
+    log('info', `[reap] killed process tree for pid ${pid} (${reason})`);
+  } catch (err) {
+    log('warn', `[reap] failed to kill process tree for pid ${pid} (${reason}):`, err);
+  }
+}
+
+/**
+ * Confirm the pid really is the shell we spawned, then reap it (#646).
+ *
+ * Every reaping path goes through here, because a pid is not an identity: an
+ * exited shell's pid can be handed to an unrelated process, and both reaping
+ * paths kill an entire process TREE. Killing the wrong one takes out a user's
+ * own shell and everything running in it.
+ *
+ * Strongest available evidence wins, and a recorded creation time is
+ * authoritative when present — the executable-name check must never override
+ * a mismatch, since a recycled pid running `powershell.exe` would sail through
+ * it. When nothing confirms the pid, the kill is SKIPPED and logged; the
+ * caller still completes whatever bookkeeping it was doing.
+ *
+ * Returns whether the reap was authorized.
+ */
+async function reapIfIdentityConfirmed(opts: {
+  pid: number;
+  cmd: string;
+  storedStartTime?: string;
+  reason: string;
+}): Promise<boolean> {
+  const [currentStartTime, looksLikeOurShell] = await Promise.all([
+    getProcessStartTime(opts.pid),
+    // Only consulted when no creation time was recorded, but probing both in
+    // parallel keeps the slow path off the critical path of the common case.
+    isOurShellProcess(opts.pid, opts.cmd),
+  ]);
+  const identity = classifyReapIdentity({
+    storedStartTime: opts.storedStartTime,
+    currentStartTime,
+    looksLikeOurShell,
+  });
+  if (!mayReap(identity)) {
+    log(
+      'warn',
+      `[reap] refusing to kill pid ${opts.pid} (${opts.reason}): identity unconfirmed ` +
+        `(storedStartTime=${opts.storedStartTime ?? 'none'} currentStartTime=${currentStartTime ?? 'unknown'} ` +
+        `looksLikeOurShell=${looksLikeOurShell} cmd=${opts.cmd}) — the pid may belong to another process now`,
+    );
+    return false;
+  }
+  // Say which evidence authorized the kill: 'start-time' is proof,
+  // 'heuristic' is the weaker executable-name match we accept only for
+  // records written before creation times were recorded.
+  log('info', `[reap] identity=${identity} authorized killing pid ${opts.pid} (${opts.reason})`);
+  await reapProcessTree(opts.pid, opts.reason);
+  return true;
+}
+
 /** Check if a PID belongs to the shell process we originally spawned.
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
 async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
@@ -988,6 +1089,13 @@ async function recoverSessions(
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
   const rebooted = state.bootId != null && state.bootId !== currentBootId;
+  // #646: `rebooted` is "we can prove a reboot happened", so a state file with
+  // no bootId at all (written by a pre-bootId build, or lost) reads as false —
+  // fine for the kill-stale-pid paths it was written for, fatal for tombstone
+  // reconciliation, which would then taskkill a recycled pid after a real
+  // reboot. Reconciliation needs the opposite claim: proof that we are on the
+  // SAME boot, which requires the bootId to exist AND match.
+  const sameBootProven = isSameBootProven(state.bootId, currentBootId);
   if (rebooted) {
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }
@@ -1024,7 +1132,28 @@ async function recoverSessions(
   }
 
   for (const session of state.sessions) {
-    if (session.state === 'dead') continue;
+    if (session.state === 'dead') {
+      // #646: a tombstone is supposed to mean "the process is gone". Before
+      // this fix a phantom PTY exit could write one while the shell kept
+      // running, and because recovery skips dead records the orphan was
+      // invisible to every census — reporters found shells outliving their
+      // daemon by 11–12 days. Reconcile here: PROVEN same boot (so the pid
+      // cannot have been recycled), pid still alive, and it really is our
+      // shell → it is an orphan of that bug, so reap it.
+      if (shouldReconcileTombstone(session, { sameBootProven, alive: isPidAlive })) {
+        const pid = session.pid;
+        const reaped = await reapIfIdentityConfirmed({
+          pid,
+          cmd: session.cmd,
+          storedStartTime: session.pidStartTime,
+          reason: `tombstone reconciliation of session ${session.id}`,
+        });
+        if (reaped) {
+          log('info', `[recovery] reconciled tombstone ${session.id}: pid ${pid} was still alive`);
+        }
+      }
+      continue;
+    }
     // Cap-skipped: leave session untouched in state.sessions. It will be
     // re-evaluated on the next launch.
     if (!recoverableIds.has(session.id)) continue;
@@ -3464,6 +3593,58 @@ function wireEvents(
       sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
     }, SHUTDOWN_KILL_RECLASSIFY_MS);
     interruptedTimers.set(payload.id, timer);
+  });
+
+  // session:phantomExit → reap-and-die (#646).
+  //
+  // node-pty told us the PTY exited, but the shell pid is still alive: this is
+  // the ConPTY conout-socket-close path, not a death. The transport is gone for
+  // good (node-pty already destroyed its outSocket), so the shell is
+  // unreachable — but it and its agent child keep running, which is how users
+  // ended up with powershell.exe processes outliving their daemon by days.
+  //
+  // Policy: run the ordinary death flow with a `phantom-exit` reason so the
+  // log says what happened, then kill the tree. Deliberately NOT the
+  // session:interrupted (suspend) path: that respawns the session on recovery
+  // and would leave the still-live shell behind — exactly the orphan this fix
+  // exists to prevent. Reattaching to the live ConPTY instead of killing it is
+  // a separate piece of work (likely an upstream node-pty fix).
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidStartTime?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
+    // `raw` is the verbatim node-pty payload — printed as-is because the
+    // native-layer investigation needs the exact shape node-pty produced, not
+    // our reading of it.
+    log(
+      'info',
+      `[lifecycle] session:phantomExit id=${payload.id} pid=${payload.pid ?? '?'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} rawPtyPayload=${payload.raw ?? '?'} — PTY reported an exit with no code and no signal, but the pid is STILL ALIVE (node-pty conout-socket-close, see #646). Reaping the orphaned process tree, then marking dead.`,
+    );
+    // Mark dead SYNCHRONOUSLY, before the reap. The reap shells out to
+    // taskkill and can take seconds; leaving the session 'attached' for that
+    // window meant a graceful shutdown landing in it would persist the session
+    // as 'suspended', and the next boot would faithfully respawn a pane over a
+    // shell we had just reaped. Nothing about the death depends on the kill
+    // succeeding — the transport is gone either way — so the kill runs in the
+    // background afterwards.
+    const managed = sessionManager.getSession(payload.id);
+    // Destroyed meanwhile (user closed the pane) → the destroy path already
+    // did the teardown, so announcing a death now would be a ghost event. The
+    // process still has to go, so this only skips the bookkeeping.
+    if (managed) {
+      managed.meta.state = 'dead';
+      managed.meta.exitCode = payload.exitCode;
+      sessionManager.emit('session:died', { ...payload, reason: 'phantom-exit' });
+      sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
+    }
+    if (payload.pid === undefined) return;
+    // Identity-check even here, where the exit event just named this pid: the
+    // shell could have exited for real between the event and this probe, and
+    // the pid could already belong to something else. If it cannot be
+    // confirmed the kill is skipped — the session is already dead regardless.
+    void reapIfIdentityConfirmed({
+      pid: payload.pid,
+      cmd: payload.cmd ?? '',
+      storedStartTime: payload.pidStartTime,
+      reason: `phantom exit of session ${payload.id}`,
+    });
   });
 
   // A pane the user closes while a reclassification is pending must not get a
