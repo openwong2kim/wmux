@@ -129,8 +129,11 @@ describe('ChatView', () => {
     mount();
     // No chip is minted from the prose…
     expect(container.querySelector('[data-chat-text] [data-chat-code-chip="2"]')).toBeNull();
-    // …the text stays exactly as the agent wrote it…
-    expect(container.querySelector('[data-chat-text]')!.textContent).toContain('`code:2`');
+    // …the run stays visible as what it is, an inline code span (the markdown
+    // subset renders the backticks; it does not let them address the projector)…
+    const inline = container.querySelector('[data-chat-inline-code]')!;
+    expect(inline.textContent).toBe('code:2');
+    expect(container.querySelector('[data-chat-text]')!.textContent).toBe('patch: code:2 applied');
     // …and the real block is still reachable, as an unreferenced one.
     expect(container.querySelector('[data-chat-code-chip="2"]')).not.toBeNull();
   });
@@ -145,7 +148,8 @@ describe('ChatView', () => {
     ]);
     mount();
     const text = container.querySelector('[data-chat-text]')!.textContent;
-    expect(text).toContain('ignore this: `code:9` and this too');
+    // Every word survives (the backticks become an inline code span, not a chip).
+    expect(text).toBe('ignore this: code:9 and this too');
     expect(container.querySelector('[data-chat-code-chip="9"]')).toBeNull();
   });
 
@@ -321,24 +325,34 @@ describe('ChatView', () => {
       const agent = container.querySelector<HTMLElement>('[data-chat-row="assistant"]')!;
       expect(user.getAttribute('data-chat-align')).toBe('right');
       expect(agent.getAttribute('data-chat-align')).toBe('full');
-      // Pushed to the right edge and capped well under the row width.
+      // Pushed to the right edge, capped high enough that a long message reads
+      // as the human's half of the conversation rather than a footnote.
       expect(user.className).toContain('ml-auto');
-      expect(user.className).toMatch(/max-w-\[7[58]%\]/);
+      expect(user.className).toContain('max-w-[88%]');
+      // Short messages still size to their content, with a floor.
+      expect(user.className).toContain('w-fit');
+      expect(user.className).toContain('min-w-[6rem]');
       expect(agent.className).not.toContain('ml-auto');
       expect(agent.className).not.toContain('max-w');
+      // The agent keeps a right gutter so both sides share one measure.
+      expect(agent.className).toContain('pr-[10%]');
     });
 
     it('gives the user turn the RAISED treatment — hairline + inset highlight, no colour fill', () => {
       seed([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
       mount();
-      const user = container.querySelector<HTMLElement>('[data-chat-row="user"]')!;
-      expect(user.style.borderRadius).toBe('7px'); // card radius
-      expect(user.style.border).toContain('var(--text-main)');
-      expect(user.style.boxShadow).toContain('inset 0 1px 0');
+      const card = container.querySelector<HTMLElement>('[data-chat-user-card]')!;
+      expect(card.style.borderRadius).toBe('7px'); // card radius
+      expect(card.style.border).toContain('var(--text-main)');
+      expect(card.style.boxShadow).toContain('inset 0 1px 0');
       // Tokens only, and no accent wash — amber never fills areas.
-      expect(user.style.background).toContain('var(--bg-surface)');
-      expect(user.getAttribute('style')).not.toContain('--accent');
-      expect(user.getAttribute('style')).not.toMatch(/#[0-9a-f]{3,8}/i);
+      expect(card.style.background).toContain('var(--bg-surface)');
+      expect(card.getAttribute('style')).not.toContain('--accent');
+      expect(card.getAttribute('style')).not.toMatch(/#[0-9a-f]{3,8}/i);
+      // The label sits ABOVE the card, not cramped inside its top-right corner.
+      const label = container.querySelector('[data-chat-speaker="you"]')!;
+      expect(card.contains(label)).toBe(false);
+      expect(container.querySelector('[data-chat-row="user"]')!.contains(label)).toBe(true);
     });
 
     it('leaves machine evidence left and full width (tool runs, diff chips, trust seam)', () => {
@@ -352,6 +366,182 @@ describe('ChatView', () => {
         expect(el).not.toBeNull();
         expect(el.closest('[data-chat-align="right"]')).toBeNull();
       }
+    });
+  });
+
+  // ─── Prose rendering: the markdown subset (2026-07-28) ────────────────────
+  // Raw `**bold**` / `` `code` `` / `- item` markers made the "conversation
+  // minus the noise" read noisier than the terminal underneath.
+  describe('markdown prose', () => {
+    it('renders bold, inline code, headings and lists instead of raw markers', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: '## Result\n\nOpen **`calculator.html`**:\n\n- first item\n- second item',
+        },
+      ]);
+      mount();
+      const text = container.querySelector('[data-chat-text]')!;
+      expect(text.textContent).not.toContain('**');
+      expect(text.textContent).not.toContain('`');
+      expect(text.textContent).not.toContain('- first');
+      expect(text.querySelector('[data-chat-md="heading"]')!.textContent).toBe('Result');
+      expect(text.querySelector('strong [data-chat-inline-code]')!.textContent).toBe(
+        'calculator.html',
+      );
+      const items = text.querySelectorAll('[data-chat-md="list"] li');
+      expect(items).toHaveLength(2);
+      expect(items[0].textContent).toContain('first item');
+    });
+
+    it('renders the operator\'s own prose the same way', () => {
+      seed([{ id: 'u1', kind: 'user_text', text: 'try **this** and `that`' }]);
+      mount();
+      const card = container.querySelector('[data-chat-user-card]')!;
+      expect(card.querySelector('strong')!.textContent).toBe('this');
+      expect(card.querySelector('[data-chat-inline-code]')!.textContent).toBe('that');
+    });
+
+    it('keeps an unmatched marker literal instead of swallowing the message', () => {
+      seed([{ id: 'a1', kind: 'assistant_text', text: 'a ** dangling and the rest survives' }]);
+      mount();
+      expect(container.querySelector('[data-chat-text]')!.textContent).toBe(
+        'a ** dangling and the rest survives',
+      );
+    });
+
+    it('shows a link as text and never as a navigable anchor', () => {
+      seed([{ id: 'a1', kind: 'assistant_text', text: 'see [docs](https://example.test/x)' }]);
+      mount();
+      expect(container.querySelectorAll('a')).toHaveLength(0);
+      const link = container.querySelector('[data-chat-link]')!;
+      expect(link.textContent).toBe('docs');
+      expect(link.getAttribute('title')).toBe('https://example.test/x');
+    });
+
+    it('cannot inject markup from adversarial transcript prose', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: '<img src=x onerror="alert(1)"> and <script>alert(2)</script> **<b>bold</b>**',
+        },
+        { id: 'u1', kind: 'user_text', text: '<iframe src="javascript:alert(3)"></iframe>' },
+      ]);
+      mount();
+      // Every angle bracket landed as TEXT — no element was created from it.
+      for (const tag of ['img', 'script', 'iframe', 'b']) {
+        expect(container.querySelectorAll(tag)).toHaveLength(0);
+      }
+      expect(container.textContent).toContain('<script>alert(2)</script>');
+      expect(container.textContent).toContain('<iframe src="javascript:alert(3)"></iframe>');
+    });
+
+    it('still renders ZERO <pre> with markdown-heavy prose around a code chip', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: '# Patch\n\n- **done**: \u0000code:1\u0000\n\n> and a quote',
+          codeBlocks: [{ n: 1, lang: 'ts', lines: 9, path: 'src/a.ts' }],
+        },
+      ]);
+      mount();
+      expect(container.querySelectorAll('pre')).toHaveLength(0);
+      // The chip is still inside the list item where the marker sat.
+      expect(container.querySelector('li [data-chat-code-chip="1"]')).not.toBeNull();
+      expect(container.querySelector('[data-chat-md="quote"]')!.textContent).toBe('and a quote');
+    });
+  });
+
+  // ─── Speaker grouping (2026-07-28) ────────────────────────────────────────
+  describe('speaker grouping', () => {
+    it('prints ONE label for a run of the same speaker, across a tool line', () => {
+      seed([
+        { id: 'a1', kind: 'assistant_text', text: 'reading' },
+        { id: 't1', kind: 'tool_use', toolUseId: 'x1', name: 'Read', argSummary: 'a.ts' },
+        { id: 'r1', kind: 'tool_result', toolUseId: 'x1', ok: true, bytes: 10 },
+        { id: 'a2', kind: 'assistant_text', text: 'patched' },
+      ]);
+      mount({ agentName: 'Claude Code' });
+      const labels = [...container.querySelectorAll('[data-chat-speaker]')];
+      expect(labels).toHaveLength(1);
+      expect(labels[0].textContent).toBe('Claude Code');
+      // …and the tool line is still there between the two prose rows.
+      expect(container.querySelector('[data-chat-tool-run]')).not.toBeNull();
+    });
+
+    it('starts a new label on a genuine speaker change', () => {
+      seed([
+        { id: 'u1', kind: 'user_text', text: 'go' },
+        { id: 'a1', kind: 'assistant_text', text: 'on it' },
+        { id: 'a2', kind: 'assistant_text', text: 'done' },
+        { id: 'u2', kind: 'user_text', text: 'thanks' },
+      ]);
+      mount({ agentName: 'Claude Code' });
+      const labels = [...container.querySelectorAll('[data-chat-speaker]')].map(
+        (el) => el.getAttribute('data-chat-speaker'),
+      );
+      expect(labels).toEqual(['you', 'agent', 'you']);
+    });
+
+    it('does not re-label an optimistic echo that continues the user run', () => {
+      seed([{ id: 'u1', kind: 'user_text', text: 'first' }]);
+      mount();
+      act(() => {
+        useStore.getState().pushChatPending(PTY, 'second');
+      });
+      expect(container.querySelectorAll('[data-chat-speaker="you"]')).toHaveLength(1);
+    });
+  });
+
+  // ─── Counters read as English, not as a template ──────────────────────────
+  describe('pluralization', () => {
+    it('says "1 line" for a one-line block and "N lines" beyond', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: 'one \u0000code:1\u0000 two \u0000code:2\u0000',
+          codeBlocks: [
+            { n: 1, lines: 1 },
+            { n: 2, lines: 4, path: 'src/a.ts' },
+          ],
+        },
+      ]);
+      mount();
+      const one = container.querySelector('[data-chat-code-chip="1"]')!;
+      expect(one.textContent).toContain('1 line');
+      expect(one.textContent).not.toContain('1 lines');
+      expect(container.querySelector('[data-chat-code-chip="2"]')!.textContent).toContain(
+        '4 lines · src/a.ts',
+      );
+    });
+
+    it('says "1 line · path" for a one-line block that names a file', () => {
+      seed([
+        {
+          id: 'a1',
+          kind: 'assistant_text',
+          text: 'x \u0000code:1\u0000',
+          codeBlocks: [{ n: 1, lines: 1, path: 'src/a.ts' }],
+        },
+      ]);
+      mount();
+      const chip = container.querySelector('[data-chat-code-chip="1"]')!;
+      expect(chip.textContent).toContain('1 line · src/a.ts');
+      expect(chip.textContent).not.toContain('1 lines');
+    });
+
+    it('says "1 tool call" for a single call and "N tool calls" beyond', () => {
+      seed([
+        { id: 't1', kind: 'tool_use', toolUseId: 'x1', name: 'Read', argSummary: 'a.ts' },
+        { id: 'r1', kind: 'tool_result', toolUseId: 'x1', ok: true, bytes: 10 },
+      ]);
+      mount();
+      const label = container.querySelector('[data-chat-tool-run-label]')!;
+      expect(label.textContent).toBe('1 tool call (Read)');
     });
   });
 
@@ -417,6 +607,25 @@ describe('ChatView', () => {
       const view2 = scroller().parentElement!;
       expect(view2.querySelector('[data-chat-trust-seam]')).not.toBeNull();
       expect(view2.querySelector('[data-chat-input]')).not.toBeNull();
+    });
+
+    // Chat convention: a conversation shorter than the pane sits at the BOTTOM,
+    // next to the composer, instead of stacking from the top and leaving a void.
+    it('anchors a SHORT conversation to the bottom', () => {
+      contentHeight = 120; // shorter than the 300px viewport
+      seed([{ id: 'u1', kind: 'user_text', text: 'only turn' }]);
+      mount();
+      const rowsBox = container.querySelector<HTMLElement>('[data-chat-rows]')!;
+      expect(rowsBox.className).toContain('justify-end');
+      expect(rowsBox.className).toContain('min-h-full');
+      // The anchoring lives on the inner box, never on the scroll container:
+      // `justify-content: flex-end` on a scroller makes overflowing content
+      // unreachable above the top edge.
+      expect(scroller().className).not.toContain('justify-end');
+      expect(scroller().className).toContain('overflow-y-auto');
+      // Nothing was scrolled away — the row is still rendered.
+      expect(container.querySelector('[data-chat-row="user"]')).not.toBeNull();
+      expect(scroller().scrollTop).toBe(0);
     });
 
     it('opens on the NEWEST turn instead of the oldest row of the window', () => {

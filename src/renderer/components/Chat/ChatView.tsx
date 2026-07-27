@@ -24,6 +24,7 @@ import { DiffChip } from './DiffChip';
 import { ChatComposer } from './ChatComposer';
 import { TrustSeam } from './TrustSeam';
 import { foldToolRuns } from './foldToolRuns';
+import { speakerLabelFlags, trailingSpeaker } from './speakerGrouping';
 import { useRowWindow, ROW_GAP } from './useRowWindow';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 
@@ -91,10 +92,18 @@ export function ChatView({
 
   const rows = useMemo(() => foldToolRuns(events), [events]);
 
+  // One label per speaker RUN, computed over the FULL row list — the window
+  // below renders a slice, so the flags are indexed absolutely.
+  const labelFlags = useMemo(() => speakerLabelFlags(rows), [rows]);
+  const tailSpeaker = useMemo(() => trailingSpeaker(rows), [rows]);
+
   // PR-9 row windowing: only the rows near the viewport (plus overscan) are in
   // the DOM; the rest are two spacer heights. Falls back to the full list while
   // the container is unmeasured, so a row is never missing because of this.
-  const { scrollRef, visibleRows, padTop, padBottom, measureRow } = useRowWindow(rows, rowKey);
+  const { scrollRef, visibleRows, startIndex, padTop, padBottom, measureRow } = useRowWindow(
+    rows,
+    rowKey,
+  );
 
   const onSend = useCallback(
     (text: string) => {
@@ -130,62 +139,78 @@ export function ChatView({
         position: 'relative',
       }}
     >
-      <div
-        ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col"
-        // Row spacing comes from ROW_GAP, not a `gap-2.5` class: the windowing
-        // spacers have to be computed from the same number.
-        style={{ gap: ROW_GAP }}
-        data-chat-scroll
-      >
-        {cursor && cursor.headOffset > 0 && (
-          <button
-            type="button"
-            data-chat-load-earlier
-            onClick={() => void loadEarlier()}
-            className={`self-center text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
-          >
-            {t('chat.loadEarlier')}
-          </button>
-        )}
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" data-chat-scroll>
+        {/* Bottom anchoring: a conversation shorter than the pane stacks from
+            the BOTTOM (chat convention) instead of leaving a void above the
+            composer. `justify-end` lives on this INNER box, never on the
+            scroller — on a scroll container it makes overflowing content
+            unreachable above the top edge. With `min-h-full` the box is at
+            least the viewport, so short content is pushed down and tall content
+            simply grows past it, leaving the windowing math and the sticky tail
+            untouched. */}
+        <div
+          className="flex flex-col justify-end min-h-full box-border px-3 py-2"
+          // Row spacing comes from ROW_GAP, not a `gap-2.5` class: the windowing
+          // spacers have to be computed from the same number.
+          style={{ gap: ROW_GAP }}
+          data-chat-rows
+        >
+          {cursor && cursor.headOffset > 0 && (
+            <button
+              type="button"
+              data-chat-load-earlier
+              onClick={() => void loadEarlier()}
+              className={`self-center text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            >
+              {t('chat.loadEarlier')}
+            </button>
+          )}
 
-        {unavailableText && (
-          <div className="text-[12px] text-[var(--text-muted)]" data-chat-unavailable={unavailableReason}>
-            {unavailableText}
-          </div>
-        )}
+          {unavailableText && (
+            <div className="text-[12px] text-[var(--text-muted)]" data-chat-unavailable={unavailableReason}>
+              {unavailableText}
+            </div>
+          )}
 
-        {!unavailableText && rows.length === 0 && (
-          <div className="text-[12px] text-[var(--text-muted)]" data-chat-empty>
-            {t('chat.empty')}
-          </div>
-        )}
+          {!unavailableText && rows.length === 0 && (
+            <div className="text-[12px] text-[var(--text-muted)]" data-chat-empty>
+              {t('chat.empty')}
+            </div>
+          )}
 
-        {padTop > 0 && <div data-chat-pad="top" style={{ height: padTop, flex: 'none' }} />}
+          {padTop > 0 && <div data-chat-pad="top" style={{ height: padTop, flex: 'none' }} />}
 
-        {visibleRows.map((row) => (
-          <div key={row.id} ref={measureRow(row.id)} data-chat-row={row.id}>
-            {row.kind === 'tool_run' ? (
-              <ToolRunLine run={row} />
-            ) : row.kind === 'diff' ? (
-              <DiffChip event={row.event} onOpenDiff={onOpenDiff} />
-            ) : (
-              <ChatRow event={row.event} agentName={agentName} onFetchBody={onFetchBody} />
-            )}
-          </div>
-        ))}
+          {visibleRows.map((row, i) => (
+            <div key={row.id} ref={measureRow(row.id)} data-chat-row={row.id}>
+              {row.kind === 'tool_run' ? (
+                <ToolRunLine run={row} />
+              ) : row.kind === 'diff' ? (
+                <DiffChip event={row.event} onOpenDiff={onOpenDiff} />
+              ) : (
+                <ChatRow
+                  event={row.event}
+                  agentName={agentName}
+                  showSpeaker={labelFlags[startIndex + i] ?? true}
+                  onFetchBody={onFetchBody}
+                />
+              )}
+            </div>
+          ))}
 
-        {padBottom > 0 && <div data-chat-pad="bottom" style={{ height: padBottom, flex: 'none' }} />}
+          {padBottom > 0 && <div data-chat-pad="bottom" style={{ height: padBottom, flex: 'none' }} />}
 
-        {/* Optimistic echoes: the line the user just sent, before it round-trips
-            through the transcript (PRD §4.3, second bullet). */}
-        {pending?.map((echo) => (
-          <ChatRow
-            key={echo.id}
-            event={{ id: echo.id, kind: 'user_text', text: echo.text }}
-            pending
-          />
-        ))}
+          {/* Optimistic echoes: the line the user just sent, before it round-trips
+              through the transcript (PRD §4.3, second bullet). Only the first one
+              opens a speaker run — the rest continue it. */}
+          {pending?.map((echo, i) => (
+            <ChatRow
+              key={echo.id}
+              event={{ id: echo.id, kind: 'user_text', text: echo.text }}
+              showSpeaker={i === 0 && tailSpeaker !== 'you'}
+              pending
+            />
+          ))}
+        </div>
       </div>
 
       <ChatComposer
