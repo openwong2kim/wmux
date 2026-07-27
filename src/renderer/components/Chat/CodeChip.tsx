@@ -49,9 +49,14 @@ export function CodeChip({ eventId, block, onFetchBody }: CodeChipProps): React.
     void load();
   }, [phase, load]);
 
+  const one = block.lines === 1;
   const label = block.path
-    ? t('chat.codeChipPath', { lines: block.lines, path: block.path })
-    : t('chat.codeChip', { lines: block.lines });
+    ? one
+      ? t('chat.codeChipPathOne', { path: block.path })
+      : t('chat.codeChipPath', { lines: block.lines, path: block.path })
+    : one
+      ? t('chat.codeChipOne')
+      : t('chat.codeChip', { lines: block.lines });
 
   return (
     <span className="inline-flex flex-col align-top max-w-full" data-chat-code-chip={block.n}>
