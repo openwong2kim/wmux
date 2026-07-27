@@ -379,6 +379,49 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
     },
   },
+  // Chat View (plan PR-4) — the renderer's whole view of the daemon transcript
+  // projector. Every method is a thin invoke; main owns the daemon relay and the
+  // local-mode fallback, so nothing here needs to know whether a daemon exists.
+  chat: {
+    /** TranscriptStatus for one pane. Resolves `{available:false, reason}` rather than rejecting. */
+    status: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.CHAT_STATUS, ptyId) as Promise<
+        import('../shared/transcript/turnEvents').TranscriptStatus
+      >,
+    /** One bounded page. `before` pages BACKWARD from a prior cursor.headOffset. */
+    snapshot: (ptyId: string, before?: number) =>
+      ipcRenderer.invoke(IPC.CHAT_SNAPSHOT, ptyId, before) as Promise<
+        import('../shared/transcript/turnEvents').TranscriptPage | null
+      >,
+    subscribe: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.CHAT_SUBSCRIBE, ptyId) as Promise<{
+        ok: boolean;
+        status: import('../shared/transcript/turnEvents').TranscriptStatus;
+      }>,
+    unsubscribe: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.CHAT_UNSUBSCRIBE, ptyId) as Promise<{ ok: boolean }>,
+    /**
+     * Fetch ONE code-block body on expand. Bodies are never on the wire with the
+     * append event (A3), so this is the only path that returns code text.
+     */
+    codeBlock: (args: { ptyId: string; srcOffset: number; n: number; eventId?: string }) =>
+      ipcRenderer.invoke(IPC.CHAT_CODE_BLOCK, args) as Promise<{ body: string } | null>,
+    /** Live projector deltas for every subscribed pane. Returns an unsubscribe fn. */
+    onAppend: (
+      callback: (
+        ptyId: string,
+        data: import('../shared/transcript/turnEvents').TranscriptAppendData,
+      ) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        ptyId: string,
+        data: import('../shared/transcript/turnEvents').TranscriptAppendData,
+      ) => callback(ptyId, data);
+      ipcRenderer.on(IPC.CHAT_APPEND, listener);
+      return () => { ipcRenderer.removeListener(IPC.CHAT_APPEND, listener); };
+    },
+  } satisfies import('../shared/transcript/turnEvents').ChatBridgeApi,
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override

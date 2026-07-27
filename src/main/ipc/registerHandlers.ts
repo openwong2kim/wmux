@@ -30,6 +30,7 @@ import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerWebHandlers } from './handlers/web.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
+import { registerChatHandlers } from './handlers/chat.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
@@ -188,6 +189,16 @@ export function registerAllHandlers(
   // snapshot is refreshed each swap. With no daemon the handler resolves
   // `{ running:false, error }` rather than throwing (see web.handler.ts).
   const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
+
+  // Chat View (plan PR-4) — registered UNCONDITIONALLY, like wmux web above:
+  // the renderer probes CHAT_STATUS on every Chat-capable pane, and in local
+  // mode that probe has to resolve `{available:false, reason:'local-mode'}`
+  // rather than reject on a missing handler (a rejection would surface as a
+  // generic error toast instead of a disabled toggle).
+  const cleanupChat = registerChatHandlers({
+    getWindow,
+    getDaemonClient: () => daemonClient ?? null,
+  });
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
@@ -407,6 +418,7 @@ export function registerAllHandlers(
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
+    cleanupChat();
     cleanupAccounts();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).

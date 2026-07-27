@@ -250,6 +250,33 @@ export const IPC = {
   DECK_BRIEFING_SEEN: 'deck:briefing:seen',
   DECK_BRIEFING_CONFIG_GET: 'deck:briefing:config:get',
   DECK_BRIEFING_CONFIG_SET: 'deck:briefing:config:set',
+  //   CHAT_* — Chat View (plan PR-4). Modelled on DECK_SEND / DECK_STREAM: the
+  //   renderer talks to MAIN over Electron IPC, and main relays to the daemon's
+  //   token-only `daemon.transcript.*` methods. Deliberately NOT pipe RPC — the
+  //   pipe router is the external-agent surface, so putting Chat there would add
+  //   gen-api-reference drift surface and hand one pane's whole conversation to
+  //   any authenticated MCP client.
+  //
+  //   CHAT_STATUS      (invoke) renderer → main: TranscriptStatus for one pane.
+  //                    `{available:false, reason}` is a normal answer, never a
+  //                    throw — the toggle reads `reason` to pick its tooltip.
+  //   CHAT_SNAPSHOT    (invoke) renderer → main: one bounded TranscriptPage.
+  //                    `before` pages BACKWARD from a prior cursor.headOffset.
+  //   CHAT_SUBSCRIBE   (invoke) renderer → main: arm the daemon's watcher for
+  //                    this pane. An unopened Chat surface costs zero watchers.
+  //   CHAT_UNSUBSCRIBE (invoke) renderer → main: disarm it.
+  //   CHAT_CODE_BLOCK  (invoke) renderer → main: fetch ONE code-block body on
+  //                    expand. Bodies never ride an append event (A3) — one
+  //                    256KB tail re-encoded with bodies overruns main's 1MB
+  //                    control buffer and takes an unrelated daemon event down.
+  //   CHAT_APPEND      (push)   main → renderer: one TranscriptAppendData per
+  //                    projector delta, enveloped with its ptyId.
+  CHAT_STATUS: 'chat:status',
+  CHAT_SNAPSHOT: 'chat:snapshot',
+  CHAT_SUBSCRIBE: 'chat:subscribe',
+  CHAT_UNSUBSCRIBE: 'chat:unsubscribe',
+  CHAT_CODE_BLOCK: 'chat:codeblock',
+  CHAT_APPEND: 'chat:append',
   //   WORKSPACE_MIRROR_PUSH (send) renderer → main: a fire-and-forget full
   //   snapshot of the workspace tree + per-pane agent status. Feeds the
   //   main-process WorkspaceMirror so routing / hook resolution can be served

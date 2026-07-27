@@ -604,6 +604,12 @@ export class DaemonClient extends EventEmitter {
         case 'agent.event':
           this.emit('session:agent', { sessionId: event.sessionId, event: event.data });
           break;
+        // Chat View (PR-4) — a subscribed pane's transcript grew. Unicast from
+        // the daemon (only sockets that called daemon.transcript.subscribe get
+        // it), so by the time it lands here the renderer is already interested.
+        case 'transcript.appended':
+          this.emit('session:transcript', { sessionId: event.sessionId, data: event.data });
+          break;
         case 'agent.critical':
           this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
           break;

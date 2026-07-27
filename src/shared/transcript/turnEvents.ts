@@ -138,3 +138,36 @@ export interface TranscriptAppendData {
   events: TurnEvent[];
   cursor: TranscriptCursor;
 }
+
+/**
+ * The `window.electronAPI.chat` contract (plan PR-4).
+ *
+ * Declared HERE rather than in the preload so main, preload, renderer and
+ * `src/shared/electron.d.ts` all name one shape — the preload object is checked
+ * against it with `satisfies`, so the global augmentation cannot drift from what
+ * is actually exposed.
+ *
+ * Every method resolves rather than rejecting on an unavailable projector: a
+ * pane whose agent publishes no transcript is a normal state that disables a
+ * toggle, not an error the renderer has to catch.
+ */
+export interface ChatBridgeApi {
+  status: (ptyId: string) => Promise<TranscriptStatus>;
+  /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
+  snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;
+  subscribe: (ptyId: string) => Promise<{ ok: boolean; status: TranscriptStatus }>;
+  unsubscribe: (ptyId: string) => Promise<{ ok: boolean }>;
+  /**
+   * One code-block body, fetched on expand. `srcOffset` + `n` come off the
+   * CodeBlockRef the append event carried; `eventId` guards against a rotated
+   * file answering with a different conversation's code.
+   */
+  codeBlock: (args: {
+    ptyId: string;
+    srcOffset: number;
+    n: number;
+    eventId?: string;
+  }) => Promise<{ body: string } | null>;
+  /** Live projector deltas for every subscribed pane. Returns an unsubscribe fn. */
+  onAppend: (callback: (ptyId: string, data: TranscriptAppendData) => void) => () => void;
+}

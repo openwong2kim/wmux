@@ -11,6 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type { WebStartArgs, WebTerminalInfo } from './web';
+import type { ChatBridgeApi } from './transcript/turnEvents';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -135,6 +136,17 @@ declare global {
          */
         pairStart: (name: string) => Promise<WebTerminalInfo>;
       };
+      /**
+       * Chat View (plan PR-4) — the daemon transcript projector, relayed by main
+       * over the CHAT_* IPC channels.
+       *
+       * Optional on purpose: a packaged app can load an OLDER preload bundle
+       * than its renderer chunk, and `useChatProjection` feature-detects this
+       * whole surface rather than throwing at mount. The shape is the shared
+       * `ChatBridgeApi`, which the preload object is checked against, so this
+       * declaration cannot drift from what is exposed.
+       */
+      chat?: ChatBridgeApi;
     };
     clipboardAPI: {
       /**
