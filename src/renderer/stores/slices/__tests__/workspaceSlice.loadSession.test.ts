@@ -47,6 +47,8 @@ type TestState = WorkspaceSlice & {
   newConversationCommand: string;
   // #517 — main-owned browser backend mirror (NOT a SessionData key).
   browserBackend: 'builtin' | 'external';
+  // PR-9 — Chat View keep-warm LRU setting (a SessionData key, default OFF).
+  chatKeepWarmLru: boolean;
 };
 
 function createTestStore() {
@@ -91,6 +93,8 @@ function createTestStore() {
       // #517 — main-owned backend mirror. Seeded here so the non-persistence
       // test can prove loadSession never writes it (it isn't a SessionData key).
       browserBackend: 'builtin',
+      // PR-9 — ships OFF; loadSession is the only thing that may turn it on.
+      chatKeepWarmLru: false,
     }))
   );
 }
@@ -523,6 +527,50 @@ describe('loadSession — A2A execute auto-approve', () => {
       a2aAutoApproveExecute: 'true',
     } as unknown as SessionData);
     expect(store.getState().a2aAutoApproveExecute).toBe(false);
+  });
+});
+
+// PR-9 — the Chat View keep-warm LRU setting round-trips through SessionData.
+// It ships OFF; the 30-pane measurement (A5) is what may flip the default.
+describe('loadSession — Chat View keep-warm LRU setting', () => {
+  function session(extra: Partial<SessionData>): SessionData {
+    const ws: Workspace = {
+      id: 'ws-keepwarm',
+      name: 'KeepWarm',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      ...extra,
+    } as unknown as SessionData;
+  }
+
+  it('defaults to OFF and stays OFF for a session that never persisted the key', () => {
+    const store = createTestStore();
+    expect(store.getState().chatKeepWarmLru).toBe(false);
+    store.getState().loadSession(session({}));
+    expect(store.getState().chatKeepWarmLru).toBe(false);
+  });
+
+  it('restores a persisted true', () => {
+    const store = createTestStore();
+    store.getState().loadSession(session({ chatKeepWarmLru: true }));
+    expect(store.getState().chatKeepWarmLru).toBe(true);
+  });
+
+  it('restores a persisted false (an explicit opt-out survives a default flip)', () => {
+    const store = createTestStore();
+    store.getState().loadSession(session({ chatKeepWarmLru: false }));
+    expect(store.getState().chatKeepWarmLru).toBe(false);
+  });
+
+  it('fails closed on a non-boolean persisted value', () => {
+    const store = createTestStore();
+    store.getState().loadSession(session({ chatKeepWarmLru: 'true' } as unknown as Partial<SessionData>));
+    expect(store.getState().chatKeepWarmLru).toBe(false);
   });
 });
 

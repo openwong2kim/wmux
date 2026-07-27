@@ -9,6 +9,7 @@ import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import { ChatView } from '../Chat/ChatView';
+import { keepWarmSet } from '../../chat/keepWarmLru';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
@@ -867,10 +868,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
  * One terminal surface, rendered as either the xterm or the Chat projection
  * (plan PR-8 / D1 — two renderings of ONE surface, not two surfaces).
  *
- * When `chatMode` is on the xterm stays MOUNTED at `visible={false}`: unmounting
- * would be safe for the PTY (Terminal.tsx only disposes a pty it created itself)
- * but a remount pays a full ring-buffer replay, and PR-9 owns that trade with a
- * keep-warm LRU. Until then, toggle-back is instant.
+ * When `chatMode` is on the xterm stays MOUNTED at `visible={false}` so a
+ * toggle-back is instant. PR-9's keep-warm LRU is the memory trade on top of
+ * that: with the `chatKeepWarmLru` setting ON, only the N most recently used
+ * chat panes stay mounted and the rest unmount. Unmounting is safe for the PTY
+ * (Terminal.tsx only disposes a pty it created itself and then had cancelled),
+ * and a remount re-attaches through the session pipe (PTY_RECONNECT /
+ * PTY_RESYNC) — the cost is a ring-buffer replay, not a lost session. With the
+ * setting OFF (the default until the 30-pane measurement passes) the terminal
+ * never leaves the tree.
  */
 export function TerminalOrChat({
   surface,
@@ -894,6 +900,14 @@ export function TerminalOrChat({
   const pendingQuestion = useStore((s) => (ptyId ? s.surfacePendingQuestion[ptyId] : undefined));
   const agentEntry = useStore((s) => (ptyId ? s.surfaceAgent[ptyId] : undefined));
   const setSurfaceChatMode = useStore((s) => s.setSurfaceChatMode);
+
+  // PR-9 memory policy. The LRU only ever REMOVES a terminal that chat mode has
+  // already hidden: in terminal mode, and with the setting off, the mount
+  // decision is exactly what it was before this policy existed.
+  const chatKeepWarmLru = useStore((s) => s.chatKeepWarmLru);
+  const chatToggleOrder = useStore((s) => s.chatToggleOrder);
+  const keepWarm = useMemo(() => keepWarmSet(chatToggleOrder), [chatToggleOrder]);
+  const mountTerminal = !chatMode || !chatKeepWarmLru || keepWarm.has(ptyId);
 
   const onJumpToTerminal = useCallback(() => {
     setSurfaceChatMode(surface.id, false);
@@ -946,6 +960,7 @@ export function TerminalOrChat({
 
   return (
     <>
+      {mountTerminal && (
       <TerminalComponent
         ptyId={ptyId || undefined}
         cwd={surface.cwd || undefined}
@@ -959,6 +974,7 @@ export function TerminalOrChat({
         workspaceId={workspaceId}
         surfaceId={surface.id}
       />
+      )}
       {chatMode && (
         <ChatView
           ptyId={ptyId}

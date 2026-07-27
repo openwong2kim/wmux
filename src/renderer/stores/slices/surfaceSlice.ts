@@ -6,6 +6,7 @@ import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
+import { dropToggle, promoteToggle } from '../../chat/keepWarmLru';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -335,10 +336,21 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
             const status = state.chatStatus?.[surface.ptyId];
             if (!surface.ptyId || !status?.available) return true;
             surface.chatMode = true;
+            // PR-9 keep-warm LRU: entering chat mode makes this pane the most
+            // recently used chat surface, so it is the last one to be unmounted.
+            // Guarded for minimal test stores composed without the chat slice.
+            if (Array.isArray(state.chatToggleOrder)) {
+              state.chatToggleOrder = promoteToggle(state.chatToggleOrder, surface.ptyId);
+            }
           } else {
             // Deleted rather than set to false so a terminal-mode surface
             // serializes exactly as it did before this field existed.
             delete surface.chatMode;
+            // Back in terminal mode the xterm is mounted unconditionally; the
+            // pane no longer needs (or should hold) a keep-warm slot.
+            if (Array.isArray(state.chatToggleOrder)) {
+              state.chatToggleOrder = dropToggle(state.chatToggleOrder, surface.ptyId);
+            }
           }
           return true;
         }

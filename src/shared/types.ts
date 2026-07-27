@@ -668,6 +668,14 @@ export interface SessionData {
    */
   coldParkEnabled?: boolean;
   /**
+   * Chat View keep-warm LRU (plan PR-9): a surface in chat mode keeps its
+   * hidden xterm mounted for an instant toggle-back; with this on, only the N
+   * most recently used chat panes do and the rest unmount (toggle-back then
+   * pays a ring-buffer replay). Default false until the 30-pane measurement
+   * justifies flipping it on.
+   */
+  chatKeepWarmLru?: boolean;
+  /**
    * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
    * browser guests (automation-leased guests stay full-speed). Default false.
    */

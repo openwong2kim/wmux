@@ -64,6 +64,7 @@ import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
+import { installChatMemoryProbe } from '../../chat/chatMemoryProbe';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
 import Titlebar from '../Titlebar/Titlebar';
@@ -234,6 +235,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
     coldParkEnabled: state.coldParkEnabled,
+    // PR-9 — explicit entry (this allowlist is not a spread; a new setting that
+    // is not listed here is silently not persisted).
+    chatKeepWarmLru: state.chatKeepWarmLru,
     browserLightweightMode: state.browserLightweightMode,
     browserDiscardHidden: state.browserDiscardHidden,
     startupDirectory: state.startupDirectory || undefined,
@@ -393,6 +397,12 @@ export default function AppLayout() {
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
+
+  // A5 — the Chat View memory measurement is run IN-APP from the renderer
+  // console (`__wmuxChatMemory.sample('30 terminals')`); see chatMemoryProbe.ts
+  // for the full dogfood procedure. Installing the global is the only wiring it
+  // needs; it does nothing until called.
+  useEffect(() => installChatMemoryProbe(), []);
 
   // #517 — mirror the browser lightweight-mode setting to main whenever it
   // changes (Settings toggle or session load), so main immediately recomputes

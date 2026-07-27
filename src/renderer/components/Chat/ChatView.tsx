@@ -24,6 +24,7 @@ import { DiffChip } from './DiffChip';
 import { ChatComposer } from './ChatComposer';
 import { TrustSeam } from './TrustSeam';
 import { foldToolRuns } from './foldToolRuns';
+import { useRowWindow } from './useRowWindow';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 
 export interface ChatViewProps {
@@ -54,6 +55,9 @@ export interface ChatViewProps {
 }
 
 const EMPTY_EVENTS: TurnEvent[] = [];
+
+/** Stable measurement key for the row window (module scope = stable identity). */
+const rowKey = (row: { id: string }): string => row.id;
 
 export function ChatView({
   ptyId,
@@ -87,6 +91,11 @@ export function ChatView({
 
   const rows = useMemo(() => foldToolRuns(events), [events]);
 
+  // PR-9 row windowing: only the rows near the viewport (plus overscan) are in
+  // the DOM; the rest are two spacer heights. Falls back to the full list while
+  // the container is unmeasured, so a row is never missing because of this.
+  const { scrollRef, visibleRows, padTop, padBottom, measureRow } = useRowWindow(rows, rowKey);
+
   const onSend = useCallback(
     (text: string) => {
       pushChatPending(ptyId, text);
@@ -109,7 +118,11 @@ export function ChatView({
       className="flex-1 min-h-0 flex-col overflow-hidden"
       style={{ display: visible ? 'flex' : 'none' }}
     >
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2.5" data-chat-scroll>
+      <div
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2.5"
+        data-chat-scroll
+      >
         {cursor && cursor.headOffset > 0 && (
           <button
             type="button"
@@ -133,18 +146,21 @@ export function ChatView({
           </div>
         )}
 
-        {rows.map((row) => {
-          if (row.kind === 'tool_run') return <ToolRunLine key={row.id} run={row} />;
-          if (row.kind === 'diff') return <DiffChip key={row.id} event={row.event} onOpenDiff={onOpenDiff} />;
-          return (
-            <ChatRow
-              key={row.id}
-              event={row.event}
-              agentName={agentName}
-              onFetchBody={onFetchBody}
-            />
-          );
-        })}
+        {padTop > 0 && <div data-chat-pad="top" style={{ height: padTop, flex: 'none' }} />}
+
+        {visibleRows.map((row) => (
+          <div key={row.id} ref={measureRow(row.id)} data-chat-row={row.id}>
+            {row.kind === 'tool_run' ? (
+              <ToolRunLine run={row} />
+            ) : row.kind === 'diff' ? (
+              <DiffChip event={row.event} onOpenDiff={onOpenDiff} />
+            ) : (
+              <ChatRow event={row.event} agentName={agentName} onFetchBody={onFetchBody} />
+            )}
+          </div>
+        ))}
+
+        {padBottom > 0 && <div data-chat-pad="bottom" style={{ height: padBottom, flex: 'none' }} />}
 
         {/* Optimistic echoes: the line the user just sent, before it round-trips
             through the transcript (PRD §4.3, second bullet). */}

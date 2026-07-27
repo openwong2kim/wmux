@@ -792,6 +792,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       // Cold-park (TASK-9): default ON; only an explicit persisted false opts out.
       if (typeof data.coldParkEnabled === 'boolean') state.coldParkEnabled = data.coldParkEnabled;
+      // Chat View keep-warm LRU (PR-9): default OFF; fail closed like the other
+      // memory flags — only an explicit boolean enables the unmount path.
+      if (typeof data.chatKeepWarmLru === 'boolean') state.chatKeepWarmLru = data.chatKeepWarmLru;
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

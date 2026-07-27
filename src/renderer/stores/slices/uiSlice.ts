@@ -224,6 +224,14 @@ export interface UISlice {
   coldParkEnabled: boolean;
   setColdParkEnabled: (enabled: boolean) => void;
 
+  // Chat View keep-warm LRU (plan PR-9, default OFF): a chat-mode surface keeps
+  // its hidden xterm mounted so toggle-back is instant; with this on, only the
+  // N most recently used chat panes do and the rest unmount, trading a
+  // ring-buffer replay on toggle-back for renderer RAM. Stays OFF until the
+  // 30-pane measurement (A5) shows chat panes cost no more than terminals.
+  chatKeepWarmLru: boolean;
+  setChatKeepWarmLru: (enabled: boolean) => void;
+
   // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
   // embedded browser guests that are effectively invisible (hidden workspace /
   // zoom-hidden / minimized window) and not under automation. CPU-only — does
@@ -928,6 +936,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setColdParkEnabled: (enabled) => set((state) => {
     state.coldParkEnabled = enabled;
+  }),
+
+  // PR-9 — ships OFF; the owner's 30-pane measurement decides the default.
+  chatKeepWarmLru: false,
+
+  setChatKeepWarmLru: (enabled) => set((state) => {
+    state.chatKeepWarmLru = enabled;
   }),
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {

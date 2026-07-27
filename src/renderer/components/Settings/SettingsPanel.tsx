@@ -1993,6 +1993,8 @@ function TabTerminal() {
   const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
   const coldParkEnabled = useStore((s) => s.coldParkEnabled);
   const setColdParkEnabled = useStore((s) => s.setColdParkEnabled);
+  const chatKeepWarmLru = useStore((s) => s.chatKeepWarmLru);
+  const setChatKeepWarmLru = useStore((s) => s.setChatKeepWarmLru);
   const browserLightweightMode = useStore((s) => s.browserLightweightMode);
   const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
   const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
@@ -2068,6 +2070,13 @@ function TabTerminal() {
             checked={coldParkEnabled}
             onChange={setColdParkEnabled}
             label={t('settings.coldPark')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.chatKeepWarm')} description={t('settings.chatKeepWarmDesc')}>
+          <Toggle
+            checked={chatKeepWarmLru}
+            onChange={setChatKeepWarmLru}
+            label={t('settings.chatKeepWarm')}
           />
         </SettingRow>
         <SettingRow label={t('settings.browserBackend')} description={t('settings.browserBackendDesc')}>

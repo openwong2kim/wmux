@@ -24,6 +24,7 @@ import type {
   TurnEvent,
 } from '../../../shared/transcript/turnEvents';
 import type { Pane } from '../../../shared/types';
+import { dropToggle } from '../../chat/keepWarmLru';
 
 /** Per-pane row cap. Head-dropped (oldest first) — the newest turn always wins. */
 export const MAX_ROWS_IN_MEMORY = 2000;
@@ -54,6 +55,13 @@ export interface ChatSlice {
   chatNeedsResnapshot: Record<string, boolean>;
   /** Optimistic composer echoes, cleared when a matching user_text arrives. */
   chatPending: Record<string, ChatPendingEcho[]>;
+  /**
+   * Chat-mode toggle recency, MOST recently used FIRST — the input to the PR-9
+   * keep-warm LRU (`chat/keepWarmLru.ts`). Transient like the rest of this
+   * slice: on restart every chat surface starts cold, which is the honest
+   * state (no xterm is mounted yet anyway).
+   */
+  chatToggleOrder: string[];
 
   /** Apply one projector delta (or a `reset:true` full replace). */
   applyChatAppend: (ptyId: string, data: TranscriptAppendData) => void;
@@ -110,6 +118,7 @@ export const createChatSlice: StateCreator<
   chatSeq: {},
   chatNeedsResnapshot: {},
   chatPending: {},
+  chatToggleOrder: [],
 
   applyChatAppend: (ptyId, data) => set((draft: StoreState) => {
     const prevSeq = draft.chatSeq[ptyId];
@@ -173,6 +182,7 @@ export const createChatSlice: StateCreator<
     // both directions, so an unavailable status forces the view mode off.
     // Guarded for the minimal test stores composed without the surface slice.
     if (status.available || !draft.workspaces) return;
+    draft.chatToggleOrder = dropToggle(draft.chatToggleOrder ?? [], ptyId);
     for (const ws of draft.workspaces) {
       const clearInPane = (pane: Pane): void => {
         if (pane.type === 'leaf') {
@@ -207,5 +217,7 @@ export const createChatSlice: StateCreator<
     delete draft.chatSeq[ptyId];
     delete draft.chatNeedsResnapshot[ptyId];
     delete draft.chatPending[ptyId];
+    // A closed pane must not hold a keep-warm slot hostage.
+    draft.chatToggleOrder = dropToggle(draft.chatToggleOrder ?? [], ptyId);
   }),
 });
