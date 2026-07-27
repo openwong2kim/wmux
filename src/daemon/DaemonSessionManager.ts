@@ -16,6 +16,7 @@ import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
+import { getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -118,6 +119,16 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
+ *  - 'session:phantomExit'  → { id, pid, pidStartTime, exitCode, signal, cmd,
+ *                               lastActivityMsAgo, raw }
+ *      A PTY exit that reported no exit code and no signal while the shell pid
+ *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
+ *      phantomExit.ts / issue #646). Mechanism only: no state is set and no
+ *      death is announced here. daemon/index.ts owns the policy — it reaps the
+ *      orphaned process tree and then runs the normal death flow, matching how
+ *      the session:interrupted policy lives there too. `raw` is the verbatim
+ *      node-pty payload, forwarded so the daemon log records the exact shape
+ *      the native layer produced (this class cannot reach that logger).
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
 export class DaemonSessionManager extends EventEmitter {
@@ -562,6 +573,36 @@ export class DaemonSessionManager extends EventEmitter {
       // as 'dead' purged exactly the in-use sessions from recovery. Classified
       // exits suspend instead — recovery replays them under the same id.
       const involuntary = this.involuntaryExitClassifier(payload.exitCode, payload.signal);
+      // #646: a code-less, signal-less exit whose pid is still alive is not a
+      // death at all — it is node-pty's conout-socket-close path firing while
+      // powershell.exe keeps running. Believing it tombstoned the session and
+      // orphaned the live shell + agent. Checked BEFORE the dead/suspended
+      // classification because both of those record an exit that didn't happen.
+      const phantom =
+        !involuntary && isPhantomExit(payload.exitCode, payload.signal, meta.pid, isPidAlive);
+      const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
+      if (phantom) {
+        // The bridge's PTY object is unusable either way (its outSocket is
+        // already destroyed), so release its timers/listeners here. State and
+        // the death announcement are the policy layer's call.
+        managed.bridge.cleanup();
+        this.emit('session:phantomExit', {
+          id: params.id,
+          pid: meta.pid,
+          exitCode: payload.exitCode,
+          signal: payload.signal,
+          cmd: meta.cmd,
+          lastActivityMsAgo,
+          // Identity of the pid we are about to ask the policy layer to kill.
+          pidStartTime: meta.pidStartTime,
+          // Carried, not logged here: this class has no access to the daemon's
+          // file logger, and a console.log would never reach the daemon log
+          // the native-layer investigation actually reads. index.ts prints it
+          // on the [lifecycle] line.
+          raw: JSON.stringify(payload),
+        });
+        return;
+      }
       meta.state = involuntary ? 'suspended' : 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
@@ -570,7 +611,6 @@ export class DaemonSessionManager extends EventEmitter {
       // exited: code/signal, the shell, and how long it had been idle before
       // dying. Silent PTY deaths (no log, no recorded exitCode) made the
       // "powershell exits -1 under claude" report undiagnosable.
-      const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
       const forensics = {
         id: params.id,
         exitCode: payload.exitCode,
@@ -596,6 +636,17 @@ export class DaemonSessionManager extends EventEmitter {
       bridge.setMuted(true);
     }
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
+
+    // #646: stamp the pid's OS creation time so later reaping paths can tell
+    // OUR shell from whatever process inherits the pid after recycling.
+    // Deliberately not awaited — createSession is synchronous and the probe
+    // shells out. The value lands on the live meta well before any tombstone
+    // could be written, and every sessions.json write reads meta at write
+    // time, so persistence picks it up. If the probe fails the field stays
+    // absent and the reaping paths fall back to their weaker check.
+    void getProcessStartTime(meta.pid).then((startTime) => {
+      if (startTime) meta.pidStartTime = startTime;
+    });
 
     this.emit('session:created', { session: { ...meta } });
     return { ...meta };
