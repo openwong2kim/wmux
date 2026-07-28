@@ -1146,6 +1146,11 @@ export const createChannelsSlice: StateCreator<
       state.channels[channelId] = next;
       // A channel in the trash must not stay open in the dock.
       if (state.activeChannelId === channelId) state.activeChannelId = null;
+      // ...nor keep counting toward the dock's total unread. A trashed channel
+      // stays in the catalog, so `setChannels`'s eviction never fires for it and
+      // the badge would go on advertising a room the user cannot open.
+      delete state.channelUnread[channelId];
+      delete state.channelMentions[channelId];
     });
     return { ok: true, value: next };
   },
@@ -1199,7 +1204,12 @@ export const createChannelsSlice: StateCreator<
       return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
     }
     if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
-      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.destroy failed') };
+      const error = get().mapRpcError(raw, 'a2a.channel.destroy failed');
+      // CHANNEL_NOT_FOUND is the end state the caller asked for — the row is
+      // already gone daemon-side (another window destroyed it, or the retention
+      // sweep did). Fall through to the eviction below and report success, so a
+      // stale mirror row can't survive as an undeletable ghost.
+      if (error.code !== 'CHANNEL_NOT_FOUND') return { ok: false, error };
     }
     // Evict every per-channel cache — same tuple `setChannels` drops for a
     // channel that has left the catalog (A19), applied eagerly here because the

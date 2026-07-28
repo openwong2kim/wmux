@@ -1345,6 +1345,47 @@ describe('channelsSlice — trash / restore / destroy', () => {
     }
   });
 
+  it('trashChannelDaemon clears the unread/mention counters (no ghost badge)', async () => {
+    // A trashed channel stays in the catalog, so setChannels' eviction never
+    // fires for it — without an explicit clear the dock header keeps counting a
+    // channel the user can no longer open.
+    withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store.getState().setChannels([makeChannel({ id: 'ch-1' })], { 'ch-1': [] });
+      store.getState().appendMessageFromEvent(makeMessage('ch-1', 1));
+      expect(store.getState().channelUnread['ch-1']).toBeGreaterThan(0);
+
+      await store.getState().trashChannelDaemon('ch-1', 'ws-human');
+
+      expect(store.getState().channelUnread['ch-1']).toBeUndefined();
+      expect(store.getState().channelMentions['ch-1']).toBeUndefined();
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('destroyChannelDaemon treats CHANNEL_NOT_FOUND as success and still evicts', async () => {
+    // The row is already gone daemon-side (another window, or the retention
+    // sweep). That IS the end state the caller asked for — reporting a failure
+    // would leave an undeletable ghost row and inflate the empty-trash count.
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel: ch-1' },
+    }));
+    try {
+      const store = createTestStore();
+      store.getState().setChannels([makeChannel({ id: 'ch-1', status: 'archived', trashedAt: 9 })], { 'ch-1': [] });
+
+      const res = await store.getState().destroyChannelDaemon('ch-1', 'ws-human');
+
+      expect(res.ok).toBe(true);
+      expect(store.getState().channels['ch-1']).toBeUndefined();
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
   it('restoreChannelDaemon clears the marker but leaves the row archived', async () => {
     withChannelsRpc(async () => ({ ok: true }));
     try {
