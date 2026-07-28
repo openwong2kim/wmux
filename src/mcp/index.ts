@@ -17,6 +17,7 @@ import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
+import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1373,6 +1374,23 @@ server.tool(
 registerChannelTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
   getSenderPtyId: () => MY_PTY_ID,
+});
+
+// === Fan-out tool (J1 on the wire) ===
+// Same provenance rule as the channel tools above, and for the same reason:
+// task.fanout.start derives the caller's workspace AND repository from this
+// ptyId, so it MUST stay MY_PTY_ID (walk-hit only). Feeding the weak
+// WMUX_PTY_ID env hint here would let a spoofable env var choose which
+// workspace's repository gets N new worktrees. No hit → fan-out fails closed.
+// `resolveWorkspaceId` is passed for the same reason the channel tools get it:
+// the walked ptyId is a SIDE EFFECT of that lookup, so a tool that only reads
+// MY_PTY_ID sees '' until something has asked who the caller is. Every channel
+// tool asks; fan-out did not, which made it fail as the first tool called on a
+// fresh server. The resolved id is used only to warm the walk — the handler
+// derives the owning workspace from the ptyId and rejects a stated one.
+registerFanOutTools(server, {
+  getSenderPtyId: () => MY_PTY_ID,
+  resolveWorkspaceId: requireWorkspaceId,
 });
 
 // === Pane + surface lifecycle tools (issue #285) ===

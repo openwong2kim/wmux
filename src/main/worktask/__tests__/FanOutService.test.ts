@@ -489,3 +489,56 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     expect(res.error).toMatch(/exceeds cap/);
   });
 });
+
+// ─── statusOf + the throw contract (the wire poll handle) ──────────────────
+//
+// The pipe surface cannot answer a fan-out synchronously (the MCP client's RPC
+// deadline is 10s and one task's spawn alone is allowed 30s), so it accepts the
+// call, runs it detached and lets the caller poll by re-sending the same key.
+// That makes the key's terminal state load-bearing in a way it was not when
+// only the GUI called this.
+describe('statusOf — the idempotency key as a poll handle', () => {
+  function svcWith(worktrees: ReturnType<typeof makeWorktreesFake>) {
+    return new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake().port,
+      worktrees,
+    });
+  }
+
+  it('is unknown for a key that was never started', () => {
+    expect(svcWith(makeWorktreesFake()).statusOf('never-seen')).toEqual({ state: 'unknown' });
+  });
+
+  it('is running while in flight and done once recorded', async () => {
+    const svc = svcWith(makeWorktreesFake());
+    const inFlight = svc.start(baseReq());
+    expect(svc.statusOf('fo-key-1')).toEqual({ state: 'running' });
+    const result = await inFlight;
+    expect(svc.statusOf('fo-key-1')).toEqual({ state: 'done', result });
+  });
+
+  it('records a THROWN run as a failed result instead of releasing the key', async () => {
+    // Critical for the wire: if a throw released the key, statusOf would answer
+    // 'unknown' and the caller's next poll would RESTART a fan-out that may
+    // already have spawned tasks. The key must terminate, not reopen.
+    const worktrees = makeWorktreesFake();
+    worktrees.preflight = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const svc = svcWith(worktrees);
+
+    const first = await svc.start(baseReq());
+    expect(first.ok).toBe(false);
+    expect(first.error).toMatch(/threw: boom/);
+
+    const status = svc.statusOf('fo-key-1');
+    expect(status).toEqual({ state: 'done', result: first });
+
+    // The poll — same key again — returns the recorded failure and runs nothing.
+    const preflightCalls = worktrees.preflight.mock.calls.length;
+    const second = await svc.start(baseReq());
+    expect(second).toBe(first);
+    expect(worktrees.preflight.mock.calls.length).toBe(preflightCalls);
+  });
+});

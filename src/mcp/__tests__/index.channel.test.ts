@@ -85,6 +85,7 @@ const channelAck = tools.get('channel_ack');
 const channelUnread = tools.get('channel_unread');
 const channelMissionStart = tools.get('channel_mission_start');
 const channelMissionClose = tools.get('channel_mission_close');
+const channelMissionList = tools.get('channel_mission_list');
 
 if (
   !channelCreate ||
@@ -98,7 +99,8 @@ if (
   !channelAck ||
   !channelUnread ||
   !channelMissionStart ||
-  !channelMissionClose
+  !channelMissionClose ||
+  !channelMissionList
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -140,10 +142,46 @@ describe('channel_* tools: registration', () => {
     expect(channelMissionClose).toBeDefined();
   });
 
-  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
-    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
-    // (fan-out) per §3 tool-surface minimalism.
-    expect(tools.get('channel_mission_list')).toBeUndefined();
+  it('registers channel_mission_list (J1 — the deferral ends with fan-out)', () => {
+    // J0 kept task.mission.list pipe-only per §3 tool-surface minimalism and
+    // deferred the tool to J1. J1 (fan-out on the wire) is the caller that
+    // needs it: fanout_start returns before the tasks exist, so this listing is
+    // how a caller follows what it spawned.
+    expect(tools.get('channel_mission_list')).toBeDefined();
+  });
+
+  it('channel_mission_list forwards the resolved workspace', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    const res = await channelMissionList({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('channel_mission_list carries the verified senderPtyId, which is what actually scopes it', async () => {
+    // The workspace ids above are NOT the scoping mechanism — the main-side
+    // handler resolves the owning workspace from this ptyId and stamps it over
+    // whatever the tool sent. `task.mission.list` now fails closed without it
+    // (it returns branches and absolute worktree paths for one owner, and the
+    // MCP workspace resolver falls back to the spoofable WMUX_WORKSPACE_ID env
+    // hint on a PID-map miss). So a registration that stops attaching the
+    // ptyId does not merely lose attribution — it loses the listing.
+    const tools = new Map<string, ToolHandler>();
+    registerChannelTools(
+      {
+        tool: (name: string, _d: string, _s: unknown, handler: ToolHandler) => tools.set(name, handler),
+      } as never,
+      { resolveWorkspaceId: async () => 'ws-test', getSenderPtyId: () => 'pty-verified' },
+    );
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    await tools.get('channel_mission_list')!({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      senderPtyId: 'pty-verified',
+    });
   });
 });
 
