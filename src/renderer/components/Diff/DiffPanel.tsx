@@ -102,6 +102,27 @@ export function formatDiffCommentText(file: string, hunkHeader: string, comment:
   return `${anchor} ${comment}`;
 }
 
+/**
+ * Which selected paths a reload has invalidated.
+ *
+ * A hunk index is a coordinate into one particular rendering of a file. The
+ * panel keeps the selection across a manual reload on purpose, so a file whose
+ * content moved underneath would otherwise carry ticks that now point at
+ * different hunks — and, because the digest sent with an adoption used to be
+ * read from the freshly loaded entry, main's integrity check would have agreed
+ * with itself and let them through. A path is stale when the entry it was
+ * ticked against is gone, or is no longer the entry we are holding.
+ *
+ * @param recorded  path -> the digest its hunks were ticked against
+ * @param loaded    path -> the entry in the read we are now displaying
+ */
+export function staleSelectionPaths(
+  recorded: Record<string, string>,
+  loaded: Map<string, { digest: string }>,
+): string[] {
+  return Object.keys(recorded).filter((path) => loaded.get(path)?.digest !== recorded[path]);
+}
+
 // J4 §S1 — diff 주석 포스트의 자동 멘션 대상을 해석한다. 미션 채널 멤버 중 사람
 // (HUMAN_WORKSPACE_ID)과 코멘터 자신(selfWorkspaceId — 미션 채널의 createdBy는 owner
 // 워크스페이스라 항상 멤버다)을 제외한 나머지를 워크스페이스 단위로 하나씩 멘션한다.
@@ -334,6 +355,13 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   // path → 선택된 hunk index Set.
   const [selection, setSelection] = useState<Record<string, Set<number>>>({});
+  /** The file fingerprint each path's hunks were ticked AGAINST. Recorded at
+   *  selection time, not at adopt time: a reload deliberately keeps the
+   *  selection (see `load`), so reading the digest off the freshly loaded entry
+   *  would hand main a digest that always agrees with itself, and hunk indices
+   *  picked from the previous content would silently adopt whatever now sits at
+   *  those positions. That is the exact case this gate exists to refuse. */
+  const [selectionDigest, setSelectionDigest] = useState<Record<string, string>>({});
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
   const [failedProbes, setFailedProbes] = useState<Set<string>>(new Set());
   const [applying, setApplying] = useState(false);
@@ -403,16 +431,43 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     return map;
   }, [data]);
 
-  const toggleHunk = useCallback((path: string, idx: number) => {
+  const toggleHunk = useCallback(
+    (path: string, idx: number) => {
+      const digest = filesByPath.get(path)?.digest ?? '';
+      setSelection((prev) => {
+        const next = { ...prev };
+        const set = new Set(next[path] ?? []);
+        if (set.has(idx)) set.delete(idx);
+        else set.add(idx);
+        next[path] = set;
+        return next;
+      });
+      setSelectionDigest((prev) => (prev[path] === digest ? prev : { ...prev, [path]: digest }));
+    },
+    [filesByPath],
+  );
+
+  // A reload keeps the selection on purpose, but hunk INDICES only mean
+  // something against the content they were picked from. So when a path's
+  // fingerprint moves — the agent rewrote the file, or it left the diff
+  // entirely — that path's ticks are dropped rather than carried onto content
+  // the user has not seen. Paths that did not change keep theirs, which is the
+  // behaviour the manual-reload contract is there for.
+  useEffect(() => {
+    if (!data) return;
+    const stale = staleSelectionPaths(selectionDigest, filesByPath);
+    if (stale.length === 0) return;
     setSelection((prev) => {
       const next = { ...prev };
-      const set = new Set(next[path] ?? []);
-      if (set.has(idx)) set.delete(idx);
-      else set.add(idx);
-      next[path] = set;
+      for (const p of stale) delete next[p];
       return next;
     });
-  }, []);
+    setSelectionDigest((prev) => {
+      const next = { ...prev };
+      for (const p of stale) delete next[p];
+      return next;
+    });
+  }, [data, filesByPath, selectionDigest]);
 
   const selectedCount = useMemo(
     () => Object.values(selection).reduce((s, set) => s + set.size, 0),
@@ -423,16 +478,18 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     if (!meta || !data) return;
     const bridge = getDiffBridge();
     if (!bridge) return;
-    // Each selection carries the fingerprint of the file entry it was picked
-    // from, so main can refuse to adopt anything but the diff we rendered. A
-    // path with no entry in the current read (selection kept across a reload
-    // that dropped the file) sends an empty digest and is rejected there.
+    // Each selection carries the fingerprint recorded when its hunks were
+    // ticked — NOT the one on the entry we happen to be holding now. Reading it
+    // fresh here would make the digest agree with itself by construction and
+    // let indices picked from older content adopt whatever now sits at those
+    // positions. A path with no recorded digest sends an empty one and is
+    // rejected in main.
     const selections = Object.entries(selection)
       .filter(([, set]) => set.size > 0)
       .map(([path, set]) => ({
         path,
         hunkIndices: [...set].sort((a, b) => a - b),
-        digest: filesByPath.get(path)?.digest ?? '',
+        digest: selectionDigest[path] ?? '',
       }));
     if (selections.length === 0) {
       setApplyMsg(t('diff.noHunksSelected'));
@@ -463,7 +520,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         setApplyMsg(res.error);
       }
     }
-  }, [meta, data, selection, taskId, load, t]);
+  }, [meta, data, selection, selectionDigest, taskId, load, t]);
 
   // 코멘트 발사(§4·J4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
   const handleComment = useCallback(
