@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkLicenses } from '../lib/license-audit.mjs';
+import { allowlistKey, checkLicenses } from '../lib/license-audit.mjs';
 import { ALLOWED, classifyLicense, findCopyleftMarker } from '../lib/license-policy.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -80,6 +80,34 @@ describe('license classification', () => {
     expect(classifyLicense('MIT AND GPL-3.0').status).toBe('denied');
   });
 
+  // A flat split on /OR|AND/ read this as four loose operands, found MIT among
+  // them, and allowed the whole expression — even though BOTH branches you
+  // could elect carry a copyleft obligation. Precedence is what tells an
+  // electable permissive branch apart from a permissive term stuck inside a
+  // tainted one.
+  it('honours AND-binds-tighter-than-OR instead of flattening the expression', () => {
+    expect(classifyLicense('(MIT AND GPL-3.0) OR (GPL-2.0 AND AGPL-3.0)').status).toBe('denied');
+    expect(classifyLicense('MIT AND GPL-3.0 OR GPL-2.0 AND AGPL-3.0').status).toBe('denied');
+    // …and a branch that IS acceptable in full still elects.
+    expect(classifyLicense('(MIT AND Apache-2.0) OR (GPL-2.0 AND AGPL-3.0)').status).toBe('allowed');
+    expect(classifyLicense('(GPL-3.0 AND MIT) OR ISC').status).toBe('allowed');
+  });
+
+  it('refuses an expression it cannot parse rather than judging the part it can', () => {
+    for (const raw of ['(MIT OR GPL-2.0', 'MIT OR', 'MIT AND', 'MIT) OR ISC', '(MIT)) OR ISC']) {
+      expect(classifyLicense(raw).status, raw).toBe('undetermined');
+    }
+  });
+
+  // BSL-1.0 is the Boost Software License — OSI-approved and permissive. The
+  // Business Source License is BUSL-*. A `BSL` deny-prefix caught Boost, and
+  // since a denied verdict cannot be waived, such a dependency could not have
+  // been approved at all.
+  it('does not confuse Boost (BSL-1.0) with the Business Source License (BUSL-1.1)', () => {
+    expect(classifyLicense('BUSL-1.1').status).toBe('denied');
+    expect(classifyLicense('BSL-1.0').status).not.toBe('denied');
+  });
+
   it('never lists a copyleft license as allowed', () => {
     for (const id of ALLOWED) {
       expect(id).not.toMatch(/GPL|SSPL|BUSL|Elastic/i);
@@ -115,12 +143,36 @@ describe('license-allowlist.json', () => {
     }
   });
 
+  // Checked against the policy's OWN prefix list, not a hand-written subset of
+  // it. The subset spelled out here previously omitted EUPL, OSL and CPAL, so
+  // an entry naming one of those would have passed this guard — and the audit
+  // used to consult the allowlist for a denied verdict as well as an
+  // undetermined one, which is what made that gap reachable.
   it('never waives a copyleft license', () => {
     const allowlist = JSON.parse(readFileSync(path.join(REPO_ROOT, 'license-allowlist.json'), 'utf8'));
     for (const entry of allowlist.packages) {
-      expect(entry.declaredLicense, `${entry.name} waives a copyleft license`).not.toMatch(
-        /\b(A?GPL|LGPL|SSPL|BUSL|Elastic)\b/i,
+      expect(classifyLicense(entry.declaredLicense).status, `${entry.name} waives a denied license`).not.toBe('denied');
+    }
+  });
+
+  it('has no entry the audit could never match', () => {
+    // Every key the audit builds runs through the same helper, so an entry
+    // written with an unmatched shape is dead weight that reads as coverage.
+    const allowlist = JSON.parse(readFileSync(path.join(REPO_ROOT, 'license-allowlist.json'), 'utf8'));
+    for (const entry of allowlist.packages) {
+      expect(allowlistKey(entry.name, entry.version, entry.declaredLicense)).toBe(
+        `${entry.name}@${entry.version}|${entry.declaredLicense}`,
       );
+    }
+  });
+
+  // The header names an empty declaration as one of the undetermined cases a
+  // human resolves with an allowlist entry. Coalescing a missing license to ''
+  // built a key ending in a bare '|', which no entry could equal — loadAllowlist
+  // requires a non-empty declaredLicense — so that path was unreachable.
+  it('gives a package with no declared license a reviewable key', () => {
+    for (const missing of [null, undefined, '', '   ']) {
+      expect(allowlistKey('pkg', '1.0.0', missing)).toBe('pkg@1.0.0|(none)');
     }
   });
 });

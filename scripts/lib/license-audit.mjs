@@ -34,6 +34,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const ALLOWLIST_PATH = join(ROOT, 'license-allowlist.json');
 
+/** Stands in for "the manifest declares no license at all" on BOTH sides of the
+ *  allowlist key. Coalescing to '' instead made that key end in a bare '|',
+ *  which no allowlist entry could ever equal — loadAllowlist rejects an empty
+ *  declaredLicense — so the one case the header names as reviewable (an empty
+ *  declaration) had no way to be reviewed. */
+const NO_DECLARED_LICENSE = '(none)';
+
+/** The key an allowlist entry is matched on: name + version + declared license.
+ *  A version bump ships a new artifact and a changed declaration means the
+ *  terms moved; either way the exception lapses until someone re-reads. */
+export function allowlistKey(name, version, declaredLicense) {
+  const declared = typeof declaredLicense === 'string' && declaredLicense.trim() ? declaredLicense : NO_DECLARED_LICENSE;
+  return `${name}@${version}|${declared}`;
+}
+
 /** Read every LICENSE-ish file a package ships, concatenated. */
 function readLicenseTexts(pkgDir) {
   let files;
@@ -77,10 +92,7 @@ function loadAllowlist() {
         );
       }
     }
-    // Keyed on name + version + declared license: a version bump ships a new
-    // artifact, and a changed declaration means the terms moved. Either way
-    // the exception no longer applies until someone re-reads the LICENSE.
-    byKey.set(`${entry.name}@${entry.version}|${entry.declaredLicense}`, entry);
+    byKey.set(allowlistKey(entry.name, entry.version, entry.declaredLicense), entry);
   }
   return byKey;
 }
@@ -94,14 +106,19 @@ export function checkLicenses() {
   const usedAllowlistKeys = new Set();
 
   for (const pkg of packages) {
-    const key = `${pkg.name}@${pkg.version}|${pkg.declaredLicense ?? ''}`;
+    const key = allowlistKey(pkg.name, pkg.version, pkg.declaredLicense);
     const verdict = classifyLicense(pkg.declaredLicense);
 
     // The text check runs even for a declared-permissive package — that is the
-    // whole point of reading the artifact instead of the metadata. It cannot
-    // run for platform-constrained packages, which are absent from disk on
-    // every platform but their own; those must be covered by an allowlist
-    // entry recording a human reading instead.
+    // whole point of reading the artifact instead of the metadata.
+    //
+    // Known limit, stated rather than implied: it cannot run for a package
+    // absent from disk (an os/cpu-constrained variant on a runner that is not
+    // its target). Such a package is judged on its declaration ALONE, so a
+    // platform variant whose manifest misstates its shipped terms passes here.
+    // Only the undetermined ones are forced to an allowlist entry; one that
+    // declares MIT is taken at its word. Closing that would mean fetching every
+    // platform variant's tarball, which is a different piece of work.
     const shippedText = pkg.dir ? readLicenseTexts(pkg.dir) : null;
     const textMarker = findCopyleftMarker(shippedText);
 
@@ -119,18 +136,29 @@ export function checkLicenses() {
 
     if (verdict.status === 'allowed') continue;
 
-    const waiver = allowlist.get(key);
-    if (waiver) {
-      usedAllowlistKeys.add(key);
-      waived.push({ package: `${pkg.name}@${pkg.version}`, reason: waiver.reason });
-      continue;
+    // Only an UNDETERMINED verdict is waivable. The failure guidance says
+    // "copyleft or source-available -> remove the dependency, do not waive it",
+    // but the lookup used to run for a denied verdict too, so an entry naming
+    // EUPL-1.2 / OSL-3.0 / CPAL-1.0 would have passed the production gate. The
+    // allowlist records a human READING an ambiguous declaration; it is not a
+    // channel for overriding the policy.
+    if (verdict.status === 'undetermined') {
+      const waiver = allowlist.get(key);
+      if (waiver) {
+        usedAllowlistKeys.add(key);
+        waived.push({ package: `${pkg.name}@${pkg.version}`, reason: waiver.reason });
+        continue;
+      }
     }
 
     violations.push({
       package: `${pkg.name}@${pkg.version}`,
       declared: pkg.declaredLicense,
       kind: verdict.status === 'denied' ? 'denied-license' : 'undetermined-license',
-      detail: verdict.detail,
+      detail:
+        verdict.status === 'denied'
+          ? `${verdict.detail} — this cannot be waived in license-allowlist.json; remove the dependency`
+          : verdict.detail,
     });
   }
 
