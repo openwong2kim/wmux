@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import MissionsSection, { flattenMissions } from '../MissionsSection';
+import MissionsSection, { flattenMissions, selectLiveMissions } from '../MissionsSection';
 import type { WorkTask } from '../../../../shared/workTask';
 
 function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title'>): WorkTask {
@@ -62,5 +62,65 @@ describe('MissionsSection', () => {
       });
       expect(out.map((t) => t.id)).toEqual(['newer', 'older']);
     });
+  });
+});
+
+// ── 미션 = 워크스페이스 수명(오너 정책) ────────────────────────────────────
+// 판정은 **워크스페이스 실존 하나**로만 한다. fan-out 워크스페이스가 사라지면 미션
+// 행이 목록에서 빠지고, 기록은 미션 채널에 남는다(이 셀렉터는 채널을 건드리지 않는다).
+describe('selectLiveMissions (순수)', () => {
+  const live = (...ids: string[]): ReadonlySet<string> => new Set(ids);
+
+  it('워크스페이스가 사라진 미션을 제외한다', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'alive', title: 'A', paneGroupId: 'child-1' }),
+          mission({ id: 'gone', title: 'B', paneGroupId: 'child-2' }),
+        ],
+      },
+      live('parent-a', 'child-1'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['alive']);
+  });
+
+  it('완료 미션도 워크스페이스가 사라지면 제외된다(사이드바 누적의 원인)', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'done', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+        ],
+      },
+      live('parent-a'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('완료됐어도 워크스페이스가 살아 있으면 남는다(점프·채널 링크가 유효)', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'done', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+        ],
+      },
+      live('parent-a', 'child-1'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['done']);
+  });
+
+  it('paneGroupId 미물질화(fan-out 진행 중)는 남긴다 — 아직 없는 것이지 사라진 게 아니다', () => {
+    const out = selectLiveMissions(
+      { 'parent-a': [mission({ id: 'inflight', title: 'A' })] },
+      live('parent-a'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['inflight']);
+  });
+
+  it('부모 캐시가 남아 있어도 자식이 없으면 제외된다(고아 캐시 방어)', () => {
+    const out = selectLiveMissions(
+      { 'parent-gone': [mission({ id: 'orphan', title: 'A', paneGroupId: 'child-x' })] },
+      live('parent-a'),
+    );
+    expect(out).toEqual([]);
   });
 });
