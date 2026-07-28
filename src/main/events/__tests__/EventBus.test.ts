@@ -194,7 +194,7 @@ describe('EventBus', () => {
       bus.emit({ type: 'pane.focused', workspaceId: 'ws-1', paneId: 'p2' });
     }
 
-    it('replaces a future cursor and converges when passed back verbatim', () => {
+    it('returns a replacement that re-anchors a direct follow-up poll', () => {
       emitThree();
 
       const first = bus.poll(999);
@@ -202,6 +202,8 @@ describe('EventBus', () => {
       expect(first.events.map((event) => event.seq)).toEqual([1, 2, 3]);
       expect(first.nextCursor).toBeLessThan(first.priorCursor);
 
+      // This proves the raw cursor behavior. Protocol clients still reconcile
+      // through pane.list and resume from its newer asOfSeq snapshot watermark.
       const second = bus.poll(first.nextCursor);
       expect(second.events).toEqual([]);
       expect(second).toMatchObject({ priorCursor: 3, nextCursor: 3 });
