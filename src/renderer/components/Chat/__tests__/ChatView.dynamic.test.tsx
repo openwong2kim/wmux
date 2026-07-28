@@ -250,8 +250,7 @@ describe('ChatView', () => {
       ta.dispatchEvent(new Event('input', { bubbles: true }));
     });
     act(() => {
-      container.querySelector<HTMLButtonElement>('[data-chat-send]')!
-        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(writes[0]).toContain('ship it');
     expect(useStore.getState().chatPending[PTY]?.[0]?.text).toBe('ship it');

@@ -51,10 +51,12 @@ function type(text: string): void {
   });
 }
 
-function clickSend(): void {
-  const btn = container.querySelector<HTMLButtonElement>('[data-chat-send]')!;
+// Enter is the only way to send — the composer has no send button.
+function pressEnter(): void {
+  const ta = container.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (!ta) return;
   act(() => {
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   });
 }
 
@@ -77,14 +79,14 @@ describe('ChatComposer', () => {
     vi.useRealTimers();
   });
 
-  it('renders a textarea and a send button when the gate is open', () => {
+  it('renders a textarea and no send button when the gate is open', () => {
     render({});
     expect(container.querySelector('[data-chat-input]')).not.toBeNull();
-    expect(container.querySelector('[data-chat-send]')).not.toBeNull();
+    expect(container.querySelector('[data-chat-send]')).toBeNull();
     expect(container.querySelector('[data-chat-composer]')?.getAttribute('data-chat-composer')).toBe('open');
   });
 
-  it('REMOVES the textarea and send button under needsInput', () => {
+  it('REMOVES the textarea under needsInput', () => {
     render({ needsInput: true });
     expect(container.querySelector('[data-chat-input]')).toBeNull();
     expect(container.querySelector('textarea')).toBeNull();
@@ -117,7 +119,7 @@ describe('ChatComposer', () => {
     const onSend = vi.fn();
     render({ onSend });
     type('run the tests');
-    clickSend();
+    pressEnter();
 
     expect(writes).toHaveLength(1);
     expect(writes[0].ptyId).toBe('pty-a');
@@ -134,17 +136,17 @@ describe('ChatComposer', () => {
   it('clears the field and refuses an empty send', () => {
     render({});
     type('hello');
-    clickSend();
+    pressEnter();
     expect(container.querySelector<HTMLTextAreaElement>('[data-chat-input]')!.value).toBe('');
     writes.length = 0;
-    clickSend();
+    pressEnter();
     expect(writes).toHaveLength(0);
   });
 
   it('A7: aborts the deferred Enter when the gate engages inside the 100ms window', () => {
     render({});
     type('yes');
-    clickSend();
+    pressEnter();
     expect(writes).toHaveLength(1);
 
     // The pane moved onto a permission menu before the Enter fired.

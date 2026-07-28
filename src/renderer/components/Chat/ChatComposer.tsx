@@ -14,9 +14,9 @@
 //    before calling the helper, and again inside the helper's timeout via
 //    `submitGuard`.
 //
-// Under `needsInput` the textarea and send button are REMOVED from the DOM,
-// not disabled: a disabled input still accepts paste in some engines, and the
-// whole point of the gate is that no byte reaches the PTY.
+// Under `needsInput` the textarea is REMOVED from the DOM, not disabled: a
+// disabled input still accepts paste in some engines, and the whole point of
+// the gate is that no byte reaches the PTY.
 //
 // DECSET 2004 dependency: `submitBracketedPasteToPty` wraps the payload in
 // bracketed-paste markers, which only behave as paste if the foreground program
@@ -154,28 +154,22 @@ export function ChatComposer({
   return (
     <div className="flex flex-col px-2 pt-1.5 pb-2" data-chat-composer="open">
       {statusRow}
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={textareaRef}
-          data-chat-input
-          rows={2}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={t('chat.placeholder')}
-          aria-label={t('chat.placeholder')}
-          className="ui-input flex-1 resize-none text-[13px] leading-relaxed py-1.5"
-        />
-        <button
-          type="button"
-          data-chat-send
-          onClick={send}
-          disabled={value.trim().length === 0}
-          className={`ui-btn ui-btn-primary ${FOCUS_RING}`}
-        >
-          {t('chat.send')}
-        </button>
-      </div>
+      {/* No send button. Enter already sends and Shift+Enter newlines — the
+          agent's own TUI convention, and true on soft keyboards too, which have
+          a return key. A button would spend this surface's one warm primary on
+          a redundant control and squeeze the field it sits beside; the key is
+          named in the placeholder instead. */}
+      <textarea
+        ref={textareaRef}
+        data-chat-input
+        rows={2}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={t('chat.placeholder')}
+        aria-label={t('chat.placeholder')}
+        className="ui-input w-full resize-none text-[13px] leading-relaxed py-1.5"
+      />
     </div>
   );
 }
