@@ -95,6 +95,15 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   'a2a.channel.trash',
   'a2a.channel.restore',
   'a2a.channel.destroy',
+  // Workspace-lifetime mission close. NOT a channel method, but it belongs on
+  // exactly this transport: the renderer closes a mission when the fan-out
+  // workspace it belongs to is deleted, and that is a humans-only action with
+  // no PTY behind it. Through the pipe router `task.mission.close` is
+  // registered `mutating`, so a renderer call (no resolvable senderPtyId) fails
+  // closed with NOT_AUTHORIZED — 100% of the time. The daemon's own gate
+  // (owner-or-CEO on the task) still runs on top of the workspace id stamped
+  // here, so this widens the transport, not the authorization.
+  'task.mission.close',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',

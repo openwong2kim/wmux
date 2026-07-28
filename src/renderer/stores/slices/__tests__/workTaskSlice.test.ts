@@ -204,6 +204,34 @@ describe('워크스페이스 수명 결속 — closeMissionForRemovedWorkspace',
     expect(calls.filter((c) => c.method === 'close')).toHaveLength(0);
   });
 
+  it('데몬이 close를 거부하면 경고만 남기고 캐시 재조회는 하지 않는다', async () => {
+    // 회귀: 이 호출은 fire-and-forget이라 NOT_AUTHORIZED 전량 실패가 무증상이었다.
+    const calls: string[] = [];
+    g.window = {
+      __wmuxMissionRpc: {
+        list: async () => {
+          calls.push('list');
+          return { ok: true, tasks: [] };
+        },
+        close: async () => {
+          calls.push('close');
+          return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'nope' } };
+        },
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+
+    expect(calls).toEqual(['close']); // 거부 후 list 재조회 없음
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('브리지 미설치/데몬 미연결이면 조용히 no-op(사이드바는 워크스페이스 실존만 본다)', async () => {
     g.window = {}; // 브리지 미설치 렌더러(useRpcBridge 마운트 전).
     const store = createTestStore();
@@ -213,5 +241,36 @@ describe('워크스페이스 수명 결속 — closeMissionForRemovedWorkspace',
     await expect(
       store.getState().closeMissionForRemovedWorkspace('child-1'),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ─── 전송 경로 회귀(소스 레벨) ────────────────────────────────────────────────
+// `task.mission.close`는 파이프 RpcRouter에서 mutating으로 등록돼 있고, 그 포워더는
+// senderPtyId를 해석할 수 없는 mutating 호출을 전부 NOT_AUTHORIZED로 막는다. 렌더러
+// 호출엔 PTY가 없으므로 `rpc.invoke`로 보내면 100% 조용히 실패한다. 이 사실은 런타임
+// 목으로는 잡히지 않으니(둘 다 프라미스를 돌려준다) 브리지 소스 자체를 고정한다.
+// (workspaceSlice.retentionMigration.test.ts의 소스 단정 관례와 동형.)
+describe('미션 close 전송 경로(회귀)', () => {
+  it('close 브리지는 rpc.invoke가 아니라 mutateChannelLocal로 탄다', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/renderer/hooks/useRpcBridge.ts'), 'utf8');
+    expect(src).toContain("mutateChannelLocal('task.mission.close'");
+    expect(src).not.toContain("invoke('task.mission.close'");
+  });
+});
+
+// ─── 부모 워크스페이스 삭제가 살아 있는 자식 미션을 숨기지 않는다(회귀) ──────────
+// removeWorkspace가 부모 id로 clearMissionsFor를 무조건 부르면, 자식 워크스페이스가
+// 아직 살아 있는 미션까지 통째로 사라진다(사이드바에서 증발 + 나중에 자식이 지워질 때
+// closeMissionForRemovedWorkspace가 태스크를 찾지 못함).
+describe('부모 미션 캐시 보존(회귀)', () => {
+  it('removeWorkspace는 clearMissionsFor를 무조건 호출하지 않는다', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/renderer/stores/slices/workspaceSlice.ts'), 'utf8');
+    expect(src).not.toContain('clearMissionsFor?.(id)');
+    // 자식 id 기준 close 배선은 그대로 남아 있어야 한다.
+    expect(src).toContain('closeMissionForRemovedWorkspace?.(id)');
   });
 });

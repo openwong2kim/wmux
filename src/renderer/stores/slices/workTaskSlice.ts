@@ -190,15 +190,23 @@ export const createWorkTaskSlice: StateCreator<
     if (!task || task.status !== 'open') return; // 부재/이미 closed = no-op.
     const bridge = readMissionRpc();
     if (!bridge?.close) return;
+    let res: unknown;
     try {
       // authz 앵커는 태스크 owner(데몬 게이트: owner OR CEO). 삭제된 자식 워크스페이스가
       // 아니라 **부모**가 owner다 — 자식 id로 호출하면 NOT_AUTHORIZED다.
-      await bridge.close({
+      res = await bridge.close({
         taskId: task.id,
         verifiedWorkspaceId: task.owner.verifiedWorkspaceId,
       });
     } catch {
       // 데몬 미연결/일시 실패 — 부트 reconcile이 수렴한다(태스크 방향 archive 재시도).
+      return;
+    }
+    // 응답을 **확인**한다: 이 호출은 fire-and-forget이라 거부가 조용히 사라졌었다
+    // (NOT_AUTHORIZED 전량 실패가 무증상이었던 원인). 던지지는 않는다 — 사이드바
+    // 표시는 워크스페이스 실존만 보므로 실패해도 화면은 옳다.
+    if (!isOkObject(unwrapRpc(res))) {
+      console.warn('[workTaskSlice] mission close rejected for task', task.id, res);
       return;
     }
     // 로컬 캐시도 즉시 반영(다음 폴링을 기다리지 않게).

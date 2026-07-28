@@ -266,8 +266,15 @@ export function useRpcBridge(): void {
       // Closing a mission whose workspace was deleted (see workspaceSlice's
       // removeWorkspace) — the daemon's authz gate is owner-or-CEO, so the
       // caller passes the task's own owner workspace.
+      //
+      // MUST ride `mutateChannelLocal`, not `rpc.invoke`: `task.mission.close`
+      // is a MUTATING method on the pipe RpcRouter, which fails closed on any
+      // mutating call with no resolvable senderPtyId. A renderer has no PTY, so
+      // the invoke path returns NOT_AUTHORIZED every single time (silently —
+      // this is a fire-and-forget call). The renderer-only IPC strips and
+      // stamps `verifiedWorkspaceId` and is unreachable from the pipe.
       close: (params) =>
-        window.electronAPI.rpc.invoke('task.mission.close', params) as Promise<RpcResult>,
+        window.electronAPI.rpc.mutateChannelLocal('task.mission.close', params) as Promise<RpcResult>,
     };
 
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min

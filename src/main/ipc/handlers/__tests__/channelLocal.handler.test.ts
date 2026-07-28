@@ -104,6 +104,13 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
       // deliberately absent from the pipe router — same humans-only stance as kick.
       'a2a.channel.operatorJoin',
       'a2a.channel.operatorList',
+      'a2a.channel.trash',
+      'a2a.channel.restore',
+      'a2a.channel.destroy',
+      // task.mission.close is not a channel method, but it is a humans-only
+      // renderer action with no PTY behind it: on the pipe router it is
+      // registered `mutating`, so a renderer call fails closed 100% of the time.
+      'task.mission.close',
     ]) {
       rpc.mockClear();
       const r = await handler(fakeEvent, method, { verifiedWorkspaceId: 'ws-ceo' });
