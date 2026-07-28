@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { foldToolRuns } from '../foldToolRuns';
-import { speakerLabelFlags, trailingSpeaker, rowSpeaker } from '../speakerGrouping';
+import { speakerLabelFlags, agentRunFlags, trailingSpeaker, rowSpeaker } from '../speakerGrouping';
 import type { TurnEvent } from '../../../../shared/transcript/turnEvents';
 
 const rowsOf = (events: TurnEvent[]) => foldToolRuns(events);
@@ -74,5 +74,35 @@ describe('trailingSpeaker', () => {
 
   it('is null on an empty conversation', () => {
     expect(trailingSpeaker([])).toBeNull();
+  });
+});
+
+describe('agentRunFlags', () => {
+  it('rails the agent turn and never the human card', () => {
+    const rows = rowsOf([
+      { id: 'u1', kind: 'user_text', text: 'go' },
+      { id: 'a1', kind: 'assistant_text', text: 'on it' },
+      { id: 'u2', kind: 'user_text', text: 'thanks' },
+    ]);
+    expect(agentRunFlags(rows)).toEqual([false, true, false]);
+  });
+
+  it('keeps the rail across the evidence inside a turn', () => {
+    const rows = rowsOf([
+      { id: 'a1', kind: 'assistant_text', text: 'reading the file' },
+      { id: 't1', kind: 'tool_use', toolUseId: 'x1', name: 'Read', argSummary: 'a.ts' },
+      { id: 'r1', kind: 'tool_result', toolUseId: 'x1', ok: true, bytes: 12 },
+      { id: 'a2', kind: 'assistant_text', text: 'patched it' },
+    ]);
+    // The folded tool run sits between two agent texts — one unbroken rail.
+    expect(agentRunFlags(rows)).toEqual([true, true, true]);
+  });
+
+  it('does not rail evidence that arrives before anyone has spoken', () => {
+    const rows = rowsOf([
+      { id: 'm1', kind: 'meta', subtype: 'slash_command', label: '/clear' },
+      { id: 'a1', kind: 'assistant_text', text: 'cleared' },
+    ]);
+    expect(agentRunFlags(rows)).toEqual([false, true]);
   });
 });

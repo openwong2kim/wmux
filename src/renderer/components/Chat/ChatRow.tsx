@@ -1,7 +1,9 @@
 // One conversation row (plan PR-7, PRD §4.2).
 //
-// DESIGN.md: hierarchy from typography, NOT decoration — "You" is muted 600,
-// the agent label is main 700, and neither side gets a bubble or an area wash.
+// DESIGN.md: hierarchy from typography first — "You" is muted 600 and the agent
+// label is main 700. The human turn also gets a raised card and the agent turn a
+// left rail (drawn by ChatView, which is the only place that can span a whole
+// turn); neither is a coloured bubble and neither washes an area.
 // Prose is sans; every machine artefact (meta lines, code chips, thinking) is
 // mono.
 

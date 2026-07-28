@@ -24,7 +24,7 @@ import { DiffChip } from './DiffChip';
 import { ChatComposer } from './ChatComposer';
 import { TrustSeam } from './TrustSeam';
 import { foldToolRuns } from './foldToolRuns';
-import { speakerLabelFlags, trailingSpeaker } from './speakerGrouping';
+import { speakerLabelFlags, agentRunFlags, trailingSpeaker } from './speakerGrouping';
 import { useRowWindow, ROW_GAP } from './useRowWindow';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 
@@ -95,6 +95,7 @@ export function ChatView({
   // One label per speaker RUN, computed over the FULL row list — the window
   // below renders a slice, so the flags are indexed absolutely.
   const labelFlags = useMemo(() => speakerLabelFlags(rows), [rows]);
+  const railFlags = useMemo(() => agentRunFlags(rows), [rows]);
   const tailSpeaker = useMemo(() => trailingSpeaker(rows), [rows]);
 
   // PR-9 row windowing: only the rows near the viewport (plus overscan) are in
@@ -180,8 +181,31 @@ export function ChatView({
 
           {padTop > 0 && <div data-chat-pad="top" style={{ height: padTop, flex: 'none' }} />}
 
-          {visibleRows.map((row, i) => (
-            <div key={row.id} ref={measureRow(row.id)} data-chat-row={row.id}>
+          {visibleRows.map((row, i) => {
+            const railed = railFlags[startIndex + i] ?? false;
+            // The rail bleeds UPWARD across the gap when the row above is part
+            // of the same turn, so one turn draws one unbroken line instead of
+            // a dashed one. Only upward: if both neighbours bled the gap would
+            // be covered twice. The negative margin and the padding are the
+            // same number, so nothing moves.
+            const joinsAbove = railed && (railFlags[startIndex + i - 1] ?? false);
+            return (
+            <div
+              key={row.id}
+              ref={measureRow(row.id)}
+              data-chat-row={row.id}
+              data-chat-agent-rail={railed ? '1' : undefined}
+              style={
+                railed
+                  ? {
+                      borderLeft: '1px solid color-mix(in srgb, var(--text-main) 12%, transparent)',
+                      paddingLeft: 10,
+                      marginTop: joinsAbove ? -ROW_GAP : undefined,
+                      paddingTop: joinsAbove ? ROW_GAP : undefined,
+                    }
+                  : undefined
+              }
+            >
               {row.kind === 'tool_run' ? (
                 <ToolRunLine run={row} />
               ) : row.kind === 'diff' ? (
@@ -195,7 +219,8 @@ export function ChatView({
                 />
               )}
             </div>
-          ))}
+            );
+          })}
 
           {padBottom > 0 && <div data-chat-pad="bottom" style={{ height: padBottom, flex: 'none' }} />}
 

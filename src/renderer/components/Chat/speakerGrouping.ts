@@ -38,6 +38,28 @@ export function speakerLabelFlags(rows: readonly ChatRowModel[]): boolean[] {
   return flags;
 }
 
+/**
+ * `flags[i]` = row i belongs to an agent turn and carries the left rail.
+ *
+ * The rail is the agent side's counterweight to the human's card: the human
+ * turn is right-aligned and boxed, so without it the agent's turn had no edge
+ * of its own and the two sides read as a styled message next to unstyled page
+ * text. It follows the same rule as the label — machine evidence belongs to
+ * whoever is currently speaking, so a tool run inside an agent turn is railed
+ * with the prose around it and the turn reads as one block.
+ */
+export function agentRunFlags(rows: readonly ChatRowModel[]): boolean[] {
+  const flags: boolean[] = [];
+  let current: ChatSpeaker | null = null;
+  for (const row of rows) {
+    const speaker = rowSpeaker(row);
+    if (speaker !== null) current = speaker;
+    // Evidence ahead of any speaker (current === null) is nobody's turn yet.
+    flags.push(current === 'agent');
+  }
+  return flags;
+}
+
 /** Speaker of the last speaker-bearing row — what an optimistic echo follows. */
 export function trailingSpeaker(rows: readonly ChatRowModel[]): ChatSpeaker | null {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
