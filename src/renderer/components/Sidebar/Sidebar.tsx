@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot, IconGitBranch } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconHash } from '../icons';
 import WebToggle from '../StatusBar/WebToggle';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
@@ -91,6 +91,22 @@ export default function Sidebar() {
       setChannelDockVisible(true);
     }
   }, [gitOpen, setActiveDeckTab, setChannelDockVisible]);
+
+  // Channels 버튼(Git 아래) — 덱을 열고 Channels 탭으로. 이미 열려 있으면 덱을
+  // 닫는다(토글). 채널 탭은 기본 OFF 설정이라 이 버튼을 누르는 것 자체가 "채널을
+  // 보겠다"는 의사표시이므로 함께 켠다 — 그렇지 않으면 눌러도 빈 탭이 뜬다.
+  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
+  const channelsOpen = channelDockVisible && activeDeckTab === 'channels' && channelsTabVisible;
+  const toggleChannels = useCallback(() => {
+    if (channelsOpen) {
+      setChannelDockVisible(false);
+    } else {
+      setChannelsTabVisible(true);
+      setActiveDeckTab('channels');
+      setChannelDockVisible(true);
+    }
+  }, [channelsOpen, setChannelsTabVisible, setActiveDeckTab, setChannelDockVisible]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -263,6 +279,32 @@ export default function Sidebar() {
         {dirtyWsCount > 0 && (
           <span className="ml-auto" data-sidebar-git-dirty>
             {dirtyWsCount > 99 ? '99+' : dirtyWsCount}
+          </span>
+        )}
+      </button>
+
+      {/* Channels toggle — Git 아래. 덱을 열고 Channels 탭으로(이미 채널이면 덱
+          닫기). 열림=steel(내비게이션) · 안 읽음=warm(카운트 동반) · 그 외 muted. */}
+      <button
+        type="button"
+        onClick={toggleChannels}
+        aria-pressed={channelsOpen}
+        title={t('sidebar.channelsTooltip') || 'Toggle the Channels panel'}
+        className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+          channelsOpen
+            ? 'text-[var(--accent-blue)]'
+            : channelUnreadTotal > 0
+              ? 'text-[var(--accent)] hover:opacity-80'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+        }`}
+        style={{ borderColor: 'var(--border-soft)' }}
+        data-sidebar-channels
+      >
+        <IconHash size={14} />
+        <span>{t('sidebar.channels') || 'Channels'}</span>
+        {channelUnreadTotal > 0 && (
+          <span className="ml-auto" data-sidebar-channels-unread>
+            {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
           </span>
         )}
       </button>

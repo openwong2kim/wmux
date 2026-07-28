@@ -14,6 +14,8 @@ export const en = {
   'sidebar.agent': 'Agent',
   'sidebar.git': 'Git',
   'sidebar.gitTooltip': 'Toggle the Git panel',
+  'sidebar.channels': 'Channels',
+  'sidebar.channelsTooltip': 'Toggle the Channels panel',
   'sidebar.screenOff': 'Screen off',
   'sidebar.screenOn': 'Screen on',
   'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',

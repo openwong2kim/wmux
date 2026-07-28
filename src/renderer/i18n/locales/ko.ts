@@ -14,6 +14,8 @@ export const ko = {
   'sidebar.agent': '에이전트',
   'sidebar.git': 'Git',
   'sidebar.gitTooltip': 'Git 패널 열기/닫기',
+  'sidebar.channels': '채널',
+  'sidebar.channelsTooltip': '채널 패널 열기/닫기',
   'sidebar.screenOff': '화면 끄기',
   'sidebar.screenOn': '화면 켜기',
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
