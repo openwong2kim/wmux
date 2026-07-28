@@ -658,3 +658,173 @@ describe('diff:resolveRepo — cwd 정규화', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+// ── Guards for the README's adoption claim: hunks are picked individually, and
+//    the all-or-nothing part is the apply of that selection (not the whole diff).
+describe('diff:applyHunks — per-hunk selection granularity and selection-wide atomicity', () => {
+  // Local fixture: two files long enough that two distant edits each land in two
+  // hunks. The shared makeScenario files are too short to split. `diff.context`
+  // and `diff.interHunkContext` are pinned because the hunk split — and so the
+  // index a selection refers to — depends on them, and a developer's global
+  // gitconfig can widen both (a global `diff.context=10` merges these into one).
+  function makeMultiHunkScenario() {
+    const base = mkdtempSync(join(tmpdir(), 'wmux-diffh-mh-'));
+    const repoRoot = join(base, 'repo');
+    mkdirSync(repoRoot);
+    g(repoRoot, ['init', '-q', '-b', 'main']);
+    g(repoRoot, ['config', 'user.email', 't@t']);
+    g(repoRoot, ['config', 'user.name', 't']);
+    g(repoRoot, ['config', 'core.autocrlf', 'false']);
+    g(repoRoot, ['config', 'diff.context', '3']);
+    g(repoRoot, ['config', 'diff.interHunkContext', '0']);
+    const baseText = `${Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join('\n')}\n`;
+    writeFileSync(join(repoRoot, 'long.txt'), baseText);
+    writeFileSync(join(repoRoot, 'other.txt'), baseText);
+    g(repoRoot, ['add', '-A']);
+    g(repoRoot, ['commit', '-q', '-m', 'base']);
+    const worktreePath = join(base, 'wt');
+    g(repoRoot, ['worktree', 'add', '-q', '-b', 'wtask/mh', worktreePath, 'HEAD']);
+    writeFileSync(
+      join(worktreePath, 'long.txt'),
+      baseText.replace('L2\n', 'TOP\n').replace('L19\n', 'BOTTOM\n'),
+    );
+    writeFileSync(
+      join(worktreePath, 'other.txt'),
+      baseText.replace('L2\n', 'OTOP\n').replace('L19\n', 'OBOTTOM\n'),
+    );
+    return {
+      repoRoot,
+      worktreePath,
+      baseText,
+      cleanup: () => rmSync(base, { recursive: true, force: true }),
+    };
+  }
+
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('한 파일의 hunk 부분 선택 — 선택한 hunk만 타겟에 반영, 나머지는 미반영', async () => {
+    const mh = makeMultiHunkScenario();
+    try {
+      const read = captured.get(IPC.DIFF_READ)!;
+      const r = (await read({}, mh.worktreePath, '')) as {
+        ok: boolean;
+        files: Array<{ path: string; hunks: unknown[] }>;
+        snapshot: DiffApplyRequest['snapshot'];
+      };
+      expect(r.ok).toBe(true);
+      const lf = r.files.find((f) => f.path === 'long.txt')!;
+      expect(lf.hunks.length).toBe(2);
+
+      // Adopt only the second hunk.
+      const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+      const res = (await apply(
+        {},
+        { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'long.txt', hunkIndices: [1] }] },
+        mh.worktreePath,
+      )) as { ok: boolean };
+      expect(res.ok).toBe(true);
+
+      const target = readFileSync(join(mh.repoRoot, 'long.txt'), 'utf8');
+      expect(target).toBe(mh.baseText.replace('L19\n', 'BOTTOM\n'));
+      // The unselected hunk in the same file did not come across.
+      expect(target).not.toContain('TOP');
+    } finally {
+      mh.cleanup();
+    }
+  });
+
+  it('선택 전체가 원자적 — 선택 중 한 파일이 적용 불가면 나머지 파일도 미반영', async () => {
+    // Diverge b.txt in the target and commit it, so it is clean (the dirty gate
+    // does not fire) but no longer matches the context the worktree hunk carries.
+    writeFileSync(join(scn.repoRoot, 'b.txt'), 'b1\nDIVERGED\nb3\n');
+    g(scn.repoRoot, ['add', '-A']);
+    g(scn.repoRoot, ['commit', '-q', '-m', 'diverge b']);
+
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, '')) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    expect(r.ok).toBe(true);
+    expect(r.files.map((f) => f.path)).toContain('b.txt');
+
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [
+          { path: 'a.txt', hunkIndices: [0] },
+          { path: 'b.txt', hunkIndices: [0] },
+        ],
+      },
+      scn.worktreePath,
+    )) as {
+      ok: boolean;
+      code?: string;
+      failedProbes?: Array<{ path: string; applicable: boolean; alreadyApplied: boolean }>;
+    };
+    expect(res.ok).toBe(false);
+    // Rejected by the combined --check gate, not by drift (the snapshot was read
+    // after the diverging commit) and not by the dirty gate (the target is clean).
+    expect(res.code).toBe('probe');
+    // `probe` is also the code for the alreadyApplied early return, so pin which
+    // gate fired: b.txt is reported not-applicable, and it is not already applied.
+    expect(res.failedProbes?.map((p) => p.path)).toEqual(['b.txt']);
+    expect(res.failedProbes?.every((p) => !p.alreadyApplied)).toBe(true);
+    // a.txt would have applied on its own — the whole selection is rejected,
+    // so the target is left exactly as it was.
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe('a1\na2\na3\na4\na5\n');
+  });
+
+  it('파일마다 다른 hunk를 하나씩 골라 한 번에 채택 — 두 타겟 파일 모두 선택분만 반영', async () => {
+    // The "per file, across files" path: a strict subset in each of two files,
+    // adopted together. Whole-file selections would not tell the two apart.
+    const mh = makeMultiHunkScenario();
+    try {
+      const read = captured.get(IPC.DIFF_READ)!;
+      const r = (await read({}, mh.worktreePath, '')) as {
+        ok: boolean;
+        files: Array<{ path: string; hunks: unknown[] }>;
+        snapshot: DiffApplyRequest['snapshot'];
+      };
+      expect(r.ok).toBe(true);
+      expect(r.files.find((f) => f.path === 'long.txt')!.hunks.length).toBe(2);
+      expect(r.files.find((f) => f.path === 'other.txt')!.hunks.length).toBe(2);
+
+      const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+      const res = (await apply(
+        {},
+        {
+          taskId: 't',
+          snapshot: r.snapshot,
+          selections: [
+            { path: 'long.txt', hunkIndices: [0] }, // top edit only
+            { path: 'other.txt', hunkIndices: [1] }, // bottom edit only
+          ],
+        },
+        mh.worktreePath,
+      )) as { ok: boolean };
+      expect(res.ok).toBe(true);
+
+      // Each file took its own selected hunk and nothing else — a per-file
+      // selection carried across files, not one selection applied to both.
+      expect(readFileSync(join(mh.repoRoot, 'long.txt'), 'utf8')).toBe(
+        mh.baseText.replace('L2\n', 'TOP\n'),
+      );
+      expect(readFileSync(join(mh.repoRoot, 'other.txt'), 'utf8')).toBe(
+        mh.baseText.replace('L19\n', 'OBOTTOM\n'),
+      );
+    } finally {
+      mh.cleanup();
+    }
+  });
+});
