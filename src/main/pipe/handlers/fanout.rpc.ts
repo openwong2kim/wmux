@@ -609,6 +609,16 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
     // The key is already claimed (above), so a poll that arrives while the
     // prompt is still up answers awaiting_approval instead of raising a second
     // prompt for it.
+    //
+    // The verdict is bound to THIS payload by construction, not by a digest:
+    // `req` is frozen-by-value before the prompt goes up, the preview below is
+    // built from the same `sharedPrompt` / `parsed` values, and `start(req)`
+    // spawns that same object — `params` is never re-read after this point, so
+    // there is no window in which the approved request and the executed request
+    // can differ. The one field that CAN drift is the repository, because it
+    // lives outside the payload (the caller's terminal may `cd`), and that one
+    // is re-derived and compared below. A canonical hash would restate a
+    // property the closure already guarantees.
     void (async () => {
       let verdict: { approved?: unknown; outcome?: unknown } | null = null;
       try {
