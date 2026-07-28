@@ -69,6 +69,13 @@ export interface AtomicWriteOptions {
    * FlushFileBuffers까지만 보장).
    */
   durable?: boolean;
+
+  /**
+   * Test seam for the win32 commit-rename retry (see
+   * `RENAME_RETRY_DELAYS_MS`). Production code never passes this;
+   * tests use it to drive the retry loop without sleeping for real.
+   */
+  renameRetry?: RenameRetryPolicy;
 }
 
 export interface AtomicReadOptions<T> {
@@ -103,6 +110,19 @@ export interface AtomicReadOptions<T> {
   quarantineOnCorruption?: boolean;
 }
 
+/**
+ * Retry policy for the final tmp → target rename. `delaysMs.length`
+ * is the number of retries after the first attempt, so total attempts
+ * are `delaysMs.length + 1`.
+ */
+export interface RenameRetryPolicy {
+  delaysMs?: readonly number[];
+  /** Sync sleep used by `atomicWriteJSONSync`. */
+  sleepSync?: (ms: number) => void;
+  /** Async sleep used by `atomicWriteJSON`. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────
 
 const JSON_INDENT = 2;
@@ -135,6 +155,229 @@ function makeTmpPath(targetPath: string): string {
 
 function bakPathFor(targetPath: string): string {
   return `${targetPath}.bak`;
+}
+
+/**
+ * Windows real-time antivirus scanners briefly open a handle on a
+ * file right after it is written, and a rename whose destination is
+ * held that way fails with EPERM/EACCES/EBUSY. The window is short
+ * (tens of ms), so a bounded backoff turns an intermittent hard
+ * failure into a slightly slower success.
+ *
+ * This matters more than a normal transient because of the ordering:
+ * by the time we rename tmp → target, the previous primary has
+ * ALREADY been moved to `.bak`. A failure here therefore leaves the
+ * caller with no primary file at all, which is how a half-written
+ * pairing survives a restart (#658).
+ *
+ * Only the final commit rename is retried, and only on win32 — POSIX
+ * rename does not fail this way, so behaviour off Windows is
+ * byte-identical to before. Total added stall is capped at 310ms,
+ * which the sync path (daemon event loop) can absorb.
+ */
+const RENAME_RETRY_DELAYS_MS: readonly number[] = [10, 20, 40, 80, 160];
+
+/** Test-only: the worst-case per-call stall of the DEFAULT policy. */
+export const RENAME_RETRY_TOTAL_MS_FOR_TEST = RENAME_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
+
+// Hard clamps on an injected policy. The seam exists for tests, but it is a
+// public option — an unclamped delays array (or Infinity) combined with the
+// blocking sync sleep would let a stray options object remove the retry bound
+// entirely and park the daemon event loop.
+const RENAME_RETRY_MAX_ATTEMPTS = 8;
+const RENAME_RETRY_MAX_TOTAL_MS = 500;
+
+function clampRetryDelays(delays: readonly number[]): readonly number[] {
+  const out: number[] = [];
+  let total = 0;
+  for (const d of delays.slice(0, RENAME_RETRY_MAX_ATTEMPTS)) {
+    const ms = Math.min(Math.max(0, Math.floor(d)), RENAME_RETRY_MAX_TOTAL_MS - total);
+    if (ms <= 0) break;
+    out.push(ms);
+    total += ms;
+  }
+  return out;
+}
+
+// Process-wide sliding budget for the SYNC retry sleeps. The per-call cap
+// bounds one write, but the daemon has many sync stores (peers, inbox, state
+// writers) and AV contention hits them together — without a shared budget a
+// batch flush could stack per-call stalls into seconds of blocked event loop.
+// When the budget is spent, writes fail immediately with the original error,
+// exactly as before this retry existed.
+const SYNC_RETRY_BUDGET_MS = 1_000;
+const SYNC_RETRY_WINDOW_MS = 5_000;
+let syncRetryWindowStart = 0;
+let syncRetrySpentMs = 0;
+
+function takeSyncRetryBudget(ms: number): boolean {
+  const now = Date.now();
+  if (now - syncRetryWindowStart > SYNC_RETRY_WINDOW_MS) {
+    syncRetryWindowStart = now;
+    syncRetrySpentMs = 0;
+  }
+  if (syncRetrySpentMs + ms > SYNC_RETRY_BUDGET_MS) return false;
+  syncRetrySpentMs += ms;
+  return true;
+}
+
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+function isTransientRenameError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+}
+
+/** Sleep without burning CPU or yielding the event loop. */
+function sleepSyncDefault(ms: number): void {
+  const shared = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(shared), 0, 0, ms);
+}
+
+function sleepDefault(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function warnRenameRetriesExhausted(targetPath: string, attempts: number, err: unknown): void {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown';
+  // Only claim AV when the final error is still in the transient family — a
+  // failure that CHANGED code mid-retry (say EPERM → ENOSPC) is a different
+  // problem and blaming the scanner would send the operator the wrong way.
+  const hint = isTransientRenameError(err)
+    ? ' (antivirus may be holding the file)'
+    : '';
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[atomicWrite] Commit rename to "${targetPath}" still failing after ` +
+      `${attempts} attempts, last code ${code}${hint}.`,
+  );
+}
+
+/**
+ * Run the commit rename, retrying transient win32 handle contention.
+ * On final failure the rename's own error is rethrown unchanged — callers
+ * branch on `err.code`. A throwing injected sleeper cannot mask it.
+ */
+function commitRenameSync(
+  tmp: string,
+  targetPath: string,
+  policy: RenameRetryPolicy | undefined,
+): void {
+  const delays = clampRetryDelays(policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS);
+  const sleep = policy?.sleepSync ?? sleepSyncDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, targetPath);
+      return;
+    } catch (err) {
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err) &&
+        takeSyncRetryBudget(delays[i]);
+      if (!retryable) {
+        if (i > 0) warnRenameRetriesExhausted(targetPath, i + 1, err);
+        throw err;
+      }
+      try {
+        sleep(delays[i]);
+      } catch {
+        throw err; // a broken sleeper must not swallow the rename failure
+      }
+    }
+  }
+}
+
+async function commitRename(
+  tmp: string,
+  targetPath: string,
+  policy: RenameRetryPolicy | undefined,
+): Promise<void> {
+  const delays = clampRetryDelays(policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS);
+  const sleep = policy?.sleep ?? sleepDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      await fsp.rename(tmp, targetPath);
+      return;
+    } catch (err) {
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err);
+      if (!retryable) {
+        if (i > 0) warnRenameRetriesExhausted(targetPath, i + 1, err);
+        throw err;
+      }
+      try {
+        await sleep(delays[i]);
+      } catch {
+        throw err;
+      }
+    }
+  }
+}
+
+/**
+ * Best-effort restore of `.bak` → target after the commit rename gave up.
+ * Without this, a retry-exhausted write leaves NO primary at all (the previous
+ * one was already rotated to `.bak`), and the "a failed write leaves the
+ * previous state" contract silently breaks — a crash in that window resurrects
+ * whatever generation `.bak` holds (#658's symptom family). Guarded on the
+ * primary still being absent: if a concurrent writer recreated it during the
+ * retry window, their newer data must not be clobbered with our old backup.
+ */
+function rollbackBakSync(bak: string, targetPath: string): void {
+  try {
+    if (fs.existsSync(targetPath) || !fs.existsSync(bak)) return;
+    fs.renameSync(bak, targetPath);
+  } catch (rbErr) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[atomicWrite] could not restore "${bak}" after a failed commit — no primary file remains:`,
+      rbErr,
+    );
+  }
+}
+
+async function rollbackBak(bak: string, targetPath: string): Promise<void> {
+  try {
+    await fsp.access(targetPath);
+    return; // primary exists again — leave it alone
+  } catch {
+    /* absent — attempt the restore below */
+  }
+  try {
+    await fsp.rename(bak, targetPath);
+  } catch (rbErr) {
+    const code = (rbErr as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[atomicWrite] could not restore "${bak}" after a failed commit — no primary file remains:`,
+        rbErr,
+      );
+    }
+  }
+}
+
+// Per-target serialisation of ASYNC writes. The retry sleep opens the event
+// loop for up to ~310ms with the primary already rotated away; two async
+// writers interleaving in that window could commit out of order and lose the
+// newer payload with no backup. Chaining writes to the same path removes that
+// race within this process (cross-process writers were never coordinated, and
+// the sync variant blocks the loop so it cannot interleave with itself).
+const asyncWriteChains = new Map<string, Promise<void>>();
+
+function chainAsyncWrite(targetPath: string, run: () => Promise<void>): Promise<void> {
+  const prev = asyncWriteChains.get(targetPath) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(run);
+  asyncWriteChains.set(targetPath, next);
+  void next.catch(() => undefined).then(() => {
+    if (asyncWriteChains.get(targetPath) === next) asyncWriteChains.delete(targetPath);
+  });
+  return next;
 }
 
 function ensureDirSync(filePath: string): void {
@@ -279,61 +522,80 @@ export async function atomicWriteJSON(
     }
   }
 
-  const tmp = makeTmpPath(targetPath);
-  const bak = bakPathFor(targetPath);
+  // Serialised per target: see chainAsyncWrite for why interleaving async
+  // writers across the retry window loses data.
+  return chainAsyncWrite(targetPath, async () => {
+    const tmp = makeTmpPath(targetPath);
+    const bak = bakPathFor(targetPath);
 
-  await ensureDir(targetPath);
+    await ensureDir(targetPath);
 
-  const json = serialise(data);
+    const json = serialise(data);
 
-  try {
-    // 1. Write to temp file. mode:0o600 is a no-op on Windows, but
-    //    matches the StateWriter's POSIX intent.
-    if (opts.durable) {
-      // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
-      const fh = await fsp.open(tmp, 'w', 0o600);
-      try {
-        await fh.writeFile(json, { encoding: 'utf-8' });
-        await fh.sync();
-      } finally {
-        await fh.close();
-      }
-    } else {
-      await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
-    }
-
-    // 2. When rotation is enabled we shift the existing numbered
-    //    slots BEFORE overwriting `.bak` so nothing is lost:
-    //      .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1.
-    //    With rotation off we keep the historical single-slot
-    //    behaviour (current `.bak` is overwritten by step 3).
-    if (opts.rotationEnabled) {
-      await rotateBackups(targetPath);
-    }
-
-    // 3. Rotate current → .bak (best-effort).
+    let movedToBak = false;
     try {
-      await fsp.rename(targetPath, bak);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        // eslint-disable-next-line no-console
-        console.warn('[atomicWrite] Failed to create backup:', err);
+      // 1. Write to temp file. mode:0o600 is a no-op on Windows, but
+      //    matches the StateWriter's POSIX intent.
+      if (opts.durable) {
+        // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
+        const fh = await fsp.open(tmp, 'w', 0o600);
+        try {
+          await fh.writeFile(json, { encoding: 'utf-8' });
+          await fh.sync();
+        } finally {
+          await fh.close();
+        }
+      } else {
+        await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
       }
-    }
 
-    // 4. Atomic rename tmp → target.
-    await fsp.rename(tmp, targetPath);
+      // 2. When rotation is enabled we shift the existing numbered
+      //    slots BEFORE overwriting `.bak` so nothing is lost:
+      //      .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1.
+      //    With rotation off we keep the historical single-slot
+      //    behaviour (current `.bak` is overwritten by step 3).
+      if (opts.rotationEnabled) {
+        await rotateBackups(targetPath);
+      }
 
-    // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
-    if (opts.durable) {
-      await fsyncParentDir(path.dirname(targetPath));
+      // 3. Rotate current → .bak. The SAME AV contention that holds the
+      //    commit rename can hold this one, and giving up here means the
+      //    commit overwrites the primary while `.bak` still holds an older
+      //    generation — the last good copy would survive nowhere. Retry it
+      //    with the same policy; if it still fails we keep the historical
+      //    warn-and-continue (availability over the backup guarantee).
+      try {
+        await commitRename(targetPath, bak, opts.renameRetry);
+        movedToBak = true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          // eslint-disable-next-line no-console
+          console.warn('[atomicWrite] Failed to create backup:', err);
+        }
+      }
+
+      // 4. Atomic rename tmp → target (retried on win32 AV contention).
+      try {
+        await commitRename(tmp, targetPath, opts.renameRetry);
+      } catch (err) {
+        // The primary is gone (step 3 moved it) and the new data never
+        // landed. Put the previous generation back so "a failed write
+        // leaves the previous state" still holds.
+        if (movedToBak) await rollbackBak(bak, targetPath);
+        throw err;
+      }
+
+      // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+      if (opts.durable) {
+        await fsyncParentDir(path.dirname(targetPath));
+      }
+    } catch (err) {
+      // Best-effort tmp cleanup so we don't leak partial files.
+      await unlinkIfExists(tmp);
+      throw err;
     }
-  } catch (err) {
-    // Best-effort tmp cleanup so we don't leak partial files.
-    await unlinkIfExists(tmp);
-    throw err;
-  }
+  });
 }
 
 // ── Async read ───────────────────────────────────────────────────────
@@ -487,16 +749,27 @@ export function atomicWriteJSONSync(
       rotateBackupsSync(targetPath);
     }
 
+    // Rotate current → .bak with the same retry as the commit — see the async
+    // variant for why giving up here silently forfeits the last good copy.
+    let movedToBak = false;
     if (fs.existsSync(targetPath)) {
       try {
-        fs.renameSync(targetPath, bak);
+        commitRenameSync(targetPath, bak, opts.renameRetry);
+        movedToBak = true;
       } catch (bakErr) {
         // eslint-disable-next-line no-console
         console.warn('[atomicWrite] Failed to create backup:', bakErr);
       }
     }
 
-    fs.renameSync(tmp, targetPath);
+    try {
+      commitRenameSync(tmp, targetPath, opts.renameRetry);
+    } catch (err) {
+      // Restore the previous generation so a retry-exhausted write does not
+      // leave the caller with no primary file at all (see rollbackBakSync).
+      if (movedToBak) rollbackBakSync(bak, targetPath);
+      throw err;
+    }
 
     // §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
     if (opts.durable) {

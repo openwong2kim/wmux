@@ -38,9 +38,14 @@ In QA/design-review mode, flag any code that doesn't match DESIGN.md.
 - **PRs never bump the version.** `package.json` stays at the last released
   version on every feature branch. Do NOT let /ship (or any workflow) bump
   MAJOR/MINOR/PATCH, claim version slots, or prefix PR titles with `vX.Y.Z`.
-- CHANGELOG: each PR adds its user-facing entries under `## [Unreleased]`
-  at the top (Keep a Changelog). Merge conflicts there are append-merges.
-- **Release = explicit user action**: bump `package.json` version, rename
+- CHANGELOG: a PR does **not** edit `CHANGELOG.md`. It adds one fragment,
+  `changelog.d/<pr-number>.md`, holding its user-facing entries under plain
+  Keep a Changelog headings. Separate files cannot conflict — editing the one
+  shared insertion point meant every merge left every other open PR dirty.
+  See `changelog.d/README.md`.
+- **Release = explicit user action**: run
+  `node scripts/collect-changelog.mjs` to fold the fragments into
+  `CHANGELOG.md`, bump `package.json` version, rename
   `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, run
   `node scripts/gen-api-reference.mjs` (the generated header bakes the
   version — the CI drift guard enforces this), commit `chore(release)`,
