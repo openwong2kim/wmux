@@ -54,7 +54,7 @@ vi.mock('../../../git/git', () => ({
 import { registerDiffHandlers } from '../diff.handler';
 import { IPC } from '../../../../shared/constants';
 
-describe('diff:read — 알고리즘 argv', () => {
+describe('diff:read — algorithm argv', () => {
   // resolveAccessiblePath realpaths its input, so the cwd must exist even
   // though no git command will ever look inside it.
   let dir: string;
@@ -66,7 +66,7 @@ describe('diff:read — 알고리즘 argv', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('task 모드의 patch·numstat 모두 --histogram으로 요청', async () => {
+  it('requests --histogram for both the patch and the numstat in task mode', async () => {
     const read = captured.get(IPC.DIFF_READ)!;
     const res = (await read({}, dir, HEAD_OID)) as { ok: boolean };
     expect(res.ok).toBe(true);
@@ -79,7 +79,7 @@ describe('diff:read — 알고리즘 argv', () => {
     expect(diffs.some((c) => c.includes('--numstat'))).toBe(true);
   });
 
-  it('workspace 모드도 동일하게 --histogram으로 요청', async () => {
+  it('requests --histogram in workspace mode too', async () => {
     const read = captured.get(IPC.DIFF_READ)!;
     const res = (await read({}, dir, '', 'workspace')) as { ok: boolean };
     expect(res.ok).toBe(true);
