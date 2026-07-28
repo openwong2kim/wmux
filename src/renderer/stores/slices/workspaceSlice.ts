@@ -404,10 +404,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // visibility rule reads workspace existence directly, so it is already
         // correct whether or not this RPC lands.
         void get().closeMissionForRemovedWorkspace?.(id);
-        // Drop this workspace's own mission cache — it may have been a fan-out
-        // PARENT, and nothing else evicts the entry (refreshMissions only ever
-        // visits workspaces that still exist).
-        get().clearMissionsFor?.(id);
+        // NOTE: deliberately NOT `clearMissionsFor(id)`. That bucket is keyed by
+        // the fan-out PARENT, and its tasks' child workspaces routinely outlive
+        // the parent — wiping it would hide live missions from the sidebar AND
+        // leave `closeMissionForRemovedWorkspace` unable to find those tasks when
+        // the children are deleted later. The orphan bucket is harmless: it is
+        // capped per workspace, `selectLiveMissions` filters rows by child
+        // workspace existence, and `refreshMissions` only ever visits workspaces
+        // that still exist, so it never grows again.
       }
     },
 
