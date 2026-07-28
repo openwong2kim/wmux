@@ -1,0 +1,105 @@
+{
+  "$comment": [
+    "Explicit exceptions to the license policy enforced by scripts/check-licenses.mjs.",
+    "",
+    "An entry here asserts that a person opened the package's actual LICENSE file and",
+    "read it. Nothing else counts: automated license detection reports 'other' /",
+    "NOASSERTION for projects whose LICENSE turns out to be the GNU GPL, so a machine",
+    "verdict alone can never justify an entry.",
+    "",
+    "Entries are matched on name + version + declaredLicense, all exact. A version bump",
+    "ships a new artifact and a changed declaration means the terms moved — either one",
+    "retires the exception and requires a fresh reading. That is deliberate: the",
+    "maintenance cost is the mechanism.",
+    "",
+    "Never add an entry for a copyleft or source-available license (GPL, AGPL, LGPL,",
+    "SSPL, BUSL, Elastic). Those are disqualifying for the signed binaries we ship;",
+    "the dependency has to go instead.",
+    "",
+    "Required fields: name, version, declaredLicense, reason.",
+    "Conventional extras: licenseFile, licenseTerms, reviewedOn."
+  ],
+  "packages": [
+    {
+      "name": "@anthropic-ai/claude-agent-sdk",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN README.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Proprietary Anthropic terms, not copyleft. LICENSE.md reads in full: '(c) Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.' The README section the manifest points at links the same Commercial Terms of Service. Grants use of the published package; imposes no source-disclosure obligation on wmux. Redistributed as an unmodified npm dependency.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary for @anthropic-ai/claude-agent-sdk. Its LICENSE.md was read on disk and is byte-identical to the parent package's — the same Anthropic proprietary terms, not copyleft.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-darwin-x64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-linux-arm64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-linux-x64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-win32-arm64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    },
+    {
+      "name": "@anthropic-ai/claude-agent-sdk-win32-x64",
+      "version": "0.3.206",
+      "declaredLicense": "SEE LICENSE IN LICENSE.md",
+      "licenseFile": "LICENSE.md",
+      "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
+      "reviewedOn": "2026-07-28"
+    }
+  ]
+}

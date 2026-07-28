@@ -11,8 +11,9 @@
  * must propagate).
  *
  * Usage:
- *   node scripts/generate-notices.mjs            # rewrite THIRD_PARTY_NOTICES
- *   node scripts/generate-notices.mjs --check    # exit 1 if the file is stale
+ *   node scripts/generate-notices.mjs                  # rewrite THIRD_PARTY_NOTICES
+ *   node scripts/generate-notices.mjs --check          # exit 1 if the file is stale
+ *   node scripts/generate-notices.mjs --stdout-digest  # sha256 of what it would write
  *
  * The output is a pure function of package-lock.json plus the LICENSE/NOTICE
  * files on disk — no wall-clock timestamp, no platform-dependent package set
@@ -24,6 +25,7 @@
  * Intentionally zero external deps — package-lock.json + node:fs only — so
  * this script is self-contained and works in CI without extra installs.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +35,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const NOTICES_PATH = join(ROOT, 'THIRD_PARTY_NOTICES');
 const CHECK_ONLY = process.argv.slice(2).includes('--check');
+// Lets the drift-guard test assert that two runs produce the same bytes without
+// writing the file twice. Determinism is the load-bearing property here: if it
+// regresses, --check flaps and a flaky guard gets deleted rather than fixed.
+const DIGEST_ONLY = process.argv.slice(2).includes('--stdout-digest');
 
 // Vendored LICENSE/NOTICE files ship with mixed line endings (several are CRLF).
 // Emitting them verbatim would bake CRLF into an otherwise-LF file and break the
@@ -305,6 +311,11 @@ for (const f of BUNDLED_FONTS) {
 }
 
 const rendered = lines.join('\n');
+
+if (DIGEST_ONLY) {
+  process.stdout.write(`${createHash('sha256').update(rendered, 'utf8').digest('hex')}\n`);
+  process.exit(0);
+}
 
 if (CHECK_ONLY) {
   let current = null;
