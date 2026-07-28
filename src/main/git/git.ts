@@ -4,7 +4,7 @@
 // execFile의 throw를 여기서 흡수한다.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getGitExecEnv } from '../../shared/execEnv';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,7 +21,7 @@ export async function git(args: string[], cwd: string): Promise<GitResult> {
       timeout: 30000,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024,
-      env: getGitExecEnv(),
+      env: getExecEnv(),
     });
     return { stdout, stderr, code: 0 };
   } catch (e) {

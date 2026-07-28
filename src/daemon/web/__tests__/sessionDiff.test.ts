@@ -123,8 +123,8 @@ describe('collectSessionDiff', () => {
       ['rev-parse', '--is-inside-work-tree', '--show-toplevel'],
       // Filter discovery, before anything reads working-tree content.
       ['config', '--list', '--name-only', '-z'],
-      ['diff', '--cached', '--no-ext-diff', '--no-textconv'],
-      ['diff', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--histogram', '--cached', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--histogram', '--no-ext-diff', '--no-textconv'],
       ['status', '--porcelain', '-z', '--untracked-files=all'],
       // The closing re-read that detects a tree edited mid-collection.
       ['status', '--porcelain', '-z', '--untracked-files=all'],
@@ -156,6 +156,22 @@ describe('collectSessionDiff', () => {
     for (const c of git.calls.filter((x) => body(x.args)[0] === 'diff')) {
       expect(c.args).toContain('--no-ext-diff');
       expect(c.args).toContain('--no-textconv');
+    }
+  });
+
+  it('★ asks for the histogram algorithm on every patch it renders', async () => {
+    // The staged and unstaged patches are what the phone actually reads, and
+    // an agent's diff is movement-heavy enough that the default Myers splits
+    // one relocation into several interleaved hunks. Stated on the argv, not
+    // left to `diff.algorithm`, so a repo the agent cloned cannot pick it.
+    const git = fakeGit({ 'rev-parse': INSIDE, status: ok(`?? new.ts${NUL}`) });
+    await collectSessionDiff('/repo', git.run);
+    const patches = git.calls.filter(
+      (c) => body(c.args)[0] === 'diff' && !c.args.includes('--no-index'),
+    );
+    expect(patches).toHaveLength(2);
+    for (const c of patches) {
+      expect(c.args).toContain('--histogram');
     }
   });
 
@@ -238,7 +254,7 @@ describe('collectSessionDiff', () => {
     const run: GitRunner = async (args) => {
       if (body(args)[0] === 'rev-parse') return INSIDE;
       if (body(args)[0] === 'status') return ok(`M  staged.ts${NUL} M dirty.ts${NUL}`);
-      return body(args)[1] === '--cached' ? ok('STAGED\n') : ok('WORKTREE\n');
+      return body(args).includes('--cached') ? ok('STAGED\n') : ok('WORKTREE\n');
     };
     const res = await collectSessionDiff('/repo', run);
     expect(res.ok).toBe(true);
@@ -255,7 +271,7 @@ describe('collectSessionDiff', () => {
     const run: GitRunner = async (args) => {
       if (body(args)[0] === 'rev-parse') return INSIDE;
       if (body(args)[0] === 'status') return ok(`?? first.ts${NUL}`);
-      if (body(args)[1] === '--cached') return fail("fatal: ambiguous argument 'HEAD'");
+      if (body(args).includes('--cached')) return fail("fatal: ambiguous argument 'HEAD'");
       return ok('');
     };
     const res = await collectSessionDiff('/fresh', run);
@@ -263,6 +279,10 @@ describe('collectSessionDiff', () => {
     if (!res.ok) return;
     expect(res.diff.files).toEqual([{ path: 'first.ts', status: '??' }]);
     expect(res.diff.patch).toBe('');
+    // Proves the injected failure actually landed. Without this the test passes
+    // whether or not the staged read failed — every scripted command returns an
+    // empty patch — so a stub that stops matching `--cached` would go unnoticed.
+    expect(res.diff.patchIncomplete).toBe(true);
   });
 
   it('reports git-failed only when status itself fails', async () => {
@@ -594,7 +614,7 @@ describe('collectSessionDiff', () => {
     const run: GitRunner = async (args) => {
       if (body(args)[0] === 'rev-parse') return INSIDE;
       if (body(args)[0] === 'status') return ok('');
-      return body(args)[1] === '--cached' ? ok('') : ok('z'.repeat(50));
+      return body(args).includes('--cached') ? ok('') : ok('z'.repeat(50));
     };
     const res = await collectSessionDiff('/repo', run, { maxBytes: 20 });
     expect(res.ok).toBe(true);

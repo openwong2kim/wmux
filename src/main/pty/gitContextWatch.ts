@@ -95,10 +95,28 @@ export function readGitContext(repo: ResolvedRepo): GitContext {
   }
 }
 
+/** Listener shape `fs.watch` invokes: `(eventType, filename)`. */
+export type GitWatchListener = (eventType: string, filename: string | Buffer | null) => void;
+
+/** The subset of `fs.FSWatcher` this module uses. `fs.FSWatcher` satisfies it. */
+export interface GitWatchHandle {
+  close(): void;
+  on(event: 'error', listener: () => void): unknown;
+}
+
+/**
+ * Factory that arms a watch on `target`. Defaults to `fs.watch`; tests inject a
+ * fake so watcher logic (filename filtering, debounce, re-resolve) is asserted
+ * without depending on platform FSEvents/inotify delivery latency.
+ */
+export type GitWatchFactory = (target: string, listener: GitWatchListener) => GitWatchHandle;
+
+const defaultWatchFactory: GitWatchFactory = (target, listener) => fs.watch(target, listener);
+
 interface SessionWatch {
   cwd: string;
   repo: ResolvedRepo | null;
-  watcher: fs.FSWatcher | null;
+  watcher: GitWatchHandle | null;
   debounce: NodeJS.Timeout | null;
   /** Last emitted value, JSON-encoded, to suppress no-op re-emits. */
   lastEmitted: string | null;
@@ -117,6 +135,16 @@ interface SessionWatch {
  */
 export class GitContextWatcher extends EventEmitter {
   private sessions = new Map<string, SessionWatch>();
+  private readonly watchFactory: GitWatchFactory;
+
+  /**
+   * @param watchFactory Test seam only. Omitted in production, where the
+   *   watcher arms `fs.watch` exactly as before.
+   */
+  constructor(watchFactory: GitWatchFactory = defaultWatchFactory) {
+    super();
+    this.watchFactory = watchFactory;
+  }
 
   update(sessionId: string, cwd: string): void {
     const existing = this.sessions.get(sessionId);
@@ -173,7 +201,7 @@ export class GitContextWatcher extends EventEmitter {
   private arm(sessionId: string, watch: SessionWatch): void {
     const target = watch.repo ? watch.repo.gitDir : watch.cwd;
     try {
-      watch.watcher = fs.watch(target, (_event, filename) => {
+      watch.watcher = this.watchFactory(target, (_event, filename) => {
         if (watch.repo) {
           // Only HEAD transitions matter (HEAD.lock → HEAD rename included).
           if (filename && !/^HEAD(\.lock)?$/i.test(String(filename))) return;

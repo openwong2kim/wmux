@@ -14,7 +14,7 @@
     <projectSourceUrl>https://github.com/openwong2kim/wmux</projectSourceUrl>
     <bugTrackerUrl>https://github.com/openwong2kim/wmux/issues</bugTrackerUrl>
     <tags>terminal multiplexer ai-agent mcp windows electron developer-tools cli</tags>
-    <summary>Windows terminal multiplexer built for AI coding agents</summary>
+    <summary>Windows terminal multiplexer built for AI agents</summary>
     <description><![CDATA[
 ## wmux — Windows Terminal Multiplexer for AI Agents
 

@@ -1,4 +1,8 @@
-export type { AtomicWriteOptions, AtomicReadOptions } from './core';
+export type {
+  AtomicWriteOptions,
+  AtomicReadOptions,
+  RenameRetryPolicy,
+} from './core';
 export {
   atomicWriteJSON,
   atomicReadJSON,

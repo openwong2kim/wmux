@@ -141,6 +141,22 @@ function parseNumstat(raw: string): DiffNumstat[] {
 // git의 잘 알려진 empty tree 오브젝트 — 첫 커밋 전(HEAD 없음) repo의 diff base.
 const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
+// Diff algorithm, pinned on the argv instead of left to git's default (Myers)
+// or to a `diff.algorithm` in the user's config. An explicit flag outranks
+// config, so every reader of this panel sees the same hunks.
+//
+// Agent-authored diffs are movement-heavy — blocks relocated, helpers hoisted,
+// imports reordered. Myers matches the shortest edit script, which on that
+// shape tends to anchor on incidental repeated lines (`}`, blank lines) and
+// split one logical move into several interleaved hunks. Histogram scores
+// candidate anchors by rarity, so it lands on the distinctive lines and emits
+// the same change as fewer, more readable hunks — which is what the reviewer
+// checkboxes and adopts, one hunk at a time.
+//
+// Applied to the patch and to `--numstat` together so the file tree's +/-
+// counts describe the same diff the panel renders.
+const DIFF_ALGORITHM = '--histogram';
+
 // diff:read 구현.
 //
 // mode:
@@ -194,11 +210,11 @@ async function readDiff(
   }
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
-  const diffRes = await git(['diff', mergeBase], worktreePath);
+  const diffRes = await git(['diff', DIFF_ALGORITHM, mergeBase], worktreePath);
   if (diffRes.code !== 0) {
     return { ok: false, error: `git diff 실패: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
   }
-  const numRes = await git(['diff', '--numstat', mergeBase], worktreePath);
+  const numRes = await git(['diff', DIFF_ALGORITHM, '--numstat', mergeBase], worktreePath);
 
   // untracked 수집 → 정식 new-file 헤더 합성(§2 R4).
   // F1: -z + quotepath=false로 특수문자 untracked 파일명을 원문 파싱.

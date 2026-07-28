@@ -69,9 +69,32 @@ jobs:
           # azure-cli.list, …), so a filename glob misses some. Matching the
           # host also survives a runner bump to deb822 (24.04 keeps the Ubuntu
           # archives in sources.list.d/ubuntu.sources, which must NOT be dropped).
+          #
+          # Dropping the third-party sources removes the deterministic 403, but
+          # the Ubuntu/Azure mirrors themselves still fail transiently (Hash Sum
+          # mismatch, connection reset, 5xx from a single mirror behind the load
+          # balancer). Acquire::Retries only retries the individual fetch inside
+          # one apt run; a mirror serving a stale index fails the whole run. Wrap
+          # both apt operations in a bounded retry with backoff so a slow/soggy
+          # mirror costs seconds instead of a red X on an unrelated PR.
+          set -euo pipefail
+          apt_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
+                sleep $((attempt * 15))
+              fi
+            done
+            echo "apt-get $* failed after 3 attempts" >&2
+            return 1
+          }
           sudo bash -c 'grep -rlE "packages\.microsoft\.com|dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f'
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get install -y build-essential libxss1
+          apt_retry update
+          apt_retry install -y build-essential libxss1
 
       # macos-14 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
       # We only verify presence — do NOT attempt to install, that would burn

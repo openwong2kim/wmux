@@ -301,6 +301,23 @@ describe('LanLinkServer — inbound responder state machine', () => {
     h.server.dispose();
   });
 
+  it('pairs NEITHER side when the peer store refuses the commit (#658)', async () => {
+    const h = await makeServer();
+    h.server.enterPairingMode('123456');
+    // What a win32 owner-DACL failure (or a failed atomic rename) does: the store
+    // refuses to hold secrets and throws out of onConfirm.
+    h.serverPeers.upsertPaired = () => {
+      throw new Error('LanLink peer store: could not apply owner-only ACL — refusing to persist secrets');
+    };
+    const clientPeers = mkPeers();
+    // The half-pair that made #658 permanent was the responder holding a peer the
+    // initiator has no secret for. Neither side may hold anything.
+    await expect(doPair(h, clientPeers, '123456')).rejects.toThrow(/failed to save the pairing/i);
+    expect(h.server.listPeers()).toEqual([]);
+    expect(clientPeers.list()).toEqual([]);
+    h.server.dispose();
+  });
+
   it('a closed pairing window destroys a PAKE_HELLO before scrypt (no pairing)', async () => {
     const h = await makeServer();
     // window NOT armed

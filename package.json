@@ -1,8 +1,8 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "3.37.1",
-  "description": "Workspace multiplexer for AI coding agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
+  "version": "3.37.2",
+  "description": "Workspace multiplexer for AI agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -20,6 +20,7 @@
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
     "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
+    "licenses": "node scripts/check-licenses.mjs",
     "test": "npm run test:parallel && npm run test:runtime",
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",

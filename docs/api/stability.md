@@ -73,10 +73,12 @@ Drops all metadata for a pane. Emits `pane.metadata.changed` with the new (empty
 **Params:** `{ cursor?: number, types?: WmuxEventType[], workspaceId?: string, max?: number }`
 **Returns:** `{ events, nextCursor, priorCursor, bootId, droppedCount?, resync? }`
 
-- Cursor is **opaque**. Clients pass `nextCursor` back as-is on the next poll. Do not increment, sort, or compare across runs.
+- Cursor is **opaque**. On a response without `resync`, clients pass `nextCursor` back verbatim on the next poll. Do not increment it or clamp it against the previous cursor.
+- Without `resync`, `nextCursor >= priorCursor`; it advances when the poll scanned at least one newer event, including filter no-matches.
+- With `resync: true`, `nextCursor` is a replacement cursor and may be lower than `priorCursor`, including `0` against an empty ring. Do not clamp it. Reconcile through `pane.list` and resume from its `asOfSeq`, which supersedes the replacement; see [`PROTOCOL.md` §2.2](../PROTOCOL.md#22-cursor-is-opaque).
 - Default cursor is `0` — replay from the oldest event in the ring.
 - `priorCursor` echoes the cursor the caller passed in. Used for diagnostics.
-- `resync: true` indicates the caller's cursor drifted past the ring window OR the daemon restarted. Client must reconcile via `pane.list`.
+- `resync: true` indicates the caller's cursor drifted past the ring window or points past the newest event. Client must reconcile as described above.
 - `droppedCount` is set when known (drift past ring) and reports the number of events the caller missed.
 - `bootId` is present on every response. Mismatch ⇒ daemon restarted; drop all caches.
 - Event ordering: monotonic in **arrival order**, not in **causal order** (see [`inventory.md`](./inventory.md#event-types) for the cross-producer caveat).

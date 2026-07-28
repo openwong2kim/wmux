@@ -918,8 +918,10 @@ describe('global concurrent-turn gate — the fleet-wide cap on autonomous turns
       type: 'agent.lifecycle', workspaceId: 'ws-3', ptyId: 'p2',
       kind: 'agent.awaiting_input', source: 'hook', agent: 'claude', decision: 'emit',
     });
-    await new Promise((r) => setTimeout(r, 1700));
-    expect(started('ws-3')).toBe(1);
+    // Poll rather than sleep a fixed 1700ms: the coalescer's 1500ms debounce is
+    // only a lower bound, and the turn's dispatch after it is not instantaneous
+    // on a loaded runner.
+    await vi.waitFor(() => expect(started('ws-3')).toBe(1), { timeout: 5_000, interval: 25 });
 
     releasers.forEach((r) => r());
     await new Promise((r) => setTimeout(r, 15));

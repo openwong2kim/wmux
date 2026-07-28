@@ -167,8 +167,9 @@ Stdio MCP transport doesn't carry server-initiated notifications cleanly, and `d
 Today, `cursor` is a monotonic 64-bit integer assigned by the bus. **Clients must not depend on this.** The substrate guarantees only:
 
 - `cursor: 0` always means "replay from oldest in the ring."
-- `nextCursor` returned from `events.poll` is the right value to pass back on the next poll. Do not increment, sort, or compare it.
-- `nextCursor` is monotonically non-decreasing across calls from the same client (strictly increasing only when new events were delivered). Specifically: `nextCursor >= priorCursor` always; `nextCursor > priorCursor` if and only if at least one event was scanned past the cursor (including filter no-matches, which still advance the cursor — see §2.3).
+- On a response without `resync`, `nextCursor` is the right value to pass back on the next poll. Pass it back verbatim; do not increment it or clamp it against an earlier cursor.
+- **Normal advancement.** On a response without `resync`, `nextCursor >= priorCursor`, and `nextCursor > priorCursor` if and only if at least one event was scanned past the cursor (including filter no-matches, which still advance the cursor — see §2.3).
+- **Replacement during resync.** On a response carrying `resync: true`, `nextCursor` is a replacement, not an advancement, and MAY be lower than `priorCursor` — including `0` against an empty ring. This lets the raw poll stream re-anchor a cursor that pointed past the newest event (`cursor > latestSeq`, §2.5); a cursor that merely drifted past the ring window still advances. Do not clamp or otherwise rewrite the replacement. The required client recovery is §2.5, not simply another poll: call `pane.list` and resume from its `asOfSeq`, which supersedes this response's `nextCursor`. A client that retries directly with `cursor = Math.max(cursor, nextCursor)` never re-anchors and repeats the same resync page indefinitely.
 
 Future evolutions (sharded rings, segmented cursors) may change the underlying encoding without notice. Opaque-cursor clients are unaffected.
 
@@ -248,6 +249,24 @@ Wire shape: `channelId`, `seq` (per-channel monotonic), `senderWorkspaceId`, `re
 > **Sanitization caveat.** `message.text` and `message.memberName` are sanitized at the terminal-delivery boundary (the bracketed-paste path strips ESC + NUL; `sanitizeA2aName` collapses CR/LF/TAB). The bus event itself, however, is **not pre-sanitized** — any UI that renders `message.text` directly (a panel that doesn't route through the delivery formatter) MUST sanitize first.
 
 ---
+
+### 2.9 The control connection is multiplexed — correlate on `id`
+
+A control connection carries **two kinds of frame in the same newline-delimited JSON stream**: replies to requests you sent, and unsolicited events the daemon pushes to every connected client. There is no subscription step — a client receives pushed events from the moment it connects, whether or not it ever asked for any. See `DaemonPipeServer.broadcast` in `src/daemon/DaemonPipeServer.ts`.
+
+The two are told apart by `id`:
+
+- **Replies always echo the `id` of the request they answer**, and always carry `ok`. This holds on every path, including `unauthorized`, `rate limited`, and `Invalid RPC request`. A reply to a request that could not be parsed at all carries `"id": null`.
+- **Pushed events never carry an `id`.** They carry a `type` (e.g. `title.changed`, `lanlink.remote.received`) and their own payload fields.
+
+Therefore a client **MUST**:
+
+1. Read frames until it sees one whose `id` matches the `id` it sent — that frame, and only that frame, is its response.
+2. Ignore (or route to an event handler) any frame with no `id`. Never treat one as a response.
+
+**Writing one request and reading exactly one line back is incorrect**, even though it appears to work: it succeeds until an event happens to be pushed between the request and its reply, at which point the client reads the event instead. An event frame has no `ok` and no `error`, so a client that assumes otherwise typically reports a failure with an empty error message and then discards the real reply when it arrives.
+
+Note the asymmetry when debugging: this mistake can **fabricate failures but never successes**. A phantom failure with an empty error message, on an operation that appears not to have happened, is a symptom of reading the wrong frame — not of the daemon failing the request.
 
 ## 3. Snapshot envelope (`pane.list`)
 

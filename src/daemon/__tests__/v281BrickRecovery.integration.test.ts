@@ -174,7 +174,11 @@ describe('v2.8.1 brick recovery — full Bug 1 flow', () => {
     writer.saveImmediate({
       version: 1,
       sessions: [
-        session('dead-tight', 'dead', new Date(now - 25 * HOUR).toISOString()),
+        // pid -1 can never be alive. The fixture's default pid (4242) is a
+        // real pid on some CI runners, and #646's keep-expired-tombstones-
+        // while-the-pid-lives rule then retains this session and flakes the
+        // assertion below.
+        { ...session('dead-tight', 'dead', new Date(now - 25 * HOUR).toISOString()), pid: -1 },
         {
           ...session(
             'suspended-tight',
@@ -190,5 +194,25 @@ describe('v2.8.1 brick recovery — full Bug 1 flow', () => {
     const ids = loaded.sessions.map((s) => s.id);
     expect(ids).not.toContain('dead-tight');
     expect(ids).toContain('suspended-tight');
+  });
+
+  it('TTL prune keeps an expired dead tombstone while its pid is still alive (#646)', () => {
+    // The counterpart of the test above, and the reason its fixture pins
+    // pid -1: an expired tombstone whose recorded pid still runs must
+    // survive the prune so recovery's reconciliation pass can reap the
+    // process. process.pid is this test runner — alive by definition.
+    const now = Date.now();
+    writer.saveImmediate({
+      version: 1,
+      sessions: [
+        {
+          ...session('dead-live-pid', 'dead', new Date(now - 25 * HOUR).toISOString()),
+          pid: process.pid,
+        },
+      ],
+    });
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).toContain('dead-live-pid');
   });
 });

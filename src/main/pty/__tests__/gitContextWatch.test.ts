@@ -1,8 +1,15 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GitContextWatcher, parseHead, resolveRepo, readGitContext } from '../gitContextWatch';
+import {
+  GitContextWatcher,
+  parseHead,
+  resolveRepo,
+  readGitContext,
+  type GitWatchFactory,
+  type GitWatchListener,
+} from '../gitContextWatch';
 
 function mkTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gitwatch-'));
@@ -22,12 +29,6 @@ function tmp(): string {
   return dir;
 }
 
-function makeWatcher(): GitContextWatcher {
-  const w = new GitContextWatcher();
-  watchers.push(w);
-  return w;
-}
-
 afterEach(() => {
   for (const w of watchers.splice(0)) w.dispose();
   for (const dir of tmpDirs.splice(0)) {
@@ -35,14 +36,29 @@ afterEach(() => {
   }
 });
 
-function waitForEvent<T>(watcher: GitContextWatcher, event: string, timeoutMs = 2000): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timeout waiting for ${event}`)), timeoutMs);
-    watcher.once(event, (payload: T) => {
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
+/** One armed watch recorded by the fake factory. */
+interface ArmedWatch {
+  target: string;
+  listener: GitWatchListener;
+  closed: boolean;
+}
+
+/**
+ * Fake `fs.watch` so the watcher's own logic (filename filter, debounce,
+ * re-resolve, teardown) is asserted without waiting on real FSEvents/inotify
+ * delivery — which is what made these tests flaky on loaded CI runners.
+ */
+function fakeWatchFactory(): { arms: ArmedWatch[]; factory: GitWatchFactory; last(): ArmedWatch } {
+  const arms: ArmedWatch[] = [];
+  const factory: GitWatchFactory = (target, listener) => {
+    const rec: ArmedWatch = { target, listener, closed: false };
+    arms.push(rec);
+    return {
+      close() { rec.closed = true; },
+      on() { return this; },
+    };
+  };
+  return { arms, factory, last: () => arms[arms.length - 1] };
 }
 
 describe('parseHead', () => {
@@ -117,78 +133,189 @@ describe('resolveRepo', () => {
 });
 
 describe('GitContextWatcher', () => {
-  it('emits the initial branch on update()', async () => {
-    const root = tmp();
-    initFakeRepo(root, 'main');
-    const watcher = makeWatcher();
-    const eventP = waitForEvent<{ sessionId: string; branch: string | null; isWorktree: boolean }>(watcher, 'git');
-    watcher.update('s1', root);
-    const ev = await eventP;
-    expect(ev).toEqual({ sessionId: 's1', branch: 'main', isWorktree: false });
+  /** The watcher's internal REREAD_DEBOUNCE_MS. */
+  const DEBOUNCE_MS = 50;
+
+  let fake: ReturnType<typeof fakeWatchFactory>;
+  let events: Array<{ sessionId: string; branch: string | null; isWorktree: boolean }>;
+
+  /** Build a watcher wired to the fake factory, with events collected. */
+  function makeWatcher(): GitContextWatcher {
+    const w = new GitContextWatcher(fake.factory);
+    watchers.push(w);
+    w.on('git', (e) => events.push(e));
+    return w;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = fakeWatchFactory();
+    events = [];
   });
 
-  it('emits again when HEAD changes (branch switch)', async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('emits the initial branch on update()', () => {
     const root = tmp();
     initFakeRepo(root, 'main');
     const watcher = makeWatcher();
-    const firstP = waitForEvent(watcher, 'git');
     watcher.update('s1', root);
-    await firstP;
+    expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
+  });
 
-    const secondP = waitForEvent<{ branch: string | null }>(watcher, 'git');
+  it('arms the watch on the git dir before the first read', () => {
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    makeWatcher().update('s1', root);
+    expect(fake.arms).toHaveLength(1);
+    expect(fake.last().target).toBe(path.join(root, '.git'));
+  });
+
+  it('emits again when HEAD changes (branch switch)', () => {
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    const watcher = makeWatcher();
+    watcher.update('s1', root);
+    expect(events).toHaveLength(1);
+
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
-    const ev = await secondP;
-    expect(ev.branch).toBe('feature-y');
+    fake.last().listener('change', 'HEAD');
+    // Nothing before the debounce elapses…
+    vi.advanceTimersByTime(DEBOUNCE_MS - 1);
+    expect(events).toHaveLength(1);
+    // …and exactly one re-emit after it.
+    vi.advanceTimersByTime(1);
+    expect(events).toHaveLength(2);
+    expect(events[1].branch).toBe('feature-y');
   });
 
-  it('does not re-emit an unchanged value on a repeated update()', async () => {
+  it('coalesces a burst of HEAD events into a single re-emit', () => {
     const root = tmp();
     initFakeRepo(root, 'main');
     const watcher = makeWatcher();
-    const events: unknown[] = [];
-    watcher.on('git', (e) => events.push(e));
     watcher.update('s1', root);
+
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
+    for (let i = 0; i < 5; i++) {
+      fake.last().listener('change', 'HEAD');
+      vi.advanceTimersByTime(10); // each event restarts the debounce
+    }
+    expect(events).toHaveLength(1);
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(events).toHaveLength(2);
+    expect(events[1].branch).toBe('feature-y');
+  });
+
+  it('reacts to HEAD.lock (the rename git uses) and ignores unrelated files', () => {
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    const watcher = makeWatcher();
     watcher.update('s1', root);
-    watcher.update('s1', path.join(root)); // identical cwd
-    await new Promise((r) => setTimeout(r, 150));
+
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/locked\n');
+    for (const name of ['config', 'index', 'refs', 'ORIG_HEAD', 'HEADER']) {
+      fake.last().listener('change', name);
+    }
+    vi.advanceTimersByTime(DEBOUNCE_MS * 2);
+    expect(events).toHaveLength(1); // filtered out — no re-read scheduled
+
+    fake.last().listener('rename', 'HEAD.lock');
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(events).toHaveLength(2);
+    expect(events[1].branch).toBe('locked');
+  });
+
+  it('does not re-emit an unchanged value when HEAD is rewritten identically', () => {
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    const watcher = makeWatcher();
+    watcher.update('s1', root);
+
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    fake.last().listener('change', 'HEAD');
+    vi.advanceTimersByTime(DEBOUNCE_MS * 2);
     expect(events).toHaveLength(1);
   });
 
-  it('emits branch null when leaving a repo for a non-repo cwd', async () => {
+  it('does not re-emit an unchanged value on a repeated update()', () => {
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    const watcher = makeWatcher();
+    watcher.update('s1', root);
+    watcher.update('s1', root);
+    watcher.update('s1', path.join(root)); // identical cwd
+    vi.advanceTimersByTime(DEBOUNCE_MS * 4);
+    expect(events).toHaveLength(1);
+  });
+
+  it('emits branch null when leaving a repo for a non-repo cwd', () => {
     const root = tmp();
     initFakeRepo(root, 'main');
     const plain = tmp();
     const watcher = makeWatcher();
-    const firstP = waitForEvent(watcher, 'git');
     watcher.update('s1', root);
-    await firstP;
-
-    const secondP = waitForEvent<{ branch: string | null; isWorktree: boolean }>(watcher, 'git');
     watcher.update('s1', plain);
-    const ev = await secondP;
-    expect(ev.branch).toBeNull();
-    expect(ev.isWorktree).toBe(false);
+    expect(events).toHaveLength(2);
+    expect(events[1].branch).toBeNull();
+    expect(events[1].isWorktree).toBe(false);
   });
 
-  it('picks up a git init in a previously non-repo cwd without polling', async () => {
+  it('picks up a git init in a previously non-repo cwd without polling', () => {
     const root = tmp();
     const watcher = makeWatcher();
     watcher.update('s1', root);
-    await new Promise((r) => setTimeout(r, 100));
+    // Outside a repo the watch arms on the cwd itself.
+    expect(fake.last().target).toBe(root);
+    const nonRepoWatch = fake.last();
 
-    const eventP = waitForEvent<{ branch: string | null }>(watcher, 'git');
+    // Unrelated files in the cwd must not trigger a re-resolve.
+    nonRepoWatch.listener('rename', 'scratch.txt');
+    vi.advanceTimersByTime(DEBOUNCE_MS * 2);
+    expect(fake.arms).toHaveLength(1);
+
     initFakeRepo(root, 'fresh');
-    const ev = await eventP;
-    expect(ev.branch).toBe('fresh');
+    nonRepoWatch.listener('rename', '.git');
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(events.at(-1)?.branch).toBe('fresh');
+    // Re-armed on the freshly resolved git dir; the old watch was closed.
+    expect(nonRepoWatch.closed).toBe(true);
+    expect(fake.last().target).toBe(path.join(root, '.git'));
   });
 
-  it('remove() drops the session watcher', () => {
+  it('remove() closes the watch and clears a pending debounce', () => {
     const root = tmp();
-    initFakeRepo(root);
+    initFakeRepo(root, 'main');
     const watcher = makeWatcher();
     watcher.update('s1', root);
     expect(watcher.size).toBe(1);
+
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/never-seen\n');
+    fake.last().listener('change', 'HEAD');
     watcher.remove('s1');
+
+    vi.advanceTimersByTime(DEBOUNCE_MS * 4);
     expect(watcher.size).toBe(0);
+    expect(fake.last().closed).toBe(true);
+    expect(events).toHaveLength(1); // the pending re-read never fired
+  });
+
+  it('dispose() closes every session watch and clears pending debounces', () => {
+    const a = tmp();
+    const b = tmp();
+    initFakeRepo(a, 'main');
+    initFakeRepo(b, 'dev');
+    const watcher = makeWatcher();
+    watcher.update('s1', a);
+    watcher.update('s2', b);
+    expect(events).toHaveLength(2);
+
+    for (const arm of fake.arms) arm.listener('change', 'HEAD');
+    watcher.dispose();
+    vi.advanceTimersByTime(DEBOUNCE_MS * 4);
+    expect(watcher.size).toBe(0);
+    expect(fake.arms.every((a2) => a2.closed)).toBe(true);
+    expect(events).toHaveLength(2);
   });
 });

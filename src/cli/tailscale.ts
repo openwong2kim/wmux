@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { getExecEnv } from '../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,7 +37,7 @@ const TAILSCALE_MAX_BUFFER = 4 * 1024 * 1024;
 export type TailscaleExec = (
   cmd: string,
   args: string[],
-  opts: { timeout: number; windowsHide: boolean; maxBuffer: number },
+  opts: { timeout: number; windowsHide: boolean; maxBuffer: number; env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type TailscaleProblem =
@@ -441,15 +442,30 @@ export async function removeTailscaleServe(opts: {
 // === process plumbing =======================================================
 
 /**
- * Where to look for the CLI. On Windows the binary ships with the desktop app
- * and its directory is frequently absent from a shell's PATH (the installer
- * only updates the machine PATH, which an already-open terminal never sees), so
- * the install location is tried as a fallback before we call it "not installed".
+ * Where to look for the CLI when a bare `tailscale` gets ENOENT.
+ *
+ * Windows: the binary ships with the desktop app and its directory is
+ * frequently absent from a shell's PATH (the installer only updates the
+ * machine PATH, which an already-open terminal never sees).
+ *
+ * macOS: the standalone desktop app ships the CLI INSIDE the app bundle and
+ * never puts it on any PATH at all — Tailscale's own docs tell users to alias
+ * it by hand. And when this module runs in the GUI process (Serve-to-browser
+ * panel), even a hand-made `/usr/local/bin` or `~/.local/bin` symlink is
+ * invisible to launchd's minimal PATH, which is exactly how the "Start" button
+ * failed with ENOENT while `wmux web --tailscale` worked in a terminal
+ * (owner-reported 2026-07-27; `getExecEnv()` covers the symlink case, the
+ * bundle path covers a stock install).
  */
 export function tailscaleCandidates(): string[] {
-  if (process.platform !== 'win32') return ['tailscale'];
-  const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
-  return ['tailscale.exe', path.join(programFiles, 'Tailscale', 'tailscale.exe')];
+  if (process.platform === 'win32') {
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    return ['tailscale.exe', path.join(programFiles, 'Tailscale', 'tailscale.exe')];
+  }
+  if (process.platform === 'darwin') {
+    return ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale'];
+  }
+  return ['tailscale'];
 }
 
 async function runTailscale(exec: TailscaleExec, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -460,6 +476,7 @@ async function runTailscale(exec: TailscaleExec, args: string[]): Promise<{ stdo
         timeout: TAILSCALE_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: TAILSCALE_MAX_BUFFER,
+        env: getExecEnv(),
       });
     } catch (err) {
       // Only a missing binary is worth trying the next candidate for; a real
