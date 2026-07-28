@@ -2,6 +2,8 @@
 
 # wmux
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fopenwong2kim%2Fwmux.svg)](https://mcptoplist.com/server/glama%2Fopenwong2kim%2Fwmux)
+
 ### The workspace multiplexer for AI agents.
 
 Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and a **real browser your agents drive**. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
