@@ -1353,8 +1353,14 @@ describe('channelsSlice — trash / restore / destroy', () => {
     try {
       const store = createTestStore();
       store.getState().setChannels([makeChannel({ id: 'ch-1' })], { 'ch-1': [] });
-      store.getState().appendMessageFromEvent(makeMessage('ch-1', 1));
+      // Seed BOTH counters — an @-mention of the human seat bumps unread and
+      // mentions together. Without seeding mentions the eviction assertion below
+      // would pass vacuously against a key that was never there.
+      store.getState().appendMessageFromEvent(
+        makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-human', name: 'me' }] }),
+      );
       expect(store.getState().channelUnread['ch-1']).toBeGreaterThan(0);
+      expect(store.getState().channelMentions['ch-1']).toBeGreaterThan(0);
 
       await store.getState().trashChannelDaemon('ch-1', 'ws-human');
 
