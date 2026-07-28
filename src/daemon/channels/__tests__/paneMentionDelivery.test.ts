@@ -53,11 +53,17 @@ function makeWriter() {
  *  src/daemon/index.ts from PrincipalService.find). `panes` lists the REAL
  *  (workspaceId, paneId, ptyId) pane-agents; anything else resolves to
  *  undefined, which is the "cannot prove this pane is yours" answer. */
+// Models the daemon's resolver (src/daemon/index.ts), which answers ownership
+// and liveness separately: `undefined` for a pane the workspace does not own,
+// `{}` for one it owns whose session is gone (an empty ptyId in the fixture),
+// and `{ ptyId }` only when a live session is behind it.
 function makePaneRegistry(panes: { workspaceId: string; paneId: string; ptyId: string }[]) {
   const byId = new Map(panes.map((p) => [panePrincipalId(p.workspaceId, p.paneId), p.ptyId]));
   return (workspaceId: string, paneId: string) => {
-    const ptyId = byId.get(panePrincipalId(workspaceId, paneId));
-    return ptyId ? { ptyId } : undefined;
+    const key = panePrincipalId(workspaceId, paneId);
+    if (!byId.has(key)) return undefined;
+    const ptyId = byId.get(key) ?? '';
+    return ptyId ? { ptyId } : {};
   };
 }
 
@@ -282,6 +288,68 @@ describe('A1 — pane-pinned channel mentions', () => {
     expect(post.droppedMentions).toEqual([
       { workspaceId: 'ws-worker', paneId: 'pane-gone', name: 'worker', reason: 'pane_not_in_workspace' },
     ]);
+  });
+
+  // The pane is genuinely that workspace's — it is the agent behind it that is
+  // gone. Passing the pin through with the registry's last-known ptyId would
+  // not fail: the receiving renderer's fail-closed match misses, the mention
+  // degrades to workspace level, and the workspace-level paste lands in
+  // whichever agent that workspace still has. So an instruction addressed to a
+  // departed worker would start a SIBLING worker's turn, and the sender would
+  // be told nothing. Refuse the pin and report it instead.
+  it('refuses a pin whose pane is the workspace’s but has no live session', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [
+        // pane-1's agent exited; pane-2 is a live sibling in the same workspace
+        // — precisely the one a degraded delivery would have gone to.
+        { workspaceId: 'ws-worker', paneId: 'pane-1', ptyId: '' },
+        { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' },
+      ],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker take this over',
+      mentions: [{ workspaceId: 'ws-worker', paneId: 'pane-1', name: 'worker' }],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    // No pane coordinate survives — nothing can route this to pane-2's pty.
+    expect(post.message.mentions).toEqual([{ workspaceId: 'ws-worker', name: 'worker' }]);
+    expect(post.droppedMentions).toEqual([
+      { workspaceId: 'ws-worker', paneId: 'pane-1', name: 'worker', reason: 'pane_not_live' },
+    ]);
+  });
+
+  it('still pins a live pane when a stale sibling exists', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [
+        { workspaceId: 'ws-worker', paneId: 'pane-1', ptyId: '' },
+        { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' },
+      ],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker carry on',
+      mentions: [{ workspaceId: 'ws-worker', paneId: 'pane-2', name: 'worker' }],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.mentions).toEqual([
+      { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2', name: 'worker' },
+    ]);
+    expect(post.droppedMentions ?? []).toEqual([]);
   });
 
   it('without the registry resolver the pin stays opaque pass-through (unit-test construction)', async () => {

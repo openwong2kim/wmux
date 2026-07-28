@@ -4440,15 +4440,23 @@ async function main(): Promise<void> {
     // A1 (pane-pinned mentions): prove a mention's paneId is a pane OF the
     // mentioned workspace. The registry key embeds the workspace
     // (`pane:${workspaceId}/${paneId}`), so a hit is the ownership proof and a
-    // caller cannot pin a pane of a workspace it is merely mentioning. Liveness
-    // is NOT gated here on purpose — a stale record still proves ownership, and
-    // the receiving renderer is the only side that can prove the pty is alive.
-    // The returned ptyId lets a caller that knows only the paneId (the MCP
-    // channel_post shape) still carry the route-time pty snapshot.
+    // caller cannot pin a pane of a workspace it is merely mentioning.
+    //
+    // Ownership and liveness are answered SEPARATELY, because they have
+    // different consequences. A stale record still proves ownership, so it is
+    // still a hit. But its ptyId may name a dead — or reused — session, and the
+    // receiving renderer matches on exactly that snapshot: a miss there does not
+    // stop the delivery, it degrades the mention to workspace level, where the
+    // flush pastes it into whatever agent the workspace still has. An
+    // instruction addressed to a departed worker would then start a SIBLING
+    // worker's turn, with nothing reported to the sender. So a stale record
+    // yields the ownership proof and no ptyId, which the caller turns into a
+    // reported refusal. Same rule PrincipalService.livePtyId() already applies
+    // for the wake worker, and for the same reason.
     resolvePanePrincipal: (workspaceId, paneId) => {
       const rec = principalService.find(panePrincipalId(workspaceId, paneId));
       if (!rec || rec.kind !== 'pane-agent') return undefined;
-      return rec.ptyId ? { ptyId: rec.ptyId } : {};
+      return rec.ptyId && rec.liveness === 'live' ? { ptyId: rec.ptyId } : {};
     },
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does

@@ -2125,12 +2125,35 @@ export class ChannelService {
                   : {}),
               });
             }
-          } else if (panePtyId.length === 0 && pane.ptyId) {
+          } else if (panePtyId.length === 0) {
             // An MCP caller pins a pane by id alone (there is no pty_id field to
-            // forge). Fill the route-time pty snapshot the receiving renderer
-            // matches on from the registry — without it the mention would only
-            // ever reach the degraded single-agent path.
-            panePtyId = pane.ptyId;
+            // forge), so the route-time pty snapshot the receiving renderer
+            // matches on comes from the registry.
+            //
+            // The registry withholds it when no live session is behind the pane.
+            // Passing the pin on without one is not a smaller version of working:
+            // the renderer's match misses, the mention degrades to workspace
+            // level, and the workspace-level paste goes to whatever agent that
+            // workspace still has — so an instruction addressed to a departed
+            // worker starts a SIBLING's turn instead. Refuse it and say so; the
+            // mention still lands as a badge, exactly like an unproven pin.
+            if (pane.ptyId) {
+              panePtyId = pane.ptyId;
+            } else {
+              paneId = '';
+              const deadKey = JSON.stringify([mn.workspaceId, requestedPaneId]);
+              if (!refusedPanes.has(deadKey)) {
+                refusedPanes.add(deadKey);
+                droppedMentions.push({
+                  workspaceId: mn.workspaceId,
+                  paneId: requestedPaneId,
+                  reason: 'pane_not_live',
+                  ...(typeof mn.name === 'string' && mn.name.length > 0
+                    ? { name: mn.name.slice(0, 80) }
+                    : {}),
+                });
+              }
+            }
           }
         }
         // Collision-free dedup key: JSON-encode the (workspaceId, paneId) pair so

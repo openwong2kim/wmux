@@ -149,7 +149,7 @@ const CHANNEL_POST_SHAPE = {
           .string()
           .optional()
           .describe(
-            'Pin the mention to ONE agent pane of that workspace (paneId from a2a_discover / pane_list). A PINNED mention is delivered into that agent\'s prompt at its next idle moment — this is the only mention shape that reaches an agent by itself. WITHOUT it the mention is badge-only: it raises an unread count and waits for the agent to poll. The pane must belong to `workspace_id`; a pane the server cannot prove belongs there is refused and reported in `droppedMentions` with reason "pane_not_in_workspace" (the mention still lands, badge-only).',
+            'Pin the mention to ONE agent pane of that workspace (paneId from a2a_discover / pane_list). A PINNED mention is delivered into that agent\'s prompt at its next idle moment — this is the only mention shape that reaches an agent by itself. WITHOUT it the mention is badge-only: it raises an unread count and waits for the agent to poll. The pane must belong to `workspace_id` and have a live agent behind it. A pane the server cannot prove belongs there is refused with reason "pane_not_in_workspace"; one whose agent has exited is refused with "pane_not_live" — it is NOT redirected to a sibling pane, which is what an unrefused dead pin would silently do. Either way the refusal is reported in `droppedMentions` and the mention still lands, badge-only.',
           ),
       }),
     )

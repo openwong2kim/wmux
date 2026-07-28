@@ -274,13 +274,21 @@ export interface ChannelMention {
  *    be a cross-workspace paste primitive). The mention itself still landed, at
  *    workspace level (badge-only, the pre-pin behavior), and `paneId` carries the
  *    pane that was refused.
+ *  - `pane_not_live` — the pane IS that workspace's, but no live session is
+ *    behind it: the agent exited, or the pane was closed. Refused rather than
+ *    routed, because a pin the receiving side cannot match does not fail — it
+ *    degrades to workspace level, and the workspace-level paste lands in
+ *    whichever agent that workspace still has. An instruction addressed to a
+ *    departed worker would silently start a sibling worker's turn. The mention
+ *    still lands at workspace level (badge-only) as above; what you are told is
+ *    that the pane you named is not the one that would have acted on it.
  */
 export interface ChannelDroppedMention {
   workspaceId: string;
   name?: string;
-  /** The refused pane pin. Present only with `reason: 'pane_not_in_workspace'`. */
+  /** The refused pane pin. Present with `pane_not_in_workspace` / `pane_not_live`. */
   paneId?: string;
-  reason: 'not_a_member' | 'pane_not_in_workspace';
+  reason: 'not_a_member' | 'pane_not_in_workspace' | 'pane_not_live';
 }
 
 /**
