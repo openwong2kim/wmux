@@ -517,6 +517,14 @@ export default function AppLayout() {
       if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff') return;
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
+      // A chat surface keeps its xterm MOUNTED but hidden (Pane.tsx), so the
+      // PTY write below would still land — into a buffer the user cannot see,
+      // while the composer they are looking at stayed empty. The drop has to
+      // reach the surface that is actually on screen.
+      if (activeSurface.chatMode && activeSurface.ptyId) {
+        useStore.getState().injectChatDrop(activeSurface.ptyId, text);
+        return;
+      }
       // Route the joined path string through the paste chunker. Single-file
       // drops fit easily in one write, but a multi-file drop with long
       // Windows paths (UNC, OneDrive, long-form Program Files) can blow

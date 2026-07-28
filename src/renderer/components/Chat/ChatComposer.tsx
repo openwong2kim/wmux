@@ -25,6 +25,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
+import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 
@@ -66,6 +67,21 @@ export function ChatComposer({
     needsInputRef.current = needsInput;
   }, [needsInput]);
 
+  // A file dropped anywhere on a chat surface arrives here rather than at the
+  // hidden xterm (AppLayout routes it). Appended to whatever is already typed,
+  // space-separated, the way dropping onto a shell prompt behaves. Keyed on
+  // `seq` so dropping the same path twice injects twice.
+  const injection = useStore((s) => s.chatDropInjection[ptyId]);
+  const clearInjection = useStore((s) => s.clearChatDropInjection);
+  useEffect(() => {
+    if (!injection) return;
+    setValue((prev) => (prev && !prev.endsWith(' ') ? `${prev} ${injection.text}` : `${prev}${injection.text}`));
+    clearInjection(ptyId);
+    textareaRef.current?.focus();
+    // `injection` is a fresh object per delivery (the store bumps `seq`), so
+    // its identity is the trigger — no separate seq dependency is needed.
+  }, [injection, ptyId, clearInjection]);
+
   useEffect(() => {
     if (isActive && !needsInput) textareaRef.current?.focus();
   }, [isActive, needsInput]);
@@ -87,16 +103,53 @@ export function ChatComposer({
     setValue('');
   }, [value, ptyId, onSend]);
 
+  /** Insert a newline at the caret, keeping undo history and the caret position. */
+  const insertNewline = useCallback((el: HTMLTextAreaElement) => {
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    setValue((prev) => `${prev.slice(0, start)}\n${prev.slice(end)}`);
+    // The value lands on the next render, so move the caret after it does.
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = start + 1;
+    });
+  }, []);
+
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Ctrl+J is a newline, not a send. It is the key Claude Code's own TUI
+      // binds for exactly that, so a user who learned it in the terminal
+      // reaches for it here — and it used to do nothing at all: this handler
+      // only ever looked at Enter, and Ctrl+J is not a textarea editing command
+      // in Chromium either, so the keystroke vanished. (The chat toggle chord
+      // is Ctrl+Shift+J, which is a different key and stays unaffected.)
+      if (e.key === 'j' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        insertNewline(e.currentTarget);
+        return;
+      }
       // Enter sends, Shift+Enter newlines — the convention the agent's own TUI
       // uses, so muscle memory carries over.
-      if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      //
+      // `isComposing` is what stops that convention from mangling Hangul (and
+      // every other IME). Mid-composition, Enter COMMITS the candidate — it is
+      // not a submit — so firing send() there cuts the message off at a
+      // half-finished syllable and clears the box. Every other composer in this
+      // repo already guards it; this one did not, and this repo's agents are
+      // routinely driven in Korean.
+      if (
+        e.key === 'Enter' &&
+        !e.nativeEvent.isComposing &&
+        e.keyCode !== 229 &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
         e.preventDefault();
         send();
       }
     },
-    [send],
+    [send, insertNewline],
   );
 
   const statusRow = (

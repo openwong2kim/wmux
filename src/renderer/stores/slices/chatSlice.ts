@@ -63,6 +63,27 @@ export interface ChatSlice {
    */
   chatToggleOrder: string[];
 
+  /**
+   * Text handed to a pane's composer from OUTSIDE it — today, a file drop.
+   *
+   * The app-wide drop handler (AppLayout) resolves dropped files to paths and
+   * writes them straight to the active surface's PTY. On a chat surface that is
+   * the wrong target: the xterm is hidden, so the path lands in a buffer the
+   * user cannot see while the composer they ARE looking at stays empty. It has
+   * to reach the composer instead, and the composer owns its draft locally, so
+   * it is delivered here.
+   *
+   * `seq` is what makes it a delivery rather than a value: dropping the same
+   * path twice must inject twice, and a plain string would compare equal and be
+   * ignored the second time.
+   */
+  chatDropInjection: Record<string, { text: string; seq: number } | undefined>;
+
+  /** Hand `text` to `ptyId`'s composer. Appended, never replacing the draft. */
+  injectChatDrop: (ptyId: string, text: string) => void;
+  /** Acknowledge an injection the composer has taken. */
+  clearChatDropInjection: (ptyId: string) => void;
+
   /** Apply one projector delta (or a `reset:true` full replace). */
   applyChatAppend: (ptyId: string, data: TranscriptAppendData) => void;
   /** Prepend an older backward page ("Load earlier"). */
@@ -119,6 +140,17 @@ export const createChatSlice: StateCreator<
   chatNeedsResnapshot: {},
   chatPending: {},
   chatToggleOrder: [],
+  chatDropInjection: {},
+
+  injectChatDrop: (ptyId, text) => set((draft: StoreState) => {
+    if (!ptyId || !text) return;
+    const prev = draft.chatDropInjection[ptyId];
+    draft.chatDropInjection[ptyId] = { text, seq: (prev?.seq ?? 0) + 1 };
+  }),
+
+  clearChatDropInjection: (ptyId) => set((draft: StoreState) => {
+    delete draft.chatDropInjection[ptyId];
+  }),
 
   applyChatAppend: (ptyId, data) => set((draft: StoreState) => {
     const prevSeq = draft.chatSeq[ptyId];
@@ -224,6 +256,7 @@ export const createChatSlice: StateCreator<
     delete draft.chatSeq[ptyId];
     delete draft.chatNeedsResnapshot[ptyId];
     delete draft.chatPending[ptyId];
+    delete draft.chatDropInjection[ptyId];
     // A closed pane must not hold a keep-warm slot hostage.
     draft.chatToggleOrder = dropToggle(draft.chatToggleOrder ?? [], ptyId);
   }),
