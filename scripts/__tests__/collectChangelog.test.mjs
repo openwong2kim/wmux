@@ -1,4 +1,4 @@
-// Fragment folding (scripts/collect-changelog.mjs).
+// Fragment folding (scripts/lib/changelog-fragments.mjs).
 //
 // The point of fragments is that a release loses nothing: whatever a PR wrote
 // in changelog.d/ has to come out the other side of the fold, in a stable
@@ -6,7 +6,7 @@
 // a fold that silently drops a section would be discovered at release time,
 // with the fragments already deleted.
 import { describe, expect, it } from 'vitest';
-import { parseFragment, collect, applyToChangelog, fragmentFiles } from '../collect-changelog.mjs';
+import { parseFragment, collect, applyToChangelog, fragmentFiles } from '../lib/changelog-fragments.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
