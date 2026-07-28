@@ -26,6 +26,10 @@ const brokerFile = path.join(outdir, 'broker.js');
 const shimFile = path.join(outdir, 'shim.js');
 const chunkFile = path.join(outdir, 'playwright-chunk.js');
 const chunkEntry = path.join(outdir, '.pw-chunk-entry.js');
+const packageVersion = require('../package.json').version;
+const serverDefines = {
+  __WMUX_MCP_VERSION__: JSON.stringify(packageVersion),
+};
 
 async function main() {
   // 1. Main bundle — playwright-core external (lives in the chunk).
@@ -38,6 +42,7 @@ async function main() {
     platform: 'node',
     outfile,
     external: ['electron', 'chromium-bidi', 'playwright-core'],
+    define: serverDefines,
     logLevel: 'error',
   });
 
@@ -51,6 +56,7 @@ async function main() {
     platform: 'node',
     outfile: brokerFile,
     external: ['electron', 'chromium-bidi', 'playwright-core'],
+    define: serverDefines,
     logLevel: 'error',
   });
 

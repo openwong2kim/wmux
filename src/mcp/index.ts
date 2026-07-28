@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
-import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
+import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
@@ -18,17 +18,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerPaneLifecycleTools } from './paneLifecycle';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
-function getVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
+import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 
 /**
  * Everything a server instance needs that used to come from process globals.
@@ -379,7 +369,9 @@ function logIdentityEnvOnce(): void {
 
 const server = new McpServer({
   name: 'wmux',
-  version: getVersion(),
+  version: resolveMcpServerVersion(),
+}, {
+  instructions: getWmuxMcpServerInstructions(ctx.commanderMode),
 });
 
 // ── BYOB P4 Layer 1: commander tool-surface filter ──────────────────────────

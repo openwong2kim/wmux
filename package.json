@@ -18,6 +18,7 @@
     "build:daemon-web": "node scripts/build-daemon-web.mjs",
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js && node scripts/copy-bridge.mjs",
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
+    "probe:mcp": "node scripts/probe-commander-surface.mjs",
     "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
     "licenses": "node scripts/check-licenses.mjs",
