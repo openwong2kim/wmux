@@ -13,6 +13,7 @@ import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 import { displayPath } from '../../utils/displayPath';
+import ContextMenu, { type ContextMenuViewMode } from '../Terminal/ContextMenu';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below
@@ -41,6 +42,8 @@ function withShortcut(label: string, keys: string): string {
 }
 const SC_SPLIT_RIGHT = IS_MAC ? '⌘D' : 'Ctrl+D';
 const SC_SPLIT_DOWN = IS_MAC ? '⇧⌘D' : 'Ctrl+Shift+D';
+/** The chord useKeyboard binds for the Terminal↔Chat view flip. */
+const SC_CHAT_TOGGLE = IS_MAC ? '⇧⌘J' : 'Ctrl+Shift+J';
 
 /** B8: dot color for a completed/awaiting surface tab. Status-dot vocabulary
  *  (DESIGN.md): green = complete, red = needs-you (awaiting/waiting). */
@@ -110,6 +113,11 @@ export default function SurfaceTabs({
   // of the pane action cluster so PANE_ACTIONS_CLUSTER_WIDTH stays exact.
   const chatStatus = useStore((s) => s.chatStatus);
   const setSurfaceChatMode = useStore((s) => s.setSurfaceChatMode);
+  // Right-click on the pane label or a tab opens the per-surface view-mode
+  // toggle. It rides the app's EXISTING context menu (Terminal/ContextMenu)
+  // rather than a second menu system, and it reaches surfaces in UNFOCUSED
+  // panes — the keyboard chord only ever addresses the focused one.
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; surfaceId: string } | null>(null);
   const [paneEditing, setPaneEditing] = useState(false);
   const [paneEditName, setPaneEditName] = useState('');
   const paneInputRef = useRef<HTMLInputElement>(null);
@@ -217,6 +225,43 @@ export default function SurfaceTabs({
     setTerminalTextDropDragActive(true);
   };
 
+  /** The Chat item for one surface, or `undefined` when the surface has
+   *  nothing to project. Chat View is Claude-only in v1, so a Codex/Gemini
+   *  pane answers `not-claude` and gets NO row at all — a control that can
+   *  never act should not occupy the menu forever. The transient no ("after
+   *  the first turn") stays, greyed, carrying the projector's own reason. */
+  const viewModeItemFor = (s: Surface | undefined): ContextMenuViewMode | undefined => {
+    if (!s || !s.ptyId) return undefined;
+    if (s.surfaceType && s.surfaceType !== 'terminal') return undefined;
+    const status = chatStatus[s.ptyId];
+    if (status?.reason === 'not-claude') return undefined;
+    const chatOn = !!s.chatMode;
+    // Leaving chat is always allowed; entering it needs a live projection —
+    // the same gate setSurfaceChatMode itself enforces.
+    const blocked = !chatOn && !status?.available;
+    return {
+      chatOn,
+      shortcut: SC_CHAT_TOGGLE,
+      ...(blocked
+        ? {
+            disabled: true,
+            disabledReason: status?.reason === 'no-transcript-path'
+              ? t('chat.unavailable.noTranscriptPath')
+              : t('chat.unavailable.generic'),
+          }
+        : {}),
+      onToggle: () => setSurfaceChatMode(s.id, !chatOn),
+    };
+  };
+
+  const openTabMenu = (e: React.MouseEvent, surfaceId: string) => {
+    // Nothing to offer for this surface — leave the event exactly as it was.
+    if (!viewModeItemFor(surfaces.find((s) => s.id === surfaceId))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setTabMenu({ x: e.clientX, y: e.clientY, surfaceId });
+  };
+
   const handleTabClick = (surfaceId: string) => {
     // Suppress click-after-dragend so a drop on an external surface does not
     // also switch the active tab on return. Mirrors WorkspaceItem.handleClick.
@@ -277,6 +322,7 @@ export default function SurfaceTabs({
           data-pane-label
           className="shrink-0 px-2 h-full flex items-center text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] border-r border-[var(--bg-surface)] cursor-pointer select-none truncate max-w-[170px]"
           onDoubleClick={startPaneRename}
+          onContextMenu={(e) => openTabMenu(e, activeSurfaceId)}
           title={paneDisplay}
           {...tokenAttrs('textMuted', 'text')}
         >
@@ -286,6 +332,7 @@ export default function SurfaceTabs({
       {surfaces.map((s) => (
         <div
           key={s.id}
+          data-pane-tab={s.id}
           draggable={editingId !== s.id}
           onDragStart={handleDragStart}
           onDragEnd={() => setTerminalTextDropDragActive(false)}
@@ -298,6 +345,7 @@ export default function SurfaceTabs({
           {...tokenAttrs('textMain', 'text')}
           onClick={() => handleTabClick(s.id)}
           onDoubleClick={() => startRename(s)}
+          onContextMenu={(e) => openTabMenu(e, s.id)}
           // Hover shows the terminal's working directory (cwd is always present
           // once the shell renders its first prompt; before that, the name).
           title={editingId === s.id ? undefined : (displayPath(s.cwd) || s.title || t('surface.terminal'))}
@@ -466,6 +514,22 @@ export default function SurfaceTabs({
           </div>
         </div>
       )}
+
+      {/* Surface-tab context menu. Re-resolved on every render so a status that
+          arrives while the menu is open (the first turn completing) updates the
+          row in place instead of leaving a stale greyed item. */}
+      {tabMenu && (() => {
+        const viewMode = viewModeItemFor(surfaces.find((s) => s.id === tabMenu.surfaceId));
+        if (!viewMode) return null;
+        return (
+          <ContextMenu
+            x={tabMenu.x}
+            y={tabMenu.y}
+            viewMode={viewMode}
+            onClose={() => setTabMenu(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

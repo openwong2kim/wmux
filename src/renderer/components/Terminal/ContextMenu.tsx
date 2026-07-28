@@ -1,25 +1,45 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useT } from '../../hooks/useT';
 
+/** Chat View toggle for the surface this menu was opened on. Absent when the
+ *  surface has nothing to project (no pty, or an agent that publishes no
+ *  transcript) — a control that can never do anything does not belong in a
+ *  menu at all. `disabled` is the transient no ("after the first turn"), which
+ *  states its own reason instead of disappearing. */
+export interface ContextMenuViewMode {
+  /** True while the surface renders as Chat — the item then offers terminal. */
+  chatOn: boolean;
+  disabled?: boolean;
+  /** Tooltip for a disabled item — the projector's own reason string. */
+  disabledReason?: string;
+  /** Pre-rendered chord shown next to the label, e.g. "⇧⌘J". */
+  shortcut?: string;
+  onToggle: () => void;
+}
+
+/** Every item group is optional: the terminal body passes the copy/paste/link
+ *  handlers, the surface tab strip passes only `viewMode`. One menu, two
+ *  callers — not two menu systems. */
 interface ContextMenuProps {
   x: number;
   y: number;
-  hasSelection: boolean;
-  selectedText: string;
-  linkUrl: string | null;
-  onCopy: () => void;
-  onPaste: () => void;
-  onOpenLink: (url: string) => void;
-  onCopyLink: (url: string) => void;
+  hasSelection?: boolean;
+  selectedText?: string;
+  linkUrl?: string | null;
+  onCopy?: () => void;
+  onPaste?: () => void;
+  onOpenLink?: (url: string) => void;
+  onCopyLink?: (url: string) => void;
   /** X8 — supervision status of this surface's pty. `undefined` for
    *  unsupervised panes (both supervision items hidden). */
   supervisionStatus?: 'armed' | 'stopped';
   onSupervisionStop?: () => void;
   onSupervisionRearm?: () => void;
+  viewMode?: ContextMenuViewMode;
   onClose: () => void;
 }
 
-export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl, onCopy, onPaste, onOpenLink, onCopyLink, supervisionStatus, onSupervisionStop, onSupervisionRearm, onClose }: ContextMenuProps) {
+export default function ContextMenu({ x, y, hasSelection = false, selectedText = '', linkUrl = null, onCopy, onPaste, onOpenLink, onCopyLink, supervisionStatus, onSupervisionStop, onSupervisionRearm, viewMode, onClose }: ContextMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -61,6 +81,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
   return (
     <div
       ref={menuRef}
+      data-context-menu
       className="fixed z-[var(--z-popover-top)] min-w-[168px] p-[5px]"
       style={{
         left: x,
@@ -73,7 +94,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
       }}
       onClick={(e) => e.stopPropagation()}
     >
-      {hasSelection && (
+      {hasSelection && onCopy && (
         <MenuItem
           label={t('contextMenu.copy')}
           shortcut="Ctrl+C"
@@ -83,7 +104,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
 
       {/* Paste is handled inline by right-click when no link/selection;
           only surface it here if no link is present (legacy callers) */}
-      {!linkUrl && (
+      {!linkUrl && onPaste && (
         <MenuItem
           label={t('contextMenu.paste')}
           shortcut="Ctrl+V"
@@ -91,7 +112,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
         />
       )}
 
-      {linkUrl && (
+      {linkUrl && onOpenLink && onCopyLink && (
         <>
           {hasSelection && (
             <div
@@ -110,7 +131,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
         </>
       )}
 
-      {hasSelection && !linkUrl && isUrl(selectedText.trim()) && (
+      {hasSelection && !linkUrl && onOpenLink && isUrl(selectedText.trim()) && (
         <>
           <div className="my-1 mx-2 border-t" style={{ borderColor: 'var(--bg-overlay)' }} />
           <MenuItem
@@ -118,6 +139,20 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
             onClick={() => handleAction(() => onOpenLink(selectedText.trim()))}
           />
         </>
+      )}
+
+      {/* Chat View toggle — the per-surface view mode. Carries the same chord
+          the keyboard binds, so the menu also teaches the shortcut. */}
+      {viewMode && (
+        <MenuItem
+          label={viewMode.chatOn ? t('chat.menu.showTerminal') : t('chat.menu.showChat')}
+          {...(viewMode.shortcut ? { shortcut: viewMode.shortcut } : {})}
+          {...(viewMode.disabled ? { disabled: true } : {})}
+          {...(viewMode.disabled && viewMode.disabledReason
+            ? { title: viewMode.disabledReason }
+            : {})}
+          onClick={() => handleAction(viewMode.onToggle)}
+        />
       )}
 
       {/* X8 supervision controls — only for a supervised pane. Armed → stop;
@@ -142,11 +177,17 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
   );
 }
 
-function MenuItem({ label, shortcut, onClick }: { label: string; shortcut?: string; onClick: () => void }) {
+function MenuItem({ label, shortcut, disabled, title, onClick }: { label: string; shortcut?: string; disabled?: boolean; title?: string; onClick: () => void }) {
   return (
     <button
-      className="w-full flex items-center justify-between gap-4 px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)]"
+      className={`w-full flex items-center justify-between gap-4 px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors ${
+        disabled
+          ? 'opacity-40 cursor-not-allowed'
+          : 'hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)]'
+      }`}
       style={{ color: 'var(--text-main)' }}
+      disabled={disabled}
+      {...(title ? { title } : {})}
       onClick={onClick}
     >
       <span>{label}</span>
