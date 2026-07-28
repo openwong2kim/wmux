@@ -374,7 +374,7 @@ describe('diff:applyHunks — source integrity gate', () => {
       ok: boolean;
       code?: string;
       error?: string;
-      failedProbes?: Array<{ path: string; hunkIndex: number }>;
+      staleSelections?: Array<{ path: string; hunkIndex: number }>;
     };
     expect(res.ok).toBe(false);
     expect(res.code).toBe('stale');
@@ -382,7 +382,35 @@ describe('diff:applyHunks — source integrity gate', () => {
     // The still-valid half of the selection must NOT have been applied.
     expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
     // The refused hunk is named so the panel can flag it.
-    expect(res.failedProbes).toEqual([{ path: 'b.txt', hunkIndex: 0, applicable: false, alreadyApplied: false }]);
+    expect(res.staleSelections).toEqual([{ path: 'b.txt', hunkIndex: 0 }]);
+  });
+
+  it('a stale refusal reports no probe verdicts for hunks it never probed', async () => {
+    const r = await readFiles();
+    // a.txt drifts; b.txt is untouched and would still apply cleanly.
+    writeFileSync(join(scn.worktreePath, 'a.txt'), 'a1\nAGENT_WROTE_THIS_LATER\na3\na4\na5\n');
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [pick(r, 'a.txt', [0]), pick(r, 'b.txt', [0])],
+      },
+      scn.worktreePath,
+    )) as {
+      ok: boolean;
+      code?: string;
+      failedProbes?: unknown;
+      staleSelections?: Array<{ path: string; hunkIndex: number }>;
+    };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('stale');
+    // No probe ran, so the response must not assert applicability for anything.
+    expect(res.failedProbes).toBeUndefined();
+    expect(JSON.stringify(res)).not.toContain('applicable');
+    // It still names which selection it refused, and only that one.
+    expect(res.staleSelections).toEqual([{ path: 'a.txt', hunkIndex: 0 }]);
   });
 
   it('a hunk index that no longer resolves is rejected, not silently dropped', async () => {
@@ -413,9 +441,44 @@ describe('diff:applyHunks — source integrity gate', () => {
       scn.worktreePath,
     )) as { ok: boolean; code?: string; error?: string };
     expect(res.ok).toBe(false);
-    expect(res.code).toBe('stale');
+    // A caller that omits the fingerprint is a protocol defect, not drift.
+    expect(res.code).toBe('malformed');
     expect(res.error).toContain('no source fingerprint');
     expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+  });
+
+  it('a missing fingerprint is reported apart from a fingerprint that no longer matches', async () => {
+    const r = await readFiles();
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    type Res = { ok: boolean; code?: string; error?: string };
+    // (a) no fingerprint at all — the caller lost the selection data.
+    const missing = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [{ path: 'a.txt', hunkIndices: [0] }] as unknown as DiffApplyRequest['selections'],
+      },
+      scn.worktreePath,
+    )) as Res;
+    // (b) a fingerprint that was valid when the user ticked, then the file moved.
+    writeFileSync(join(scn.worktreePath, 'a.txt'), 'a1\nAGENT_WROTE_THIS_LATER\na3\na4\na5\n');
+    const mismatch = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0])] },
+      scn.worktreePath,
+    )) as Res;
+
+    expect(missing.ok).toBe(false);
+    expect(mismatch.ok).toBe(false);
+    // Distinguishable by code, and the caller-defect message never blames the
+    // user's review for going stale.
+    expect(missing.code).toBe('malformed');
+    expect(mismatch.code).toBe('stale');
+    expect(missing.code).not.toBe(mismatch.code);
+    expect(missing.error).not.toContain('since you reviewed');
+    expect(missing.error).not.toContain('Reload the diff');
+    expect(mismatch.error).toContain('since you reviewed');
   });
 
   it('a multi-file adoption reaches git as one patch, so a mid-way failure cannot half-apply', async () => {

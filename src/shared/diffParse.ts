@@ -145,6 +145,14 @@ export interface DiffApplyRequest {
   }>;
 }
 
+// A selection the handler refused *without* probing it. It names which hunk was
+// refused and nothing else — carrying HunkProbe here would state applicability
+// that was never measured.
+export interface SelectionRef {
+  readonly path: string;
+  readonly hunkIndex: number;
+}
+
 // per-hunk 프로브 결과(§3). applied는 --reverse --check best-effort 뱃지.
 export interface HunkProbe {
   readonly path: string;
@@ -164,12 +172,23 @@ export type DiffApplyResult =
         // selection points at hunks it no longer has. Distinct from 'drift',
         // which is about the target — the remedy here is reload + reselect.
         | 'stale'
+        // The request itself is malformed: it carries a selection no diff read
+        // could have produced (a missing fingerprint, a path or hunk listed
+        // twice, a path with no hunks). That is a caller defect, not user-side
+        // drift, so it is never reported as staleness — reloading cannot fix it.
+        | 'malformed'
         | 'dirty' // 대상 파일 dirty
         | 'probe' // per-hunk 프로브 실패(failedProbes에 특정)
         | 'apply' // 최종 apply 실패
         | 'path' // 경로 검증 실패(.. 등)
         | 'unsupported'; // rename·binary 등 채택 불가
+      // Measured per-hunk probe results. Only ever set for 'probe' — a refusal
+      // that never ran a probe must not fill this in.
       readonly failedProbes?: readonly HunkProbe[];
+      // Selections refused by the source integrity gate ('stale'). Unprobed, so
+      // it says which selections were refused and claims nothing about whether
+      // they would apply.
+      readonly staleSelections?: readonly SelectionRef[];
     };
 
 // hunk 헤더 파싱 정규식. "@@ -a,b +c,d @@" 또는 "@@ -a +c @@"(단일 라인).

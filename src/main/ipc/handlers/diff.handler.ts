@@ -34,6 +34,7 @@ import {
   type DiffApplyRequest,
   type DiffApplyResult,
   type HunkProbe,
+  type SelectionRef,
 } from '../../../shared/diffParse';
 
 // git 실행 헬퍼는 main/git/git.ts로 승격 추출됨(동작 무변경) — worktree
@@ -378,51 +379,48 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
     //     single one rejects the whole request (no partial adoption).
     const freshByPath = new Map<string, DiffReadFile>();
     for (const f of read.files) freshByPath.set(f.path, f);
+    //     Two kinds of rejection come out of this loop and they are never mixed:
+    //     a request that no diff read could have produced (missing fingerprint,
+    //     a path or hunk listed twice, a path with no hunks) is a caller defect
+    //     and is reported as 'malformed' — telling the user their review went
+    //     stale would be false, and reloading would not fix it. Everything else
+    //     is genuine source drift and is reported as 'stale'.
     const staleReasons: string[] = [];
-    const staleProbes: HunkProbe[] = [];
+    const malformedReasons: string[] = [];
+    // Refused selections are named so the panel can flag them. They are NOT
+    // probed here, so nothing is recorded about whether they would apply.
+    const staleSelections: SelectionRef[] = [];
     const selMap = new Map<string, readonly number[]>();
     for (const s of req.selections) {
       const idxs = Array.isArray(s.hunkIndices) ? s.hunkIndices : [];
-      // Mark every hunk the user picked for this path, so the panel can show
-      // exactly which selections were refused.
-      const flag = (): void => {
-        for (const i of idxs) {
-          staleProbes.push({
-            path: s.path,
-            hunkIndex: i,
-            applicable: false,
-            alreadyApplied: false,
-          });
-        }
+      const flagStale = (): void => {
+        for (const i of idxs) staleSelections.push({ path: s.path, hunkIndex: i });
       };
       if (selMap.has(s.path)) {
-        staleReasons.push(`${s.path}: selected twice in one request`);
-        flag();
+        malformedReasons.push(`${s.path}: selected twice in one request`);
         continue;
       }
       if (idxs.length === 0) {
-        staleReasons.push(`${s.path}: no hunks selected`);
+        malformedReasons.push(`${s.path}: no hunks selected`);
         continue;
       }
       if (new Set(idxs).size !== idxs.length) {
-        staleReasons.push(`${s.path}: the same hunk is selected twice`);
-        flag();
+        malformedReasons.push(`${s.path}: the same hunk is selected twice`);
+        continue;
+      }
+      if (typeof s.digest !== 'string' || s.digest.length === 0) {
+        malformedReasons.push(`${s.path}: selection carries no source fingerprint`);
         continue;
       }
       const fresh = freshByPath.get(s.path);
       if (!fresh) {
         staleReasons.push(`${s.path}: no longer in this diff`);
-        flag();
-        continue;
-      }
-      if (typeof s.digest !== 'string' || s.digest.length === 0) {
-        staleReasons.push(`${s.path}: selection carries no source fingerprint`);
-        flag();
+        flagStale();
         continue;
       }
       if (s.digest !== fresh.digest) {
         staleReasons.push(`${s.path}: changed since you reviewed it`);
-        flag();
+        flagStale();
         continue;
       }
       const gone = idxs.filter(
@@ -430,10 +428,20 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       );
       if (gone.length > 0) {
         staleReasons.push(`${s.path}: hunk ${gone.join(', ')} no longer exists`);
-        flag();
+        flagStale();
         continue;
       }
       selMap.set(s.path, idxs);
+    }
+    // A malformed request is untrustworthy as a whole, so it outranks staleness.
+    if (malformedReasons.length > 0) {
+      return {
+        ok: false,
+        error:
+          'Adoption rejected — the selection sent with this request is invalid: ' +
+          `${malformedReasons.join('; ')}. Close and reopen the diff, then select again.`,
+        code: 'malformed',
+      };
     }
     if (staleReasons.length > 0) {
       return {
@@ -442,7 +450,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
           'Adoption rejected — the selection no longer matches the diff you reviewed: ' +
           `${staleReasons.join('; ')}. Reload the diff and reselect.`,
         code: 'stale',
-        failedProbes: staleProbes,
+        staleSelections,
       };
     }
 

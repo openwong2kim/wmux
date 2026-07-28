@@ -507,11 +507,16 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
       void load();
     } else {
-      if ((res.code === 'probe' || res.code === 'stale') && res.failedProbes) {
+      if (res.code === 'probe' && res.failedProbes) {
         setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
-        // 'stale' names the specific paths/hunks that moved — show that reason
-        // rather than the generic "some hunks failed" copy.
-        setApplyMsg(res.code === 'stale' ? res.error : t('diff.someHunksFailed'));
+        setApplyMsg(t('diff.someHunksFailed'));
+      } else if (res.code === 'stale') {
+        // Refused without probing: mark the same hunks so the panel points at
+        // them, and show the reason, which names the paths/hunks that moved.
+        if (res.staleSelections) {
+          setFailedProbes(new Set(res.staleSelections.map((s) => `${s.path}#${s.hunkIndex}`)));
+        }
+        setApplyMsg(res.error);
       } else if (res.code === 'drift') {
         setApplyMsg(t('diff.targetMoved'));
       } else if (res.code === 'dirty') {
