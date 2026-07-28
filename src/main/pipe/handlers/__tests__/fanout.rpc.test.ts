@@ -36,12 +36,16 @@ import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '.
 import type { RpcRouter } from '../../RpcRouter';
 
 const CALLER_WS = 'ws-caller';
-const CALLER_CWD = '/repo/packages/app';
-const CALLER_REPO_ROOT = '/repo';
+// Resolved to NATIVE form. The handler runs the caller's cwd through
+// path.resolve() before it reaches git, so on win32 a POSIX '/repo' arrives as
+// 'D:\repo' — fixtures written as raw POSIX strings never match what the git
+// stub is asked about, and every derivation in this file fails closed.
+const CALLER_CWD = nodePath.resolve('/repo/packages/app');
+const CALLER_REPO_ROOT = nodePath.resolve('/repo');
 /** Where a SIBLING pane in the same workspace is sitting. Nothing the caller
  *  asks for may ever resolve to this — see the R3 sibling-pane test. */
-const SIBLING_CWD = '/other/project/src';
-const SIBLING_REPO_ROOT = '/other/project';
+const SIBLING_CWD = nodePath.resolve('/other/project/src');
+const SIBLING_REPO_ROOT = nodePath.resolve('/other/project');
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
 
@@ -153,11 +157,12 @@ function setup(opts?: {
     throw new Error(`unexpected renderer call: ${method}`);
   });
 
-  // Every path under /repo is the caller's repo, everything under /other is a
-  // DIFFERENT repo, and anything else is no repo at all.
+  // Every path under the caller's root is the caller's repo, everything under
+  // the sibling root is a DIFFERENT repo, and anything else is no repo at all.
+  // Matched on the resolved roots, not raw prefixes — see the fixtures above.
   vi.mocked(git).mockImplementation(async (_args: string[], dir: string) => {
-    if (dir.startsWith('/repo')) return { stdout: `${CALLER_REPO_ROOT}\n`, stderr: '', code: 0 };
-    if (dir.startsWith('/other')) return { stdout: `${SIBLING_REPO_ROOT}\n`, stderr: '', code: 0 };
+    if (dir.startsWith(CALLER_REPO_ROOT)) return { stdout: `${CALLER_REPO_ROOT}\n`, stderr: '', code: 0 };
+    if (dir.startsWith(SIBLING_REPO_ROOT)) return { stdout: `${SIBLING_REPO_ROOT}\n`, stderr: '', code: 0 };
     return { stdout: '', stderr: 'not a git repository', code: 128 };
   });
 
