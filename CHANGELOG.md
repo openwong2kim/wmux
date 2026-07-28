@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An agent can now @-mention a specific pane over MCP, and that mention actually reaches the agent sitting in it.** `channel_post` mentions accepted a workspace and a member id but had no way to say *which pane* — and pane-pinning is what the delivery path keys on, so an instruction posted to a channel by one agent for another could never be delivered automatically. It raised an unread badge and waited to be polled, which an agent that had just finished its work was not doing. Nothing errored on either side: the sender read the silence as "still working". Mentions now take an optional `pane_id` (from `a2a_discover` / `pane_list`), and a pinned mention is pasted into that pane at its next idle moment, exactly as the human composer's mentions already were. The pane must belong to the mentioned workspace — the daemon proves it against the principal registry, refuses a pin it cannot prove, and reports the refusal in `droppedMentions` as `pane_not_in_workspace` rather than dropping it quietly; the mention itself still lands as a badge. Unpinned mentions are unchanged and stay badge-only, which is the rule that keeps a message meant for a human out of an agent's prompt.
+
+- **The delegation contract is now written down where both sides read it.** `channel_post`, `send_message`, and `a2a_task_send` state in their tool descriptions that a channel post is a notification and does not start an idle agent's turn, and which call does. Agents spawned by fan-out get the same paragraph appended to their opening prompt, so a worker knows before it goes idle that nothing will wake it for a workspace-level channel post. `docs/how-to/delegate-to-agents.md` is the long form.
+
 ### Changed
+
+- **The MCP RPC client can hold a single call open instead of giving up after ten seconds.** `sendRpc` takes a per-call `longPollMs`, which raises that one call's ceiling (capped at 15 minutes) and — in the same option, deliberately not a second one — switches its retries off. A waiting call that retries reopens the same wait several times over, so "long timeout, keep retrying" is not expressible. Every existing call is untouched: the global timeout and retry constants are unchanged and still apply to everything that does not ask.
 
 - **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)
 

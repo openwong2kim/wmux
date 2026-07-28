@@ -37,6 +37,32 @@ import {
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 
+/**
+ * A3 (delegation contract, worker side) — appended to every fan-out prompt.md.
+ *
+ * A fanned-out worker finishes its task and goes idle. Nothing polls on its
+ * behalf, and a channel post addressed to its workspace never reaches its
+ * prompt — so a follow-up instruction sent that way is invisible to the worker
+ * while the sender reads the silence as "still working". That exact loss is what
+ * this paragraph exists to prevent; it is appended AFTER the caller's prompt (and
+ * after the FANOUT_PROMPT_MAX_BYTES check, which bounds caller input only) so it
+ * never eats into the caller's byte budget or reorders their instructions.
+ */
+export const WORKER_DELIVERY_PREAMBLE = `
+
+---
+
+## How your next instructions arrive (wmux)
+
+You are running in a wmux pane. When this task is done and you go idle:
+
+- A **task sent to you** (\`a2a_task_send\`) IS pasted into your prompt — it starts a new turn on its own.
+- A **channel mention that pins your pane** is pasted the same way, at your next idle moment.
+- A channel post that mentions only your *workspace* — or that mentions nobody — is **not** pasted. It raises an unread badge and nothing else.
+
+So going idle is not "waiting for the next message": nothing wakes you for the third case. If you are expecting follow-up work, check \`channel_unread\` / \`a2a_task_query\` yourself before you stop. And report completion in your mission channel (\`channel_post\`) — an idle worker and a hung worker look identical from the outside, and the only difference the sender can see is what you said.
+`;
+
 /** 데몬 RPC 최소 표면(테스트 주입 가능). daemonClient.rpc의 부분집합. */
 export interface FanOutDaemonPort {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
@@ -300,7 +326,10 @@ export class FanOutService {
       fs.mkdirSync(plan.metaDir, { recursive: true });
       if (ctx.prompt.length > 0) {
         promptPath = path.join(plan.metaDir, 'prompt.md');
-        fs.writeFileSync(promptPath, ctx.prompt, 'utf8');
+        // A3: the caller's prompt verbatim, then the delivery contract (see
+        // WORKER_DELIVERY_PREAMBLE). 프롬프트 없이 여는 "환경만 조성" 경로는
+        // 파일 자체가 없으므로 계약문도 붙지 않는다 — 사람이 직접 입력한다.
+        fs.writeFileSync(promptPath, ctx.prompt + WORKER_DELIVERY_PREAMBLE, 'utf8');
       }
       const stamp: WorkTaskMetaStamp = { taskId, title: ctx.title, createdAt: Date.now() };
       fs.writeFileSync(path.join(plan.metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
