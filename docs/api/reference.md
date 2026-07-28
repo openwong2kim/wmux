@@ -178,9 +178,9 @@ Total: **147** methods (`ALL_RPC_METHODS` in
 | `a2a.channel.purgeMembership` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.operatorJoin` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.operatorList` | `a2a.channel.send` | `a2a` |
-| `a2a.channel.trash` | `a2a.channel.send` | `a2a` |
-| `a2a.channel.restore` | `a2a.channel.send` | `a2a` |
-| `a2a.channel.destroy` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.trash` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
+| `a2a.channel.restore` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
+| `a2a.channel.destroy` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
 | `a2a.principal.upsert` | `wmux.internal` |  |
 | `a2a.principal.remove` | `wmux.internal` |  |
 | `a2a.principal.markStaleWorkspace` | `wmux.internal` |  |
