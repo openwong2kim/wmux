@@ -53,6 +53,35 @@ const RETRY_DELAY_MS = 800;
 const PAGE_FIND_RETRIES = 3;
 const PAGE_FIND_DELAY_MS = 500;
 
+/** Stable error code — agents can match on this instead of the prose. */
+export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
+
+/**
+ * The contract error for "page selection cannot be scoped to the caller".
+ *
+ * Every workspace-routed sibling already fails closed on the SAME identity
+ * miss: browser_open / browser_close throw from requireWorkspaceId
+ * (src/mcp/index.ts), browser_tabs returns BROWSER_TABS_WORKSPACE_UNRESOLVED
+ * (tools/navigation.ts), and the engine's own auto-open skips the RPC
+ * (attemptAutoOpen). Page selection used to be the one path that stayed
+ * lenient, and a lenient selection can only mean "any workspace's live guest"
+ * — so it refuses too, and says why.
+ *
+ * `reason` names the specific miss (unresolved identity, cdp.info down, a main
+ * too old to tag targets) so the caller can tell a transient failure from a
+ * permanent one. Mirrors EXTERNAL_BACKEND_UNSUPPORTED's `CODE: prose` shape.
+ */
+function workspaceScopeUnresolved(reason: string): Error {
+  // Log as well as throw: several tools call getPage().catch(() => null) and
+  // fall back to an RPC path, which would otherwise swallow the reason whole.
+  console.error(`[PlaywrightEngine] Page selection refused — ${reason}`);
+  return new Error(
+    `${WORKSPACE_SCOPE_UNRESOLVED_CODE}: cannot determine which workspace this session owns (${reason}), ` +
+      `so browser page selection cannot be scoped to it. Refusing rather than driving another workspace's browser. ` +
+      `Make sure you are running inside a wmux terminal workspace.`,
+  );
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -442,32 +471,40 @@ export class PlaywrightEngine {
    *    scope selection to it.
    *  - { kind: 'none' } — identity resolved but the caller's workspace owns no
    *    surface. Callers must NOT fall back to another workspace's page.
-   *  - { kind: 'unscoped' } — identity could not be resolved (no resolver, the
-   *    server-walk threw/returned empty, or an older main that doesn't tag
-   *    targets with a workspaceId). Preserve the legacy lenient behavior so
-   *    single-workspace setups keep working.
+   *
+   * There is no third, lenient outcome. Every path that cannot PROVE which
+   * surface belongs to the caller throws WORKSPACE_SCOPE_UNRESOLVED: a
+   * selection made without that proof reaches any workspace's live guest
+   * (findViaTargetDomain's `targets[0]`, and the "first non-shell page"
+   * heuristic), which is exactly what scoping exists to prevent. Identity can
+   * legitimately be unresolvable for a well-behaved agent — a sandboxed Codex
+   * cannot walk its own process tree — so this is not a spoofing question and
+   * the #113 same-user ceiling does not cover it.
    */
   private async resolveCallerSurface(): Promise<
     | { kind: 'surface'; surfaceId: string; workspaceId: string }
     | { kind: 'none'; workspaceId: string }
-    | { kind: 'unscoped' }
   > {
-    if (!this.workspaceIdResolver) return { kind: 'unscoped' };
+    if (!this.workspaceIdResolver) throw workspaceScopeUnresolved('no workspace resolver wired');
     let workspaceId: string;
     try {
       workspaceId = await this.workspaceIdResolver();
-    } catch {
-      return { kind: 'unscoped' };
+    } catch (err) {
+      throw workspaceScopeUnresolved(
+        `workspace identity unresolved: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-    if (!workspaceId) return { kind: 'unscoped' };
+    if (!workspaceId) throw workspaceScopeUnresolved('workspace identity resolved to an empty id');
 
     let info: CdpInfoResponse;
     try {
       // Pass our resolved workspace so main filters `targets` server-side
       // (#580, Option 1). The response then carries only our own targets.
       info = (await sendRpc('browser.cdp.info', { workspaceId })) as CdpInfoResponse;
-    } catch {
-      return { kind: 'unscoped' };
+    } catch (err) {
+      throw workspaceScopeUnresolved(
+        `browser.cdp.info unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     this.cacheShellUrl(info);
 
@@ -482,12 +519,26 @@ export class PlaywrightEngine {
     }
 
     // Legacy path: an older main ignored the param and returned every target.
-    // If NONE carry a workspaceId we cannot scope at all, so stay lenient rather
-    // than fail-closing a working single-workspace setup; otherwise filter here.
+    //
+    // An EMPTY list from such a main is unambiguous no matter who it belongs to
+    // — there is no live guest anywhere — so it is 'none' (auto-open our own),
+    // which is what the old leniency was really protecting: a single-workspace
+    // setup with nothing to cross into.
+    if (info.targets.length === 0) return { kind: 'none', workspaceId };
+
+    // Targets exist but if NONE carry a workspaceId we cannot scope at all —
+    // and an unscopeable selection is a cross-workspace selection, so refuse.
+    // Matches how browser_tabs reports a main too old to scope
+    // (BROWSER_TABS_UNSUPPORTED) rather than falling back to something
+    // workspace-blind.
     const anyTagged = info.targets.some(
       (t) => typeof t.workspaceId === 'string' && t.workspaceId.length > 0,
     );
-    if (!anyTagged) return { kind: 'unscoped' };
+    if (!anyTagged) {
+      throw workspaceScopeUnresolved(
+        'the connected wmux main does not tag browser targets with a workspace',
+      );
+    }
 
     const own = info.targets.find((t) => t.workspaceId === workspaceId);
     if (own) return { kind: 'surface', surfaceId: own.surfaceId, workspaceId };
@@ -513,10 +564,7 @@ export class PlaywrightEngine {
     if (owned.kind === 'surface') {
       return { key: `ws:${owned.workspaceId}`, surfaceId: owned.surfaceId, callerHasNoSurface: false, workspaceId: owned.workspaceId };
     }
-    if (owned.kind === 'none') {
-      return { key: `ws:${owned.workspaceId}`, surfaceId: undefined, callerHasNoSurface: true, workspaceId: owned.workspaceId };
-    }
-    return { key: 'unscoped', surfaceId: undefined, callerHasNoSurface: false };
+    return { key: `ws:${owned.workspaceId}`, surfaceId: undefined, callerHasNoSurface: true, workspaceId: owned.workspaceId };
   }
 
   private async _getPageImpl(
@@ -557,6 +605,12 @@ export class PlaywrightEngine {
         // surfaceId, this heuristic is SKIPPED — returning "some other guest"
         // would silently drive surface B while the automation lease (and the
         // caller's intent) points at surface A.
+        //
+        // Since resolveCallerSurface fails closed there is no longer a context
+        // with NO surfaceId and callerHasNoSurface=false — that combination was
+        // only produced by the old lenient 'unscoped' outcome — so this
+        // workspace-blind pick is unreachable. Kept as the last line of defense
+        // if a future context shape reintroduces it.
         if (!surfaceId) {
           const allPages = this.getAllPages();
           console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
@@ -710,6 +764,9 @@ export class PlaywrightEngine {
         // Get registered wmux targets for matching, scoped to the caller's
         // workspace when known so the no-surfaceId fallback (info.targets[0])
         // can never resolve to another workspace's guest (#580, Option 1).
+        // getPage now always arrives with either a surfaceId or a resolved
+        // workspaceId (fail-closed scoping), so the unscoped `{}` call and the
+        // `targets[0]` pick below are reachable only from a direct call.
         const info = (await sendRpc(
           'browser.cdp.info',
           workspaceId ? { workspaceId } : {},
