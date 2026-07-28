@@ -1203,7 +1203,7 @@ export class ChannelService {
       }
       const recipients = this.lifecycleRecipients(channel);
       if (channel.trashedAt !== undefined) {
-        // 멱등 no-op — but still re-emit. A second renderer whose mirror missed
+        // Idempotent no-op — but still re-emit. A second renderer whose mirror missed
         // the first fan-out retries the trash; without an emit its stale row
         // never converges, and the retry looks like it did nothing.
         this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
@@ -1270,7 +1270,7 @@ export class ChannelService {
       }
       const recipients = this.lifecycleRecipients(channel);
       if (channel.trashedAt === undefined) {
-        // 멱등 no-op — re-emit for the same reason trash() does: a retry from a
+        // Idempotent no-op — re-emit for the same reason trash() does: a retry from a
         // renderer with a stale mirror must converge, not silently succeed.
         this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
         return { ok: true };

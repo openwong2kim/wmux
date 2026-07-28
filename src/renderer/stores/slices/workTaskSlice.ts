@@ -22,7 +22,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 
-/** useRpcBridge가 설치하는 미션 브리지(읽기 + 워크스페이스 수명 결속용 close). */
+/** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
 interface MissionRpcBridge {
   list: (params: Record<string, unknown>) => Promise<unknown>;
   close?: (params: Record<string, unknown>) => Promise<unknown>;
@@ -103,11 +103,13 @@ export interface WorkTaskSlice {
   /** J3 §4 — 태스크 워크스페이스의 이탈 상태 설정(cwd=null이면 해제). */
   setPaneGroupDeparted: (paneGroupId: string, cwd: string | null) => void;
   /**
-   * 태스크 워크스페이스가 삭제될 때 그 미션을 close한다(워크스페이스 수명 결속).
-   * 데몬 close가 미션 채널을 archive하므로, 워크스페이스가 사라지면 미션 행이
-   * 목록에서 빠지는 것과 동시에 채널이 접힌 Archived 그룹으로 내려간다 —
-   * **채널은 지워지지 않는다**(기록 보존). best-effort: 실패해도 사이드바
-   * 표시는 워크스페이스 실존만 보므로 무해하고, 다음 부트 reconcile이 수렴한다.
+   * Closes the mission of a task workspace when that workspace is deleted
+   * (workspace-lifetime binding). The daemon's close archives the mission channel,
+   * so as the workspace disappears the mission row drops out of the list and the
+   * channel folds down into the Archived group at the same time —
+   * **the channel is never destroyed** (the record is preserved). Best-effort: a
+   * failure is harmless because the sidebar's visibility rule looks only at workspace
+   * existence, and the next boot reconcile converges.
    */
   closeMissionForRemovedWorkspace: (paneGroupId: string) => Promise<void>;
 }
@@ -187,29 +189,31 @@ export const createWorkTaskSlice: StateCreator<
   closeMissionForRemovedWorkspace: async (paneGroupId) => {
     if (!paneGroupId) return;
     const task = get().missionByPaneGroup[paneGroupId];
-    if (!task || task.status !== 'open') return; // 부재/이미 closed = no-op.
+    if (!task || task.status !== 'open') return; // Absent / already closed = no-op.
     const bridge = readMissionRpc();
     if (!bridge?.close) return;
     let res: unknown;
     try {
-      // authz 앵커는 태스크 owner(데몬 게이트: owner OR CEO). 삭제된 자식 워크스페이스가
-      // 아니라 **부모**가 owner다 — 자식 id로 호출하면 NOT_AUTHORIZED다.
+      // The authz anchor is the task owner (daemon gate: owner OR CEO). The owner is the
+      // **parent**, not the deleted child workspace — calling with the child id is NOT_AUTHORIZED.
       res = await bridge.close({
         taskId: task.id,
         verifiedWorkspaceId: task.owner.verifiedWorkspaceId,
       });
     } catch {
-      // 데몬 미연결/일시 실패 — 부트 reconcile이 수렴한다(태스크 방향 archive 재시도).
+      // Daemon not connected / transient failure — the boot reconcile converges
+      // (it retries the archive from the task side).
       return;
     }
-    // 응답을 **확인**한다: 이 호출은 fire-and-forget이라 거부가 조용히 사라졌었다
-    // (NOT_AUTHORIZED 전량 실패가 무증상이었던 원인). 던지지는 않는다 — 사이드바
-    // 표시는 워크스페이스 실존만 보므로 실패해도 화면은 옳다.
+    // **Check** the response: this call used to be fire-and-forget, so a rejection
+    // vanished silently (that is why a 100% NOT_AUTHORIZED failure was symptomless).
+    // Still do not throw — the sidebar's visibility rule looks only at workspace
+    // existence, so the screen is correct even when this fails.
     if (!isOkObject(unwrapRpc(res))) {
       console.warn('[workTaskSlice] mission close rejected for task', task.id, res);
       return;
     }
-    // 로컬 캐시도 즉시 반영(다음 폴링을 기다리지 않게).
+    // Reflect it in the local cache right away, so we do not wait for the next poll.
     await get().refreshMissions(task.owner.verifiedWorkspaceId);
   },
 });

@@ -228,15 +228,16 @@ describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재�
   });
 });
 
-// ═══ 워크스페이스 수명 결속 — 채널 보존 불변식 ═════════════════════════
+// ═══ Workspace-lifetime binding — the channel retention invariant ══════════
 //
-// 오너 정책의 핵심: **미션은 워크스페이스 수명에 묶이지만 채널은 남는다.**
-// 렌더러는 태스크 워크스페이스가 삭제될 때 mission.close를 쏘므로, 그 close가
-// 채널을 지우지 않는다는 것이 정책 전체가 서 있는 자리다(archive는 접힘일 뿐,
-// 삭제는 사람이 명시적으로 휴지통을 비울 때만 일어난다).
+// The core of the owner policy: **a mission is bound to its workspace's lifetime,
+// but the channel survives.** The renderer fires mission.close when the task
+// workspace is deleted, so "that close does not destroy the channel" is the ground
+// the whole policy stands on (archive is only a fold; deletion happens solely when
+// a human explicitly empties the trash).
 
-describe('mission.close는 채널을 archive할 뿐 지우지 않는다', () => {
-  it('워크스페이스 삭제로 close된 뒤에도 채널 행·메시지·멤버가 그대로 남는다', async () => {
+describe('mission.close archives the channel, it never destroys it', () => {
+  it('keeps the channel row, its messages, and its members after a workspace-deletion close', async () => {
     const writer = makeFakeWriter();
     const channelSvc = newChannelService(writer);
     const log = newLog();
@@ -258,19 +259,19 @@ describe('mission.close는 채널을 archive할 뿐 지우지 않는다', () => 
       verifiedWorkspaceId: 'ws-owner',
     });
 
-    // 태스크 워크스페이스가 사라져 렌더러가 쏘는 close.
+    // The close the renderer fires because the task workspace is gone.
     const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     expect(closed.ok).toBe(true);
 
-    // 미션은 닫혔다.
+    // The mission is closed.
     expect(svc.getTask(taskId)?.status).toBe('closed');
-    // 채널은 남는다 — archived(접힘)일 뿐 부재가 아니다.
+    // The channel stays — archived (folded away), not absent.
     const ch = channelSvc.get(channelId, 'ws-owner');
     expect(ch).not.toBeNull();
     expect(ch?.status).toBe('archived');
-    // 휴지통에 들어가지도 않는다(삭제 경로는 사람의 명시적 행위 전용).
+    // It does not land in the trash either (the deletion path is for explicit human acts only).
     expect(ch?.trashedAt).toBeUndefined();
-    // 기록 그대로.
+    // The record is intact.
     expect(channelSvc.getMessages(channelId, undefined, 'ws-owner').map((m) => m.text)).toEqual([
       'what the agent did',
     ]);
@@ -278,10 +279,10 @@ describe('mission.close는 채널을 archive할 뿐 지우지 않는다', () => 
   });
 });
 
-// ─── 채널 보존 앵커(ChannelService.sweepRetention이 소비) ──────────────────────
+// ─── Channel retention anchor (consumed by ChannelService.sweepRetention) ──
 
-describe('hasOpenTaskForChannel — 살아 있는 미션의 채널을 스윕이 지우지 못하게', () => {
-  it('open 미션의 채널만 true이고, close되면 false로 풀린다', async () => {
+describe('hasOpenTaskForChannel — keeps the sweep off the channel of a live mission', () => {
+  it('is true only for an open mission\'s channel, and releases to false once it closes', async () => {
     const writer = makeFakeWriter();
     const channelSvc = newChannelService(writer);
     const log = newLog();
@@ -297,7 +298,7 @@ describe('hasOpenTaskForChannel — 살아 있는 미션의 채널을 스윕이 
     if (!started.ok) return;
 
     expect(svc.hasOpenTaskForChannel(started.channelId)).toBe(true);
-    // 무관한 채널·빈 문자열은 앵커가 아니다.
+    // An unrelated channel and the empty string are not anchors.
     expect(svc.hasOpenTaskForChannel('chan-unrelated')).toBe(false);
     expect(svc.hasOpenTaskForChannel('')).toBe(false);
 

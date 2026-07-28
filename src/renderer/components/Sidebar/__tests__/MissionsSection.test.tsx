@@ -65,13 +65,14 @@ describe('MissionsSection', () => {
   });
 });
 
-// ── 미션 = 워크스페이스 수명(오너 정책) ────────────────────────────────────
-// 판정은 **워크스페이스 실존 하나**로만 한다. fan-out 워크스페이스가 사라지면 미션
-// 행이 목록에서 빠지고, 기록은 미션 채널에 남는다(이 셀렉터는 채널을 건드리지 않는다).
-describe('selectLiveMissions (순수)', () => {
+// ── Mission = workspace lifetime (owner policy) ────────────────────────────
+// The decision rests on **workspace existence alone**. When a fan-out workspace is
+// gone the mission row drops out of the list, and the record stays in the mission
+// channel (this selector never touches channels).
+describe('selectLiveMissions (pure)', () => {
   const live = (...ids: string[]): ReadonlySet<string> => new Set(ids);
 
-  it('워크스페이스가 사라진 미션을 제외한다', () => {
+  it('excludes a mission whose workspace is gone', () => {
     const out = selectLiveMissions(
       {
         'parent-a': [
@@ -84,7 +85,7 @@ describe('selectLiveMissions (순수)', () => {
     expect(out.map((t) => t.id)).toEqual(['alive']);
   });
 
-  it('완료 미션도 워크스페이스가 사라지면 제외된다(사이드바 누적의 원인)', () => {
+  it('excludes a done mission too once its workspace is gone (the cause of sidebar pile-up)', () => {
     const out = selectLiveMissions(
       {
         'parent-a': [
@@ -96,7 +97,7 @@ describe('selectLiveMissions (순수)', () => {
     expect(out).toEqual([]);
   });
 
-  it('완료됐어도 워크스페이스가 살아 있으면 남는다(점프·채널 링크가 유효)', () => {
+  it('keeps a done mission while its workspace is alive (jump and channel links still work)', () => {
     const out = selectLiveMissions(
       {
         'parent-a': [
@@ -108,7 +109,7 @@ describe('selectLiveMissions (순수)', () => {
     expect(out.map((t) => t.id)).toEqual(['done']);
   });
 
-  it('paneGroupId 미물질화(fan-out 진행 중)는 남긴다 — 아직 없는 것이지 사라진 게 아니다', () => {
+  it('keeps a mission with no materialized paneGroupId (fan-out in flight) — not yet there is not gone', () => {
     const out = selectLiveMissions(
       { 'parent-a': [mission({ id: 'inflight', title: 'A' })] },
       live('parent-a'),
@@ -116,7 +117,7 @@ describe('selectLiveMissions (순수)', () => {
     expect(out.map((t) => t.id)).toEqual(['inflight']);
   });
 
-  it('부모 캐시가 남아 있어도 자식이 없으면 제외된다(고아 캐시 방어)', () => {
+  it('excludes a mission whose child is gone even if the parent cache lingers (orphan-cache guard)', () => {
     const out = selectLiveMissions(
       { 'parent-gone': [mission({ id: 'orphan', title: 'A', paneGroupId: 'child-x' })] },
       live('parent-a'),

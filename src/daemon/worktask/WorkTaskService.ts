@@ -633,10 +633,11 @@ export class WorkTaskService {
   }
 
   /**
-   * 채널 보존 앵커: 이 채널을 미션 채널로 가리키는 **open** 태스크가 있는가.
-   * 채널 보존 스윕(ChannelService.sweepRetention)이 살아 있는 미션의 채널을
-   * 지워 `#` 링크를 CHANNEL_NOT_FOUND로 만드는 것을 막는다. projection은
-   * closed GC로 바운드돼 있어 선형 스캔이 저렴하다(시간당 1회 호출 경로).
+   * Channel retention anchor: is there an **open** task pointing at this channel
+   * as its mission channel? This stops the channel retention sweep
+   * (ChannelService.sweepRetention) from destroying the channel of a live mission
+   * and turning its `#` link into CHANNEL_NOT_FOUND. The projection is bounded by
+   * the closed-task GC, so the linear scan is cheap (called once per hour on this path).
    */
   hasOpenTaskForChannel(channelId: string): boolean {
     if (!channelId) return false;

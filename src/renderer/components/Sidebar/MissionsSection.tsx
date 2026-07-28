@@ -14,8 +14,9 @@
 // 빈 상태: 미션이 하나도 없으면(대부분의 일반 워크스페이스) 이 컴포넌트는 null을
 // 반환해 **공간을 전혀 차지하지 않는다**(헤더조차 렌더하지 않음).
 //
-// 수명(오너 정책): 미션 행은 fan-out 워크스페이스가 살아 있는 동안만 보인다. 워크스페이스가
-// 사라지면 행도 사라지고, 기록은 미션 채널에 남는다(selectLiveMissions 참조).
+// Lifetime (owner policy): a mission row is visible only while its fan-out workspace
+// is alive. When the workspace is gone the row goes with it, and the record stays in
+// the mission channel (see selectLiveMissions).
 
 import { memo, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -39,15 +40,17 @@ export function flattenMissions(byWorkspace: Record<string, WorkTask[]>): WorkTa
 }
 
 /**
- * 미션 = 워크스페이스 수명(오너 정책). 표시 규칙은 **워크스페이스 실존 하나**로
- * 판정한다 — 파생/추론 신호(에이전트 상태·배달 상태 등)는 이 리포에서 여러 번
- * 거짓을 보고했으므로 쓰지 않는다. `liveWorkspaceIds`는 세션에서 복원된 워크스페이스
- * 목록 그대로다.
+ * Mission = workspace lifetime (owner policy). Visibility is decided on
+ * **workspace existence alone** — derived/inferred signals (agent status, delivery
+ * status, and the like) have reported false several times in this repo, so they are
+ * not used here. `liveWorkspaceIds` is the workspace list restored from the session,
+ * verbatim.
  *
- *   - paneGroupId 물질화됨 + 워크스페이스 부재 → **제외**(기록은 채널에 남는다).
- *   - paneGroupId 물질화됨 + 워크스페이스 존재 → 표시.
- *   - paneGroupId 미물질화(fan-out 진행 중) → **표시**. 아직 워크스페이스가 없는
- *     것이지 사라진 게 아니다 — 진행 중인 미션을 감추는 쪽이 훨씬 나쁘다.
+ *   - paneGroupId materialized + workspace absent → **excluded** (the record stays in the channel).
+ *   - paneGroupId materialized + workspace present → shown.
+ *   - paneGroupId not materialized (fan-out in flight) → **shown**. There is no
+ *     workspace yet; that is not the same as one having disappeared — hiding a
+ *     mission that is still running is far worse.
  */
 export function selectLiveMissions(
   byWorkspace: Record<string, WorkTask[]>,
@@ -60,9 +63,10 @@ export function selectLiveMissions(
 
 function useLiveMissions(): WorkTask[] {
   const byWorkspace = useStore(useShallow((s) => s.missionsByWorkspace));
-  // id 배열만 얕은 비교로 구독(이름·메타 변경엔 재계산 없음). 조인 문자열 키를
-  // 쓰지 않는다 — 워크스페이스가 0개면 `''.split(',')`가 `['']`를 내놓아 빈
-  // 문자열 id가 "살아 있는" 것으로 잡히고, id에 쉼표가 들어가면 쪼개진다.
+  // Subscribe to the id array with a shallow compare (renames and metadata changes do
+  // not recompute). Do NOT use a joined string key — with zero workspaces
+  // `''.split(',')` yields `['']`, which makes the empty-string id count as "alive",
+  // and any id containing a comma would be split apart.
   const workspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
   return useMemo(
     () => selectLiveMissions(byWorkspace, new Set(workspaceIds)),
@@ -135,10 +139,12 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
 
 function MissionsSection(): React.ReactElement | null {
   const missions = useLiveMissions();
-  // 섹션 전체 접기(기본 펼침 — open 미션은 지금 돌아가는 일이다).
+  // Collapse for the whole section (expanded by default — open missions are the work
+  // that is running right now).
   const [expanded, setExpanded] = useState(true);
-  // 완료 미션은 별도 디스클로저(기본 접힘). 워크스페이스가 살아 있는 한 미션 행은
-  // 유효하지만(점프·채널 링크가 동작한다) 상시 펼쳐져 자리를 먹을 이유는 없다.
+  // Done missions get their own disclosure (collapsed by default). A mission row stays
+  // valid as long as its workspace is alive (jump and channel links still work), but
+  // there is no reason for it to sit permanently expanded taking up room.
   const [doneExpanded, setDoneExpanded] = useState(false);
   const open = missions.filter((t) => t.status === 'open');
   const done = missions.filter((t) => t.status !== 'open');

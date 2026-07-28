@@ -4627,7 +4627,8 @@ async function main(): Promise<void> {
   // 부트 순서 고정(§1): replay → reconcile(양방향) → closed GC. 로그 미가용이면
   // 미션 RPC는 fail-closed(null → 핸들러가 명시 에러). await 부트는 register
   // 배선 전에 완료돼야 reconcile이 채널 상태를 정리한 뒤 첫 RPC를 받는다.
-  // (선언은 channelService 생성 위로 올라가 있다 — 보존 앵커 클로저가 지연 참조.)
+  // (The declaration is hoisted above the channelService construction — the
+  // retention-anchor closure dereferences it lazily.)
   if (channelEventLogDeps) {
     try {
       const svc = new WorkTaskService({

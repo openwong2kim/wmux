@@ -68,7 +68,7 @@ describe('groupChannels — trash', () => {
   });
 
   it('keeps an untrashed private observed channel in the active list (regression)', () => {
-    // The 관전/observed mission rooms the operator watches must stay visible
+    // The observed mission rooms the operator watches must stay visible
     // until they are explicitly trashed — the trash marker is the ONLY thing
     // that removes a row.
     const observed = makeChannel({ id: 'ch-o', visibility: 'private', observed: true });
