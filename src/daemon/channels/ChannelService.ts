@@ -1432,6 +1432,14 @@ export class ChannelService {
         .filter((c) => this.isChannelRetained?.(c.id) !== true)
         .map((c) => c.id);
       for (const id of expired) {
+        // Re-check expiry against LIVE state before each destroy. The list above
+        // is a snapshot and every `destroy` awaits a commit, so a restore can
+        // land mid-sweep. `destroy` would then refuse it (CHANNEL_NOT_TRASHED)
+        // and the data is safe either way — but the refusal is recorded as a
+        // FAILURE, which logs an hourly warning about a channel that is behaving
+        // exactly as the operator asked. Skip it instead of reporting it.
+        const live = this.state.channels.find((c) => c.id === id);
+        if (!live || live.trashedAt === undefined || now - live.trashedAt < trashTtlMs) continue;
         const res = await this.destroy({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
         if (res.ok) destroyed.push(id);
         else failed.push({ id, op: 'destroy', code: res.error.code });

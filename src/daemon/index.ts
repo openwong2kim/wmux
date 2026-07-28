@@ -4578,9 +4578,14 @@ async function main(): Promise<void> {
       })
       .catch((err) => log('warn', 'channel retention sweep failed:', err));
   };
-  runChannelRetentionSweep();
-  const channelRetentionInterval = setInterval(runChannelRetentionSweep, 60 * 60 * 1000);
-  channelRetentionInterval.unref();
+  // NOTE: the sweep is DEFINED here (it closes over channelService) but ARMED
+  // below, after WorkTaskService boot. `isChannelRetained` reads the
+  // `workTaskService` binding, which is still null at this point — arming here
+  // would run the boot sweep with every mission anchor reporting "not
+  // retained", so the very protection it adds would be off for the one sweep
+  // most likely to find expired trash. Legacy boots (no event log, service
+  // never created) reach the arming site too, where null then correctly means
+  // "no missions exist this boot".
 
   // ── A2A 태스크 데몬 정본 (envelope PR4 §5 D11 — 공유 로그) ──────────────
   // 채널과 **단일 AppendOnlyLog 인스턴스를 공유**한다(§2.1 단일 논리 스트림 —
@@ -4657,6 +4662,15 @@ async function main(): Promise<void> {
   } else {
     log('warn', 'WorkTask mission service skipped — event log inactive this boot (legacy path)');
   }
+
+  // Arm the channel retention sweep (defined above). Both branches of the
+  // WorkTaskService gate have run, so `workTaskService` is either the live
+  // service or definitively null — either way `isChannelRetained` now answers
+  // truthfully, and the boot sweep cannot destroy a channel an open mission
+  // still anchors.
+  runChannelRetentionSweep();
+  const channelRetentionInterval = setInterval(runChannelRetentionSweep, 60 * 60 * 1000);
+  channelRetentionInterval.unref();
 
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
   // full strategy stack + safety rules). Adapters keep it decoupled: session

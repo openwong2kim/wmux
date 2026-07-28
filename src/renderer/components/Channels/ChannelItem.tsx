@@ -151,6 +151,16 @@ export function ChannelItemView({
             setArmed(false);
             action.onClick(channel.id);
           }}
+          // The row is itself a role="button" with an Enter/Space handler, so a
+          // key press on this button reaches BOTH: the browser synthesizes the
+          // click here AND the same keydown bubbles up and selects the channel.
+          // Trashing a room while also opening it is not what either press
+          // meant, and on the armed path the first press would arm and navigate
+          // at once. Stop the key event at the button; the click handler above
+          // still runs and owns the action.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+          }}
           onBlur={() => setArmed(false)}
           {...tokenAttrs(armed ? 'danger' : 'textMuted', armed ? 'accent' : 'text')}
         >

@@ -311,6 +311,41 @@ describe('③ retention sweep', () => {
     expect(row(svc, id)).toBeDefined();
   });
 
+  it('a restore landing mid-sweep wins — retention never beats an explicit undo', async () => {
+    // The purge list is a snapshot and every destroy awaits a commit. If the
+    // operator pulls a channel back out during one of those windows, destroy's
+    // "is trashed" precondition alone would not save it — the live re-check does.
+    const { svc, setClock } = makeService({ trashTtlHours: 1 });
+    const first = await makeMissionChannel(svc, 'mission-first');
+    const rescued = await makeMissionChannel(svc, 'mission-rescued');
+    await svc.trash({ channelId: first, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    await svc.trash({ channelId: rescued, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    setClock(T0 + 10 * HOUR);
+
+    // Restore `rescued` the moment the first destroy commits, i.e. after the
+    // purge list was already snapshotted with both ids on it.
+    const realDestroy = svc.destroy.bind(svc);
+    vi.spyOn(svc, 'destroy').mockImplementation(async (params) => {
+      const res = await realDestroy(params);
+      if (params.channelId === first) {
+        await svc.restore({ channelId: rescued, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+      }
+      return res;
+    });
+
+    const swept = await svc.sweepRetention();
+
+    expect(swept.destroyed).toEqual([first]);
+    expect(row(svc, rescued)).toBeDefined();
+    expect(row(svc, rescued)?.trashedAt).toBeUndefined();
+    expect(svc.getMessages(rescued, undefined, HUMAN_WORKSPACE_ID)).toHaveLength(1);
+    // destroy's own precondition would also have saved the data, so asserting
+    // survival alone cannot tell the re-check from the fallback. The observable
+    // difference is the report: a restored channel must be SKIPPED, not recorded
+    // as a failed op that warns every hour about correct behaviour.
+    expect(swept.failed).toEqual([]);
+  });
+
   it('a zero TTL disables the purge pass entirely', async () => {
     const { svc, setClock } = makeService({ trashTtlHours: 0 });
     const id = await makeMissionChannel(svc);

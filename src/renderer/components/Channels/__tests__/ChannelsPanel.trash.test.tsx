@@ -35,8 +35,8 @@ function renderPanel(channels: Channel[], props: Record<string, unknown> = {}): 
       channelMentions: {},
       activeChannelId: null,
       company: null,
-      onSelect: () => {},
-      onCreate: () => true,
+      onSelect: (): void => undefined,
+      onCreate: (): boolean => true,
       ...props,
     } as never),
   );
@@ -104,7 +104,9 @@ describe('ChannelsPanelView — trash group', () => {
   it('renders the per-row trash affordance only when onTrash is wired', () => {
     const channels = [makeChannel({ id: 'ch-a', name: 'alpha' })];
     expect(renderPanel(channels)).not.toContain('data-channel-trash');
-    expect(renderPanel(channels, { onTrash: () => {} })).toContain('data-channel-trash');
+    expect(renderPanel(channels, { onTrash: (): void => undefined })).toContain(
+      'data-channel-trash',
+    );
   });
 
   it('arms the trash action on ACTIVE rows (one misclick must not archive a live room)', () => {
@@ -123,7 +125,7 @@ describe('ChannelsPanelView — trash group', () => {
   it('does not offer empty-trash without a confirm step', () => {
     const html = renderPanel(
       [makeChannel({ id: 'ch-t1', name: 'mission-one', status: 'archived', trashedAt: 1 })],
-      { onEmptyTrash: () => {} },
+      { onEmptyTrash: (): void => undefined },
     );
     // Collapsed, so neither the action nor its confirmation is reachable yet.
     expect(html).not.toContain('data-channels-empty-trash-yes');
