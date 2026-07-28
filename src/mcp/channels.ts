@@ -550,11 +550,20 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // Owner-scoped listing of the caller's missions, including the J1
   // materialization fields (branch / worktreePath / paneGroupId) — so an agent
   // that started a fan-out can see where each task landed and whether it is
-  // still open. The daemon filters on the server-resolved verifiedWorkspaceId,
-  // so this can only ever return the caller's own missions.
+  // still open.
+  //
+  // Scoping, stated exactly: `callRpc` attaches this server's verified
+  // senderPtyId, and the main-side handler resolves the owning workspace from
+  // it and stamps `verifiedWorkspaceId` over whatever is sent. Unlike the other
+  // reads here, the method fails closed when that ptyId does not resolve — the
+  // rows it returns (branches, absolute worktree paths, channel ids) belong to
+  // one owner, so falling back to a caller-supplied scope would hand them to
+  // whoever named the workspace. The residual is the #113 same-user ceiling on
+  // the ptyId itself, shared with every other method on this surface; the tool
+  // description below must not promise more than that.
   server.tool(
     'channel_mission_list',
-    'List the missions (WorkTasks) you own, with their status and — once materialized — branch, worktreePath, paneGroupId (the task workspace) and missionChannelId. This is how you check on tasks started by fanout_start or channel_mission_start. Only your own missions are returned.',
+    'List the missions (WorkTasks) you own, with their status and — once materialized — branch, worktreePath, paneGroupId (the task workspace) and missionChannelId. This is how you check on tasks started by fanout_start or channel_mission_start. The listing is scoped to the workspace the server resolves from your verified terminal — you cannot ask for another workspace\'s missions, and the call is refused outright if your identity cannot be verified.',
     {},
     async () => {
       const workspaceId = await deps.resolveWorkspaceId();
