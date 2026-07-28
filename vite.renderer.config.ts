@@ -18,7 +18,7 @@ export default defineConfig({
             '@xterm/addon-fit',
             '@xterm/addon-webgl',
             '@xterm/addon-search',
-            '@xterm/addon-unicode11',
+            '@xterm/addon-unicode-graphemes',
             '@xterm/addon-web-links',
           ],
           'vendor-react': ['react', 'react-dom'],

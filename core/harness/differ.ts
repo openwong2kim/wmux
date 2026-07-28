@@ -8,6 +8,15 @@
 //
 // 기준선 폭 모델은 **Unicode 11로 명시 고정**한다(@xterm/addon-unicode11 로딩 + activeVersion='11').
 // 본체 renderer와 동일한 폭 모델을 쓰기 위함(lockfile 핀).
+//
+// NOTE (unicode-graphemes swap): the product (renderer + HeadlessSnapshot) has since moved to
+// @xterm/addon-unicode-graphemes ('15-graphemes'), so this baseline NO LONGER tracks the renderer's
+// width model — and that is deliberate. This subject is the differential DENOMINATOR: its goldens
+// pin *measured* xterm.js-U11 behavior, and intended-diffs.json already reserves the exact cell
+// (cjk-emoji, x=0, y=2, width) where U11's VS16 width-1 is expected to become width 2 under
+// grapheme clustering. Re-pinning this subject to '15-graphemes' would erase that reserved
+// coordinate and turn gate ③ into a self-comparison. Keep U11 here until the E1 core lands as a
+// second subject.
 
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';

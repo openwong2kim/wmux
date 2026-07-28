@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
@@ -863,7 +863,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
-    const unicode11Addon = new Unicode11Addon();
+    const unicodeGraphemesAddon = new UnicodeGraphemesAddon();
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
@@ -875,7 +875,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
-    terminal.loadAddon(unicode11Addon);
+    terminal.loadAddon(unicodeGraphemesAddon);
     terminal.loadAddon(webLinksAddon);
     // Path link provider — Ctrl+click an absolute filesystem path to open
     // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
@@ -929,10 +929,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       return true;
     });
-    // Activate Unicode 11 width tables — required for correct CJK / emoji
-    // width. Without this, xterm defaults to v6 and TUI apps that use cursor
-    // positioning (Claude Code, vim, etc.) collide frames over Korean text.
-    terminal.unicode.activeVersion = '11';
+    // Activate Unicode 15 + grapheme-cluster width tables — required for
+    // correct CJK / emoji width. Without this, xterm defaults to v6 and TUI
+    // apps that use cursor positioning (Claude Code, vim, etc.) collide frames
+    // over Korean text. Grapheme clustering additionally fixes what the older
+    // per-codepoint Unicode 11 tables got wrong: a ZWJ sequence (👨‍👩‍👧),
+    // a regional-indicator flag, an emoji + skin-tone modifier and a VS16
+    // emoji-presentation selector each measure as ONE cluster of width 2
+    // instead of summing their codepoints. CJK/Hangul/fullwidth widths are
+    // unchanged from Unicode 11 — see HeadlessSnapshot.graphemes.test.ts.
+    // The daemon-side snapshot terminal must stay on the same version
+    // (HeadlessSnapshot.ts) or snapshots paint cell-shifted against the screen.
+    terminal.unicode.activeVersion = '15-graphemes';
     terminal.open(container);
 
     // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가

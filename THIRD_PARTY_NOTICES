@@ -124,12 +124,12 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-unicode11@0.9.0
+@xterm/addon-unicode-graphemes@0.4.0
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
-Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-unicode11
+Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-unicode-graphemes
 
-Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+Copyright (c) 2023, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

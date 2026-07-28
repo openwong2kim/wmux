@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import { Terminal } from '@xterm/headless';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { SessionPipe, FLUSH_DONE_MARKER, ATTACH_SNAPSHOT_MIN_BYTES } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import { waitFor } from '../../test-utils/waitFor';
@@ -50,8 +50,8 @@ function replaySegment(wire: Buffer): Buffer | null {
 /** Parse ANSI through a headless terminal and dump visible screen rows. */
 async function screenOf(data: Buffer, cols: number, rows: number): Promise<string[]> {
   const term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
-  term.loadAddon(new Unicode11Addon());
-  term.unicode.activeVersion = '11';
+  term.loadAddon(new UnicodeGraphemesAddon());
+  term.unicode.activeVersion = '15-graphemes';
   try {
     await new Promise<void>((resolve) => term.write(data, resolve));
     const buf = term.buffer.active;
@@ -68,8 +68,8 @@ async function screenOf(data: Buffer, cols: number, rows: number): Promise<strin
 /** Parse ANSI and return EVERY buffer row (scrollback + viewport), trimmed. */
 async function fullBufferText(data: Buffer, cols: number, rows: number, scrollback: number): Promise<string[]> {
   const term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
-  term.loadAddon(new Unicode11Addon());
-  term.unicode.activeVersion = '11';
+  term.loadAddon(new UnicodeGraphemesAddon());
+  term.unicode.activeVersion = '15-graphemes';
   try {
     await new Promise<void>((resolve) => term.write(data, resolve));
     const buf = term.buffer.active;
@@ -157,7 +157,7 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     expect(replay!.length).toBeLessThan(raw.length / 2);
     // Fidelity: the serialized replay reconstructs the same visible screen
     // as parsing the full raw stream (the plan's "correct screen state" AC,
-    // CJK included via the Unicode11 parity in HeadlessSnapshot).
+    // CJK included via the Unicode-graphemes parity in HeadlessSnapshot).
     const [fromSnapshot, fromRaw] = await Promise.all([
       screenOf(replay!, COLS, ROWS),
       screenOf(raw, COLS, ROWS),

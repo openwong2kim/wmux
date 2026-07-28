@@ -117,7 +117,7 @@ winget install openwong2kim.wmux
 - 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
 - 💬 **Channels** — Slack-style rooms agents read, post, and get @-mentioned into · server-verified sender · durable per-agent inbox · `wmux channel` CLI · operators can self-join private agent rooms (audited)
 - 🤖 **Agent supervision** — declare a pane in `wmux.json` (trust-gated) and the daemon keeps it alive: restart policy, backoff, reboot survival
-- 🖥️ **Native PTY (ConPTY on Windows, forkpty on macOS) + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
+- 🖥️ **Native PTY (ConPTY on Windows, forkpty on macOS) + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 15 + grapheme clusters (correct CJK / emoji, including ZWJ sequences and flags)
 - ⌨️ **Tmux-style prefix** (`Ctrl+B` + key, 13 actions) · **floating pane** (`` Ctrl+` ``) · scroll bookmarks
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
 - 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
@@ -156,7 +156,7 @@ winget install openwong2kim.wmux
 
 <br>
 
-**Terminal** — xterm.js + WebGL, native PTY (ConPTY on Windows, forkpty on macOS), Unicode 11 width tables, split panes, tabs, floating pane, smart right-click (selection→copy / empty→paste / link menu), scroll bookmarks, Vi copy mode, regex search, 999K scrollback with disk persistence, shell integration (OSC 133) for semantic command boundaries (Constrained Language Mode safe).
+**Terminal** — xterm.js + WebGL, native PTY (ConPTY on Windows, forkpty on macOS), Unicode 15 + grapheme-cluster width tables, split panes, tabs, floating pane, smart right-click (selection→copy / empty→paste / link menu), scroll bookmarks, Vi copy mode, regex search, 999K scrollback with disk persistence, shell integration (OSC 133) for semantic command boundaries (Constrained Language Mode safe).
 
 **Keybindings** — Tmux-style prefix mode (`Ctrl+B`, 13 default actions), fully customizable, reset-to-defaults.
 

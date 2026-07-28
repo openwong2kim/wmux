@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Terminal } from '@xterm/headless';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { generateSnapshot, FEED_SLICE_BYTES } from '../HeadlessSnapshot';
 
 // ── Round-trip harness ──────────────────────────────────────────────
@@ -9,12 +9,13 @@ import { generateSnapshot, FEED_SLICE_BYTES } from '../HeadlessSnapshot';
 // into a "reference" terminal, restore the snapshot payload into another
 // terminal, and assert the two buffers (text + cursor + relevant modes)
 // agree. Both terminals use the exact config the generator uses
-// (@xterm/headless, Unicode 11 tables, allowProposedApi) so widths line up.
+// (@xterm/headless, Unicode 15 + grapheme tables, allowProposedApi) so widths
+// line up.
 
 function makeTerminal(cols: number, rows: number): Terminal {
   const t = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
-  t.loadAddon(new Unicode11Addon());
-  t.unicode.activeVersion = '11';
+  t.loadAddon(new UnicodeGraphemesAddon());
+  t.unicode.activeVersion = '15-graphemes';
   return t;
 }
 

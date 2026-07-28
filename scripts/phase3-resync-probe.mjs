@@ -23,10 +23,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import headless from '@xterm/headless';
-import unicode11 from '@xterm/addon-unicode11';
+import unicodeGraphemes from '@xterm/addon-unicode-graphemes';
 
 const { Terminal } = headless;
-const { Unicode11Addon } = unicode11;
+const { UnicodeGraphemesAddon } = unicodeGraphemes;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -101,8 +101,8 @@ class ControlClient {
 class RendererSim {
   constructor() {
     this.terminal = new Terminal({ cols: COLS, rows: ROWS, scrollback: 5000, allowProposedApi: true, logLevel: 'off' });
-    this.terminal.loadAddon(new Unicode11Addon());
-    this.terminal.unicode.activeVersion = '11';
+    this.terminal.loadAddon(new UnicodeGraphemesAddon());
+    this.terminal.unicode.activeVersion = '15-graphemes';
     this.mode = 'accumulating'; // initial flush
     this.pendingChunks = [];
     this.liveCarry = Buffer.alloc(0);

@@ -29,7 +29,7 @@
 
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import {
   PartialSequenceTracker,
   MarginTracker,
@@ -188,8 +188,8 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     logLevel: 'off',
   });
   try {
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = '11';
+    terminal.loadAddon(new UnicodeGraphemesAddon());
+    terminal.unicode.activeVersion = '15-graphemes';
 
     let utf8Carry: Buffer = Buffer.alloc(0);
     let bytesIn = 0;
@@ -287,11 +287,13 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
   const serializer = new SerializeAddon();
   try {
     terminal.loadAddon(serializer);
-    // Width parity with the renderer (useTerminal sets the same): without
-    // Unicode 11 tables, CJK/emoji rows advance the cursor differently here
-    // than on screen and the snapshot paints cell-shifted tears.
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = '11';
+    // Width parity with the renderer (useTerminal sets the same): without the
+    // Unicode 15 + grapheme-cluster tables, CJK/emoji rows advance the cursor
+    // differently here than on screen and the snapshot paints cell-shifted
+    // tears. This addon must be swapped in lockstep with the renderer's — a
+    // one-sided change is exactly the divergence this comment warns about.
+    terminal.loadAddon(new UnicodeGraphemesAddon());
+    terminal.unicode.activeVersion = '15-graphemes';
 
     const partialTail = new PartialSequenceTracker();
     const margins = new MarginTracker();

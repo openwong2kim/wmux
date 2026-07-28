@@ -3,7 +3,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Terminal } from '@xterm/headless';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import {
   SessionPipe,
   FLUSH_DONE_MARKER,
@@ -77,8 +77,8 @@ function parseWire(buf: Buffer): WireSegments | null {
 // Headless terminal harness matching generateSnapshot's config exactly.
 function makeTerminal(cols: number, rows: number): Terminal {
   const t = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
-  t.loadAddon(new Unicode11Addon());
-  t.unicode.activeVersion = '11';
+  t.loadAddon(new UnicodeGraphemesAddon());
+  t.unicode.activeVersion = '15-graphemes';
   return t;
 }
 
