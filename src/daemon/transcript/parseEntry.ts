@@ -25,6 +25,7 @@ import type {
   AssistantTextEvent,
   CodeBlockRef,
   MetaEvent,
+  ToolBody,
   ToolResultEvent,
   ToolUseEvent,
   TurnEvent,
@@ -117,7 +118,7 @@ export function parseTranscriptLineDetailed(
 
   const content = message?.['content'];
   return isUser
-    ? parseUserEntry(entry, content, baseId, ts)
+    ? parseUserEntry(entry, content, baseId, ts, offsetHint)
     : parseAssistantEntry(content, baseId, ts, offsetHint);
 }
 
@@ -130,6 +131,7 @@ function parseUserEntry(
   content: unknown,
   baseId: string,
   ts: number | undefined,
+  offsetHint: number,
 ): ParsedTranscriptLine {
   const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
 
@@ -154,6 +156,7 @@ function parseUserEntry(
 
   const out: TurnEvent[] = [];
   const parts: string[] = [];
+  const bodies = new Map<string, Map<number, string>>();
   let hasImage = false;
   for (const raw of content) {
     const block = asObject(raw);
@@ -164,7 +167,7 @@ function parseUserEntry(
     } else if (blockType === 'image') {
       hasImage = true;
     } else if (blockType === 'tool_result') {
-      out.push(toolResultEvent(block!, baseId, ts, out.length));
+      out.push(toolResultEvent(block!, baseId, ts, out.length, offsetHint, bodies));
     }
     // Any other block type (including invented ones) is skipped silently — R1.
   }
@@ -189,7 +192,8 @@ function parseUserEntry(
       out.push(metaEvent(`${baseId}#${out.length}`, ts, 'system_reminder', 'System reminder'));
     }
   }
-  return { events: reid(out, baseId), bodies: new Map() };
+  const events = reid(out, baseId);
+  return { events, bodies: remapBodies(bodies, out, baseId) };
 }
 
 /**
@@ -282,19 +286,40 @@ function toolResultEvent(
   baseId: string,
   ts: number | undefined,
   index: number,
+  offsetHint: number,
+  bodies: Map<string, Map<number, string>>,
 ): ToolResultEvent {
   const toolUseId = typeof block['tool_use_id'] === 'string' ? (block['tool_use_id'] as string) : '';
   const body = flattenResultContent(block['content']);
+  const id = `${baseId}#${index}`;
   const ev: ToolResultEvent = {
-    id: `${baseId}#${index}`,
+    id,
     kind: 'tool_result',
     toolUseId,
     ok: block['is_error'] !== true,
     bytes: Buffer.byteLength(body, 'utf8'),
     ...(looksLikeDiff(body) ? { diffLike: true } : {}),
+    // A diff-shaped result already renders as its own chip, so carrying the
+    // body twice would pay the inline budget for something the reader is not
+    // going to read here.
+    ...(looksLikeDiff(body)
+      ? {}
+      : withBody('output', registerToolBody(id, unwrapToolError(body), offsetHint, bodies))),
     ...tsOf(ts),
   };
   return ev;
+}
+
+/**
+ * `<tool_use_error>…</tool_use_error>` is a wrapper Claude Code puts around a
+ * failed tool's output. `is_error` already carries the fact, so the tags are
+ * noise in the body — and left in, they read as if the tool itself printed
+ * them. Borrowed from claude-replay's transcript reader, which strips the same
+ * wrapper for the same reason.
+ */
+function unwrapToolError(body: string): string {
+  const m = /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(body.trim());
+  return m ? m[1] : body;
 }
 
 /** `tool_result.content` is a string or an array of `{type:'text'}` blocks. */
@@ -360,8 +385,9 @@ function parseAssistantEntry(
         : typeof block?.['text'] === 'string' ? (block['text'] as string).trim() : '';
       if (t) out.push(assistantText(`${baseId}#${out.length}`, ts, t, true, offsetHint, bodies));
     } else if (blockType === 'tool_use') {
+      const id = `${baseId}#${out.length}`;
       const ev: ToolUseEvent = {
-        id: `${baseId}#${out.length}`,
+        id,
         kind: 'tool_use',
         toolUseId: typeof block?.['id'] === 'string' ? (block['id'] as string) : '',
         name: typeof block?.['name'] === 'string' ? (block['name'] as string) : '',
@@ -369,6 +395,11 @@ function parseAssistantEntry(
         // so one tool call reads the same wherever wmux shows it. Its own cap
         // (80) is inside this field's documented 120.
         argSummary: summarizeActivity(block?.['name'], block?.['input']),
+        // The summary says WHICH tool ran; this says what it was actually
+        // given. Kept as the rendered JSON rather than the raw object so the
+        // body table stays `string` for every producer and the on-expand fetch
+        // has one shape to answer with.
+        ...withBody('input', registerToolBody(id, toolInputText(block?.['input']), offsetHint, bodies)),
         ...tsOf(ts),
       };
       out.push(ev);
@@ -562,6 +593,89 @@ function reid(events: TurnEvent[], baseId: string): TurnEvent[] {
 }
 
 /** Follow the `reid` collapse so a body stays reachable by its event's id. */
+/**
+ * How much of a tool body rides inline on the event instead of waiting for an
+ * on-expand fetch.
+ *
+ * Sized from a measured session: median tool output ~300 B, p90 ~2.5 KB, p99
+ * ~9.5 KB. 4 KB therefore renders about nine calls in ten with no click, which
+ * is the difference between reading a pane as a conversation and clicking
+ * through it. It is also 0.4% of main's 1 MB control-pipe frame cap — and that
+ * cap matters because overflowing it CLEARS the whole buffer silently, taking
+ * unrelated in-flight events with it (DaemonClient.ts). So this number is a
+ * safety bound, not a display preference.
+ */
+export const INLINE_BODY_MAX_BYTES = 4 * 1024;
+
+/** JSON the tool's input, or '' when there is nothing to show. */
+function toolInputText(input: unknown): string {
+  if (input === undefined || input === null) return '';
+  if (typeof input === 'string') return input;
+  try {
+    const json = JSON.stringify(input, null, 2);
+    return typeof json === 'string' ? json : '';
+  } catch {
+    // Circular or otherwise unserializable — the summary line still stands.
+    return '';
+  }
+}
+
+/**
+ * Truncate to a BYTE budget without splitting a UTF-8 character.
+ *
+ * `slice()` counts UTF-16 code units, so a byte cap applied that way can cut a
+ * multi-byte character in half and produce a replacement char — visible as
+ * mojibake on exactly the CJK and emoji output this project sees constantly.
+ */
+function sliceToBytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  // Walk back off any continuation byte (10xxxxxx) to a character boundary.
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+/**
+ * Put one tool body in the side table and describe it for the wire.
+ *
+ * The full body always goes to `bodies` — that is what the on-expand fetch
+ * re-derives and what keeps a large output reachable. Only the inline copy is
+ * capped.
+ */
+function registerToolBody(
+  eventId: string,
+  text: string,
+  offsetHint: number,
+  bodies: Map<string, Map<number, string>>,
+): ToolBody | undefined {
+  if (!text) return undefined;
+  const stored = text.length > MAX_BODY_CHARS ? text.slice(0, MAX_BODY_CHARS) : text;
+  const existing = bodies.get(eventId) ?? new Map<number, string>();
+  existing.set(1, stored);
+  bodies.set(eventId, existing);
+
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const inline = bytes <= INLINE_BODY_MAX_BYTES ? stored : sliceToBytes(stored, INLINE_BODY_MAX_BYTES);
+  return {
+    n: 1,
+    bytes,
+    // Under the cap the inline copy IS the whole body, so the reader needs no
+    // fetch. Over it, the inline copy is a head and `bytes` says how much more
+    // is waiting — the renderer uses the mismatch to offer the expand.
+    ...(inline ? { inline } : {}),
+    ...(offsetHint >= 0 ? { srcOffset: offsetHint } : {}),
+  };
+}
+
+/** Spread helper so an absent body adds no key at all. */
+function withBody<K extends 'input' | 'output'>(
+  key: K,
+  body: ToolBody | undefined,
+): Record<string, ToolBody> {
+  return body ? ({ [key]: body } as Record<string, ToolBody>) : {};
+}
+
 function remapBodies(
   bodies: Map<string, Map<number, string>>,
   events: TurnEvent[],

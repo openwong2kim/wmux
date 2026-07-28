@@ -78,12 +78,48 @@ export interface AssistantTextEvent extends TurnEventBase {
   thinking?: boolean;
 }
 
+/**
+ * What a tool was actually given, or actually returned.
+ *
+ * Chat View exists so a pane can be read as a conversation instead of a
+ * terminal, and for an agent session most of what happens IS the tool calls —
+ * the command that ran and what came back. Those used to be summarised away
+ * (`argSummary` at 80 chars; a result reduced to `ok` + `bytes`), which left
+ * the view able to say that something happened but never what.
+ *
+ * Small bodies ride inline so the common case reads without a click: the
+ * measured median tool output is ~300 bytes and p90 is ~2.5 KB, so a 4 KB cap
+ * covers about nine calls in ten. Anything larger is left to the same
+ * on-expand fetch code blocks already use (`daemon.transcript.codeBlock`),
+ * which re-reads the one transcript line rather than caching anything.
+ *
+ * The cap is not a display preference. main's control pipe drops its ENTIRE
+ * buffer when a frame exceeds MAX_LINE_BUFFER (1 MB) — silently, taking
+ * unrelated in-flight events with it — so an unbounded body here would be a
+ * quiet event-loss bug, not a slow render.
+ */
+export interface ToolBody {
+  /** Handle for the on-expand fetch, unique within its parent event. */
+  n: number;
+  /** Total size of the body on disk, before any inline truncation. */
+  bytes: number;
+  /**
+   * The body itself, present only when it fit under the inline cap. Absent
+   * means "fetch it with codeBlock(n)" — NOT "there is nothing here".
+   */
+  inline?: string;
+  /** Byte offset of the transcript line this came from, for the fetch. */
+  srcOffset?: number;
+}
+
 export interface ToolUseEvent extends TurnEventBase {
   kind: 'tool_use';
   toolUseId: string;
   name: string;
   /** One line, <=120 chars, no newlines. */
   argSummary: string;
+  /** What the tool was called WITH. Absent when the call carried no input. */
+  input?: ToolBody;
 }
 
 export interface ToolResultEvent extends TurnEventBase {
@@ -91,6 +127,8 @@ export interface ToolResultEvent extends TurnEventBase {
   toolUseId: string;
   ok: boolean;
   bytes: number;
+  /** What the tool returned. Absent when the result carried no text. */
+  output?: ToolBody;
   /**
    * Heuristic: content opens with `diff --git` / unified-hunk headers.
    * Renders as the workspace-diff chip, never inline.

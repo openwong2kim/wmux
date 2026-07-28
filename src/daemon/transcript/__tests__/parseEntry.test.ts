@@ -5,6 +5,7 @@ import {
   CODE_MARKER_PREFIX,
   CODE_MARKER_SUFFIX,
   extractCodeBlocks,
+  INLINE_BODY_MAX_BYTES,
   parseTranscriptLine,
   parseTranscriptLineDetailed,
 } from '../parseEntry';
@@ -419,5 +420,119 @@ describe('parseTranscriptLine — NUL in transcript prose (marker spoofing)', ()
     if (user[0].kind === 'user_text') {
       expect(user[0].text.includes('\u0000')).toBe(false);
     }
+  });
+});
+
+// ── Tool bodies ────────────────────────────────────────────────────────────
+//
+// Chat View could say a tool ran but never what it ran or what came back:
+// ToolUseEvent carried an 80-char `argSummary` and ToolResultEvent carried
+// `ok` + `bytes`. The transcript has both in full — the parser was extracting
+// and then dropping them. These pin the shape that carries them, and the two
+// invariants that keep the wire bounded.
+describe('parseTranscriptLine — tool bodies', () => {
+  const line = (obj: unknown): string => JSON.stringify(obj);
+
+  const useEntry = (input: unknown, id = 'tu-1') =>
+    line({
+      type: 'assistant',
+      uuid: 'a-1',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input }] },
+    });
+
+  const resultEntry = (content: unknown, isError = false, id = 'tu-1') =>
+    line({
+      type: 'user',
+      uuid: 'u-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] },
+    });
+
+  it('carries a small tool input inline, as rendered JSON', () => {
+    const [ev] = parseTranscriptLine(useEntry({ command: 'ls -la' }), 0);
+    expect(ev.kind).toBe('tool_use');
+    if (ev.kind !== 'tool_use') throw new Error('expected tool_use');
+    expect(ev.input?.inline).toContain('ls -la');
+    expect(ev.input?.n).toBe(1);
+    expect(ev.input?.srcOffset).toBe(0);
+  });
+
+  it('carries a small tool output inline', () => {
+    const [ev] = parseTranscriptLine(resultEntry('total 0\ndrwxr-xr-x'), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.output?.inline).toBe('total 0\ndrwxr-xr-x');
+    expect(ev.output?.bytes).toBe(18);
+  });
+
+  it('leaves an over-cap body as a head plus the true byte count', () => {
+    const big = 'x'.repeat(10_000);
+    const [ev] = parseTranscriptLine(resultEntry(big), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.output?.bytes).toBe(10_000);
+    // The head is bounded; the count is honest about what is still waiting.
+    expect(Buffer.byteLength(ev.output?.inline ?? '', 'utf8')).toBeLessThanOrEqual(INLINE_BODY_MAX_BYTES);
+    expect((ev.output?.inline ?? '').length).toBeLessThan(10_000);
+  });
+
+  it('never splits a multi-byte character at the cap', () => {
+    // Every char is 3 bytes, so a byte cap that ignored encoding would land
+    // mid-character and yield U+FFFD — visible as mojibake on CJK output.
+    const cjk = '가'.repeat(5000);
+    const [ev] = parseTranscriptLine(resultEntry(cjk), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.output?.inline ?? '').not.toContain('\uFFFD');
+    expect(Buffer.byteLength(ev.output?.inline ?? '', 'utf8')).toBeLessThanOrEqual(INLINE_BODY_MAX_BYTES);
+  });
+
+  it('unwraps the <tool_use_error> envelope — is_error already says it failed', () => {
+    const [ev] = parseTranscriptLine(resultEntry('<tool_use_error>boom</tool_use_error>', true), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.ok).toBe(false);
+    expect(ev.output?.inline).toBe('boom');
+  });
+
+  it('omits the body entirely when there was nothing to carry', () => {
+    const [ev] = parseTranscriptLine(resultEntry(''), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.output).toBeUndefined();
+  });
+
+  it('does not carry a body for a diff-shaped result — the diff chip owns it', () => {
+    const diff = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n';
+    const [ev] = parseTranscriptLine(resultEntry(diff), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.diffLike).toBe(true);
+    expect(ev.output).toBeUndefined();
+  });
+
+  it('registers the FULL body in the side table even when the inline copy is cut', () => {
+    const big = 'y'.repeat(10_000);
+    const { events, bodies } = parseTranscriptLineDetailed(resultEntry(big), 0);
+    const ev = events[0];
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    const stored = bodies.get(ev.id)?.get(ev.output?.n ?? -1);
+    expect(stored).toHaveLength(10_000);
+  });
+
+  // The invariant that keeps a body from being broadcast by accident: the
+  // narrow parse is what fans out to clients, and it must never hand back the
+  // side table. Bodies riding inline are capped; the FULL body is not.
+  it('keeps bodies out of the narrow parse (REGRESSION guard)', () => {
+    const { bodies } = parseTranscriptLineDetailed(resultEntry('z'.repeat(10_000)), 0);
+    expect(bodies.size).toBeGreaterThan(0);
+    // parseTranscriptLine returns events only — there is no bodies channel on it.
+    const events = parseTranscriptLine(resultEntry('z'.repeat(10_000)), 0);
+    expect(Array.isArray(events)).toBe(true);
+    const ev = events[0];
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(Buffer.byteLength(ev.output?.inline ?? '', 'utf8')).toBeLessThanOrEqual(INLINE_BODY_MAX_BYTES);
+  });
+
+  it('survives an unserializable tool input instead of throwing', () => {
+    // A cyclic input cannot be JSONed; the summary line must still stand.
+    const cyclic: Record<string, unknown> = {};
+    cyclic['self'] = cyclic;
+    // Build the entry by hand — JSON.stringify would reject the cycle too.
+    const raw = '{"type":"assistant","uuid":"a-2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ok"}}]}}';
+    expect(() => parseTranscriptLine(raw, 0)).not.toThrow();
   });
 });

@@ -5,14 +5,16 @@
 // Expanded: the same flat mono grammar per call — status glyph (● running amber
 // / ✓ ok green / ✕ error red) + tool name + one-line arg summary.
 
-import React, { useState } from 'react';
-import type { ToolUseEvent } from '../../../shared/transcript/turnEvents';
+import React, { useCallback, useState } from 'react';
+import type { ToolBody, ToolResultEvent, ToolUseEvent } from '../../../shared/transcript/turnEvents';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { formatToolRunLabel, toolCallState, type ToolRunRow } from './foldToolRuns';
 
 export interface ToolRunLineProps {
   run: ToolRunRow;
+  /** Resolves an over-cap body on expand — same handle CodeChip uses. */
+  onFetchBody?: (eventId: string, n: number) => Promise<string>;
 }
 
 const GLYPH: Record<'running' | 'ok' | 'error', string> = {
@@ -32,7 +34,90 @@ function runState(run: ToolRunRow): 'running' | 'ok' | 'error' {
   return run.running ? 'running' : 'ok';
 }
 
-export function ToolRunLine({ run }: ToolRunLineProps): React.ReactElement {
+/** The result that answered this call, if it has arrived. */
+function resultFor(run: ToolRunRow, call: ToolUseEvent): ToolResultEvent | undefined {
+  return run.events.find(
+    (e): e is ToolResultEvent => e.kind === 'tool_result' && e.toolUseId === call.toolUseId,
+  );
+}
+
+/**
+ * One tool body — what a call was given, or what it returned.
+ *
+ * Most bodies arrive inline (measured: ~99% of inputs and ~95% of outputs fit
+ * the 4 KB cap), so the common case is plain text with no fetch and no click.
+ * A body over the cap arrives as a head plus a byte count; expanding pulls the
+ * rest through the same `onFetchBody` handle CodeChip uses.
+ *
+ * Deliberately NOT a boxed chip: DESIGN.md says tool calls render as flat mono
+ * log lines, and a bash transcript reads as a log, not as a card.
+ */
+function ToolBodyBlock({
+  eventId,
+  body,
+  label,
+  error,
+  onFetchBody,
+}: {
+  eventId: string;
+  body?: ToolBody;
+  label: string;
+  error?: boolean;
+  onFetchBody?: (eventId: string, n: number) => Promise<string>;
+}): React.ReactElement | null {
+  const t = useT();
+  const [full, setFull] = useState<string | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'loading' | 'error'>('idle');
+
+  const expand = useCallback(() => {
+    if (!body || !onFetchBody || phase === 'loading') return;
+    setPhase('loading');
+    void onFetchBody(eventId, body.n)
+      .then((text) => {
+        setFull(text);
+        setPhase('idle');
+      })
+      .catch(() => setPhase('error'));
+  }, [body, onFetchBody, eventId, phase]);
+
+  if (!body) return null;
+  const shown = full ?? body.inline ?? '';
+  if (!shown) return null;
+  // `inline` is a HEAD when the body did not fit; that is what the reader has
+  // to be told, otherwise a truncated command looks like the whole command.
+  const truncated = full === null && body.inline !== undefined
+    && Buffer.byteLength(body.inline, 'utf8') < body.bytes;
+
+  return (
+    <div className="flex flex-col gap-0.5 pl-4" data-chat-tool-body={label}>
+      <span className="text-[10px] font-mono text-[var(--text-muted)]">{label}</span>
+      <pre
+        className={`m-0 whitespace-pre-wrap break-words text-[11px] font-mono leading-relaxed ${
+          error ? 'text-[var(--accent-red)]' : 'text-[var(--text-sub)]'
+        }`}
+      >
+        {shown}
+      </pre>
+      {truncated && (
+        <button
+          type="button"
+          onClick={expand}
+          disabled={phase === 'loading' || !onFetchBody}
+          data-chat-tool-body-expand
+          className={`self-start text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+        >
+          {phase === 'loading'
+            ? t('chat.loadingBody')
+            : phase === 'error'
+              ? t('chat.bodyUnavailable')
+              : t('chat.showFullBody', { bytes: String(body.bytes) })}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ToolRunLine({ run, onFetchBody }: ToolRunLineProps): React.ReactElement {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
   const state = runState(run);
@@ -55,17 +140,34 @@ export function ToolRunLine({ run }: ToolRunLineProps): React.ReactElement {
         <div className="flex flex-col gap-0.5 pl-4" data-chat-tool-run-calls>
           {calls.map((call) => {
             const callState = toolCallState(run, call);
+            const result = resultFor(run, call);
             return (
-              <div
-                key={call.id}
-                data-chat-tool-call={call.toolUseId}
-                className="flex items-baseline gap-1.5 text-[11px] font-mono text-[var(--text-muted)]"
-              >
-                <span style={{ color: GLYPH_COLOR[callState] }} aria-hidden="true">
-                  {GLYPH[callState]}
-                </span>
-                <span className="text-[var(--text-sub)]">{call.name}</span>
-                <span className="truncate">{call.argSummary}</span>
+              <div key={call.id} data-chat-tool-call={call.toolUseId} className="flex flex-col gap-0.5">
+                <div className="flex items-baseline gap-1.5 text-[11px] font-mono text-[var(--text-muted)]">
+                  <span style={{ color: GLYPH_COLOR[callState] }} aria-hidden="true">
+                    {GLYPH[callState]}
+                  </span>
+                  <span className="text-[var(--text-sub)]">{call.name}</span>
+                  <span className="truncate">{call.argSummary}</span>
+                </div>
+                {/* What it was called WITH, then what came back. The summary
+                    line above says which tool ran; these two say what actually
+                    happened, which is the whole reason to expand a run. */}
+                <ToolBodyBlock
+                  eventId={call.id}
+                  body={call.input}
+                  label={t('chat.toolInput')}
+                  onFetchBody={onFetchBody}
+                />
+                {result && (
+                  <ToolBodyBlock
+                    eventId={result.id}
+                    body={result.output}
+                    label={t('chat.toolOutput')}
+                    error={!result.ok}
+                    onFetchBody={onFetchBody}
+                  />
+                )}
               </div>
             );
           })}

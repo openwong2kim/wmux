@@ -555,3 +555,51 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Codex's outside-voice review questioned whether the existing on-expand fetch
+// could serve a tool body at all, or whether "reuse codeBlock" was really a new
+// implementation in disguise. It serves them: `bodies` is keyed by event id and
+// block number, and a tool body registers under the same shape a code block
+// does. This pins that, plus the rotation guard that keeps a stale offset from
+// answering with a different conversation's bytes.
+describe('TranscriptProjector.codeBlock — tool bodies', () => {
+  it('serves an over-cap tool output through the same fetch code blocks use', () => {
+    const big = 'q'.repeat(9000);
+    const line = JSON.stringify({
+      type: 'user',
+      uuid: 'u-body',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: big }],
+      },
+    });
+    const file = path.join(harness.projects, '920b9112-1111-4222-8333-444455556666.jsonl');
+    fs.writeFileSync(file, `${line}
+`, 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+
+    const page = harness.projector.snapshot('pty-1');
+    const ev = page?.events.find((e) => e.kind === 'tool_result');
+    if (!ev || ev.kind !== 'tool_result') throw new Error('expected a tool_result event');
+    expect(ev.output?.bytes).toBe(9000);
+    // Over the cap, so the inline copy is only a head.
+    expect((ev.output?.inline ?? '').length).toBeLessThan(9000);
+
+    const fetched = harness.projector.codeBlock('pty-1', {
+      srcOffset: ev.output?.srcOffset ?? 0,
+      n: ev.output?.n ?? 1,
+      eventId: ev.id,
+    });
+    expect(fetched?.body).toHaveLength(9000);
+
+    // A stale event id must not be answered from the same offset — the guard
+    // that stops a rotated file from serving another conversation's bytes.
+    expect(
+      harness.projector.codeBlock('pty-1', {
+        srcOffset: ev.output?.srcOffset ?? 0,
+        n: ev.output?.n ?? 1,
+        eventId: 'not-this-event',
+      }),
+    ).toBeNull();
+  });
+});

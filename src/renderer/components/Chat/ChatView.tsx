@@ -207,7 +207,7 @@ export function ChatView({
               }
             >
               {row.kind === 'tool_run' ? (
-                <ToolRunLine run={row} />
+                <ToolRunLine run={row} onFetchBody={onFetchBody} />
               ) : row.kind === 'diff' ? (
                 <DiffChip event={row.event} onOpenDiff={onOpenDiff} />
               ) : (

@@ -1247,6 +1247,11 @@ export const en = {
   'chat.toolRuns': '{count} tool calls',
   'chat.toolRunMore': '+{count} more',
   'chat.expandToolRun': 'Expand tool calls',
+  'chat.toolInput': 'called with',
+  'chat.toolOutput': 'returned',
+  'chat.showFullBody': 'show all {bytes} bytes',
+  'chat.loadingBody': 'loading…',
+  'chat.bodyUnavailable': 'no longer available',
   'chat.collapseToolRun': 'Collapse tool calls',
   // Counters carry an explicit singular — "1 lines" is the kind of seam that
   // makes a supervision surface look machine-generated.
