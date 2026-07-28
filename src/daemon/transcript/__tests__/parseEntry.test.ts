@@ -596,6 +596,74 @@ describe('parseTranscriptLine — tool bodies', () => {
     expect(Buffer.byteLength(JSON.stringify(events), 'utf8')).toBeLessThan(128 * 1024);
   });
 
+  // Codex's PR review: the budget was charged in RAW bytes while the projector
+  // enforces its page budget against JSON.stringify(events). A NUL is one byte
+  // raw and six characters escaped, so control-heavy output could spend exactly
+  // the budget and still serialize past 128 KB — the entry then gets skipped
+  // whole, which is the failure the budget exists to prevent.
+  // Codex's PR review: the budget was charged in RAW bytes while the projector
+  // enforces its page budget against JSON.stringify(events). A NUL is one byte
+  // raw and six characters escaped, so control-heavy output spends the budget
+  // and STILL serializes past 128 KB — the entry is then skipped whole, which
+  // is the failure the budget exists to prevent.
+  //
+  // The blow-up is on the tool_RESULT path: a result body is raw program
+  // output, so its control characters survive to the wire. A tool_use input is
+  // JSON-stringified before it is stored, so it arrives pre-escaped.
+  it('charges the entry budget by SERIALIZED size, not raw bytes', () => {
+    // Codex's exact case: eight 4 KB bodies of NULs. Raw that is exactly the
+    // 32 KB budget; escaped it is ~197 KB.
+    const nulBody = ' '.repeat(4096);
+    const results = Array.from({ length: 8 }, (_, i) => ({
+      type: 'tool_result',
+      tool_use_id: `n${i}`,
+      content: nulBody,
+    }));
+    const raw = JSON.stringify({
+      type: 'user',
+      uuid: 'nuls',
+      message: { role: 'user', content: results },
+    });
+    const events = parseTranscriptLine(raw, 0);
+    expect(events).toHaveLength(8);
+    // The whole entry must still fit the page budget once serialized — that is
+    // the number the projector actually checks.
+    expect(Buffer.byteLength(JSON.stringify(events), 'utf8')).toBeLessThan(128 * 1024);
+    // And nothing is lost: every result is still fetchable.
+    for (const e of events) {
+      if (e.kind !== 'tool_result') continue;
+      expect(e.output?.bytes).toBe(4096);
+      expect(e.output?.srcOffset).toBe(0);
+    }
+  });
+
+  it('still hands back a fetch handle when the allowance left no room to inline', () => {
+    const body = 'v'.repeat(4096);
+    const calls = Array.from({ length: 64 }, (_, i) => ({
+      type: 'tool_use',
+      id: `t${i}`,
+      name: 'Bash',
+      input: { command: body },
+    }));
+    const raw = JSON.stringify({
+      type: 'assistant',
+      uuid: 'wide3',
+      message: { role: 'assistant', content: calls },
+    });
+    const events = parseTranscriptLine(raw, 0);
+    const starved = events.filter(
+      (e) => e.kind === 'tool_use' && !e.input?.inline,
+    );
+    // Whatever ran out of allowance must still be reachable: a handle with an
+    // offset, flagged truncated so the renderer offers the fetch.
+    for (const e of starved) {
+      if (e.kind !== 'tool_use') continue;
+      expect(e.input?.truncated).toBe(true);
+      expect(e.input?.srcOffset).toBe(0);
+      expect(e.input?.n).toBe(1);
+    }
+  });
+
   it('keeps the FULL body fetchable for a call that lost its inline allowance', () => {
     const body = 'w'.repeat(4096);
     const calls = Array.from({ length: 64 }, (_, i) => ({

@@ -82,22 +82,28 @@ function ToolBodyBlock({
 
   if (!body) return null;
   const shown = full ?? body.inline ?? '';
-  if (!shown) return null;
   // The producer says whether `inline` is only a head. Derived here it would
   // need a byte length, and `Buffer` does not exist in this renderer
   // (nodeIntegration: false) — that would throw, not merely miscount.
   const truncated = full === null && body.truncated === true;
+  // A body can arrive with NO inline text at all: in a wide tool fan-out the
+  // later calls spend the entry's whole inline allowance, so they carry only a
+  // handle. Returning null here would take the expand button with it and leave
+  // those calls permanently unreadable even though the daemon still has them.
+  if (!shown && !truncated) return null;
 
   return (
     <div className="flex flex-col gap-0.5 pl-4" data-chat-tool-body={label}>
       <span className="text-[10px] font-mono text-[var(--text-muted)]">{label}</span>
-      <pre
-        className={`m-0 whitespace-pre-wrap break-words text-[11px] font-mono leading-relaxed ${
-          error ? 'text-[var(--accent-red)]' : 'text-[var(--text-sub)]'
-        }`}
-      >
-        {shown}
-      </pre>
+      {shown && (
+        <pre
+          className={`m-0 whitespace-pre-wrap break-words text-[11px] font-mono leading-relaxed ${
+            error ? 'text-[var(--accent-red)]' : 'text-[var(--text-sub)]'
+          }`}
+        >
+          {shown}
+        </pre>
+      )}
       {truncated && (
         <button
           type="button"

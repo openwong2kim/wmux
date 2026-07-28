@@ -663,6 +663,18 @@ function toolInputText(input: unknown): string {
  * multi-byte character in half and produce a replacement char — visible as
  * mojibake on exactly the CJK and emoji output this project sees constantly.
  */
+/**
+ * What a string costs once it is JSON-encoded onto the wire.
+ *
+ * `JSON.stringify` is the honest measure because that is exactly what the
+ * projector's page-budget check runs on. Quotes and backslashes double, and a
+ * control character becomes a six-character `\uXXXX` escape — so raw byte
+ * length understates the wire cost by up to 6x on binary-ish tool output.
+ */
+function serializedCost(text: string): number {
+  return Buffer.byteLength(JSON.stringify(text), 'utf8');
+}
+
 function sliceToBytes(text: string, maxBytes: number): string {
   const buf = Buffer.from(text, 'utf8');
   if (buf.length <= maxBytes) return text;
@@ -697,9 +709,23 @@ function registerToolBody(
   // wide fan-out degrade to fetch rather than pushing the entry past the page
   // budget, where it would be dropped whole and silently.
   const allowance = Math.min(INLINE_BODY_MAX_BYTES, Math.max(0, budget.remaining));
-  const inline = sliceToBytes(stored, allowance);
+  let inline = sliceToBytes(stored, allowance);
+  // Charge the budget by what this costs ON THE WIRE, not by the raw byte
+  // length. The projector enforces its page budget against
+  // `JSON.stringify(events)`, and JSON escaping is not a small constant:
+  // a NUL becomes ` `, six characters for one byte. Eight 4 KB
+  // control-heavy bodies spend exactly 32 KB raw and serialize to ~197 KB —
+  // past the 128 KB page budget, so the entry is skipped whole and the turn
+  // vanishes, which is the failure this budget exists to prevent.
+  let cost = serializedCost(inline);
+  while (inline && cost > budget.remaining) {
+    // Halve rather than compute an inverse: escaping is per-character and
+    // input-dependent, so there is no cheap exact solve. Converges fast.
+    inline = sliceToBytes(inline, Math.floor(Buffer.byteLength(inline, 'utf8') / 2));
+    cost = serializedCost(inline);
+  }
+  budget.remaining -= cost;
   const inlineBytes = Buffer.byteLength(inline, 'utf8');
-  budget.remaining -= inlineBytes;
   // Truncated when the reader is not being shown all of it — either because
   // the body itself is over the cap, or because MAX_BODY_BYTES cut the stored
   // copy so even a fetch cannot return the whole thing.
