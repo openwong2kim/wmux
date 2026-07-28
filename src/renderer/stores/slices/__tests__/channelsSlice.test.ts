@@ -1316,3 +1316,106 @@ describe('channelsSlice — *Optimistic regression (U4)', () => {
     expect(store.getState().channelMessages['ch-1']).toEqual([msg]);
   });
 });
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// Trash lifecycle — the mirror side of the deletion path
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('channelsSlice — trash / restore / destroy', () => {
+  it('trashChannelDaemon marks the row archived + trashed and closes the dock', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store.getState().setChannels([makeChannel({ id: 'ch-1' })], { 'ch-1': [] });
+      store.getState().setActiveChannel('ch-1');
+
+      const res = await store.getState().trashChannelDaemon('ch-1', 'ws-human');
+
+      expect(res.ok).toBe(true);
+      expect(calls[0].method).toBe('a2a.channel.trash');
+      expect(calls[0].params).toMatchObject({ channelId: 'ch-1', verifiedWorkspaceId: 'ws-human' });
+      const row = store.getState().channels['ch-1'];
+      expect(row.status).toBe('archived');
+      expect(typeof row.trashedAt).toBe('number');
+      expect(row.trashedBy).toBe('ws-human');
+      expect(store.getState().activeChannelId).toBeNull();
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('restoreChannelDaemon clears the marker but leaves the row archived', async () => {
+    withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store
+        .getState()
+        .setChannels(
+          [makeChannel({ id: 'ch-1', status: 'archived', archivedAt: 5, trashedAt: 9, trashedBy: 'ws-human' })],
+          { 'ch-1': [] },
+        );
+
+      const res = await store.getState().restoreChannelDaemon('ch-1', 'ws-human');
+
+      expect(res.ok).toBe(true);
+      const row = store.getState().channels['ch-1'];
+      expect(row.trashedAt).toBeUndefined();
+      expect(row.trashedBy).toBeUndefined();
+      expect(row.status).toBe('archived');
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('destroyChannelDaemon evicts every per-channel cache for that id only', async () => {
+    withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store.getState().setChannels(
+        [
+          makeChannel({ id: 'ch-doomed', status: 'archived', trashedAt: 9 }),
+          makeChannel({ id: 'ch-keeper', name: 'keeper' }),
+        ],
+        { 'ch-doomed': [makeMember()], 'ch-keeper': [makeMember()] },
+      );
+      store.getState().appendMessageFromEvent(makeMessage('ch-doomed', 1));
+      store.getState().appendMessageFromEvent(makeMessage('ch-keeper', 1));
+
+      const res = await store.getState().destroyChannelDaemon('ch-doomed', 'ws-human');
+
+      expect(res.ok).toBe(true);
+      const s = store.getState();
+      expect(s.channels['ch-doomed']).toBeUndefined();
+      expect(s.channelMembers['ch-doomed']).toBeUndefined();
+      expect(s.channelMessages['ch-doomed']).toBeUndefined();
+      expect(s.channelUnread['ch-doomed']).toBeUndefined();
+      // The neighbour is untouched.
+      expect(s.channels['ch-keeper']).toBeDefined();
+      expect(s.channelMessages['ch-keeper']).toHaveLength(1);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('a daemon refusal leaves the mirror untouched', async () => {
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'CHANNEL_NOT_TRASHED', message: 'trash it first' },
+    }));
+    try {
+      const store = createTestStore();
+      store.getState().setChannels([makeChannel({ id: 'ch-1', status: 'archived' })], { 'ch-1': [] });
+
+      const res = await store.getState().destroyChannelDaemon('ch-1', 'ws-human');
+
+      expect(res.ok).toBe(false);
+      // The code is outside the renderer's modelled union, so it buckets to
+      // UNKNOWN with the daemon's reason preserved in the message.
+      if (!res.ok) expect(res.error.message).toContain('trash it first');
+      expect(store.getState().channels['ch-1']).toBeDefined();
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+});
