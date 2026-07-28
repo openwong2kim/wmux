@@ -29,6 +29,30 @@
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 
 /**
+ * KNOWN LIMITATION (accepted, not a TODO — decided 2026-07-28).
+ *
+ * A grapheme cluster is stored in ONE cell, and Unicode places no bound on how
+ * long a cluster may be. A ZWJ chain of N emoji is, per UAX #29, a single
+ * cluster, so one cell ends up holding the whole run: measured at 1,499,999
+ * characters in a single cell from a 500k-emoji chain.
+ *
+ * The consequence worth knowing: a terminal buffer's memory is normally bounded
+ * by `rows × cols × O(1) per cell`, and this removes the `O(1) per cell` term.
+ * A scrollback limit counted in ROWS therefore stops bounding the buffer's
+ * memory. Row eviction still works — push the row out and it is freed — but
+ * while it is retained it can cost arbitrarily more than its one row suggests.
+ *
+ * Deliberately NOT mitigated here. The only in-process fix is a bounded
+ * `IUnicodeVersionProvider` wrapper, which would have to reproduce xterm's
+ * private property-value bit encoding; that is worse long-term debt than the
+ * bug, because it breaks silently whenever upstream changes the encoding. The
+ * behaviour is a property of the upstream addon (hence its "experimental"
+ * warning), the damage is availability-only, and closing the pane recovers it.
+ *
+ * `scripts/repro-grapheme-cell-growth.mjs` reproduces it with no wmux deps.
+ */
+
+/**
  * Unicode version registered by `UnicodeGraphemesAddon`. Unicode 15 tables plus
  * grapheme-cluster segmentation, so a ZWJ sequence, a regional-indicator flag,
  * an emoji + skin-tone modifier and a VS16 emoji-presentation selector each
