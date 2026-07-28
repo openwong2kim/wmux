@@ -1377,7 +1377,16 @@ registerChannelTools(server, {
 // ptyId, so it MUST stay MY_PTY_ID (walk-hit only). Feeding the weak
 // WMUX_PTY_ID env hint here would let a spoofable env var choose which
 // workspace's repository gets N new worktrees. No hit → fan-out fails closed.
-registerFanOutTools(server, { getSenderPtyId: () => MY_PTY_ID });
+// `resolveWorkspaceId` is passed for the same reason the channel tools get it:
+// the walked ptyId is a SIDE EFFECT of that lookup, so a tool that only reads
+// MY_PTY_ID sees '' until something has asked who the caller is. Every channel
+// tool asks; fan-out did not, which made it fail as the first tool called on a
+// fresh server. The resolved id is used only to warm the walk — the handler
+// derives the owning workspace from the ptyId and rejects a stated one.
+registerFanOutTools(server, {
+  getSenderPtyId: () => MY_PTY_ID,
+  resolveWorkspaceId: requireWorkspaceId,
+});
 
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /

@@ -36,7 +36,10 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
 
 const shapes = new Map<string, Record<string, unknown>>();
 
-function collectTools(getSenderPtyId: () => string): Map<string, ToolHandler> {
+function collectTools(
+  getSenderPtyId: () => string,
+  resolveWorkspaceId?: () => Promise<string>,
+): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
     tool: (name: string, _desc: string, schema: Record<string, unknown>, handler: ToolHandler) => {
@@ -44,7 +47,7 @@ function collectTools(getSenderPtyId: () => string): Map<string, ToolHandler> {
       shapes.set(name, schema);
     },
   };
-  registerFanOutTools(server as never, { getSenderPtyId });
+  registerFanOutTools(server as never, { getSenderPtyId, ...(resolveWorkspaceId && { resolveWorkspaceId }) });
   return tools;
 }
 
@@ -137,6 +140,43 @@ describe('fanout_start: request mapping', () => {
     const res = await missTools.get('fanout_start')!({ idempotency_key: 'k4', titles: ['t'] });
     const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
     expect(params.senderPtyId).toBeUndefined();
+    expect(res.isError).toBe(true);
+  });
+
+  // The walked ptyId is a side effect of the workspace lookup — nothing sets it
+  // until something asks who the caller is. Every channel tool asks; this one
+  // did not, so as the FIRST tool called on a fresh server it sent no
+  // senderPtyId and main refused it as NOT_AUTHORIZED. Working only after some
+  // unrelated tool happened to run first is not a property to ship.
+  it('resolves identity BEFORE reading the ptyId, so a cold first call still carries one', async () => {
+    let walked = false;
+    const coldTools = collectTools(
+      () => (walked ? 'pty-warm' : ''),
+      async () => {
+        walked = true;
+        return 'ws-mine';
+      },
+    );
+    mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted' });
+    await coldTools.get('fanout_start')!({ idempotency_key: 'k5', titles: ['t'] });
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.senderPtyId).toBe('pty-warm');
+    // The resolved workspace is NOT forwarded: main derives the owner from the
+    // ptyId and rejects a caller-stated one.
+    expect(params.workspaceId).toBeUndefined();
+    expect(params.verifiedWorkspaceId).toBeUndefined();
+  });
+
+  it('still calls through when identity resolution throws, so main owns the refusal', async () => {
+    const throwTools = collectTools(
+      () => '',
+      async () => {
+        throw new Error('Workspace identity unknown');
+      },
+    );
+    mockSendRpc.mockResolvedValue({ ok: false, error: { code: 'NOT_AUTHORIZED', message: 'no ptyId' } });
+    const res = await throwTools.get('fanout_start')!({ idempotency_key: 'k6', titles: ['t'] });
+    expect((mockSendRpc.mock.calls[0][1] as Record<string, unknown>).senderPtyId).toBeUndefined();
     expect(res.isError).toBe(true);
   });
 });

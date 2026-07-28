@@ -24,13 +24,30 @@ import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../shared/workTask';
 
-/** Resolver the parent module injects (mirrors ChannelToolDeps). */
+/** Resolvers the parent module injects (mirrors ChannelToolDeps). */
 export interface FanOutToolDeps {
   /** The MCP server's OWN verified senderPtyId (its PID-map-walked ptyId, or ''
    *  on miss). The main-side handler resolves this to the owning workspace and
    *  derives the fan-out identity + repository from it. Fan-out fails closed
    *  without a resolvable ptyId — there is no env-hint fallback, by design. */
   getSenderPtyId?: () => string;
+  /**
+   * Runs the identity resolution that POPULATES the ptyId above, and is the
+   * reason this dep exists at all rather than just the getter.
+   *
+   * The walked ptyId is a side effect of the workspace lookup: nothing sets it
+   * until something asks who the caller is. Every channel tool asks, so by the
+   * time one of them reads the getter it is warm. fanout_start read the getter
+   * alone — so as the FIRST tool called on a fresh server it sent no
+   * senderPtyId at all and the handler refused it as NOT_AUTHORIZED. The tool
+   * worked only if some unrelated tool had run first, which is not a property
+   * anyone can rely on.
+   *
+   * The resolved workspace id itself is deliberately NOT forwarded: the handler
+   * derives the owning workspace from the verified ptyId server-side and
+   * rejects a caller-stated one.
+   */
+  resolveWorkspaceId?: () => Promise<string>;
 }
 
 const FANOUT_START_SHAPE = {
@@ -86,6 +103,19 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       if (task_prompts !== undefined) params['taskPrompts'] = task_prompts;
       // The verified ptyId is the whole identity basis for this call — the
       // handler resolves it to the owning workspace and refuses without it.
+      // Resolve identity FIRST: the walk that produces that ptyId is a side
+      // effect of the workspace lookup, so reading the getter cold (this tool
+      // called first on a fresh server) yields '' and the call is refused.
+      // The resolved workspace id is discarded on purpose — the handler
+      // derives the owner from the ptyId and rejects a caller-stated one.
+      if (deps.resolveWorkspaceId) {
+        try {
+          await deps.resolveWorkspaceId();
+        } catch {
+          // Unresolvable identity is the handler's refusal to make, with its
+          // own message. Fall through with whatever the getter has.
+        }
+      }
       const pty = resolveSenderPtyId();
       if (pty) params['senderPtyId'] = pty;
 
