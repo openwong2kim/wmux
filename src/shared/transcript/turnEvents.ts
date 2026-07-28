@@ -104,10 +104,20 @@ export interface ToolBody {
   /** Total size of the body on disk, before any inline truncation. */
   bytes: number;
   /**
-   * The body itself, present only when it fit under the inline cap. Absent
-   * means "fetch it with codeBlock(n)" — NOT "there is nothing here".
+   * The body itself, or its head. Absent means "fetch it with codeBlock(n)" —
+   * NOT "there is nothing here".
    */
   inline?: string;
+  /**
+   * `inline` is only a HEAD; the rest is behind the fetch.
+   *
+   * Stated as a flag rather than left for the reader to derive by comparing
+   * `inline`'s size against `bytes`: the renderer runs with
+   * `nodeIntegration: false`, where `Buffer` does not exist, so a byte-length
+   * comparison there is a ReferenceError rather than a wrong answer. The
+   * producer already knows, so it says.
+   */
+  truncated?: boolean;
   /** Byte offset of the transcript line this came from, for the fetch. */
   srcOffset?: number;
 }

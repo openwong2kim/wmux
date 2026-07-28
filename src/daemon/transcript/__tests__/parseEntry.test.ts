@@ -6,6 +6,7 @@ import {
   CODE_MARKER_SUFFIX,
   extractCodeBlocks,
   INLINE_BODY_MAX_BYTES,
+  INLINE_ENTRY_MAX_BYTES,
   parseTranscriptLine,
   parseTranscriptLineDetailed,
 } from '../parseEntry';
@@ -527,12 +528,91 @@ describe('parseTranscriptLine — tool bodies', () => {
     expect(Buffer.byteLength(ev.output?.inline ?? '', 'utf8')).toBeLessThanOrEqual(INLINE_BODY_MAX_BYTES);
   });
 
-  it('survives an unserializable tool input instead of throwing', () => {
-    // A cyclic input cannot be JSONed; the summary line must still stand.
-    const cyclic: Record<string, unknown> = {};
-    cyclic['self'] = cyclic;
-    // Build the entry by hand — JSON.stringify would reject the cycle too.
-    const raw = '{"type":"assistant","uuid":"a-2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ok"}}]}}';
-    expect(() => parseTranscriptLine(raw, 0)).not.toThrow();
+  it('carries a string tool input as-is rather than re-JSONing it', () => {
+    const raw = JSON.stringify({
+      type: 'assistant',
+      uuid: 'a-2',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 't', name: 'Bash', input: 'raw string input' }],
+      },
+    });
+    const [ev] = parseTranscriptLine(raw, 0);
+    if (ev.kind !== 'tool_use') throw new Error('expected tool_use');
+    expect(ev.input?.inline).toBe('raw string input');
+  });
+
+  it('omits the input body when the call carried none', () => {
+    const [ev] = parseTranscriptLine(useEntry(undefined), 0);
+    if (ev.kind !== 'tool_use') throw new Error('expected tool_use');
+    expect(ev.input).toBeUndefined();
+    // The summary line still identifies the tool.
+    expect(ev.name).toBe('Bash');
+  });
+
+  it('flags a head with `truncated` so the renderer never derives it', () => {
+    // The renderer runs with nodeIntegration:false — no Buffer — so deriving
+    // "is this only a head?" from a byte comparison there would THROW.
+    const [ev] = parseTranscriptLine(resultEntry('x'.repeat(10_000)), 0);
+    if (ev.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(ev.output?.truncated).toBe(true);
+    const [small] = parseTranscriptLine(resultEntry('short'), 0);
+    if (small.kind !== 'tool_result') throw new Error('expected tool_result');
+    expect(small.output?.truncated).toBeUndefined();
+  });
+
+  // Both outside-voice reviewers landed on this independently: a per-BODY cap
+  // does not bound a FRAME. One assistant line carries every parallel tool_use
+  // of that turn, so a wide fan-out at 4 KB each blows past the projector's
+  // 128 KB page budget — and because a JSONL line cannot be split, the whole
+  // entry is then skipped and the turn vanishes with nothing said.
+  it('bounds the TOTAL inline bytes one entry may carry', () => {
+    const body = 'z'.repeat(4096);
+    const calls = Array.from({ length: 64 }, (_, i) => ({
+      type: 'tool_use',
+      id: `t${i}`,
+      name: 'Bash',
+      input: { command: body },
+    }));
+    const raw = JSON.stringify({
+      type: 'assistant',
+      uuid: 'wide',
+      message: { role: 'assistant', content: calls },
+    });
+    const events = parseTranscriptLine(raw, 0);
+    expect(events).toHaveLength(64);
+    const totalInline = events.reduce(
+      (sum, e) => sum + (e.kind === 'tool_use' ? Buffer.byteLength(e.input?.inline ?? '', 'utf8') : 0),
+      0,
+    );
+    expect(totalInline).toBeLessThanOrEqual(INLINE_ENTRY_MAX_BYTES);
+    // Nothing is LOST — the later calls degrade to fetch, they do not vanish.
+    for (const e of events) {
+      if (e.kind !== 'tool_use') continue;
+      expect(e.input?.bytes).toBeGreaterThan(0);
+      expect(e.input?.srcOffset).toBe(0);
+    }
+    // And the whole entry still fits the page budget it would otherwise bust.
+    expect(Buffer.byteLength(JSON.stringify(events), 'utf8')).toBeLessThan(128 * 1024);
+  });
+
+  it('keeps the FULL body fetchable for a call that lost its inline allowance', () => {
+    const body = 'w'.repeat(4096);
+    const calls = Array.from({ length: 64 }, (_, i) => ({
+      type: 'tool_use',
+      id: `t${i}`,
+      name: 'Bash',
+      input: { command: body },
+    }));
+    const raw = JSON.stringify({
+      type: 'assistant',
+      uuid: 'wide2',
+      message: { role: 'assistant', content: calls },
+    });
+    const { events, bodies } = parseTranscriptLineDetailed(raw, 0);
+    const last = events[events.length - 1];
+    if (last.kind !== 'tool_use') throw new Error('expected tool_use');
+    expect(last.input?.truncated).toBe(true);
+    expect(bodies.get(last.id)?.get(1)).toContain(body);
   });
 });

@@ -157,6 +157,8 @@ function parseUserEntry(
   const out: TurnEvent[] = [];
   const parts: string[] = [];
   const bodies = new Map<string, Map<number, string>>();
+  // One entry is one frame; the budget is spent across every body it carries.
+  const budget = { remaining: INLINE_ENTRY_MAX_BYTES };
   let hasImage = false;
   for (const raw of content) {
     const block = asObject(raw);
@@ -167,7 +169,7 @@ function parseUserEntry(
     } else if (blockType === 'image') {
       hasImage = true;
     } else if (blockType === 'tool_result') {
-      out.push(toolResultEvent(block!, baseId, ts, out.length, offsetHint, bodies));
+      out.push(toolResultEvent(block!, baseId, ts, out.length, offsetHint, bodies, budget));
     }
     // Any other block type (including invented ones) is skipped silently — R1.
   }
@@ -288,6 +290,7 @@ function toolResultEvent(
   index: number,
   offsetHint: number,
   bodies: Map<string, Map<number, string>>,
+  budget: { remaining: number },
 ): ToolResultEvent {
   const toolUseId = typeof block['tool_use_id'] === 'string' ? (block['tool_use_id'] as string) : '';
   const body = flattenResultContent(block['content']);
@@ -304,7 +307,7 @@ function toolResultEvent(
     // going to read here.
     ...(looksLikeDiff(body)
       ? {}
-      : withBody('output', registerToolBody(id, unwrapToolError(body), offsetHint, bodies))),
+      : withBody('output', registerToolBody(id, unwrapToolError(body), offsetHint, bodies, budget))),
     ...tsOf(ts),
   };
   return ev;
@@ -363,6 +366,8 @@ function parseAssistantEntry(
   offsetHint: number,
 ): ParsedTranscriptLine {
   const bodies = new Map<string, Map<number, string>>();
+  // One entry is one frame; the budget is spent across every body it carries.
+  const budget = { remaining: INLINE_ENTRY_MAX_BYTES };
 
   if (typeof content === 'string') {
     const clean = content.trim();
@@ -399,7 +404,7 @@ function parseAssistantEntry(
         // given. Kept as the rendered JSON rather than the raw object so the
         // body table stays `string` for every producer and the on-expand fetch
         // has one shape to answer with.
-        ...withBody('input', registerToolBody(id, toolInputText(block?.['input']), offsetHint, bodies)),
+        ...withBody('input', registerToolBody(id, toolInputText(block?.['input']), offsetHint, bodies, budget)),
         ...tsOf(ts),
       };
       out.push(ev);
@@ -607,6 +612,37 @@ function reid(events: TurnEvent[], baseId: string): TurnEvent[] {
  */
 export const INLINE_BODY_MAX_BYTES = 4 * 1024;
 
+/**
+ * How much inline body ONE transcript entry may carry in total.
+ *
+ * The per-body cap alone does not bound a frame. A single assistant line holds
+ * every parallel `tool_use` in that turn, and a single user line holds every
+ * matching `tool_result` — a fan-out of 32 tools at 4 KB each is 128 KB from
+ * one line, which is the projector's whole per-page budget (BUDGET_BYTES).
+ *
+ * That failure is worse than a big frame. `TranscriptProjector` fits a page by
+ * reading LESS, and one JSONL line cannot be split — so an entry that busts the
+ * budget on its own is skipped entirely and the turn vanishes from the
+ * conversation with nothing said. Bodies past this budget therefore degrade to
+ * head + fetch, which is the same thing an over-cap body already does and is
+ * visible to the reader.
+ *
+ * Sized well under BUDGET_BYTES so the ids, names and summaries riding
+ * alongside still fit.
+ */
+export const INLINE_ENTRY_MAX_BYTES = 32 * 1024;
+
+/**
+ * Ceiling on the body kept in the side table for an on-expand fetch.
+ *
+ * Counted in BYTES, unlike the code-block ceiling next to it: a tool body is
+ * arbitrary program output, so a character-counted cut can land between a
+ * surrogate pair and hand the reader a lone half of an emoji. Matches the
+ * code-block ceiling in magnitude so one expand costs about the same either
+ * way.
+ */
+const MAX_BODY_BYTES = 256 * 1024;
+
 /** JSON the tool's input, or '' when there is nothing to show. */
 function toolInputText(input: unknown): string {
   if (input === undefined || input === null) return '';
@@ -648,22 +684,31 @@ function registerToolBody(
   text: string,
   offsetHint: number,
   bodies: Map<string, Map<number, string>>,
+  budget: { remaining: number },
 ): ToolBody | undefined {
   if (!text) return undefined;
-  const stored = text.length > MAX_BODY_CHARS ? text.slice(0, MAX_BODY_CHARS) : text;
+  const stored = sliceToBytes(text, MAX_BODY_BYTES);
   const existing = bodies.get(eventId) ?? new Map<number, string>();
   existing.set(1, stored);
   bodies.set(eventId, existing);
 
   const bytes = Buffer.byteLength(text, 'utf8');
-  const inline = bytes <= INLINE_BODY_MAX_BYTES ? stored : sliceToBytes(stored, INLINE_BODY_MAX_BYTES);
+  // The per-body cap AND what this entry has already spent. Later bodies in a
+  // wide fan-out degrade to fetch rather than pushing the entry past the page
+  // budget, where it would be dropped whole and silently.
+  const allowance = Math.min(INLINE_BODY_MAX_BYTES, Math.max(0, budget.remaining));
+  const inline = sliceToBytes(stored, allowance);
+  const inlineBytes = Buffer.byteLength(inline, 'utf8');
+  budget.remaining -= inlineBytes;
+  // Truncated when the reader is not being shown all of it — either because
+  // the body itself is over the cap, or because MAX_BODY_BYTES cut the stored
+  // copy so even a fetch cannot return the whole thing.
+  const truncated = inlineBytes < bytes;
   return {
     n: 1,
     bytes,
-    // Under the cap the inline copy IS the whole body, so the reader needs no
-    // fetch. Over it, the inline copy is a head and `bytes` says how much more
-    // is waiting — the renderer uses the mismatch to offer the expand.
     ...(inline ? { inline } : {}),
+    ...(truncated ? { truncated: true } : {}),
     ...(offsetHint >= 0 ? { srcOffset: offsetHint } : {}),
   };
 }

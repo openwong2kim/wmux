@@ -933,11 +933,20 @@ export function TerminalOrChat({
       if (!chat?.codeBlock || !ptyId) throw new Error('chat bridge unavailable');
       const events = useStore.getState().chatEvents[ptyId] ?? [];
       const event = events.find((e) => e.id === eventId);
-      const block = event && event.kind === 'assistant_text'
-        ? event.codeBlocks?.find((b) => b.n === n)
-        : undefined;
-      if (block?.srcOffset === undefined) throw new Error('no source offset for this block');
-      const res = await chat.codeBlock({ ptyId, srcOffset: block.srcOffset, n, eventId });
+      // Three kinds of event carry a fetchable body now, all through the same
+      // handle: prose code blocks, a tool's input, and a tool's output. Keying
+      // this on `assistant_text` alone silently failed every tool body with
+      // "no source offset", so nothing over the inline cap could ever expand.
+      const ref =
+        event?.kind === 'assistant_text'
+          ? event.codeBlocks?.find((b) => b.n === n)
+          : event?.kind === 'tool_use'
+            ? event.input
+            : event?.kind === 'tool_result'
+              ? event.output
+              : undefined;
+      if (ref?.srcOffset === undefined) throw new Error('no source offset for this block');
+      const res = await chat.codeBlock({ ptyId, srcOffset: ref.srcOffset, n, eventId });
       if (!res) throw new Error('code block unavailable');
       return res.body;
     },

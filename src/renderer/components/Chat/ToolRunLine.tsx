@@ -83,10 +83,10 @@ function ToolBodyBlock({
   if (!body) return null;
   const shown = full ?? body.inline ?? '';
   if (!shown) return null;
-  // `inline` is a HEAD when the body did not fit; that is what the reader has
-  // to be told, otherwise a truncated command looks like the whole command.
-  const truncated = full === null && body.inline !== undefined
-    && Buffer.byteLength(body.inline, 'utf8') < body.bytes;
+  // The producer says whether `inline` is only a head. Derived here it would
+  // need a byte length, and `Buffer` does not exist in this renderer
+  // (nodeIntegration: false) — that would throw, not merely miscount.
+  const truncated = full === null && body.truncated === true;
 
   return (
     <div className="flex flex-col gap-0.5 pl-4" data-chat-tool-body={label}>
