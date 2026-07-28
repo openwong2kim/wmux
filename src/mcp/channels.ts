@@ -27,6 +27,11 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc } from './wmux-client';
+import {
+  defineWmuxTool,
+  registerWmuxTools,
+  type RegisterWmuxToolsOptions,
+} from './toolCatalog';
 import type { RpcMethod } from '../shared/rpc';
 import type { ChannelVisibility } from '../shared/channels';
 
@@ -42,7 +47,7 @@ export interface ChannelToolDeps {
    *  to the owning workspace and stamps `verifiedWorkspaceId` server-side
    *  (D5) — so a forged client workspace id is ignored. Mutating channel
    *  calls fail closed without a resolvable senderPtyId. */
-  getSenderPtyId?: () => string;
+  getSenderPtyId: () => string;
 }
 
 /** Channel name pattern matches `CHANNEL_NAME_RE` in src/shared/channels.ts:
@@ -121,7 +126,7 @@ async function callChannelRpc(
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects. The
 // shapes carry no per-call state — the handlers (which close over `deps`) stay
-// inside registerChannelTools. channel_list takes no params, so its `{}` shape
+// inside createChannelToolCatalog. channel_list takes no params, so its `{}` shape
 // stays inline (no zod objects to share).
 const CHANNEL_CREATE_SHAPE = {
   name: channelNameSchema,
@@ -253,25 +258,27 @@ const CHANNEL_MISSION_CLOSE_SHAPE = {
     .describe('Optional idempotency key. A retried close with the same key returns the original result.'),
 };
 
-/** Register the standard channel tools on the given MCP server. The
+/** Build the standard channel catalog for one MCP server instance. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
-export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): void {
+export function createChannelToolCatalog(deps: ChannelToolDeps) {
   // D5: the caller's verified-ptyId resolver, captured in THIS registration's
   // closure (not a module global) so concurrent broker-hosted connections each
   // stamp their own sender identity. `callRpc` binds it into every channel RPC.
-  const resolveSenderPtyId = deps.getSenderPtyId ?? (() => '');
+  const resolveSenderPtyId = deps.getSenderPtyId;
   const callRpc = (
     method: RpcMethod,
     params: Record<string, unknown>,
   ): ReturnType<typeof callChannelRpc> => callChannelRpc(method, params, resolveSenderPtyId);
   // ── channel_list ──────────────────────────────────────────────────
-  server.tool(
-    'channel_list',
-    'List all channels visible to the calling workspace. Returns the channel metadata (id, name, visibility, topic, status, members) but NOT the message history — use a follow-up get for history.',
-    {},
-    async () => {
+  const channelList = defineWmuxTool({
+    name: 'channel_list',
+    description:
+      'List all channels visible to the calling workspace. Returns the channel metadata (id, name, visibility, topic, status, members) but NOT the message history — use a follow-up get for history.',
+    inputSchema: {},
+    profiles: ['full', 'commander'],
+    invoke: async () => {
       const workspaceId = await deps.resolveWorkspaceId();
       // U5: `verifiedWorkspaceId` is the transport-resolved caller
       // identity (PID-map hit + env-hint fallback). It is forwarded on
@@ -281,14 +288,16 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       // every call keeps the transport shape uniform.
       return callRpc('a2a.channel.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
     },
-  );
+  });
 
   // ── channel_create ────────────────────────────────────────────────
-  server.tool(
-    'channel_create',
-    'Create a new channel. The creator is auto-added as a member with full history (plan KTD10). Visibility is immutable post-creation; a "private" channel must be joined by an existing member. Topics are optional and editable only via the underlying daemon.',
-    CHANNEL_CREATE_SHAPE,
-    async ({ name, visibility, topic, member_id, member_name }) => {
+  const channelCreate = defineWmuxTool({
+    name: 'channel_create',
+    description:
+      'Create a new channel. The creator is auto-added as a member with full history (plan KTD10). Visibility is immutable post-creation; a "private" channel must be joined by an existing member. Topics are optional and editable only via the underlying daemon.',
+    inputSchema: CHANNEL_CREATE_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ name, visibility, topic, member_id, member_name }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -306,14 +315,16 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       if (topic !== undefined) params['topic'] = topic;
       return callRpc('a2a.channel.create' as RpcMethod, params);
     },
-  );
+  });
 
   // ── channel_post ──────────────────────────────────────────────────
-  server.tool(
-    'channel_post',
-    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
-    CHANNEL_POST_SHAPE,
-    async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
+  const channelPost = defineWmuxTool({
+    name: 'channel_post',
+    description:
+      'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
+    inputSchema: CHANNEL_POST_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -337,14 +348,16 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       }
       return callRpc('a2a.channel.post' as RpcMethod, params);
     },
-  );
+  });
 
   // ── channel_join ──────────────────────────────────────────────────
-  server.tool(
-    'channel_join',
-    'Join a channel as a member. By default joins with full history (historyFromSeq=0); pass include_history=false to start at the channel\'s current seq (no past messages). Public channels are joinable by any company member; private channels require an existing member to add you (not yet exposed via MCP — see plan Scope Boundaries).',
-    CHANNEL_JOIN_SHAPE,
-    async ({ channel_id, member_id, member_name, include_history }) => {
+  const channelJoin = defineWmuxTool({
+    name: 'channel_join',
+    description:
+      'Join a channel as a member. By default joins with full history (historyFromSeq=0); pass include_history=false to start at the channel\'s current seq (no past messages). Public channels are joinable by any company member; private channels require an existing member to add you (not yet exposed via MCP — see plan Scope Boundaries).',
+    inputSchema: CHANNEL_JOIN_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -360,14 +373,16 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       };
       return callRpc('a2a.channel.join' as RpcMethod, params);
     },
-  );
+  });
 
   // ── channel_leave ─────────────────────────────────────────────────
-  server.tool(
-    'channel_leave',
-    'Leave a channel. The caller\'s (workspaceId, memberId) pair is removed from the member list. If the channel becomes empty, the 7-day empty-channel reaper (plan KTD8) will purge it.',
-    CHANNEL_LEAVE_SHAPE,
-    async ({ channel_id, member_id }) => {
+  const channelLeave = defineWmuxTool({
+    name: 'channel_leave',
+    description:
+      'Leave a channel. The caller\'s (workspaceId, memberId) pair is removed from the member list. If the channel becomes empty, the 7-day empty-channel reaper (plan KTD8) will purge it.',
+    inputSchema: CHANNEL_LEAVE_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.leave' as RpcMethod, {
         workspaceId,
@@ -376,7 +391,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         memberId: member_id,
       });
     },
-  );
+  });
 
   // NOTE: there is intentionally NO channel_archive MCP tool. Archiving tears a
   // channel down for everyone, so — like kicking a member — it is a HUMANS-ONLY
@@ -391,17 +406,19 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // on @-mention, but can PULL recent history on demand here. `limit`
   // defaults to a small N at this tool layer (NOT in the daemon) to protect
   // the agent's context window — reading a busy channel is a token cost.
-  server.tool(
-    'channel_read',
-    'Read messages from a channel you can see (public, or private if you are a member). ' +
-      'With `since_seq` (pass your cursor + 1 from channel_unread) it returns the OLDEST `limit` ' +
-      'messages from that point — contiguous pages, so ack the highest seq you read and repeat ' +
-      'until fewer than `limit` return to drain safely. Without `since_seq` it returns the most ' +
-      'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
-      '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
-      'returns an error.',
-    CHANNEL_READ_SHAPE,
-    async ({ channel_id, since_seq, limit }) => {
+  const channelRead = defineWmuxTool({
+    name: 'channel_read',
+    description:
+      'Read messages from a channel you can see (public, or private if you are a member). ' +
+        'With `since_seq` (pass your cursor + 1 from channel_unread) it returns the OLDEST `limit` ' +
+        'messages from that point — contiguous pages, so ack the highest seq you read and repeat ' +
+        'until fewer than `limit` return to drain safely. Without `since_seq` it returns the most ' +
+        'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
+        '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
+        'returns an error.',
+    inputSchema: CHANNEL_READ_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, since_seq, limit }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -412,18 +429,20 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       if (since_seq !== undefined) params['sinceSeq'] = since_seq;
       return callRpc('a2a.channel.getMessages' as RpcMethod, params);
     },
-  );
+  });
 
   // ── channel_invite ────────────────────────────────────────────────
   // Add ANOTHER workspace to a channel. Unlike channel_join (self-join), this
   // adds a different workspace and is the only way into a PRIVATE channel.
   // Any member may invite (P1b authz); the daemon gates on the caller being a
   // current member. The invited workspace gains history + live messages.
-  server.tool(
-    'channel_invite',
-    'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
-    CHANNEL_INVITE_SHAPE,
-    async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
+  const channelInvite = defineWmuxTool({
+    name: 'channel_invite',
+    description:
+      'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
+    inputSchema: CHANNEL_INVITE_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.invite' as RpcMethod, {
         workspaceId,
@@ -438,18 +457,20 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         includeHistory: include_history !== false,
       });
     },
-  );
+  });
 
   // ── channel_get_members ───────────────────────────────────────────
   // The roster read: who is in a channel. Pairs with channel_invite (know who
   // is already a member before adding) and channel_read (attribute messages).
   // Wraps the existing a2a.channel.getMembers RPC; a private channel you are not
   // a member of returns an empty list (its membership is never leaked).
-  server.tool(
-    'channel_get_members',
-    'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
-    CHANNEL_GET_MEMBERS_SHAPE,
-    async ({ channel_id }) => {
+  const channelGetMembers = defineWmuxTool({
+    name: 'channel_get_members',
+    description:
+      'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
+    inputSchema: CHANNEL_GET_MEMBERS_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.getMembers' as RpcMethod, {
         workspaceId,
@@ -457,7 +478,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         channelId: channel_id,
       });
     },
-  );
+  });
 
   // ── channel_ack (Channels v2) ─────────────────────────────────────
   // The consume signal of the durable inbox: advances the caller's
@@ -465,11 +486,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // member while it has unread mentions and STOPS on ack — so an agent
   // that reads a channel should ack the highest seq it processed, or it
   // will be re-pinged about the same messages.
-  server.tool(
-    'channel_ack',
-    'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
-    CHANNEL_ACK_SHAPE,
-    async ({ channel_id, upto_seq, member_id }) => {
+  const channelAck = defineWmuxTool({
+    name: 'channel_ack',
+    description:
+      'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
+    inputSchema: CHANNEL_ACK_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ channel_id, upto_seq, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.ack' as RpcMethod, {
         workspaceId,
@@ -479,7 +502,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         ...(member_id !== undefined ? { memberId: member_id } : {}),
       });
     },
-  );
+  });
 
   // ── channel_unread (Channels v2) ──────────────────────────────────
   // The cheap "do I owe anything?" poll: per-channel unread + mention-unread
@@ -487,11 +510,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // messages (only channel_ack advances the cursor). `trimmedBeforeCursor`
   // > 0 means retention removed messages before you read them — the gap is
   // reported, never silently swallowed.
-  server.tool(
-    'channel_unread',
-    'Summarize your unread channel messages: per-channel unread count, mention-unread count (messages that @-mention you), your cursor (lastReadSeq), the channel head seq, and trimmedBeforeCursor (messages lost to retention before you read them — never silently dropped). Cheap to call; does not consume messages. Follow up with channel_read + channel_ack.',
-    CHANNEL_UNREAD_SHAPE,
-    async ({ member_id }) => {
+  const channelUnread = defineWmuxTool({
+    name: 'channel_unread',
+    description:
+      'Summarize your unread channel messages: per-channel unread count, mention-unread count (messages that @-mention you), your cursor (lastReadSeq), the channel head seq, and trimmedBeforeCursor (messages lost to retention before you read them — never silently dropped). Cheap to call; does not consume messages. Follow up with channel_read + channel_ack.',
+    inputSchema: CHANNEL_UNREAD_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.unread' as RpcMethod, {
         workspaceId,
@@ -499,18 +524,20 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         ...(member_id !== undefined ? { memberId: member_id } : {}),
       });
     },
-  );
+  });
 
   // ── channel_mission_start (WorkTask J0) ───────────────────────────
   // Start a worktree mission: server mints a WorkTask (owner = you, born-owned)
   // AND creates a private mission channel bound to it, returning both ids. Thin
   // RPC caller over task.mission.start — identity, ownership, and the channel
   // are all server-constructed (§5.1): you supply only title + optional invites.
-  server.tool(
-    'channel_mission_start',
-    'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it. Returns { taskId, channelId }. Use idempotency_key to make a retried start safe — a repeat with the same key returns the original { taskId, channelId } instead of creating a duplicate mission + channel. Optionally seed the channel with initial members via invite.',
-    CHANNEL_MISSION_START_SHAPE,
-    async ({ title, member_id, invite, idempotency_key }) => {
+  const channelMissionStart = defineWmuxTool({
+    name: 'channel_mission_start',
+    description:
+      'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it. Returns { taskId, channelId }. Use idempotency_key to make a retried start safe — a repeat with the same key returns the original { taskId, channelId } instead of creating a duplicate mission + channel. Optionally seed the channel with initial members via invite.',
+    inputSchema: CHANNEL_MISSION_START_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ title, member_id, invite, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -524,18 +551,20 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
       return callRpc('task.mission.start' as RpcMethod, params);
     },
-  );
+  });
 
   // ── channel_mission_close (WorkTask J0) ───────────────────────────
   // Close a mission you own (or as CEO): flips the WorkTask to closed and
   // archives its mission channel. Idempotent — closing an already-closed
   // mission is a no-op success, and the archive step is no-op-tolerant if the
   // channel was already archived or reaped.
-  server.tool(
-    'channel_mission_close',
-    'Close a mission by task_id: mark the WorkTask closed and archive its mission channel. Only the task owner (or the CEO) may close. Re-closing an already-closed mission is a no-op success. Use idempotency_key to make a retried close safe.',
-    CHANNEL_MISSION_CLOSE_SHAPE,
-    async ({ task_id, idempotency_key }) => {
+  const channelMissionClose = defineWmuxTool({
+    name: 'channel_mission_close',
+    description:
+      'Close a mission by task_id: mark the WorkTask closed and archive its mission channel. Only the task owner (or the CEO) may close. Re-closing an already-closed mission is a no-op success. Use idempotency_key to make a retried close safe.',
+    inputSchema: CHANNEL_MISSION_CLOSE_SHAPE,
+    profiles: ['full', 'commander'],
+    invoke: async ({ task_id, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -545,5 +574,29 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
       return callRpc('task.mission.close' as RpcMethod, params);
     },
-  );
+  });
+
+  return Object.freeze([
+    channelList,
+    channelCreate,
+    channelPost,
+    channelJoin,
+    channelLeave,
+    channelRead,
+    channelInvite,
+    channelGetMembers,
+    channelAck,
+    channelUnread,
+    channelMissionStart,
+    channelMissionClose,
+  ]);
+}
+
+/** Register the channel catalog through the wire-neutral current-SDK adapter. */
+export function registerChannelTools(
+  server: McpServer,
+  deps: ChannelToolDeps,
+  options: RegisterWmuxToolsOptions,
+): void {
+  registerWmuxTools(server, createChannelToolCatalog(deps), options);
 }

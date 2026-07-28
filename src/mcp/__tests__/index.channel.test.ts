@@ -47,9 +47,15 @@ vi.mock('../wmux-client', () => ({
 
 import { sendRpc } from '../wmux-client';
 import {
+  createChannelToolCatalog,
   registerChannelTools,
   type ChannelToolDeps,
 } from '../channels';
+import type { WmuxToolProfile } from '../toolCatalog';
+import {
+  expectCommanderCatalogLockstep,
+  expectFrozenCatalog,
+} from './catalogAssertions';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
@@ -66,23 +72,19 @@ interface ToolRegistration {
   handler: ToolHandler;
 }
 
-// Dual-path stand-in: the normalized baseline stays identical while a domain
-// migrates from legacy server.tool() to the typed registerTool() adapter.
+const DEFAULT_CHANNEL_DEPS: ChannelToolDeps = {
+  resolveWorkspaceId: async () => 'ws-test',
+  getSenderPtyId: () => '',
+};
+
+// registerTool-only stand-in: a regression to deprecated server.tool() must
+// fail this suite instead of being normalized away by the harness.
 function collectRegistrations(
-  deps: ChannelToolDeps = {
-    resolveWorkspaceId: async () => 'ws-test',
-  },
+  deps: ChannelToolDeps = DEFAULT_CHANNEL_DEPS,
+  profile: WmuxToolProfile = 'full',
 ): ToolRegistration[] {
   const registrations: ToolRegistration[] = [];
   const server = {
-    tool: (
-      name: string,
-      description: string,
-      inputSchema: Record<string, unknown>,
-      handler: ToolHandler,
-    ) => {
-      registrations.push({ name, description, inputSchema, handler });
-    },
     registerTool: (
       name: string,
       config: {
@@ -103,13 +105,22 @@ function collectRegistrations(
   // its own resolver; for tests we pass an identity one so every call sees
   // `ws-test` as the caller's workspace (matches the FIRST_PARTY verified
   // hit pattern in src/mcp/index.ts).
-  registerChannelTools(server as never, deps);
+  registerChannelTools(server as never, deps, {
+    profile,
+    context: { principal: { kind: 'unattributed' } },
+  });
   return registrations;
 }
 
-function collectTools(deps?: ChannelToolDeps): Map<string, ToolHandler> {
+function collectTools(
+  deps?: ChannelToolDeps,
+  profile: WmuxToolProfile = 'full',
+): Map<string, ToolHandler> {
   return new Map(
-    collectRegistrations(deps).map(({ name, handler }) => [name, handler]),
+    collectRegistrations(deps, profile).map(({ name, handler }) => [
+      name,
+      handler,
+    ]),
   );
 }
 
@@ -267,8 +278,22 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all twelve tools in their exact public order', () => {
+  it('registers all twelve tools in exact full and commander order', () => {
     expect([...tools.keys()]).toEqual(CHANNEL_TOOL_NAMES);
+    expect(
+      collectRegistrations(undefined, 'commander').map(({ name }) => name),
+    ).toEqual(CHANNEL_TOOL_NAMES);
+  });
+
+  it('keeps catalog profiles in commander-manifest lockstep and frozen', () => {
+    const specs = createChannelToolCatalog(DEFAULT_CHANNEL_DEPS);
+
+    expect(specs.map(({ name }) => name)).toEqual(CHANNEL_TOOL_NAMES);
+    expect(specs.map(({ profiles }) => profiles)).toEqual(
+      CHANNEL_TOOL_NAMES.map(() => ['full', 'commander']),
+    );
+    expectCommanderCatalogLockstep(specs);
+    expectFrozenCatalog(specs);
   });
 
   it('pins every raw schema key order and reuses module-scope shapes', () => {
@@ -280,6 +305,34 @@ describe('channel_* tools: registration', () => {
     ).toEqual(
       CHANNEL_TOOL_NAMES.map((name) => [name, CHANNEL_SCHEMA_KEYS[name]]),
     );
+
+    const registrationByName = new Map(
+      registrations.map((registration) => [
+        registration.name,
+        registration,
+      ]),
+    );
+    const nestedObjectKeys = (toolName: string, field: string): string[] => {
+      const registration = registrationByName.get(toolName);
+      if (!registration) throw new Error(`${toolName} failed to register`);
+      const optionalArray = registration.inputSchema[field] as {
+        unwrap(): {
+          element: {
+            shape: Record<string, unknown>;
+          };
+        };
+      };
+      return Object.keys(optionalArray.unwrap().element.shape);
+    };
+    expect(nestedObjectKeys('channel_post', 'mentions')).toEqual([
+      'workspace_id',
+      'name',
+      'member_id',
+    ]);
+    expect(nestedObjectKeys('channel_mission_start', 'invite')).toEqual([
+      'workspace_id',
+      'member_id',
+    ]);
 
     const secondByName = new Map(
       collectRegistrations().map((registration) => [

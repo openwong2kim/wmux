@@ -1350,8 +1350,9 @@ server.tool(
 );
 
 // === A2A channel tools ===
-// Six standard MCP tools that expose the a2a.channel.* pipe RPC surface.
-// `channel.history` is intentionally deferred per plan Scope Boundaries.
+// Ten channel tools plus two WorkTask mission tools expose the
+// a2a.channel.* / task.mission.* pipe surfaces. `channel_history` stays absent:
+// bounded history is already exposed by channel_read.
 // Workspace identity uses the same resolveWorkspaceId as the other
 // workspace-routed tools (verified PID-map hit first, env-hint fallback).
 // D5: also expose the server's verified senderPtyId (MY_PTY_ID, the PID-map
@@ -1368,10 +1369,14 @@ server.tool(
 // ceiling this gate is a reliability mechanism (a same-user caller could assert
 // a foreign pid), not a same-user security boundary. Still fail-closed when no
 // hit at all.
-registerChannelTools(server, {
-  resolveWorkspaceId: requireWorkspaceId,
-  getSenderPtyId: () => MY_PTY_ID,
-});
+registerChannelTools(
+  server,
+  {
+    resolveWorkspaceId: requireWorkspaceId,
+    getSenderPtyId: () => MY_PTY_ID,
+  },
+  MCP_CATALOG_OPTIONS,
+);
 
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /
