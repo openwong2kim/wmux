@@ -8,7 +8,7 @@ import { applyUnicodeWidthModel, TERMINAL_UNICODE_VERSION } from '../../shared/t
 // ── Unicode width model: grapheme clusters, and the CJK regression guard ────
 //
 // The product measures character width with @xterm/addon-unicode-graphemes
-// ('15-graphemes') in BOTH places that own a terminal grid: the renderer
+// ('15-graphemes') in the two places that own a LOCAL terminal grid: the renderer
 // (useTerminal.ts) and the daemon snapshot (HeadlessSnapshot.ts). The addon
 // ships with an upstream "experimental" warning, so these tests pin the two
 // properties we actually rely on:
@@ -73,27 +73,33 @@ describe('unicode width model — grapheme clustering', () => {
   // Each of these is a single user-perceived character. Unicode 11 widthed
   // every codepoint independently and summed, so they over- or under-measured;
   // grapheme clustering collapses each to one 2-cell cluster.
-  const CLUSTERS: ReadonlyArray<readonly [string, string, number]> = [
-    ['ZWJ family', '\u{1F468}‍\u{1F469}‍\u{1F467}', 6],
-    ['ZWJ couple', '\u{1F469}‍❤️‍\u{1F468}', 5],
-    ['skin-tone modifier', '\u{1F44D}\u{1F3FD}', 4],
-    ['VS16 heart', '❤️', 1],
-    ['VS16 check mark', '✔️', 1],
-    ['keycap sequence', '1️⃣', 1],
+  // Tuple order is [name, u11Width, text] so the it.each title binds %s and %d
+  // positionally — vitest substitutes by argument index, so putting the number
+  // last printed "Unicode 11 said NaN" for every case.
+  const CLUSTERS: ReadonlyArray<readonly [string, number, string]> = [
+    ['ZWJ family', 6, '\u{1F468}‍\u{1F469}‍\u{1F467}'],
+    ['ZWJ couple', 5, '\u{1F469}‍❤️‍\u{1F468}'],
+    ['skin-tone modifier', 4, '\u{1F44D}\u{1F3FD}'],
+    ['VS16 heart', 1, '❤️'],
+    ['VS16 check mark', 1, '✔️'],
+    ['keycap sequence', 1, '1️⃣'],
   ];
 
   it.each(CLUSTERS)(
     '%s measures 2 cells as one cluster (Unicode 11 said %d)',
-    async (_name, text, u11Width) => {
+    async (_name, u11Width, text) => {
       // Guard the premise: this case really was mismeasured before the swap.
       expect(await measureWidth(text, '11')).toBe(u11Width);
       expect(await measureWidth(text, '15-graphemes')).toBe(2);
     },
   );
 
-  it('a regional-indicator flag is one 2-cell cluster', async () => {
-    // U+1F1F0 U+1F1F7 — the pair must not split across a row boundary as two
-    // separate 1-wide indicators.
+  it('a regional-indicator flag was ALREADY correct and stays 2 cells', async () => {
+    // U+1F1F0 U+1F1F7. Unlike the cases above this is NOT something the swap
+    // fixed — Unicode 11 already measured the pair as 2. Asserting both sides
+    // keeps that honest: without the '11' assertion this test would pass under
+    // either width model and prove nothing.
+    expect(await measureWidth('\u{1F1F0}\u{1F1F7}', '11')).toBe(2);
     expect(await measureWidth('\u{1F1F0}\u{1F1F7}', '15-graphemes')).toBe(2);
   });
 

@@ -19,6 +19,12 @@
 //       사실을 리포트에 기록. — 체크섬 알고리즘은 DEC STD 070 / xterm ctlseqs에서 도출
 //       (vendor 소스의 체크섬 로직 미참조 — 클린룸 규율. computeRectChecksum 참조).
 
+// NOTE (unicode-graphemes swap): like differ.ts, this subject stays pinned to Unicode 11 on
+// purpose — the product (renderer + HeadlessSnapshot) now measures with
+// @xterm/addon-unicode-graphemes ('15-graphemes'), but the conformance harness is the
+// differential baseline, not a mirror of what ships. `report.json` records the subject as
+// "xterm.js@6 (+Unicode11)" for the same reason. Do not "fix" this to match the product.
+
 import { spawn, type IPty } from 'node-pty';
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';

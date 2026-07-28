@@ -1,12 +1,19 @@
 /**
  * Single source of truth for the terminal width model.
  *
- * Two places own a terminal grid — the renderer's xterm (useTerminal.ts) and
- * the daemon's headless snapshot terminals (HeadlessSnapshot.ts) — and they
- * MUST measure character width identically. If they drift, a restored snapshot
- * paints cell-shifted against the live screen: the daemon wraps a row at a
- * different column than the screen does, and everything after it sits one or
- * more cells off.
+ * Two places own a terminal grid that must agree — the renderer's xterm
+ * (useTerminal.ts) and the daemon's headless snapshot terminals
+ * (HeadlessSnapshot.ts) — because a snapshot is restored onto the renderer's
+ * grid. If they drift, a restored snapshot paints cell-shifted against the
+ * live screen: the daemon wraps a row at a different column than the screen
+ * does, and everything after it sits one or more cells off.
+ *
+ * There is a THIRD grid that does NOT use this helper: the `wmux web` browser
+ * terminal (`src/daemon/web/frontend/app.js`) loads no Unicode addon at all and
+ * so renders at xterm's Unicode 6 default. That divergence predates this
+ * module — closing it means inlining the addon into the hand-built web bundle
+ * and regenerating the CSP script hashes (`webCsp.ts`), which is its own piece
+ * of work. Do not read this file as evidence that every wmux terminal agrees.
  *
  * Nothing in the type system enforced that before: each site named the addon
  * and the version string itself, so a future addon bump that updated one site
@@ -46,8 +53,17 @@ export interface UnicodeWidthTarget {
  * Requires the terminal to have been constructed with `allowProposedApi: true`
  * — registering a Unicode version provider is a proposed API, and xterm throws
  * without it.
+ *
+ * The addon instance is deliberately not returned: unlike `Unicode11Addon`,
+ * whose `dispose()` was a no-op, `UnicodeGraphemesAddon.dispose()` restores
+ * whatever `activeVersion` was set before it loaded — i.e. '6'. Disposing this
+ * addon on its own (rather than with the terminal, as WebglAddon sometimes is)
+ * would silently drop a live terminal back to Unicode 6 widths. Keeping the
+ * handle unreachable makes that mistake impossible to write.
  */
 export function applyUnicodeWidthModel(terminal: UnicodeWidthTarget): void {
   terminal.loadAddon(new UnicodeGraphemesAddon() as never);
+  // Redundant today (activate() already selects this version) but explicit, so
+  // the active version is pinned here rather than inherited from addon internals.
   terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
 }
