@@ -208,7 +208,17 @@ async function readDiff(
   }
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
-  const diffRes = await git(['diff', mergeBase], worktreePath);
+  // The patch has to come from git's own engine, whatever the user configured:
+  //  - `diff.external` (difftastic and friends) replaces the output entirely,
+  //    so parseUnifiedDiff sees zero files while --numstat below — which never
+  //    consults it — still reports counts. The tree would show +/- against a
+  //    file with no hunks at all, with nothing saying why.
+  //  - textconv is on by default for `git diff` and rewrites the content, so
+  //    the diff shown is one that cannot be applied to anything.
+  // Both split what the user sees from what would be adopted. --numstat
+  // deliberately gets neither flag: measured to be unaffected by both (a
+  // line-doubling textconv driver still reports the raw counts).
+  const diffRes = await git(['diff', '--no-ext-diff', '--no-textconv', mergeBase], worktreePath);
   if (diffRes.code !== 0) {
     return { ok: false, error: `git diff 실패: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
   }

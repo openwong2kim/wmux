@@ -256,6 +256,64 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
   });
 });
 
+// ── The rendered diff must come from git's own engine ────────────────────────
+// A user-level `diff.external` or a textconv driver rewrites `git diff` output
+// while --numstat keeps reporting the real counts, so the panel would show a
+// file with +/- and no hunks, or hunks that cannot be applied. Note neither
+// configured command is ever spawned once the flags are in place — these tests
+// assert the flags took effect, not the tools' behaviour.
+describe('diff:read — external diff drivers cannot replace the patch', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('parses hunks normally with diff.external configured (tree and hunks agree)', async () => {
+    // Repo-level config is shared with the linked worktree the diff is read in.
+    g(scn.repoRoot, ['config', 'diff.external', 'echo EXTERNAL_TOOL_OUTPUT']);
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; hunks: unknown[] }>;
+      numstat: Array<{ path: string }>;
+    };
+    expect(res.ok).toBe(true);
+    // --numstat never consults diff.external, so it is the control: whatever it
+    // lists must also have parsed hunks.
+    expect(res.numstat.map((n) => n.path)).toContain('a.txt');
+    const a = res.files.find((f) => f.path === 'a.txt');
+    expect(a).toBeDefined();
+    expect(a!.hunks.length).toBeGreaterThan(0);
+  });
+
+  it('reads the real content under a textconv driver, and adopts it', async () => {
+    // Bind a content-rewriting textconv driver to a.txt in the worktree only.
+    writeFileSync(join(scn.worktreePath, '.gitattributes'), 'a.txt diff=upper\n');
+    g(scn.repoRoot, ['config', 'diff.upper.textconv', 'tr a-z A-Z <']);
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; digest: string; hunks: Array<{ bodyLines: string[] }> }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    expect(r.ok).toBe(true);
+    const a = r.files.find((f) => f.path === 'a.txt')!;
+    // The converted diff would read '-A2 +CHANGED2' and apply to nothing.
+    expect(a.hunks[0].bodyLines.join('\n')).toContain('-a2');
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0])] },
+      scn.worktreePath,
+    )) as { ok: boolean; error?: string };
+    expect(res.ok).toBe(true);
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe('a1\nCHANGED2\na3\na4\na5\n');
+  });
+});
+
 // ── TOCTOU: an adoption may only apply the diff the user actually saw ────────
 // The handler re-reads the source diff at apply time, so anything that changed
 // the worktree in between used to be adopted silently — the wrong hunk, or only
