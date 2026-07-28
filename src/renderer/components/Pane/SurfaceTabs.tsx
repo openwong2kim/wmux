@@ -392,63 +392,6 @@ export default function SurfaceTabs({
       ))}
       </div>
 
-      {/* Chat View segmented control (plan PR-8). Shown only for the ACTIVE
-          terminal surface that owns a ptyId — the other surface types (browser,
-          diff, editor) have no transcript to project. Disabled (with the exact
-          reason string) when the daemon projector says this pane is unsupported,
-          which is also what setSurfaceChatMode refuses on. */}
-      {(() => {
-        const isTerminalSurface =
-          !!activeSurface
-          && (!activeSurface.surfaceType || activeSurface.surfaceType === 'terminal')
-          && !!activeSurface.ptyId;
-        if (!isTerminalSurface || !activeSurface) return null;
-        const status = chatStatus[activeSurface.ptyId];
-        const available = !!status?.available;
-        const chatOn = !!activeSurface.chatMode;
-        const unavailableTitle = status?.reason === 'not-claude'
-          ? t('chat.unavailable.notClaude')
-          : status?.reason === 'no-transcript-path'
-            ? t('chat.unavailable.noTranscriptPath')
-            : t('chat.unavailable.generic');
-        const segment = (mode: 'terminal' | 'chat') => {
-          const on = mode === 'chat' ? chatOn : !chatOn;
-          const disabled = mode === 'chat' && !available;
-          return (
-            <button
-              type="button"
-              disabled={disabled}
-              data-pane-view-mode={mode}
-              aria-pressed={on}
-              title={disabled ? unavailableTitle : t(`chat.viewMode.${mode}`)}
-              className={`px-1.5 h-5 text-[10px] font-mono leading-none rounded-[5px] transition-colors ${FOCUS_RING} ${
-                on
-                  ? 'bg-[var(--bg-base)] text-[var(--text-main)]'
-                  : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)]'
-              } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (disabled) return;
-                setSurfaceChatMode(activeSurface.id, mode === 'chat');
-              }}
-            >
-              {t(`chat.viewMode.${mode}`)}
-            </button>
-          );
-        };
-        return (
-          <div
-            className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
-            data-pane-view-mode-group
-            role="group"
-            aria-label={t('chat.viewMode.label')}
-          >
-            {segment('terminal')}
-            {segment('chat')}
-          </div>
-        );
-      })()}
-
       {/* Right-aligned pane action cluster. Native next to the per-tab close
           button (same quiet chrome): boxless at rest, a subtle surface lift on
           hover, a keyboard-focus ring, and monochrome line icons from the

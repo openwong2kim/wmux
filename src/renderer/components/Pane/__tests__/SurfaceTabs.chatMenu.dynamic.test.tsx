@@ -180,6 +180,27 @@ describe('SurfaceTabs — Chat View on the tab context menu', () => {
     expect(storedSurface()?.chatMode).toBeUndefined();
   });
 
+  it('falls back to the generic reason for an unknown one (and for local mode)', () => {
+    useStore.getState().setChatStatus(PTY, { available: false, reason: 'local-mode' });
+    seedSurface();
+    mount([terminalSurface()]);
+
+    rightClick('[data-pane-tab]');
+    expect(items()[0].getAttribute('title')).toBe('Chat View is unavailable for this pane.');
+  });
+
+  it('keeps the toggle out of the tab strip itself — the bar stays small', () => {
+    // The Terminal|Chat segment used to sit here permanently. Four to six
+    // panes later the strip was mostly controls, so the view mode moved into
+    // this menu; nothing may quietly put a segment back.
+    useStore.getState().setChatStatus(PTY, { available: true, reason: 'ok' });
+    seedSurface();
+    mount([terminalSurface()]);
+
+    expect(container.querySelector('[data-pane-view-mode-group]')).toBeNull();
+    expect(container.querySelector('[data-pane-view-mode]')).toBeNull();
+  });
+
   it('opens no menu on a surface with nothing behind it', () => {
     useStore.getState().setChatStatus(PTY, { available: true, reason: 'ok' });
     mount([{ id: 'sf-browser', ptyId: '', title: 'Browser', shell: '', cwd: '', surfaceType: 'browser' }]);

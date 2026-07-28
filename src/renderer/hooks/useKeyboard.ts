@@ -7,6 +7,7 @@ import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ut
 import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import { toggleActiveSurfaceChatMode } from '../utils/chatViewToggle';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -467,19 +468,8 @@ export function useKeyboard() {
       // pane on an empty Chat view that its agent can never fill.
       if (cmdOrCtrl && shift && !alt && (key === 'J' || code === 'KeyJ')) {
         e.preventDefault();
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (!ws) return;
-        const leaf = findLeaf(ws.rootPane, ws.activePaneId);
-        if (!leaf) return;
-        const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-        if (!surface || !surface.ptyId) return;
-        if (surface.surfaceType && surface.surfaceType !== 'terminal') return;
-        if (surface.chatMode) {
-          state.setSurfaceChatMode(surface.id, false);
-        } else if (state.chatStatus[surface.ptyId]?.available) {
-          state.setSurfaceChatMode(surface.id, true);
-        }
+        // Shared with the palette command so both apply one gate.
+        toggleActiveSurfaceChatMode();
         return;
       }
 

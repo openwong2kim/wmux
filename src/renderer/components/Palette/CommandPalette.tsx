@@ -13,6 +13,7 @@ import { usePlugins } from '../../plugins/usePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
+import { toggleActiveSurfaceChatMode } from '../../utils/chatViewToggle';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // ---------------------------------------------------------------------------
@@ -254,6 +255,15 @@ export default function CommandPalette() {
           }
           setVisible(false);
         },
+      },
+      {
+        // Chat View's searchable entry point. The tab strip carries no
+        // Terminal|Chat segment any more (it cost more chrome than a
+        // per-surface view mode is worth once a pane is split four ways), so
+        // the palette and the ⇧⌘J chord are what keep the mode findable
+        // without right-clicking a tab first.
+        label: t('chat.toggle'),
+        action: () => { toggleActiveSurfaceChatMode(); setVisible(false); },
       },
       {
         label: t('palette.cmd.showNotifications'),
