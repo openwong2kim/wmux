@@ -4,6 +4,7 @@ import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { useChatAgentLiveness } from '../../hooks/useChatAgentLiveness';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
@@ -897,6 +898,9 @@ export function TerminalOrChat({
 }) {
   const ptyId = surface.ptyId;
   const chatMode = !!surface.chatMode && !!ptyId;
+  // The lens steps aside when the pane's agent process dies — otherwise Chat
+  // keeps rendering a dead conversation and the composer writes into a shell.
+  useChatAgentLiveness(surface.id, ptyId, chatMode);
   // Locked while EITHER source holds the gate, and — fail-closed — while the
   // open-approval snapshot has not arrived yet. Before the seed existed, a
   // renderer reload during an open permission menu rendered a fully usable

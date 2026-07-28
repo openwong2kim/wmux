@@ -1271,6 +1271,7 @@ export const en = {
   'chat.viewMode.chat': 'Chat',
   'chat.viewMode.label': 'Pane view mode',
   'chat.toggle': 'Toggle Terminal / Chat view',
+  'chat.agentGone': 'The agent in this pane exited — back to the terminal.',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',
