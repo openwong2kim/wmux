@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   getWmuxMcpServerInstructions,
   resolveMcpServerVersion,
+  WMUX_MCP_CRITICAL_INSTRUCTIONS,
 } from '../serverMetadata';
 
 const tempDirs: string[] = [];
@@ -100,6 +101,7 @@ describe('getWmuxMcpServerInstructions', () => {
     const prefix = instructions.slice(0, 512);
 
     expect(Buffer.byteLength(instructions, 'utf8')).toBeLessThanOrEqual(2 * 1024);
+    expect(prefix).toContain(WMUX_MCP_CRITICAL_INSTRUCTIONS);
     expect(prefix).toContain('wmux');
     expect(prefix).toContain('opaque IDs');
     expect(prefix).toContain('untrusted data');
