@@ -171,6 +171,42 @@ describe('fanout_start: result envelope', () => {
     expect(res.content[0].text).toContain('expired');
   });
 
+  it('keeps status, reason and key on a denial instead of collapsing it to a message', async () => {
+    // The whole point of the async contract is that an unattended caller can
+    // tell WHY nothing ran. `Error [code]: message` dropped `status`, `reason`
+    // and `idempotencyKey`, so "the user declined", "nobody was at the
+    // keyboard" and "this key already ran" all read the same.
+    for (const reason of ['declined', 'timeout', 'unavailable', 'repo-moved'] as const) {
+      mockSendRpc.mockResolvedValue({
+        ok: false,
+        status: 'denied',
+        reason,
+        idempotencyKey: 'k8b',
+        error: { code: 'NOT_AUTHORIZED', message: 'fan-out was not approved' },
+      });
+      const res = await fanoutStart({ idempotency_key: 'k8b', titles: ['t'] });
+      expect(res.isError).toBe(true);
+      expect(JSON.parse(res.content[0].text)).toMatchObject({
+        status: 'denied',
+        reason,
+        idempotencyKey: 'k8b',
+        error: { code: 'NOT_AUTHORIZED' },
+      });
+    }
+  });
+
+  it('distinguishes an aged-out key from a denial', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      status: 'expired',
+      idempotencyKey: 'k8c',
+      error: { code: 'NOT_FOUND', message: 'this fan-out already ran' },
+    });
+    const res = await fanoutStart({ idempotency_key: 'k8c', titles: ['t'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).status).toBe('expired');
+  });
+
   it('hands back a completed poll whole, including partly-failed tasks', async () => {
     // A completed fan-out can be ok:false at the RESULT level while still
     // carrying the branches and worktree paths of the tasks that did spawn —

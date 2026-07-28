@@ -116,7 +116,11 @@ export default function ExecuteApprovalDialog() {
           style={{
             backgroundColor: 'var(--bg-surface)',
             color: 'var(--text-main)',
-            maxHeight: 160,
+            // A fan-out preview carries one block PER TASK — the effective
+            // prompt each agent is handed, which is what the user is actually
+            // approving. Eight lines of scroll would hide most of it behind a
+            // gesture nobody makes under a 30s timer.
+            maxHeight: fanout ? 340 : 160,
             overflowY: 'auto',
           }}
         >

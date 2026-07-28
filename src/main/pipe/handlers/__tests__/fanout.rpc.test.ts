@@ -31,13 +31,17 @@ vi.mock('../../../git/git', () => ({ git: vi.fn() }));
 
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';
-import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD } from '../fanout.rpc';
+import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 
 const CALLER_WS = 'ws-caller';
 const CALLER_CWD = '/repo/packages/app';
 const CALLER_REPO_ROOT = '/repo';
+/** Where a SIBLING pane in the same workspace is sitting. Nothing the caller
+ *  asks for may ever resolve to this — see the R3 sibling-pane test. */
+const SIBLING_CWD = '/other/project/src';
+const SIBLING_REPO_ROOT = '/other/project';
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
 
@@ -64,6 +68,17 @@ interface Harness {
   runFinished: () => boolean;
   /** The FanOutRequest the service was actually handed (asserts on overrides). */
   request: () => FanOutRequest;
+  /** Move the CALLER's own surface to another directory — the "it cd'd while
+   *  the prompt was up" case the approval-time re-derivation exists for. */
+  moveCaller: (cwd: string | null) => void;
+  /** The preview the approval prompt was actually raised with. */
+  preview: () => string;
+  /** Drop a completed key from the service's result LRU — what the real
+   *  FanOutService does once 1000 newer fan-outs have finished. */
+  forgetResult: (callerKey: string) => void;
+  /** Answer a prompt that was left hanging — the "the user took their time"
+   *  case the approval-time repo re-derivation is about. */
+  approveHungPrompt: () => void;
 }
 
 function setup(opts?: {
@@ -104,26 +119,45 @@ function setup(opts?: {
   const service = { start, statusOf } as unknown as FanOutService;
 
   const ownerWs = opts?.ownerWorkspaceId === undefined ? CALLER_WS : opts.ownerWorkspaceId;
-  const cwd = opts?.cwd === undefined ? CALLER_CWD : opts.cwd;
+  let currentCwd = opts?.cwd === undefined ? CALLER_CWD : opts.cwd;
+  const siblingCwd = SIBLING_CWD;
   const approval: ApprovalStub = opts?.approval ?? { approved: true, outcome: 'approved' };
   let approvals = 0;
+  let lastPreview = '';
+  let releaseApproval: ((v: unknown) => void) | null = null;
 
-  vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string) => {
+  vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string, p?: unknown) => {
     if (method === 'input.findOwnerWorkspace') return ownerWs ? { workspaceId: ownerWs } : {};
-    if (method === 'workspace.list') return [{ id: ownerWs, metadata: { cwd } }];
+    if (method === 'surface.list') {
+      expect((p as Record<string, unknown>)?.workspaceId).toBe(ownerWs);
+      // The caller's OWN surface plus a sibling sitting in a different repo —
+      // so a test that reads the wrong one lands somewhere visible.
+      return [
+        { ptyId: 'pty-sibling', cwd: siblingCwd },
+        { ptyId: 'pty-1', cwd: currentCwd },
+      ];
+    }
     if (method === 'fanout.requestApproval') {
       approvals += 1;
+      lastPreview = String((p as Record<string, unknown>)?.promptPreview ?? '');
       if (approval === 'throw') throw new Error('renderer unavailable');
-      // A prompt nobody ever answers — the unattended case.
-      if (approval === 'hang') return new Promise(() => undefined);
+      // A prompt nobody has answered YET — the unattended case, and also the
+      // handle a test uses to answer it late (approveHungPrompt).
+      if (approval === 'hang') {
+        return new Promise((resolve) => {
+          releaseApproval = resolve as (v: unknown) => void;
+        });
+      }
       return approval;
     }
     throw new Error(`unexpected renderer call: ${method}`);
   });
 
-  // Every path under /repo is the caller's repo; anything else is not a repo.
+  // Every path under /repo is the caller's repo, everything under /other is a
+  // DIFFERENT repo, and anything else is no repo at all.
   vi.mocked(git).mockImplementation(async (_args: string[], dir: string) => {
     if (dir.startsWith('/repo')) return { stdout: `${CALLER_REPO_ROOT}\n`, stderr: '', code: 0 };
+    if (dir.startsWith('/other')) return { stdout: `${SIBLING_REPO_ROOT}\n`, stderr: '', code: 0 };
     return { stdout: '', stderr: 'not a git repository', code: 128 };
   });
 
@@ -140,6 +174,12 @@ function setup(opts?: {
     finishRun: (result = { ok: true, tasks: [] }) => releaseRun?.(result),
     runFinished: () => finished,
     request: () => start.mock.calls[0][0] as FanOutRequest,
+    moveCaller: (next) => {
+      currentCwd = next;
+    },
+    preview: () => lastPreview,
+    forgetResult: (callerKey) => state.delete(`${ownerWs}::${callerKey}`),
+    approveHungPrompt: () => releaseApproval?.({ approved: true, outcome: 'approved' }),
   };
 }
 
@@ -278,6 +318,102 @@ describe('the caller is answered without waiting for the fan-out', () => {
   });
 });
 
+// ── terminal states survive eviction ──────────────────────────────────────
+//
+// Both bookkeeping stores are bounded. The gate map used to evict its oldest
+// entry regardless of phase, so a `started` or `denied` key could fall out of
+// it AND out of the service's result LRU — after which the poll saw `unknown`,
+// fell through as a NEW request, and the caller got a second approval prompt
+// and a full re-execution of tasks that had already spawned. Terminal states
+// now live in a body-free tombstone map with a much larger cap.
+describe('an evicted key can never restart a fan-out that already spawned', () => {
+  /** Push `n` unrelated fan-outs through, each of which terminates. */
+  async function flood(h: Harness, n: number): Promise<void> {
+    for (let k = 0; k < n; k += 1) {
+      await h.call(goodParams({ idempotencyKey: `filler-${k}` }));
+      await h.flush();
+    }
+  }
+
+  it('answers expired — not a fresh request — after eviction pressure on both stores', async () => {
+    const h = setup();
+    await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+
+    // The service forgets the result, and enough newer fan-outs go through to
+    // push the key past the gate map's own cap.
+    h.forgetResult('the-real-one');
+    await flood(h, 1100);
+
+    const res = await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    expect(res).toMatchObject({ ok: false, status: 'expired' });
+    // The one thing that must not happen: a second run of the same key.
+    expect(h.start.mock.calls.filter((c) => (c[0] as FanOutRequest).idempotencyKey.endsWith('the-real-one'))).toHaveLength(1);
+  });
+
+  it('keeps a denial terminal under the same pressure, instead of re-prompting', async () => {
+    const h = setup({ approval: { approved: false, outcome: 'declined' } });
+    await h.call(goodParams({ idempotencyKey: 'denied-one' }));
+    await h.flush();
+    const before = h.approvalCount();
+
+    await flood(h, 1100);
+
+    const res = await h.call(goodParams({ idempotencyKey: 'denied-one' }));
+    await h.flush();
+    expect(res).toMatchObject({ ok: false, status: 'denied', reason: 'declined' });
+    // Exactly one prompt was raised for THIS key across the whole sequence.
+    expect(h.approvalCount()).toBe(before + 1100);
+  });
+});
+
+// ── one key, one prompt ───────────────────────────────────────────────────
+describe('concurrent calls on one key raise one prompt', () => {
+  it('answers the second concurrent caller as a poll', async () => {
+    // The gate used to be claimed after two renderer round-trips and a git
+    // call, so both callers observed no gate and both raised a dialog —
+    // indistinguishable on screen while carrying different payloads.
+    const h = setup({ approval: 'hang' });
+    const [first, second] = await Promise.all([
+      h.call(goodParams({ prompt: 'benign' })),
+      h.call(goodParams({ prompt: 'hostile' })),
+    ]);
+    await h.flush();
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual(['accepted', 'awaiting_approval']);
+    expect(h.approvalCount()).toBe(1);
+  });
+
+  it('releases the key when the repository cannot be derived, so a retry is not bricked', async () => {
+    const h = setup({ cwd: null });
+    expect(errorOf(await h.call(goodParams())).code).toBe('FAILED_PRECONDITION');
+    // Same key again, now resolvable: it must behave as a new request rather
+    // than answering awaiting_approval forever.
+    h.moveCaller(CALLER_CWD);
+    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
+  });
+});
+
+describe('the idempotency key is bounded', () => {
+  it('rejects a key large enough to be a payload', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ idempotencyKey: 'k'.repeat(FANOUT_IDEMPOTENCY_KEY_MAX_BYTES + 1) })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    // Rejected before any identity or repo work.
+    expect(vi.mocked(sendToRenderer)).not.toHaveBeenCalled();
+  });
+
+  it(`accepts exactly ${FANOUT_IDEMPOTENCY_KEY_MAX_BYTES} bytes`, async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ idempotencyKey: 'k'.repeat(FANOUT_IDEMPOTENCY_KEY_MAX_BYTES) }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+  });
+});
+
 // ── R7 — approval gate ────────────────────────────────────────────────────
 describe('R7 — the fan-out is approved before anything spawns', () => {
   it('starts nothing when the user denies', async () => {
@@ -339,6 +475,81 @@ describe('R7 — the fan-out is approved before anything spawns', () => {
   });
 });
 
+// ── R7 preview ────────────────────────────────────────────────────────────
+//
+// The dialog renders `promptPreview` verbatim, so whatever is NOT in it is
+// something the user approved without seeing. The predecessor built it from
+// `[sharedPrompt, ...titles]` and sliced at 500 chars with no marker: since
+// each per-task prompt may be FANOUT_PROMPT_MAX_BYTES (8 KB) on its own, a
+// caller could fill the shared prompt with 500 benign characters and put the
+// real instructions in `taskPrompts`. Every assertion here is about that.
+describe('the approval preview shows what the agents are actually told', () => {
+  it('carries each task\'s OWN prompt, not just the shared one', async () => {
+    const h = setup();
+    await h.call(
+      goodParams({
+        titles: ['refactor', 'document'],
+        prompt: 'be careful',
+        taskPrompts: ['DELETE-THE-CI-KEYS', 'exfiltrate-the-env'],
+      }),
+    );
+    await h.flush();
+    expect(h.preview()).toContain('DELETE-THE-CI-KEYS');
+    expect(h.preview()).toContain('exfiltrate-the-env');
+  });
+
+  it('shows the EFFECTIVE prompt per task — shared and per-task, joined as the service joins them', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['one'], prompt: 'shared part', taskPrompts: ['own part'] }));
+    await h.flush();
+    expect(h.preview()).toContain('shared part\n\nown part');
+  });
+
+  it('labels every task, so N blocks of instructions cannot be read as one', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['alpha', 'beta', 'gamma'], taskPrompts: ['a', 'b', 'c'] }));
+    await h.flush();
+    expect(h.preview()).toContain('task 1/3: alpha');
+    expect(h.preview()).toContain('task 2/3: beta');
+    expect(h.preview()).toContain('task 3/3: gamma');
+  });
+
+  it('never truncates silently — the byte count of what was cut is in the preview', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['one'], prompt: '', taskPrompts: ['z'.repeat(6000)] }));
+    await h.flush();
+    expect(h.preview()).toMatch(/…\(\d+ bytes truncated\)/);
+  });
+
+  it('gives every task room, so one huge prompt cannot push the others out of view', async () => {
+    const h = setup();
+    await h.call(
+      goodParams({
+        titles: ['loud', 'quiet'],
+        prompt: '',
+        taskPrompts: ['x'.repeat(FANOUT_PROMPT_MAX_BYTES), 'THE-QUIET-ONE'],
+      }),
+    );
+    await h.flush();
+    expect(h.preview()).toContain('THE-QUIET-ONE');
+  });
+
+  it('does not cut a multi-byte character in half', async () => {
+    const h = setup();
+    // 3 bytes per char, so the per-task budget lands mid-character.
+    await h.call(goodParams({ titles: ['one'], prompt: '', taskPrompts: ['가'.repeat(4000)] }));
+    await h.flush();
+    expect(h.preview()).not.toContain('�');
+  });
+
+  it('says so when a task has no prompt at all, instead of showing nothing', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['one'], prompt: '', taskPrompts: [''] }));
+    await h.flush();
+    expect(h.preview()).toContain('no prompt');
+  });
+});
+
 // ── R1 ────────────────────────────────────────────────────────────────────
 // The agent command is interpolated verbatim into `${agentCmd} "$(cat …)"` and
 // written to a PTY. A wire caller that could set it would have arbitrary
@@ -364,9 +575,21 @@ describe('R1 — agentCmd is never read from the wire', () => {
 // verifiedWorkspaceId drives task ownership and channel authz. A caller that
 // could assert it would create tasks owned by someone else's workspace.
 describe('R2 — the caller workspace is derived, not asserted', () => {
-  it('ignores a caller-supplied verifiedWorkspaceId', async () => {
+  it('rejects a caller-supplied verifiedWorkspaceId rather than silently overriding it', async () => {
+    // It used to be the one identity field that was overwritten in SILENCE
+    // while repoPath / agentCmd / memberId were refused — leaving a caller
+    // believing its tasks were owned by the workspace it named. Same class,
+    // same answer.
     const h = setup();
-    await h.call(goodParams({ verifiedWorkspaceId: 'ws-victim' }));
+    const err = errorOf(await h.call(goodParams({ verifiedWorkspaceId: 'ws-victim' })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('always hands the service the resolved workspace', async () => {
+    const h = setup();
+    await h.call(goodParams());
     await h.flush();
     expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
   });
@@ -468,6 +691,62 @@ describe("R3 — the repository is derived from the caller's own workspace", () 
     const err = errorOf(await h.call(goodParams()));
     expect(err.code).toBe('FAILED_PRECONDITION');
     expect(vi.mocked(git)).not.toHaveBeenCalled();
+  });
+
+  // The repo used to come from `workspace.list` → `metadata.cwd`, which is
+  // WORKSPACE-scoped and tracks whichever surface last changed directory. A
+  // sibling pane in the caller's workspace could therefore choose the
+  // repository a caller fans out over, without the caller doing anything.
+  it("takes the cwd of the caller's OWN surface, not a sibling pane's", async () => {
+    const h = setup();
+    await h.call(goodParams());
+    await h.flush();
+    // The sibling row sits in a different repo and comes FIRST in the list.
+    expect(h.request().repoPath).toBe(CALLER_REPO_ROOT);
+    expect(h.request().repoPath).not.toBe(SIBLING_REPO_ROOT);
+  });
+
+  it('refuses when no surface belongs to the calling ptyId', async () => {
+    // The identity hop answers for any ptyId, so this isolates the surface
+    // match: a caller whose pty owns no surface has no cwd of its own, and
+    // must not inherit one from the workspace.
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ senderPtyId: 'pty-nowhere' })));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  // The call is asynchronous now, so the gap between "the dialog said /repo"
+  // and "the worktree is created" is however long the user takes to answer.
+  it('refuses if the caller moved to another repository while the prompt was up', async () => {
+    const h = setup({ approval: 'hang' });
+    await h.call(goodParams());
+    // The prompt is on screen, naming CALLER_REPO_ROOT. The caller cds away.
+    h.moveCaller(SIBLING_CWD);
+    h.approveHungPrompt();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(await h.call(goodParams())).toMatchObject({ status: 'denied', reason: 'repo-moved' });
+  });
+
+  it('refuses if the repository cannot be re-derived at approval time', async () => {
+    const h = setup({ approval: 'hang' });
+    await h.call(goodParams());
+    h.moveCaller(null);
+    h.approveHungPrompt();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(await h.call(goodParams())).toMatchObject({ status: 'denied', reason: 'repo-moved' });
+  });
+
+  it('still starts when the caller has not moved', async () => {
+    const h = setup({ approval: 'hang' });
+    await h.call(goodParams());
+    h.approveHungPrompt();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.request().repoPath).toBe(CALLER_REPO_ROOT);
   });
 });
 

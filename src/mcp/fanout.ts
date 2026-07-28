@@ -94,19 +94,18 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
           | { ok: true; [k: string]: unknown }
           | { ok: false; error: { code: string; message: string } }
           | undefined;
-        // `ok: false` covers both a rejected request and a terminal denial;
-        // both are things the caller must stop polling on. The full envelope is
-        // still handed back below for the success path, because a `completed`
-        // result carries per-task branches and worktree paths even when some
-        // tasks failed — collapsing that to a message would throw away exactly
-        // the data the agent needs to recover.
-        if (result && result.ok === false) {
-          return {
-            content: [{ type: 'text' as const, text: `Error [${result.error.code}]: ${result.error.message}` }],
-            isError: true,
-          };
-        }
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }] };
+        // `ok: false` covers both a rejected request and a terminal outcome
+        // (denied / expired); both are things the caller must stop polling on,
+        // and `isError` is how it learns that. But the ENVELOPE goes back
+        // whole: collapsing it to `Error [code]: message` discarded `status`,
+        // `reason` and `idempotencyKey`, so an unattended caller could not tell
+        // "the user declined" from "the 30s prompt expired with nobody at the
+        // keyboard" from "this key already ran and its result aged out" — which
+        // is half of what the async contract exists to report.
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
+          ...(result && result.ok === false ? { isError: true as const } : {}),
+        };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
