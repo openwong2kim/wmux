@@ -30,7 +30,7 @@ import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
 import { manifestFileExists, pingFormatVersionField } from './eventlog/EventLogManifest';
 import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
 import { PrincipalService, PrincipalStateWriter } from './principals';
-import { isPrincipalUpsertInput } from '../shared/principals';
+import { isPrincipalUpsertInput, panePrincipalId } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
@@ -4436,6 +4436,19 @@ async function main(): Promise<void> {
             ...(rec.memberId ? { memberId: rec.memberId } : {}),
           }
         : undefined;
+    },
+    // A1 (pane-pinned mentions): prove a mention's paneId is a pane OF the
+    // mentioned workspace. The registry key embeds the workspace
+    // (`pane:${workspaceId}/${paneId}`), so a hit is the ownership proof and a
+    // caller cannot pin a pane of a workspace it is merely mentioning. Liveness
+    // is NOT gated here on purpose — a stale record still proves ownership, and
+    // the receiving renderer is the only side that can prove the pty is alive.
+    // The returned ptyId lets a caller that knows only the paneId (the MCP
+    // channel_post shape) still carry the route-time pty snapshot.
+    resolvePanePrincipal: (workspaceId, paneId) => {
+      const rec = principalService.find(panePrincipalId(workspaceId, paneId));
+      if (!rec || rec.kind !== 'pane-agent') return undefined;
+      return rec.ptyId ? { ptyId: rec.ptyId } : {};
     },
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does

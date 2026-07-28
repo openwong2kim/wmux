@@ -338,6 +338,29 @@ describe('channel_post', () => {
     expect(res.isError).toBeUndefined();
   });
 
+  it('A1: forwards a mention\'s pane_id as paneId (and no pty coordinate)', async () => {
+    // The vocabulary this tool lacked: without pane_id an MCP caller could not
+    // express "this agent", so an agent-addressed mention could never be
+    // auto-delivered. There is deliberately no pty_id counterpart — the daemon
+    // fills the pty snapshot from the principal registry after it proves the
+    // pane belongs to workspace_id.
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 2 } });
+    await channelPost({
+      channel_id: 'ch-1',
+      text: '@worker step 2',
+      member_id: 'm-1',
+      mentions: [
+        { workspace_id: 'ws-worker', name: 'worker', member_id: 'w1-2(claude)', pane_id: 'pane-2' },
+        { workspace_id: 'ws-other', name: 'other' }, // unpinned → no paneId key
+      ],
+    });
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.mentions).toEqual([
+      { workspaceId: 'ws-worker', name: 'worker', memberId: 'w1-2(claude)', paneId: 'pane-2' },
+      { workspaceId: 'ws-other', name: 'other' },
+    ]);
+  });
+
   it('surfaces PERSIST_FAILED from the daemon as isError (U2 directive)', async () => {
     mockSendRpc.mockResolvedValue({
       ok: false,

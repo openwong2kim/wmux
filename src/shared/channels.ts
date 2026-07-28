@@ -260,16 +260,27 @@ export interface ChannelMention {
 }
 
 /**
- * A requested @mention that could NOT be routed because its target workspace is
- * not a member of the channel. `ChannelService.post` returns these to the sender
- * so a mis-targeted mention is visible feedback, not a silent drop (the dominant
- * A2A failure mode). `reason` is an enum so future drop causes (e.g. archived,
- * rate-limited) extend it without breaking callers.
+ * A requested @mention that could NOT be routed as asked. `ChannelService.post`
+ * returns these to the sender so a mis-targeted mention is visible feedback, not
+ * a silent drop (the dominant A2A failure mode). `reason` is an enum so future
+ * drop causes (e.g. archived, rate-limited) extend it without breaking callers.
+ *
+ * Reasons:
+ *  - `not_a_member` — the target workspace is not in the channel, so the whole
+ *    mention was dropped. You cannot ping a workspace that isn't in the room.
+ *  - `pane_not_in_workspace` — only the PANE PIN was refused: `paneId` is not a
+ *    known pane of the mentioned workspace, so the daemon could not prove the
+ *    caller is targeting a pane that workspace owns (a pin it cannot prove would
+ *    be a cross-workspace paste primitive). The mention itself still landed, at
+ *    workspace level (badge-only, the pre-pin behavior), and `paneId` carries the
+ *    pane that was refused.
  */
 export interface ChannelDroppedMention {
   workspaceId: string;
   name?: string;
-  reason: 'not_a_member';
+  /** The refused pane pin. Present only with `reason: 'pane_not_in_workspace'`. */
+  paneId?: string;
+  reason: 'not_a_member' | 'pane_not_in_workspace';
 }
 
 /**
