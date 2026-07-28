@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { FanOutService, buildInitialCommand } from '../FanOutService';
+import { FanOutService, buildInitialCommand, WORKER_DELIVERY_PREAMBLE } from '../FanOutService';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 
@@ -231,8 +231,9 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
       return fs.readFileSync(promptFile!, 'utf8');
     });
-    expect(bodies[0]).toBe('SHARED CONTEXT\n\ndo login page');
-    expect(bodies[1]).toBe('SHARED CONTEXT\n\ndo settings page');
+    // A3: 호출자 프롬프트는 그대로 앞에 오고, 배달 계약문이 뒤에 붙는다.
+    expect(bodies[0]).toBe('SHARED CONTEXT\n\ndo login page' + WORKER_DELIVERY_PREAMBLE);
+    expect(bodies[1]).toBe('SHARED CONTEXT\n\ndo settings page' + WORKER_DELIVERY_PREAMBLE);
   });
 
   it('공통 프롬프트가 비어도 태스크별 프롬프트만으로 스폰된다', async () => {
@@ -248,7 +249,28 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
       return fs.readFileSync(promptFile!, 'utf8');
     });
-    expect(bodies).toEqual(['task A only', 'task B only']);
+    expect(bodies).toEqual([
+      'task A only' + WORKER_DELIVERY_PREAMBLE,
+      'task B only' + WORKER_DELIVERY_PREAMBLE,
+    ]);
+  });
+
+  it('A3: 배달 계약문이 워커 프롬프트에 실려, 유휴 후 지시가 어떻게 오는지 워커가 안다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(baseReq({ prompt: 'BUILD IT', taskPrompts: [''] }));
+    expect(res.ok).toBe(true);
+    const promptFile = renderer.spawned[0].initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
+    const body = fs.readFileSync(promptFile!, 'utf8');
+    expect(body.startsWith('BUILD IT')).toBe(true);
+    expect(body).toContain('a2a_task_send');
+    expect(body).toContain('channel_unread');
+    // 계약문의 핵심: 워크스페이스 단위 채널 포스트는 프롬프트에 붙지 않는다.
+    expect(body).toMatch(/not.*pasted/i);
   });
 
   it('하위 mission 멱등키가 {fanout키}-{k}로 파생된다', async () => {
