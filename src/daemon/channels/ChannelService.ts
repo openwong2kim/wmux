@@ -200,6 +200,24 @@ export interface ChannelServiceDeps {
    * seat for a pane that is already a member via another entry path.
    */
   resolvePrincipalByPtyId?: (ptyId: string) => { id: string; display?: string; memberId?: string } | undefined;
+  /**
+   * A1 (pane-pinned mentions) — prove that a mention's `paneId` really is a pane
+   * OF THE MENTIONED WORKSPACE, and hand back that pane's last-known ptyId.
+   * Injected from the principal registry, whose key for a pane is
+   * `pane:${workspaceId}/${paneId}` — so a lookup HIT is itself the ownership
+   * proof, and a caller cannot pin a pane belonging to a workspace it is only
+   * mentioning. `undefined` means "no such pane under that workspace" and the
+   * post path refuses the pin (see the mention loop in `post`).
+   *
+   * Liveness is deliberately NOT part of this contract: a stale record still
+   * proves ownership, and the RECEIVING renderer is the only place that can
+   * authoritatively re-check the pty is live before pasting anything.
+   *
+   * Optional so channel unit tests need no registry fixture (same convention as
+   * the two resolvers above); production always injects it (src/daemon/index.ts).
+   * When absent, `paneId`/`ptyId` stay the pre-A1 opaque pass-through.
+   */
+  resolvePanePrincipal?: (workspaceId: string, paneId: string) => { ptyId?: string } | undefined;
 }
 
 /** Sender identity carried in post/join payloads. */
@@ -435,6 +453,10 @@ export class ChannelService {
   private readonly resolvePrincipalByPtyId?: (
     ptyId: string,
   ) => { id: string; display?: string; memberId?: string } | undefined;
+  private readonly resolvePanePrincipal?: (
+    workspaceId: string,
+    paneId: string,
+  ) => { ptyId?: string } | undefined;
 
   /**
    * 1b — derive the server-owned display name for a member row. Principal
@@ -485,6 +507,7 @@ export class ChannelService {
     this.now = deps.now ?? (() => Date.now());
     this.resolvePrincipalDisplay = deps.resolvePrincipalDisplay;
     this.resolvePrincipalByPtyId = deps.resolvePrincipalByPtyId;
+    this.resolvePanePrincipal = deps.resolvePanePrincipal;
     // Channels v2 cursor backfill — member rows persisted before the
     // `lastReadSeq` field existed get the channel HEAD ("start reading from
     // now"), NOT 0: a 0 default would flag the entire history unread on
@@ -2026,14 +2049,20 @@ export class ChannelService {
       // (workspaceId, paneId) lets TWO agents in the SAME workspace (split panes)
       // both be mentioned in one post without the second collapsing into the
       // first; a ws-level mention (no paneId) still dedupes per workspace exactly
-      // as before. `paneId`/`ptyId` are OPAQUE pass-through here: the daemon owns
-      // the workspace (subscription) membership gate, but it does not know the
-      // live pane tree — the RECEIVING renderer resolves paneId in its own leaves
-      // and re-checks ptyId liveness (fail-closed) before pinning the a2a task.
+      // as before. A1: `paneId` is no longer opaque pass-through — the daemon now
+      // proves it is a pane OF the mentioned workspace via the principal registry
+      // (see the pane-pin gate below) because the pin became reachable from MCP.
+      // LIVENESS is still not the daemon's business: the RECEIVING renderer
+      // resolves paneId in its own leaves and re-checks ptyId liveness
+      // (fail-closed) before pinning the a2a task.
       const mentionedKeys = new Set<string>();
       const mentions: ChannelMention[] = [];
       const droppedMentions: ChannelDroppedMention[] = [];
       const droppedWorkspaces = new Set<string>();
+      // A1: refused pane pins, deduped per (workspace, pane) so one report per
+      // distinct refused pane — independent of the per-workspace `not_a_member`
+      // dedup above (a workspace can be a member AND pin an unprovable pane).
+      const refusedPanes = new Set<string>();
       // Build the member-workspace lookup ONCE so membership is O(1) per mention
       // (O(n + m) overall) instead of O(mentions x members) under the lock.
       const memberWorkspaces = new Set(members.map((m) => m.workspaceId));
@@ -2056,7 +2085,77 @@ export class ChannelService {
           }
           continue;
         }
-        const paneId = typeof mn.paneId === 'string' ? mn.paneId : '';
+        // A1 (pane-pinned mentions) — the pane-pin gate. `paneId`/`ptyId` used to
+        // be pure pass-through, which was safe only because the sole producer was
+        // the local composer. `channel_post` can now pin a pane over MCP, so the
+        // daemon must prove the pinned pane belongs to the MENTIONED workspace —
+        // an unproven pin is a cross-workspace paste primitive (pin any string,
+        // and the receiving workspace's degraded single-agent delivery pastes the
+        // nudge into whatever agent it has). The principal registry keys panes as
+        // `pane:${workspaceId}/${paneId}`, so a lookup hit IS the ownership proof.
+        // A refused pin does NOT fail the post: the mention degrades to workspace
+        // level (badge-only — exactly the pre-A1 behavior) and is reported in
+        // droppedMentions, because this file's discipline is "never drop silently".
+        const requestedPaneId = typeof mn.paneId === 'string' ? mn.paneId : '';
+        let paneId = requestedPaneId;
+        let panePtyId = typeof mn.ptyId === 'string' ? mn.ptyId : '';
+        if (requestedPaneId.length > 0 && this.resolvePanePrincipal) {
+          let pane: { ptyId?: string } | undefined;
+          let lookupFailed = false;
+          try {
+            pane = this.resolvePanePrincipal(mn.workspaceId, requestedPaneId);
+          } catch (err) {
+            // Fail CLOSED: a registry that cannot answer has not proven anything,
+            // so the pin is refused rather than passed through unchecked.
+            lookupFailed = true;
+            console.error('[ChannelService] pane principal lookup failed:', err);
+          }
+          if (!pane || lookupFailed) {
+            paneId = '';
+            panePtyId = '';
+            const refusedKey = JSON.stringify([mn.workspaceId, requestedPaneId]);
+            if (!refusedPanes.has(refusedKey)) {
+              refusedPanes.add(refusedKey);
+              droppedMentions.push({
+                workspaceId: mn.workspaceId,
+                paneId: requestedPaneId,
+                reason: 'pane_not_in_workspace',
+                ...(typeof mn.name === 'string' && mn.name.length > 0
+                  ? { name: mn.name.slice(0, 80) }
+                  : {}),
+              });
+            }
+          } else if (panePtyId.length === 0) {
+            // An MCP caller pins a pane by id alone (there is no pty_id field to
+            // forge), so the route-time pty snapshot the receiving renderer
+            // matches on comes from the registry.
+            //
+            // The registry withholds it when no live session is behind the pane.
+            // Passing the pin on without one is not a smaller version of working:
+            // the renderer's match misses, the mention degrades to workspace
+            // level, and the workspace-level paste goes to whatever agent that
+            // workspace still has — so an instruction addressed to a departed
+            // worker starts a SIBLING's turn instead. Refuse it and say so; the
+            // mention still lands as a badge, exactly like an unproven pin.
+            if (pane.ptyId) {
+              panePtyId = pane.ptyId;
+            } else {
+              paneId = '';
+              const deadKey = JSON.stringify([mn.workspaceId, requestedPaneId]);
+              if (!refusedPanes.has(deadKey)) {
+                refusedPanes.add(deadKey);
+                droppedMentions.push({
+                  workspaceId: mn.workspaceId,
+                  paneId: requestedPaneId,
+                  reason: 'pane_not_live',
+                  ...(typeof mn.name === 'string' && mn.name.length > 0
+                    ? { name: mn.name.slice(0, 80) }
+                    : {}),
+                });
+              }
+            }
+          }
+        }
         // Collision-free dedup key: JSON-encode the (workspaceId, paneId) pair so
         // no separator-substring ambiguity can fold two distinct targets onto one
         // key and silently drop the later mention (review-team: codex+GLM).
@@ -2085,8 +2184,9 @@ export class ChannelService {
           workspaceId: mn.workspaceId,
           name: typeof mn.name === 'string' && mn.name.length > 0 ? mn.name.slice(0, 80) : mn.workspaceId,
           ...(mnMemberId !== undefined ? { memberId: mnMemberId } : {}),
-          ...(typeof mn.paneId === 'string' && mn.paneId.length > 0 ? { paneId: mn.paneId } : {}),
-          ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
+          // A1: the EFFECTIVE pane pin — empty when the gate above refused it.
+          ...(paneId.length > 0 ? { paneId } : {}),
+          ...(panePtyId.length > 0 ? { ptyId: panePtyId } : {}),
         });
       }
       // G1: seq는 **선결정**(증가 없음). 로그 모드는 append 성공 후 적용기가

@@ -1189,13 +1189,18 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
 
 server.tool(
   'send_message',
-  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID.',
+  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID. This is the delivery that STARTS an idle agent\'s turn — the receiver gets a one-line nudge pasted into its prompt (unless silent:true). Use it, not channel_post, when you are handing out work: a channel post only raises an unread badge and waits to be polled.',
   SEND_MESSAGE_SHAPE,
   sendMessageHandler,
 );
 
 // Keep a2a_task_send as alias for backward compatibility
-server.tool('a2a_task_send', 'Alias for send_message.', SEND_MESSAGE_SHAPE, sendMessageHandler);
+server.tool(
+  'a2a_task_send',
+  'Alias for send_message. This is how you hand work to another agent: the task is pasted into the receiver\'s prompt and starts its turn. A channel post does not — it is a notification an idle agent will only see when it polls.',
+  SEND_MESSAGE_SHAPE,
+  sendMessageHandler,
+);
 
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
