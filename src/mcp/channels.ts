@@ -1,7 +1,8 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Standard MCP tools (eleven — Channels v2 added channel_ack/channel_unread)
-// that expose the `a2a.channel.*` pipe RPC surface to
+// Standard MCP tools (twelve — Channels v2 added channel_ack/channel_unread,
+// and WorkTask J0 added the two mission tools) that expose the
+// `a2a.channel.*` and `task.mission.*` pipe RPC surfaces to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
