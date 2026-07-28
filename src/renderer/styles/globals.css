@@ -271,7 +271,7 @@
  * 모달·다이얼로그 그림자와 백드롭을 토큰으로 승격. 값은 기존 복붙 리터럴을
  * 그대로 보존한다(시각 불변). --shadow-modal = 다이얼로그 표준(0.75 알파),
  * --shadow-modal-soft = 팔레트/플릿/회사 오버레이(0.7). --backdrop-modal =
- * 표준 모달 백드롭(0.6). 0.55·0.65·0.7 백드롭은 알파가 다륯�로 승격 대상에서
+ * 표준 모달 백드롭(0.6). 0.55·0.65·0.7 백드롭은 알파가 다르므로 승격 대상에서
  * 제외하고 현행 유지(시각 보존). 이 값들은 라이트/다크 무관하게 동일하다. */
 :root {
   --shadow-modal: 0 25px 60px rgba(0, 0, 0, 0.75);
@@ -283,8 +283,8 @@
  * 산재한 z-[N] 임의 리터럴을 명명 레이어로 승격. 값은 기존 리터럴을 그대로
  * 유지하므로 상대 순서가 증명적으로 불변이다. 로컬 스택(z-10/z-20)과 표준
  * Tailwind z-50(=--z-overlay 기준선)은 임의 리터럴이 아니므로 재작성하지 않고
- * 아래에 기준값으로만 문서화한다. 온볼딩 모듈의 자체 클러스터(9999/10000/
- * 10001)도 낼부 결합이 강해 인라인 유지한다.
+ * 아래에 기준값으로만 문서화한다. 온보딩 모듈의 자체 클러스터(9999/10000/
+ * 10001)도 내부 결합이 강해 인라인 유지한다.
  *
  *   40    cheatsheet   기준선(z-50) 아래
  *   50    overlay      드롭다운·메뉴·패널 (표준 Tailwind z-50)
@@ -378,7 +378,7 @@ html, body, #root {
 }
 
 /* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를
-   직접 그려 평평한 커스템 테마 위로 새어나오는 문제를 막는다. checkbox/radio/
+   직접 그려 평평한 커스텀 테마 위로 새어나오는 문제를 막는다. checkbox/radio/
    select는 네이티브 외형(체크표시·드롭다운 화살표)이 필요하므로 건드리지 않는다. */
 button {
   -webkit-appearance: none;
@@ -570,7 +570,7 @@ select option {
  * 깜빡인다(컴포지터 전용, 메인 스레드 비용 0). ::after는 pane-flash와
  * 공유되지만 flash는 500ms 일회성 — 겹치는 순간만 flash가 이기고(뒤 규칙
  * 우선) 끝나면 블링크가 복귀한다. 링이 꺼진 상태에서는 Pane.tsx의 인라인
- * 볼더가 그대로 보인다(기존 50% border-color:var(--bg-surface) 상태와 동등). */
+ * 보더가 그대로 보인다(기존 50% border-color:var(--bg-surface) 상태와 동등). */
 @keyframes pane-complete-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
@@ -585,9 +585,9 @@ select option {
   box-shadow: 0 0 0 2px var(--accent-green) inset;
   animation: pane-complete-blink 1.2s ease-in-out infinite;
 }
-/* pane-flash와 동시 활성 시(공존 지원 — Pane.notificationRing.test) 단일-클리스
+/* pane-flash와 동시 활성 시(공존 지원 — Pane.notificationRing.test) 단일-클래스
  * 규칙끼리는 속성이 병합돼 flash의 background만 남고 blink의 무한 애니메이션이
- * 도는 최악 조합(불투명 오버레이 깜빡임)이 된다. 2-클리스 복합 규칙로 flash
+ * 도는 최악 조합(불투명 오버레이 깜빡임)이 된다. 2-클래스 복합 규칙로 flash
  * 상태를 완전 재기술해 우선시키고, .pane-flash 클래스가 제거되면(500ms 타이머)
  * 위의 blink 규칙이 복귀한다. */
 .pane-complete-blink.pane-flash::after {
@@ -679,7 +679,7 @@ select option {
  * Depth on the active row comes from token-derived color-mix values, so all
  * built-in and custom themes work: the gradient/highlight lean toward
  * --text-main, which flips light/dark direction automatically per theme.
- * Motion is subtle (~150px hovers, 2s breathing glow); everything animated
+ * Motion is subtle (~150ms hovers, 2s breathing glow); everything animated
  * is disabled under prefers-reduced-motion below.
  * --border-soft is the shared softened-border color for sidebar surfaces. */
 
