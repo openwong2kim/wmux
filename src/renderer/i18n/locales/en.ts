@@ -866,6 +866,7 @@ export const en = {
   // Trash lifecycle — soft delete, undo, and permanent deletion.
   'channels.trash': 'Trash',
   'channels.trashTooltip': 'Move to trash',
+  'channels.trashConfirm': 'Confirm — this also archives the channel (read-only, one-way)',
   'channels.restoreTooltip': 'Restore from trash',
   'channels.emptyTrash': 'Empty trash',
   'channels.emptyTrashConfirm': 'Delete permanently?',

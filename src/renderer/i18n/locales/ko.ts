@@ -714,6 +714,7 @@ export const ko = {
   // Trash lifecycle — soft delete, undo, and permanent deletion.
   'channels.trash': '휴지통',
   'channels.trashTooltip': '휴지통으로 이동',
+  'channels.trashConfirm': '확인 — 채널도 함께 보관됩니다(읽기 전용, 되돌릴 수 없음)',
   'channels.restoreTooltip': '휴지통에서 복원',
   'channels.emptyTrash': '휴지통 비우기',
   'channels.emptyTrashConfirm': '영구 삭제할까요?',

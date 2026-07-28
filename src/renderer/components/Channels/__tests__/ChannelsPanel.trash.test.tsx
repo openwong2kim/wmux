@@ -107,6 +107,19 @@ describe('ChannelsPanelView — trash group', () => {
     expect(renderPanel(channels, { onTrash: () => {} })).toContain('data-channel-trash');
   });
 
+  it('arms the trash action on ACTIVE rows (one misclick must not archive a live room)', () => {
+    // Trashing an active channel archives it in the same commit and restore
+    // does NOT un-archive, so the active-group action carries the two-click
+    // armed confirm (`data-armed` present, starting disarmed). The behaviour of
+    // the two clicks lives in ChannelItem.trashConfirm.dynamic.test.tsx; this
+    // pins the wiring the panel is responsible for.
+    const html = renderPanel([makeChannel({ id: 'ch-a', name: 'alpha' })], {
+      onTrash: (): void => undefined,
+    });
+    expect(html).toContain('data-channel-trash');
+    expect(html).toContain('data-armed="false"');
+  });
+
   it('does not offer empty-trash without a confirm step', () => {
     const html = renderPanel(
       [makeChannel({ id: 'ch-t1', name: 'mission-one', status: 'archived', trashedAt: 1 })],

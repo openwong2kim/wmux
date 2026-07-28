@@ -555,6 +555,23 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         : undefined,
     [onTrash, t],
   );
+  // Trashing an ACTIVE channel archives it in the same commit, and restore does
+  // not un-archive — so that one is a two-click armed confirm (ChannelView's
+  // archive pattern). The Archived group reuses the plain one-click action:
+  // trashing an already-archived row changes nothing that restore can't undo.
+  const trashActionActive = useMemo(
+    () =>
+      trashAction
+        ? {
+            ...trashAction,
+            requiresConfirm: true,
+            confirmLabel:
+              t('channels.trashConfirm') ||
+              'Confirm — this also archives the channel (read-only, one-way)',
+          }
+        : undefined,
+    [trashAction, t],
+  );
   const restoreAction = useMemo(
     () =>
       onRestore
@@ -692,7 +709,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                 mentioned={(channelMentions[ch.id] ?? 0) > 0}
                 observedLabel={t('channels.observedBadge') || 'observed'}
                 onSelect={onSelect}
-                {...(trashAction ? { action: trashAction } : {})}
+                {...(trashActionActive ? { action: trashActionActive } : {})}
               />
             ))}
           </div>
@@ -1294,6 +1311,9 @@ export function ChannelsPanel(): React.ReactElement {
       .map((c) => c.id);
     void Promise.all(ids.map((id) => destroyChannelDaemon(id, HUMAN_WORKSPACE_ID))).then(
       (results) => {
+        // `destroyChannelDaemon` already reports CHANNEL_NOT_FOUND as success
+        // (the row was gone before we got there — that is the requested end
+        // state), so a concurrent sweep can't inflate this count.
         const failed = results.filter((r) => !r.ok).length;
         if (failed > 0) {
           pushToast({
