@@ -69,7 +69,11 @@ import { useT } from '../../hooks/useT';
 // ─── Grouping / aggregation helpers (pure, exported for unit tests) ──────────
 
 /** Pure grouping helper. Sorted by name (active / discoverable) or
- *  archivedAt descending (archived).
+ *  archivedAt descending (archived) / trashedAt descending (trash).
+ *
+ *  `trash` is checked BEFORE `archived`: a trashed channel is always also
+ *  archived, and the whole point of the trash is that it takes the row OUT of
+ *  the list you were trying to clear. Restoring puts it back in `archived`.
  *
  *  `isMember` (optional) splits non-archived channels into "joined" (active)
  *  vs "joinable" (discoverable): a public channel the caller is NOT a member
@@ -89,11 +93,17 @@ export function groupChannels(
   active: Channel[];
   archived: Channel[];
   discoverable: Channel[];
+  trashed: Channel[];
 } {
   const active: Channel[] = [];
   const archived: Channel[] = [];
   const discoverable: Channel[] = [];
+  const trashed: Channel[] = [];
   for (const c of channels) {
+    if (c.trashedAt !== undefined) {
+      trashed.push(c);
+      continue;
+    }
     if (c.status === 'archived') {
       archived.push(c);
       continue;
@@ -119,7 +129,8 @@ export function groupChannels(
   active.sort((a, b) => a.name.localeCompare(b.name));
   archived.sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
   discoverable.sort((a, b) => a.name.localeCompare(b.name));
-  return { active, archived, discoverable };
+  trashed.sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
+  return { active, archived, discoverable, trashed };
 }
 
 /** Aggregated unread count across every channel. Mirrors the slice's
@@ -437,6 +448,14 @@ export interface ChannelsPanelViewProps {
   /** Join a private/discoverable channel as the operator. The View shows the
    *  confirm dialog and calls this only after the operator confirms. */
   onOperatorJoin?: (channelId: string) => void;
+  /** Move a channel to the trash — the only way to get a row out of the
+   *  sidebar. Wiring this turns the per-row trash affordance on. */
+  onTrash?: (channelId: string) => void;
+  /** Bring a channel back from the trash (into the Archived group). */
+  onRestore?: (channelId: string) => void;
+  /** Permanently delete everything in the trash. The View shows the confirm
+   *  dialog and calls this only after the operator confirms. */
+  onEmptyTrash?: () => void;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -457,6 +476,9 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     operatorChannels,
     onOperatorToggle,
     onOperatorJoin,
+    onTrash,
+    onRestore,
+    onEmptyTrash,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -464,6 +486,11 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
   const newBtnRef = useRef<HTMLButtonElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [discoverExpanded, setDiscoverExpanded] = useState(false);
+  // Trash is collapsed by default for the same reason Archived is: it is where
+  // rows go to stop taking up space.
+  const [trashExpanded, setTrashExpanded] = useState(false);
+  // Emptying the trash is irreversible, so it goes through a confirm step.
+  const [emptyTrashPending, setEmptyTrashPending] = useState(false);
   // operator-join (§3): the section is COLLAPSED by default — this collapse is the
   // intent gate (private channel names do not exist on screen until expanded).
   const [operatorExpanded, setOperatorExpanded] = useState(false);
@@ -505,13 +532,40 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         : undefined,
     [memberChannelIds],
   );
-  const { active, archived, discoverable } = useMemo(
+  const { active, archived, discoverable, trashed } = useMemo(
     () => groupChannels(channelList, isMember),
     [channelList, isMember],
   );
   const totalUnread = useMemo(
     () => sumUnread(channelUnread),
     [channelUnread],
+  );
+  // Row actions — trash on the visible groups, restore on the trashed ones.
+  // Both are undefined when the host does not wire the handler, which keeps the
+  // affordance off for tests/legacy callers.
+  const trashAction = useMemo(
+    () =>
+      onTrash
+        ? {
+            label: t('channels.trashTooltip') || 'Move to trash',
+            glyph: '×',
+            onClick: onTrash,
+            testAttr: 'data-channel-trash',
+          }
+        : undefined,
+    [onTrash, t],
+  );
+  const restoreAction = useMemo(
+    () =>
+      onRestore
+        ? {
+            label: t('channels.restoreTooltip') || 'Restore from trash',
+            glyph: '↩',
+            onClick: onRestore,
+            testAttr: 'data-channel-restore',
+          }
+        : undefined,
+    [onRestore, t],
   );
 
   // Channels are decoupled from in-app Company mode (the daemon scopes every
@@ -638,6 +692,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                 mentioned={(channelMentions[ch.id] ?? 0) > 0}
                 observedLabel={t('channels.observedBadge') || 'observed'}
                 onSelect={onSelect}
+                {...(trashAction ? { action: trashAction } : {})}
               />
             ))}
           </div>
@@ -735,9 +790,97 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       unreadCount={channelUnread[ch.id] ?? 0}
                       mentioned={(channelMentions[ch.id] ?? 0) > 0}
                       onSelect={onSelect}
+                      {...(trashAction ? { action: trashAction } : {})}
                     />
                   ))}
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* Trash group — collapsed by default, below Archived. Rows here are
+                out of the way but recoverable; the retention sweep empties the
+                group on its own after the configured window. */}
+          {trashed.length > 0 && (
+            <div className="mt-1" data-channels-trash-group>
+              <button
+                type="button"
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                onClick={() => setTrashExpanded((v) => !v)}
+                aria-expanded={trashExpanded}
+                data-channels-trash-toggle
+                {...tokenAttrs('textMuted', 'text')}
+              >
+                <span
+                  className={`transition-transform ${trashExpanded ? 'rotate-90' : ''}`}
+                  aria-hidden="true"
+                >
+                  <IconChevron size={9} />
+                </span>
+                <span>
+                  {t('channels.trash') || 'Trash'} ({trashed.length})
+                </span>
+              </button>
+              {trashExpanded && (
+                <>
+                  <div className="space-y-0.5 opacity-50">
+                    {trashed.map((ch) => (
+                      <ChannelItem
+                        key={ch.id}
+                        channel={ch}
+                        isActive={activeChannelId === ch.id}
+                        unreadCount={0}
+                        onSelect={onSelect}
+                        {...(restoreAction ? { action: restoreAction } : {})}
+                      />
+                    ))}
+                  </div>
+                  {onEmptyTrash && (
+                    <div className="px-4 pt-1">
+                      {emptyTrashPending ? (
+                        <div className="flex items-center gap-2" data-channels-empty-trash-confirm>
+                          <span
+                            className="text-[9px] font-mono text-[var(--text-muted)]"
+                            {...tokenAttrs('textMuted', 'text')}
+                          >
+                            {t('channels.emptyTrashConfirm') || 'Delete permanently?'}
+                          </span>
+                          <button
+                            type="button"
+                            className={`text-[9px] font-mono uppercase tracking-widest text-[var(--accent-red)] hover:underline ${FOCUS_RING}`}
+                            onClick={() => {
+                              setEmptyTrashPending(false);
+                              onEmptyTrash();
+                            }}
+                            data-channels-empty-trash-yes
+                            {...tokenAttrs('danger', 'accent')}
+                          >
+                            {t('channels.emptyTrashYes') || 'Delete'}
+                          </button>
+                          <button
+                            type="button"
+                            className={`text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:underline ${FOCUS_RING}`}
+                            onClick={() => setEmptyTrashPending(false)}
+                            data-channels-empty-trash-cancel
+                            {...tokenAttrs('textMuted', 'text')}
+                          >
+                            {t('channels.cancel') || 'Cancel'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+                          onClick={() => setEmptyTrashPending(true)}
+                          data-channels-empty-trash
+                          {...tokenAttrs('textMuted', 'text')}
+                        >
+                          {t('channels.emptyTrash') || 'Empty trash'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -922,6 +1065,9 @@ export function ChannelsPanel(): React.ReactElement {
   const joinChannelDaemon = useStore((s) => s.joinChannelDaemon);
   const operatorListDaemon = useStore((s) => s.operatorListDaemon);
   const operatorJoinDaemon = useStore((s) => s.operatorJoinDaemon);
+  const trashChannelDaemon = useStore((s) => s.trashChannelDaemon);
+  const restoreChannelDaemon = useStore((s) => s.restoreChannelDaemon);
+  const destroyChannelDaemon = useStore((s) => s.destroyChannelDaemon);
   const pushToast = useStore((s) => s.pushToast);
   // Dock host wiring: the panel's collapse affordance folds the whole dock
   // away (the panel is the dock's only host — the old separate dock header
@@ -1108,6 +1254,57 @@ export function ChannelsPanel(): React.ReactElement {
     });
   }, [pushToast, t]);
 
+  // Trash lifecycle. The operator identity is the reserved ws-human seat, which
+  // is exactly what the daemon's lifecycle gate accepts for a channel the human
+  // only observes (a mission room it was never a member of).
+  const handleTrash = useCallback(
+    (channelId: string) => {
+      const channelName = channels[channelId]?.name ?? channelId;
+      void trashChannelDaemon(channelId, HUMAN_WORKSPACE_ID).then((result) => {
+        if (!result.ok) {
+          pushToast({
+            level: 'error',
+            message: t('channels.trashFailedToast', { channel: channelName }),
+          });
+        }
+      });
+    },
+    [channels, trashChannelDaemon, pushToast, t],
+  );
+
+  const handleRestore = useCallback(
+    (channelId: string) => {
+      const channelName = channels[channelId]?.name ?? channelId;
+      void restoreChannelDaemon(channelId, HUMAN_WORKSPACE_ID).then((result) => {
+        if (!result.ok) {
+          pushToast({
+            level: 'error',
+            message: t('channels.restoreFailedToast', { channel: channelName }),
+          });
+        }
+      });
+    },
+    [channels, restoreChannelDaemon, pushToast, t],
+  );
+
+  const handleEmptyTrash = useCallback(() => {
+    // Snapshot the ids first — each destroy mutates the mirror we are reading.
+    const ids = Object.values(channels)
+      .filter((c) => c.trashedAt !== undefined)
+      .map((c) => c.id);
+    void Promise.all(ids.map((id) => destroyChannelDaemon(id, HUMAN_WORKSPACE_ID))).then(
+      (results) => {
+        const failed = results.filter((r) => !r.ok).length;
+        if (failed > 0) {
+          pushToast({
+            level: 'error',
+            message: t('channels.emptyTrashFailedToast', { count: String(failed) }),
+          });
+        }
+      },
+    );
+  }, [channels, destroyChannelDaemon, pushToast, t]);
+
   return (
     <ChannelsPanelView
       channels={channels}
@@ -1122,6 +1319,9 @@ export function ChannelsPanel(): React.ReactElement {
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
       onRefresh={handleRefresh}
+      onTrash={handleTrash}
+      onRestore={handleRestore}
+      onEmptyTrash={handleEmptyTrash}
       daemonStale={channelsDaemonStale}
       operatorChannels={operatorChannels}
       onOperatorToggle={handleOperatorToggle}

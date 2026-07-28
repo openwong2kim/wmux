@@ -28,6 +28,17 @@ export interface ChannelItemViewProps {
    *  local human operator watches but has not joined). Defaults to 'observed'. */
   observedLabel?: string;
   onSelect: (channelId: string) => void;
+  /** Optional trailing action, revealed on row hover/focus. Wired by the panel
+   *  for the trash affordance (and the restore affordance on trashed rows) —
+   *  the row itself stays presentational and does not know what it does. */
+  action?: {
+    label: string;
+    /** Single glyph rendered in the button. */
+    glyph: string;
+    onClick: (channelId: string) => void;
+    /** Diagnostic attribute name, e.g. `data-channel-trash`. */
+    testAttr: string;
+  };
 }
 
 /** Sidebar row for a single channel. Renders `#name`, an unread badge
@@ -42,6 +53,7 @@ export function ChannelItemView({
   mentioned = false,
   observedLabel = 'observed',
   onSelect,
+  action,
 }: ChannelItemViewProps): React.ReactElement {
   const showBadge = unreadCount > 0 || mentioned;
   const observed = channel.observed === true;
@@ -93,6 +105,24 @@ export function ChannelItemView({
           {mentioned && <span aria-hidden="true">@</span>}
           {unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : ''}
         </span>
+      )}
+      {action && (
+        <button
+          type="button"
+          {...{ [action.testAttr]: 'true' }}
+          title={action.label}
+          aria-label={action.label}
+          // Hidden until the row is hovered/focused so the resting sidebar
+          // stays as quiet as it is today (DESIGN.md: no decoration at rest).
+          className="flex-shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-main)] transition-opacity"
+          onClick={(e) => {
+            e.stopPropagation(); // never let the action double as a row select
+            action.onClick(channel.id);
+          }}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {action.glyph}
+        </button>
       )}
     </div>
   );
