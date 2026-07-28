@@ -533,9 +533,24 @@ export async function collectSessionDiff(
   ];
 
   const statusArgv = argv('status', '--porcelain', '-z', '--untracked-files=all');
+  // `--histogram` rather than git's default Myers. An agent's work is
+  // movement-heavy — blocks relocated, helpers hoisted — and Myers anchors
+  // that on incidental repeated lines, splitting one move into several
+  // interleaved hunks. Histogram weights rare lines as anchors and emits the
+  // same change as fewer hunks, which is the whole point on a screen someone
+  // is approving from.
+  //
+  // On the argv for DETERMINISM, not as hardening: an explicit flag outranks
+  // config, so the phone renders the same hunks regardless of a
+  // `diff.algorithm` in the user's global or repo config. It is deliberately
+  // NOT part of `GIT_HARDENING_CONFIG` — that list exists to defuse config
+  // keys a hostile checkout could turn into code execution, and
+  // `diff.algorithm` is not one: it lives in `.git/config`, which `git clone`
+  // does not transfer, so a repo an agent cloned cannot set it in the first
+  // place. Filing it under hardening would overstate what it defends against.
   const [staged, unstaged, status] = await Promise.all([
-    run(argv('diff', '--cached', '--no-ext-diff', '--no-textconv'), cwd),
-    run(argv('diff', '--no-ext-diff', '--no-textconv'), cwd),
+    run(argv('diff', '--histogram', '--cached', '--no-ext-diff', '--no-textconv'), cwd),
+    run(argv('diff', '--histogram', '--no-ext-diff', '--no-textconv'), cwd),
     run(statusArgv, cwd),
   ]);
 

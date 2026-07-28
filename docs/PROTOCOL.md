@@ -167,8 +167,9 @@ Stdio MCP transport doesn't carry server-initiated notifications cleanly, and `d
 Today, `cursor` is a monotonic 64-bit integer assigned by the bus. **Clients must not depend on this.** The substrate guarantees only:
 
 - `cursor: 0` always means "replay from oldest in the ring."
-- `nextCursor` returned from `events.poll` is the right value to pass back on the next poll. Do not increment, sort, or compare it.
-- `nextCursor` is monotonically non-decreasing across calls from the same client (strictly increasing only when new events were delivered). Specifically: `nextCursor >= priorCursor` always; `nextCursor > priorCursor` if and only if at least one event was scanned past the cursor (including filter no-matches, which still advance the cursor — see §2.3).
+- On a response without `resync`, `nextCursor` is the right value to pass back on the next poll. Pass it back verbatim; do not increment it or clamp it against an earlier cursor.
+- **Normal advancement.** On a response without `resync`, `nextCursor >= priorCursor`, and `nextCursor > priorCursor` if and only if at least one event was scanned past the cursor (including filter no-matches, which still advance the cursor — see §2.3).
+- **Replacement during resync.** On a response carrying `resync: true`, `nextCursor` is a replacement, not an advancement, and MAY be lower than `priorCursor` — including `0` against an empty ring. This lets the raw poll stream re-anchor a cursor that pointed past the newest event (`cursor > latestSeq`, §2.5); a cursor that merely drifted past the ring window still advances. Do not clamp or otherwise rewrite the replacement. The required client recovery is §2.5, not simply another poll: call `pane.list` and resume from its `asOfSeq`, which supersedes this response's `nextCursor`. A client that retries directly with `cursor = Math.max(cursor, nextCursor)` never re-anchors and repeats the same resync page indefinitely.
 
 Future evolutions (sharded rings, segmented cursors) may change the underlying encoding without notice. Opaque-cursor clients are unaffected.
 
