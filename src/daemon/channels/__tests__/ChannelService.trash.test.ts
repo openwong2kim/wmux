@@ -231,6 +231,28 @@ describe('③ retention sweep', () => {
     expect(row(svc, fresh)).toBeDefined();
   });
 
+  it('does not even ATTEMPT to destroy a channel outside the trash', async () => {
+    // Asserting on the outcome alone cannot tell "the sweep selected the right
+    // channels" from "the sweep selected everything and destroy() refused" —
+    // mutation testing caught exactly that hole. Spy on the call so the
+    // SELECTION is pinned independently of the precondition backing it up.
+    const { svc, setClock } = makeService({ trashTtlHours: 1 });
+    const untrashed = await makeMissionChannel(svc, 'mission-untrashed');
+    await svc.archive({
+      channelId: untrashed,
+      archivedBy: 'ws-agent',
+      verifiedWorkspaceId: 'ws-agent',
+    });
+    const doomed = await makeMissionChannel(svc, 'mission-doomed');
+    await svc.trash({ channelId: doomed, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    const destroySpy = vi.spyOn(svc, 'destroy');
+
+    setClock(T0 + 10_000 * HOUR);
+    await svc.sweepRetention();
+
+    expect(destroySpy.mock.calls.map((c) => c[0].channelId)).toEqual([doomed]);
+  });
+
   it('never touches channels outside the trash', async () => {
     const { svc, setClock } = makeService({ trashTtlHours: 1 });
     const active = await makeMissionChannel(svc, 'mission-active');
@@ -250,15 +272,21 @@ describe('③ retention sweep', () => {
     expect(row(svc, archived)?.status).toBe('archived');
   });
 
-  it('auto-trash is off by default and moves (not deletes) when enabled', async () => {
+  it('auto-trash moves (not deletes) archived channels, and only archived ones', async () => {
     const { svc, setClock } = makeService({ autoTrashArchivedHours: 24, trashTtlHours: 30 * 24 });
     const id = await makeMissionChannel(svc);
     await svc.archive({ channelId: id, archivedBy: 'ws-agent', verifiedWorkspaceId: 'ws-agent' });
+    // A live channel of the same age must not be swept up with it — auto-trash
+    // is an ARCHIVED-channel policy, and hiding a room people still post in
+    // would be the worst possible reading of "periodic cleanup".
+    const live = await makeMissionChannel(svc, 'mission-live');
 
     setClock(T0 + 48 * HOUR);
     const swept = await svc.sweepRetention();
 
     expect(swept.trashed).toEqual([id]);
+    expect(row(svc, live)?.status).toBe('active');
+    expect(row(svc, live)?.trashedAt).toBeUndefined();
     expect(swept.destroyed).toEqual([]);
     // Moved to the trash, still recoverable with its history.
     expect(row(svc, id)?.trashedAt).toBe(T0 + 48 * HOUR);
