@@ -427,7 +427,7 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
 // shell-URL tests reach their internals.
 interface AutoOpenInternals {
   setWorkspaceIdResolver(resolver: () => Promise<string>): void;
-  attemptAutoOpen(): Promise<boolean>;
+  attemptAutoOpen(): Promise<{ surfaceId?: string } | null>;
 }
 function autoOpen(engine: PlaywrightEngine): AutoOpenInternals {
   return engine as unknown as AutoOpenInternals;
@@ -443,9 +443,11 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
   it('sends browser.open with the workspaceId from the wired resolver', async () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
-    mockSendRpc.mockResolvedValue({});
+    mockSendRpc.mockResolvedValue({ ok: true, surfaceId: 'surf-new' });
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(true);
+    // The reply's surfaceId comes back so the caller can pin the surface it
+    // just asked for, without having to prove ownership of it afterwards.
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toEqual({ surfaceId: 'surf-new' });
 
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   });
@@ -456,7 +458,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       throw new Error('Workspace identity unknown');
     });
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -465,7 +467,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => '');
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -473,7 +475,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
   it('fails closed when no resolver is wired', async () => {
     const engine = PlaywrightEngine.getInstance();
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -565,6 +567,73 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const page = await engine.getPage();
 
     expect(page).toBe(webviewPage);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
+  }, 15_000);
+
+  it('auto-open still returns a page against a main too old to tag targets', async () => {
+    // The one legacy case this PR keeps functional: a main that ignores the
+    // scope request and reports NO live targets at all is unambiguous — nothing
+    // exists to cross into — so we auto-open our own surface.
+    //
+    // Re-deriving the surface afterwards did not work here. The just-opened
+    // target carries no workspaceId, so resolveCallerSurface() found nothing
+    // tagged and THREW; the throw was swallowed by the auto-open catch,
+    // callerHasNoSurface stayed true, discovery stayed skipped, and getPage()
+    // returned null. The panel opened and its page was unreachable — the
+    // exception documented as "still functional" was not. The surfaceId now
+    // comes from browser.open's own reply, which needs no tagging.
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    let opened = false;
+
+    const webviewPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://example.com/'),
+      context: vi.fn(),
+    };
+    const openedSession = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: opened
+                ? [{ targetId: 'wc-legacy', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+                : [],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockImplementation(() => (opened ? [webviewPage] : [])),
+      newCDPSession: vi.fn().mockImplementation(async () => openedSession),
+    };
+    webviewPage.context.mockReturnValue(ctx);
+
+    mockConnectOverCDP.mockResolvedValue({
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => openedSession),
+      contexts: vi.fn().mockImplementation(() => (opened ? [ctx] : [])),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        // No `targetsScoped`, and the opened target carries no workspaceId —
+        // this main does not tag anything.
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          targets: opened ? [{ surfaceId: 'surf-legacy', targetId: 'wc-legacy' }] : [],
+        });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true, surfaceId: 'surf-legacy' });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+
+    await expect(engine.getPage()).resolves.toBe(webviewPage);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
 });

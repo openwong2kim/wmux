@@ -637,7 +637,8 @@ export class PlaywrightEngine {
         if (attempt === 1 && !this.autoOpenAttempted.has(ctx.key) && !surfaceId) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           try {
-            if (await this.attemptAutoOpen()) {
+            const opened = await this.attemptAutoOpen();
+            if (opened) {
               // Latch (per context) only once the RPC actually went out, so a
               // fail-closed skip (no resolver / unresolved identity) leaves a
               // later call free to retry instead of spending the one-shot
@@ -647,14 +648,39 @@ export class PlaywrightEngine {
               await sleep(2000);
               await this.disconnect();
               await this.ensureConnected();
-              // The just-opened surface belongs to the caller's workspace, so
-              // re-resolve to pin it (#554) — otherwise callerHasNoSurface would
-              // keep skipping Strategies 1-3 and the new page is never found.
+              // Pin the surface we just opened (#554) — otherwise
+              // callerHasNoSurface keeps skipping Strategies 1-3 and the new
+              // page is never found.
+              //
+              // Take it from browser.open's own reply rather than re-deriving
+              // it. Re-deriving went through resolveCallerSurface(), which on a
+              // main too old to tag targets THROWS — and that main is exactly
+              // the one whose empty target list sent us down this branch. The
+              // throw landed in the catch below, callerHasNoSurface stayed
+              // true, and the auto-open opened a panel whose page could never
+              // be returned. We asked for this surface, so no proof is owed.
               if (callerHasNoSurface) {
-                const owned = await this.resolveCallerSurface();
-                if (owned.kind === 'surface') {
-                  surfaceId = owned.surfaceId;
+                if (opened.surfaceId) {
+                  surfaceId = opened.surfaceId;
                   callerHasNoSurface = false;
+                } else {
+                  // A main that did not name the surface. Fall back to
+                  // re-deriving. A refusal here is caught rather than thrown
+                  // on: the retry then finds nothing and getPage() returns
+                  // null, which is the same answer, but it arrives through the
+                  // normal path instead of aborting the loop mid-way.
+                  try {
+                    const owned = await this.resolveCallerSurface();
+                    if (owned.kind === 'surface') {
+                      surfaceId = owned.surfaceId;
+                      callerHasNoSurface = false;
+                    }
+                  } catch (resolveErr) {
+                    console.error(
+                      '[PlaywrightEngine] Could not pin the auto-opened surface:',
+                      resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
+                    );
+                  }
                 }
               }
               continue; // retry page discovery
@@ -701,10 +727,17 @@ export class PlaywrightEngine {
    * caller then proceeds to the normal "no page" retry/error path, surfacing
    * the existing "Call browser_open first" guidance to the user.
    */
-  private async attemptAutoOpen(): Promise<boolean> {
+  /**
+   * @returns the surface that was opened (`surfaceId` absent if the reply did
+   *   not name one), or null when the attempt was skipped fail-closed.
+   *
+   * The surfaceId matters: it is the ONE selection this engine can make without
+   * having to prove anything, because we are the ones who just asked for it.
+   */
+  private async attemptAutoOpen(): Promise<{ surfaceId?: string } | null> {
     if (!this.workspaceIdResolver) {
       console.error('[PlaywrightEngine] Auto-open skipped: no workspace resolver wired');
-      return false;
+      return null;
     }
     let workspaceId: string;
     try {
@@ -714,14 +747,15 @@ export class PlaywrightEngine {
         '[PlaywrightEngine] Auto-open skipped: workspace identity unresolved:',
         err instanceof Error ? err.message : String(err),
       );
-      return false;
+      return null;
     }
     if (!workspaceId) {
       console.error('[PlaywrightEngine] Auto-open skipped: empty workspace id');
-      return false;
+      return null;
     }
-    await sendRpc('browser.open', { workspaceId });
-    return true;
+    const reply = (await sendRpc('browser.open', { workspaceId })) as { surfaceId?: unknown } | undefined;
+    const surfaceId = typeof reply?.surfaceId === 'string' && reply.surfaceId ? reply.surfaceId : undefined;
+    return surfaceId ? { surfaceId } : {};
   }
 
   /**
