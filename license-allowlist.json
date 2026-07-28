@@ -12,6 +12,12 @@
     "retires the exception and requires a fresh reading. That is deliberate: the",
     "maintenance cost is the mechanism.",
     "",
+    "Ask TWO questions, not one. 'Is it copyleft?' governs source disclosure. 'Is",
+    "redistribution granted?' governs whether we may ship it at all — a permissive-",
+    "sounding proprietary licence can grant use and stay silent on distribution, and",
+    "silence is not permission. Record the answer to both, and mark either one",
+    "'unresolved' rather than letting the copyleft answer stand in for both.",
+    "",
     "Never add an entry for a copyleft or source-available license (GPL, AGPL, LGPL,",
     "SSPL, BUSL, Elastic). Those are disqualifying for the signed binaries we ship;",
     "the dependency has to go instead.",
@@ -26,8 +32,9 @@
       "declaredLicense": "SEE LICENSE IN README.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Proprietary Anthropic terms, not copyleft. LICENSE.md reads in full: '(c) Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.' The README section the manifest points at links the same Commercial Terms of Service. Grants use of the published package; imposes no source-disclosure obligation on wmux. Redistributed as an unmodified npm dependency.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Proprietary Anthropic terms, not copyleft. LICENSE.md reads in full: '(c) Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.' The README section the manifest points at links the same Commercial Terms of Service. Grants use of the published package; imposes no source-disclosure obligation on wmux. Redistributed as an unmodified npm dependency. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
@@ -35,8 +42,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary for @anthropic-ai/claude-agent-sdk. Its LICENSE.md was read on disk and is byte-identical to the parent package's — the same Anthropic proprietary terms, not copyleft.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary for @anthropic-ai/claude-agent-sdk. Its LICENSE.md was read on disk and is byte-identical to the parent package's — the same Anthropic proprietary terms, not copyleft. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-darwin-x64",
@@ -44,8 +52,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-linux-arm64",
@@ -53,8 +62,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
@@ -62,8 +72,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-linux-x64",
@@ -71,8 +82,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
@@ -80,8 +92,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-win32-arm64",
@@ -89,8 +102,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     },
     {
       "name": "@anthropic-ai/claude-agent-sdk-win32-x64",
@@ -98,8 +112,9 @@
       "declaredLicense": "SEE LICENSE IN LICENSE.md",
       "licenseFile": "LICENSE.md",
       "licenseTerms": "https://code.claude.com/docs/en/legal-and-compliance",
-      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling.",
-      "reviewedOn": "2026-07-28"
+      "reason": "Platform binary sibling of @anthropic-ai/claude-agent-sdk-darwin-arm64, published from the same source at the same version and carrying the same Anthropic proprietary terms. Not installable on the reviewer's platform; covered by the reading of the parent package and of the darwin-arm64 sibling. OPEN QUESTION — redistribution is not granted, only use. LICENSE.md reserves all rights; the linked Anthropic terms grant permission to USE the Services and are silent on redistributing, sublicensing or bundling SDK packages. wmux ships this package inside a signed installer, which is redistribution, not use. Read on 2026-07-28: no clause found either permitting or forbidding it. Recorded here so a later reader does not mistake this entry for a settled question. Not copyleft, so no source-disclosure obligation either way; the exposure is redistribution rights. Removing the package from the bundle and resolving it on the user's machine would retire the question entirely.",
+      "reviewedOn": "2026-07-28",
+      "redistributionStatus": "unresolved"
     }
   ]
 }
