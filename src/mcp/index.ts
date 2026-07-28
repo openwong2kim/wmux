@@ -1382,8 +1382,8 @@ registerPaneLifecycleTools(
     resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
   },
   {
+    profile: COMMANDER_MODE ? 'commander' : 'full',
     context: {
-      profile: COMMANDER_MODE ? 'commander' : 'full',
       // clientInfo is self-declared telemetry. Until the MCP transport issues an
       // authenticated principal, catalog invocation stays explicitly powerless.
       principal: { kind: 'unattributed' },

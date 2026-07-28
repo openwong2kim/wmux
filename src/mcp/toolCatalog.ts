@@ -14,14 +14,14 @@ export type WmuxToolProfile = 'full' | 'core' | 'commander';
 /**
  * Catalog invocation identity. `unattributed` is deliberately powerless: the
  * catalog must never turn profile, MCP clientInfo, or annotations into auth.
- * Only a future authenticated transport adapter may construct `transport`.
+ * A future authenticated transport principal needs a private, branded
+ * constructor; Phase 1 intentionally has no public privileged variant.
  */
-export type WmuxOperationPrincipal =
-  | { readonly kind: 'unattributed' }
-  | { readonly kind: 'transport'; readonly id: string };
+export interface WmuxOperationPrincipal {
+  readonly kind: 'unattributed';
+}
 
 export interface WmuxOperationContext {
-  readonly profile: WmuxToolProfile;
   readonly principal: WmuxOperationPrincipal;
 }
 
@@ -58,6 +58,7 @@ type WmuxToolDraft<Name extends string, Shape extends z.ZodRawShape> =
   };
 
 export interface RegisterWmuxToolsOptions {
+  readonly profile: WmuxToolProfile;
   readonly context: WmuxOperationContext;
 }
 
@@ -90,6 +91,16 @@ function assertValidToolSpec(spec: WmuxToolSpec): void {
   }
 }
 
+function freezeWmuxToolSpec<Name extends string>(
+  spec: WmuxToolSpec<Name>,
+): WmuxToolSpec<Name> {
+  // The container freeze is intentionally shallow. Zod nodes use immutable
+  // builder methods and remain shared across broker connections.
+  Object.freeze(spec.inputSchema);
+  Object.freeze(spec.profiles);
+  return Object.freeze(spec);
+}
+
 /**
  * Define and freeze one descriptor while preserving its literal name and exact
  * input type. Zod nodes are treated as immutable values; the raw shape
@@ -110,7 +121,7 @@ export function defineWmuxTool<
     invoke: draft.invoke as unknown as WmuxToolSpec<Name>['invoke'],
   };
   assertValidToolSpec(spec);
-  return Object.freeze(spec);
+  return freezeWmuxToolSpec(spec);
 }
 
 /**
@@ -124,11 +135,12 @@ export function selectWmuxTools(
 ): readonly WmuxToolSpec[] {
   const names = new Set<string>();
   for (const spec of specs) {
-    assertValidToolSpec(spec);
-    if (names.has(spec.name)) {
-      throw new Error(`duplicate wmux tool name: ${spec.name}`);
+    const frozenSpec = freezeWmuxToolSpec(spec);
+    assertValidToolSpec(frozenSpec);
+    if (names.has(frozenSpec.name)) {
+      throw new Error(`duplicate wmux tool name: ${frozenSpec.name}`);
     }
-    names.add(spec.name);
+    names.add(frozenSpec.name);
   }
   return Object.freeze(specs.filter((spec) => spec.profiles.includes(profile)));
 }
@@ -143,20 +155,13 @@ export function registerWmuxTools(
   specs: readonly WmuxToolSpec[],
   options: RegisterWmuxToolsOptions,
 ): readonly RegisteredTool[] {
-  if (!TOOL_PROFILES.has(options.context.profile)) {
-    throw new Error(`unknown wmux tool profile: ${String(options.context.profile)}`);
-  }
-  if (
-    options.context.principal.kind === 'transport' &&
-    !options.context.principal.id.trim()
-  ) {
-    throw new Error('transport principals must have a non-empty id');
+  if (!TOOL_PROFILES.has(options.profile)) {
+    throw new Error(`unknown wmux tool profile: ${String(options.profile)}`);
   }
   const context: WmuxOperationContext = Object.freeze({
-    profile: options.context.profile,
     principal: Object.freeze({ ...options.context.principal }),
   });
-  const selected = selectWmuxTools(specs, context.profile);
+  const selected = selectWmuxTools(specs, options.profile);
   return Object.freeze(
     selected.map((spec) =>
       server.registerTool(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import {
   defineWmuxTool,
@@ -24,7 +24,9 @@ function makeTool(
       content: [
         {
           type: 'text',
-          text: `${value}:${context.profile}:${context.principal.kind}`,
+          text:
+            `${value}:${context.principal.kind}:` +
+            `${Object.isFrozen(context)}:${Object.isFrozen(context.principal)}`,
         },
       ],
     }),
@@ -42,6 +44,26 @@ describe('typed wmux tool catalog', () => {
     expect(Object.isFrozen(shared)).toBe(true);
     expect(Object.isFrozen(shared.profiles)).toBe(true);
     expect(Object.isFrozen(shared.inputSchema)).toBe(true);
+  });
+
+  it('freezes plain descriptors at the registry boundary even when the helper is bypassed', () => {
+    const inputSchema = { value: z.string() };
+    const profiles: WmuxToolProfile[] = ['full'];
+    const plainSpec: WmuxToolSpec = {
+      name: 'plain',
+      description: 'Plain descriptor',
+      inputSchema,
+      profiles,
+      invoke: async ({ value }) => ({
+        content: [{ type: 'text', text: String(value) }],
+      }),
+    };
+
+    selectWmuxTools([plainSpec], 'full');
+
+    expect(Object.isFrozen(plainSpec)).toBe(true);
+    expect(Object.isFrozen(inputSchema)).toBe(true);
+    expect(Object.isFrozen(profiles)).toBe(true);
   });
 
   it('fails before filtering when any profile contains a duplicate name', () => {
@@ -74,7 +96,6 @@ describe('typed wmux tool catalog', () => {
       },
     };
     const context: WmuxOperationContext = {
-      profile: 'commander',
       principal: { kind: 'unattributed' },
     };
     const fullOnly = makeTool('full_only');
@@ -83,7 +104,7 @@ describe('typed wmux tool catalog', () => {
     const registered = registerWmuxTools(
       server as never,
       [fullOnly, shared],
-      { context },
+      { profile: 'commander', context },
     );
 
     expect(registrations.map(({ name }) => name)).toEqual(['shared']);
@@ -94,22 +115,31 @@ describe('typed wmux tool catalog', () => {
     expect(registrations[0]?.config).not.toHaveProperty('title');
     expect(registrations[0]?.config).not.toHaveProperty('annotations');
     expect(registrations[0]?.config).not.toHaveProperty('outputSchema');
-    (context as { profile: WmuxToolProfile }).profile = 'full';
+    (context.principal as { kind: string }).kind = 'forged';
     await expect(registrations[0]?.handler({ value: 'ok' })).resolves.toEqual({
-      content: [{ type: 'text', text: 'ok:commander:unattributed' }],
+      content: [{ type: 'text', text: 'ok:unattributed:true:true' }],
     });
     expect(Object.isFrozen(registered)).toBe(true);
   });
 
-  it('fails closed on a malformed transport-issued principal', () => {
-    const server = { registerTool: () => ({}) };
-    expect(() =>
-      registerWmuxTools(server as never, [makeTool('read_tool')], {
-        context: {
-          profile: 'full',
-          principal: { kind: 'transport', id: '   ' },
-        },
-      }),
-    ).toThrow('transport principals must have a non-empty id');
+  it('preserves literal names and exact Zod input inference at the authoring boundary', () => {
+    const spec = defineWmuxTool({
+      name: 'typed_tool',
+      description: 'Typed tool',
+      inputSchema: {
+        value: z.string(),
+        direction: z.enum(['horizontal', 'vertical']),
+      },
+      profiles: ['full'],
+      invoke: async (input) => {
+        expectTypeOf(input).toEqualTypeOf<{
+          value: string;
+          direction: 'horizontal' | 'vertical';
+        }>();
+        return { content: [{ type: 'text', text: input.value }] };
+      },
+    });
+
+    expectTypeOf(spec.name).toEqualTypeOf<'typed_tool'>();
   });
 });

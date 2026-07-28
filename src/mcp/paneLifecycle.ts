@@ -66,8 +66,8 @@ export interface PaneLifecycleDeps {
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects. The
-// shapes carry no per-call state — the handlers (which close over `deps`) stay
-// inside registerPaneLifecycleTools.
+// shapes carry no per-call state — the handlers (which close over `deps`) are
+// created by createPaneLifecycleToolCatalog.
 const PANE_SPLIT_SHAPE = {
   workspaceId: z
     .string()

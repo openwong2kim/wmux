@@ -45,8 +45,8 @@ function collectTools(profile: WmuxToolProfile = 'full'): Map<string, ToolHandle
     resolveCallerWorkspaceId: mockResolveWs,
   };
   registerPaneLifecycleTools(server as never, deps, {
+    profile,
     context: {
-      profile,
       principal: { kind: 'unattributed' },
     },
   });
@@ -103,8 +103,8 @@ describe('paneLifecycle tools: registration', () => {
       .filter((spec) => spec.profiles.includes('commander'))
       .map((spec) => spec.name);
 
-    expect(catalogCommanderNames).toEqual(
-      COMMANDER_TOOL_SURFACE.filter((name) => migratedNames.has(name)),
+    expect(new Set(catalogCommanderNames)).toEqual(
+      new Set(COMMANDER_TOOL_SURFACE.filter((name) => migratedNames.has(name))),
     );
     expect(Object.isFrozen(specs)).toBe(true);
     for (const spec of specs) {

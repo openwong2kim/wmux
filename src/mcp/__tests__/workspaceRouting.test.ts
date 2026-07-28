@@ -36,15 +36,22 @@ describe('MCP workspace routing (source-level invariants)', () => {
   }
   const src = stripComments(rawSrc);
 
-  // Slice a single server.tool(...) block by its quoted name, bounded by the next
-  // server.tool( call (or a fixed window for the last one). The 800-char fallback
-  // only matters if a probed tool were the final server.tool( in the file; both
-  // tools below are early in the file, each followed by more server.tool( calls.
+  // Slice one registration block by its quoted name, bounded by the next legacy
+  // or catalog registration. Phase 1 migrates one domain at a time, so keying
+  // only on server.tool() would silently widen these source invariants as soon
+  // as an in-index domain moves to defineWmuxTool().
   function toolBlock(toolName: string): string {
     const start = src.indexOf(`'${toolName}'`);
     expect(start).toBeGreaterThan(0);
-    const next = src.indexOf('server.tool(', start + toolName.length);
-    return src.slice(start, next > start ? next : start + 800);
+    const tailStart = start + toolName.length;
+    const nextOffset = src
+      .slice(tailStart)
+      .search(/(?:server\.tool\(|defineWmuxTool\(\s*\{)/);
+    expect(
+      nextOffset,
+      `${toolName} source invariant needs a following registration boundary`,
+    ).toBeGreaterThanOrEqual(0);
+    return src.slice(start, tailStart + nextOffset);
   }
 
   it('the weak resolveWorkspaceId() is called only by requireWorkspaceId and the fail-soft read resolver — exactly three call sites', () => {
@@ -210,6 +217,12 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // Pin the injected resolver at the wiring site.
     expect(src, 'lifecycle CREATE family must inject resolveScopedReadWorkspaceId').toMatch(
       /registerPaneLifecycleTools\([\s\S]*?resolveCallerWorkspaceId:\s*resolveScopedReadWorkspaceId/,
+    );
+    expect(src, 'lifecycle profile must derive from COMMANDER_MODE').toMatch(
+      /registerPaneLifecycleTools\([\s\S]*?profile:\s*COMMANDER_MODE\s*\?\s*'commander'\s*:\s*'full'/,
+    );
+    expect(src, 'lifecycle invocation must remain explicitly unattributed').toMatch(
+      /registerPaneLifecycleTools\([\s\S]*?principal:\s*\{\s*kind:\s*'unattributed'\s*\}/,
     );
   });
 });
