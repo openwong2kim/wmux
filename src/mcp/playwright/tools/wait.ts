@@ -4,6 +4,11 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
+import {
+  defineWmuxTool,
+  registerWmuxTools,
+  type RegisterWmuxToolsOptions,
+} from '../../toolCatalog';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -54,8 +59,8 @@ const BROWSER_WAIT_SHAPE = {
  * exactly:
  *   - a single `*` is confined to one path segment (`[^/]*`);
  *   - a "deep" `**` bounded by `/` or the string edge spans zero or more whole
- *     segments and absorbs the following slash, so `/**​/settings` also matches
- *     `/settings` (zero segments), not just `/a/b/settings`.
+ *     segments and absorbs the following slash, so a deep settings glob also
+ *     matches `/settings` (zero segments), not just `/a/b/settings`.
  * Every other character is escaped to a regex literal.
  */
 function urlGlobToRegExp(glob: string): RegExp {
@@ -117,22 +122,24 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Register wait-related MCP tools on the given server.
+ * Build the wait-related MCP catalog for one server instance.
  *
  * Tools:
  *  - browser_wait — wait for a URL, selector, text, JS predicate, or network idle
  */
-export function registerWaitTools(server: McpServer): void {
+export function createWaitToolCatalog() {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
   // browser_wait
   // -----------------------------------------------------------------------
-  server.tool(
-    'browser_wait',
-    'Wait for a condition: URL pattern, CSS selector, text content, custom JS predicate, or network idle. Priority: url > selector > text > fn > networkidle.',
-    BROWSER_WAIT_SHAPE,
-    async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
+  const tool = defineWmuxTool({
+    name: 'browser_wait',
+    description:
+      'Wait for a condition: URL pattern, CSS selector, text content, custom JS predicate, or network idle. Priority: url > selector > text > fn > networkidle.',
+    inputSchema: BROWSER_WAIT_SHAPE,
+    profiles: ['full'],
+    invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
@@ -301,5 +308,15 @@ export function registerWaitTools(server: McpServer): void {
         };
       }
     }),
-  );
+  });
+
+  return Object.freeze([tool]);
+}
+
+/** Register the wait catalog through the wire-neutral current-SDK adapter. */
+export function registerWaitTools(
+  server: McpServer,
+  options: RegisterWmuxToolsOptions,
+): void {
+  registerWmuxTools(server, createWaitToolCatalog(), options);
 }

@@ -218,11 +218,20 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(src, 'lifecycle CREATE family must inject resolveScopedReadWorkspaceId').toMatch(
       /registerPaneLifecycleTools\([\s\S]*?resolveCallerWorkspaceId:\s*resolveScopedReadWorkspaceId/,
     );
-    expect(src, 'lifecycle profile must derive from COMMANDER_MODE').toMatch(
-      /registerPaneLifecycleTools\([\s\S]*?profile:\s*COMMANDER_MODE\s*\?\s*'commander'\s*:\s*'full'/,
+    expect(src, 'catalog profile must derive from COMMANDER_MODE').toMatch(
+      /const MCP_CATALOG_OPTIONS[\s\S]*?profile:\s*COMMANDER_MODE\s*\?\s*'commander'\s*:\s*'full'/,
     );
-    expect(src, 'lifecycle invocation must remain explicitly unattributed').toMatch(
-      /registerPaneLifecycleTools\([\s\S]*?principal:\s*\{\s*kind:\s*'unattributed'\s*\}/,
+    expect(src, 'catalog invocation must remain explicitly unattributed').toMatch(
+      /const MCP_CATALOG_OPTIONS[\s\S]*?principal:[\s\S]*?kind:\s*'unattributed'/,
+    );
+    expect(src, 'lifecycle registration must use the shared catalog options').toMatch(
+      /registerPaneLifecycleTools\([\s\S]*?MCP_CATALOG_OPTIONS\s*,?\s*\)/,
+    );
+  });
+
+  it('browser_wait is wired through the same immutable catalog profile', () => {
+    expect(src).toMatch(
+      /registerWaitTools\(\s*server\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
     );
   });
 });

@@ -19,6 +19,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
+import type { RegisterWmuxToolsOptions } from './toolCatalog';
 
 /**
  * Everything a server instance needs that used to come from process globals.
@@ -384,6 +385,14 @@ const server = new McpServer({
 // tools cannot be called by ANY brain runtime (SDK, ACP, gateway). Ordinary
 // pane agents (no arg) keep the full surface, unchanged.
 const COMMANDER_MODE = ctx.commanderMode;
+const MCP_CATALOG_OPTIONS: RegisterWmuxToolsOptions = Object.freeze({
+  profile: COMMANDER_MODE ? 'commander' : 'full',
+  context: Object.freeze({
+    // clientInfo is self-declared telemetry. Catalog invocation remains
+    // explicitly powerless until an authenticated transport principal exists.
+    principal: Object.freeze({ kind: 'unattributed' as const }),
+  }),
+});
 if (COMMANDER_MODE) {
   // Layer 2 pairing: every outbound RPC from a commander-mode child carries
   // the per-spawn token as a role CLAIM — the router validates it and fails
@@ -827,7 +836,7 @@ registerNavigationTools(server, { resolveWorkspaceId: requireWorkspaceId });
 registerInteractionTools(server);
 registerInspectionTools(server);
 registerStateTools(server);
-registerWaitTools(server);
+registerWaitTools(server, MCP_CATALOG_OPTIONS);
 registerFileTools(server);
 registerUtilityTools(server);
 registerExtractionTools(server);
@@ -1381,14 +1390,7 @@ registerPaneLifecycleTools(
     callRpc,
     resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
   },
-  {
-    profile: COMMANDER_MODE ? 'commander' : 'full',
-    context: {
-      // clientInfo is self-declared telemetry. Until the MCP transport issues an
-      // authenticated principal, catalog invocation stays explicitly powerless.
-      principal: { kind: 'unattributed' },
-    },
-  },
+  MCP_CATALOG_OPTIONS,
 );
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared

@@ -15,7 +15,10 @@ import {
   type PaneLifecycleDeps,
 } from '../paneLifecycle';
 import type { WmuxToolProfile } from '../toolCatalog';
-import { COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
+import {
+  expectCommanderCatalogLockstep,
+  expectFrozenCatalog,
+} from './catalogAssertions';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];
@@ -88,9 +91,7 @@ describe('paneLifecycle tools: registration', () => {
     const commanderNames = [...collectTools('commander').keys()];
 
     expect([...tools.keys()]).toEqual(fullNames);
-    expect(commanderNames).toEqual(
-      fullNames.filter((name) => COMMANDER_TOOL_SURFACE.includes(name)),
-    );
+    expect(commanderNames).toEqual(['pane_split', 'pane_focus', 'surface_new']);
   });
 
   it('keeps the legacy commander manifest and migrated profiles in lockstep', () => {
@@ -98,20 +99,8 @@ describe('paneLifecycle tools: registration', () => {
       callRpc: mockCallRpc,
       resolveCallerWorkspaceId: mockResolveWs,
     });
-    const migratedNames = new Set<string>(specs.map((spec) => spec.name));
-    const catalogCommanderNames = specs
-      .filter((spec) => spec.profiles.includes('commander'))
-      .map((spec) => spec.name);
-
-    expect(new Set(catalogCommanderNames)).toEqual(
-      new Set(COMMANDER_TOOL_SURFACE.filter((name) => migratedNames.has(name))),
-    );
-    expect(Object.isFrozen(specs)).toBe(true);
-    for (const spec of specs) {
-      expect(Object.isFrozen(spec)).toBe(true);
-      expect(Object.isFrozen(spec.profiles)).toBe(true);
-      expect(Object.isFrozen(spec.inputSchema)).toBe(true);
-    }
+    expectCommanderCatalogLockstep(specs);
+    expectFrozenCatalog(specs);
   });
 });
 
