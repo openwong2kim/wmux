@@ -49,7 +49,13 @@ function makeFakeWriter() {
   };
 }
 
-function makeService(opts: { trashTtlHours?: number; autoTrashArchivedHours?: number } = {}) {
+function makeService(
+  opts: {
+    trashTtlHours?: number;
+    autoTrashArchivedHours?: number;
+    isChannelRetained?: (channelId: string) => boolean;
+  } = {},
+) {
   const writer = makeFakeWriter();
   const emit = vi.fn<ChannelServiceEmit>();
   let clock = T0;
@@ -315,5 +321,152 @@ describe('③ retention sweep', () => {
 
     expect(swept.destroyed).toEqual([]);
     expect(row(svc, id)).toBeDefined();
+  });
+});
+
+describe('catalog fan-out — the deletion must reach somebody', () => {
+  /** Catalog events emitted for `channelId`, newest last. */
+  function catalogEvents(emit: ReturnType<typeof vi.fn>, channelId: string) {
+    return emit.mock.calls
+      .map((c) => c[0] as { type: string; channelId: string; recipientWorkspaceIds: string[] })
+      .filter((e) => e.type === 'channel.catalog' && e.channelId === channelId);
+  }
+
+  it('destroying a zero-member PRIVATE channel still notifies the operator', async () => {
+    // The bug: emitCatalog ran AFTER the applier removed the row, so its own
+    // private-channel lookup found nothing and the recipient list (derived from
+    // an already-deleted member map) was empty — nobody heard, and the operator
+    // sidebar kept a ghost row no refresh would ever clear.
+    const { svc, emit } = makeService();
+    const id = await makeMissionChannel(svc);
+    await svc.leave({
+      channelId: id,
+      workspaceId: 'ws-agent',
+      memberId: 'agent-1',
+      verifiedWorkspaceId: 'ws-agent',
+    });
+    expect(svc.getMembers(id, HUMAN_WORKSPACE_ID)).toEqual([]);
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    emit.mockClear();
+
+    const res = await svc.destroy({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    expect(res.ok).toBe(true);
+
+    const events = catalogEvents(emit, id);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.recipientWorkspaceIds).toContain(HUMAN_WORKSPACE_ID);
+  });
+
+  it('a PUBLIC channel fans out to everyone on trash and restore', async () => {
+    // list() shows a public channel to every workspace, so its NON-member
+    // observers must hear that it moved to (or out of) the trash. Members-only
+    // fan-out left them showing a row that no longer exists.
+    const { svc, emit } = makeService();
+    const created = await svc.create({
+      name: 'town-square',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-agent', memberId: 'agent-1', memberName: 'Agent' },
+      verifiedWorkspaceId: 'ws-agent',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const id = created.channel.id;
+
+    emit.mockClear();
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    expect(catalogEvents(emit, id)[0]?.recipientWorkspaceIds).toEqual(['*']);
+
+    emit.mockClear();
+    await svc.restore({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    expect(catalogEvents(emit, id)[0]?.recipientWorkspaceIds).toEqual(['*']);
+  });
+
+  it('an idempotent no-op trash/restore still re-emits (a stale mirror converges)', async () => {
+    const { svc, emit } = makeService();
+    const id = await makeMissionChannel(svc);
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+
+    emit.mockClear();
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID }); // no-op
+    expect(catalogEvents(emit, id)).toHaveLength(1);
+
+    await svc.restore({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    emit.mockClear();
+    await svc.restore({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID }); // no-op
+    expect(catalogEvents(emit, id)).toHaveLength(1);
+  });
+});
+
+describe('sweep — WorkTask anchor + failure reporting', () => {
+  it('does not destroy a TTL-expired channel an open mission still anchors', async () => {
+    let retained = true;
+    const { svc, setClock } = makeService({
+      trashTtlHours: 1,
+      isChannelRetained: (id) => retained && id === anchored,
+    });
+    const anchored = await makeMissionChannel(svc, 'mission-anchored');
+    await svc.trash({ channelId: anchored, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+
+    setClock(T0 + 10_000 * HOUR);
+    const first = await svc.sweepRetention();
+    expect(first.destroyed).toEqual([]);
+    expect(row(svc, anchored)).toBeDefined();
+
+    // The mission closes → the anchor releases → the next sweep finishes the job.
+    retained = false;
+    const second = await svc.sweepRetention();
+    expect(second.destroyed).toEqual([anchored]);
+    expect(row(svc, anchored)).toBeUndefined();
+  });
+
+  it('reports refused ops instead of swallowing them', async () => {
+    const { svc, setClock } = makeService({ trashTtlHours: 1 });
+    const id = await makeMissionChannel(svc, 'mission-stuck');
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    vi.spyOn(svc, 'destroy').mockResolvedValue({
+      ok: false,
+      error: { code: 'PERSIST_FAILED', message: 'disk full' },
+    });
+
+    setClock(T0 + 10_000 * HOUR);
+    const swept = await svc.sweepRetention();
+
+    expect(swept.destroyed).toEqual([]);
+    expect(swept.failed).toEqual([{ id, op: 'destroy', code: 'PERSIST_FAILED' }]);
+  });
+});
+
+describe('retention knob coercion', () => {
+  it('a deliberate sub-hour TTL rounds UP to 1h instead of flooring to "off"', async () => {
+    // 0.5 h floored to 0 would read "delete aggressively" as "never delete" —
+    // the exact opposite of what the operator asked for.
+    const { svc, setClock } = makeService({ trashTtlHours: 0.5 });
+    const id = await makeMissionChannel(svc);
+    await svc.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+
+    setClock(T0 + 2 * HOUR);
+    const swept = await svc.sweepRetention();
+
+    expect(swept.destroyed).toEqual([id]);
+  });
+});
+
+describe('destroy — runtime hygiene + audit', () => {
+  it('drops the per-channel runtime idempotency LRU', async () => {
+    // The applier clears `state.idempotency[channelId]`, but the service's
+    // private runtime Map is keyed by the same id and nothing else evicts it —
+    // up to 1000 entries per channel would outlive the channel for the daemon's
+    // whole life. Not observable through the public API, so pin the source.
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/daemon/channels/ChannelService.ts'), 'utf8');
+    expect(src).toContain('this.idempotency.delete(channel.id);');
+  });
+
+  it('stamps the audit fields on the destroy event (the only surviving trace)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/daemon/channels/ChannelService.ts'), 'utf8');
+    expect(src).toContain('destroyedBy: params.verifiedWorkspaceId');
+    expect(src).toContain('destroyedAt: this.now()');
   });
 });

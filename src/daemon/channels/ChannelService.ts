@@ -193,6 +193,16 @@ export interface ChannelServiceDeps {
    *  trash on its own. `0` = OFF, and that is the default — see
    *  `CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT`. */
   autoTrashArchivedHours?: number;
+  /**
+   * WorkTask anchor check — `true` while some OPEN mission still points at this
+   * channel. `sweepRetention`'s purge pass skips those: destroying the channel
+   * an open mission row links to would kill the `#` link with CHANNEL_NOT_FOUND
+   * while the work is still live. Only the SWEEP consults it — an explicit
+   * human destroy / empty-trash still wins, because the human can see the
+   * mission and chose anyway. Absent (tests, legacy construction) = nothing is
+   * anchored.
+   */
+  isChannelRetained?: (channelId: string) => boolean;
   /** Event sink. Called once per successful post. */
   emit: ChannelServiceEmit;
   /** Time source. Defaults to `Date.now`. Override in tests for stable seq. */
@@ -453,10 +463,16 @@ export interface PostMessageParams {
  * omitted knob should get the vetted default, but a knob the operator
  * explicitly set to something nonsensical must fail toward keeping data, never
  * toward deleting it on a schedule they did not choose.
+ *
+ * A deliberate sub-hour value (`0 < v < 1`, e.g. `0.5`) rounds UP to `1`, not
+ * down to `0`: flooring it would read an operator asking for an AGGRESSIVE
+ * schedule as "disabled", the exact opposite of the intent. Only an exact `0`
+ * means off.
  */
 function normalizeRetentionHours(raw: number | undefined, def: number): number {
   if (raw === undefined) return def;
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return 0;
+  if (raw > 0 && raw < 1) return 1;
   return Math.floor(raw);
 }
 
@@ -501,6 +517,7 @@ export class ChannelService {
   private readonly ceoWorkspaceId: string | undefined;
   private readonly trashTtlHours: number;
   private readonly autoTrashArchivedHours: number;
+  private readonly isChannelRetained: ((channelId: string) => boolean) | undefined;
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
   private readonly resolvePrincipalDisplay?: (principalId: string) => string | undefined;
@@ -568,6 +585,7 @@ export class ChannelService {
       deps.autoTrashArchivedHours,
       CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
     );
+    this.isChannelRetained = deps.isChannelRetained;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
     this.resolvePrincipalDisplay = deps.resolvePrincipalDisplay;
@@ -1126,6 +1144,27 @@ export class ChannelService {
    * same-machine agent identity (#113). An empty `verifiedWorkspaceId` is
    * refused outright ("no anonymous mutation", kick/archive convention).
    */
+  /**
+   * Catalog recipients for the three lifecycle ops. MUST be computed BEFORE the
+   * commit: `destroy` removes the channel row and its member list, so a
+   * recipient set derived afterwards is empty AND `emitCatalog`'s own
+   * private-channel lookup finds nothing — nobody is notified, and every other
+   * renderer keeps a ghost row it can never act on (daemon-sweep deletions have
+   * no optimistic renderer patch to cover for it).
+   *
+   * `public` fans out with the `'*'` sentinel, mirroring `create`: `list()`
+   * shows a public channel to every workspace, so its non-member observers must
+   * hear that it moved to (or out of) the trash. `private` notifies its members
+   * plus the local operator, who observes without a member row (W1).
+   */
+  private lifecycleRecipients(channel: Channel): string[] {
+    if (channel.visibility === 'public') return ['*'];
+    return [
+      ...(this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+      HUMAN_WORKSPACE_ID,
+    ];
+  }
+
   private canManageChannelLifecycle(channelId: string, verifiedWorkspaceId: string): boolean {
     if (!verifiedWorkspaceId) return false;
     if (verifiedWorkspaceId === HUMAN_WORKSPACE_ID) return true;
@@ -1162,7 +1201,14 @@ export class ChannelService {
           },
         };
       }
-      if (channel.trashedAt !== undefined) return { ok: true }; // 멱등 no-op
+      const recipients = this.lifecycleRecipients(channel);
+      if (channel.trashedAt !== undefined) {
+        // 멱등 no-op — but still re-emit. A second renderer whose mirror missed
+        // the first fan-out retries the trash; without an emit its stale row
+        // never converges, and the retry looks like it did nothing.
+        this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
+        return { ok: true };
+      }
       const now = this.now();
       const wasActive = channel.status === 'active';
       const payload: ChannelEventPayload = {
@@ -1190,14 +1236,11 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel trash' } };
         }
       }
-      // Catalog fan-out mirrors archive(): other renderers must drop the row
-      // from their visible lists instead of offering actions that now fail.
-      this.emitCatalog(
-        channel.id,
-        params.verifiedWorkspaceId,
-        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
-        'archived',
-      );
+      // Catalog fan-out: other renderers must drop the row from their visible
+      // lists instead of offering actions that now fail. Unlike archive() this
+      // uses the precomputed recipient set, so a PUBLIC channel's non-member
+      // observers hear about it too.
+      this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
       return { ok: true };
     });
   }
@@ -1225,7 +1268,13 @@ export class ChannelService {
           },
         };
       }
-      if (channel.trashedAt === undefined) return { ok: true }; // 멱등 no-op
+      const recipients = this.lifecycleRecipients(channel);
+      if (channel.trashedAt === undefined) {
+        // 멱등 no-op — re-emit for the same reason trash() does: a retry from a
+        // renderer with a stale mirror must converge, not silently succeed.
+        this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
+        return { ok: true };
+      }
       const prevTrashedAt = channel.trashedAt;
       const prevTrashedBy = channel.trashedBy;
       const payload: ChannelEventPayload = { kind: 'restore', channelId: channel.id };
@@ -1241,12 +1290,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel restore' } };
         }
       }
-      this.emitCatalog(
-        channel.id,
-        params.verifiedWorkspaceId,
-        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
-        'archived',
-      );
+      this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
       return { ok: true };
     });
   }
@@ -1285,8 +1329,16 @@ export class ChannelService {
           },
         };
       }
-      const memberWorkspaces = (this.state.members[channel.id] ?? []).map((m) => m.workspaceId);
-      const payload: ChannelEventPayload = { kind: 'destroy', channelId: channel.id };
+      // Recipients BEFORE the apply — after it the row and its members are gone.
+      const recipients = this.lifecycleRecipients(channel);
+      const payload: ChannelEventPayload = {
+        kind: 'destroy',
+        channelId: channel.id,
+        // Audit-only (see channelEvents.ts): an irreversible deletion leaves
+        // nothing but this record, so it names its author.
+        destroyedBy: params.verifiedWorkspaceId,
+        destroyedAt: this.now(),
+      };
       if (this.eventLog) {
         if (!(await this.commitAndApply(payload, { verifiedWorkspaceId: params.verifiedWorkspaceId }))) {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel deletion' } };
@@ -1306,7 +1358,12 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel deletion' } };
         }
       }
-      this.emitCatalog(channel.id, params.verifiedWorkspaceId, memberWorkspaces, 'archived');
+      // The applier cleared `state.idempotency[channelId]`; the RUNTIME LRU is a
+      // separate private map keyed by the same id and nothing else evicts it —
+      // without this the entries (up to 1000 per channel) outlive the channel
+      // for the daemon's whole lifetime.
+      this.idempotency.delete(channel.id);
+      this.emitCatalog(channel.id, params.verifiedWorkspaceId, recipients, 'archived');
       return { ok: true };
     });
   }
@@ -1320,7 +1377,9 @@ export class ChannelService {
    *      record nobody chose to discard, and even then the move is reversible
    *      for the full trash TTL.
    *   2. purge — trashed channels older than `trashTtlHours` are destroyed.
-   *      Only ever finishes a deletion a human (or pass 1) already started.
+   *      Only ever finishes a deletion a human (or pass 1) already started, and
+   *      never touches a channel an OPEN WorkTask still anchors
+   *      (`isChannelRetained`).
    *
    * Runs at boot AND on a timer: a load-time-only reaper (KTD8's shape) never
    * fires on a daemon that stays up for weeks, which is exactly the daemon we
@@ -1332,10 +1391,18 @@ export class ChannelService {
    * the operator's configured policy, and `ws-human` is the identity that
    * policy belongs to.
    */
-  async sweepRetention(): Promise<{ trashed: string[]; destroyed: string[] }> {
+  async sweepRetention(): Promise<{
+    trashed: string[];
+    destroyed: string[];
+    /** Ops the sweep attempted and the channel refused. Reported (not thrown)
+     *  so the daemon can log a PERSISTENT failure instead of retrying it
+     *  silently every hour forever. */
+    failed: Array<{ id: string; op: 'trash' | 'destroy'; code: string }>;
+  }> {
     const now = this.now();
     const trashed: string[] = [];
     const destroyed: string[] = [];
+    const failed: Array<{ id: string; op: 'trash' | 'destroy'; code: string }> = [];
     const autoTrashMs = this.autoTrashArchivedHours * 60 * 60 * 1000;
     if (this.autoTrashArchivedHours > 0) {
       // Snapshot ids first — trash() takes the per-channel lock and mutates
@@ -1351,19 +1418,26 @@ export class ChannelService {
       for (const id of candidates) {
         const res = await this.trash({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
         if (res.ok) trashed.push(id);
+        else failed.push({ id, op: 'trash', code: res.error.code });
       }
     }
     const trashTtlMs = this.trashTtlHours * 60 * 60 * 1000;
     if (this.trashTtlHours > 0) {
       const expired = this.state.channels
         .filter((c) => c.trashedAt !== undefined && now - c.trashedAt >= trashTtlMs)
+        // An OPEN WorkTask still anchors this channel — the mission's `#` link
+        // must keep resolving while the work is live. The sweep is the daemon
+        // acting on a schedule nobody looked at; a human's explicit destroy /
+        // empty-trash bypasses this check on purpose.
+        .filter((c) => this.isChannelRetained?.(c.id) !== true)
         .map((c) => c.id);
       for (const id of expired) {
         const res = await this.destroy({ channelId: id, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
         if (res.ok) destroyed.push(id);
+        else failed.push({ id, op: 'destroy', code: res.error.code });
       }
     }
-    return { trashed, destroyed };
+    return { trashed, destroyed, failed };
   }
 
   /**

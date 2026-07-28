@@ -66,9 +66,17 @@ export type ChannelEventPayload =
        * NOT to be confused with `purge`, which removes MEMBER rows. This drops
        * the channel row and its members/messages/idempotency maps together —
        * the same tuple `reapEmptyChannels` prunes.
+       *
+       * `destroyedBy`/`destroyedAt` are ADDITIVE-ONLY audit fields: the applier
+       * ignores them (the record is being removed, so there is nothing to stamp
+       * them on), and records written before they existed replay identically.
+       * They exist so the event log — the only surviving trace of an
+       * irreversible deletion — says who deleted the channel and when.
        */
       kind: 'destroy';
       channelId: string;
+      destroyedBy?: string;
+      destroyedAt?: number;
     }
   | {
       kind: 'join';
@@ -199,6 +207,8 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
     }
     case 'destroy': {
       // Idempotent: an already-destroyed channel filters to the same arrays.
+      // `destroyedBy`/`destroyedAt` are audit-only — deliberately not applied
+      // to state, so old records without them replay to the same result.
       state.channels = state.channels.filter((c) => c.id !== p.channelId);
       delete state.members[p.channelId];
       delete state.messages[p.channelId];
