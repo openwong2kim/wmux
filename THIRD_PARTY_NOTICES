@@ -4,11 +4,145 @@ wmux itself is distributed under the MIT License (see LICENSE).
 The packages listed below are bundled with the wmux application or
 its MCP server and retain their own license terms.
 
-Generated from package.json production dependencies (transitive included).
-Last regenerated: 2026-05-25
-Total packages: 110
+Generated from the package-lock.json production closure (transitive included,
+every platform variant of platform-specific packages included).
+Total packages: 128
 
 Regenerate with: `npm run notices`
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk@0.3.206
+License: SEE LICENSE IN README.md
+Author: Anthropic <support@anthropic.com>
+Repository: https://github.com/anthropics/claude-agent-sdk-typescript
+
+© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-linux-x64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/claude-agent-sdk-win32-x64@0.3.206
+License: SEE LICENSE IN LICENSE.md
+
+(Platform-specific binary package. It is installed only on its target OS/CPU, so its
+license text is not read from this checkout; the license identifier above is taken from
+package-lock.json. The full terms are those of the parent package that declares this
+package as an optional dependency — see that entry in this file.)
+
+================================================================================
+
+@anthropic-ai/sdk@0.111.0
+License: MIT
+Author: Anthropic <support@anthropic.com>
+Repository: github:anthropics/anthropic-sdk-typescript
+
+Copyright 2023 Anthropic, PBC.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+@babel/runtime@7.29.7
+License: MIT
+Author: The Babel Team (https://babel.dev/team)
+Repository: https://github.com/babel/babel
+
+MIT License
+
+Copyright (c) 2014-present Sebastian McKenzie and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
@@ -41,7 +175,7 @@ SOFTWARE.
 
 ================================================================================
 
-@modelcontextprotocol/sdk@1.27.1
+@modelcontextprotocol/sdk@1.29.0
 License: MIT
 Author: Anthropic, PBC (https://anthropic.com)
 Repository: https://github.com/modelcontextprotocol/typescript-sdk
@@ -56,6 +190,35 @@ in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+@stablelib/base64@1.0.1
+License: MIT
+Author: Dmitry Chestnykh
+Repository: https://github.com/StableLib/stablelib
+
+This software is licensed under the MIT license:
+
+Copyright (C) 2016 Dmitry Chestnykh
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
@@ -266,11 +429,11 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ajv@8.18.0
 License: MIT
 Author: Evgeny Poberezkin
-Repository: https://github.com/ajv-validator/ajv
+Repository: ajv-validator/ajv
 
 The MIT License (MIT)
 
-Copyright (c) 2015-2017 Evgeny Poberezkin
+Copyright (c) 2015-2021 Evgeny Poberezkin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -620,34 +783,33 @@ THE SOFTWARE.
 
 ================================================================================
 
-debug@4.4.3
+debug@2.6.9
 License: MIT
-Author: Josh Junon (https://github.com/qix-)
-Repository: git://github.com/debug-js/debug
+Author: TJ Holowaychuk <tj@vision-media.ca>
+Repository: git://github.com/visionmedia/debug
 
 (The MIT License)
 
-Copyright (c) 2014-2017 TJ Holowaychuk <tj@vision-media.ca>
-Copyright (c) 2018-2021 Josh Junon
+Copyright (c) 2014 TJ Holowaychuk <tj@vision-media.ca>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software
-and associated documentation files (the 'Software'), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
+and associated documentation files (the 'Software'), to deal in the Software without restriction, 
+including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
 and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
 subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all copies or substantial
+The above copyright notice and this permission notice shall be included in all copies or substantial 
 portions of the Software.
 
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
-LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT 
+LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-debug@2.6.9
+debug@4.4.3
 License: MIT
 Author: Josh Junon (https://github.com/qix-)
 Repository: git://github.com/debug-js/debug
@@ -1324,6 +1486,38 @@ SOFTWARE.
 
 ================================================================================
 
+fast-sha256@1.3.0
+License: Unlicense
+Author: Dmitry Chestnykh
+Repository: https://github.com/dchest/fast-sha256-js
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org>
+
+================================================================================
+
 fast-uri@3.1.0
 License: BSD-3-Clause
 Author: Vincent Le Goff <vince.legoff@gmail.com> (https://github.com/zekth)
@@ -1688,7 +1882,7 @@ THE SOFTWARE.
 iconv-lite@0.7.2
 License: MIT
 Author: Alexander Shtuchkin <ashtuchkin@gmail.com>
-Repository: git://github.com/ashtuchkin/iconv-lite
+Repository: https://github.com/pillarjs/iconv-lite
 
 Copyright (c) 2011 Alexander Shtuchkin
 
@@ -1876,6 +2070,35 @@ Repository: panva/jose
 The MIT License (MIT)
 
 Copyright (c) 2018 Filip Skokan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+json-schema-to-ts@3.1.1
+License: MIT
+Author: Thomas Aribart
+Repository: https://github.com/ThomasAribart/json-schema-to-ts
+
+MIT License
+
+Copyright (c) 2020 Thomas Aribart
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2128,13 +2351,13 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-ms@2.1.3
+ms@2.0.0
 License: MIT
-Repository: vercel/ms
+Repository: zeit/ms
 
 The MIT License (MIT)
 
-Copyright (c) 2020 Vercel, Inc.
+Copyright (c) 2016 Zeit, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2156,7 +2379,7 @@ SOFTWARE.
 
 ================================================================================
 
-ms@2.0.0
+ms@2.1.3
 License: MIT
 Repository: vercel/ms
 
@@ -6849,6 +7072,15 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+qrcode-generator@2.0.4
+License: MIT
+Author: Kazuhiko Arase
+Repository: https://github.com/kazuhikoarase/qrcode-generator
+
+(No LICENSE file shipped with this package. See https://github.com/kazuhikoarase/qrcode-generator for full terms.)
+
+================================================================================
+
 qs@6.15.0
 License: BSD-3-Clause
 Repository: https://github.com/ljharb/qs
@@ -7383,6 +7615,47 @@ SOFTWARE.
 
 ================================================================================
 
+smol-toml@1.6.1
+License: BSD-3-Clause
+Author: Cynthia <cyyynthia@borkenware.com>
+Repository: github:squirrelchat/smol-toml
+
+Copyright (c) Squirrel Chat et al., All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+================================================================================
+
+standardwebhooks@1.0.0
+License: MIT
+Author: Standard Webhooks
+Repository: https://github.com/standard-webhooks/standard-webhooks
+
+(No LICENSE file shipped with this package. See https://github.com/standard-webhooks/standard-webhooks for full terms.)
+
+================================================================================
+
 statuses@2.0.2
 License: MIT
 Repository: jshttp/statuses
@@ -7420,6 +7693,35 @@ Repository: component/toidentifier
 MIT License
 
 Copyright (c) 2016 Douglas Christopher Wilson <doug@somethingdoug.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+ts-algebra@2.0.0
+License: MIT
+Author: Thomas Aribart
+Repository: https://github.com/ThomasAribart/ts-algebra
+
+MIT License
+
+Copyright (c) 2020 Thomas Aribart
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

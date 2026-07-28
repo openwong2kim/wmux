@@ -207,6 +207,49 @@ describe('events.rpc — events.poll', () => {
     }
   });
 
+  it('keeps normal advancement and resync replacement distinct after scoped max truncation', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+    eventBus.emit({ type: 'pane.closed', workspaceId: 'ws-1', paneId: 'p1' });
+
+    const router = setupRouter();
+    const normal = await router.dispatch({
+      id: 'cursor-normal',
+      method: 'events.poll',
+      params: { cursor: 0, workspaceId: 'ws-1', max: 1 },
+    }, { firstParty: true });
+
+    expect(normal.ok).toBe(true);
+    if (!normal.ok) return;
+    const normalResult = normal.result as {
+      events: { seq: number }[];
+      nextCursor: number;
+      priorCursor: number;
+      resync?: true;
+    };
+    expect(normalResult.events.map((event) => event.seq)).toEqual([1]);
+    expect(normalResult).toMatchObject({ priorCursor: 0, nextCursor: 1 });
+    expect(normalResult.resync).toBeUndefined();
+    expect(normalResult.nextCursor).toBeGreaterThan(normalResult.priorCursor);
+
+    const replacement = await router.dispatch({
+      id: 'cursor-resync',
+      method: 'events.poll',
+      params: { cursor: 999, workspaceId: 'ws-1', max: 1 },
+    }, { firstParty: true });
+
+    expect(replacement.ok).toBe(true);
+    if (!replacement.ok) return;
+    const replacementResult = replacement.result as {
+      events: { seq: number }[];
+      nextCursor: number;
+      priorCursor: number;
+      resync?: true;
+    };
+    expect(replacementResult.events.map((event) => event.seq)).toEqual([1]);
+    expect(replacementResult).toMatchObject({ priorCursor: 999, nextCursor: 1, resync: true });
+    expect(replacementResult.nextCursor).toBeLessThan(replacementResult.priorCursor);
+  });
+
   it('exposes bootId + priorCursor on every response (review fixes 5a, 2a)', async () => {
     eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
 
