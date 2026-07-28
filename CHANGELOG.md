@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Adopting hunks from a task diff can no longer apply something other than what you ticked.** The adopt step re-read the task's diff at the moment you pressed the button and matched your selection onto that fresh read by file path and hunk position — so anything the agent wrote to its worktree between opening the diff and adopting it was silently adopted in place of what you reviewed. The same mapping dropped selections instead of refusing them: a file that had left the diff was skipped, a hunk index that no longer existed was dropped, and the adoption went ahead with whatever was left, reporting success. This is the normal path for the fan-out journey, where agents keep writing while you review. Each file in a diff read now carries a fingerprint of exactly the entry you were shown, the adopt request carries it back, and the handler refuses the **whole** adoption — never part of it — if any selected file changed, left the diff, or no longer has the hunks you picked, naming the files and hunks it refused. The three existing refusals (target moved, target file has uncommitted changes, hunk does not apply) are unchanged. This also covers a selection left over from a Reload, which previously pointed at hunk positions in a diff that had since been re-parsed.
+
 ### Changed
 
 - **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)

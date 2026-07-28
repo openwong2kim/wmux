@@ -4,9 +4,14 @@
 //   untracked 합성·타겟 스냅샷을 동봉해 반환(§2).
 // diff:applyHunks: 스냅샷 드리프트 게이트 → dirty 거부 → per-hunk 프로브 →
 //   선택 hunk 단일 패치 all-or-nothing apply(§3). 타겟 repo 단위 뮤텍스.
+//   A source integrity gate runs between the drift gate and the dirty gate:
+//   the selection is pinned to the read it was made against by per-file
+//   fingerprint, so an adoption can only ever apply the diff the user saw
+//   (plans/apply-hunks-toctou-design.md).
 import { ipcMain } from 'electron';
 import { readFile, lstat } from 'node:fs/promises';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, normalize, dirname } from 'node:path';
 import { IPC } from '../../../shared/constants';
@@ -17,9 +22,11 @@ import {
   parseUnifiedDiff,
   reassemblePatch,
   synthesizeNewFileDiff,
+  fileFingerprintInput,
   DIFF_TOTAL_CAP_BYTES,
   DIFF_FILE_CAP_BYTES,
   type DiffFile,
+  type DiffReadFile,
   type DiffReadResult,
   type DiffReadError,
   type DiffNumstat,
@@ -136,6 +143,13 @@ function parseNumstat(raw: string): DiffNumstat[] {
     });
   }
   return out;
+}
+
+// Adoption fingerprint of a parsed file entry. Hashing lives here rather than in
+// shared/ so the renderer bundle stays free of node:crypto — the renderer only
+// ever echoes the digest back, never computes one.
+function fileDigest(file: DiffFile): string {
+  return createHash('sha256').update(fileFingerprintInput(file), 'utf8').digest('hex');
 }
 
 // git의 잘 알려진 empty tree 오브젝트 — 첫 커밋 전(HEAD 없음) repo의 diff base.
@@ -259,18 +273,17 @@ async function readDiff(
 
   const parsed = parseUnifiedDiff(diffText);
   // 파일당 캡 초과 파일을 truncated로(파싱은 유지하되 안내).
-  const files: DiffFile[] = [];
+  const files: DiffReadFile[] = [];
   for (const f of parsed.files) {
     const size = f.headerBlock.length + f.hunks.reduce((s, h) => s + h.bodyLines.join('\n').length, 0);
     const isTruncated = size > DIFF_FILE_CAP_BYTES;
     if (isTruncated && !truncated.includes(f.path)) truncated.push(f.path);
     // F7: 캡 초과 파일은 hunkSelectable=false로 강등(applyHunks의 2중 거부와 짝).
     //   표시 diff는 잘리지 않았어도 재직렬화 신뢰 범위를 넘으므로 채택 대상에서 제외.
-    if (isTruncated && f.hunkSelectable) {
-      files.push({ ...f, hunkSelectable: false });
-    } else {
-      files.push(f);
-    }
+    const final = isTruncated && f.hunkSelectable ? { ...f, hunkSelectable: false } : f;
+    // Fingerprint the entry as it is handed to the renderer — the demotion above
+    // is part of what the user saw, so it has to be part of what we pin.
+    files.push({ ...final, digest: fileDigest(final) });
   }
 
   const snapshot = await collectSnapshot(targetRepoPath);
@@ -325,14 +338,91 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
     const read = await readDiff(worktreePath, req.snapshot.targetHeadOid);
     if (!read.ok) return { ok: false, error: read.error, code: 'apply' };
 
-    // 선택 파일 매핑 + 채택 가능성 검증.
+    // ①′ Source integrity gate: an adoption may only apply the diff the user
+    //     actually saw. The selection was made against a read that happened
+    //     before this one, so every entry is matched back to the fresh read by
+    //     path *and* by adoption fingerprint, and every hunk index is checked to
+    //     still exist. A selected path that vanished or a hunk index that no
+    //     longer resolves is a rejection reason, never a silent skip — dropping
+    //     either one would apply a subset of what the user ticked. All reasons
+    //     are collected so the message can name every one of them, and any
+    //     single one rejects the whole request (no partial adoption).
+    const freshByPath = new Map<string, DiffReadFile>();
+    for (const f of read.files) freshByPath.set(f.path, f);
+    const staleReasons: string[] = [];
+    const staleProbes: HunkProbe[] = [];
     const selMap = new Map<string, readonly number[]>();
-    for (const s of req.selections) selMap.set(s.path, s.hunkIndices);
+    for (const s of req.selections) {
+      const idxs = Array.isArray(s.hunkIndices) ? s.hunkIndices : [];
+      // Mark every hunk the user picked for this path, so the panel can show
+      // exactly which selections were refused.
+      const flag = (): void => {
+        for (const i of idxs) {
+          staleProbes.push({
+            path: s.path,
+            hunkIndex: i,
+            applicable: false,
+            alreadyApplied: false,
+          });
+        }
+      };
+      if (selMap.has(s.path)) {
+        staleReasons.push(`${s.path}: selected twice in one request`);
+        flag();
+        continue;
+      }
+      if (idxs.length === 0) {
+        staleReasons.push(`${s.path}: no hunks selected`);
+        continue;
+      }
+      if (new Set(idxs).size !== idxs.length) {
+        staleReasons.push(`${s.path}: the same hunk is selected twice`);
+        flag();
+        continue;
+      }
+      const fresh = freshByPath.get(s.path);
+      if (!fresh) {
+        staleReasons.push(`${s.path}: no longer in this diff`);
+        flag();
+        continue;
+      }
+      if (typeof s.digest !== 'string' || s.digest.length === 0) {
+        staleReasons.push(`${s.path}: selection carries no source fingerprint`);
+        flag();
+        continue;
+      }
+      if (s.digest !== fresh.digest) {
+        staleReasons.push(`${s.path}: changed since you reviewed it`);
+        flag();
+        continue;
+      }
+      const gone = idxs.filter(
+        (i) => !Number.isInteger(i) || i < 0 || i >= fresh.hunks.length,
+      );
+      if (gone.length > 0) {
+        staleReasons.push(`${s.path}: hunk ${gone.join(', ')} no longer exists`);
+        flag();
+        continue;
+      }
+      selMap.set(s.path, idxs);
+    }
+    if (staleReasons.length > 0) {
+      return {
+        ok: false,
+        error:
+          'Adoption rejected — the selection no longer matches the diff you reviewed: ' +
+          `${staleReasons.join('; ')}. Reload the diff and reselect.`,
+        code: 'stale',
+        failedProbes: staleProbes,
+      };
+    }
+
+    // 선택 파일 매핑 + 채택 가능성 검증.
     const selectedFiles: Array<{ file: DiffFile; hunkIndices: readonly number[] }> = [];
     const truncatedSet = new Set(read.truncated);
     for (const f of read.files) {
       const idxs = selMap.get(f.path);
-      if (!idxs || idxs.length === 0) continue;
+      if (!idxs) continue;
       // F7 2중 거부: 캡 초과(truncated) 파일은 hunkSelectable=false로도 걸리지만,
       // truncated 집합으로 명시 거부해 재직렬화 신뢰 범위를 넘는 채택을 이중 차단.
       if (truncatedSet.has(f.path)) {

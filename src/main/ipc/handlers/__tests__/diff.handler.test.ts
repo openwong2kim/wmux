@@ -20,6 +20,21 @@ vi.mock('electron', () => ({
   },
 }));
 
+// Record every git invocation while still running the real thing — the adoption
+// is all-or-nothing because it hands git one patch, and that is only observable
+// in the argv (a per-file loop passes a combined --check just the same).
+const gitCalls = vi.hoisted(() => ({ argv: [] as string[][] }));
+vi.mock('../../../git/git', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../git/git')>();
+  return {
+    ...actual,
+    git: (args: string[], cwd: string) => {
+      gitCalls.argv.push(args);
+      return actual.git(args, cwd);
+    },
+  };
+});
+
 // wrapHandler는 함수를 그대로 감싸므로 실제 구현을 통과시킨다.
 import { registerDiffHandlers } from '../diff.handler';
 import { IPC } from '../../../../shared/constants';
@@ -27,6 +42,18 @@ import { parseUnifiedDiff, type DiffApplyRequest } from '../../../../shared/diff
 
 function g(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
+}
+
+// A selection only adopts if it carries the adoption fingerprint of the file
+// entry it was picked from, so build selections from the read they were made
+// against — exactly like the renderer does.
+type ReadLike = { files: Array<{ path: string; digest?: string }> };
+function pick(
+  r: ReadLike,
+  path: string,
+  hunkIndices: number[],
+): DiffApplyRequest['selections'][number] {
+  return { path, hunkIndices, digest: r.files.find((f) => f.path === path)?.digest ?? '' };
 }
 
 // 태스크 worktree 시나리오를 구성한다: 본 repo + linked worktree.
@@ -110,7 +137,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const read = captured.get(IPC.DIFF_READ)!;
     return (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
-      files: Array<{ path: string; hunks: unknown[] }>;
+      files: Array<{ path: string; digest: string; hunks: unknown[] }>;
       snapshot: DiffApplyRequest['snapshot'];
     };
   }
@@ -121,7 +148,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const req: DiffApplyRequest = {
       taskId: 't1',
       snapshot: r.snapshot,
-      selections: [{ path: 'a.txt', hunkIndices: [0] }],
+      selections: [pick(r, 'a.txt', [0])],
     };
     const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; appliedFiles?: string[] };
     expect(res.ok).toBe(true);
@@ -144,7 +171,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const req: DiffApplyRequest = {
       taskId: 't1',
       snapshot: r.snapshot,
-      selections: [{ path: 'c.txt', hunkIndices: [0] }],
+      selections: [pick(r, 'c.txt', [0])],
     };
     const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean };
     expect(res.ok).toBe(true);
@@ -161,7 +188,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const req: DiffApplyRequest = {
       taskId: 't1',
       snapshot: r.snapshot, // 옛 스냅샷.
-      selections: [{ path: 'a.txt', hunkIndices: [0] }],
+      selections: [pick(r, 'a.txt', [0])],
     };
     const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string };
     expect(res.ok).toBe(false);
@@ -176,7 +203,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const req: DiffApplyRequest = {
       taskId: 't1',
       snapshot: r.snapshot,
-      selections: [{ path: 'a.txt', hunkIndices: [0] }],
+      selections: [pick(r, 'a.txt', [0])],
     };
     const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string };
     expect(res.ok).toBe(false);
@@ -187,12 +214,12 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     // 먼저 a.txt hunk를 타겟에 적용.
     const r1 = await readFiles();
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
-    await apply({}, { taskId: 't', snapshot: r1.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] }, scn.worktreePath);
+    await apply({}, { taskId: 't', snapshot: r1.snapshot, selections: [pick(r1, 'a.txt', [0])] }, scn.worktreePath);
     // 스냅샷 갱신 후 재적용 시도 → --check 실패·--reverse 성공 → probe 코드.
     const r2 = await readFiles();
     const res = (await apply(
       {},
-      { taskId: 't', snapshot: r2.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r2.snapshot, selections: [pick(r2, 'a.txt', [0])] },
       scn.worktreePath,
     )) as { ok: boolean; code?: string; failedProbes?: Array<{ alreadyApplied: boolean }> };
     // dirty(방금 적용으로 a.txt가 dirty)로 거부되거나 probe로 걸림 — 둘 다 안전.
@@ -206,10 +233,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const req: DiffApplyRequest = {
       taskId: 't1',
       snapshot: r.snapshot,
-      selections: [
-        { path: 'a.txt', hunkIndices: [0] },
-        { path: 'b.txt', hunkIndices: [0] },
-      ],
+      selections: [pick(r, 'a.txt', [0]), pick(r, 'b.txt', [0])],
     };
     const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean };
     expect(res.ok).toBe(true);
@@ -222,13 +246,165 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
     await apply(
       {},
-      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0])] },
       scn.worktreePath,
     );
     // 타겟의 현 diff를 파싱 → a.txt 한 파일·한 hunk여야 한다.
     const targetDiff = g(scn.repoRoot, ['diff']);
     const parsed = parseUnifiedDiff(targetDiff);
     expect(parsed.files.map((f) => f.path)).toEqual(['a.txt']);
+  });
+});
+
+// ── TOCTOU: an adoption may only apply the diff the user actually saw ────────
+// The handler re-reads the source diff at apply time, so anything that changed
+// the worktree in between used to be adopted silently — the wrong hunk, or only
+// the part of the selection that still resolved. Every case below must reject
+// the whole request and leave the target byte-identical.
+describe('diff:applyHunks — source integrity gate', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  const BASE_A = 'a1\na2\na3\na4\na5\n';
+  const BASE_B = 'b1\nb2\nb3\n';
+
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  async function readFiles() {
+    const read = captured.get(IPC.DIFF_READ)!;
+    return (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; digest: string; hunks: unknown[] }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+  }
+
+  it('a file edited between read and apply is rejected, not adopted at its new content', async () => {
+    const r = await readFiles();
+    // The task agent keeps writing while the human reviews.
+    writeFileSync(join(scn.worktreePath, 'a.txt'), 'a1\nAGENT_WROTE_THIS_LATER\na3\na4\na5\n');
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0])] },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('stale');
+    expect(res.error).toContain('a.txt');
+    // The target keeps the base content — neither the reviewed nor the newer text.
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+  });
+
+  it('a selected path that left the diff rejects the whole request (no partial adoption)', async () => {
+    const r = await readFiles();
+    // b.txt goes back to its base content, so it drops out of the diff entirely.
+    writeFileSync(join(scn.worktreePath, 'b.txt'), BASE_B);
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [pick(r, 'a.txt', [0]), pick(r, 'b.txt', [0])],
+      },
+      scn.worktreePath,
+    )) as {
+      ok: boolean;
+      code?: string;
+      error?: string;
+      failedProbes?: Array<{ path: string; hunkIndex: number }>;
+    };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('stale');
+    expect(res.error).toContain('b.txt');
+    // The still-valid half of the selection must NOT have been applied.
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+    // The refused hunk is named so the panel can flag it.
+    expect(res.failedProbes).toEqual([{ path: 'b.txt', hunkIndex: 0, applicable: false, alreadyApplied: false }]);
+  });
+
+  it('a hunk index that no longer resolves is rejected, not silently dropped', async () => {
+    const r = await readFiles();
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0, 5])] },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('stale');
+    expect(res.error).toContain('hunk 5');
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+  });
+
+  it('a selection carrying no fingerprint is refused (fail closed)', async () => {
+    const r = await readFiles();
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        // A request shaped like the pre-gate contract.
+        selections: [{ path: 'a.txt', hunkIndices: [0] }] as unknown as DiffApplyRequest['selections'],
+      },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('stale');
+    expect(res.error).toContain('no source fingerprint');
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+  });
+
+  it('a multi-file adoption reaches git as one patch, so a mid-way failure cannot half-apply', async () => {
+    const r = await readFiles();
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    gitCalls.argv.length = 0;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [pick(r, 'a.txt', [0]), pick(r, 'b.txt', [0])],
+      },
+      scn.worktreePath,
+    )) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    // --check probes may be many; the write must be exactly one invocation.
+    const writes = gitCalls.argv.filter(
+      (a) => a[0] === 'apply' && !a.includes('--check') && !a.includes('--reverse'),
+    );
+    expect(writes.length).toBe(1);
+  });
+
+  it('one inapplicable file in the selection leaves the applicable one untouched', async () => {
+    // The target commits a conflicting change to b.txt first, so b.txt is clean
+    // there (dirty gate passes) but the reviewed hunk's context no longer
+    // matches. Committing before the read keeps the snapshot's HEAD current, so
+    // the drift gate passes too — the request has to die at apply time.
+    writeFileSync(join(scn.repoRoot, 'b.txt'), 'BTARGET\nb2\nb3\n');
+    g(scn.repoRoot, ['add', '-A']);
+    g(scn.repoRoot, ['commit', '-q', '-m', 'target moves b.txt']);
+    const r = await readFiles();
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      {
+        taskId: 't',
+        snapshot: r.snapshot,
+        selections: [pick(r, 'a.txt', [0]), pick(r, 'b.txt', [0])],
+      },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string };
+    expect(res.ok).toBe(false);
+    // All-or-nothing is a property of the apply, not just of the combined
+    // --check: a.txt is applicable on its own and must still be untouched.
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe(BASE_A);
+    expect(readFileSync(join(scn.repoRoot, 'b.txt'), 'utf8')).toBe('BTARGET\nb2\nb3\n');
   });
 });
 
@@ -300,7 +476,7 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
     const read = captured.get(IPC.DIFF_READ)!;
     const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
-      files: Array<{ path: string; hunks: unknown[] }>;
+      files: Array<{ path: string; digest: string; hunks: unknown[] }>;
       snapshot: DiffApplyRequest['snapshot'];
     };
     const af = r.files.find((f) => f.path === 'a.txt')!;
@@ -308,7 +484,7 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
     const res = (await apply(
       {},
-      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'a.txt', hunkIndices: allIdx }] },
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', allIdx)] },
       scn.worktreePath,
     )) as { ok: boolean };
     expect(res.ok).toBe(true);
@@ -320,13 +496,14 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
     const read = captured.get(IPC.DIFF_READ)!;
     const r1 = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
+      files: Array<{ path: string; digest: string }>;
       snapshot: DiffApplyRequest['snapshot'];
     };
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
     // 1차 적용 후 타겟에서 커밋 → a.txt가 clean(=dirty 아님)이면서 변경은 반영됨.
     await apply(
       {},
-      { taskId: 't', snapshot: r1.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r1.snapshot, selections: [pick(r1, 'a.txt', [0])] },
       scn.worktreePath,
     );
     g(scn.repoRoot, ['add', '-A']);
@@ -334,7 +511,7 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
     // 타겟 HEAD가 이동했으므로 worktree의 mergeBase도 이동 — 재열람 후 재시도.
     const r2 = (await read({}, scn.worktreePath, '')) as {
       ok: boolean;
-      files: Array<{ path: string; hunks: unknown[] }>;
+      files: Array<{ path: string; digest: string; hunks: unknown[] }>;
       snapshot: DiffApplyRequest['snapshot'];
     };
     // a.txt가 여전히 worktree diff에 있으면(이미 반영돼 없을 수도) alreadyApplied 경로 확인.
@@ -345,7 +522,7 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
     }
     const res = (await apply(
       {},
-      { taskId: 't', snapshot: r2.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r2.snapshot, selections: [pick(r2, 'a.txt', [0])] },
       scn.worktreePath,
     )) as { ok: boolean; code?: string; failedProbes?: Array<{ alreadyApplied: boolean }> };
     expect(res.ok).toBe(false);
@@ -411,7 +588,7 @@ describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부',
     const read = captured.get(IPC.DIFF_READ)!;
     const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
-      files: Array<{ path: string; kind: string; hunks: unknown[] }>;
+      files: Array<{ path: string; digest: string; kind: string; hunks: unknown[] }>;
       snapshot: DiffApplyRequest['snapshot'];
     };
     // delete 파일의 표시 경로가 실경로 b.txt(‘/dev/null’ 아님)여야 함(F4).
@@ -422,7 +599,7 @@ describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부',
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
     const res = (await apply(
       {},
-      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'b.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'b.txt', [0])] },
       scn.worktreePath,
     )) as { ok: boolean; code?: string };
     expect(res.ok).toBe(false);
@@ -447,7 +624,7 @@ describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', () => {
     const read = captured.get(IPC.DIFF_READ)!;
     const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
-      files: Array<{ path: string; hunkSelectable: boolean; hunks: unknown[] }>;
+      files: Array<{ path: string; digest: string; hunkSelectable: boolean; hunks: unknown[] }>;
       truncated: string[];
       snapshot: DiffApplyRequest['snapshot'];
     };
@@ -459,7 +636,7 @@ describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', () => {
     const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
     const res = (await apply(
       {},
-      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      { taskId: 't', snapshot: r.snapshot, selections: [pick(r, 'a.txt', [0])] },
       scn.worktreePath,
     )) as { ok: boolean; code?: string };
     expect(res.ok).toBe(false);

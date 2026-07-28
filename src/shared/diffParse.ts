@@ -60,6 +60,40 @@ export interface ParsedDiff {
   readonly files: readonly DiffFile[];
 }
 
+// A parsed file annotated with its adoption fingerprint. `diff:read` returns
+// these; `diff:applyHunks` recomputes the fingerprint from a fresh read and
+// refuses to adopt anything whose fingerprint moved (see fileFingerprintInput).
+export interface DiffReadFile extends DiffFile {
+  readonly digest: string;
+}
+
+// Canonical serialization behind a file's adoption fingerprint.
+//
+// It covers exactly what decides the patch bytes reassembled from this entry —
+// the header block and every hunk's header + body — plus the identity and
+// adoptability class the user saw. Every hunk is included, not only the
+// selected ones, because a selection is a positional index into this list.
+//
+// Fields are length-delimited so two different file entries cannot serialize
+// alike, and the leading tag versions the format: change the covered fields and
+// bump the tag, so old fingerprints compare unequal instead of comparing wrong.
+export function fileFingerprintInput(file: DiffFile): string {
+  const parts: string[] = [
+    'wmux-diff-file-v1',
+    file.path,
+    file.kind,
+    file.hunkSelectable ? 'sel' : 'nosel',
+    file.headerBlock,
+    String(file.hunks.length),
+  ];
+  for (const h of file.hunks) {
+    parts.push(h.header);
+    parts.push(String(h.bodyLines.length));
+    for (const bl of h.bodyLines) parts.push(bl);
+  }
+  return parts.map((p) => `${p.length}:${p}`).join('\n');
+}
+
 // ── diff:read / diff:applyHunks RPC 계약 (main↔renderer 공유, 스펙 §2·§3) ──
 
 // 타겟 repo 스냅샷(드리프트 게이트용, §2). applyHunks가 이를 되받아 재검증한다.
@@ -73,7 +107,7 @@ export interface DiffTargetSnapshot {
 // diff:read 응답. files는 파싱된 diff, snapshot은 드리프트 게이트 재료.
 export interface DiffReadResult {
   readonly ok: true;
-  readonly files: readonly DiffFile[];
+  readonly files: readonly DiffReadFile[];
   readonly numstat: readonly DiffNumstat[];
   readonly snapshot: DiffTargetSnapshot;
   // 캡 초과·binary 등으로 표시 전용인 파일 경로 목록(사용자 안내용).
@@ -103,6 +137,11 @@ export interface DiffApplyRequest {
   readonly selections: ReadonlyArray<{
     readonly path: string; // 표시 경로(repo-relative).
     readonly hunkIndices: readonly number[];
+    // Adoption fingerprint of the file entry these indices were picked from
+    // (DiffReadFile.digest, echoed verbatim). The handler re-reads the source
+    // diff at apply time and rejects the whole request unless this still
+    // matches — an adoption may only apply the diff the user actually saw.
+    readonly digest: string;
   }>;
 }
 
@@ -121,6 +160,10 @@ export type DiffApplyResult =
       readonly error: string;
       readonly code:
         | 'drift' // 타겟 HEAD/브랜치 이동
+        // The source diff moved: a selected file changed, left the diff, or the
+        // selection points at hunks it no longer has. Distinct from 'drift',
+        // which is about the target — the remedy here is reload + reselect.
+        | 'stale'
         | 'dirty' // 대상 파일 dirty
         | 'probe' // per-hunk 프로브 실패(failedProbes에 특정)
         | 'apply' // 최종 apply 실패

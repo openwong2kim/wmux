@@ -5,7 +5,7 @@
 // 실패 hunk 표시 + "적용됨"/"채택불가" 뱃지 + 코멘트 버튼.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type {
-  DiffFile,
+  DiffReadFile,
   DiffReadResult,
   DiffApplyRequest,
   DiffApplyResult,
@@ -398,7 +398,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   }, [isActive, isTask, load]);
 
   const filesByPath = useMemo(() => {
-    const map = new Map<string, DiffFile>();
+    const map = new Map<string, DiffReadFile>();
     for (const f of data?.files ?? []) map.set(f.path, f);
     return map;
   }, [data]);
@@ -423,9 +423,17 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     if (!meta || !data) return;
     const bridge = getDiffBridge();
     if (!bridge) return;
+    // Each selection carries the fingerprint of the file entry it was picked
+    // from, so main can refuse to adopt anything but the diff we rendered. A
+    // path with no entry in the current read (selection kept across a reload
+    // that dropped the file) sends an empty digest and is rejected there.
     const selections = Object.entries(selection)
       .filter(([, set]) => set.size > 0)
-      .map(([path, set]) => ({ path, hunkIndices: [...set].sort((a, b) => a - b) }));
+      .map(([path, set]) => ({
+        path,
+        hunkIndices: [...set].sort((a, b) => a - b),
+        digest: filesByPath.get(path)?.digest ?? '',
+      }));
     if (selections.length === 0) {
       setApplyMsg(t('diff.noHunksSelected'));
       return;
@@ -442,9 +450,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
       void load();
     } else {
-      if (res.code === 'probe' && res.failedProbes) {
+      if ((res.code === 'probe' || res.code === 'stale') && res.failedProbes) {
         setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
-        setApplyMsg(t('diff.someHunksFailed'));
+        // 'stale' names the specific paths/hunks that moved — show that reason
+        // rather than the generic "some hunks failed" copy.
+        setApplyMsg(res.code === 'stale' ? res.error : t('diff.someHunksFailed'));
       } else if (res.code === 'drift') {
         setApplyMsg(t('diff.targetMoved'));
       } else if (res.code === 'dirty') {
