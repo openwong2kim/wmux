@@ -396,6 +396,18 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (willRemove) {
         void get().purgeMembershipDaemon?.({ workspaceId: id });
         void get().principalMarkStaleWorkspaceDaemon?.(id);
+        // Missions are bound to the lifetime of their fan-out workspace: when
+        // the workspace goes, the mission closes, which archives its mission
+        // channel into the collapsed group. The CHANNEL SURVIVES — closing a
+        // mission never deletes its record. Optional call (the minimal test
+        // store has no workTask slice) and fire-and-forget: the sidebar's
+        // visibility rule reads workspace existence directly, so it is already
+        // correct whether or not this RPC lands.
+        void get().closeMissionForRemovedWorkspace?.(id);
+        // Drop this workspace's own mission cache — it may have been a fan-out
+        // PARENT, and nothing else evicts the entry (refreshMissions only ever
+        // visits workspaces that still exist).
+        get().clearMissionsFor?.(id);
       }
     },
 

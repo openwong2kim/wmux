@@ -228,6 +228,56 @@ describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재�
   });
 });
 
+// ═══ 워크스페이스 수명 결속 — 채널 보존 불변식 ═════════════════════════
+//
+// 오너 정책의 핵심: **미션은 워크스페이스 수명에 묶이지만 채널은 남는다.**
+// 렌더러는 태스크 워크스페이스가 삭제될 때 mission.close를 쏘므로, 그 close가
+// 채널을 지우지 않는다는 것이 정책 전체가 서 있는 자리다(archive는 접힘일 뿐,
+// 삭제는 사람이 명시적으로 휴지통을 비울 때만 일어난다).
+
+describe('mission.close는 채널을 archive할 뿐 지우지 않는다', () => {
+  it('워크스페이스 삭제로 close된 뒤에도 채널 행·메시지·멤버가 그대로 남는다', async () => {
+    const writer = makeFakeWriter();
+    const channelSvc = newChannelService(writer);
+    const log = newLog();
+    const svc = newWorkTaskService(log, channelSvc as unknown as WorkTaskChannelPort);
+    await svc.boot();
+
+    const started = await svc.startMission({
+      title: 'Fan out five',
+      verifiedWorkspaceId: 'ws-owner',
+      memberId: 'lead',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const { taskId, channelId } = started;
+    await channelSvc.post({
+      channelId,
+      sender: { workspaceId: 'ws-owner', memberId: 'lead' },
+      text: 'what the agent did',
+      verifiedWorkspaceId: 'ws-owner',
+    });
+
+    // 태스크 워크스페이스가 사라져 렌더러가 쏘는 close.
+    const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(closed.ok).toBe(true);
+
+    // 미션은 닫혔다.
+    expect(svc.getTask(taskId)?.status).toBe('closed');
+    // 채널은 남는다 — archived(접힘)일 뿐 부재가 아니다.
+    const ch = channelSvc.get(channelId, 'ws-owner');
+    expect(ch).not.toBeNull();
+    expect(ch?.status).toBe('archived');
+    // 휴지통에 들어가지도 않는다(삭제 경로는 사람의 명시적 행위 전용).
+    expect(ch?.trashedAt).toBeUndefined();
+    // 기록 그대로.
+    expect(channelSvc.getMessages(channelId, undefined, 'ws-owner').map((m) => m.text)).toEqual([
+      'what the agent did',
+    ]);
+    expect(channelSvc.getMembers(channelId, 'ws-owner').length).toBeGreaterThan(0);
+  });
+});
+
 // ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════
 
 describe('§3 멱등', () => {

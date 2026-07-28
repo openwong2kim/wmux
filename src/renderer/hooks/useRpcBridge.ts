@@ -258,10 +258,16 @@ export function useRpcBridge(): void {
     (window as unknown as {
       __wmuxMissionRpc: {
         list: (params: { verifiedWorkspaceId: string }) => Promise<RpcResult>;
+        close: (params: { taskId: string; verifiedWorkspaceId: string }) => Promise<RpcResult>;
       };
     }).__wmuxMissionRpc = {
       list: (params) =>
         window.electronAPI.rpc.invoke('task.mission.list', params) as Promise<RpcResult>,
+      // Closing a mission whose workspace was deleted (see workspaceSlice's
+      // removeWorkspace) — the daemon's authz gate is owner-or-CEO, so the
+      // caller passes the task's own owner workspace.
+      close: (params) =>
+        window.electronAPI.rpc.invoke('task.mission.close', params) as Promise<RpcResult>,
     };
 
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min

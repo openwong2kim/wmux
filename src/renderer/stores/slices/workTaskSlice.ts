@@ -22,9 +22,10 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 
-/** useRpcBridge가 설치하는 미션 읽기 브리지(단일 메서드 파사드). */
+/** useRpcBridge가 설치하는 미션 브리지(읽기 + 워크스페이스 수명 결속용 close). */
 interface MissionRpcBridge {
   list: (params: Record<string, unknown>) => Promise<unknown>;
+  close?: (params: Record<string, unknown>) => Promise<unknown>;
 }
 
 function readMissionRpc(): MissionRpcBridge | undefined {
@@ -101,6 +102,14 @@ export interface WorkTaskSlice {
   registerTaskPtys: (entries: Array<{ ptyId: string } & TaskPtyEntry>) => void;
   /** J3 §4 — 태스크 워크스페이스의 이탈 상태 설정(cwd=null이면 해제). */
   setPaneGroupDeparted: (paneGroupId: string, cwd: string | null) => void;
+  /**
+   * 태스크 워크스페이스가 삭제될 때 그 미션을 close한다(워크스페이스 수명 결속).
+   * 데몬 close가 미션 채널을 archive하므로, 워크스페이스가 사라지면 미션 행이
+   * 목록에서 빠지는 것과 동시에 채널이 접힌 Archived 그룹으로 내려간다 —
+   * **채널은 지워지지 않는다**(기록 보존). best-effort: 실패해도 사이드바
+   * 표시는 워크스페이스 실존만 보므로 무해하고, 다음 부트 reconcile이 수렴한다.
+   */
+  closeMissionForRemovedWorkspace: (paneGroupId: string) => Promise<void>;
 }
 
 export const createWorkTaskSlice: StateCreator<
@@ -173,5 +182,26 @@ export const createWorkTaskSlice: StateCreator<
   getMissionForPaneGroup: (paneGroupId) => {
     if (!paneGroupId) return undefined;
     return get().missionByPaneGroup[paneGroupId];
+  },
+
+  closeMissionForRemovedWorkspace: async (paneGroupId) => {
+    if (!paneGroupId) return;
+    const task = get().missionByPaneGroup[paneGroupId];
+    if (!task || task.status !== 'open') return; // 부재/이미 closed = no-op.
+    const bridge = readMissionRpc();
+    if (!bridge?.close) return;
+    try {
+      // authz 앵커는 태스크 owner(데몬 게이트: owner OR CEO). 삭제된 자식 워크스페이스가
+      // 아니라 **부모**가 owner다 — 자식 id로 호출하면 NOT_AUTHORIZED다.
+      await bridge.close({
+        taskId: task.id,
+        verifiedWorkspaceId: task.owner.verifiedWorkspaceId,
+      });
+    } catch {
+      // 데몬 미연결/일시 실패 — 부트 reconcile이 수렴한다(태스크 방향 archive 재시도).
+      return;
+    }
+    // 로컬 캐시도 즉시 반영(다음 폴링을 기다리지 않게).
+    await get().refreshMissions(task.owner.verifiedWorkspaceId);
   },
 });

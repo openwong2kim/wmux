@@ -146,3 +146,72 @@ describe('workTaskSlice', () => {
     });
   });
 });
+
+describe('워크스페이스 수명 결속 — closeMissionForRemovedWorkspace', () => {
+  interface MockedWindow {
+    __wmuxMissionRpc?: {
+      list: (p: Record<string, unknown>) => Promise<unknown>;
+      close: (p: Record<string, unknown>) => Promise<unknown>;
+    };
+  }
+  const g = globalThis as unknown as { window?: MockedWindow };
+
+  function withMissionRpc(): { calls: Array<{ method: string; params: Record<string, unknown> }> } {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    g.window = {
+      __wmuxMissionRpc: {
+        list: async (params) => {
+          calls.push({ method: 'list', params });
+          return { ok: true, tasks: [] };
+        },
+        close: async (params) => {
+          calls.push({ method: 'close', params });
+          return { ok: true };
+        },
+      },
+    };
+    return { calls };
+  }
+
+  afterEach(() => {
+    delete g.window;
+  });
+
+  it('삭제된 태스크 워크스페이스의 open 미션을 owner 신원으로 close한다', async () => {
+    const { calls } = withMissionRpc();
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+
+    const close = calls.find((c) => c.method === 'close');
+    expect(close).toBeDefined();
+    expect(close?.params).toEqual({ taskId: 'wtask-1', verifiedWorkspaceId: 'parent-a' });
+  });
+
+  it('이미 closed거나 매칭 미션이 없으면 close를 부르지 않는다', async () => {
+    const { calls } = withMissionRpc();
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+    await store.getState().closeMissionForRemovedWorkspace('child-unknown');
+
+    expect(calls.filter((c) => c.method === 'close')).toHaveLength(0);
+  });
+
+  it('브리지 미설치/데몬 미연결이면 조용히 no-op(사이드바는 워크스페이스 실존만 본다)', async () => {
+    g.window = {}; // 브리지 미설치 렌더러(useRpcBridge 마운트 전).
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+    await expect(
+      store.getState().closeMissionForRemovedWorkspace('child-1'),
+    ).resolves.toBeUndefined();
+  });
+});
