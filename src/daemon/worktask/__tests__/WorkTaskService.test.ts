@@ -278,6 +278,34 @@ describe('mission.close는 채널을 archive할 뿐 지우지 않는다', () => 
   });
 });
 
+// ─── 채널 보존 앵커(ChannelService.sweepRetention이 소비) ──────────────────────
+
+describe('hasOpenTaskForChannel — 살아 있는 미션의 채널을 스윕이 지우지 못하게', () => {
+  it('open 미션의 채널만 true이고, close되면 false로 풀린다', async () => {
+    const writer = makeFakeWriter();
+    const channelSvc = newChannelService(writer);
+    const log = newLog();
+    const svc = newWorkTaskService(log, channelSvc as unknown as WorkTaskChannelPort);
+    await svc.boot();
+
+    const started = await svc.startMission({
+      title: 'Anchor me',
+      verifiedWorkspaceId: 'ws-owner',
+      memberId: 'lead',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    expect(svc.hasOpenTaskForChannel(started.channelId)).toBe(true);
+    // 무관한 채널·빈 문자열은 앵커가 아니다.
+    expect(svc.hasOpenTaskForChannel('chan-unrelated')).toBe(false);
+    expect(svc.hasOpenTaskForChannel('')).toBe(false);
+
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(svc.hasOpenTaskForChannel(started.channelId)).toBe(false);
+  });
+});
+
 // ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════
 
 describe('§3 멱등', () => {

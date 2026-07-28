@@ -2883,6 +2883,18 @@ function registerRpcHandlers(
   // hand every pane agent an honest daemon-pipe route to hiding or destroying
   // a channel. `destroy` additionally refuses anything not already in the
   // trash, so even a caller on this path cannot skip the undo window.
+  //
+  // ACCEPTED RESIDUAL (owner decision) — like archive, these three trust a
+  // caller-supplied `verifiedWorkspaceId`, so a client that already speaks the
+  // daemon control pipe directly can call them as any workspace. That is the
+  // documented same-user trust-root residual (#113 / plans F1) and nothing here
+  // widens it: the MCP/agent router does not register these methods, and the
+  // renderer path is pipe-unreachable. What DOES change with `destroy` is the
+  // GRADE of the residual — archive is reversible, permanent deletion is not.
+  // Accepted as-is: closing it needs the same server-resolved identity anchor
+  // the whole F1 epic is about, and a partial gate here would only move the
+  // hole. Do not add `stampCaller` — that would hand every pane agent an honest
+  // route to the same ops.
   for (const [method, run] of [
     ['a2a.channel.trash', (p: { channelId: string; verifiedWorkspaceId: string }) => channelService.trash(p)],
     ['a2a.channel.restore', (p: { channelId: string; verifiedWorkspaceId: string }) => channelService.restore(p)],
@@ -4443,6 +4455,12 @@ async function main(): Promise<void> {
   // channel service since 1b injects its display lookup below.
   const principalStateWriter = new PrincipalStateWriter(wmuxDir);
   const principalService = new PrincipalService({ writer: principalStateWriter });
+  // Declared here (not at its construction site further down) so the channel
+  // service's retention-anchor closure below can read it late-bound: the
+  // channel service is built first, but the boot retention sweep also runs
+  // before WorkTaskService exists, and a `let` in the temporal dead zone would
+  // throw inside that sweep instead of reading `null`.
+  let workTaskService: WorkTaskService | null = null;
   const channelService = new ChannelService({
     writer: channelStateWriter,
     // 이벤트로그 커밋 경로(§5) — 부트 게이트 성공 시에만. 실패 시 레거시 경로 유지.
@@ -4500,6 +4518,12 @@ async function main(): Promise<void> {
           autoTrashArchivedHours: config.channels.autoTrashArchivedHours,
         }
       : {}),
+    // Retention anchor — the purge pass must not destroy a channel an OPEN
+    // mission still links to (the mission row's `#` would die with
+    // CHANNEL_NOT_FOUND). Late-bound on purpose: WorkTaskService is built after
+    // this service, so the closure reads the binding at sweep time and treats
+    // "not built yet / log unavailable" as "nothing anchored".
+    isChannelRetained: (channelId) => workTaskService?.hasOpenTaskForChannel(channelId) === true,
     emit: (event) => {
       // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
       // before broadcasting on the control pipe. The helper lives in
@@ -4535,12 +4559,22 @@ async function main(): Promise<void> {
   const runChannelRetentionSweep = (): void => {
     void channelService
       .sweepRetention()
-      .then(({ trashed, destroyed }) => {
-        if (trashed.length === 0 && destroyed.length === 0) return;
-        log(
-          'info',
-          `channel retention sweep: ${trashed.length} auto-trashed, ${destroyed.length} destroyed`,
-        );
+      .then(({ trashed, destroyed, failed }) => {
+        if (trashed.length > 0 || destroyed.length > 0) {
+          log(
+            'info',
+            `channel retention sweep: ${trashed.length} auto-trashed, ${destroyed.length} destroyed`,
+          );
+        }
+        // A refusal the sweep swallows silently would repeat every hour with no
+        // trace, so a stuck channel stays invisible forever. Warn, never throw.
+        if (failed.length > 0) {
+          log(
+            'warn',
+            `channel retention sweep: ${failed.length} op(s) failed — ` +
+              failed.map((f) => `${f.op} ${f.id}: ${f.code}`).join(', '),
+          );
+        }
       })
       .catch((err) => log('warn', 'channel retention sweep failed:', err));
   };
@@ -4588,7 +4622,7 @@ async function main(): Promise<void> {
   // 부트 순서 고정(§1): replay → reconcile(양방향) → closed GC. 로그 미가용이면
   // 미션 RPC는 fail-closed(null → 핸들러가 명시 에러). await 부트는 register
   // 배선 전에 완료돼야 reconcile이 채널 상태를 정리한 뒤 첫 RPC를 받는다.
-  let workTaskService: WorkTaskService | null = null;
+  // (선언은 channelService 생성 위로 올라가 있다 — 보존 앵커 클로저가 지연 참조.)
   if (channelEventLogDeps) {
     try {
       const svc = new WorkTaskService({

@@ -632,6 +632,20 @@ export class WorkTaskService {
     return this.tasks.get(taskId);
   }
 
+  /**
+   * 채널 보존 앵커: 이 채널을 미션 채널로 가리키는 **open** 태스크가 있는가.
+   * 채널 보존 스윕(ChannelService.sweepRetention)이 살아 있는 미션의 채널을
+   * 지워 `#` 링크를 CHANNEL_NOT_FOUND로 만드는 것을 막는다. projection은
+   * closed GC로 바운드돼 있어 선형 스캔이 저렴하다(시간당 1회 호출 경로).
+   */
+  hasOpenTaskForChannel(channelId: string): boolean {
+    if (!channelId) return false;
+    for (const task of this.tasks.values()) {
+      if (task.status === 'open' && task.missionChannelId === channelId) return true;
+    }
+    return false;
+  }
+
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
   get taskCount(): number {
     return this.tasks.size;
