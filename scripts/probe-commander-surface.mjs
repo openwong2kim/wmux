@@ -416,7 +416,7 @@ async function main() {
     baseline: path.relative(REPO_ROOT, BASELINE_PATH).replaceAll('\\', '/'),
     rawProtocolVersions: RAW_PROTOCOL_VERSIONS,
     handshakeLayouts: ['bundle', 'unbundled-dist', 'relocated-bundle'],
-    profiles: Object.fromEntries(results.map(({ names: _names, ...result }) => [
+    profiles: Object.fromEntries(results.map((result) => [
       result.profile,
       {
         toolCount: result.toolCount,

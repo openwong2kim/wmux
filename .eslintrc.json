@@ -12,5 +12,22 @@
     "plugin:import/electron",
     "plugin:import/typescript"
   ],
-  "parser": "@typescript-eslint/parser"
+  "parser": "@typescript-eslint/parser",
+  "overrides": [
+    {
+      "files": [
+        "scripts/probe-commander-surface.mjs"
+      ],
+      "rules": {
+        "import/no-unresolved": [
+          "error",
+          {
+            "ignore": [
+              "^@modelcontextprotocol/sdk/client/(?:index|stdio)\\.js$"
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }
