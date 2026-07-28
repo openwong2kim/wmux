@@ -1,61 +1,21 @@
 // J1 fan-out IPC 핸들러(renderer → main). 프롬프트 1개 → N 격리 태스크.
 //
-// FanOutService(main)를 매 호출 조립한다: 데몬 RPC 포트(daemonClient) + 렌더러 spawn
-// 포트(sendToRenderer('fanout.spawnWorkspace')). 렌더러 신뢰 신원(verifiedWorkspaceId)은
-// channelLocal.handler와 동일 trust basis(Electron 프로세스 경계 — 파이프 미노출).
+// 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal.handler와 동일 trust basis
+// (Electron 프로세스 경계). 이 경로의 모든 필드는 사람이 GUI 모달에 입력한 값이라
+// 그대로 신뢰한다 — agentCmd·repoPath·verifiedWorkspaceId 포함. 사람의 클릭이 곧
+// 인가이므로 승인 프롬프트도 없다.
 //
-// 멱등(§2 G1)은 FanOutService 인스턴스가 키→결과 LRU로 관리하므로, 서비스 인스턴스는
-// 프로세스 수명 동안 재사용해야 한다(핸들러 등록 시 1회 생성, 클로저로 보존).
+// The pipe/MCP front door is a DIFFERENT handler (pipe/handlers/fanout.rpc.ts)
+// with a deliberately narrower input contract: it never reads agentCmd,
+// repoPath, verifiedWorkspaceId or memberId from the caller, and it does ask
+// for approval. Both share ONE FanOutService instance, built by
+// worktask/createFanOutService.ts — the §2 G1 idempotency LRU is an instance
+// field, so a second instance would accept one key twice and fan out twice.
 
-import { ipcMain, type BrowserWindow } from 'electron';
+import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import type { DaemonClient } from '../../DaemonClient';
-import type { RpcMethod } from '../../../shared/rpc';
-import { sendToRenderer } from '../../pipe/handlers/_bridge';
-import { FanOutService } from '../../worktask/FanOutService';
-import type { FanOutRequest } from '../../worktask/FanOutService';
-
-type GetWindow = () => BrowserWindow | null;
-
-/** 스폰은 몇 초 걸릴 수 있으니 렌더러 spawn 타임아웃을 넉넉히(PTY 생성 포함). */
-const SPAWN_TIMEOUT_MS = 30000;
-
-/**
- * Build the process-lifetime FanOutService.
- *
- * MUST be called once per process and the instance shared by every caller
- * (renderer IPC + pipe RPC). The service owns two pieces of state that break
- * when duplicated: the §2 G1 idempotency LRU, and a TaskWorktreeManager whose
- * serial queue is what keeps concurrent `git worktree add` off the same repo.
- * Two instances = two queues = the race that queue exists to prevent.
- */
-export function createFanOutService(
-  getDaemonClient: () => DaemonClient | null,
-  getWindow: GetWindow,
-): FanOutService {
-  return new FanOutService({
-    daemon: {
-      rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
-        const dc = getDaemonClient();
-        if (!dc) throw new Error('Daemon not connected');
-        return dc.rpc(method as RpcMethod, params);
-      },
-    },
-    renderer: {
-      spawnWorkspace: async (p) => {
-        const res = (await sendToRenderer(getWindow, 'fanout.spawnWorkspace', p, {
-          timeoutMs: SPAWN_TIMEOUT_MS,
-        })) as { workspaceId?: string; ptyId?: string; error?: string };
-        if (res && typeof res.error === 'string') return { error: res.error };
-        if (res && typeof res.workspaceId === 'string') {
-          return { workspaceId: res.workspaceId, ...(res.ptyId ? { ptyId: res.ptyId } : {}) };
-        }
-        return { error: 'fanout.spawnWorkspace: renderer returned no workspaceId' };
-      },
-    },
-  });
-}
+import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
   ipcMain.removeHandler(IPC.FANOUT_START);

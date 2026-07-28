@@ -118,6 +118,18 @@ export interface FanOutServiceOptions {
   worktrees?: TaskWorktreeManager;
 }
 
+/**
+ * Idempotency-key state, for the wire poll contract. The pipe surface cannot
+ * answer a fan-out synchronously (the MCP client's RPC deadline is 10s and a
+ * single task's renderer spawn alone is allowed 30s), so it accepts the call,
+ * runs it detached, and lets the caller poll by re-sending the same key. This
+ * view turns the existing §2 G1 idempotency bookkeeping into that poll answer.
+ */
+export type FanOutStatus =
+  | { state: 'unknown' }
+  | { state: 'running' }
+  | { state: 'done'; result: FanOutResult };
+
 export class FanOutService {
   private readonly daemon: FanOutDaemonPort;
   private readonly renderer: FanOutRendererPort;
@@ -156,9 +168,33 @@ export class FanOutService {
       // 완료 결과 저장(LRU cap).
       this.recordResult(key, result);
       return result;
+    } catch (err) {
+      // A THROWN run (as opposed to a per-task failure, which run() already
+      // folds into the result) must still TERMINATE the key. The pipe surface
+      // polls by key: releasing the key here would let the next poll RESTART a
+      // fan-out that has already spawned tasks. Record the throw as a failed
+      // result instead, so the key answers "done, and it failed".
+      const failed: FanOutResult = {
+        ok: false,
+        error: `fanout:start threw: ${(err as Error).message}`,
+        tasks: [],
+      };
+      this.recordResult(key, failed);
+      return failed;
     } finally {
       this.inFlight.delete(key);
     }
+  }
+
+  /**
+   * Idempotency-key state for the wire poll contract (see FanOutStatus). Purely
+   * a read of the §2 G1 bookkeeping — it starts nothing and mutates nothing.
+   */
+  statusOf(key: string): FanOutStatus {
+    const done = this.results.get(key);
+    if (done) return { state: 'done', result: done };
+    if (this.inFlight.has(key)) return { state: 'running' };
+    return { state: 'unknown' };
   }
 
   private async run(req: FanOutRequest): Promise<FanOutResult> {

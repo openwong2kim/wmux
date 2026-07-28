@@ -263,9 +263,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'task.mission.start',
   'task.mission.close',
   'task.mission.list',
-  // Fan-out (fanout_start). The repo is derived server-side from the caller's
-  // own pane and the spawn is execute-approval gated — see
-  // plans/fanout-mcp-surface-2026-07-28.md.
+  // Fan-out (J1) on the wire — the fanout_start tool. Every dangerous input is
+  // server-derived in the handler and the spawn is approval-gated, so the grant
+  // is to ATTEMPT the call; an unverifiable caller still fails closed.
   'task.fanout.start',
   // company mode (all wmux.internal — undeclarable, hence the need for this list)
   'company.a2a.whoami',

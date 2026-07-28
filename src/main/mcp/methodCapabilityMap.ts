@@ -423,7 +423,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // 단조 물질화·배타 불변식·owner|CEO authz는 데몬 WorkTaskService에서 강제.
   'task.mission.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
 
-  // --- Fan-out (plans/fanout-mcp-surface-2026-07-28.md) ---
+  // --- Fan-out (pipe/handlers/fanout.rpc.ts) ---
   // Starting a fan-out spawns N autonomous agent CLIs, which is the same
   // effect class as `a2a.task.send { execute: true }` — so it takes the same
   // capability rather than a weaker channel one. The user-facing approval

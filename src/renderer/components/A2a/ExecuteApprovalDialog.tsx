@@ -37,7 +37,8 @@ export default function ExecuteApprovalDialog() {
   // Fan-out from the pipe/MCP surface. The A2A copy below says "in this
   // workspace", which is wrong for a fan-out (N NEW worktree workspaces) in a
   // security-relevant way — so the fan-out branch states the count and the repo
-  // instead of letting the user wave through a misdescribed spawn.
+  // instead of letting the user wave through a misdescribed spawn. It also
+  // hides the auto-approve checkbox, which does not apply to fan-out.
   const fanout = approval.fanout;
   const remainingMs = Math.max(0, approval.expiresAt - now);
   const remainingSec = Math.ceil(remainingMs / 1000);
@@ -122,14 +123,23 @@ export default function ExecuteApprovalDialog() {
           {approval.messagePreview || '<empty message>'}
         </div>
         <div className="flex items-center justify-between">
-          <label className="flex items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-            <input
-              type="checkbox"
-              checked={a2aAutoApproveExecute}
-              onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
-            />
-            {t('fleet.approvals.a2aAutoApprove')}
-          </label>
+          {fanout ? (
+            // No auto-approve affordance on a fan-out: the toggle is scoped to
+            // A2A background execution and fan-out deliberately does not ride
+            // it, so offering it here would promise something it does not do.
+            <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+              fan-out always asks — auto-approve does not cover it
+            </span>
+          ) : (
+            <label className="flex items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+              <input
+                type="checkbox"
+                checked={a2aAutoApproveExecute}
+                onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
+              />
+              {t('fleet.approvals.a2aAutoApprove')}
+            </label>
+          )}
         </div>
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>

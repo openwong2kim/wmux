@@ -12,7 +12,7 @@ import { normalizeRoleBinding } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
-import { requestExecuteApproval } from '../utils/executeApprovalGate';
+import { requestExecuteApproval, requestFanOutApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
   closeBrowserTabInWorkspace,
@@ -560,23 +560,25 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'fanout.requestApproval') {
-    // 파이프/MCP fan-out의 승인 게이트(plans/fanout-mcp-surface-2026-07-28.md D5).
-    // 새 게이트가 아니라 기존 A2A execute 게이트 재사용 — 같은 큐·같은 30s
-    // auto-deny·같은 전역 auto-approve 토글을 그대로 탄다. 렌더러 다이얼로그가
+    // 파이프/MCP fan-out의 승인 게이트. 큐·다이얼로그·30s 타이머는 A2A execute
+    // 게이트와 공유하지만 전역 auto-approve 토글(a2aAutoApproveExecute)은 타지
+    // 않는다 — 그 토글은 백그라운드 에이전트 스폰에 대한 동의지 worktree N개
+    // 생성에 대한 동의가 아니다(requestFanOutApproval). 렌더러 다이얼로그가
     // 시작하는 fan-out(FanOutDialog)은 사람 클릭이 곧 승인이라 이 경로를 타지 않는다.
+    //
+    // outcome을 그대로 돌려준다: main은 이미 호출자에게 accepted를 반환한 뒤라,
+    // 자동 거부가 "조용히 사라지는" 대신 폴 응답에 이유로 실려야 한다.
     const callerWsId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     const repoPath = typeof params.repoPath === 'string' ? params.repoPath : '';
     const taskCount = typeof params.taskCount === 'number' ? params.taskCount : 0;
     const promptPreview = typeof params.promptPreview === 'string' ? params.promptPreview : '';
-    const approved = await requestExecuteApproval({
-      taskId: 'fan-out',
-      senderWorkspaceId: callerWsId,
-      receiverWorkspaceId: callerWsId,
+    const verdict = await requestFanOutApproval({
+      workspaceId: callerWsId,
+      repoPath,
+      taskCount,
       messagePreview: promptPreview,
-      cwd: repoPath || null,
-      fanout: { taskCount, repoPath },
     });
-    return { approved };
+    return { approved: verdict.approved, outcome: verdict.outcome };
   }
 
   if (method === 'fanout.spawnWorkspace') {

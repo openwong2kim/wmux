@@ -28,7 +28,6 @@ import { z } from 'zod';
 import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import type { ChannelVisibility } from '../shared/channels';
-import { FANOUT_MAX_TASKS } from '../shared/workTask';
 
 /** Resolver the parent module injects so tests can stub without booting the
  *  PID-map walk (src/mcp/index.ts uses its own verified resolver). */
@@ -115,46 +114,6 @@ async function callChannelRpc(
       content: [{ type: 'text', text: `Error: ${message}` }],
       isError: true,
     };
-  }
-}
-
-/** Helper for `task.fanout.start`, which does NOT share the channel envelope:
- *  it returns `{ ok, error?: string, tasks: FanOutTaskResult[] }`, where a
- *  partial failure (`ok: false`) still carries the tasks that DID spawn plus
- *  their branches and worktree paths. Collapsing that into `callChannelRpc`'s
- *  `Error [code]: message` would throw away exactly the data the agent needs to
- *  recover. So: report `isError` only when nothing spawned, and otherwise hand
- *  back the whole report. Rejections raised by the handler itself (before any
- *  spawn) use the structured `{ code, message }` shape, so both are rendered. */
-async function callFanOutRpc(
-  params: Record<string, unknown>,
-  resolveSenderPtyId: () => string,
-): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
-  const pty = resolveSenderPtyId();
-  const withPty = pty ? { ...params, senderPtyId: pty } : params;
-  try {
-    const result = (await sendRpc('task.fanout.start' as RpcMethod, withPty)) as
-      | { ok?: boolean; error?: unknown; tasks?: unknown[] }
-      | undefined;
-    const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
-    const spawned = tasks.some((t) => t && typeof t === 'object' && (t as Record<string, unknown>)['ok'] === true);
-    if (!spawned) {
-      const err = result?.error;
-      const detail =
-        typeof err === 'string'
-          ? err
-          : err && typeof err === 'object'
-            ? `[${String((err as Record<string, unknown>)['code'])}] ${String((err as Record<string, unknown>)['message'])}`
-            : 'no tasks were started';
-      return {
-        content: [{ type: 'text', text: `Error: ${detail}\n${JSON.stringify(result ?? {}, null, 2)}` }],
-        isError: true,
-      };
-    }
-    return { content: [{ type: 'text', text: JSON.stringify(result ?? {}, null, 2) }] };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
   }
 }
 
@@ -291,33 +250,6 @@ const CHANNEL_MISSION_CLOSE_SHAPE = {
     .string()
     .optional()
     .describe('Optional idempotency key. A retried close with the same key returns the original result.'),
-};
-
-// Fan-out (plans/fanout-mcp-surface-2026-07-28.md). Deliberately NOT on this
-// shape: `repo_path` (derived server-side from the calling pane's cwd so an
-// agent cannot create worktrees in an arbitrary repo) and `agent_cmd` (the
-// main-side command builder interpolates it unquoted into a shell command).
-const FANOUT_START_SHAPE = {
-  titles: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(FANOUT_MAX_TASKS)
-    .describe(`One title per task (1-${FANOUT_MAX_TASKS}). The count of titles decides how many tasks are spawned; each title seeds the task's branch name and mission channel.`),
-  idempotency_key: z
-    .string()
-    .describe('Required idempotency key. A repeat with the same key returns the original result instead of spawning a second set of tasks.'),
-  prompt: z
-    .string()
-    .optional()
-    .describe('Prompt shared by every task. Combined with the matching task_prompts entry as "shared\\n\\nper-task". Both may be empty — that just opens the worktrees and agent panes for a human to drive.'),
-  task_prompts: z
-    .array(z.string())
-    .optional()
-    .describe('Per-task prompts, index-aligned with titles.'),
-  member_id: z
-    .string()
-    .optional()
-    .describe('Your member id inside the mission channels (defaults to your workspace id).'),
 };
 
 /** Register the standard channel tools on the given MCP server. The
@@ -627,32 +559,6 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     async () => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('task.mission.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
-    },
-  );
-
-  // ── fanout_start (J1 fan-out on the MCP surface) ──────────────────
-  // One prompt → N isolated worktree tasks, each with its own branch, its own
-  // workspace + agent pane, and its own private mission channel.
-  //
-  // Two parameters the in-app dialog has are deliberately absent here:
-  //   repo_path — derived main-side from the cwd of the pane this MCP server is
-  //     anchored to, so a caller cannot create worktrees in an arbitrary repo.
-  //   agent_cmd — the main-side command builder interpolates it unquoted into a
-  //     shell command, so a wire value would be shell injection.
-  // The call is also gated by the user-facing execute approval prompt.
-  server.tool(
-    'fanout_start',
-    'Fan out one prompt into N isolated tasks. Each task gets its own git worktree + branch, its own workspace with an agent pane, and its own private mission channel. The repository is ALWAYS the one your own terminal pane is working in — it is not a parameter, so run this from a pane inside the repo you want to fan out over. The user is asked to approve before anything spawns. Poll channel_mission_list for the resulting branches and worktree paths.',
-    FANOUT_START_SHAPE,
-    async ({ titles, idempotency_key, prompt, task_prompts, member_id }) => {
-      const params: Record<string, unknown> = {
-        titles,
-        idempotencyKey: idempotency_key,
-      };
-      if (prompt !== undefined) params['prompt'] = prompt;
-      if (task_prompts !== undefined) params['taskPrompts'] = task_prompts;
-      if (member_id !== undefined) params['memberId'] = member_id;
-      return callFanOutRpc(params, resolveSenderPtyId);
     },
   );
 }

@@ -356,12 +356,13 @@ export type RpcMethod =
   // J1 §5 — 물질화 필드(branch/worktreePath/paneGroupId) 단조 커밋. FanOutService
   // 내부 경로가 호출한다(owner OR CEO authz는 데몬 WorkTaskService에서 강제).
   | 'task.mission.update'
-  // Fan-out on the pipe surface (plans/fanout-mcp-surface-2026-07-28.md). One
-  // prompt → N isolated worktree tasks. Unlike the renderer-only `fanout:start`
-  // IPC, the caller supplies NO repoPath and NO agentCmd: the repo is derived
-  // server-side from the caller's own pane cwd, and the agent command is fixed.
-  // Identity rides the same senderPtyId→verifiedWorkspaceId stamp as
-  // `task.mission.*`, and the spawn is execute-approval gated.
+  // Fan-out on the pipe surface (pipe/handlers/fanout.rpc.ts). One prompt → N
+  // isolated worktree tasks. Unlike the renderer-only `fanout:start` IPC, the
+  // caller supplies NO repoPath, NO agentCmd and NO memberId: the repo is the
+  // git toplevel of the caller's own workspace cwd and the agent command is
+  // fixed. Identity rides the same senderPtyId→verifiedWorkspaceId stamp as
+  // `task.mission.*`, the spawn is approval-gated, and the call is
+  // accept-then-poll (re-send the key to read the state).
   | 'task.fanout.start';
 
 // All available methods as array (for system.capabilities)
