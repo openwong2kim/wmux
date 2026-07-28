@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { DaemonConfig } from './types';
+import type { ChannelRetentionConfig, DaemonConfig } from './types';
+import {
+  CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
+  CHANNEL_TRASH_TTL_HOURS_DEFAULT,
+} from '../shared/channels';
 import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
@@ -113,9 +117,46 @@ export function createDefaultConfig(): DaemonConfig {
       // (e.g. a running build) never hits this.
       detachedTtlHours: 8,
     },
+    // Channel retention — the trash empties itself after 30 days (it only
+    // finishes deletions a human started), while auto-trashing archived
+    // channels stays off (it would discard records nobody chose to discard).
+    channels: {
+      trashTtlHours: CHANNEL_TRASH_TTL_HOURS_DEFAULT,
+      autoTrashArchivedHours: CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
+    },
     // LanLink control plane (PR-3) — OFF by default, explicit opt-in. NIC null
     // until the user selects one; port omitted (PR-4 picks a default).
     lanlink: defaultLanLinkConfig(),
+  };
+}
+
+/**
+ * Per-field backfill for the `channels` retention slice. Same discipline as the
+ * lifecycle knobs: absent → default, garbage → the SAFE reading rather than the
+ * default. "Safe" here is asymmetric on purpose — a garbage `trashTtlHours`
+ * becomes `0` (keep everything) instead of silently reverting to a 30-day
+ * delete schedule the operator did not ask for. Negative values clamp to `0`
+ * for the same reason; there is no upper clamp, since "very long" is exactly
+ * the value a cautious operator should be able to set.
+ */
+function coerceChannelRetention(
+  raw: unknown,
+  defaults: ChannelRetentionConfig,
+): ChannelRetentionConfig {
+  const hours = (v: unknown, def: number): number => {
+    if (v === undefined) return def;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 0;
+    return Math.floor(v);
+  };
+  const slice = (raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {});
+  return {
+    trashTtlHours: hours(slice['trashTtlHours'], defaults.trashTtlHours),
+    autoTrashArchivedHours: hours(
+      slice['autoTrashArchivedHours'],
+      defaults.autoTrashArchivedHours,
+    ),
   };
 }
 
@@ -239,6 +280,15 @@ export function loadConfig(): DaemonConfig {
     // OFF default WITHOUT touching any sibling field (a malformed lanlink must not
     // nuke pipeName). enabled defaults OFF — explicit opt-in.
     config.lanlink = coerceLanLinkConfig(config.lanlink, defaults.lanlink ?? defaultLanLinkConfig());
+
+    // ── Channel retention: per-field backfill (same discipline as lanlink) ──
+    config.channels = coerceChannelRetention(
+      config.channels,
+      defaults.channels ?? {
+        trashTtlHours: CHANNEL_TRASH_TTL_HOURS_DEFAULT,
+        autoTrashArchivedHours: CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
+      },
+    );
 
     return config;
   } catch (err) {

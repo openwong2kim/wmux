@@ -2877,6 +2877,34 @@ function registerRpcHandlers(
     return channelService.archive({ channelId, archivedBy, verifiedWorkspaceId });
   });
 
+  // Trash lifecycle (trash / restore / destroy) — HUMANS-ONLY, exactly like
+  // archive above: no `stampCaller`, because these ride the renderer-local
+  // mutate path which pre-stamps `verifiedWorkspaceId`. Stamping here would
+  // hand every pane agent an honest daemon-pipe route to hiding or destroying
+  // a channel. `destroy` additionally refuses anything not already in the
+  // trash, so even a caller on this path cannot skip the undo window.
+  for (const [method, run] of [
+    ['a2a.channel.trash', (p: { channelId: string; verifiedWorkspaceId: string }) => channelService.trash(p)],
+    ['a2a.channel.restore', (p: { channelId: string; verifiedWorkspaceId: string }) => channelService.restore(p)],
+    ['a2a.channel.destroy', (p: { channelId: string; verifiedWorkspaceId: string }) => channelService.destroy(p)],
+  ] as const) {
+    pipeServer.onRpc(method, async (params) => {
+      const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+      const verifiedWorkspaceId =
+        typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+      if (!channelId || !verifiedWorkspaceId) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'channelId and verifiedWorkspaceId are required',
+          },
+        };
+      }
+      return run({ channelId, verifiedWorkspaceId });
+    });
+  }
+
   pipeServer.onRpc('a2a.channel.join', async (rawParams) => {
     const stamped = stampCaller(rawParams, { kind: 'ref', key: 'member' });
     if (!stamped.ok) return stamped;
@@ -4464,6 +4492,14 @@ async function main(): Promise<void> {
     // `ChannelService.archive()` is already wired and will activate
     // automatically once a real value is plumbed in.
     ceoWorkspaceId: undefined,
+    // Channel retention policy (config.json → channels). Absent slice falls
+    // back to the shared defaults inside the service.
+    ...(config.channels
+      ? {
+          trashTtlHours: config.channels.trashTtlHours,
+          autoTrashArchivedHours: config.channels.autoTrashArchivedHours,
+        }
+      : {}),
     emit: (event) => {
       // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
       // before broadcasting on the control pipe. The helper lives in
@@ -4489,6 +4525,28 @@ async function main(): Promise<void> {
       }
     },
   });
+
+  // Channel retention sweep — auto-trash (off unless configured) + trash purge.
+  // Boot pass plus an hourly timer (same shape as the A2A/WorkTask projection
+  // GC below): the pre-existing empty-channel reaper only runs at `load()`,
+  // which never fires on a daemon that stays up for weeks. `unref` so the sweep
+  // can't hold the event loop open. Failures are logged, never fatal —
+  // retention is housekeeping, and the next tick retries.
+  const runChannelRetentionSweep = (): void => {
+    void channelService
+      .sweepRetention()
+      .then(({ trashed, destroyed }) => {
+        if (trashed.length === 0 && destroyed.length === 0) return;
+        log(
+          'info',
+          `channel retention sweep: ${trashed.length} auto-trashed, ${destroyed.length} destroyed`,
+        );
+      })
+      .catch((err) => log('warn', 'channel retention sweep failed:', err));
+  };
+  runChannelRetentionSweep();
+  const channelRetentionInterval = setInterval(runChannelRetentionSweep, 60 * 60 * 1000);
+  channelRetentionInterval.unref();
 
   // ── A2A 태스크 데몬 정본 (envelope PR4 §5 D11 — 공유 로그) ──────────────
   // 채널과 **단일 AppendOnlyLog 인스턴스를 공유**한다(§2.1 단일 논리 스트림 —
