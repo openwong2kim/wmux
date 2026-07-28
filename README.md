@@ -4,7 +4,7 @@
 
 ### The workspace multiplexer for AI agents.
 
-Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and a **real browser your agents drive**. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
+Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and an integrated browser your agents can drive. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
 
 <img width="924" alt="wmux — the workspace multiplexer for AI agents, on Windows and macOS" src="docs/banner.png" />
 
@@ -97,21 +97,21 @@ winget install openwong2kim.wmux
 
 |   |   |
 |---|---|
-| 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **adopt hunks all-or-nothing**, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
+| 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **tick the hunks you want** — per file, across files — and adopt that selection in one atomic `git apply` that lands whole or is refused whole, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
 | 🌿 **Git & GitHub live in the dock** | A **Git tab** shows the worktrees of the repo behind your active pane — create, open as a workspace, or remove — plus its **pull requests and comments** (GitHub via `gh`, GitLab via `glab`, including self-hosted). A read-only **workspace diff** is one palette command away, and from any hunk you can **ask the orchestrator** with the code attached. No alt-tabbing to the browser to see if review feedback landed. |
 | 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
 | 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
-| 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **84 tools** (browser, terminal, panes, channels, A2A) register themselves, scoped to the workspace that called them. |
+| 🌐 **A browser is in the workspace** | Chrome over CDP is integrated, so browser work happens in the same window as the panes and channels — your agent clicks, types, and screenshots through the same MCP surface, with nothing to wire up. Works with React inputs and CJK text. |
 
 ---
 
 ## ✨ Highlights
 
-- 🧵 **Task fan-out & harvest** — one prompt → N worktree-isolated tasks (idempotent, per-task compensation) · side-by-side diff with **hunk adoption** (all-or-nothing `git apply`) · close / one-click PR / cleanup list · mission channels record every decision
+- 🧵 **Task fan-out & harvest** — one prompt → N worktree-isolated tasks (idempotent, per-task compensation) · side-by-side diff with **per-hunk adoption** (check individual hunks in any text file — renames, binaries, mode-only and over-cap files stay display-only; the selection lands as one all-or-nothing `git apply`) · close / one-click PR / cleanup list · mission channels record every decision
 - 🌿 **Git surface** — a **Git tab** in the dock: worktrees (create / open-as-workspace / remove, no force-delete) + **pull requests & comments** for the active repo (GitHub via `gh`, GitLab via `glab`, self-hosted included) · read-only **workspace diff** from the palette · **ask the orchestrator about a hunk** with the code attached
 - 🔁 **One-click loops** — put the orchestrator on an objective with optional per-iteration **steps** (a `/`-picker autocompletes your `.claude` skills), a done-when checklist, and a cadence; it keeps working across restarts, event-woken by your agents, and stopping fails closed to report-only
 - 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
@@ -168,7 +168,7 @@ winget install openwong2kim.wmux
 
 **Agent detection** — Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode, GitHub Copilot CLI. Detects start → activates monitoring, warns on critical actions.
 
-**Task journey (fan-out → diff → PR)** — spawn up to 8 `WorkTask` missions from one prompt, each with a dedicated git worktree on a fresh `wtask/*` branch, its own task workspace, a private mission channel, and a file-backed initial prompt. Idempotency-keyed end to end; per-task failures compensate individually, and worktrees are preserved — never force-deleted. Harvest through a diff surface (file tree, unified diff, per-hunk checkboxes; adoption is a single all-or-nothing `git apply` gated by a target snapshot so the target is fully changed or fully untouched), comment straight into the mission channel, then close the task (the worktree is removed only after a clean check — dirty output is preserved and the close is held) or open a PR with one click (`gh`-gated, idempotent re-entry). A palette cleanup list scans the worktree root for leftovers, and missions show up in the sidebar and fleet panel.
+**Task journey (fan-out → diff → PR)** — spawn up to 8 `WorkTask` missions from one prompt, each with a dedicated git worktree on a fresh `wtask/*` branch, its own task workspace, a private mission channel, and a file-backed initial prompt. Idempotency-keyed end to end; per-task failures compensate individually, and worktrees are preserved — never force-deleted. Harvest through a diff surface (file tree, unified diff, per-hunk checkboxes across files; the hunks you selected are combined into a single all-or-nothing `git apply` gated by a target snapshot, so the target takes that whole selection or stays untouched — and it is refused as a whole if the target moved, if it has uncommitted changes to those files, or if any selected hunk no longer applies. The selection is resolved against a fresh read of the task worktree at adopt time, so re-read the diff if the agent is still writing to it), comment straight into the mission channel, then close the task (the worktree is removed only after a clean check — dirty output is preserved and the close is held) or open a PR with one click (`gh`-gated, idempotent re-entry). A palette cleanup list scans the worktree root for leftovers, and missions show up in the sidebar and fleet panel.
 
 **Multi-agent (A2A)** — agent-to-agent messaging + task delegation addressed by pane/surface, same-workspace and cross-workspace. Per-pane **execute approval gate** (a remote agent can't spawn a `bypassPermissions` worker in your workspace without your approval). Symmetric reply (a reply returns to the exact pane that asked), pollable task inbox on the EventBus, broadcast, and a unified approval inbox in Fleet View.
 
