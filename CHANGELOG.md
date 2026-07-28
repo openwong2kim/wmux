@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The event-polling contract now describes the cursor replacement that already happens during resync.** On ordinary responses, `nextCursor` is non-decreasing; a response with `resync: true` may instead return a value lower than the cursor the client supplied — including `0` for an empty ring — when it needs to re-anchor a cursor that points past the newest event. Clients must pass that replacement back verbatim: clamping it to the previous value repeats the same resync page indefinitely. No runtime behavior or wire shape changed.
+
 - **The protocol docs now state that the daemon control connection is multiplexed.** Replies and pushed events share one stream, with no subscription step, and are told apart only by whether they carry the `id` of the request you sent. Clients that wrote a request and read exactly one line back therefore worked until an event arrived at the wrong moment, then reported a failure with an empty error message and dropped the real reply — a failure mode that can invent failures but never successes, which sent two teams debugging in the wrong direction. `docs/PROTOCOL.md` §2.9 now spells out the correlation rule. No behaviour changes; correctly-written clients were never affected. (#659)
 
 ### Fixed

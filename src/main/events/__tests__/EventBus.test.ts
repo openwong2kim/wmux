@@ -86,6 +86,9 @@ describe('EventBus', () => {
       // cursor=2 → strictly older than oldestSeq-1 → resync.
       const resync = bus.poll(2);
       expect(resync.resync).toBe(true);
+      // Ring-window drift still advances; only an ahead cursor can be replaced
+      // with a lower value during resync.
+      expect(resync.nextCursor).toBeGreaterThan(resync.priorCursor);
     });
   });
 
@@ -184,14 +187,62 @@ describe('EventBus', () => {
     });
   });
 
-  describe('cursor ahead of latest (review fix 5a)', () => {
-    it('triggers resync when cursor > latestSeq (daemon-restart smell)', () => {
+  describe('nextCursor during resync', () => {
+    function emitThree(): void {
       bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
-      // latestSeq=1; caller is 999 ahead — only possible after a daemon restart.
-      const r = bus.poll(999);
-      expect(r.resync).toBe(true);
-      // After resync we serve from oldest forward.
-      expect(r.events).toHaveLength(1);
+      bus.emit({ type: 'pane.closed', workspaceId: 'ws-1', paneId: 'p1' });
+      bus.emit({ type: 'pane.focused', workspaceId: 'ws-1', paneId: 'p2' });
+    }
+
+    it('replaces a future cursor and converges when passed back verbatim', () => {
+      emitThree();
+
+      const first = bus.poll(999);
+      expect(first).toMatchObject({ priorCursor: 999, nextCursor: 3, resync: true });
+      expect(first.events.map((event) => event.seq)).toEqual([1, 2, 3]);
+      expect(first.nextCursor).toBeLessThan(first.priorCursor);
+
+      const second = bus.poll(first.nextCursor);
+      expect(second.events).toEqual([]);
+      expect(second).toMatchObject({ priorCursor: 3, nextCursor: 3 });
+      expect(second.resync).toBeUndefined();
+    });
+
+    it('replaces a future cursor with 0 when the ring is empty', () => {
+      const result = bus.poll(5);
+
+      expect(result).toMatchObject({
+        events: [],
+        priorCursor: 5,
+        nextCursor: 0,
+        resync: true,
+      });
+    });
+
+    it.each([
+      {
+        label: 'the page is truncated by max',
+        options: { max: 1 },
+        expectedSeqs: [1],
+        expectedNextCursor: 1,
+      },
+      {
+        label: 'the type filter matches nothing',
+        options: { types: ['process.exited'] as const },
+        expectedSeqs: [],
+        expectedNextCursor: 3,
+      },
+    ])('keeps the replacement semantics when $label', ({ options, expectedSeqs, expectedNextCursor }) => {
+      emitThree();
+
+      const result = bus.poll(999, options);
+      expect(result.events.map((event) => event.seq)).toEqual(expectedSeqs);
+      expect(result).toMatchObject({
+        priorCursor: 999,
+        nextCursor: expectedNextCursor,
+        resync: true,
+      });
+      expect(result.nextCursor).toBeLessThan(result.priorCursor);
     });
   });
 
