@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkLicenses } from '../check-licenses.mjs';
+import { checkLicenses } from '../lib/license-audit.mjs';
 import { ALLOWED, classifyLicense, findCopyleftMarker } from '../lib/license-policy.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
