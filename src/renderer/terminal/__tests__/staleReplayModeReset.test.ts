@@ -78,7 +78,7 @@ type TerminalWithCore = Terminal & {
 };
 
 describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
-  it('releases a DECSTBM scroll region left armed by a replayed dead-TUI buffer ("el hueco")', async () => {
+  it('releases a DECSTBM scroll region left armed by a replayed dead-TUI buffer (the frozen-scroll-window bug)', async () => {
     const term = new Terminal({ rows: 24, cols: 80 }) as TerminalWithCore;
     try {
       // A TUI (e.g. an agent's input box pinned to the bottom) narrows the
@@ -90,6 +90,22 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
       await write(term, STALE_REPLAY_DISPLAY_RESETS);
       expect(term._core.buffer.scrollTop).toBe(0);
       expect(term._core.buffer.scrollBottom).toBe(term.rows - 1);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('preserves the replayed cursor position (xterm.js CSI r snaps the cursor to (0,0) as a side effect)', async () => {
+    const term = new Terminal({ rows: 24, cols: 80 });
+    try {
+      // Replay left the cursor mid-buffer, inside the still-armed region.
+      await write(term, '\x1b[5;20r\x1b[10;15H');
+      expect(term.buffer.active.cursorY).toBe(9);
+      expect(term.buffer.active.cursorX).toBe(14);
+
+      await write(term, STALE_REPLAY_DISPLAY_RESETS);
+      expect(term.buffer.active.cursorY).toBe(9);
+      expect(term.buffer.active.cursorX).toBe(14);
     } finally {
       term.dispose();
     }
@@ -153,7 +169,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(src.slice(resyncIdx, resyncIdx + 1200)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
   });
 
-  it('pairs STALE_REPLAY_DISPLAY_RESETS with STALE_REPLAY_INPUT_MODE_RESETS at both call sites ("el hueco" fix)', () => {
+  it('pairs STALE_REPLAY_DISPLAY_RESETS with STALE_REPLAY_INPUT_MODE_RESETS at both call sites (frozen-scroll-window fix)', () => {
     // Site 1: the dead-snapshot paint (no resumeAgent gate — dead is dead).
     const deadSnapshotIdx = src.indexOf('const paintDeadSnapshot');
     expect(deadSnapshotIdx).toBeGreaterThan(-1);
