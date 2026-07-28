@@ -4,7 +4,7 @@
     "full": {
       "maxListBytes": 75000,
       "wireResultSha256": "dd03eddf270598f74363fd372a895ccd561f944e0f8a44f3f9cc2de61c090cc0",
-      "instructionSha256": "ed7cdfbc662a9f370426312e1c15de298e0fe9d73b5e3613654c45bc7b2f61b9",
+      "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
         "browser_close",
@@ -95,7 +95,7 @@
     "commander": {
       "maxListBytes": 45000,
       "wireResultSha256": "61bd067bb7c80dc16be73beb4a36319ee18002860ed67a304fe782b54e463aea",
-      "instructionSha256": "49f05ee3a4a641a87d3cafc6cc28c3009217b98f72d8efa74c40f3e613760d7e",
+      "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
         "terminal_read_events",

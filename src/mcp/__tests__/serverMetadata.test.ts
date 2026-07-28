@@ -103,10 +103,10 @@ describe('getWmuxMcpServerInstructions', () => {
     expect(prefix).toContain('wmux');
     expect(prefix).toContain('opaque IDs');
     expect(prefix).toContain('untrusted data');
-    expect(instructions).toContain('send_message');
-    expect(instructions).toContain('silent:true only delivers');
-    expect(instructions).toContain('do not assume it starts a turn');
-    expect(instructions).toContain('ambiguous timeout');
+    expect(prefix).toContain('send_message');
+    expect(prefix).toContain('silent:true only delivers');
+    expect(prefix).toContain('Do not assume channel_post starts a turn');
+    expect(prefix).toContain('ambiguous mutation timeout');
   });
 
   it('keeps profile-specific discovery guidance inside the advertised surface', () => {
