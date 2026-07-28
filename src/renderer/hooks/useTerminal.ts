@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
-import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
+import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
@@ -863,7 +863,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
-    const unicodeGraphemesAddon = new UnicodeGraphemesAddon();
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
@@ -875,7 +874,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
-    terminal.loadAddon(unicodeGraphemesAddon);
     terminal.loadAddon(webLinksAddon);
     // Path link provider — Ctrl+click an absolute filesystem path to open
     // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
@@ -938,9 +936,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // emoji-presentation selector each measure as ONE cluster of width 2
     // instead of summing their codepoints. CJK/Hangul/fullwidth widths are
     // unchanged from Unicode 11 — see HeadlessSnapshot.graphemes.test.ts.
-    // The daemon-side snapshot terminal must stay on the same version
-    // (HeadlessSnapshot.ts) or snapshots paint cell-shifted against the screen.
-    terminal.unicode.activeVersion = '15-graphemes';
+    // Shared with the daemon snapshot terminals via this helper; if the two
+    // sides ever measure differently, snapshots paint cell-shifted.
+    applyUnicodeWidthModel(terminal);
     terminal.open(container);
 
     // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가

@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { generateTextSnapshot } from '../HeadlessSnapshot';
+import { applyUnicodeWidthModel, TERMINAL_UNICODE_VERSION } from '../../shared/terminalUnicode';
 
 // ── Unicode width model: grapheme clusters, and the CJK regression guard ────
 //
@@ -33,6 +34,40 @@ async function measureWidth(text: string, version: '11' | '15-graphemes'): Promi
     term.dispose();
   }
 }
+
+describe('shared width model helper', () => {
+  // Both production terminals (renderer useTerminal.ts, daemon
+  // HeadlessSnapshot.ts x2) go through applyUnicodeWidthModel. Testing the
+  // helper is what covers all of them — and it is deliberately the ONLY
+  // coverage the ANSI snapshot path can have. The serialize addon re-emits
+  // characters, so its payload is byte-identical under Unicode 11 and
+  // '15-graphemes' (verified): no black-box test can observe that path's width
+  // model. Making divergence structurally impossible is the substitute.
+
+  it('registers the version it claims (guards a bad addon bump)', () => {
+    const term = new Terminal({ cols: 20, rows: 4, allowProposedApi: true, logLevel: 'off' });
+    try {
+      applyUnicodeWidthModel(term);
+      // If a future addon renames or drops this version id, activeVersion would
+      // silently fall back and every width below would quietly change.
+      expect(term.unicode.versions).toContain(TERMINAL_UNICODE_VERSION);
+      expect(term.unicode.activeVersion).toBe(TERMINAL_UNICODE_VERSION);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('yields grapheme widths, not per-codepoint sums', async () => {
+    const term = new Terminal({ cols: 200, rows: 4, allowProposedApi: true, logLevel: 'off' });
+    try {
+      applyUnicodeWidthModel(term);
+      await new Promise<void>((r) => term.write('\x1b[H\u{1F468}‍\u{1F469}‍\u{1F467}', r));
+      expect(term.buffer.active.cursorX).toBe(2);
+    } finally {
+      term.dispose();
+    }
+  });
+});
 
 describe('unicode width model — grapheme clustering', () => {
   // Each of these is a single user-perceived character. Unicode 11 widthed
