@@ -60,11 +60,13 @@ export function selectLiveMissions(
 
 function useLiveMissions(): WorkTask[] {
   const byWorkspace = useStore(useShallow((s) => s.missionsByWorkspace));
-  // id 집합만 구독(이름·메타 변경엔 재계산 없음 — useMissionsPolling과 동형 키).
-  const workspaceIdsKey = useStore((s) => s.workspaces.map((w) => w.id).join(','));
+  // id 배열만 얕은 비교로 구독(이름·메타 변경엔 재계산 없음). 조인 문자열 키를
+  // 쓰지 않는다 — 워크스페이스가 0개면 `''.split(',')`가 `['']`를 내놓아 빈
+  // 문자열 id가 "살아 있는" 것으로 잡히고, id에 쉼표가 들어가면 쪼개진다.
+  const workspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
   return useMemo(
-    () => selectLiveMissions(byWorkspace, new Set(workspaceIdsKey.split(','))),
-    [byWorkspace, workspaceIdsKey],
+    () => selectLiveMissions(byWorkspace, new Set(workspaceIds)),
+    [byWorkspace, workspaceIds],
   );
 }
 
