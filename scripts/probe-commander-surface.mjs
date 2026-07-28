@@ -24,6 +24,11 @@ const UNBUNDLED_PATH = path.join(REPO_ROOT, 'dist', 'mcp', 'mcp', 'entry.js');
 const PACKAGE_PATH = path.join(REPO_ROOT, 'package.json');
 const BASELINE_PATH = path.join(SCRIPT_DIR, 'mcp-protocol-baseline.json');
 const REQUEST_TIMEOUT_MS = 20_000;
+const RAW_PROTOCOL_VERSIONS = [
+  '2025-11-25',
+  '2025-03-26',
+  '2024-11-05',
+];
 
 const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
@@ -169,8 +174,9 @@ function writeFrame(child, message) {
   child.stdin.write(`${JSON.stringify(message)}\n`);
 }
 
-async function readRawProfile(profile, config) {
+async function readRawProfile(profile, config, protocolVersion) {
   const commander = profile === 'commander';
+  const label = `${profile}/${protocolVersion}`;
 
   return await new Promise((resolve, reject) => {
     const child = spawn(
@@ -206,7 +212,7 @@ async function readRawProfile(profile, config) {
     const handleLine = (line) => {
       if (settled) return;
       if (line.length === 0) {
-        fail(new Error(`${profile}: blank non-protocol frame appeared on MCP stdout`));
+        fail(new Error(`${label}: blank non-protocol frame appeared on MCP stdout`));
         return;
       }
       frameCount += 1;
@@ -216,7 +222,7 @@ async function readRawProfile(profile, config) {
         message = JSON.parse(line);
       } catch (error) {
         fail(new Error(
-          `${profile}: non-JSON data appeared on MCP stdout: ${line.slice(0, 120)}`,
+          `${label}: non-JSON data appeared on MCP stdout: ${line.slice(0, 120)}`,
           { cause: error },
         ));
         return;
@@ -246,7 +252,7 @@ async function readRawProfile(profile, config) {
           secondResultRaw = extractRawResult(line, 3);
           child.stdin.end();
         } else {
-          throw new Error(`${profile}: unexpected JSON-RPC response id ${message.id}`);
+          throw new Error(`${label}: unexpected JSON-RPC response id ${message.id}`);
         }
       } catch (error) {
         fail(error);
@@ -274,48 +280,48 @@ async function readRawProfile(profile, config) {
         assert.equal(
           stdoutBuffer,
           '',
-          `${profile}: MCP stdout ended with an incomplete or unframed value`,
+          `${label}: MCP stdout ended with an incomplete or unframed value`,
         );
         assert.equal(
           code,
           0,
-          `${profile}: raw MCP child exited ${code}; stderr: ${stderr.trim()}`,
+          `${label}: raw MCP child exited ${code}; stderr: ${stderr.trim()}`,
         );
-        assert.equal(frameCount, 3, `${profile}: expected exactly three response frames`);
+        assert.equal(frameCount, 3, `${label}: expected exactly three response frames`);
         assert.deepEqual(
           initialized?.serverInfo,
           { name: 'wmux', version: packageJson.version },
-          `${profile}: raw initialize serverInfo must match package.json`,
+          `${label}: raw initialize serverInfo must match package.json`,
         );
         assert.equal(
           initialized?.protocolVersion,
-          '2025-11-25',
-          `${profile}: raw probe must negotiate the stable protocol`,
+          protocolVersion,
+          `${label}: raw probe must negotiate the requested protocol`,
         );
         assert.equal(
           sha256(initialized?.instructions ?? ''),
           config.instructionSha256,
-          `${profile}: raw server instructions changed`,
+          `${label}: raw server instructions changed`,
         );
         assert.equal(
           firstResultRaw,
           secondResultRaw,
-          `${profile}: raw tools/list result values are not byte-identical`,
+          `${label}: raw tools/list result values are not byte-identical`,
         );
 
         const names = firstResult.tools.map((tool) => tool.name);
-        assert.deepEqual(names, config.toolNames, `${profile}: raw tool surface changed`);
+        assert.deepEqual(names, config.toolNames, `${label}: raw tool surface changed`);
         const wireResultBytes = Buffer.byteLength(firstResultRaw, 'utf8');
         const wireResultSha256 = sha256(firstResultRaw);
         assert.ok(
           wireResultBytes <= config.maxListBytes,
-          `${profile}: raw tools/list result is ${wireResultBytes} bytes ` +
+          `${label}: raw tools/list result is ${wireResultBytes} bytes ` +
             `(budget ${config.maxListBytes})`,
         );
         assert.equal(
           wireResultSha256,
           config.wireResultSha256,
-          `${profile}: raw tool schemas, descriptions, or ordering changed`,
+          `${label}: raw tool schemas, descriptions, or ordering changed`,
         );
 
         settled = true;
@@ -328,7 +334,7 @@ async function readRawProfile(profile, config) {
 
     timeout = setTimeout(() => {
       fail(new Error(
-        `${profile}: raw MCP probe timed out; stderr: ${stderr.trim()}`,
+        `${label}: raw MCP probe timed out; stderr: ${stderr.trim()}`,
       ));
     }, REQUEST_TIMEOUT_MS);
 
@@ -337,7 +343,7 @@ async function readRawProfile(profile, config) {
       id: 1,
       method: 'initialize',
       params: {
-        protocolVersion: '2025-11-25',
+        protocolVersion,
         capabilities: {},
         clientInfo: { name: 'wmux-raw-protocol-probe', version: '1.0.0' },
       },
@@ -360,7 +366,10 @@ async function main() {
   const results = [];
   for (const [profile, config] of Object.entries(baseline.profiles)) {
     const sdk = await readSdkProfile(profile, config);
-    const wire = await readRawProfile(profile, config);
+    const wire = await readRawProfile(profile, config, RAW_PROTOCOL_VERSIONS[0]);
+    for (const protocolVersion of RAW_PROTOCOL_VERSIONS.slice(1)) {
+      await readRawProfile(profile, config, protocolVersion);
+    }
     results.push({ ...sdk, ...wire });
   }
 
@@ -395,10 +404,17 @@ async function main() {
     commanderNames.length < fullNames.size,
     'commander surface must omit at least one full-profile tool',
   );
+  const commanderSet = new Set(commanderNames);
+  assert.deepEqual(
+    commanderNames,
+    results[0].names.filter((name) => commanderSet.has(name)),
+    'commander must preserve the canonical full-profile registration order',
+  );
 
   console.log(JSON.stringify({
     server: { name: 'wmux', version: packageJson.version },
     baseline: path.relative(REPO_ROOT, BASELINE_PATH).replaceAll('\\', '/'),
+    rawProtocolVersions: RAW_PROTOCOL_VERSIONS,
     handshakeLayouts: ['bundle', 'unbundled-dist', 'relocated-bundle'],
     profiles: Object.fromEntries(results.map(({ names: _names, ...result }) => [
       result.profile,

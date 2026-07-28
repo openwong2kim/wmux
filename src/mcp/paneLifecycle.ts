@@ -41,6 +41,11 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { RpcMethod } from '../shared/rpc';
+import {
+  defineWmuxTool,
+  registerWmuxTools,
+  type RegisterWmuxToolsOptions,
+} from './toolCatalog';
 
 /** Resolvers/helpers the parent module injects so the behavioral test can
  *  capture each tool handler and assert its RPC mapping without booting the
@@ -95,59 +100,85 @@ const SURFACE_CLOSE_SHAPE = {
   surfaceId: z.string().describe('Surface id to close (from surface_list).'),
 };
 
-/** Register the five pane/surface lifecycle tools on the given MCP server. */
-export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycleDeps): void {
+/**
+ * Build the first typed-catalog domain. The ordering is the public MCP ordering
+ * and must remain stable: the raw protocol probe pins it for both profiles.
+ */
+export function createPaneLifecycleToolCatalog(
+  deps: PaneLifecycleDeps,
+) {
   const { callRpc, resolveCallerWorkspaceId } = deps;
 
-  // ── pane_split (CREATE family) ────────────────────────────────────
-  server.tool(
-    'pane_split',
-    'Split a leaf pane, creating a new sibling pane. Returns the new paneId (and a ptyWarning if a background PTY could not be pre-spawned). Omit workspaceId to split inside your own (the caller\'s) workspace; pass it to target a specific one — an unknown id is rejected, never silently redirected to the on-screen workspace.',
-    PANE_SPLIT_SHAPE,
-    async ({ workspaceId, direction }) => {
-      const resolved = workspaceId || (await resolveCallerWorkspaceId());
-      const params: Record<string, unknown> = { direction: direction ?? 'horizontal' };
-      if (resolved) params['workspaceId'] = resolved;
-      return callRpc('pane.split', params);
-    },
-  );
+  return Object.freeze([
+    // ── pane_split (CREATE family) ──────────────────────────────────
+    defineWmuxTool({
+      name: 'pane_split',
+      description:
+        'Split a leaf pane, creating a new sibling pane. Returns the new paneId (and a ptyWarning if a background PTY could not be pre-spawned). Omit workspaceId to split inside your own (the caller\'s) workspace; pass it to target a specific one — an unknown id is rejected, never silently redirected to the on-screen workspace.',
+      inputSchema: PANE_SPLIT_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ workspaceId, direction }) => {
+        const resolved = workspaceId || (await resolveCallerWorkspaceId());
+        const params: Record<string, unknown> = { direction: direction ?? 'horizontal' };
+        if (resolved) params['workspaceId'] = resolved;
+        return callRpc('pane.split', params);
+      },
+    }),
 
-  // ── pane_close (ADDRESS family) ───────────────────────────────────
-  server.tool(
-    'pane_close',
-    'Close a leaf pane and dispose its surfaces\' PTYs. paneId is globally unique and resolved across all workspaces, so a supervisor can reap a worker pane it created in a background workspace. Rejects branch (non-leaf) panes and the root pane.',
-    PANE_CLOSE_SHAPE,
-    async ({ paneId }) => callRpc('pane.close', { id: paneId }),
-  );
+    // ── pane_close (ADDRESS family) ─────────────────────────────────
+    defineWmuxTool({
+      name: 'pane_close',
+      description:
+        'Close a leaf pane and dispose its surfaces\' PTYs. paneId is globally unique and resolved across all workspaces, so a supervisor can reap a worker pane it created in a background workspace. Rejects branch (non-leaf) panes and the root pane.',
+      inputSchema: PANE_CLOSE_SHAPE,
+      profiles: ['full'],
+      invoke: async ({ paneId }) => callRpc('pane.close', { id: paneId }),
+    }),
 
-  // ── pane_focus (ADDRESS family, non-yank) ─────────────────────────
-  server.tool(
-    'pane_focus',
-    'Focus a leaf pane. Does NOT switch the on-screen workspace (non-yank): focusing a pane in a background workspace marks it active there without stealing the user\'s screen. Use workspace.focus to switch screens. paneId is resolved across all workspaces.',
-    PANE_FOCUS_SHAPE,
-    async ({ paneId }) => callRpc('pane.focus', { id: paneId }),
-  );
+    // ── pane_focus (ADDRESS family, non-yank) ───────────────────────
+    defineWmuxTool({
+      name: 'pane_focus',
+      description:
+        'Focus a leaf pane. Does NOT switch the on-screen workspace (non-yank): focusing a pane in a background workspace marks it active there without stealing the user\'s screen. Use workspace.focus to switch screens. paneId is resolved across all workspaces.',
+      inputSchema: PANE_FOCUS_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ paneId }) => callRpc('pane.focus', { id: paneId }),
+    }),
 
-  // ── surface_new (CREATE family) ───────────────────────────────────
-  server.tool(
-    'surface_new',
-    'Open a new surface (terminal) in the active pane of a workspace. Returns the new surfaceId + ptyId. Omit workspaceId to open in your own (the caller\'s) workspace; an explicit unknown id is rejected.',
-    SURFACE_NEW_SHAPE,
-    async ({ workspaceId, shell, cwd }) => {
-      const resolved = workspaceId || (await resolveCallerWorkspaceId());
-      const params: Record<string, unknown> = {};
-      if (resolved) params['workspaceId'] = resolved;
-      if (shell !== undefined) params['shell'] = shell;
-      if (cwd !== undefined) params['cwd'] = cwd;
-      return callRpc('surface.new', params);
-    },
-  );
+    // ── surface_new (CREATE family) ─────────────────────────────────
+    defineWmuxTool({
+      name: 'surface_new',
+      description:
+        'Open a new surface (terminal) in the active pane of a workspace. Returns the new surfaceId + ptyId. Omit workspaceId to open in your own (the caller\'s) workspace; an explicit unknown id is rejected.',
+      inputSchema: SURFACE_NEW_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ workspaceId, shell, cwd }) => {
+        const resolved = workspaceId || (await resolveCallerWorkspaceId());
+        const params: Record<string, unknown> = {};
+        if (resolved) params['workspaceId'] = resolved;
+        if (shell !== undefined) params['shell'] = shell;
+        if (cwd !== undefined) params['cwd'] = cwd;
+        return callRpc('surface.new', params);
+      },
+    }),
 
-  // ── surface_close (ADDRESS family) ────────────────────────────────
-  server.tool(
-    'surface_close',
-    'Close a surface and dispose its PTY. surfaceId is globally unique and resolved across all workspaces.',
-    SURFACE_CLOSE_SHAPE,
-    async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
-  );
+    // ── surface_close (ADDRESS family) ──────────────────────────────
+    defineWmuxTool({
+      name: 'surface_close',
+      description:
+        'Close a surface and dispose its PTY. surfaceId is globally unique and resolved across all workspaces.',
+      inputSchema: SURFACE_CLOSE_SHAPE,
+      profiles: ['full'],
+      invoke: async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
+    }),
+  ]);
+}
+
+/** Register the five pane/surface lifecycle tools on the selected surface. */
+export function registerPaneLifecycleTools(
+  server: McpServer,
+  deps: PaneLifecycleDeps,
+  options: RegisterWmuxToolsOptions,
+): void {
+  registerWmuxTools(server, createPaneLifecycleToolCatalog(deps), options);
 }

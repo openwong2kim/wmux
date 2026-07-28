@@ -393,8 +393,10 @@ if (COMMANDER_MODE) {
   setCommanderRole(ctx.commanderToken ?? '');
   const surface = new Set(COMMANDER_TOOL_SURFACE);
   const registerTool = server.tool.bind(server);
-  // Single gate for every registration site (index.ts + channels +
-  // paneLifecycle + playwright modules all register through this instance).
+  // Transitional gate for legacy server.tool() registration sites. Domains
+  // migrated to WmuxToolSpec use their immutable profile instead; invariant
+  // tests keep those profile entries equal to COMMANDER_TOOL_SURFACE until the
+  // catalog owns all tools and this monkey-patch can be removed.
   (server as { tool: typeof server.tool }).tool = ((name: string, ...rest: unknown[]) => {
     if (!surface.has(name)) {
       // Skipped registration — return a inert handle-shaped object for the
@@ -1373,10 +1375,21 @@ registerChannelTools(server, {
 // workspace by surprise. The ADDRESS family (close/focus) takes a
 // globally-unique id resolved across all workspaces. callRpc is injected so
 // paneLifecycle.test.ts can assert each handler's RPC mapping against a mock.
-registerPaneLifecycleTools(server, {
-  callRpc,
-  resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
-});
+registerPaneLifecycleTools(
+  server,
+  {
+    callRpc,
+    resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
+  },
+  {
+    context: {
+      profile: COMMANDER_MODE ? 'commander' : 'full',
+      // clientInfo is self-declared telemetry. Until the MCP transport issues an
+      // authenticated principal, catalog invocation stays explicitly powerless.
+      principal: { kind: 'unattributed' },
+    },
+  },
+);
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared
 // plugin identity (clientInfo.name + version). Fire `mcp.identify` once so
