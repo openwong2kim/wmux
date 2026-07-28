@@ -143,9 +143,13 @@ function coerceChannelRetention(
   raw: unknown,
   defaults: ChannelRetentionConfig,
 ): ChannelRetentionConfig {
+  // Mirrors `normalizeRetentionHours` in ChannelService: a deliberate sub-hour
+  // value rounds UP to one hour instead of flooring to `0`, so asking for an
+  // aggressive schedule cannot be read as "disabled". Only an exact `0` is off.
   const hours = (v: unknown, def: number): number => {
     if (v === undefined) return def;
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 0;
+    if (v > 0 && v < 1) return 1;
     return Math.floor(v);
   };
   const slice = (raw !== null && typeof raw === 'object' && !Array.isArray(raw)

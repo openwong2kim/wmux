@@ -357,3 +357,27 @@ describe('loadConfig — P1 idle-CPU knobs backfill + clamp', () => {
     expect(c.daemon.pipeName).toBe('\\\\.\\pipe\\keepme2');
   });
 });
+
+describe('loadConfig — channel retention coercion', () => {
+  it('rounds a deliberate sub-hour value UP to 1h (never down to "off")', () => {
+    // Flooring 0.5 to 0 would read an operator asking for an AGGRESSIVE purge
+    // schedule as "disabled" — the exact opposite of the stated intent.
+    const c0 = createDefaultConfig();
+    writeRawConfig({
+      ...c0,
+      channels: { trashTtlHours: 0.5, autoTrashArchivedHours: 0.25 },
+    });
+
+    const c = loadConfig();
+    expect(c.channels?.trashTtlHours).toBe(1);
+    expect(c.channels?.autoTrashArchivedHours).toBe(1);
+  });
+
+  it('keeps an exact 0 as OFF, and coerces negatives/garbage to OFF', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, channels: { trashTtlHours: 0, autoTrashArchivedHours: -5 } });
+    const c = loadConfig();
+    expect(c.channels?.trashTtlHours).toBe(0);
+    expect(c.channels?.autoTrashArchivedHours).toBe(0);
+  });
+});
