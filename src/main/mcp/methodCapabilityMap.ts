@@ -406,6 +406,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // 필요하므로 send 등급으로 둔다(도달 시점엔 이미 mutateLocal 경계를 통과했다는 의미).
   'a2a.channel.operatorJoin':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.operatorList':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  // Channel trash lifecycle — humans-only, same grade and rationale as
+  // archive/kick: entries here for RpcMethod completeness, excluded from the
+  // first-party grant. Hiding or destroying a channel must never be reachable
+  // from a forgeable agent identity.
+  'a2a.channel.trash':                { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.restore':              { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.destroy':              { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.principal.upsert':             { capability: 'wmux.internal' },
   'a2a.principal.remove':             { capability: 'wmux.internal' },
   'a2a.principal.markStaleWorkspace': { capability: 'wmux.internal' },

@@ -86,6 +86,15 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   // 하므로 같은 allowlist에 둔다.
   'a2a.channel.operatorJoin',
   'a2a.channel.operatorList',
+  // Channel trash lifecycle — soft delete, undo, and permanent deletion. Same
+  // humans-only convention as kick/archive: absent from the pipe router, so an
+  // agent cannot make a channel disappear from the operator's sidebar (let
+  // alone destroy its history). `destroy` is additionally gated daemon-side on
+  // the channel already being in the trash, so this path cannot skip the undo
+  // window either.
+  'a2a.channel.trash',
+  'a2a.channel.restore',
+  'a2a.channel.destroy',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',
