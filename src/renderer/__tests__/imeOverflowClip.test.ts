@@ -34,10 +34,14 @@ function xtermRuleBlocks(): string[] {
 }
 
 describe('IME composition overflow guard (#678)', () => {
-  it('a rule clips .xterm and .xterm-screen', () => {
+  it('every .xterm/.xterm-screen rule individually declares overflow: clip', () => {
     const blocks = xtermRuleBlocks();
     expect(blocks.length, 'globals.css has no overflow rule for .xterm/.xterm-screen').toBeGreaterThan(0);
-    expect(blocks.join('\n')).toContain('overflow: clip');
+    // Per-rule, not aggregate: one clipped rule must not cover for a sibling
+    // that forgot it.
+    for (const block of blocks) {
+      expect(block).toContain('overflow: clip');
+    }
   });
 
   it('no .xterm/.xterm-screen rule uses a scroll-container overflow', () => {
