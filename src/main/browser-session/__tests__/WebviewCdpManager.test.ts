@@ -585,6 +585,33 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(onWake).toHaveBeenCalledWith('b-surface');
   });
 
+  it('a scoped caller joining an in-flight wake applies its own check to the result (#695)', async () => {
+    // Concurrent wakes share one promise. Ownership was proven against the
+    // pre-wake guest state, but what actually re-registers can be something
+    // else — here the legacy path that reports no workspace at all. The check
+    // therefore belongs to whoever receives the result, not to whoever started
+    // the wake, and nothing else in the suite covers that branch.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('a-surface', 42, 'ws-A');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('a-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('a-surface')).toBe(true);
+
+    // An unscoped caller starts the wake; the owner joins that same one.
+    const starter = manager.ensureAwake('a-surface');
+    const joiner = manager.ensureAwake('a-surface', 'ws-A');
+    await vi.advanceTimersByTimeAsync(100);
+
+    // One wake, two receivers, two different answers.
+    expect(onWake).toHaveBeenCalledTimes(1);
+    expect(await starter).not.toBeNull();
+    expect(await joiner).toBeNull();
+  });
+
   it('ensureAwake returns null for a surface that is neither registered nor discarded', async () => {
     const onWake = vi.fn();
     manager.setDiscardHooks({ onWake });
