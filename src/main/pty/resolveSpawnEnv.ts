@@ -1,4 +1,4 @@
-import { buildGatedAutomationEnv, buildInteractiveShellEnv } from '../../shared/envFilter';
+import { buildGatedAutomationEnv, buildInteractiveShellEnv, forceTerminalIdentity } from '../../shared/envFilter';
 import { ENV_KEYS } from '../../shared/constants';
 import type { EnvPolicy } from '../../shared/spawnKind';
 
@@ -108,6 +108,13 @@ export function resolveSpawnEnv(
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;
   }
+  // TERM_PROGRAM is terminal IDENTITY, not a capability hint, so it is forced
+  // here — after the profile overlay — not only inside the builder. The builder
+  // runs before the overlay, so a workspace profile carrying TERM_PROGRAM would
+  // otherwise win and the pane would advertise something other than wmux.
+  // TERM/COLORTERM stay overridable: those describe what the terminal can do,
+  // and a profile is entitled to say otherwise.
+  forceTerminalIdentity(env);
   // Re-apply the captured suffix AFTER identity (same "forced last, unspoofable"
   // discipline). A profile can never set it (applyProfileEnv skips WMUX_*); only
   // the spawning process's real suffix survives. baseEnv here is always the live

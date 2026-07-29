@@ -301,11 +301,25 @@ describe('resolveSpawnEnv — terminal capability defaults (#680)', () => {
     expect(env.TERM_PROGRAM).toBe('wmux');
   });
 
-  it('a workspace profile can still override the advertised default', () => {
+  it('a workspace profile can still override the advertised capability default', () => {
     // Profile overlay applies AFTER the baseline, so a configured profile TERM
     // beats the injected default — TERM/COLORTERM describe what the terminal
     // can do, and the override chain stays intact for them.
     const env = resolveSpawnEnv({ PATH: '/p' }, { TERM: 'screen-256color' }, {});
     expect(env.TERM).toBe('screen-256color');
+  });
+
+  it('a workspace profile can NOT override TERM_PROGRAM', () => {
+    // The builder forces TERM_PROGRAM before the profile overlay runs, so the
+    // identity is re-asserted at the funnel AFTER the overlay. Otherwise a
+    // profile key would silently make the pane advertise a foreign terminal.
+    const env = resolveSpawnEnv({ PATH: '/p' }, { TERM_PROGRAM: 'iTerm.app' }, {});
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('a case-variant profile TERM_PROGRAM cannot survive alongside the forced key', () => {
+    const env = resolveSpawnEnv({ PATH: '/p' }, { Term_Program: 'WezTerm' }, {});
+    expect(env.Term_Program).toBeUndefined();
+    expect(env.TERM_PROGRAM).toBe('wmux');
   });
 });

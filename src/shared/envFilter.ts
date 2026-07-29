@@ -96,10 +96,12 @@ export const TERM_PROGRAM_IDENTITY = 'wmux';
  * terminal inherits e.g. TERM_PROGRAM=iTerm.app straight through, and a
  * default-only injection would leave the pane advertising the wrong host
  * terminal — tools that branch on TERM_PROGRAM would misidentify wmux.
+ * Exported because resolveSpawnEnv must re-assert it AFTER the workspace
+ * profile overlay, which would otherwise be able to override the identity.
  * Any case-variant key is deleted first so a stray win32 `Term_Program`
  * cannot survive alongside the canonical key and get picked nondeterministically.
  */
-function forceTerminalIdentity(env: Record<string, string>): void {
+export function forceTerminalIdentity(env: Record<string, string>): void {
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'TERM_PROGRAM' && key !== 'TERM_PROGRAM') delete env[key];
   }
