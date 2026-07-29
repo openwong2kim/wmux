@@ -4926,9 +4926,9 @@ async function main(): Promise<void> {
     } catch (err) {
       log('error', `supervisor onSessionDied failed for ${payload.id}:`, err);
     }
-    // R2: a dead session's pane-agent principal goes stale immediately — the
-    // safety premise that keeps the wake worker from targeting a stale
-    // principal's ptyId.
+    // R2: reflect the dead session immediately in registry/UI liveness. Wake
+    // targeting separately validates the stored coordinate against
+    // listLiveSessions(), whose attached/detached filter is the safety gate.
     try {
       principalService.markStaleByPtyId(payload.id);
     } catch (err) {
