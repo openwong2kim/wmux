@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
-import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
+import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
@@ -17,18 +17,10 @@ import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
+import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
-function getVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
+import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
+import type { RegisterWmuxToolsOptions } from './toolCatalog';
 
 /**
  * Everything a server instance needs that used to come from process globals.
@@ -379,7 +371,9 @@ function logIdentityEnvOnce(): void {
 
 const server = new McpServer({
   name: 'wmux',
-  version: getVersion(),
+  version: resolveMcpServerVersion(),
+}, {
+  instructions: getWmuxMcpServerInstructions(ctx.commanderMode),
 });
 
 // ── BYOB P4 Layer 1: commander tool-surface filter ──────────────────────────
@@ -392,6 +386,14 @@ const server = new McpServer({
 // tools cannot be called by ANY brain runtime (SDK, ACP, gateway). Ordinary
 // pane agents (no arg) keep the full surface, unchanged.
 const COMMANDER_MODE = ctx.commanderMode;
+const MCP_CATALOG_OPTIONS: RegisterWmuxToolsOptions = Object.freeze({
+  profile: COMMANDER_MODE ? 'commander' : 'full',
+  context: Object.freeze({
+    // clientInfo is self-declared telemetry. Catalog invocation remains
+    // explicitly powerless until an authenticated transport principal exists.
+    principal: Object.freeze({ kind: 'unattributed' as const }),
+  }),
+});
 if (COMMANDER_MODE) {
   // Layer 2 pairing: every outbound RPC from a commander-mode child carries
   // the per-spawn token as a role CLAIM — the router validates it and fails
@@ -401,8 +403,10 @@ if (COMMANDER_MODE) {
   setCommanderRole(ctx.commanderToken ?? '');
   const surface = new Set(COMMANDER_TOOL_SURFACE);
   const registerTool = server.tool.bind(server);
-  // Single gate for every registration site (index.ts + channels +
-  // paneLifecycle + playwright modules all register through this instance).
+  // Transitional gate for legacy server.tool() registration sites. Domains
+  // migrated to WmuxToolSpec use their immutable profile instead; invariant
+  // tests keep those profile entries equal to COMMANDER_TOOL_SURFACE until the
+  // catalog owns all tools and this monkey-patch can be removed.
   (server as { tool: typeof server.tool }).tool = ((name: string, ...rest: unknown[]) => {
     if (!surface.has(name)) {
       // Skipped registration — return a inert handle-shaped object for the
@@ -833,7 +837,7 @@ registerNavigationTools(server, { resolveWorkspaceId: requireWorkspaceId });
 registerInteractionTools(server);
 registerInspectionTools(server);
 registerStateTools(server);
-registerWaitTools(server);
+registerWaitTools(server, MCP_CATALOG_OPTIONS);
 registerFileTools(server);
 registerUtilityTools(server);
 registerExtractionTools(server);
@@ -1189,13 +1193,18 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
 
 server.tool(
   'send_message',
-  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID.',
+  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID. This is the delivery that STARTS an idle agent\'s turn — the receiver gets a one-line nudge pasted into its prompt (unless silent:true). Use it, not channel_post, when you are handing out work: a channel post only raises an unread badge and waits to be polled.',
   SEND_MESSAGE_SHAPE,
   sendMessageHandler,
 );
 
 // Keep a2a_task_send as alias for backward compatibility
-server.tool('a2a_task_send', 'Alias for send_message.', SEND_MESSAGE_SHAPE, sendMessageHandler);
+server.tool(
+  'a2a_task_send',
+  'Alias for send_message. This is how you hand work to another agent: the task is pasted into the receiver\'s prompt and starts its turn. A channel post does not — it is a notification an idle agent will only see when it polls.',
+  SEND_MESSAGE_SHAPE,
+  sendMessageHandler,
+);
 
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
@@ -1347,8 +1356,9 @@ server.tool(
 );
 
 // === A2A channel tools ===
-// Six standard MCP tools that expose the a2a.channel.* pipe RPC surface.
-// `channel.history` is intentionally deferred per plan Scope Boundaries.
+// Ten channel tools plus three WorkTask mission tools expose the
+// a2a.channel.* / task.mission.* pipe surfaces. `channel_history` stays absent:
+// bounded history is already exposed by channel_read.
 // Workspace identity uses the same resolveWorkspaceId as the other
 // workspace-routed tools (verified PID-map hit first, env-hint fallback).
 // D5: also expose the server's verified senderPtyId (MY_PTY_ID, the PID-map
@@ -1365,9 +1375,30 @@ server.tool(
 // ceiling this gate is a reliability mechanism (a same-user caller could assert
 // a foreign pid), not a same-user security boundary. Still fail-closed when no
 // hit at all.
-registerChannelTools(server, {
-  resolveWorkspaceId: requireWorkspaceId,
+registerChannelTools(
+  server,
+  {
+    resolveWorkspaceId: requireWorkspaceId,
+    getSenderPtyId: () => MY_PTY_ID,
+  },
+  MCP_CATALOG_OPTIONS,
+);
+
+// === Fan-out tool (J1 on the wire) ===
+// Same provenance rule as the channel tools above, and for the same reason:
+// task.fanout.start derives the caller's workspace AND repository from this
+// ptyId, so it MUST stay MY_PTY_ID (walk-hit only). Feeding the weak
+// WMUX_PTY_ID env hint here would let a spoofable env var choose which
+// workspace's repository gets N new worktrees. No hit → fan-out fails closed.
+// `resolveWorkspaceId` is passed for the same reason the channel tools get it:
+// the walked ptyId is a SIDE EFFECT of that lookup, so a tool that only reads
+// MY_PTY_ID sees '' until something has asked who the caller is. Every channel
+// tool asks; fan-out did not, which made it fail as the first tool called on a
+// fresh server. The resolved id is used only to warm the walk — the handler
+// derives the owning workspace from the ptyId and rejects a stated one.
+registerFanOutTools(server, {
   getSenderPtyId: () => MY_PTY_ID,
+  resolveWorkspaceId: requireWorkspaceId,
 });
 
 // === Pane + surface lifecycle tools (issue #285) ===
@@ -1381,10 +1412,14 @@ registerChannelTools(server, {
 // workspace by surprise. The ADDRESS family (close/focus) takes a
 // globally-unique id resolved across all workspaces. callRpc is injected so
 // paneLifecycle.test.ts can assert each handler's RPC mapping against a mock.
-registerPaneLifecycleTools(server, {
-  callRpc,
-  resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
-});
+registerPaneLifecycleTools(
+  server,
+  {
+    callRpc,
+    resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
+  },
+  MCP_CATALOG_OPTIONS,
+);
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared
 // plugin identity (clientInfo.name + version). Fire `mcp.identify` once so

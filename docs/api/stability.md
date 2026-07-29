@@ -73,10 +73,12 @@ Drops all metadata for a pane. Emits `pane.metadata.changed` with the new (empty
 **Params:** `{ cursor?: number, types?: WmuxEventType[], workspaceId?: string, max?: number }`
 **Returns:** `{ events, nextCursor, priorCursor, bootId, droppedCount?, resync? }`
 
-- Cursor is **opaque**. Clients pass `nextCursor` back as-is on the next poll. Do not increment, sort, or compare across runs.
+- Cursor is **opaque**. On a response without `resync`, clients pass `nextCursor` back verbatim on the next poll. Do not increment it or clamp it against the previous cursor.
+- Without `resync`, `nextCursor >= priorCursor`; it advances when the poll scanned at least one newer event, including filter no-matches.
+- With `resync: true`, `nextCursor` is a replacement cursor and may be lower than `priorCursor`, including `0` against an empty ring. Do not clamp it. Reconcile through `pane.list` and resume from its `asOfSeq`, which supersedes the replacement; see [`PROTOCOL.md` §2.2](../PROTOCOL.md#22-cursor-is-opaque).
 - Default cursor is `0` — replay from the oldest event in the ring.
 - `priorCursor` echoes the cursor the caller passed in. Used for diagnostics.
-- `resync: true` indicates the caller's cursor drifted past the ring window OR the daemon restarted. Client must reconcile via `pane.list`.
+- `resync: true` indicates the caller's cursor drifted past the ring window or points past the newest event. Client must reconcile as described above.
 - `droppedCount` is set when known (drift past ring) and reports the number of events the caller missed.
 - `bootId` is present on every response. Mismatch ⇒ daemon restarted; drop all caches.
 - Event ordering: monotonic in **arrival order**, not in **causal order** (see [`inventory.md`](./inventory.md#event-types) for the cross-producer caveat).
@@ -246,6 +248,8 @@ These can grow in minor releases; they cannot shrink within v3.x.
 | `MAX_CONNECTIONS` (Named Pipe) | 50 | Concurrent client connections. |
 | `CHANNEL_IDEMPOTENCY_CAP` | 1000 | Per-channel idempotency LRU cap (R13). Repeat posts with the same `clientMsgId` return the original `seq` instead of appending a duplicate. |
 | `CHANNEL_EMPTY_TTL_HOURS_DEFAULT` | 168 (7 days) | TTL after which an empty channel (no members, `emptySince` set) is pruned by the reaper on `load()`. Channels with members are retained indefinitely — the TTL only applies to channels whose last member left (`emptySince` set) and remained unpopulated for the full window. |
+| `CHANNEL_TRASH_TTL_HOURS_DEFAULT` | 720 (30 days) | How long a channel stays in the trash before the retention sweep destroys it. Override with `channels.trashTtlHours` in `config.json`; `0` disables the purge. Nothing reaches the trash except an explicit `a2a.channel.trash` call, so this only ever finishes a deletion a human started. The sweep also skips any channel an open mission still links to. `a2a.channel.trash` / `restore` / `destroy` are humans-only transport (renderer IPC; not registered on the MCP/agent router), and — like `archive` — they trust a caller-supplied `verifiedWorkspaceId`, which leaves the documented same-user direct-pipe residual (#113 / F1). Accepted, with the note that `destroy` makes that residual unrecoverable rather than merely disruptive. |
+| `CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT` | 0 (off) | Age at which the sweep moves an ARCHIVED channel to the trash on its own. Off by default — this is the only knob that discards records nobody chose to discard. Override with `channels.autoTrashArchivedHours`. Even when on it only moves channels to the trash, so the full trash TTL undo window still applies. |
 
 ---
 

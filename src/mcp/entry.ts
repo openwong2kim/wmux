@@ -34,7 +34,9 @@ async function main(): Promise<void> {
   // a reconnect must re-run the MCP initialize handshake to re-establish
   // identity (see wireClientIdentityHook in index.ts).
   transport.onclose = async () => {
-    console.log('[wmux-mcp] Transport closed, disconnecting Playwright');
+    // stdout belongs exclusively to MCP JSON-RPC for the lifetime of a stdio
+    // child. Diagnostics must stay on stderr, including during shutdown.
+    console.error('[wmux-mcp] Transport closed, disconnecting Playwright');
     clearClientIdentity();
     await PlaywrightEngine.getInstance().disconnect();
   };

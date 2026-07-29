@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
-import { STALE_REPLAY_INPUT_MODE_RESETS } from '../staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../staleReplayModeReset';
 
 const write = (term: Terminal, data: string) =>
   new Promise<void>((resolve) => term.write(data, resolve));
@@ -68,6 +68,74 @@ describe('STALE_REPLAY_INPUT_MODE_RESETS — behavioral (headless xterm)', () =>
   });
 });
 
+// Internal xterm buffer access — `buffer.active.scrollTop/scrollBottom` are
+// not on the public API (HeadlessSnapshot.ts documents this gap explicitly:
+// "DECSTBM scroll margins are not exposed by the public API"), so the only
+// way to observe an armed region is through `_core`, same as the daemon's
+// own MarginTracker has to track it externally rather than read it off xterm.
+type TerminalWithCore = Terminal & {
+  _core: { buffer: { scrollTop: number; scrollBottom: number } };
+};
+
+describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
+  it('releases a DECSTBM scroll region left armed by a replayed dead-TUI buffer (the frozen-scroll-window bug)', async () => {
+    const term = new Terminal({ rows: 24, cols: 80 }) as TerminalWithCore;
+    try {
+      // A TUI (e.g. an agent's input box pinned to the bottom) narrows the
+      // scroll region and is killed before it can emit the matching ESC[r.
+      await write(term, '\x1b[5;20r');
+      expect(term._core.buffer.scrollTop).toBe(4);
+      expect(term._core.buffer.scrollBottom).toBe(19);
+
+      await write(term, STALE_REPLAY_DISPLAY_RESETS);
+      expect(term._core.buffer.scrollTop).toBe(0);
+      expect(term._core.buffer.scrollBottom).toBe(term.rows - 1);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('preserves the replayed cursor position (xterm.js CSI r snaps the cursor to (0,0) as a side effect)', async () => {
+    const term = new Terminal({ rows: 24, cols: 80 });
+    try {
+      // Replay left the cursor mid-buffer, inside the still-armed region.
+      await write(term, '\x1b[5;20r\x1b[10;15H');
+      expect(term.buffer.active.cursorY).toBe(9);
+      expect(term.buffer.active.cursorX).toBe(14);
+
+      await write(term, STALE_REPLAY_DISPLAY_RESETS);
+      expect(term.buffer.active.cursorY).toBe(9);
+      expect(term.buffer.active.cursorX).toBe(14);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('does not erase any cell (safe to apply even when nothing was armed)', async () => {
+    const term = new Terminal();
+    try {
+      await write(term, 'line one\r\nline two\r\n');
+      const before = term.buffer.active.getLine(0)?.translateToString();
+      await write(term, STALE_REPLAY_DISPLAY_RESETS);
+      expect(term.buffer.active.getLine(0)?.translateToString()).toBe(before);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('provokes no response bytes of its own', async () => {
+    const term = new Terminal();
+    try {
+      const emitted: string[] = [];
+      term.onData((d) => emitted.push(d));
+      await write(term, STALE_REPLAY_DISPLAY_RESETS);
+      expect(emitted).toEqual([]);
+    } finally {
+      term.dispose();
+    }
+  });
+});
+
 describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
   const src = readFileSync(
     path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
@@ -99,5 +167,22 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     const resyncIdx = src.indexOf('const completeResyncFromFlush');
     expect(resyncIdx).toBeGreaterThan(-1);
     expect(src.slice(resyncIdx, resyncIdx + 1200)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
+  });
+
+  it('pairs STALE_REPLAY_DISPLAY_RESETS with STALE_REPLAY_INPUT_MODE_RESETS at both call sites (frozen-scroll-window fix)', () => {
+    // Site 1: the dead-snapshot paint (no resumeAgent gate — dead is dead).
+    const deadSnapshotIdx = src.indexOf('const paintDeadSnapshot');
+    expect(deadSnapshotIdx).toBeGreaterThan(-1);
+    const deadSnapshotBody = src.slice(deadSnapshotIdx, deadSnapshotIdx + 900);
+    expect(deadSnapshotBody).toMatch(/terminal\.write\(bytes\)|term\.write\(bytes\)/);
+    expect(deadSnapshotBody).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
+    expect(deadSnapshotBody).toMatch(/STALE_REPLAY_DISPLAY_RESETS/);
+
+    // Site 2: resetStaleReplayModes (resumeAgent-gated, reboot recovery).
+    const resetFnIdx = src.indexOf('const resetStaleReplayModes');
+    expect(resetFnIdx).toBeGreaterThan(-1);
+    const resetFnBody = src.slice(resetFnIdx, resetFnIdx + 900);
+    expect(resetFnBody).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
+    expect(resetFnBody).toMatch(/STALE_REPLAY_DISPLAY_RESETS/);
   });
 });

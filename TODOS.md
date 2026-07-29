@@ -1,5 +1,85 @@
 # TODOS
 
+## 오케스트레이터 자리를 Claude Code TUI 로 — 조사 완료, 다음은 도그푸드 (P1)
+- **What:** 커맨더(Command Deck)가 원래 Agent SDK 자리라 채팅 UI 다. 오너 구상은 **오케스트레이터 자리를 진짜 Claude Code TUI 로** 바꾸고, 기존 자리는 그대로 둔 채 **옵션 선택 시 통짜 교체**.
+- **조사 결과(2026-07-28, `plans/deck-commander-pty-survey.md` 23KB):** **거의 다 만들어져 있고 이미 출시됐다.** Settings 에서 **"Claude Code (terminal)"** 을 고르면 된다. 스위치·어댑터(`ClaudePtyBrainAdapter`, 벤더 `claude-pty`)·터미널 임베드(`BrainTerminalEmbed`)·훅 레인·벤더별 스레드 분리가 전부 존재. **판정 S — 단 셸 정책을 안 건드리는 경우.**
+- **왜 싼가:** 함대·미션·루프·스케줄이 **전부 브레인 바깥**에 있다. heartbeat/scheduler/event-coalescer/decision 재개/loop kickoff 가 **전부 `runTurnForWorkspace` 하나를 통과**해서 자동화가 이미 벤더 무관하게 동작한다(pty 브레인엔 TUI 타이핑으로 실현).
+- **다음 행동:** 만들 게 아니라 **써보는 것**. Settings 를 pty 벤더로 바꿔 도그푸드하면 걸림돌 1 이 실제로 얼마나 아픈지 즉시 나온다.
+- **시스템 프롬프트 자리:** `<wmuxDir>/brains/<wsId>/CLAUDE.md` — 오퍼레이터가 직접 쓰는 파일, wmux 설정 불필요. **`.claude/skills/wmux-orchestration/` 내용이 들어갈 자리다.**
+- **Priority:** P1
+
+## 커맨더 셸 정책 — 통짜 교체의 유일한 진짜 설계 문제 (P1, 오너 결정)
+- **What:** 커맨더 툴 표면은 allowlist 이고 `Bash` 가 이중 차단이다. 그런데 2026-07-28 오케스트레이션 작업의 **절반이 `git`·`gh`·워크트리**였다.
+- **Why 어려운가:** `pane_split` + `terminal_send` 로 우회는 되지만 **exit code 를 못 읽고 출력 폴링이 필요**하다. 반대로 셸을 열면 **커맨더 role-gate 3중 방어(Layer 1 미등록 / Layer 2 서버 거부 / teardown deny)가 전부 무의미해진다** — 셸이 있으면 pane 도 닫고 gh PR 도 닫는다.
+- **Context:** `src/shared/commanderSurface.ts`. 규칙은 "READS fleet-global, WRITES confined". fan-out 툴도 allowlist 에 없다(PR #673 워커 보고).
+- **Priority:** P1 — 도그푸드 후 결정. 셸 없이 견딜 만한지가 먼저다.
+
+## pty 브레인: 프롬프트 평탄화 + 제출 타이밍 (P2)
+- **What:** `flattenPromptForPty` 가 개행·제어문자를 전부 스페이스로 바꾼다 → 다단계 지시·코드블록·체크리스트가 **한 줄로 뭉개진다**. 제출은 400ms/800ms 딜레이 + Enter 2회라는 경험적 타이밍.
+- **Why:** 코드 주석이 직접 인정 — *"the first can still be swallowed when it lands during a TUI redraw right after the previous turn — observed in dogfood"*. **모델 문제가 아니라 입력 채널이 사람 키보드라서 생기는 근본 한계.**
+- **Note:** 2026-07-28 오케스트레이션에서 내가 판에 긴 브리핑을 보낼 때 **두 번 제출 실패**한 것과 같은 뿌리다.
+- **Priority:** P2
+
+## pty 브레인 관측 비대칭 — 툴 칩·토큰 미터·버블 로그 오염 (P2)
+- **What:** `claude-pty` 는 `tool-start`/`tool-end`/`usage`/스트리밍 델타를 **아예 안 낸다.** 그래서 이 벤더에선 **툴 칩(pane 점프 원클릭 — Deck 의 "모든 액션은 그 증거로 한 클릭" 리트머스)**·토큰/비용 미터·스트리밍 버블이 전부 죽는다.
+- **더 나쁜 것:** 벤더를 오가면 **두 벤더의 버블이 한 로그에 섞인다** — `brainMessages` 는 workspace 단위 하나이고 벤더 무관하게 누적된다(세션 id 는 `wsId::vendor` 로 분리돼 있는데 버블 로그는 아님).
+- **판정:** 이건 통짜 교체의 **부작용이 아니라 근거**다. 두 관측 표면이 이만큼 비대칭이면 한 화면에서 섞는 게 어느 쪽도 온전하지 않다. 지금의 sticky-터미널 + 아래 버블 로그가 그 절충이고, 벤더 전환 시 오염이 그 절충이 새는 지점.
+- **Priority:** P2
+
+## iOS 출시 차단 2건 + 미검증 파이프라인 (P0/P1)
+- **판정서:** `~/Desktop/coding/wmux-ios/RELEASE-READINESS.md`. HANDOFF 의 "남은 둘"은 **둘 다 닫혔다**(① `/api/v1` → prefix 아닌 **핸드셰이크**로 해결, PR #648/3.37.x ② 사진 업로드 완료).
+- **P0 업로드 차단:** `PrivacyInfo.xcprivacy` **0건** — `UserDefaults` 를 5개 파일에서 쓰는데 required-reason API 라 **ITMS-91053 거부**. 나머지 required-reason 계열은 grep 전부 0건이라 **선언 1건(CA92.1)이면 끝**. → 착수함
+- **P0 오너 결정:** `ITSAppUsesNonExemptEncryption` 없음 → App Store Connect 가 "Missing Compliance" 로 멈춘다. 단순 HTTPS 가 아니라 **CryptoKit X25519 + AES-GCM 자체 프로토콜**이라 exempt 여부가 수출규제 판단. **오너만 정할 수 있다.**
+- **P1 가장 큰 공백:** `~/Library/Developer/Xcode/Archives` 에 Wmux 아카이브가 **0건**. 서명→아카이브→export 경로가 **한 번도 안 돌았다.** 앱은 250테스트+실기 도그푸드 완료인데 **배포 파이프라인만 처녀지**. 여기서 터지는 게 정상이고 터지면 목록이 늘어난다.
+- **P2:** remote 0개 — 64커밋 3일치가 이 맥 디스크 한 곳에만. 배포 차단은 아니고 백업 리스크.
+- **참고:** TestFlight **내부 테스터(본인 팀)는 스크린샷·심사 불필요**. 외부 테스터일 때만 Beta App Review.
+
+## ✅ 해결됨 — `wmux` CLI 가 임시 경로를 가리키던 문제 (2026-07-28)
+- `~/.local/bin/wmux` 가 `/private/tmp/claude-501/.../scratchpad/cv-merge/...` 를 가리키고 있었다. macOS 가 `/private/tmp` 를 주기적으로 청소하므로 **어느 날 `wmux` 명령이 통째로 사라질 상태**였다.
+- `/Applications/wmux.app/Contents/Resources/cli-bundle/index.js` 로 재연결하고 동작 확인. 이전 심링크는 `/tmp/wmux-symlink.bak`.
+- **교훈:** 워커가 빌드 산출물을 PATH 에 링크할 수 있다. 브리핑에 "임시 경로를 PATH 에 걸지 마라"를 넣을 것.
+
+
+## #679 명시적 `surfaceId` 경로 검증 (P0 — 미확인 구멍)
+- **What:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 그런데 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로가 소유권을 검증하는지는 추적이 끝나지 않았다.
+- **Why:** 안 막혀 있으면 **같은 결함의 두 번째 문**이다. "고쳤다"고 머지한 PR이 절반만 고친 상태가 되는 게 가장 나쁘다.
+- **Context:** 스코핑 조사 판이 `gh pr diff 679`로 확인하던 중 판이 종료돼 결론을 못 봤다. 시작점: `PlaywrightEngine.ts`의 `resolveSelectionContext` / `explicitSurfaceId` 취급.
+- **Priority:** P0 — #679 머지 전에 답이 나와야 한다.
+
+## 스코핑 조사 U4·U8·U3 미검증 (P1)
+- **What:** `plans/workspace-scoping-survey.md`의 164지점 중 미검증 3건. **U8**(`meta.setStatus/setProgress`가 호출자 스코프 없이 사람이 보는 활성 워크스페이스에 씀)이 U7과 같은 계열로 보인다. U4(`principal.remove`/`markStaleWorkspace`가 스탬프 존재만 확인, 대상 비교 없음), U3(`operatorList` 주석은 "파이프 미등록"인데 `daemon/index.ts:3050`에 등록됨).
+- **Why:** U7은 REAL이라 PR #679가 됐고, U1은 검증 결과 ACCEPTED였다. 나머지도 갈라야 한다 — 관찰만 남기면 다음 사람이 어느 쪽인지 모른다.
+- **Context:** 판정 기준·1차 오판 사유가 문서에 기록돼 있다. 낮은 effort로 관찰 → 높은 effort로 검증 2단계가 U1에서 실효를 증명했다.
+- **Priority:** P1
+
+## A4 재정의 — 자식 워크스페이스 트리 대신 "막힘 노출" (P1)
+- **What:** 원안은 fan-out 태스크를 부모의 하위 워크스페이스로 만들어 오케스트레이터가 읽고 풀 수 있게 하는 것. **범위를 좁히자** — `agent.awaiting_input` 이벤트를 태스크 소유자에게만 보이게. 권한이 아니라 **가시성만**.
+- **Why:** 2026-07-28 실측상 필요한 셋 중 둘(화면 보기·승인 풀기)은 **판을 오케스트레이터 워크스페이스에 만들면 해결**된다. 남는 건 "막혔다는 사실을 아는 것" 하나뿐이다. 계층 도입은 스코핑 164지점 상당수를 "동일하거나 소유자이거나"로 바꿔야 하고 전이·역방향·복구 규칙까지 필요해 표면 대비 이득이 작다.
+- **Pros:** 신규 신뢰 프리미티브 0개 — `agent.awaiting_input`은 이미 감지되고, `a2a.task`가 이미 dual-party 예외 선례이며, `task.owner.verifiedWorkspaceId`는 이미 서버 검증돼 기록된다. Claude Agent Teams가 같은 형태로 이미 출하("teammate permission prompts appear in the lead session").
+- **Cons:** 원안이 주던 "자식 판 화면 읽기"는 못 얻는다(배치로 우회).
+- **Depends on:** 권한 경계 인접 → 3모델 패널.
+- **Priority:** P1
+
+## `plans/` 추적 여부 결정 (P2 — 싸지만 계속 걸린다)
+- **What:** `plans/`가 `.gitignore:130`에 있으나 **기존 파일은 추적 중**(gitignore는 이미 추적된 파일에 무효). 그래서 새로 쓴 설계 문서만 사라진다. 2026-07-28에 80KB 4개를 워크트리에서 수동 구조했다.
+- **Why:** 워커 3명이 각각 이 질문을 남겼고, 한 워커는 `git add -f`로 우회 커밋했다(관례 위반). 정하지 않으면 매번 반복된다.
+- **Context:** 미추적 문서: `as-is-to-be-2026-07-28.md`, `orchestration-retro-2026-07-28.md`, `orchestration-primitives-research.md`, `workspace-scoping-survey.md`, `orchestration-action-plan-2026-07-28.md`, 그 외 설계문서 4개.
+- **Priority:** P2
+
+## `@anthropic-ai/claude-agent-sdk` 재배포 권리 미확인 (P2)
+- **What:** 서명·공증 바이너리에 번들된다(`out/.../Resources/claude-agent-sdk/`). LICENSE.md는 "All rights reserved", 링크된 Anthropic 약관은 **사용**만 부여하고 재배포·서브라이선스·번들링에 침묵. 2026-07-28 양쪽 원문 확인 — 허락도 금지도 없음.
+- **Why:** copyleft가 아니라 소스 공개 의무는 없다. 노출은 **재배포 권리 부재**다. 별개로 문서가 "Agent SDK 쓰는 개발자는 API 키 인증을 쓰라"고 권고하는데 `ClaudeSdkAdapter`는 `ANTHROPIC_API_KEY`를 의도적으로 스크럽해 구독 인증으로 떨어뜨린다(주석: "the wmux moat").
+- **Context:** `license-allowlist.json` 9개 항목에 `redistributionStatus: unresolved`로 기록됨(PR #676). 해소 경로: 번들에서 빼고 사용자 머신에서 해석. 메모리의 `SDK/-p 유료화 헤지` TODO와 같은 줄기.
+- **Priority:** P2 — 기록은 끝났고, 판단은 오너 몫.
+
+## 별건 위생 묶음 (P2)
+- `THIRD_PARTY_NOTICES` 버전 드리프트(기록 1.27.1 vs 설치 1.29.0) — PR #676의 재생성으로 해소됐는지 확인 필요
+- `.claude/worktrees/agent-*` 잔여 24개 — README는 fan-out을 "never as mystery folders"로 파는데 리포가 그 상태다. wmux 정리 목록이 `~/.wmux/worktrees/`만 본다
+- CHANGELOG `[Unreleased]`에 grapheme 항목 3개 중복 — #671 되돌림으로 전량 삭제 대상이었는데 확인 필요
+- wmux web 터미널이 유니코드 애드온 미탑재 → Unicode 6 기본값. 데스크톱과 같은 판이 폰에서 폭이 다르다
+- 오케스트레이션 스킬 3차 개정 — 긴 메시지 붙여넣기 실패 사례, 감시가 유휴도 잡아야 한다는 것
+
+
 ## 커맨더 원격 제어 — OpenClaw 2호 어댑터 + 메신저 채널 브리지 (BYOB C, P2)
 - **What:** 데크 커맨더를 폰/외부에서 제어하는 경로. OpenClaw를 두 번째 ACP... 정확히는
   Gateway WS 어댑터(`chat.send`→`agent` 이벤트: deltaText/tool_call/tool_result/finish,

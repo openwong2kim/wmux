@@ -2463,8 +2463,8 @@ describe('WebTerminalServer', () => {
       // Names the repo's content filters so they can be blanked before
       // anything below converts working-tree content.
       ['config', '--list', '--name-only', '-z'],
-      ['diff', '--cached', '--no-ext-diff', '--no-textconv'],
-      ['diff', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--histogram', '--cached', '--no-ext-diff', '--no-textconv'],
+      ['diff', '--histogram', '--no-ext-diff', '--no-textconv'],
       ['status', '--porcelain', '-z', '--untracked-files=all'],
       // #6: an untracked file is in files[] and would otherwise contribute
       // nothing to the patch. The path goes after a literal `--`.

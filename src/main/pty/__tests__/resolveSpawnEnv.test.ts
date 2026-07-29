@@ -303,7 +303,8 @@ describe('resolveSpawnEnv — terminal capability defaults (#680)', () => {
 
   it('a workspace profile can still override the advertised default', () => {
     // Profile overlay applies AFTER the baseline, so a configured profile TERM
-    // beats the injected default — the override chain stays intact.
+    // beats the injected default — TERM/COLORTERM describe what the terminal
+    // can do, and the override chain stays intact for them.
     const env = resolveSpawnEnv({ PATH: '/p' }, { TERM: 'screen-256color' }, {});
     expect(env.TERM).toBe('screen-256color');
   });

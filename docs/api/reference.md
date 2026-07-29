@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **144** methods (`ALL_RPC_METHODS` in
+Total: **148** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -178,6 +178,9 @@ Total: **144** methods (`ALL_RPC_METHODS` in
 | `a2a.channel.purgeMembership` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.operatorJoin` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.operatorList` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.trash` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
+| `a2a.channel.restore` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
+| `a2a.channel.destroy` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
 | `a2a.principal.upsert` | `wmux.internal` |  |
 | `a2a.principal.remove` | `wmux.internal` |  |
 | `a2a.principal.markStaleWorkspace` | `wmux.internal` |  |
@@ -270,6 +273,7 @@ Total: **144** methods (`ALL_RPC_METHODS` in
 | `task.mission.close` | `a2a.channel.send` | `a2a` |
 | `task.mission.list` | `a2a.channel.read` | `a2a` |
 | `task.mission.update` | `a2a.channel.send` | `a2a` |
+| `task.fanout.start` | `a2a.execute` | `a2a` |
 
 ---
 

@@ -85,6 +85,9 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     expect(mcpIndexSrc).not.toMatch(/getSenderPtyId:\s*\(\)\s*=>[^\n,]*ENV_PTY_HINT/);
     expect(mcpIndexSrc).not.toMatch(/getSenderPtyId:\s*\(\)\s*=>[^\n,]*process\.env/);
     expect(mcpIndexSrc).not.toMatch(/getSenderPtyId:\s*\(\)\s*=>[^\n,]*getTaskSenderPtyId/);
+    expect(mcpIndexSrc).toMatch(
+      /registerChannelTools\s*\(\s*server\s*,\s*\{[\s\S]*?resolveWorkspaceId:\s*requireWorkspaceId[\s\S]*?getSenderPtyId:\s*\(\)\s*=>\s*MY_PTY_ID[\s\S]*?\}\s*,\s*MCP_CATALOG_OPTIONS\s*,?\s*\)/,
+    );
   });
 
   it('the A2A task + terminal tools use the weak-allowing getter (>= 5 call sites)', () => {

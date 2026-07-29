@@ -9,7 +9,16 @@
 // index.ts wiring guard lives in workspaceRouting.test.ts.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { registerPaneLifecycleTools, type PaneLifecycleDeps } from '../paneLifecycle';
+import {
+  createPaneLifecycleToolCatalog,
+  registerPaneLifecycleTools,
+  type PaneLifecycleDeps,
+} from '../paneLifecycle';
+import type { WmuxToolProfile } from '../toolCatalog';
+import {
+  expectCommanderCatalogLockstep,
+  expectFrozenCatalog,
+} from './catalogAssertions';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];
@@ -23,10 +32,14 @@ const mockCallRpc = vi.fn(async () => ({
 }));
 const mockResolveWs = vi.fn(async () => callerWs);
 
-function collectTools(): Map<string, ToolHandler> {
+function collectTools(profile: WmuxToolProfile = 'full'): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
-    tool: (name: string, _desc: string, _schema: unknown, handler: ToolHandler) => {
+    registerTool: (
+      name: string,
+      _config: unknown,
+      handler: ToolHandler,
+    ) => {
       tools.set(name, handler);
     },
   };
@@ -34,7 +47,12 @@ function collectTools(): Map<string, ToolHandler> {
     callRpc: mockCallRpc,
     resolveCallerWorkspaceId: mockResolveWs,
   };
-  registerPaneLifecycleTools(server as never, deps);
+  registerPaneLifecycleTools(server as never, deps, {
+    profile,
+    context: {
+      principal: { kind: 'unattributed' },
+    },
+  });
   return tools;
 }
 
@@ -60,6 +78,29 @@ describe('paneLifecycle tools: registration', () => {
     for (const name of ['pane_split', 'pane_close', 'pane_focus', 'surface_new', 'surface_close']) {
       expect(tools.get(name), `${name} should be registered`).toBeDefined();
     }
+  });
+
+  it('preserves the full ordering and narrows commander without a monkey-patch', () => {
+    const fullNames = [
+      'pane_split',
+      'pane_close',
+      'pane_focus',
+      'surface_new',
+      'surface_close',
+    ];
+    const commanderNames = [...collectTools('commander').keys()];
+
+    expect([...tools.keys()]).toEqual(fullNames);
+    expect(commanderNames).toEqual(['pane_split', 'pane_focus', 'surface_new']);
+  });
+
+  it('keeps the legacy commander manifest and migrated profiles in lockstep', () => {
+    const specs = createPaneLifecycleToolCatalog({
+      callRpc: mockCallRpc,
+      resolveCallerWorkspaceId: mockResolveWs,
+    });
+    expectCommanderCatalogLockstep(specs);
+    expectFrozenCatalog(specs);
   });
 });
 

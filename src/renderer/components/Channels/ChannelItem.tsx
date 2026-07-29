@@ -13,6 +13,7 @@
 // in as props, so this component can be tested via `renderToStaticMarkup`
 // in the project's node-environment vitest config (no jsdom).
 
+import { useState } from 'react';
 import type { Channel } from '../../../shared/channels';
 import { tokenAttrs } from '../../themes';
 
@@ -28,6 +29,32 @@ export interface ChannelItemViewProps {
    *  local human operator watches but has not joined). Defaults to 'observed'. */
   observedLabel?: string;
   onSelect: (channelId: string) => void;
+  /** Optional trailing action, revealed on row hover/focus. Wired by the panel
+   *  for the trash affordance (and the restore affordance on trashed rows) —
+   *  the row itself stays presentational and does not know what it does. */
+  action?: {
+    label: string;
+    /** Single glyph rendered in the button. */
+    glyph: string;
+    onClick: (channelId: string) => void;
+    /** Diagnostic attribute name, e.g. `data-channel-trash`. */
+    testAttr: string;
+    /**
+     * Two-step armed confirm before firing — the repo's existing pattern for a
+     * one-way action (ChannelView's archive button). The first click ARMS (the
+     * glyph flips to a check), the second commits; leaving the row or blurring
+     * disarms.
+     *
+     * Set this for trashing an ACTIVE channel: that archives it in the same
+     * commit and `restore` does NOT un-archive (there is no un-archive op), so
+     * a single misclick permanently read-onlies a live room. Reversible
+     * actions — restore, and trashing a row that is already archived — stay
+     * one click.
+     */
+    requiresConfirm?: boolean;
+    /** Label/tooltip shown while armed. Falls back to `label`. */
+    confirmLabel?: string;
+  };
 }
 
 /** Sidebar row for a single channel. Renders `#name`, an unread badge
@@ -42,9 +69,12 @@ export function ChannelItemView({
   mentioned = false,
   observedLabel = 'observed',
   onSelect,
+  action,
 }: ChannelItemViewProps): React.ReactElement {
   const showBadge = unreadCount > 0 || mentioned;
   const observed = channel.observed === true;
+  // Armed state for a `requiresConfirm` action (see the prop's doc comment).
+  const [armed, setArmed] = useState(false);
   return (
     <div
       role="button"
@@ -53,6 +83,9 @@ export function ChannelItemView({
       data-active={isActive ? 'true' : 'false'}
       data-unread={showBadge ? String(unreadCount) : '0'}
       onClick={() => onSelect(channel.id)}
+      // Leaving the row cancels a pending confirm — the same "clicking elsewhere
+      // disarms" contract ChannelView's archive button gets from onBlur.
+      onMouseLeave={() => setArmed(false)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -93,6 +126,46 @@ export function ChannelItemView({
           {mentioned && <span aria-hidden="true">@</span>}
           {unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : ''}
         </span>
+      )}
+      {action && (
+        <button
+          type="button"
+          {...{ [action.testAttr]: 'true' }}
+          {...(action.requiresConfirm ? { 'data-armed': armed ? 'true' : 'false' } : {})}
+          title={armed ? (action.confirmLabel ?? action.label) : action.label}
+          aria-label={armed ? (action.confirmLabel ?? action.label) : action.label}
+          // Hidden until the row is hovered/focused so the resting sidebar
+          // stays as quiet as it is today (DESIGN.md: no decoration at rest).
+          // An armed button stays visible — it is asking a question.
+          className={`flex-shrink-0 text-[10px] font-mono transition-opacity ${
+            armed
+              ? 'opacity-100 text-[var(--accent-red)]'
+              : 'opacity-0 group-hover:opacity-100 focus:opacity-100 text-[var(--text-muted)] hover:text-[var(--text-main)]'
+          }`}
+          onClick={(e) => {
+            e.stopPropagation(); // never let the action double as a row select
+            if (action.requiresConfirm && !armed) {
+              setArmed(true);
+              return;
+            }
+            setArmed(false);
+            action.onClick(channel.id);
+          }}
+          // The row is itself a role="button" with an Enter/Space handler, so a
+          // key press on this button reaches BOTH: the browser synthesizes the
+          // click here AND the same keydown bubbles up and selects the channel.
+          // Trashing a room while also opening it is not what either press
+          // meant, and on the armed path the first press would arm and navigate
+          // at once. Stop the key event at the button; the click handler above
+          // still runs and owns the action.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+          }}
+          onBlur={() => setArmed(false)}
+          {...tokenAttrs(armed ? 'danger' : 'textMuted', armed ? 'accent' : 'text')}
+        >
+          {armed ? '✓' : action.glyph}
+        </button>
       )}
     </div>
   );

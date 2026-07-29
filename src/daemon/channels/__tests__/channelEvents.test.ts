@@ -185,4 +185,83 @@ describe('applyChannelEvent — 멱등 replay 적용기', () => {
     applyChannelEvent(s, { kind: 'archive', channelId: 'gone', archivedAt: 1, archivedBy: 'w' });
     expect(s).toEqual(before);
   });
+  it('trash archives an active channel and marks it trashed in the same commit (idempotent)', () => {
+    const s = freshState();
+    applyChannelEvent(s, { kind: 'create', channel: ch('c1'), members: [member('ws-1', 'm-1')] });
+    const p: ChannelEventPayload = {
+      kind: 'trash',
+      channelId: 'c1',
+      trashedAt: 5000,
+      trashedBy: 'ws-human',
+      archivedAt: 5000,
+      archivedBy: 'ws-human',
+    };
+    applyChannelEvent(s, p);
+    const after = JSON.parse(JSON.stringify(s));
+    applyChannelEvent(s, p); // Re-applying changes nothing.
+    expect(s).toEqual(after);
+    expect(s.channels[0].status).toBe('archived');
+    expect(s.channels[0].trashedAt).toBe(5000);
+    expect(s.channels[0].trashedBy).toBe('ws-human');
+  });
+
+  it('trash on an already archived channel only adds the marker, preserving archivedAt', () => {
+    const s = freshState();
+    applyChannelEvent(s, { kind: 'create', channel: ch('c1'), members: [member('ws-1', 'm-1')] });
+    applyChannelEvent(s, { kind: 'archive', channelId: 'c1', archivedAt: 1000, archivedBy: 'ws-1' });
+    applyChannelEvent(s, { kind: 'trash', channelId: 'c1', trashedAt: 5000, trashedBy: 'ws-human' });
+    expect(s.channels[0].archivedAt).toBe(1000);
+    expect(s.channels[0].archivedBy).toBe('ws-1');
+    expect(s.channels[0].trashedAt).toBe(5000);
+  });
+
+  it('restore removes only the trash marker and keeps the channel archived (idempotent)', () => {
+    const s = freshState();
+    applyChannelEvent(s, { kind: 'create', channel: ch('c1'), members: [member('ws-1', 'm-1')] });
+    applyChannelEvent(s, {
+      kind: 'trash',
+      channelId: 'c1',
+      trashedAt: 5000,
+      trashedBy: 'ws-human',
+      archivedAt: 5000,
+      archivedBy: 'ws-human',
+    });
+    applyChannelEvent(s, { kind: 'restore', channelId: 'c1' });
+    const after = JSON.parse(JSON.stringify(s));
+    applyChannelEvent(s, { kind: 'restore', channelId: 'c1' });
+    expect(s).toEqual(after);
+    expect(s.channels[0].status).toBe('archived');
+    expect(s.channels[0].trashedAt).toBeUndefined();
+    expect(s.channels[0].trashedBy).toBeUndefined();
+  });
+
+  it('destroy drops only the target channel from all four maps and leaves neighbours intact (idempotent)', () => {
+    const s = freshState();
+    applyChannelEvent(s, { kind: 'create', channel: ch('c1'), members: [member('ws-1', 'm-1')] });
+    applyChannelEvent(s, { kind: 'create', channel: ch('c2'), members: [member('ws-1', 'm-1')] });
+    applyChannelEvent(s, { kind: 'post', channelId: 'c1', message: msg('c1', 1) });
+    applyChannelEvent(s, { kind: 'post', channelId: 'c2', message: msg('c2', 1) });
+
+    applyChannelEvent(s, { kind: 'destroy', channelId: 'c1' });
+    const after = JSON.parse(JSON.stringify(s));
+    applyChannelEvent(s, { kind: 'destroy', channelId: 'c1' }); // Re-applying changes nothing.
+    expect(s).toEqual(after);
+
+    expect(s.channels.map((c) => c.id)).toEqual(['c2']);
+    expect(s.members['c1']).toBeUndefined();
+    expect(s.messages['c1']).toBeUndefined();
+    expect(s.idempotency['c1']).toBeUndefined();
+    // The neighbour is untouched.
+    expect(s.members['c2']).toHaveLength(1);
+    expect(s.messages['c2']).toHaveLength(1);
+  });
+
+  it('trash / restore / destroy against a missing channel do nothing', () => {
+    const s = freshState();
+    const before = JSON.parse(JSON.stringify(s));
+    applyChannelEvent(s, { kind: 'trash', channelId: 'gone', trashedAt: 1, trashedBy: 'w' });
+    applyChannelEvent(s, { kind: 'restore', channelId: 'gone' });
+    applyChannelEvent(s, { kind: 'destroy', channelId: 'gone' });
+    expect(s).toEqual(before);
+  });
 });

@@ -24,6 +24,9 @@ jobs:
       - name: Type check
         run: node_modules/.bin/tsc --noEmit
 
+      - name: Build and probe MCP protocol
+        run: npm run build:mcp && npm run probe:mcp
+
       # The push relay is a separate Cloudflare Worker deployment with its own
       # tsconfig (WebWorker libs, no @types/node — node-only code must not
       # typecheck here and then fail at the edge), so the root project's

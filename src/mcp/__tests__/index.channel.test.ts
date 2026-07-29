@@ -2,10 +2,10 @@
 // `a2a.channel.*` pipe RPC surface to first-party MCP clients.
 //
 // Coverage:
-//  1. All eight tools register (channel_create / channel_post / channel_join /
-//     channel_leave / channel_list / channel_read / channel_invite /
-//     channel_get_members). There is deliberately NO channel_archive tool —
-//     archive is humans-only (renderer-IPC), like kick.
+//  1. All thirteen tools register in their public order. There is deliberately
+//     NO channel_archive tool — archive is humans-only (renderer-IPC), like
+//     kick. channel_mission_list is full-profile only: it is absent from the
+//     commander manifest, so the commander surface still registers twelve.
 //  2. Each tool's params are forwarded to the right `a2a.channel.*` RPC and
 //     the typed `{ ok, ... }` / `{ ok: false, error }` envelope is reflected
 //     in `isError`.
@@ -22,8 +22,9 @@
 //     pass it).
 //  6. Non-first-party client identity (no envelope) does NOT affect tool
 //     registration; the allowlist gate is upstream at the substrate enforcer.
-//  7. FIRST_PARTY_METHODS includes all nine AGENT-REACHABLE a2a.channel.*
-//     methods (list/get/getMessages/getMembers/create/join/leave/post/invite)
+//  7. FIRST_PARTY_METHODS includes all eleven AGENT-REACHABLE a2a.channel.*
+//     methods (list/get/getMessages/getMembers/create/join/leave/post/invite/
+//     ack/unread)
 //     so the bundled first-party MCP server isn't deadlocked under enforce
 //     mode (plans/first-party-mcp-trust.md §2) — and excludes archive + kick,
 //     which are humans-only.
@@ -46,7 +47,16 @@ vi.mock('../wmux-client', () => ({
 }));
 
 import { sendRpc } from '../wmux-client';
-import { registerChannelTools } from '../channels';
+import {
+  createChannelToolCatalog,
+  registerChannelTools,
+  type ChannelToolDeps,
+} from '../channels';
+import type { WmuxToolProfile } from '../toolCatalog';
+import {
+  expectCommanderCatalogLockstep,
+  expectFrozenCatalog,
+} from './catalogAssertions';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
@@ -56,23 +66,197 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
-// Minimal McpServer stand-in that captures each registered tool's handler.
-function collectTools(): Map<string, ToolHandler> {
-  const tools = new Map<string, ToolHandler>();
+interface ToolRegistration {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  handler: ToolHandler;
+}
+
+const DEFAULT_CHANNEL_DEPS: ChannelToolDeps = {
+  resolveWorkspaceId: async () => 'ws-test',
+  getSenderPtyId: () => '',
+};
+
+// registerTool-only stand-in: a regression to deprecated server.tool() must
+// fail this suite instead of being normalized away by the harness.
+function collectRegistrations(
+  deps: ChannelToolDeps = DEFAULT_CHANNEL_DEPS,
+  profile: WmuxToolProfile = 'full',
+): ToolRegistration[] {
+  const registrations: ToolRegistration[] = [];
   const server = {
-    tool: (name: string, _desc: string, _schema: unknown, handler: ToolHandler) => {
-      tools.set(name, handler);
+    registerTool: (
+      name: string,
+      config: {
+        description: string;
+        inputSchema: Record<string, unknown>;
+      },
+      handler: ToolHandler,
+    ) => {
+      registrations.push({
+        name,
+        description: config.description,
+        inputSchema: config.inputSchema,
+        handler,
+      });
     },
   };
   // The tools need a way to resolve a workspaceId. The real index.ts injects
   // its own resolver; for tests we pass an identity one so every call sees
   // `ws-test` as the caller's workspace (matches the FIRST_PARTY verified
   // hit pattern in src/mcp/index.ts).
-  registerChannelTools(server as never, { resolveWorkspaceId: async () => 'ws-test' });
-  return tools;
+  registerChannelTools(server as never, deps, {
+    profile,
+    context: { principal: { kind: 'unattributed' } },
+  });
+  return registrations;
 }
 
-const tools = collectTools();
+function collectTools(
+  deps?: ChannelToolDeps,
+  profile: WmuxToolProfile = 'full',
+): Map<string, ToolHandler> {
+  return new Map(
+    collectRegistrations(deps, profile).map(({ name, handler }) => [
+      name,
+      handler,
+    ]),
+  );
+}
+
+const CHANNEL_TOOL_NAMES = [
+  'channel_list',
+  'channel_create',
+  'channel_post',
+  'channel_join',
+  'channel_leave',
+  'channel_read',
+  'channel_invite',
+  'channel_get_members',
+  'channel_ack',
+  'channel_unread',
+  'channel_mission_start',
+  'channel_mission_close',
+  'channel_mission_list',
+] as const;
+
+// channel_mission_list is not in COMMANDER_TOOL_SURFACE, so the commander
+// profile registers everything except it, in the same relative order.
+const CHANNEL_COMMANDER_TOOL_NAMES = CHANNEL_TOOL_NAMES.filter(
+  (name) => name !== 'channel_mission_list',
+);
+
+const CHANNEL_SCHEMA_KEYS = {
+  channel_list: [],
+  channel_create: ['name', 'visibility', 'topic', 'member_id', 'member_name'],
+  channel_post: [
+    'channel_id',
+    'text',
+    'member_id',
+    'member_name',
+    'client_msg_id',
+    'mentions',
+  ],
+  channel_join: ['channel_id', 'member_id', 'member_name', 'include_history'],
+  channel_leave: ['channel_id', 'member_id'],
+  channel_read: ['channel_id', 'since_seq', 'limit'],
+  channel_invite: [
+    'channel_id',
+    'invited_workspace_id',
+    'member_id',
+    'member_name',
+    'include_history',
+  ],
+  channel_get_members: ['channel_id'],
+  channel_ack: ['channel_id', 'upto_seq', 'member_id'],
+  channel_unread: ['member_id'],
+  channel_mission_start: [
+    'title',
+    'member_id',
+    'invite',
+    'idempotency_key',
+  ],
+  channel_mission_close: ['task_id', 'idempotency_key'],
+  channel_mission_list: [],
+} satisfies Record<(typeof CHANNEL_TOOL_NAMES)[number], readonly string[]>;
+
+const CHANNEL_INVOCATIONS: ReadonlyArray<{
+  name: (typeof CHANNEL_TOOL_NAMES)[number];
+  method: string;
+  args: Record<string, unknown>;
+}> = [
+  { name: 'channel_list', method: 'a2a.channel.list', args: {} },
+  {
+    name: 'channel_create',
+    method: 'a2a.channel.create',
+    args: { name: 'general', visibility: 'public', member_id: 'lead' },
+  },
+  {
+    name: 'channel_post',
+    method: 'a2a.channel.post',
+    args: { channel_id: 'ch-1', text: 'hello', member_id: 'lead' },
+  },
+  {
+    name: 'channel_join',
+    method: 'a2a.channel.join',
+    args: { channel_id: 'ch-1', member_id: 'lead' },
+  },
+  {
+    name: 'channel_leave',
+    method: 'a2a.channel.leave',
+    args: { channel_id: 'ch-1', member_id: 'lead' },
+  },
+  {
+    name: 'channel_read',
+    method: 'a2a.channel.getMessages',
+    args: { channel_id: 'ch-1' },
+  },
+  {
+    name: 'channel_invite',
+    method: 'a2a.channel.invite',
+    args: {
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-b',
+      member_id: 'dev',
+    },
+  },
+  {
+    name: 'channel_get_members',
+    method: 'a2a.channel.getMembers',
+    args: { channel_id: 'ch-1' },
+  },
+  {
+    name: 'channel_ack',
+    method: 'a2a.channel.ack',
+    args: { channel_id: 'ch-1', upto_seq: 1 },
+  },
+  {
+    name: 'channel_unread',
+    method: 'a2a.channel.unread',
+    args: {},
+  },
+  {
+    name: 'channel_mission_start',
+    method: 'task.mission.start',
+    args: { title: 'Ship', member_id: 'lead' },
+  },
+  {
+    name: 'channel_mission_close',
+    method: 'task.mission.close',
+    args: { task_id: 'task-1' },
+  },
+  {
+    name: 'channel_mission_list',
+    method: 'task.mission.list',
+    args: {},
+  },
+];
+
+const registrations = collectRegistrations();
+const tools = new Map(
+  registrations.map(({ name, handler }) => [name, handler]),
+);
 const channelCreate = tools.get('channel_create');
 const channelPost = tools.get('channel_post');
 const channelJoin = tools.get('channel_join');
@@ -85,6 +269,7 @@ const channelAck = tools.get('channel_ack');
 const channelUnread = tools.get('channel_unread');
 const channelMissionStart = tools.get('channel_mission_start');
 const channelMissionClose = tools.get('channel_mission_close');
+const channelMissionList = tools.get('channel_mission_list');
 
 if (
   !channelCreate ||
@@ -98,7 +283,8 @@ if (
   !channelAck ||
   !channelUnread ||
   !channelMissionStart ||
-  !channelMissionClose
+  !channelMissionClose ||
+  !channelMissionList
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -108,21 +294,79 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all ten standard tools', () => {
-    // channel_read exposes message history; channel_invite adds another
-    // workspace (the only path into a private channel); channel_get_members
-    // exposes the roster (who is in the channel). Channels v2 adds
-    // channel_ack (durable-inbox consume signal) + channel_unread (cheap poll).
-    expect(channelCreate).toBeDefined();
-    expect(channelPost).toBeDefined();
-    expect(channelJoin).toBeDefined();
-    expect(channelLeave).toBeDefined();
-    expect(channelList).toBeDefined();
-    expect(channelRead).toBeDefined();
-    expect(channelInvite).toBeDefined();
-    expect(channelGetMembers).toBeDefined();
-    expect(channelAck).toBeDefined();
-    expect(channelUnread).toBeDefined();
+  it('registers all thirteen tools in exact full order, twelve on commander', () => {
+    expect([...tools.keys()]).toEqual(CHANNEL_TOOL_NAMES);
+    expect(
+      collectRegistrations(undefined, 'commander').map(({ name }) => name),
+    ).toEqual(CHANNEL_COMMANDER_TOOL_NAMES);
+  });
+
+  it('keeps catalog profiles in commander-manifest lockstep and frozen', () => {
+    const specs = createChannelToolCatalog(DEFAULT_CHANNEL_DEPS);
+
+    expect(specs.map(({ name }) => name)).toEqual(CHANNEL_TOOL_NAMES);
+    expect(specs.map(({ profiles }) => profiles)).toEqual(
+      CHANNEL_TOOL_NAMES.map((name) =>
+        name === 'channel_mission_list' ? ['full'] : ['full', 'commander'],
+      ),
+    );
+    expectCommanderCatalogLockstep(specs);
+    expectFrozenCatalog(specs);
+  });
+
+  it('pins every raw schema key order and reuses module-scope shapes', () => {
+    expect(
+      registrations.map(({ name, inputSchema }) => [
+        name,
+        Object.keys(inputSchema),
+      ]),
+    ).toEqual(
+      CHANNEL_TOOL_NAMES.map((name) => [name, CHANNEL_SCHEMA_KEYS[name]]),
+    );
+
+    const registrationByName = new Map(
+      registrations.map((registration) => [
+        registration.name,
+        registration,
+      ]),
+    );
+    const nestedObjectKeys = (toolName: string, field: string): string[] => {
+      const registration = registrationByName.get(toolName);
+      if (!registration) throw new Error(`${toolName} failed to register`);
+      const optionalArray = registration.inputSchema[field] as {
+        unwrap(): {
+          element: {
+            shape: Record<string, unknown>;
+          };
+        };
+      };
+      return Object.keys(optionalArray.unwrap().element.shape);
+    };
+    expect(nestedObjectKeys('channel_post', 'mentions')).toEqual([
+      'workspace_id',
+      'name',
+      'member_id',
+      'pane_id',
+    ]);
+    expect(nestedObjectKeys('channel_mission_start', 'invite')).toEqual([
+      'workspace_id',
+      'member_id',
+    ]);
+
+    const secondByName = new Map(
+      collectRegistrations().map((registration) => [
+        registration.name,
+        registration,
+      ]),
+    );
+    for (const registration of registrations) {
+      if (registration.name === 'channel_list') continue;
+      const second = secondByName.get(registration.name);
+      if (!second) {
+        throw new Error(`${registration.name} failed to register twice`);
+      }
+      expect(second.inputSchema).toBe(registration.inputSchema);
+    }
   });
 
   it('does not register a channel_history tool (history is exposed via channel_read)', () => {
@@ -135,15 +379,170 @@ describe('channel_* tools: registration', () => {
     expect(tools.get('channel_archive')).toBeUndefined();
   });
 
-  it('registers the two WorkTask mission tools (J0)', () => {
+  it('registers the WorkTask mission tools (J0)', () => {
     expect(channelMissionStart).toBeDefined();
     expect(channelMissionClose).toBeDefined();
   });
 
-  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
-    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
-    // (fan-out) per §3 tool-surface minimalism.
-    expect(tools.get('channel_mission_list')).toBeUndefined();
+  it('registers channel_mission_list (J1 — the deferral ends with fan-out)', () => {
+    // J0 kept task.mission.list pipe-only per §3 tool-surface minimalism and
+    // deferred the tool to J1. J1 (fan-out on the wire) is the caller that
+    // needs it: fanout_start returns before the tasks exist, so this listing is
+    // how a caller follows what it spawned.
+    expect(tools.get('channel_mission_list')).toBeDefined();
+  });
+
+  it('channel_mission_list forwards the resolved workspace', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    const res = await channelMissionList({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('channel_mission_list carries the verified senderPtyId, which is what actually scopes it', async () => {
+    // The workspace ids above are NOT the scoping mechanism — the main-side
+    // handler resolves the owning workspace from this ptyId and stamps it over
+    // whatever the tool sent. `task.mission.list` now fails closed without it
+    // (it returns branches and absolute worktree paths for one owner, and the
+    // MCP workspace resolver falls back to the spoofable WMUX_WORKSPACE_ID env
+    // hint on a PID-map miss). So a registration that stops attaching the
+    // ptyId does not merely lose attribution — it loses the listing.
+    const scopedTools = collectTools({
+      resolveWorkspaceId: async () => 'ws-test',
+      getSenderPtyId: () => 'pty-verified',
+    });
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    await scopedTools.get('channel_mission_list')!({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      senderPtyId: 'pty-verified',
+    });
+  });
+
+  it('keeps the verified sender resolver isolated per server registration', async () => {
+    const getSenderA = vi.fn(() => 'pty-a');
+    const getSenderB = vi.fn(() => 'pty-b');
+    const postA = collectTools({
+      resolveWorkspaceId: async () => 'ws-a',
+      getSenderPtyId: getSenderA,
+    }).get('channel_post');
+    const postB = collectTools({
+      resolveWorkspaceId: async () => 'ws-b',
+      getSenderPtyId: getSenderB,
+    }).get('channel_post');
+    if (!postA || !postB) {
+      throw new Error('channel_post failed to register for connection isolation test');
+    }
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 1 } });
+
+    await postA({ channel_id: 'ch-1', text: 'from A', member_id: 'a' });
+    await postB({ channel_id: 'ch-1', text: 'from B', member_id: 'b' });
+
+    expect(mockSendRpc.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        workspaceId: 'ws-a',
+        verifiedWorkspaceId: 'ws-a',
+        senderPtyId: 'pty-a',
+      }),
+    );
+    expect(mockSendRpc.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        workspaceId: 'ws-b',
+        verifiedWorkspaceId: 'ws-b',
+        senderPtyId: 'pty-b',
+      }),
+    );
+    expect(getSenderA).toHaveBeenCalledTimes(1);
+    expect(getSenderB).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads sender identity at invocation time instead of snapshotting it', async () => {
+    let senderPtyId = '';
+    const getSenderPtyId = vi.fn(() => senderPtyId);
+    const list = collectTools({
+      resolveWorkspaceId: async () => 'ws-live',
+      getSenderPtyId,
+    }).get('channel_list');
+    if (!list) throw new Error('channel_list failed to register');
+    senderPtyId = 'pty-live';
+    mockSendRpc.mockResolvedValue({ ok: true, channels: [] });
+
+    await list({});
+
+    expect(mockSendRpc).toHaveBeenCalledWith(
+      'a2a.channel.list',
+      expect.objectContaining({ senderPtyId: 'pty-live' }),
+    );
+    expect(getSenderPtyId).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('channel_* provenance and RPC closure', () => {
+  it.each(CHANNEL_INVOCATIONS)(
+    '$name resolves both identities once and calls $method once',
+    async ({ name, method, args }) => {
+      const resolveWorkspaceId = vi.fn(async () => 'ws-provenance');
+      const getSenderPtyId = vi.fn(() => 'pty-provenance');
+      const handler = collectTools({
+        resolveWorkspaceId,
+        getSenderPtyId,
+      }).get(name);
+      if (!handler) throw new Error(`${name} failed to register`);
+      mockSendRpc.mockResolvedValue({ ok: true });
+
+      await handler(args);
+
+      expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
+      expect(getSenderPtyId).toHaveBeenCalledTimes(1);
+      expect(mockSendRpc).toHaveBeenCalledTimes(1);
+      expect(mockSendRpc).toHaveBeenCalledWith(
+        method,
+        expect.objectContaining({
+          workspaceId: 'ws-provenance',
+          verifiedWorkspaceId: 'ws-provenance',
+          senderPtyId: 'pty-provenance',
+        }),
+      );
+    },
+  );
+
+  it('does not call the pipe when workspace resolution rejects', async () => {
+    const list = collectTools({
+      resolveWorkspaceId: async () => {
+        throw new Error('workspace identity unavailable');
+      },
+      getSenderPtyId: () => 'pty-live',
+    }).get('channel_list');
+    if (!list) throw new Error('channel_list failed to register');
+
+    await expect(list({})).rejects.toThrow('workspace identity unavailable');
+    expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('does not call the pipe when sender resolution rejects', async () => {
+    const list = collectTools({
+      resolveWorkspaceId: async () => 'ws-live',
+      getSenderPtyId: () => {
+        throw new Error('sender identity unavailable');
+      },
+    }).get('channel_list');
+    if (!list) throw new Error('channel_list failed to register');
+
+    await expect(list({})).rejects.toThrow('sender identity unavailable');
+    expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('converts a pipe rejection into an MCP error result', async () => {
+    mockSendRpc.mockRejectedValue(new Error('pipe unavailable'));
+
+    const result = await channelList({});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toBe('Error: pipe unavailable');
   });
 });
 
@@ -338,6 +737,29 @@ describe('channel_post', () => {
     expect(res.isError).toBeUndefined();
   });
 
+  it('A1: forwards a mention\'s pane_id as paneId (and no pty coordinate)', async () => {
+    // The vocabulary this tool lacked: without pane_id an MCP caller could not
+    // express "this agent", so an agent-addressed mention could never be
+    // auto-delivered. There is deliberately no pty_id counterpart — the daemon
+    // fills the pty snapshot from the principal registry after it proves the
+    // pane belongs to workspace_id.
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 2 } });
+    await channelPost({
+      channel_id: 'ch-1',
+      text: '@worker step 2',
+      member_id: 'm-1',
+      mentions: [
+        { workspace_id: 'ws-worker', name: 'worker', member_id: 'w1-2(claude)', pane_id: 'pane-2' },
+        { workspace_id: 'ws-other', name: 'other' }, // unpinned → no paneId key
+      ],
+    });
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.mentions).toEqual([
+      { workspaceId: 'ws-worker', name: 'worker', memberId: 'w1-2(claude)', paneId: 'pane-2' },
+      { workspaceId: 'ws-other', name: 'other' },
+    ]);
+  });
+
   it('surfaces PERSIST_FAILED from the daemon as isError (U2 directive)', async () => {
     mockSendRpc.mockResolvedValue({
       ok: false,
@@ -426,6 +848,30 @@ describe('channel_post', () => {
     });
     const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
     expect(params.clientMsgId).toBeUndefined();
+  });
+
+  it('maps mention keys and defaults only an omitted display name', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 1 } });
+
+    await channelPost({
+      channel_id: 'ch-1',
+      text: 'ping',
+      member_id: 'lead',
+      mentions: [
+        { workspace_id: 'ws-default' },
+        { workspace_id: 'ws-empty', name: '', member_id: 'dev' },
+      ],
+    });
+
+    expect(mockSendRpc).toHaveBeenCalledWith(
+      'a2a.channel.post',
+      expect.objectContaining({
+        mentions: [
+          { workspaceId: 'ws-default', name: 'ws-default' },
+          { workspaceId: 'ws-empty', name: '', memberId: 'dev' },
+        ],
+      }),
+    );
   });
 });
 
@@ -540,6 +986,49 @@ describe('channel_invite', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('NOT_AUTHORIZED');
+  });
+});
+
+describe('optional member display-name forwarding', () => {
+  it('omits memberName rather than forwarding undefined', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+
+    await channelCreate({
+      name: 'general',
+      visibility: 'public',
+      member_id: 'lead',
+    });
+    await channelPost({
+      channel_id: 'ch-1',
+      text: 'hello',
+      member_id: 'lead',
+    });
+    await channelJoin({
+      channel_id: 'ch-1',
+      member_id: 'lead',
+    });
+    await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-b',
+      member_id: 'dev',
+    });
+
+    const createParams = mockSendRpc.mock.calls[0]?.[1] as {
+      createdBy: Record<string, unknown>;
+    };
+    const postParams = mockSendRpc.mock.calls[1]?.[1] as {
+      sender: Record<string, unknown>;
+    };
+    const joinParams = mockSendRpc.mock.calls[2]?.[1] as {
+      member: Record<string, unknown>;
+    };
+    const inviteParams = mockSendRpc.mock.calls[3]?.[1] as {
+      invitedMember: Record<string, unknown>;
+    };
+    expect(createParams.createdBy).not.toHaveProperty('memberName');
+    expect(postParams.sender).not.toHaveProperty('memberName');
+    expect(joinParams.member).not.toHaveProperty('memberName');
+    expect(inviteParams.invitedMember).not.toHaveProperty('memberName');
   });
 });
 

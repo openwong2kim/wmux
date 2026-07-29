@@ -343,6 +343,13 @@ export type RpcMethod =
   // 의도적으로 제외된다(설계 §2.3 / Codex #7).
   | 'a2a.channel.operatorJoin'
   | 'a2a.channel.operatorList'
+  // Channel trash lifecycle — soft delete, undo, and permanent deletion.
+  // Same humans-only grade as archive/kick/operator*: registered on the
+  // renderer-only channels:mutate-local IPC and deliberately absent from the
+  // pipe router, so no agent/MCP caller can hide or destroy a channel.
+  | 'a2a.channel.trash'
+  | 'a2a.channel.restore'
+  | 'a2a.channel.destroy'
   | 'a2a.principal.upsert'
   | 'a2a.principal.remove'
   | 'a2a.principal.markStaleWorkspace'
@@ -355,7 +362,15 @@ export type RpcMethod =
   | 'task.mission.list'
   // J1 §5 — 물질화 필드(branch/worktreePath/paneGroupId) 단조 커밋. FanOutService
   // 내부 경로가 호출한다(owner OR CEO authz는 데몬 WorkTaskService에서 강제).
-  | 'task.mission.update';
+  | 'task.mission.update'
+  // Fan-out on the pipe surface (pipe/handlers/fanout.rpc.ts). One prompt → N
+  // isolated worktree tasks. Unlike the renderer-only `fanout:start` IPC, the
+  // caller supplies NO repoPath, NO agentCmd and NO memberId: the repo is the
+  // git toplevel of the caller's own workspace cwd and the agent command is
+  // fixed. Identity rides the same senderPtyId→verifiedWorkspaceId stamp as
+  // `task.mission.*`, the spawn is approval-gated, and the call is
+  // accept-then-poll (re-send the key to read the state).
+  | 'task.fanout.start';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -497,6 +512,10 @@ export const ALL_RPC_METHODS = [
   // operator-join (설계 §2.1/§2.2) — humans-only, 파이프 미등록. RpcMethod 완전성.
   'a2a.channel.operatorJoin',
   'a2a.channel.operatorList',
+  // Channel trash lifecycle — humans-only, pipe-unregistered. RpcMethod completeness.
+  'a2a.channel.trash',
+  'a2a.channel.restore',
+  'a2a.channel.destroy',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',
@@ -504,6 +523,7 @@ export const ALL_RPC_METHODS = [
   'task.mission.close',
   'task.mission.list',
   'task.mission.update',
+  'task.fanout.start',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

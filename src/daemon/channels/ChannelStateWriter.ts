@@ -416,6 +416,14 @@ export class ChannelStateWriter {
  *     fallback, that channel would be immortal. The 7-day bound
  *     applies from creation in that case, which is conservative.
  * Archived channels with zero members follow the same rule.
+ *
+ * TRASHED channels are exempt from every rule above: a channel in the trash is
+ * owned by the retention sweep's purge pass (`ChannelService.sweepRetention`),
+ * which honours the promised 30-day undo window and commits a `destroy` event.
+ * Without this exemption a trashed mission channel — routinely left with zero
+ * members once `purgeMembership` sweeps its deleted workspace — would be pruned
+ * silently at the 7-day empty TTL, three weeks inside the window the UI
+ * promises, and with no event for other replicas to replay.
  */
 export function reapEmptyChannels(
   state: ChannelState,
@@ -425,6 +433,11 @@ export function reapEmptyChannels(
   const cutoffMs = emptyChannelTtlHours * 60 * 60 * 1000;
   const survivingIds = new Set<string>();
   for (const ch of state.channels) {
+    // Deleting a trashed channel is EXCLUSIVELY the retention sweep's job.
+    if (ch.trashedAt !== undefined) {
+      survivingIds.add(ch.id);
+      continue;
+    }
     const memberCount = (state.members[ch.id] ?? []).length;
     if (memberCount > 0) {
       survivingIds.add(ch.id);

@@ -269,6 +269,18 @@ export function IconGitBranch({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Hash — the channel glyph. Opens the deck on the Channels tab. */
+export function IconHash({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1="5.2" y1="2" x2="4.2" y2="12" />
+      <line x1="9.4" y1="2" x2="8.4" y2="12" />
+      <line x1="2.4" y1="5.2" x2="11.4" y2="5.2" />
+      <line x1="2" y1="8.8" x2="11" y2="8.8" />
+    </Icon>
+  );
+}
+
 /** Review — a checklist / diff roster. Opens the Review surface (cross-workspace
  *  diff roster) in the center pane. */
 export function IconReview({ size = 14 }: { size?: number }) {

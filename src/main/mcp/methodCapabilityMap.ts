@@ -406,6 +406,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // 필요하므로 send 등급으로 둔다(도달 시점엔 이미 mutateLocal 경계를 통과했다는 의미).
   'a2a.channel.operatorJoin':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.operatorList':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  // Channel trash lifecycle — humans-only, same grade and rationale as
+  // archive/kick: entries here for RpcMethod completeness, excluded from the
+  // first-party grant. Hiding or destroying a channel must never be reachable
+  // from a forgeable agent identity.
+  'a2a.channel.trash':                { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.restore':              { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.destroy':              { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.principal.upsert':             { capability: 'wmux.internal' },
   'a2a.principal.remove':             { capability: 'wmux.internal' },
   'a2a.principal.markStaleWorkspace': { capability: 'wmux.internal' },
@@ -422,6 +429,14 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // J1 §5 — 물질화 커밋. start/close와 동일 mutation 등급(a2a.channel.send).
   // 단조 물질화·배타 불변식·owner|CEO authz는 데몬 WorkTaskService에서 강제.
   'task.mission.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+
+  // --- Fan-out (pipe/handlers/fanout.rpc.ts) ---
+  // Starting a fan-out spawns N autonomous agent CLIs, which is the same
+  // effect class as `a2a.task.send { execute: true }` — so it takes the same
+  // capability rather than a weaker channel one. The user-facing approval
+  // prompt is additionally enforced in the handler; the capability only
+  // decides whether a plugin may reach the surface at all.
+  'task.fanout.start': { capability: 'a2a.execute', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

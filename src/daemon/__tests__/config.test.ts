@@ -357,3 +357,46 @@ describe('loadConfig — P1 idle-CPU knobs backfill + clamp', () => {
     expect(c.daemon.pipeName).toBe('\\\\.\\pipe\\keepme2');
   });
 });
+
+describe('loadConfig — channel retention coercion', () => {
+  it('rounds a deliberate sub-hour value UP to 1h (never down to "off")', () => {
+    // Flooring 0.5 to 0 would read an operator asking for an AGGRESSIVE purge
+    // schedule as "disabled" — the exact opposite of the stated intent.
+    const c0 = createDefaultConfig();
+    writeRawConfig({
+      ...c0,
+      channels: { trashTtlHours: 0.5, autoTrashArchivedHours: 0.25 },
+    });
+
+    const c = loadConfig();
+    expect(c.channels?.trashTtlHours).toBe(1);
+    expect(c.channels?.autoTrashArchivedHours).toBe(1);
+  });
+
+  it('keeps an exact 0 as OFF, and coerces negatives to OFF', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, channels: { trashTtlHours: 0, autoTrashArchivedHours: -5 } });
+    const c = loadConfig();
+    expect(c.channels?.trashTtlHours).toBe(0);
+    expect(c.channels?.autoTrashArchivedHours).toBe(0);
+  });
+
+  it('coerces non-numeric garbage to OFF, never back to the delete-by-default', () => {
+    // The asymmetry that matters: a hand-edited `"30"` (JSON string), a null, or a
+    // nested object must NOT silently restore the 30-day purge schedule the operator
+    // never asked for. `0` — keep everything — is the only safe reading of garbage.
+    const c0 = createDefaultConfig();
+    for (const garbage of ['30', null, { hours: 30 }, [], true, 'off']) {
+      writeRawConfig({
+        ...c0,
+        channels: { trashTtlHours: garbage, autoTrashArchivedHours: garbage },
+      });
+      const c = loadConfig();
+      expect(c.channels?.trashTtlHours, `trashTtlHours for ${JSON.stringify(garbage)}`).toBe(0);
+      expect(
+        c.channels?.autoTrashArchivedHours,
+        `autoTrashArchivedHours for ${JSON.stringify(garbage)}`,
+      ).toBe(0);
+    }
+  });
+});

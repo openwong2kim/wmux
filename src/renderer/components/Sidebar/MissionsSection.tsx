@@ -13,11 +13,17 @@
 //
 // 빈 상태: 미션이 하나도 없으면(대부분의 일반 워크스페이스) 이 컴포넌트는 null을
 // 반환해 **공간을 전혀 차지하지 않는다**(헤더조차 렌더하지 않음).
+//
+// Lifetime (owner policy): a mission row is visible only while its fan-out workspace
+// is alive. When the workspace is gone the row goes with it, and the record stays in
+// the mission channel (see selectLiveMissions).
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import type { WorkTask } from '../../../shared/workTask';
+import { IconChevron } from '../icons';
+import { FOCUS_RING } from '../focusRing';
 
 /**
  * 모든 부모 캐시를 평탄화·정렬한 미션 목록(순수 함수 — 테스트 가능). open을 먼저,
@@ -33,9 +39,39 @@ export function flattenMissions(byWorkspace: Record<string, WorkTask[]>): WorkTa
   });
 }
 
-function useFlatMissions(): WorkTask[] {
+/**
+ * Mission = workspace lifetime (owner policy). Visibility is decided on
+ * **workspace existence alone** — derived/inferred signals (agent status, delivery
+ * status, and the like) have reported false several times in this repo, so they are
+ * not used here. `liveWorkspaceIds` is the workspace list restored from the session,
+ * verbatim.
+ *
+ *   - paneGroupId materialized + workspace absent → **excluded** (the record stays in the channel).
+ *   - paneGroupId materialized + workspace present → shown.
+ *   - paneGroupId not materialized (fan-out in flight) → **shown**. There is no
+ *     workspace yet; that is not the same as one having disappeared — hiding a
+ *     mission that is still running is far worse.
+ */
+export function selectLiveMissions(
+  byWorkspace: Record<string, WorkTask[]>,
+  liveWorkspaceIds: ReadonlySet<string>,
+): WorkTask[] {
+  return flattenMissions(byWorkspace).filter(
+    (task) => !task.paneGroupId || liveWorkspaceIds.has(task.paneGroupId),
+  );
+}
+
+function useLiveMissions(): WorkTask[] {
   const byWorkspace = useStore(useShallow((s) => s.missionsByWorkspace));
-  return useMemo(() => flattenMissions(byWorkspace), [byWorkspace]);
+  // Subscribe to the id array with a shallow compare (renames and metadata changes do
+  // not recompute). Do NOT use a joined string key — with zero workspaces
+  // `''.split(',')` yields `['']`, which makes the empty-string id count as "alive",
+  // and any id containing a comma would be split apart.
+  const workspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
+  return useMemo(
+    () => selectLiveMissions(byWorkspace, new Set(workspaceIds)),
+    [byWorkspace, workspaceIds],
+  );
 }
 
 function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
@@ -102,20 +138,72 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
 }
 
 function MissionsSection(): React.ReactElement | null {
-  const missions = useFlatMissions();
+  const missions = useLiveMissions();
+  // Collapse for the whole section (expanded by default — open missions are the work
+  // that is running right now).
+  const [expanded, setExpanded] = useState(true);
+  // Done missions get their own disclosure (collapsed by default). A mission row stays
+  // valid as long as its workspace is alive (jump and channel links still work), but
+  // there is no reason for it to sit permanently expanded taking up room.
+  const [doneExpanded, setDoneExpanded] = useState(false);
+  const open = missions.filter((t) => t.status === 'open');
+  const done = missions.filter((t) => t.status !== 'open');
+
   // 빈 상태: 미션이 없으면 아무 것도 렌더하지 않는다(공간 0).
   if (missions.length === 0) return null;
 
   return (
     <div className="mb-1" data-missions-section>
-      <div className="px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase">
-        Missions
-      </div>
-      <div className="space-y-0.5">
-        {missions.map((task) => (
-          <MissionRow key={task.id} task={task} />
-        ))}
-      </div>
+      <button
+        type="button"
+        className={`w-full flex items-center gap-1 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        data-missions-toggle
+      >
+        <span
+          className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+          aria-hidden="true"
+        >
+          <IconChevron size={9} />
+        </span>
+        <span>Missions ({missions.length})</span>
+      </button>
+      {expanded && (
+        <>
+          <div className="space-y-0.5" data-missions-open-group>
+            {open.map((task) => (
+              <MissionRow key={task.id} task={task} />
+            ))}
+          </div>
+          {done.length > 0 && (
+            <div data-missions-done-group>
+              <button
+                type="button"
+                className={`w-full flex items-center gap-1 px-4 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                onClick={() => setDoneExpanded((v) => !v)}
+                aria-expanded={doneExpanded}
+                data-missions-done-toggle
+              >
+                <span
+                  className={`transition-transform ${doneExpanded ? 'rotate-90' : ''}`}
+                  aria-hidden="true"
+                >
+                  <IconChevron size={9} />
+                </span>
+                <span>Done ({done.length})</span>
+              </button>
+              {doneExpanded && (
+                <div className="space-y-0.5 opacity-60">
+                  {done.map((task) => (
+                    <MissionRow key={task.id} task={task} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

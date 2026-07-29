@@ -5,42 +5,61 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // browser.evaluate RPC channel instead of throwing "No browser page available".
 
 // #517: tool handlers are wrapped in withAutomationLease, which issues
-// browser.lease.* RPCs around the real operation. Keep those transparent to
-// this suite's call-sequence assertions: lease traffic is answered inline
-// ({ token: null } → the helper proceeds unleased, no renew/release) and only
-// non-lease methods reach the recorded mock.
-const { mockSendRpc } = vi.hoisted(() => ({ mockSendRpc: vi.fn() }));
+// browser.lease.* RPCs around the real operation. Record that traffic
+// separately so ordinary fallback assertions see only browser.evaluate calls.
+const { mockSendRpc, mockLeaseRpc, getPage, getInstance } = vi.hoisted(() => {
+  const getPage = vi.fn();
+  return {
+    mockSendRpc: vi.fn(),
+    mockLeaseRpc: vi.fn(),
+    getPage,
+    getInstance: vi.fn(() => ({ getPage })),
+  };
+});
 vi.mock('../../wmux-client', () => ({
   sendRpc: (method: string, ...args: unknown[]) =>
     typeof method === 'string' && method.startsWith('browser.lease.')
-      ? Promise.resolve({ token: null })
+      ? mockLeaseRpc(method, ...args)
       : mockSendRpc(method, ...args),
 }));
 
-const getPage = vi.fn();
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPage }) },
+  PlaywrightEngine: { getInstance },
 }));
 
-import { registerWaitTools } from '../tools/wait';
+import {
+  createWaitToolCatalog,
+  registerWaitTools,
+} from '../tools/wait';
+import type { WmuxToolProfile } from '../../toolCatalog';
+import {
+  expectCommanderCatalogLockstep,
+  expectFrozenCatalog,
+} from '../../__tests__/catalogAssertions';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];
   isError?: boolean;
 }>;
 
-function collectTools(): Map<string, ToolHandler> {
+function collectTools(profile: WmuxToolProfile = 'full'): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
-    tool: (name: string, _desc: string, _schema: unknown, handler: ToolHandler) => {
+    registerTool: (name: string, _config: unknown, handler: ToolHandler) => {
       tools.set(name, handler);
     },
   };
-  registerWaitTools(server as never);
+  registerWaitTools(server as never, {
+    profile,
+    context: { principal: { kind: 'unattributed' } },
+  });
   return tools;
 }
 
-const wait = collectTools().get('browser_wait')!;
+const wait = collectTools().get('browser_wait');
+if (!wait) {
+  throw new Error('browser_wait failed to register');
+}
 
 /** Resolve common page reads (href/readyState) and let each test override the
  *  predicate-defining expression via `truthy`. */
@@ -53,8 +72,61 @@ function evalRouter(map: Record<string, unknown>, fallback: unknown = false) {
 
 beforeEach(() => {
   mockSendRpc.mockReset();
+  mockLeaseRpc.mockReset();
+  mockLeaseRpc.mockResolvedValue({ token: null });
+  getInstance.mockClear();
   getPage.mockReset();
   getPage.mockResolvedValue(null); // default: packaged (no Playwright Page)
+});
+
+describe('browser_wait catalog registration', () => {
+  it('preserves the full order and stays absent from commander', () => {
+    expect([...collectTools('full').keys()]).toEqual(['browser_wait']);
+    expect([...collectTools('commander').keys()]).toEqual([]);
+  });
+
+  it('keeps the legacy schema order, profile membership, and frozen descriptors', () => {
+    const specs = createWaitToolCatalog();
+    expect(specs.map((spec) => spec.name)).toEqual(['browser_wait']);
+    expect(specs[0]?.profiles).toEqual(['full']);
+    expect(Object.keys(specs[0]?.inputSchema ?? {})).toEqual([
+      'url',
+      'selector',
+      'text',
+      'fn',
+      'timeout',
+      'surfaceId',
+    ]);
+    expectCommanderCatalogLockstep(specs);
+    expectFrozenCatalog(specs);
+  });
+
+  it('keeps registration-time engine acquisition before commander filtering', () => {
+    expect([...collectTools('commander').keys()]).toEqual([]);
+    expect(getInstance).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the exact module-scope raw shape across catalogs and SDK registration', () => {
+    const firstCatalog = createWaitToolCatalog();
+    const secondCatalog = createWaitToolCatalog();
+    let registeredInputSchema: unknown;
+    const server = {
+      registerTool: (
+        _name: string,
+        config: { inputSchema: unknown },
+      ) => {
+        registeredInputSchema = config.inputSchema;
+      },
+    };
+
+    registerWaitTools(server as never, {
+      profile: 'full',
+      context: { principal: { kind: 'unattributed' } },
+    });
+
+    expect(secondCatalog[0]?.inputSchema).toBe(firstCatalog[0]?.inputSchema);
+    expect(registeredInputSchema).toBe(firstCatalog[0]?.inputSchema);
+  });
 });
 
 describe('browser_wait RPC fallback', () => {
@@ -186,5 +258,23 @@ describe('browser_wait RPC fallback', () => {
     expect(waitForSelector).toHaveBeenCalledWith('#app', { timeout: 30000 });
     expect(mockSendRpc).not.toHaveBeenCalled();
     expect(res.content[0].text).toContain('selector "#app" found');
+  });
+
+  it('acquires and releases an automation lease around a Page wait', async () => {
+    mockLeaseRpc.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'browser.lease.acquire'
+          ? { token: 'lease-1' }
+          : {},
+      ));
+    const waitForSelector = vi.fn().mockResolvedValue(undefined);
+    getPage.mockResolvedValue({ waitForSelector });
+
+    await wait({ selector: '#app', surfaceId: 'surface-1' });
+
+    expect(mockLeaseRpc.mock.calls).toEqual([
+      ['browser.lease.acquire', { surfaceId: 'surface-1' }],
+      ['browser.lease.release', { token: 'lease-1' }],
+    ]);
   });
 });

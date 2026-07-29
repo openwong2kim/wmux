@@ -248,7 +248,7 @@ describe('terminal capability defaults (#680)', () => {
 
   it('base-env TERM/COLORTERM always win (user/system override is never clobbered)', () => {
     for (const build of [buildInteractiveShellEnv, buildGatedAutomationEnv]) {
-      const env = build({ TERM: 'vt100', COLORTERM: '0', TERM_PROGRAM: 'custom', PATH: '/p' });
+      const env = build({ TERM: 'vt100', COLORTERM: '0', PATH: '/p' });
       expect(env.TERM).toBe('vt100');
       expect(env.COLORTERM).toBe('0');
     }

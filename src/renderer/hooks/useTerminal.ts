@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
@@ -25,7 +25,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
-import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -696,6 +696,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         term.reset();
         term.write(bytes);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
+        term.write(STALE_REPLAY_DISPLAY_RESETS);
         for (const chunk of st.buffer) term.write(chunk);
         markTerminalClean(term);
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
@@ -863,7 +864,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
-    const unicode11Addon = new Unicode11Addon();
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
@@ -875,7 +875,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
-    terminal.loadAddon(unicode11Addon);
     terminal.loadAddon(webLinksAddon);
     // Path link provider — Ctrl+click an absolute filesystem path to open
     // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
@@ -932,7 +931,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Activate Unicode 11 width tables — required for correct CJK / emoji
     // width. Without this, xterm defaults to v6 and TUI apps that use cursor
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
-    terminal.unicode.activeVersion = '11';
+    // Shared with the daemon's snapshot terminals through this helper; if the
+    // two sides ever measure differently, a restored snapshot paints
+    // cell-shifted against the live screen.
+    applyUnicodeWidthModel(terminal);
     terminal.open(container);
 
     // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
@@ -1635,6 +1637,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (terminalRef.current !== terminal) return;
         if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
           terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
+          terminal.write(STALE_REPLAY_DISPLAY_RESETS);
         }
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };

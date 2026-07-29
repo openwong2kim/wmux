@@ -327,11 +327,18 @@ function buildMarkdown() {
   p('  `wmux.internal` methods.');
   p('');
 
-  // archive + kick are humans-only: present in the cap map for RpcMethod
-  // completeness but NOT registered on the pipe router (a2a.channel.rpc.ts), so
-  // no agent/MCP caller can reach them. Flag that in the table so readers don't
-  // treat them as publicly callable A2A RPCs (CodeRabbit).
-  const HUMANS_ONLY_RPC = new Set(['a2a.channel.archive', 'a2a.channel.kick']);
+  // archive + kick + the trash lifecycle are humans-only: present in the cap map
+  // for RpcMethod completeness but NOT registered on the pipe router
+  // (a2a.channel.rpc.ts), so no agent/MCP caller can reach them — they are reachable
+  // only through the renderer-only `channels:mutate-local` IPC. Flag that in the
+  // table so readers don't treat them as publicly callable A2A RPCs (CodeRabbit).
+  const HUMANS_ONLY_RPC = new Set([
+    'a2a.channel.archive',
+    'a2a.channel.kick',
+    'a2a.channel.trash',
+    'a2a.channel.restore',
+    'a2a.channel.destroy',
+  ]);
   // Group methods, preserving ALL_RPC_METHODS order within each group.
   const grouped = new Map();
   for (const method of methods) {

@@ -90,23 +90,29 @@ export const TERMINAL_CAPABILITY_DEFAULTS: ReadonlyArray<readonly [string, strin
 /** The terminal identity every wmux pane must advertise. */
 export const TERM_PROGRAM_IDENTITY = 'wmux';
 
+/**
+ * Force TERM_PROGRAM=wmux (in place). Unlike TERM/COLORTERM this is NOT a
+ * default: the filter is a blocklist, so a dev build launched from another
+ * terminal inherits e.g. TERM_PROGRAM=iTerm.app straight through, and a
+ * default-only injection would leave the pane advertising the wrong host
+ * terminal — tools that branch on TERM_PROGRAM would misidentify wmux.
+ * Any case-variant key is deleted first so a stray win32 `Term_Program`
+ * cannot survive alongside the canonical key and get picked nondeterministically.
+ */
+function forceTerminalIdentity(env: Record<string, string>): void {
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'TERM_PROGRAM' && key !== 'TERM_PROGRAM') delete env[key];
+  }
+  env.TERM_PROGRAM = TERM_PROGRAM_IDENTITY;
+}
+
 /** Apply the terminal-capability defaults to a fresh spawn env (in place). */
 function applyTerminalCapabilityDefaults(env: Record<string, string>): void {
   const present = new Set(Object.keys(env).map((k) => k.toUpperCase()));
   for (const [key, value] of TERMINAL_CAPABILITY_DEFAULTS) {
     if (!present.has(key)) env[key] = value;
   }
-  // TERM_PROGRAM is FORCED, not defaulted. The filter is a blocklist, so a
-  // dev build launched from another terminal inherits e.g.
-  // TERM_PROGRAM=iTerm.app straight through — a default-only injection would
-  // leave the pane advertising the wrong host terminal, and tools that branch
-  // on TERM_PROGRAM would misidentify wmux. Delete any case-variant key first
-  // so a stray win32 `Term_Program` cannot survive alongside the canonical
-  // key and get picked nondeterministically.
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'TERM_PROGRAM' && key !== 'TERM_PROGRAM') delete env[key];
-  }
-  env.TERM_PROGRAM = TERM_PROGRAM_IDENTITY;
+  forceTerminalIdentity(env);
 }
 
 /**
