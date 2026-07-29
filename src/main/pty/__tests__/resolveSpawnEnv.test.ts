@@ -273,3 +273,38 @@ describe('resolveSpawnEnv — execution-context policy', () => {
     expect(env.WMUX_WORKSPACE_ID).toBe('real');  // 정체성은 여전히 강제
   });
 });
+
+describe('resolveSpawnEnv — terminal capability defaults (#680)', () => {
+  it('injects TERM/COLORTERM/TERM_PROGRAM into the gated baseline when absent', () => {
+    const env = resolveSpawnEnv({ PATH: '/p' }, undefined, {});
+    expect(env.TERM).toBe('xterm-256color');
+    expect(env.COLORTERM).toBe('truecolor');
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('injects them into the passthrough baseline too (both spawn paths in lockstep)', () => {
+    const env = resolveSpawnEnv({ PATH: '/p' }, undefined, {}, undefined, 'passthrough');
+    expect(env.TERM).toBe('xterm-256color');
+    expect(env.COLORTERM).toBe('truecolor');
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('a base-env TERM wins over the default (user/system override)', () => {
+    const env = resolveSpawnEnv({ PATH: '/p', TERM: 'vt100' }, undefined, {});
+    expect(env.TERM).toBe('vt100');
+  });
+
+  it('a base-env TERM_PROGRAM is forced to wmux at the funnel too', () => {
+    // Unlike TERM/COLORTERM, an inherited TERM_PROGRAM (e.g. iTerm.app from a
+    // dev launch) is replaced — the pane must not advertise the wrong host.
+    const env = resolveSpawnEnv({ PATH: '/p', TERM_PROGRAM: 'iTerm.app' }, undefined, {});
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('a workspace profile can still override the advertised default', () => {
+    // Profile overlay applies AFTER the baseline, so a configured profile TERM
+    // beats the injected default — the override chain stays intact.
+    const env = resolveSpawnEnv({ PATH: '/p' }, { TERM: 'screen-256color' }, {});
+    expect(env.TERM).toBe('screen-256color');
+  });
+});
