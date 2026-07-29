@@ -553,7 +553,6 @@ export function registerBrowserRpc(
         ? params['workspaceId']
         : undefined;
 
-    const workspaceBackend = backend();
     const listRelevantTargets = () => {
       const targets = webviewCdpManager.listTargets();
       // Server-side workspace scoping. An untagged target (older registration
@@ -567,11 +566,21 @@ export function registerBrowserRpc(
 
     // If the caller has no relevant builtin target yet, wait briefly for an
     // in-flight registration. A foreign workspace target must not suppress
-    // this grace period. External mode never registers builtin targets.
-    if (workspaceBackend === 'builtin' && scopedTargets.length === 0) {
+    // this grace period. Only 'external' skips the wait — it is the one backend
+    // that never registers a builtin target, so waiting could add latency to a
+    // guaranteed miss. Any other value waits, which costs at most the grace
+    // period; skipping costs a duplicate surface.
+    if (backend() !== 'external' && scopedTargets.length === 0) {
       await new Promise((r) => setTimeout(r, 1500));
       scopedTargets = listRelevantTargets();
     }
+
+    // Read after the wait, not before: the Settings UI can flip the backend
+    // over IPC while the grace period is pending, and a stale 'builtin' here
+    // would send the caller into target-miss retries when the honest answer is
+    // the external-backend contract error. The wait decision is the entry
+    // value's to make; the reported value is the current one.
+    const workspaceBackend = backend();
 
     const cdpPort: number = webviewCdpManager.getCdpPort();
 

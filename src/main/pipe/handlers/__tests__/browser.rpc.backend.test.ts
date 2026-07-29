@@ -284,5 +284,33 @@ describe('browser backend fork (#517)', () => {
         vi.useRealTimers();
       }
     });
+
+    it('reports the backend as it stands after the grace period, not before it', async () => {
+      // Settings writes the backend over IPC on the same event loop, so it can
+      // land mid-wait. Reporting the entry value would tell the caller
+      // 'builtin' + zero targets — a generic target-miss it would retry — when
+      // the honest answer is now the external-backend contract error.
+      vi.useFakeTimers();
+      try {
+        const { router, setBackend } = register({ backend: 'builtin', hasTarget: false });
+        const responsePromise = dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' });
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBe(1); // the entry value chose to wait
+        setBackend('external');
+        await vi.advanceTimersByTimeAsync(1500);
+
+        await expect(responsePromise).resolves.toMatchObject({
+          result: {
+            workspaceBackend: 'external',
+            targetsScoped: true,
+            targets: [],
+          },
+        });
+      } finally {
+        await vi.runOnlyPendingTimersAsync();
+        vi.useRealTimers();
+      }
+    });
   });
 });
