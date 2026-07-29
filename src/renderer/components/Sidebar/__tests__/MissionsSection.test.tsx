@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import MissionsSection, { flattenMissions } from '../MissionsSection';
+import MissionsSection, { flattenMissions, selectLiveMissions } from '../MissionsSection';
 import type { WorkTask } from '../../../../shared/workTask';
 
 function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title'>): WorkTask {
@@ -62,5 +62,66 @@ describe('MissionsSection', () => {
       });
       expect(out.map((t) => t.id)).toEqual(['newer', 'older']);
     });
+  });
+});
+
+// ── Mission = workspace lifetime (owner policy) ────────────────────────────
+// The decision rests on **workspace existence alone**. When a fan-out workspace is
+// gone the mission row drops out of the list, and the record stays in the mission
+// channel (this selector never touches channels).
+describe('selectLiveMissions (pure)', () => {
+  const live = (...ids: string[]): ReadonlySet<string> => new Set(ids);
+
+  it('excludes a mission whose workspace is gone', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'alive', title: 'A', paneGroupId: 'child-1' }),
+          mission({ id: 'gone', title: 'B', paneGroupId: 'child-2' }),
+        ],
+      },
+      live('parent-a', 'child-1'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['alive']);
+  });
+
+  it('excludes a done mission too once its workspace is gone (the cause of sidebar pile-up)', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'done', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+        ],
+      },
+      live('parent-a'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('keeps a done mission while its workspace is alive (jump and channel links still work)', () => {
+    const out = selectLiveMissions(
+      {
+        'parent-a': [
+          mission({ id: 'done', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+        ],
+      },
+      live('parent-a', 'child-1'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['done']);
+  });
+
+  it('keeps a mission with no materialized paneGroupId (fan-out in flight) — not yet there is not gone', () => {
+    const out = selectLiveMissions(
+      { 'parent-a': [mission({ id: 'inflight', title: 'A' })] },
+      live('parent-a'),
+    );
+    expect(out.map((t) => t.id)).toEqual(['inflight']);
+  });
+
+  it('excludes a mission whose child is gone even if the parent cache lingers (orphan-cache guard)', () => {
+    const out = selectLiveMissions(
+      { 'parent-gone': [mission({ id: 'orphan', title: 'A', paneGroupId: 'child-x' })] },
+      live('parent-a'),
+    );
+    expect(out).toEqual([]);
   });
 });

@@ -71,6 +71,31 @@ const SAFE_PASSTHROUGH: ReadonlySet<string> = new Set([
   'COLORTERM',          // 터미널 능력 힌트
 ]);
 
+// ── Terminal capability advertisement (#680) ─────────────────────────────
+// Every pane renders through xterm.js, which fully supports 256 colors and
+// truecolor — but nothing on the Windows spawn path sets TERM / COLORTERM /
+// TERM_PROGRAM for the child, so every capability-probing CLI (supports-color,
+// i.e. most Node TUIs) concludes the terminal is monochrome and starts with
+// colors disabled. Advertise the real capabilities at spawn, in both builders
+// so the PTYManager and DaemonSessionManager paths stay in lockstep like the
+// rest of this module. These are DEFAULTS ONLY: any base-env value (a
+// user/system override) wins. The presence check is case-insensitive because
+// win32 env keys are — a user-set `Term` must block the `TERM` default, else
+// both keys survive and the OS picks one nondeterministically.
+export const TERMINAL_CAPABILITY_DEFAULTS: ReadonlyArray<readonly [string, string]> = [
+  ['TERM', 'xterm-256color'],
+  ['COLORTERM', 'truecolor'],
+  ['TERM_PROGRAM', 'wmux'],
+];
+
+/** Apply the terminal-capability defaults to a fresh spawn env (in place). */
+function applyTerminalCapabilityDefaults(env: Record<string, string>): void {
+  const present = new Set(Object.keys(env).map((k) => k.toUpperCase()));
+  for (const [key, value] of TERMINAL_CAPABILITY_DEFAULTS) {
+    if (!present.has(key)) env[key] = value;
+  }
+}
+
 /**
  * wmux/Electron/빌드 내부 변수인가 — 두 정책 모두에서 strip 대상.
  * 매칭은 case-insensitive(키를 대문자화) — 소문자 우회를 막는다.
@@ -124,7 +149,9 @@ function buildFilteredEnv(
 export function buildInteractiveShellEnv(
   baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
 ): Record<string, string> {
-  return buildFilteredEnv(baseEnv, isInternalEnvKey);
+  const env = buildFilteredEnv(baseEnv, isInternalEnvKey);
+  applyTerminalCapabilityDefaults(env);
+  return env;
 }
 
 /**
@@ -134,7 +161,9 @@ export function buildInteractiveShellEnv(
 export function buildGatedAutomationEnv(
   baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
 ): Record<string, string> {
-  return buildFilteredEnv(baseEnv, isSensitiveEnvKey);
+  const env = buildFilteredEnv(baseEnv, isSensitiveEnvKey);
+  applyTerminalCapabilityDefaults(env);
+  return env;
 }
 
 /**

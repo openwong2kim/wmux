@@ -349,6 +349,84 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
     expect(rpcSpy).not.toHaveBeenCalled();
   });
 
+  // task.mission.list is a READ, but an owner-scoped one: it hands back the
+  // named workspace's mission titles, branches, absolute worktree paths, pane
+  // group ids and channel ids. Registered as an ordinary read it left a
+  // caller-supplied verifiedWorkspaceId in place whenever no senderPtyId
+  // resolved — and the MCP resolver falls back to the spoofable
+  // WMUX_WORKSPACE_ID env hint on a PID-map miss, sending no senderPtyId at
+  // all on that path. So `WMUX_WORKSPACE_ID=<victim>` read the victim's
+  // missions, while the tool description, the code comment and a test all
+  // asserted that only your own were returned.
+  describe('task.mission.list is scoped to a verifiable caller', () => {
+    it('stamps the resolved workspace over a caller-supplied one', async () => {
+      const daemon = makeFakeDaemon((method, p) => {
+        expect(method).toBe('task.mission.list');
+        expect((p as Record<string, unknown>).verifiedWorkspaceId).toBe('ws-of-pty-S');
+        return { ok: true, tasks: [] };
+      });
+      const router = setupHandlerRouter(daemon);
+      const res = await router.dispatch({
+        id: 'ml-1',
+        method: 'task.mission.list',
+        params: { senderPtyId: 'pty-S', verifiedWorkspaceId: 'ws-victim' },
+      });
+      expect(res.ok).toBe(true);
+    });
+
+    it('fails closed off the wire when no senderPtyId resolves', async () => {
+      const daemon = makeFakeDaemon(() => ({ ok: true, tasks: [] }));
+      const router = setupHandlerRouter(daemon);
+      const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+      const res = await router.dispatch({
+        id: 'ml-2',
+        method: 'task.mission.list',
+        // Exactly the env-hint path: a workspace id and no ptyId at all.
+        params: { verifiedWorkspaceId: 'ws-victim' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const r = res.result as { ok: boolean; error?: { code: string } };
+        expect(r.ok).toBe(false);
+        expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      }
+      // The daemon must never have been asked.
+      expect(rpcSpy).not.toHaveBeenCalled();
+    });
+
+    it('still serves the renderer, which is first-party and has no PTY', async () => {
+      // The in-app mission views (workTaskSlice, DiffPanel) read through the
+      // renderer IPC bridge, which dispatches with firstParty: true and cannot
+      // supply a senderPtyId. Fail-closed must not take them out.
+      const daemon = makeFakeDaemon((_m, p) => {
+        expect((p as Record<string, unknown>).verifiedWorkspaceId).toBe('ws-renderer');
+        return { ok: true, tasks: [] };
+      });
+      const router = setupHandlerRouter(daemon);
+      const res = await router.dispatch(
+        { id: 'ml-3', method: 'task.mission.list', params: { verifiedWorkspaceId: 'ws-renderer' } },
+        { firstParty: true },
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect((res.result as { ok: boolean }).ok).toBe(true);
+    });
+
+    it('leaves the membership-scoped channel reads alone', async () => {
+      // Only the OWNER-scoped read is raised. Channel reads are scoped by
+      // membership inside the daemon, and the renderer's own reads ride this
+      // router without a PTY.
+      const daemon = makeFakeDaemon(() => ({ ok: true, value: [] }));
+      const router = setupHandlerRouter(daemon);
+      const res = await router.dispatch({
+        id: 'ml-4',
+        method: 'a2a.channel.list',
+        params: { verifiedWorkspaceId: 'ws-someone' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect((res.result as { ok: boolean }).ok).toBe(true);
+    });
+  });
+
   it('treats missing params as {} so the daemon gets a valid envelope', async () => {
     // The handler is `(params) => daemonClient.rpc(method, params ?? {})` —
     // a caller omitting `params` still hits the daemon with a valid object,

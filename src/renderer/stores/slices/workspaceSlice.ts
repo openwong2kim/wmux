@@ -396,6 +396,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (willRemove) {
         void get().purgeMembershipDaemon?.({ workspaceId: id });
         void get().principalMarkStaleWorkspaceDaemon?.(id);
+        // Missions are bound to the lifetime of their fan-out workspace: when
+        // the workspace goes, the mission closes, which archives its mission
+        // channel into the collapsed group. The CHANNEL SURVIVES — closing a
+        // mission never deletes its record. Optional call (the minimal test
+        // store has no workTask slice) and fire-and-forget: the sidebar's
+        // visibility rule reads workspace existence directly, so it is already
+        // correct whether or not this RPC lands.
+        void get().closeMissionForRemovedWorkspace?.(id);
+        // NOTE: deliberately NOT `clearMissionsFor(id)`. That bucket is keyed by
+        // the fan-out PARENT, and its tasks' child workspaces routinely outlive
+        // the parent — wiping it would hide live missions from the sidebar AND
+        // leave `closeMissionForRemovedWorkspace` unable to find those tasks when
+        // the children are deleted later. The orphan bucket is harmless: it is
+        // capped per workspace, `selectLiveMissions` filters rows by child
+        // workspace existence, and `refreshMissions` only ever visits workspaces
+        // that still exist, so it never grows again.
       }
     },
 

@@ -445,6 +445,23 @@ select option {
   background: var(--bg-overlay) !important;
 }
 
+/* IME composition overflow guard (#678). xterm anchors its hidden IME helper
+   textarea at the app's buffer cursor. A TUI that ends its redraw with the
+   cursor at the right edge — e.g. Kimi Code, whose input row finishes with a
+   right-aligned hint/border — parks the cursor at the last column, so the
+   textarea (growing with the preedit) sticks out past the screen's right
+   bound. Chromium then scroll-into-views the IME caret and drags every
+   overflow:hidden ANCESTOR sideways (the pane container is one), which is the
+   "whole pane shifts left per composition keystroke, snaps back on commit"
+   tearing. overflow:clip paints exactly like overflow:hidden but creates NO
+   scroll container, so the misplaced textarea is clipped at the edge instead
+   of dragging the pane. .xterm-screen has no overflow in xterm's stylesheet
+   (default visible, i.e. also a propagation path); clip both layers. */
+.xterm,
+.xterm .xterm-screen {
+  overflow: clip;
+}
+
 /* Notification ring pulse on inactive panes with unread notifications.
  * 성능: box-shadow 자체를 애니메이션하면 매 프레임 스타일 재계산+리페인트가
  * 발생해 유휴 상태에서도 CPU/GPU를 상시 소모한다(macOS 실측: 렌더러+GPU
