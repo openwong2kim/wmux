@@ -23,8 +23,9 @@ interface Target { name: string; pipe: string; token: string; method: string }
 
 let tmp: string;
 let fakeHome: string;
-let resolveTargets: () => Target[];
+let resolveTargets: (gateMode?: boolean) => Target[];
 let shouldTryNextTarget: (result: unknown) => boolean;
+let isGateAnswerLost: (result: unknown) => boolean;
 let savedUserProfile: string | undefined;
 let savedHome: string | undefined;
 let savedKillSwitch: string | undefined;
@@ -44,10 +45,10 @@ beforeAll(async () => {
   const cut = src.indexOf(ENTRYPOINT_MARKER);
   expect(cut).toBeGreaterThan(-1);
   const testable = src.slice(0, cut).replace(/^#![^\n]*\n/, '')
-    + '\nexport { resolveTargets, shouldTryNextTarget };\n';
+    + '\nexport { resolveTargets, shouldTryNextTarget, isGateAnswerLost };\n';
   const mod = path.join(tmp, 'bridge-under-test.mjs');
   writeFileSync(mod, testable, 'utf8');
-  ({ resolveTargets, shouldTryNextTarget } = await import(pathToFileURL(mod).href));
+  ({ resolveTargets, shouldTryNextTarget, isGateAnswerLost } = await import(pathToFileURL(mod).href));
 
   savedUserProfile = process.env.USERPROFILE;
   savedHome = process.env.HOME;
@@ -153,6 +154,36 @@ describe('shouldTryNextTarget', () => {
   });
 });
 
+describe('isGateAnswerLost — the gate fails CLOSED only on a lost answer', () => {
+  it('treats a written-then-unanswered request as lost (main may hold the waiter)', () => {
+    expect(isGateAnswerLost({ ok: false, error: 'timeout', retryable: false })).toBe(true);
+    expect(isGateAnswerLost({ ok: false, error: 'closed-without-response', retryable: false })).toBe(true);
+  });
+
+  it('fails OPEN on a connect failure — no main, so no gate authority', () => {
+    expect(isGateAnswerLost({ ok: false, error: 'connect-error', detail: 'ENOENT', retryable: true })).toBe(false);
+    expect(isGateAnswerLost({ ok: false, error: 'connect-error', detail: 'ECONNREFUSED', retryable: true })).toBe(false);
+    // Even a post-write connect reset: sendRpcWithRetry reports it as
+    // connect-error, and the turn is not worth blocking on a reset socket.
+    expect(isGateAnswerLost({ ok: false, error: 'connect-error', detail: 'ECONNRESET', retryable: false })).toBe(false);
+  });
+
+  it('fails OPEN when no target existed at all', () => {
+    expect(isGateAnswerLost({ ok: false, error: 'no-target' })).toBe(false);
+    expect(isGateAnswerLost(null)).toBe(false);
+    expect(isGateAnswerLost(undefined)).toBe(false);
+  });
+
+  it('fails OPEN when main ANSWERED, however it answered', () => {
+    expect(isGateAnswerLost({ ok: true, result: { ok: true } })).toBe(false);
+    expect(isGateAnswerLost({ ok: true, result: { ok: false, reason: 'no-workspace-match' } })).toBe(false);
+  });
+
+  it('fails OPEN on a timeout that never wrote the request', () => {
+    expect(isGateAnswerLost({ ok: false, error: 'timeout', retryable: true })).toBe(false);
+  });
+});
+
 describe('WMUX_PIPE_NAME override', () => {
   const OVERRIDE =
     process.platform === 'win32'
@@ -181,6 +212,33 @@ describe('WMUX_PIPE_NAME override', () => {
     process.env.WMUX_PIPE_NAME = OVERRIDE;
     try {
       expect(resolveTargets()).toEqual([]);
+    } finally {
+      delete process.env.WMUX_PIPE_NAME;
+    }
+  });
+
+  it('addresses the override to MAIN in gate mode, with MAIN\'s token', () => {
+    // The daemon serves no gate, so an override in gate mode still has to speak
+    // `hooks.signal` — and authenticate with the token that method checks.
+    // Preferring the daemon token here produced `unauthorized`, no verdict, and
+    // a silently allowed Stop on any host that had both tokens on disk.
+    writeDaemonToken();
+    writeMainToken();
+    process.env.WMUX_PIPE_NAME = OVERRIDE;
+    try {
+      const targets = resolveTargets(true);
+      expect(targets).toHaveLength(1);
+      expect(targets[0]).toMatchObject({ name: 'main', method: 'hooks.signal', token: 'main-token' });
+    } finally {
+      delete process.env.WMUX_PIPE_NAME;
+    }
+  });
+
+  it('falls back to the daemon token in gate mode when main has none', () => {
+    writeDaemonToken();
+    process.env.WMUX_PIPE_NAME = OVERRIDE;
+    try {
+      expect(resolveTargets(true)[0]).toMatchObject({ name: 'main', token: 'daemon-token' });
     } finally {
       delete process.env.WMUX_PIPE_NAME;
     }

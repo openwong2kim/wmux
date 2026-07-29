@@ -22,8 +22,16 @@
 
 import type { AgentSignal } from '../../shared/hooks/signal-types';
 
-/** Receives every hook signal that fired inside one brain pty. */
-export type BrainPtyHookListener = (signal: AgentSignal) => void;
+/** Verdict a listener may return to REFUSE the hook that produced the signal.
+ *  Only the Stop gate uses it: the reason is relayed to the bridge, which turns
+ *  it into exit 2 so the TUI keeps working instead of ending its turn. */
+export interface BrainPtyHookBlock {
+  block: string;
+}
+
+/** Receives every hook signal that fired inside one brain pty. Returning a
+ *  block asks the caller to refuse the hook; returning nothing allows it. */
+export type BrainPtyHookListener = (signal: AgentSignal) => void | BrainPtyHookBlock;
 
 const listeners = new Map<string, BrainPtyHookListener>();
 
@@ -46,23 +54,32 @@ export function isBrainPty(ptyId: string): boolean {
 }
 
 /**
- * Deliver a hook signal to its brain pty, if it belongs to one. Returns true
- * when the signal was CONSUMED — the caller must then stop processing it (no
- * daemon relay, no notification, no EventBus tee). A throwing listener is
- * swallowed: a hook must never fail because a brain adapter misbehaved, and
- * the signal is still consumed (it was addressed to the brain either way).
+ * Deliver a hook signal to its brain pty, if it belongs to one. `consumed` is
+ * true when the signal was claimed — the caller must then stop processing it
+ * (no daemon relay, no notification, no EventBus tee). `block` carries the
+ * listener's refusal, if any, back to the RPC response.
+ *
+ * A throwing listener is swallowed and yields NO block: a hook must never fail
+ * because a brain adapter misbehaved, and a gate whose predicate crashed must
+ * fail open. The signal is still consumed (it was addressed to the brain either
+ * way).
  */
-export function deliverBrainPtyHookSignal(signal: AgentSignal): boolean {
+export function deliverBrainPtyHookSignal(
+  signal: AgentSignal,
+): { consumed: boolean; block?: string } {
   const ptyId = signal.ptyId;
-  if (!ptyId) return false;
+  if (!ptyId) return { consumed: false };
   const listener = listeners.get(ptyId);
-  if (!listener) return false;
+  if (!listener) return { consumed: false };
   try {
-    listener(signal);
+    const verdict = listener(signal);
+    if (verdict && typeof verdict.block === 'string' && verdict.block.length > 0) {
+      return { consumed: true, block: verdict.block };
+    }
   } catch (err) {
     console.warn(`[deck] brain pty ${ptyId} hook listener threw: ${String(err)}`);
   }
-  return true;
+  return { consumed: true };
 }
 
 /** Test-only: drop every registration. */

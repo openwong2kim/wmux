@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => '/repo', getPath: () => '/home' },
@@ -30,6 +31,7 @@ import {
   ClaudePtyBrainAdapter,
   scrubBrainSpawnEnv,
   buildBrainSettingsProfile,
+  buildDenyScript,
   buildBrainLaunchCommand,
   flattenPromptForPty,
   resolveBrainHomeDir,
@@ -169,6 +171,10 @@ function makeAdapter(host: FakeHost, over: Record<string, unknown> = {}): Claude
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Drain an adapter turn, feeding hook signals as the fake bridge would. */
 async function collect(iterable: AsyncIterable<BrainEvent>): Promise<BrainEvent[]> {
   const out: BrainEvent[] = [];
@@ -291,11 +297,14 @@ describe('buildBrainSettingsProfile', () => {
   const profile = buildBrainSettingsProfile({
     bridgePath: '/home/.wmux/hooks/wmux-bridge.mjs',
     nodePath: '/usr/bin/node',
+    denyScriptPath: '/tmp/brain-profiles/deny-1.js',
   });
 
-  it('denies every built-in the SDK adapter disallows, plus Write', () => {
+  it('denies every built-in the SDK adapter disallows, plus Write and AskUserQuestion', () => {
     const deny = (profile.permissions as { deny: string[] }).deny;
-    expect(deny).toEqual(['Agent', 'Task', 'Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
+    expect(deny).toEqual([
+      'Agent', 'Task', 'Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write', 'AskUserQuestion',
+    ]);
   });
 
   it('pre-approves exactly the commander MCP surface', () => {
@@ -304,24 +313,70 @@ describe('buildBrainSettingsProfile', () => {
     expect(allow.every((t) => t.startsWith('mcp__wmux__'))).toBe(true);
   });
 
-  it('wires Stop + SessionStart to the bundled bridge', () => {
+  it('wires Stop + SessionStart to the bundled bridge, and only Stop gates', () => {
     const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     for (const event of ['Stop', 'SessionStart']) {
       const command = hooks[event][0].hooks[0].command;
       expect(command).toContain('wmux-bridge.mjs');
       expect(command).toContain(event);
     }
+    expect(hooks.Stop[0].hooks[0].command).toContain('--gate');
+    expect(hooks.SessionStart[0].hooks[0].command).not.toContain('--gate');
   });
 
-  it('backstops each denied tool with a PreToolUse hook that exits 2', () => {
+  it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
-    expect(pre.PreToolUse.map((g) => g.matcher)).toContain('Bash');
+    const matchers = pre.PreToolUse.map((g) => g.matcher);
+    expect(matchers).toContain('Bash');
+    expect(matchers).toContain('AskUserQuestion');
+    for (const group of pre.PreToolUse) {
+      const command = group.hooks[0].command;
+      expect(command).toContain('/tmp/brain-profiles/deny-1.js');
+      expect(command.endsWith(` ${group.matcher}`)).toBe(true);
+      // Windows-quoting regression guard (F8): the hook command is run by
+      // Claude Code's OWN shell — a PowerShell on Windows, which reads neither
+      // of this module's quoters. Exactly two double-quoted path arguments and
+      // a bare tool name is the only shape that survives both shells, so no
+      // quoted argument may contain a quote of its own.
+      expect(command).toMatch(/^"[^"]+" "[^"]+" [A-Za-z]+$/);
+    }
+  });
+
+  it('falls back to a bare exit 2 when no deny script could be written', () => {
+    const noScript = buildBrainSettingsProfile({
+      bridgePath: null,
+      nodePath: '/usr/bin/node',
+      denyScriptPath: null,
+    });
+    const pre = noScript.hooks as { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
     expect(pre.PreToolUse[0].hooks[0].command).toContain('process.exit(2)');
   });
 
   it('omits the signal hooks when no bridge could be located', () => {
     const noBridge = buildBrainSettingsProfile({ bridgePath: null, nodePath: '/usr/bin/node' });
     expect((noBridge.hooks as Record<string, unknown>).Stop).toBeUndefined();
+  });
+});
+
+describe('buildDenyScript', () => {
+  it('exits 2 and points AskUserQuestion at the decision gate', () => {
+    const script = buildDenyScript();
+    expect(script).toContain('process.exit(2)');
+    expect(script).toContain('mcp__wmux__deck_ask_decision');
+    // The reason has to reach stderr — that is the only channel Claude Code
+    // shows the model on a blocked call.
+    expect(script).toContain('process.stderr.write');
+  });
+
+  it('runs as real node, blocking with the tool-specific reason', () => {
+    const scriptPath = path.join(tmpDir, 'deny.js');
+    fs.writeFileSync(scriptPath, buildDenyScript(), 'utf8');
+    const result = spawnSync(process.execPath, [scriptPath, 'Bash'], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('no shell');
+    // An unknown tool still blocks rather than falling through.
+    const unknown = spawnSync(process.execPath, [scriptPath, 'SomethingElse'], { encoding: 'utf8' });
+    expect(unknown.status).toBe(2);
   });
 });
 
@@ -558,7 +613,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     // The hook bus registration lands just after createSession resolves, so
     // retry until the signal is actually claimed by this pty's lane.
     await vi.waitFor(() =>
-      expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId))).toBe(true),
+      expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId)).consumed).toBe(true),
     );
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
@@ -596,7 +651,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const turn = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const dir = path.join(tmpDir, 'brain-profiles');
-    expect(fs.readdirSync(dir).length).toBe(2); // settings + mcp config
+    expect(fs.readdirSync(dir).length).toBe(3); // settings + mcp config + deny script
     adapter.dispose();
     await turn;
     expect(fs.readdirSync(dir)).toEqual([]);
@@ -691,7 +746,7 @@ describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {
     expect(host.destroyed).toEqual([host.created[0].id]);
     expect(adapter.brainPtyId).toBeNull();
     // A late hook signal from the abandoned pty must not be claimed any more.
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id))).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id)).consumed).toBe(false);
     adapter.dispose();
   });
 
@@ -740,6 +795,135 @@ describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {
   });
 });
 
+// ── the Stop gate ───────────────────────────────────────────────────────────
+
+describe('the Stop gate', () => {
+  it('keeps the turn open on a blocked Stop and ends it exactly once when allowed', async () => {
+    const host = makeHost();
+    const calls: number[] = [];
+    let blocking = true;
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: (_ws: string, consecutiveBlocks: number) => {
+        calls.push(consecutiveBlocks);
+        return blocking
+          ? { block: true, reason: 'worker-a (running) still needs you' }
+          : { block: false };
+      },
+    });
+    const turn = collect(adapter.send('delegate the build'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+
+    // The refusal rides the delivery result — this is what the gated bridge
+    // turns into exit 2.
+    const blocked = deliverBrainPtyHookSignal(
+      signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }),
+    );
+    expect(blocked.consumed).toBe(true);
+    expect(blocked.block).toContain('worker-a (running)');
+
+    // The turn must NOT have ended. Nothing else can prove that from out here,
+    // so race the pending iterator against a tick.
+    const settled = await Promise.race([turn.then(() => 'ended'), delay(20).then(() => 'open')]);
+    expect(settled).toBe('open');
+
+    // A second refusal reports a RISEN consecutive count — that counter is what
+    // caps the refusal run.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    expect(calls).toEqual([0, 1]);
+
+    blocking = false;
+    deliverBrainPtyHookSignal(
+      signal('agent.stop', ptyId, {
+        agentSessionId: 'sess-1',
+        payload: { transcript_path: '/tmp/t.jsonl' },
+      }),
+    );
+    const events = await turn;
+    expect(events).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    // The allowed Stop reset the run, so the NEXT turn starts from zero.
+    expect(calls).toEqual([0, 1, 2]);
+    adapter.dispose();
+  });
+
+  it('starts every turn with a fresh refusal count, even after a turn that timed out', async () => {
+    // The cap is a PER-TURN escape hatch. A turn that used its refusals up and
+    // then died on the timeout used to hand its tally to the next turn, which
+    // would then be allowed to stop on its very first Stop — the gate would go
+    // quiet for exactly the fleet that had just proved it needs one.
+    const host = makeHost();
+    const calls: number[] = [];
+    const adapter = makeAdapter(host, {
+      turnTimeoutMs: 60,
+      evaluateStopGate: (_ws: string, consecutiveBlocks: number) => {
+        calls.push(consecutiveBlocks);
+        return { block: true, reason: 'worker-a (running) still needs you' };
+      },
+    });
+
+    const first = collect(adapter.send('delegate the build'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    expect(calls).toEqual([0, 1]);
+    // The turn is abandoned on the timeout, refusals still outstanding.
+    expect(await first).toEqual([
+      { type: 'error', message: 'the terminal brain did not finish its turn' },
+    ]);
+
+    const second = collect(adapter.send('a new question'));
+    await vi.waitFor(() => expect(host.writes.filter((w) => w.data === 'a new question').length).toBe(1));
+    // The superseded turn's late Stop is swallowed, so it never reaches the gate.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(calls).toEqual([0, 1, 0]);
+    adapter.dispose();
+    await second;
+  });
+
+  it('is never consulted for a Stop with no open turn', async () => {
+    const host = makeHost();
+    let consulted = 0;
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: () => {
+        consulted += 1;
+        return { block: true, reason: 'nope' };
+      },
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    adapter.dispose();
+    await turn;
+    // Dispose released the id; a late Stop is not even delivered, let alone
+    // gated — a refusal there would strand a turn nobody is awaiting.
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId)).consumed).toBe(false);
+    expect(consulted).toBe(0);
+  });
+
+  it('fails open when the predicate throws', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: () => {
+        throw new Error('mirror exploded');
+      },
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const result = deliverBrainPtyHookSignal(
+      signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-x' }),
+    );
+    expect(result.block).toBeUndefined();
+    const events = await turn;
+    expect(events.some((e) => e.type === 'turn-end')).toBe(true);
+    adapter.dispose();
+  });
+});
+
 // ── hook bus isolation ──────────────────────────────────────────────────────
 
 describe('brainPtyHookBus', () => {
@@ -750,13 +934,13 @@ describe('brainPtyHookBus', () => {
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const ptyId = host.created[0].id;
     // A worker pane's signal falls through to the fleet path untouched.
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', 'pane-42'))).toBe(false);
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's' }))).toBe(true);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', 'pane-42')).consumed).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's' })).consumed).toBe(true);
     await turn;
     // After dispose the id is released — a late signal must not be swallowed
     // by a dead adapter.
     adapter.dispose();
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId))).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId)).consumed).toBe(false);
   });
 });
 

@@ -134,12 +134,22 @@ export interface AgentSignal {
 }
 
 /**
- * Shape returned by the `hooks.signal` RPC handler. The bridge does not
- * care about the response beyond ok/error; it does not retry, does not
- * read back any data.
+ * Shape returned by the `hooks.signal` RPC handler. An ordinary bridge
+ * invocation does not care about the response beyond ok/error; it does not
+ * retry and reads nothing back.
+ *
+ * The ONE exception is a bridge run with `--gate` (the terminal orchestrator's
+ * Stop hook), which reads `block` and exits 2 when it is present. The verdict
+ * has to ride this response rather than a second, independent hook: Claude Code
+ * runs one event's hooks in parallel, so a separate blocking hook would race
+ * the signal that ends the turn. One authority, one round trip.
  */
 export interface HookSignalResponse {
   ok: boolean;
+  /** Present only for a gated hook whose handler declined to let the turn end.
+   *  `reason` is shown to the model verbatim (the bridge writes it to stderr,
+   *  which Claude Code feeds back on exit 2). */
+  block?: { reason: string };
   /** Reason hint when ok=false. Logged by the bridge to ~/.wmux/bridge.log. */
   reason?:
     | 'no-workspace-match'

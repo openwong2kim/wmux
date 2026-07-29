@@ -475,8 +475,14 @@ export function registerHooksRpc(
     //     notification fan-out, or the `agent.lifecycle` tee — that tee feeds
     //     the deck's wake coalescer, so a brain's own Stop would wake the
     //     brain, forever. See deck/brainPtyHookBus.
-    if (deliverBrainPtyHookSignal(signal)) {
-      return { ok: true };
+    //     A claimed signal may come back with a BLOCK — the Stop gate refusing
+    //     to let the orchestrator end its turn. It rides this response because
+    //     a second, independent hook would race the one that ends the turn.
+    const brainVerdict = deliverBrainPtyHookSignal(signal);
+    if (brainVerdict.consumed) {
+      return brainVerdict.block
+        ? { ok: true, block: { reason: brainVerdict.block } }
+        : { ok: true };
     }
 
     // 2. Latency observability runs BEFORE workspace match so that
