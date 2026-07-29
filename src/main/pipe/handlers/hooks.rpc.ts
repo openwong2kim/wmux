@@ -484,6 +484,14 @@ export function registerHooksRpc(
         ? { ok: true, block: { reason: brainVerdict.block } }
         : { ok: true };
     }
+    // A prompt-submit only ever means something to the brain lane above — it
+    // exists to open the foreign-turn flag. One arriving UNCLAIMED is a brain
+    // pty that already died (teardown raced the hook): letting it fall through
+    // would surface a "Prompt submitted" fleet notification for a pane the
+    // human never saw. Drop it silently.
+    if (signal.kind === 'agent.user_prompt_submit') {
+      return { ok: true };
+    }
 
     // 2. Latency observability runs BEFORE workspace match so that
     //    plugin signals from cwds outside any wmux workspace still
