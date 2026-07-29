@@ -719,6 +719,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  so the abandoned turn actually stops burning the brain's context. */
   private supersedeTurn(turnId: number): void {
     console.warn(`[deck] terminal-brain turn ${turnId} timed out — interrupting the TUI`);
+    // Abandoning the turn abandons its refusal tally too: the late Stop this
+    // turn may still emit is dropped, and the next turn must start from zero.
+    this.consecutiveStopBlocks = 0;
     this.supersededTurns += 1;
     this.clearSupersededExpiry();
     const timer = setTimeout(() => {
@@ -1136,6 +1139,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
     const turnId = ++this.turnSeq;
     const waiter = createWaiter<AgentSignal | null>();
+    // The block counter is PER TURN. Without this reset a turn that used up
+    // refusals would hand its tally to the next turn, which would then be
+    // allowed to stop immediately — the cap is a per-turn escape hatch, not a
+    // per-pty budget.
+    this.consecutiveStopBlocks = 0;
     this.turnStop = waiter;
     try {
       // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste

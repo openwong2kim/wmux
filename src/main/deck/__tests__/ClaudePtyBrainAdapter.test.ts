@@ -849,6 +849,42 @@ describe('the Stop gate', () => {
     adapter.dispose();
   });
 
+  it('starts every turn with a fresh refusal count, even after a turn that timed out', async () => {
+    // The cap is a PER-TURN escape hatch. A turn that used its refusals up and
+    // then died on the timeout used to hand its tally to the next turn, which
+    // would then be allowed to stop on its very first Stop — the gate would go
+    // quiet for exactly the fleet that had just proved it needs one.
+    const host = makeHost();
+    const calls: number[] = [];
+    const adapter = makeAdapter(host, {
+      turnTimeoutMs: 60,
+      evaluateStopGate: (_ws: string, consecutiveBlocks: number) => {
+        calls.push(consecutiveBlocks);
+        return { block: true, reason: 'worker-a (running) still needs you' };
+      },
+    });
+
+    const first = collect(adapter.send('delegate the build'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    expect(calls).toEqual([0, 1]);
+    // The turn is abandoned on the timeout, refusals still outstanding.
+    expect(await first).toEqual([
+      { type: 'error', message: 'the terminal brain did not finish its turn' },
+    ]);
+
+    const second = collect(adapter.send('a new question'));
+    await vi.waitFor(() => expect(host.writes.filter((w) => w.data === 'a new question').length).toBe(1));
+    // The superseded turn's late Stop is swallowed, so it never reaches the gate.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(calls).toEqual([0, 1, 0]);
+    adapter.dispose();
+    await second;
+  });
+
   it('is never consulted for a Stop with no open turn', async () => {
     const host = makeHost();
     let consulted = 0;
