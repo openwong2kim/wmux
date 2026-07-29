@@ -9,6 +9,11 @@ const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
 const RETRY_DELAY_MS = 1000;
 
+/** Upper bound for a long-poll wait. A waiting call parks a socket on the
+ *  daemon for its whole duration, so the ceiling is what stops a caller from
+ *  pinning one indefinitely — a waiter that wants longer re-waits. */
+export const LONG_POLL_MAX_MS = 15 * 60 * 1000;
+
 // Module-scoped declared identity. Populated by `setClientIdentity` from
 // the MCP `InitializeRequest` handler (src/mcp/index.ts). Every outbound
 // RPC stamps the envelope with this so PluginTrustStore can attribute the
@@ -114,6 +119,7 @@ function attemptRpc(
   token: string,
   method: RpcMethod,
   params: Record<string, unknown>,
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
@@ -132,9 +138,9 @@ function attemptRpc(
       if (!settled) {
         settled = true;
         socket.destroy();
-        reject(new Error(`RPC timeout: ${method} (${TIMEOUT_MS}ms)`));
+        reject(new Error(`RPC timeout: ${method} (${timeoutMs}ms)`));
       }
-    }, TIMEOUT_MS);
+    }, timeoutMs);
 
     socket.on('connect', () => {
       socket.write(request);
@@ -192,10 +198,36 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Per-call transport options. */
+export interface SendRpcOptions {
+  /**
+   * Turn this call into a LONG POLL: wait up to this many ms (clamped to
+   * `LONG_POLL_MAX_MS`) for the daemon to answer, instead of the 10 s default.
+   *
+   * Setting it also DISABLES the retry ladder, and that coupling is why it is
+   * one option rather than two knobs. A waiting call that retries opens the
+   * SAME wait several times over — the caller ends up holding N sockets on one
+   * event and, if the RPC has any side effect, triggering it N times. There is
+   * deliberately no way to express "long timeout, keep retrying".
+   *
+   * The pipe-path and Windows-TCP fallbacks stay in place: those fire only on a
+   * connect-class failure, which means no wait was ever opened.
+   */
+  longPollMs?: number;
+}
+
 export async function sendRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
+  options: SendRpcOptions = {},
 ): Promise<unknown> {
+  // Long poll: clamp the wait and collapse the retry ladder to a single attempt
+  // per candidate endpoint (see SendRpcOptions.longPollMs).
+  const longPoll = typeof options.longPollMs === 'number' && options.longPollMs > 0;
+  const timeoutMs = longPoll
+    ? Math.min(options.longPollMs as number, LONG_POLL_MAX_MS)
+    : TIMEOUT_MS;
+  const retryCount = longPoll ? 1 : RETRY_COUNT;
   const token = readAuthToken();
   if (!token) {
     throw new Error('wmux auth token not found. Is wmux running?');
@@ -214,16 +246,16 @@ export async function sendRpc(
   let lastError: Error | undefined;
 
   for (const pipePath of pipePaths) {
-    for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
+    for (let attempt = 0; attempt < retryCount; attempt++) {
       try {
-        return await attemptRpc(pipePath, token, method, params);
+        return await attemptRpc(pipePath, token, method, params, timeoutMs);
       } catch (err) {
         lastError = err as Error;
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
         if (isPerm) break; // Don't retry EPERM — fall through to TCP
-        if (isRetryable && attempt < RETRY_COUNT - 1) {
+        if (isRetryable && attempt < retryCount - 1) {
           await sleep(RETRY_DELAY_MS);
           continue;
         }
@@ -238,7 +270,7 @@ export async function sendRpc(
   // TCP localhost fallback — bypasses Windows named pipe ACL issues
   if (tcpPort) {
     try {
-      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params);
+      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
     } catch { /* fall through */ }
   }
 
