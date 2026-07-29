@@ -399,7 +399,15 @@ export function registerBrowserRpc(
       }
     }
 
-    // Fallback to renderer bridge
+    // Fallback to renderer bridge. The renderer resolves a surface id without
+    // any workspace check, so a scoped caller that just failed the lookup
+    // above must not be handed this path: forwarding the same foreign
+    // surfaceId one layer down would drive the pane the scope just refused,
+    // and the refusal would have bought nothing (#695). Unscoped callers keep
+    // the fallback — it is the packaged-build route for the whole tool set.
+    if (scopeOf(params) && surfaceId) {
+      throw new Error('browser.navigate: no webview target registered');
+    }
     return sendToRenderer(getWindow, 'browser.navigate', {
       url: params['url'],
       ...(surfaceId && { surfaceId }),
@@ -926,15 +934,12 @@ export function registerBrowserRpc(
 
     if (surfaceId) {
       try {
-        const target = await webviewCdpManager.waitForTarget(surfaceId, 5000);
-        // waitForTarget is exact-match on surfaceId and applies no scope, so
-        // re-resolve through the scoped lookup before handing an id back. The
-        // refusal reuses the no-target message on purpose: "that surface is
-        // not yours" and "there is no such surface" must read the same, or the
-        // error itself becomes the disclosure this handler is closing.
-        if (!webviewCdpManager.getTarget(surfaceId, scopeOf(params))) {
-          return { error: 'no active browser webview' };
-        }
+        // The wait itself carries the scope, so a live-but-foreign surface is
+        // indistinguishable from one that never existed — same message, same
+        // latency. Post-checking an unscoped wait would not achieve that: the
+        // foreign case answers instantly and the missing case costs the full
+        // timeout, and that difference is itself the disclosure.
+        const target = await webviewCdpManager.waitForTarget(surfaceId, 5000, scopeOf(params));
         return {
           targetId: target.targetId,
           surfaceId: target.surfaceId,

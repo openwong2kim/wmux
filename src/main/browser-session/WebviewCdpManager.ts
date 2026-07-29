@@ -269,8 +269,11 @@ export class WebviewCdpManager {
 
     const pending = this.waiters.get(surfaceId);
     if (pending) {
-      for (const resolve of pending) resolve(info);
-      this.waiters.delete(surfaceId);
+      // Iterate a copy, and let each waiter remove itself once it settles. A
+      // scoped waiter that does not own this registration stays parked instead
+      // of being dropped, so it can still be satisfied by a later one it does
+      // own — or time out exactly like a surface that never existed (#695).
+      for (const resolve of [...pending]) resolve(info);
     }
 
     console.log(`[WebviewCdpManager] Registered surface=${surfaceId} target=${targetId}`);
@@ -415,7 +418,10 @@ export class WebviewCdpManager {
     // as well — a named foreign surface must not be woken either.
     if (!ownedBy(gs.workspaceId, workspaceId)) return null;
     const inFlight = this.waking.get(resolved);
-    if (inFlight) return inFlight;
+    // Joining a wake somebody else started does not inherit their scope: the
+    // shared promise resolves to whatever registered, so this caller applies
+    // its own check to the result.
+    if (inFlight) return inFlight.then((t) => (t && ownedBy(t.workspaceId, workspaceId) ? t : null));
     const sid = resolved;
     const wake = (async (): Promise<CdpTargetInfo | null> => {
       console.log(`[WebviewCdpManager] waking discarded surface=${sid}`);
@@ -434,7 +440,15 @@ export class WebviewCdpManager {
     })();
     this.waking.set(sid, wake);
     try {
-      return await wake;
+      const woken = await wake;
+      // Re-check after the wake, not only before it. Ownership was read off
+      // the pre-wake guest state, and the surface re-registers in between —
+      // commonly by a legacy path that reports no workspace at all, which
+      // would otherwise hand a scoped caller an untagged target that every
+      // later getTarget() refuses. The in-flight wake is also shared, so this
+      // promise may have been started by an unscoped caller; the scope has to
+      // be applied by whoever is receiving, not by whoever started it.
+      return woken && ownedBy(woken.workspaceId, workspaceId) ? woken : null;
     } finally {
       this.waking.delete(sid);
     }
@@ -684,9 +698,20 @@ export class WebviewCdpManager {
     return null;
   }
 
-  waitForTarget(surfaceId: string, timeoutMs = 5000): Promise<CdpTargetInfo> {
+  /**
+   * Wait for a surface's CDP target.
+   *
+   * `workspaceId` makes the wait itself scoped (#695): the promise settles only
+   * on a target the caller owns. That matters more than post-checking the
+   * result. A caller that waits unscoped and refuses afterwards still leaks the
+   * distinction — a live foreign surface answers instantly while a
+   * non-existent one costs the full timeout, so the latency alone says "that
+   * surface exists, just not for you". Waiting for *your* target makes the two
+   * cases identical in message and in timing.
+   */
+  waitForTarget(surfaceId: string, timeoutMs = 5000, workspaceId?: string): Promise<CdpTargetInfo> {
     const existing = this.sessions.get(surfaceId);
-    if (existing) return Promise.resolve(existing);
+    if (existing && ownedBy(existing.workspaceId, workspaceId)) return Promise.resolve(existing);
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -700,7 +725,19 @@ export class WebviewCdpManager {
       }, timeoutMs);
 
       const wrappedResolve = (target: CdpTargetInfo) => {
+        // A registration this caller does not own is not the one it is waiting
+        // for. Stay parked rather than resolving: the surface can still
+        // re-register as ours before the timeout, and settling here would hand
+        // back a foreign target — or, if we merely rejected, restore the
+        // timing tell this scope exists to remove.
+        if (!ownedBy(target.workspaceId, workspaceId)) return;
         clearTimeout(timer);
+        const pending = this.waiters.get(surfaceId);
+        if (pending) {
+          const idx = pending.indexOf(wrappedResolve);
+          if (idx >= 0) pending.splice(idx, 1);
+          if (pending.length === 0) this.waiters.delete(surfaceId);
+        }
         resolve(target);
       };
 

@@ -145,6 +145,23 @@ describe('WebviewCdpManager workspace scoping (#695)', () => {
     expect(manager.getTarget(undefined, 'ws-A')).toBeNull();
   });
 
+  it('a scoped wait is not settled by a foreign registration, and is by an owned one', async () => {
+    // Post-checking an unscoped wait would leak by latency: a live foreign
+    // surface answers instantly while a missing one costs the whole timeout.
+    // The scoped waiter stays parked instead, so both look identical — and a
+    // parked waiter must survive to be satisfied by a registration it owns.
+    const scoped = manager.waitForTarget('shared-id', 2000, 'ws-A');
+    await manager.register('shared-id', 41, 'ws-B');
+
+    let settled = false;
+    void scoped.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await manager.register('shared-id', 42, 'ws-A');
+    await expect(scoped).resolves.toMatchObject({ surfaceId: 'shared-id', workspaceId: 'ws-A' });
+  });
+
   it('refuses an untagged target to a scoped caller but still serves an unscoped one', async () => {
     // Ownership is never inferred from being the only candidate — same rule
     // browser.cdp.info applies to the target list (#591).
@@ -542,6 +559,29 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     const awake = manager.ensureAwake('b-surface', 'ws-B');
     await vi.advanceTimersByTimeAsync(100);
     expect(await awake).not.toBeNull();
+    expect(onWake).toHaveBeenCalledWith('b-surface');
+  });
+
+  it('ensureAwake re-checks ownership after the wake, not only before it (#695)', async () => {
+    // Ownership is read off the pre-wake guest state, but the surface
+    // re-registers in between — here by a legacy path reporting no workspace
+    // at all. Returning that would hand a scoped caller an untagged target
+    // every later getTarget() refuses: authorized once, unusable after.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('b-surface', 42, 'ws-B');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('b-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    const awake = manager.ensureAwake('b-surface', 'ws-B');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await awake).toBeNull();
+    // The wake itself still happened — this is a refusal to hand back an
+    // unproven target, not a refusal to remount.
     expect(onWake).toHaveBeenCalledWith('b-surface');
   });
 
