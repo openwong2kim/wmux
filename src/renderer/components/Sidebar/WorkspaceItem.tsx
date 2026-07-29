@@ -5,7 +5,7 @@ import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell } from '../icons';
+import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
@@ -270,6 +270,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const handlePortClick = (port: number) => {
     useStore.getState().setActiveWorkspace(workspaceId);
     openUrlInBrowserPane(`http://localhost:${port}`, { workspaceId });
+  };
+
+  /** Open the workspace's current working directory in the OS file explorer. */
+  const handleOpenExplorer = () => {
+    if (!metadata?.cwd) return;
+    window.electronAPI.shell.openPath(metadata.cwd);
   };
 
   useEffect(() => {
@@ -582,6 +588,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
+        {/* Folder icon — opens this workspace's cwd in the OS file explorer. */}
+        <button
+          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
+          onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
+          title={t('workspace.openInExplorer')}
+          aria-label={t('workspace.openInExplorer')}
+        >
+          <IconFolder size={11} />
+        </button>
+
         {/* Copy session info button */}
         <button
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
@@ -636,6 +652,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             onClick={() => { setMenuPos(null); onDuplicate(workspaceId); }}
           >
             {t('workspace.duplicate')}
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); handleOpenExplorer(); }}
+          >
+            {t('workspace.openInExplorerCtx')}
           </button>
 
           {/* Multi-account (M1): per-vendor account bind submenu. Hides itself
