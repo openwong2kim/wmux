@@ -125,6 +125,9 @@ export interface RegisterDeckHandlerOptions {
      *  `claude-pty` human-typed-into-the-TUI case). Passed to every factory so
      *  the wake plumbing is exercisable without a live daemon. */
     onForeignTurnEnd: () => void;
+    /** How an adapter reports a session id learned from a foreign turn's Stop
+     *  (TUI-only conversations must survive a restart). */
+    onForeignSessionId: (sessionId: string) => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -230,6 +233,7 @@ export function registerDeckHandler(
       vendor?: BrainVendor;
       onPtySpawned: (ptyId: string | null) => void;
       onForeignTurnEnd: () => void;
+      onForeignSessionId: (sessionId: string) => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
@@ -257,6 +261,7 @@ export function registerDeckHandler(
                 consecutiveBlocks,
               }),
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
+            onForeignSessionId: adapterOpts.onForeignSessionId,
             // The model picker applies to the TUI brain too (`--model`);
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).
@@ -388,6 +393,7 @@ export function registerDeckHandler(
         vendor,
         onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
         onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
+        onForeignSessionId: (sessionId) => managerRef?.notifyForeignSessionId(sessionId),
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),

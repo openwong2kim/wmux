@@ -579,6 +579,13 @@ export interface ClaudePtyBrainAdapterDeps {
    *  this the buffered events sat until some unrelated event arrived. Wired to
    *  the session manager's ordinary idle wake. */
   onForeignTurnEnd?: () => void;
+  /** How the adapter reports a session id it learned from a FOREIGN turn's
+   *  Stop. A human conversation held entirely in the TUI (or one that swapped
+   *  the transcript via /resume there) never yields a `turn-end`, which is the
+   *  only other place the manager persists the id — without this, a restart
+   *  resumed the previous (or an empty) session and the TUI-only conversation
+   *  was lost. */
+  onForeignSessionId?: (sessionId: string) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
@@ -757,6 +764,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       return;
     }
     if (signal.kind !== 'agent.stop') return;
+    // A Stop no waiter claims is a FOREIGN turn's (or a superseded one from
+    // the same pty session) — either way its session id is the transcript the
+    // TUI is actually on. Adopt it and let the manager persist it, or a
+    // restart resumes a conversation the human already left behind.
+    if (this.turnStop === null && signal.agentSessionId && signal.agentSessionId !== this._sessionId) {
+      this._sessionId = signal.agentSessionId;
+      try {
+        this.deps.onForeignSessionId?.(signal.agentSessionId);
+      } catch {
+        /* persistence is best-effort — never surface into a hook */
+      }
+    }
     // A FOREIGN turn's Stop outranks a superseded credit. Both are "a Stop no
     // waiter claims", but the credit is bookkeeping for a turn we already gave
     // up on, while the foreign flag is the live reason this workspace reports

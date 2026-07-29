@@ -221,6 +221,18 @@ export class CommanderSessionManager {
     this.scheduleIdleWake();
   }
 
+  /** Persist a session id learned from a foreign (TUI-typed) turn's Stop.
+   *  Same dedup + best-effort contract as the turn-end path above. */
+  notifyForeignSessionId(sessionId: string): void {
+    if (!sessionId || sessionId === this._lastReportedSessionId) return;
+    this._lastReportedSessionId = sessionId;
+    try {
+      this.onSessionId?.(sessionId);
+    } catch {
+      /* persistence is best-effort — never fail the live turn */
+    }
+  }
+
   /** Abort the in-flight turn (best-effort). No-op when idle/disposed. */
   interrupt(): void {
     if (this._status === 'busy') this.adapter.interrupt();

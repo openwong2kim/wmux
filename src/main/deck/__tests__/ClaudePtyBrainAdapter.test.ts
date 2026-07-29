@@ -1191,3 +1191,30 @@ describe('createBrainPtyHost.write', () => {
     expect(() => host.write('brain-1', 'hi')).not.toThrow();
   });
 });
+
+describe('a session id learned from a foreign Stop', () => {
+  it('adopts it and reports it, so a TUI-only conversation survives a restart', async () => {
+    const host = makeHost();
+    const reported: string[] = [];
+    const adapter = makeAdapter(host, { onForeignSessionId: (id: string) => reported.push(id) });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    // Our OWN turn's Stop persists through turn-end, never through the dep.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-own', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    await turn;
+    expect(reported).toEqual([]);
+
+    // A TUI-typed turn: its Stop carries the transcript the human is now on.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-tui', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(reported).toEqual(['sess-tui']);
+    expect(adapter.sessionId).toBe('sess-tui');
+
+    // Same id again (duplicate foreign Stop) — adopted once, reported once.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-tui', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(reported).toEqual(['sess-tui']);
+    adapter.dispose();
+  });
+});
