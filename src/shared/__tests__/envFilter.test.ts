@@ -246,13 +246,30 @@ describe('terminal capability defaults (#680)', () => {
     expect(env.TERM_PROGRAM).toBe('wmux');
   });
 
-  it('base-env values always win (user/system override is never clobbered)', () => {
+  it('base-env TERM/COLORTERM always win (user/system override is never clobbered)', () => {
     for (const build of [buildInteractiveShellEnv, buildGatedAutomationEnv]) {
-      const env = build({ TERM: 'vt100', COLORTERM: '0', TERM_PROGRAM: 'custom', PATH: '/p' });
+      const env = build({ TERM: 'vt100', COLORTERM: '0', PATH: '/p' });
       expect(env.TERM).toBe('vt100');
       expect(env.COLORTERM).toBe('0');
-      expect(env.TERM_PROGRAM).toBe('custom');
     }
+  });
+
+  it('TERM_PROGRAM is forced to wmux (an inherited host-terminal identity is replaced)', () => {
+    // A dev build launched from iTerm inherits TERM_PROGRAM=iTerm.app straight
+    // through the blocklist filter — the pane must not advertise the wrong
+    // host, so TERM_PROGRAM is an override, not a default like TERM/COLORTERM.
+    for (const build of [buildInteractiveShellEnv, buildGatedAutomationEnv]) {
+      const env = build({ TERM_PROGRAM: 'iTerm.app', PATH: '/p' });
+      expect(env.TERM_PROGRAM).toBe('wmux');
+    }
+  });
+
+  it('a case-variant TERM_PROGRAM key is removed, not shadowed (win32)', () => {
+    // Forcing must not leave a stray `Term_Program` alongside `TERM_PROGRAM` —
+    // on win32 both would survive and the OS would pick one nondeterministically.
+    const env = buildInteractiveShellEnv({ Term_Program: 'WezTerm', PATH: '/p' });
+    expect(env.Term_Program).toBeUndefined();
+    expect(env.TERM_PROGRAM).toBe('wmux');
   });
 
   it('a case-variant base key blocks the default (win32 keys are case-insensitive)', () => {

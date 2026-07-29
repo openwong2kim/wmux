@@ -78,15 +78,35 @@ const SAFE_PASSTHROUGH: ReadonlySet<string> = new Set([
 // i.e. most Node TUIs) concludes the terminal is monochrome and starts with
 // colors disabled. Advertise the real capabilities at spawn, in both builders
 // so the PTYManager and DaemonSessionManager paths stay in lockstep like the
-// rest of this module. These are DEFAULTS ONLY: any base-env value (a
-// user/system override) wins. The presence check is case-insensitive because
-// win32 env keys are — a user-set `Term` must block the `TERM` default, else
-// both keys survive and the OS picks one nondeterministically.
+// rest of this module. TERM and COLORTERM are DEFAULTS ONLY: any base-env
+// value (a user/system override) wins. The presence check is case-insensitive
+// because win32 env keys are — a user-set `Term` must block the `TERM`
+// default, else both keys survive and the OS picks one nondeterministically.
 export const TERMINAL_CAPABILITY_DEFAULTS: ReadonlyArray<readonly [string, string]> = [
   ['TERM', 'xterm-256color'],
   ['COLORTERM', 'truecolor'],
-  ['TERM_PROGRAM', 'wmux'],
 ];
+
+/** The terminal identity every wmux pane must advertise. */
+export const TERM_PROGRAM_IDENTITY = 'wmux';
+
+/**
+ * Force TERM_PROGRAM=wmux (in place). Unlike TERM/COLORTERM this is NOT a
+ * default: the filter is a blocklist, so a dev build launched from another
+ * terminal inherits e.g. TERM_PROGRAM=iTerm.app straight through, and a
+ * default-only injection would leave the pane advertising the wrong host
+ * terminal — tools that branch on TERM_PROGRAM would misidentify wmux.
+ * Exported because resolveSpawnEnv must re-assert it AFTER the workspace
+ * profile overlay, which would otherwise be able to override the identity.
+ * Any case-variant key is deleted first so a stray win32 `Term_Program`
+ * cannot survive alongside the canonical key and get picked nondeterministically.
+ */
+export function forceTerminalIdentity(env: Record<string, string>): void {
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'TERM_PROGRAM' && key !== 'TERM_PROGRAM') delete env[key];
+  }
+  env.TERM_PROGRAM = TERM_PROGRAM_IDENTITY;
+}
 
 /** Apply the terminal-capability defaults to a fresh spawn env (in place). */
 function applyTerminalCapabilityDefaults(env: Record<string, string>): void {
@@ -94,6 +114,7 @@ function applyTerminalCapabilityDefaults(env: Record<string, string>): void {
   for (const [key, value] of TERMINAL_CAPABILITY_DEFAULTS) {
     if (!present.has(key)) env[key] = value;
   }
+  forceTerminalIdentity(env);
 }
 
 /**
