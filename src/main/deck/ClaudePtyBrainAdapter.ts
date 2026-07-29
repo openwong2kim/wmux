@@ -651,6 +651,12 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  no waiter claims. Automation reads it through `busy` and defers, exactly
    *  as it does for an adapter-started turn. */
   private foreignTurnOpen = false;
+  /** When the open foreign turn started, or null when none is open. A foreign
+   *  turn has no waiter and no timer of its own, so a Stop that never arrives
+   *  (a hook command that failed to reach main, a claude build that skipped it)
+   *  would strand `busy` forever — `busy` releases the flag past this stamp
+   *  plus the turn timeout. */
+  private foreignTurnOpenedAt: number | null = null;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -675,7 +681,27 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  into its own status so a heartbeat / loop / schedule tick never pushes a
    *  second prompt into a busy TUI. */
   get busy(): boolean {
-    return this.foreignTurnOpen;
+    if (!this.foreignTurnOpen) return false;
+    // Self-releasing read (the getter is the only thing that observes a foreign
+    // turn, so this is where the backstop belongs). A foreign turn is closed by
+    // its Stop hook and nothing else; a Stop that is never delivered would keep
+    // this workspace busy for the rest of the app's life. Past the same ceiling
+    // an adapter-started turn gets, assume the turn is long over.
+    const openedAt = this.foreignTurnOpenedAt;
+    const limit = this.deps.turnTimeoutMs ?? TURN_TIMEOUT_MS;
+    if (openedAt !== null && Date.now() - openedAt > limit) {
+      console.warn('[deck] a terminal-brain turn the human started never reported its Stop — releasing it');
+      this.closeForeignTurn();
+      return false;
+    }
+    return true;
+  }
+
+  /** Close an open foreign turn (or no-op when none is). The one place the flag
+   *  and its stamp are cleared together. */
+  private closeForeignTurn(): void {
+    this.foreignTurnOpen = false;
+    this.foreignTurnOpenedAt = null;
   }
 
   /** The live pty the deck embeds, or null before the first turn spawned one. */
@@ -710,10 +736,23 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // counts: during our own send() the hook fires for our keystroke too, and
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
-      if (this.turnStop === null) this.foreignTurnOpen = true;
+      if (this.turnStop === null) {
+        this.foreignTurnOpen = true;
+        this.foreignTurnOpenedAt = Date.now();
+      }
       return;
     }
     if (signal.kind !== 'agent.stop') return;
+    // A FOREIGN turn's Stop outranks a superseded credit. Both are "a Stop no
+    // waiter claims", but the credit is bookkeeping for a turn we already gave
+    // up on, while the foreign flag is the live reason this workspace reports
+    // busy. Letting the credit eat this Stop first left foreignTurnOpen set
+    // with nothing else able to clear it — the workspace stayed busy forever
+    // and every ambient turn deferred to a human who had long since finished.
+    if (this.foreignTurnOpen && this.turnStop === null) {
+      this.closeForeignTurn();
+      return;
+    }
     // A superseded (timed-out) turn's Stop arrives late and is
     // INDISTINGUISHABLE from the current turn's — the hook carries no turn
     // identity — so a credit banked at timeout drops exactly one Stop.
@@ -729,9 +768,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     const waiter = this.turnStop;
     if (!waiter) {
       // Still dropped as a turn signal — it just closes the foreign turn it
-      // belongs to, so the workspace stops reporting busy. The gate below
-      // never applies here: refusing a Stop nobody awaits would strand it.
-      this.foreignTurnOpen = false;
+      // belongs to, so the workspace stops reporting busy. (The flag is already
+      // clear on this path; the branch above owns the open case.) The gate
+      // below never applies here: refusing a Stop nobody awaits would strand it.
+      this.closeForeignTurn();
       return;
     }
     // The gate only ever applies to a turn this adapter opened: a Stop with no
@@ -1056,7 +1096,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // A pty that died mid-foreign-turn will never fire its Stop; leaving the
     // flag set would strand the workspace busy forever. This is the one choke
     // point every teardown path goes through.
-    this.foreignTurnOpen = false;
+    this.closeForeignTurn();
     this.bannerWatching = false;
     this.consecutiveStopBlocks = 0;
     this.unregisterHooks?.();

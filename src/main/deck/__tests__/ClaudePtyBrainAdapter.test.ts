@@ -989,6 +989,45 @@ describe('a turn the human started in the TUI', () => {
   });
 });
 
+describe('a foreign turn that could get stuck open', () => {
+  it('lets the foreign Stop close the turn instead of feeding a superseded credit', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { turnTimeoutMs: 20 });
+    // Bank a superseded credit: this turn times out and is ESC'd, so its Stop
+    // is still owed.
+    const timedOut = await collect(adapter.send('slow job'));
+    expect(timedOut).toEqual([
+      { type: 'error', message: 'the terminal brain did not finish its turn' },
+    ]);
+    const ptyId = host.created[0].id;
+
+    // The human then types into the TUI. Its Stop must close THEIR turn — if
+    // the credit swallowed it first, nothing else would ever clear the flag.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-human' }));
+    expect(adapter.busy).toBe(false);
+    adapter.dispose();
+  });
+
+  it('releases a foreign turn whose Stop never arrives, past the turn timeout', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { turnTimeoutMs: 30 });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    // No Stop is ever delivered — the hook command died, the bridge could not
+    // reach main, whatever. The next read past the ceiling releases it.
+    await vi.waitFor(() => expect(adapter.busy).toBe(false), { timeout: 1_000 });
+    adapter.dispose();
+  });
+});
+
 describe('an automation turn racing the human`s Enter', () => {
   it('stands down when the UserPromptSubmit lands inside the double-check window', async () => {
     const host = makeHost();
