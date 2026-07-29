@@ -92,9 +92,11 @@ export default function Sidebar() {
     }
   }, [gitOpen, setActiveDeckTab, setChannelDockVisible]);
 
-  // Channels 버튼(Git 아래) — 덱을 열고 Channels 탭으로. 이미 열려 있으면 덱을
-  // 닫는다(토글). 채널 탭은 기본 OFF 설정이라 이 버튼을 누르는 것 자체가 "채널을
-  // 보겠다"는 의사표시이므로 함께 켠다 — 그렇지 않으면 눌러도 빈 탭이 뜬다.
+  // Channels button (below Git) — opens the deck on the Channels tab, and
+  // closes the deck when it is already there (toggle). The Channels tab
+  // defaults to OFF, so pressing this button IS the statement "I want to see
+  // channels" and switches the tab on too — otherwise the press would open an
+  // empty tab.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const channelsOpen = channelDockVisible && activeDeckTab === 'channels' && channelsTabVisible;
@@ -283,8 +285,9 @@ export default function Sidebar() {
         )}
       </button>
 
-      {/* Channels toggle — Git 아래. 덱을 열고 Channels 탭으로(이미 채널이면 덱
-          닫기). 열림=steel(내비게이션) · 안 읽음=warm(카운트 동반) · 그 외 muted. */}
+      {/* Channels toggle — below Git. Opens the deck on the Channels tab, or
+          closes the deck when it is already there. Open = steel (navigation) ·
+          unread = warm, with the count · everything else muted. */}
       <button
         type="button"
         onClick={toggleChannels}
@@ -309,11 +312,11 @@ export default function Sidebar() {
         )}
       </button>
 
-      {/* wmux web toggle — the third entry in this footer cluster (Agent · Git ·
-          web). Serving panes to a browser is a workspace-level capability like
-          the other two, so it belongs on the same rail rather than in the status
-          strip. Amber while the server is running (alive); the popover opens
-          upward from here. */}
+      {/* wmux web toggle — the last entry in this footer cluster (Agent · Git ·
+          Channels · web). Serving panes to a browser is a workspace-level
+          capability like the others, so it belongs on the same rail rather than
+          in the status strip. Amber while the server is running (alive); the
+          popover opens upward from here. */}
       <WebToggle variant="sidebar" />
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
