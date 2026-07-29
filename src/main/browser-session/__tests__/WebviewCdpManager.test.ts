@@ -110,6 +110,69 @@ describe('WebviewCdpManager', () => {
   });
 });
 
+// ── #695 workspace-scoped target selection ───────────────────────────────────
+// The default lookup used to answer "the first session in the process", which
+// is whichever workspace happened to open a browser first. A caller that can
+// prove its own workspace now gets only what it can be shown to own.
+describe('WebviewCdpManager workspace scoping (#695)', () => {
+  let manager: WebviewCdpManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    manager = new WebviewCdpManager(18800);
+  });
+
+  it('the default lookup stops depending on who registered first', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    await manager.register('a-surface', 42, 'ws-A');
+
+    // Unscoped: unchanged, still the first session in the process.
+    expect(manager.getTarget()?.surfaceId).toBe('b-surface');
+    // Scoped: registration order no longer decides whose page you get.
+    expect(manager.getTarget(undefined, 'ws-A')?.surfaceId).toBe('a-surface');
+    expect(manager.getTarget(undefined, 'ws-B')?.surfaceId).toBe('b-surface');
+  });
+
+  it('refuses a named surface belonging to another workspace', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    // Naming it exactly is not authority to reach it.
+    expect(manager.getTarget('b-surface')?.surfaceId).toBe('b-surface');
+    expect(manager.getTarget('b-surface', 'ws-A')).toBeNull();
+  });
+
+  it('gives a scoped caller that owns nothing null, never a stranger"s target', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    expect(manager.getTarget(undefined, 'ws-A')).toBeNull();
+  });
+
+  it('a scoped wait is not settled by a foreign registration, and is by an owned one', async () => {
+    // Post-checking an unscoped wait would leak by latency: a live foreign
+    // surface answers instantly while a missing one costs the whole timeout.
+    // The scoped waiter stays parked instead, so both look identical — and a
+    // parked waiter must survive to be satisfied by a registration it owns.
+    const scoped = manager.waitForTarget('shared-id', 2000, 'ws-A');
+    await manager.register('shared-id', 41, 'ws-B');
+
+    let settled = false;
+    void scoped.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await manager.register('shared-id', 42, 'ws-A');
+    await expect(scoped).resolves.toMatchObject({ surfaceId: 'shared-id', workspaceId: 'ws-A' });
+  });
+
+  it('refuses an untagged target to a scoped caller but still serves an unscoped one', async () => {
+    // Ownership is never inferred from being the only candidate — same rule
+    // browser.cdp.info applies to the target list (#591).
+    await manager.register('legacy', 42);
+    expect(manager.getTarget('legacy')).not.toBeNull();
+    expect(manager.getTarget(undefined)).not.toBeNull();
+    expect(manager.getTarget('legacy', 'ws-A')).toBeNull();
+    expect(manager.getTarget(undefined, 'ws-A')).toBeNull();
+  });
+});
+
 // ── #517 lightweight mode ────────────────────────────────────────────────────
 
 describe('WebviewCdpManager lightweight mode (#517)', () => {
@@ -469,6 +532,84 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(onWake).toHaveBeenCalledWith('s1');
     expect(target).not.toBeNull();
     expect(manager.isDiscarded('s1')).toBe(false);
+  });
+
+  it('ensureAwake will not wake another workspace"s discarded surface (#695)', async () => {
+    // Waking is not a read. It remounts somebody else's guest and reloads
+    // their page, so an unscoped wake is an action taken inside a workspace
+    // the caller does not own — worth more than the disclosure beside it.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43, 'ws-B'); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('b-surface', 42, 'ws-B');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('b-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    // The default scan finds nothing to wake for ws-A...
+    expect(await manager.ensureAwake(undefined, 'ws-A')).toBeNull();
+    // ...and naming the surface outright does not get past it either.
+    expect(await manager.ensureAwake('b-surface', 'ws-A')).toBeNull();
+    expect(onWake).not.toHaveBeenCalled();
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    // Its own workspace still wakes it — the scope refuses strangers, not owners.
+    const awake = manager.ensureAwake('b-surface', 'ws-B');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await awake).not.toBeNull();
+    expect(onWake).toHaveBeenCalledWith('b-surface');
+  });
+
+  it('ensureAwake re-checks ownership after the wake, not only before it (#695)', async () => {
+    // Ownership is read off the pre-wake guest state, but the surface
+    // re-registers in between — here by a legacy path reporting no workspace
+    // at all. Returning that would hand a scoped caller an untagged target
+    // every later getTarget() refuses: authorized once, unusable after.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('b-surface', 42, 'ws-B');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('b-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    const awake = manager.ensureAwake('b-surface', 'ws-B');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await awake).toBeNull();
+    // The wake itself still happened — this is a refusal to hand back an
+    // unproven target, not a refusal to remount.
+    expect(onWake).toHaveBeenCalledWith('b-surface');
+  });
+
+  it('a scoped caller joining an in-flight wake applies its own check to the result (#695)', async () => {
+    // Concurrent wakes share one promise. Ownership was proven against the
+    // pre-wake guest state, but what actually re-registers can be something
+    // else — here the legacy path that reports no workspace at all. The check
+    // therefore belongs to whoever receives the result, not to whoever started
+    // the wake, and nothing else in the suite covers that branch.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('a-surface', 42, 'ws-A');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('a-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('a-surface')).toBe(true);
+
+    // An unscoped caller starts the wake; the owner joins that same one.
+    const starter = manager.ensureAwake('a-surface');
+    const joiner = manager.ensureAwake('a-surface', 'ws-A');
+    await vi.advanceTimersByTimeAsync(100);
+
+    // One wake, two receivers, two different answers.
+    expect(onWake).toHaveBeenCalledTimes(1);
+    expect(await starter).not.toBeNull();
+    expect(await joiner).toBeNull();
   });
 
   it('ensureAwake returns null for a surface that is neither registered nor discarded', async () => {

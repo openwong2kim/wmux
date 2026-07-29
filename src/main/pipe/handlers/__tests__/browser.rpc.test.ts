@@ -761,3 +761,279 @@ describe('browser.screenshot capture fallback (#529)', () => {
     expect(response.ok).toBe(true);
   });
 });
+
+// ── #695 a scoped caller cannot reach another workspace ──────────────────────
+// These drive the handlers against an ownership-enforcing stand-in rather than
+// a permissive spy. Asserting that getTarget was *called* with a workspace
+// would pass just as well if the manager ignored it — the property is that a
+// foreign surface cannot be read, driven, navigated or leased.
+describe('registerBrowserRpc — scoped callers stay inside their workspace (#695)', () => {
+  const OWN = {
+    surfaceId: 'own-surface', webContentsId: 42,
+    targetId: 'target-own', wsUrl: 'ws://127.0.0.1/devtools/page/own', workspaceId: 'ws-a',
+  };
+  const FOREIGN = {
+    surfaceId: 'foreign-surface', webContentsId: 43,
+    targetId: 'target-foreign', wsUrl: 'ws://127.0.0.1/devtools/page/foreign', workspaceId: 'ws-b',
+  };
+
+  function registerScoped() {
+    const sessions = new Map([[OWN.surfaceId, OWN], [FOREIGN.surfaceId, FOREIGN]]);
+    const owns = (t: typeof OWN, ws?: string) => !ws || t.workspaceId === ws;
+    const cdp = {
+      getTarget: vi.fn((surfaceId?: string, ws?: string) => {
+        if (surfaceId) {
+          const t = sessions.get(surfaceId);
+          return t && owns(t, ws) ? t : null;
+        }
+        for (const t of sessions.values()) if (owns(t, ws)) return t;
+        return null;
+      }),
+      // Scoped wait: a surface the caller does not own is indistinguishable
+      // from one that is not there — both time out.
+      waitForTarget: vi.fn(async (surfaceId: string, _timeout?: number, ws?: string) => {
+        const t = sessions.get(surfaceId);
+        if (t && owns(t, ws)) return t;
+        throw new Error(`timeout waiting for CDP target: ${surfaceId}`);
+      }),
+      ensureAwake: vi.fn(async () => null),
+      listTargets: vi.fn(() => [...sessions.values()]),
+      getCdpPort: vi.fn(() => 18800),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn((sid: string) => `lease-for-${sid}`),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    const router = new RpcRouter();
+    registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
+    return { router, cdp };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    // Primed here, not inherited: without it validateUrl throws a TypeError
+    // and every navigate case below fails before reaching what it tests —
+    // which makes the ok:false assertions pass for the wrong reason and only
+    // shows up when this block is run on its own.
+    validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
+    mockWebContents.loadURL.mockResolvedValue(undefined);
+  });
+
+  it('does not evaluate in a surface owned by another workspace', async () => {
+    const { router } = registerScoped();
+
+    const response = await router.dispatch({
+      id: 'x1',
+      method: 'browser.evaluate',
+      params: { expression: 'document.cookie', surfaceId: FOREIGN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(false);
+    // The guest was never driven — not merely a refused response after the fact.
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('still evaluates in a surface the caller does own', async () => {
+    const { router } = registerScoped();
+
+    const response = await router.dispatch({
+      id: 'x2',
+      method: 'browser.evaluate',
+      params: { expression: '1+1', surfaceId: OWN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(mockWebContents.debugger.sendCommand).toHaveBeenCalled();
+  });
+
+  it('refuses to navigate a foreign surface instead of handing it to the renderer', async () => {
+    // The renderer bridge resolves a surface id with no workspace check, so
+    // falling through to it would undo the refusal one layer down.
+    const { router } = registerScoped();
+
+    const response = await router.dispatch({
+      id: 'n1',
+      method: 'browser.navigate',
+      params: { url: 'https://example.com', surfaceId: FOREIGN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the renderer navigate fallback for an unscoped caller', async () => {
+    // Packaged builds route the whole tool set through this path; only a
+    // caller that named a workspace loses it.
+    const { router } = registerScoped();
+
+    const response = await router.dispatch({
+      id: 'n2',
+      method: 'browser.navigate',
+      params: { url: 'https://example.com', surfaceId: 'ghost-surface' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate',
+      expect.objectContaining({ surfaceId: 'ghost-surface' }),
+    );
+  });
+
+  it('browser.cdp.target answers a foreign surface exactly as it answers a missing one', async () => {
+    // Not compared against the no-surfaceId case — that one legitimately
+    // differs. The pair that must be indistinguishable is "exists, not yours"
+    // versus "does not exist", in message and in the path taken to get there.
+    const { router } = registerScoped();
+
+    const foreign = await router.dispatch({
+      id: 'c1', method: 'browser.cdp.target',
+      params: { surfaceId: FOREIGN.surfaceId, workspaceId: 'ws-a' },
+    });
+    const missing = await router.dispatch({
+      id: 'c2', method: 'browser.cdp.target',
+      params: { surfaceId: 'no-such-surface', workspaceId: 'ws-a' },
+    });
+
+    expect(foreign.ok).toBe(true);
+    expect(missing.ok).toBe(true);
+    if (foreign.ok && missing.ok) {
+      expect(foreign.result).toEqual(missing.result);
+      expect(JSON.stringify(foreign.result)).not.toContain('target-foreign');
+    }
+  });
+
+  it('never leases a foreign surface for a scoped caller', async () => {
+    const { router, cdp } = registerScoped();
+
+    const response = await router.dispatch({
+      id: 'l1', method: 'browser.lease.acquire',
+      params: { surfaceId: FOREIGN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) expect(response.result).toEqual({ token: null });
+    expect(cdp.acquireRpcLease).not.toHaveBeenCalled();
+  });
+});
+
+// ── #695 round two: the navigate fallback, in every combination ──────────────
+// The first attempt guarded on `scope && surfaceId`, which left the case the
+// issue is actually about — a scoped caller with no surface id, whose default
+// selection is the workspace-blind one — still falling through. It also refused
+// a caller whose ownership had already been proven and whose CDP call merely
+// failed. Both directions are pinned here.
+describe('registerBrowserRpc — navigate fallback under a scope (#695)', () => {
+  const OWN = {
+    surfaceId: 'own-surface', webContentsId: 42,
+    targetId: 'target-own', wsUrl: 'ws://127.0.0.1/devtools/page/own', workspaceId: 'ws-a',
+  };
+  const FOREIGN = {
+    surfaceId: 'foreign-surface', webContentsId: 43,
+    targetId: 'target-foreign', wsUrl: 'ws://127.0.0.1/devtools/page/foreign', workspaceId: 'ws-b',
+  };
+
+  function registerWith(sessions: Map<string, typeof OWN>) {
+    const owns = (t: typeof OWN, ws?: string) => !ws || t.workspaceId === ws;
+    const cdp = {
+      getTarget: vi.fn((surfaceId?: string, ws?: string) => {
+        if (surfaceId) {
+          const t = sessions.get(surfaceId);
+          return t && owns(t, ws) ? t : null;
+        }
+        for (const t of sessions.values()) if (owns(t, ws)) return t;
+        return null;
+      }),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      listTargets: vi.fn(() => [...sessions.values()]),
+      getCdpPort: vi.fn(() => 18800),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    const router = new RpcRouter();
+    registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
+    return { router, cdp };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    // Primed here, not inherited: without it validateUrl throws a TypeError
+    // and every navigate case below fails before reaching what it tests —
+    // which makes the ok:false assertions pass for the wrong reason and only
+    // shows up when this block is run on its own.
+    validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
+    mockWebContents.loadURL.mockResolvedValue(undefined);
+  });
+
+  it('refuses a scoped caller that owns nothing, with no surface id to hide behind', async () => {
+    // The bridge would have picked its own default here — someone else's pane.
+    const { router } = registerWith(new Map([[FOREIGN.surfaceId, FOREIGN]]));
+
+    const response = await router.dispatch({
+      id: 'nv1', method: 'browser.navigate',
+      params: { url: 'https://example.com', workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('still lets a proven owner use the bridge when CDP itself fails', async () => {
+    // Ownership was established before the CDP attempt, so a loadURL failure
+    // is a transport problem, not an authorization one.
+    mockWebContents.loadURL.mockRejectedValueOnce(new Error('CDP navigation failed'));
+    const { router } = registerWith(new Map([[OWN.surfaceId, OWN]]));
+
+    const response = await router.dispatch({
+      id: 'nv2', method: 'browser.navigate',
+      params: { url: 'https://example.com', surfaceId: OWN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate',
+      expect.objectContaining({ surfaceId: OWN.surfaceId }),
+    );
+  });
+
+  it('pins the bridge to the resolved surface when a scoped caller named none', async () => {
+    // Without this the bridge falls back to its own default pick, which is the
+    // workspace-blind selection the scope just avoided.
+    mockWebContents.loadURL.mockRejectedValueOnce(new Error('CDP navigation failed'));
+    const { router } = registerWith(new Map([[FOREIGN.surfaceId, FOREIGN], [OWN.surfaceId, OWN]]));
+
+    const response = await router.dispatch({
+      id: 'nv3', method: 'browser.navigate',
+      params: { url: 'https://example.com', workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate',
+      expect.objectContaining({ surfaceId: OWN.surfaceId }),
+    );
+  });
+
+  it('leaves the unscoped fallback exactly as it was', async () => {
+    const { router } = registerWith(new Map());
+
+    const response = await router.dispatch({
+      id: 'nv4', method: 'browser.navigate',
+      params: { url: 'https://example.com' },
+    });
+
+    expect(response.ok).toBe(true);
+    // No surfaceId sent, no workspace pinned — the historical shape.
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate', { url: 'https://example.com' },
+    );
+  });
+});
