@@ -71,9 +71,11 @@ export function BrainTerminalEmbed({
       data-pty-id={ptyId}
       ref={containerRef}
       onMouseDown={focusTerminal}
-      // Firm height (not flex-1): the bubble log now renders BELOW the embed in
-      // the same scroll column, and a flex-fill terminal would squeeze it out.
-      className="h-[42vh] min-h-[260px] shrink-0 w-full overflow-hidden rounded-[6px]"
+      // Flex-fill: the dock's pty layout gives the TUI everything the fixed
+      // rows above and the report rail below do not take. (It was a firm 42vh
+      // while the bubble log shared one scroll column with the embed; the rail
+      // is a fixed-height footer instead, so nothing is squeezed out.)
+      className="flex-1 min-h-0 w-full overflow-hidden rounded-[6px]"
     />
   );
 }
