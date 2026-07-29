@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyBrainEvent,
   buildWorkspaceContextSummary,
+  selectReportRail,
   shortToolName,
   type DeckBrainMessage,
 } from '../deckBrain';
@@ -261,5 +262,25 @@ describe('buildWorkspaceContextSummary', () => {
     });
     expect(capped.length).toBeLessThanOrEqual(20 + '\n…(truncated)'.length);
     expect(capped.endsWith('…(truncated)')).toBe(true);
+  });
+});
+
+describe('selectReportRail', () => {
+  it('excludes a streaming assistant message and includes the same message once done', () => {
+    const streaming: DeckBrainMessage = {
+      id: 'a1', role: 'assistant', text: 'half a thought', status: 'streaming',
+    };
+    expect(selectReportRail([streaming])).toEqual([]);
+    const done: DeckBrainMessage = { ...streaming, status: 'done' };
+    expect(selectReportRail([done])).toEqual([done]);
+  });
+
+  it('drops user echoes and empty done reports, keeps an error-only report', () => {
+    const user: DeckBrainMessage = { id: 'u1', role: 'user', text: 'do it' };
+    const empty: DeckBrainMessage = { id: 'a1', role: 'assistant', text: '   ', status: 'done' };
+    const errored: DeckBrainMessage = {
+      id: 'a2', role: 'assistant', text: '', status: 'error', errorText: 'auth failed',
+    };
+    expect(selectReportRail([user, empty, errored])).toEqual([errored]);
   });
 });

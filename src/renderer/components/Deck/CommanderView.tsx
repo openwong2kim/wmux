@@ -24,7 +24,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { formatChatTime, type DeckLimitNotice } from './deckBrain';
+import { formatChatTime, selectReportRail, type DeckLimitNotice } from './deckBrain';
 import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { getLeafPanes } from '../../../shared/paneUtils';
@@ -165,10 +165,19 @@ export function CommanderViewContent({
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
-  // Collapsed state of the embedded brain terminal. Local by design: it is a
-  // view preference, resets to open on remount, and needs no persistence.
-  const [terminalCollapsed, setTerminalCollapsed] = useState(false);
+  // Collapsed state of the pty layout's report rail. Local by design: it is a
+  // view preference, resets on remount, and needs no persistence. Default COLLAPSED: the TUI
+  // is the conversation, the rail is the durable receipt you open when you want
+  // it. Declared at the top level (not inside the pty branch) because
+  // `brainPtyId` hydrates a frame after mount and can go null again mid-session
+  // — the state must survive the layout swap.
+  const [railCollapsed, setRailCollapsed] = useState(true);
+  const [decisionPending, setDecisionPending] = useState(false);
   const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
+  // The pty layout's durable turn reports (pure selector — the store keeps the
+  // full message array for the other vendors' bubble log).
+  const railMessages = useMemo(() => selectReportRail(brainMessages), [brainMessages]);
+  const railHasError = railMessages[railMessages.length - 1]?.status === 'error';
 
   // Stick-to-bottom autoscroll. `stickToBottom` flips off when the user
   // scrolls up to read history (>48px from the bottom) and back on when they
@@ -193,6 +202,181 @@ export function CommanderViewContent({
     const el = threadsRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [activeWorkspaceId]);
+
+  // The orchestrator control bar — the persistent automation controls. Shared
+  // by both layouts: below the thread in the bubble layout, merged into the pty
+  // layout's single top row. `data-deck-control-bar` stays on it either way.
+  const renderControlBar = (className: string, extra?: React.ReactNode): React.ReactElement | null =>
+    activeWorkspaceId || quickActions.length > 0 ? (
+      <div
+        data-deck-control-bar
+        className={className}
+        style={{ borderColor: 'var(--border-soft)' }}
+        {...tokenAttrs('bgSurface', 'border')}
+      >
+        {/* Mode = the single autonomy knob, always showing the current mode.
+            모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
+            Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
+        <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
+        {/* The one-click loop chip + panel (loop engineering v1) — binds to
+            THIS workspace. */}
+        <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
+        {/* Schedules chip + inline panel — new schedules bind to THIS
+            workspace's orchestrator (M1.5). */}
+        <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+        {extra}
+
+        {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
+            recovery. Flows inline after the always-on controls (no ml-auto:
+            the dock is narrow enough that the bar wraps, and pushing this to
+            the trailing edge stranded it alone on its own line with a gap).
+            Neutral at rest, accent on hover (the DESIGN.md AI-action
+            grammar), disabled while a turn streams. */}
+        {quickActions.length > 0 && (
+          <div data-deck-quick-actions className="flex flex-wrap gap-1.5">
+            {quickActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                data-deck-quick-action
+                data-action-id={action.id}
+                disabled={brainBusy}
+                onClick={() => onQuickAction?.(action)}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
+                {...tokenAttrs('textSub', 'text')}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    ) : null;
+
+  // ── pty layout: the Claude Code TUI IS the dock ──────────────────────────
+  //
+  // The `claude-pty` orchestrator types into its own terminal, so the dock
+  // stops being a chat surface: one compressed control row on top, the TUI
+  // taking everything between, and a collapsed report rail as the footer. No
+  // composer — the TUI is the only input path (the other vendors keep theirs
+  // in the branch below, where it is their ONLY input path). No Stop button
+  // either: ESC in the TUI is the interrupt.
+  if (brainPtyId) {
+    return (
+      <div
+        data-commander-view
+        className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
+        {...tokenAttrs('bgMantle', 'bg')}
+      >
+        {/* One control row: the Fleet roster and the automation controls. */}
+        {fleetSlot}
+        {renderControlBar(
+          'flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-[var(--bg-surface)] shrink-0',
+          // Wake button — pty-layout only. With no composer, this is the
+          // human's one-click "take a turn now"; the bubble layout's composer
+          // already covers it. Disabled mid-turn: the busy reject would be the
+          // only outcome. Same visual grammar as a quick action (neutral at
+          // rest, accent on hover).
+          activeWorkspaceId ? (
+            <button
+              type="button"
+              data-commander-wake-now
+              disabled={brainBusy}
+              onClick={() => {
+                void window.electronAPI?.deck?.wake?.(activeWorkspaceId).catch(() => {
+                  /* best-effort — a rejected wake just means the brain is busy */
+                });
+              }}
+              className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-amber)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {t('deck.wakeNow') || 'Wake'}
+            </button>
+          ) : null,
+        )}
+
+        {/* The TUI — the hero of this layout, taking every pixel the fixed rows
+            leave. It has no collapse toggle anymore: collapsing the dock's only
+            input surface has no meaning, and the rail below it is what the
+            operator opens instead. */}
+        <div className="flex flex-col flex-1 min-h-0 px-3 py-2">
+          <BrainTerminalEmbed ptyId={brainPtyId} />
+        </div>
+
+        {/* Report rail — the durable footer. The TUI scrolls its own
+            conversation away, so closed turns (and the decision gate, and the
+            briefing) stay reachable here. Collapsed by default; the header
+            carries the count, a busy dot, and an error affordance so a
+            collapsed rail never hides something that needs the operator. */}
+        <div
+          className="border-t border-[var(--bg-surface)] shrink-0"
+          style={{ borderColor: 'var(--border-soft)' }}
+          {...tokenAttrs('bgSurface', 'border')}
+        >
+          <button
+            type="button"
+            data-commander-report-rail-toggle
+            onClick={() => setRailCollapsed((v) => !v)}
+            className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            <span aria-hidden>{railCollapsed ? '▸' : '▾'}</span>
+            <span
+              className={railHasError ? 'text-[var(--accent-red)]' : undefined}
+              {...(railHasError ? tokenAttrs('danger', 'text') : {})}
+            >
+              {(t('deck.reportRail') || 'Reports {count}').replace(
+                '{count}',
+                String(railMessages.length),
+              )}
+            </span>
+            {decisionPending && (
+              <span data-commander-rail-decision>
+                {` · ${t('deck.reportRailDecision') || '1 decision'}`}
+              </span>
+            )}
+            {/* Slim busy indicator: automation-driven turns (heartbeat, loop,
+                schedule) must stay visible now that the busy bar is gone. */}
+            {brainBusy && (
+              <span data-commander-busy className="flex items-center gap-1.5 ml-auto">
+                <span
+                  aria-hidden="true"
+                  className="inline-block w-2 h-2 rounded-full border border-[var(--accent-amber)] border-t-transparent animate-spin"
+                />
+                <span>{t('deck.commanderThinking') || 'Orchestrator is working…'}</span>
+              </span>
+            )}
+          </button>
+          <div
+            data-commander-threads
+            className={
+              railCollapsed
+                ? 'hidden'
+                : 'max-h-[30vh] overflow-y-auto px-4 pb-3 space-y-3'
+            }
+          >
+            <DeckBriefingCard
+              workspaceId={activeWorkspaceId}
+              t={t}
+              onJumpToPane={onJumpToPane}
+              resolvePtyPane={resolvePtyPane}
+              channelsUnread={channelsUnread}
+              onJumpToChannels={onJumpToChannels}
+              fleetSignature={fleetSignature}
+            />
+            <DeckDecisionCard
+              workspaceId={activeWorkspaceId}
+              onPendingChange={setDecisionPending}
+              t={t}
+            />
+            {railMessages.map((m) => (
+              <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -292,43 +476,15 @@ export function CommanderViewContent({
             this workspace. */}
         <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
 
-        {/* Brain conversation. The `claude-pty` vendor embeds the brain's own
-            terminal AND keeps the bubble log below it: the TUI scrolls away and
-            drowns the brain's reports in preamble/status noise, so the
-            turn-end final texts (recovered from the transcript) remain the
-            durable report surface the operator actually reads. Every other
-            vendor renders only the normalized bubbles + tool chips. */}
-        {brainPtyId ? (
-          // Sticky wrapper: the terminal stays pinned while the bubble log
-          // scrolls beneath it, and the header collapses it to one row when
-          // the operator wants the history to have the whole dock.
-          <div className="sticky top-0 z-10 bg-[var(--bg-mantle)] -mx-4 px-4 pb-1">
-            <button
-              type="button"
-              data-commander-terminal-toggle
-              onClick={() => setTerminalCollapsed((v) => !v)}
-              className="w-full flex items-center gap-1.5 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
-            >
-              <span aria-hidden>{terminalCollapsed ? '▸' : '▾'}</span>
-              <span>{t('deck.brainTerminal')}</span>
-            </button>
-            {/* Collapse hides, never unmounts: unmounting would tear down the
-                xterm attach and drop scrollback on every toggle. */}
-            <div className={terminalCollapsed ? 'hidden' : undefined}>
-              {/* isVisible, not just `hidden`: xterm's fit addon measures the
-                  container, and a display:none wrapper measures zero — the
-                  collapsed terminal would resize itself to nothing and only
-                  recover on the next resize after expanding. */}
-              <BrainTerminalEmbed ptyId={brainPtyId} isVisible={!terminalCollapsed} />
-            </div>
-          </div>
-        ) : null}
+        {/* Brain conversation — the normalized bubbles + tool chips. The
+            `claude-pty` vendor never reaches here (it returns the TUI layout
+            above); every other vendor renders its whole turn log. */}
         {brainMessages.map((m) => (
           <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
         ))}
 
         {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
-        {!brainPtyId && threads.map((thread, idx) => (
+        {threads.map((thread, idx) => (
           <CommanderThreadItem
             key={thread.dispatch ? `d-${thread.dispatch.seq}` : `r-${idx}`}
             thread={thread}
@@ -379,49 +535,8 @@ export function CommanderViewContent({
           it never crowds the always-on controls. Each control's container
           self-hides when its preload API is absent, so pure jsdom parent tests
           are unaffected. */}
-      {(activeWorkspaceId || quickActions.length > 0) && (
-        <div
-          data-deck-control-bar
-          className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
-          style={{ borderColor: 'var(--border-soft)' }}
-          {...tokenAttrs('bgSurface', 'border')}
-        >
-          {/* Mode = the single autonomy knob, always showing the current mode.
-              모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
-              Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
-          <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
-          {/* The one-click loop chip + panel (loop engineering v1) — binds to
-              THIS workspace. */}
-          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
-          {/* Schedules chip + inline panel — new schedules bind to THIS
-              workspace's orchestrator (M1.5). */}
-          <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
-
-          {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
-              recovery. Flows inline after the always-on controls (no ml-auto:
-              the dock is narrow enough that the bar wraps, and pushing this to
-              the trailing edge stranded it alone on its own line with a gap).
-              Neutral at rest, accent on hover (the DESIGN.md AI-action
-              grammar), disabled while a turn streams. */}
-          {quickActions.length > 0 && (
-            <div data-deck-quick-actions className="flex flex-wrap gap-1.5">
-              {quickActions.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  data-deck-quick-action
-                  data-action-id={action.id}
-                  disabled={brainBusy}
-                  onClick={() => onQuickAction?.(action)}
-                  className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
-                  {...tokenAttrs('textSub', 'text')}
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+      {renderControlBar(
+        'flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-[var(--bg-surface)] shrink-0',
       )}
 
       {/* Composer — the SAME pure shell the channel composer uses. No @mention →

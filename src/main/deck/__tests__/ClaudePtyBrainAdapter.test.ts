@@ -924,6 +924,210 @@ describe('the Stop gate', () => {
   });
 });
 
+// ── foreign turns (the human types into the TUI) ─────────────────────────────
+
+describe('a turn the human started in the TUI', () => {
+  it('marks the adapter busy on UserPromptSubmit and clears it on the Stop', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const first = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    // Our OWN turn's UserPromptSubmit is not a foreign turn — turnStop owns it.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(false);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(await first).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+
+    // Now the human types into the TUI directly: no send(), no waiter.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(adapter.busy).toBe(false);
+
+    // The foreign turn emitted no turn-end of its own: the next adapter turn
+    // still ends exactly once (the manager's exactly-once contract).
+    const second = collect(adapter.send('again'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(3));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-3', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(await second).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-3' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('clears the flag when the pty dies mid-turn, so the workspace is not stranded busy', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    host.killSession(ptyId, 1);
+    expect(adapter.busy).toBe(false);
+
+    // dispose() takes the same path for a live pty.
+    const host2 = makeHost();
+    const adapter2 = makeAdapter(host2);
+    const t2 = collect(adapter2.send('hi'));
+    await vi.waitFor(() => expect(host2.writes.length).toBeGreaterThan(0));
+    const pty2 = host2.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', pty2, { agentSessionId: 's' }));
+    await t2;
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', pty2));
+    expect(adapter2.busy).toBe(true);
+    adapter2.dispose();
+    expect(adapter2.busy).toBe(false);
+  });
+});
+
+describe('a foreign turn that could get stuck open', () => {
+  it('lets the foreign Stop close the turn instead of feeding a superseded credit', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { turnTimeoutMs: 20 });
+    // Bank a superseded credit: this turn times out and is ESC'd, so its Stop
+    // is still owed.
+    const timedOut = await collect(adapter.send('slow job'));
+    expect(timedOut).toEqual([
+      { type: 'error', message: 'the terminal brain did not finish its turn' },
+    ]);
+    const ptyId = host.created[0].id;
+
+    // The human then types into the TUI. Its Stop must close THEIR turn — if
+    // the credit swallowed it first, nothing else would ever clear the flag.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-human' }));
+    expect(adapter.busy).toBe(false);
+    adapter.dispose();
+  });
+
+  it('releases a foreign turn whose Stop never arrives, past the turn timeout', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { turnTimeoutMs: 30 });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    // No Stop is ever delivered — the hook command died, the bridge could not
+    // reach main, whatever. The next read past the ceiling releases it.
+    await vi.waitFor(() => expect(adapter.busy).toBe(false), { timeout: 1_000 });
+    adapter.dispose();
+  });
+});
+
+describe('the foreign-turn-end notification', () => {
+  it('fires once when the human`s Stop closes their turn, and not for our own turns', async () => {
+    const host = makeHost();
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnEnd });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    // Our own turn ends through the manager's normal path — no foreign wake.
+    expect(onForeignTurnEnd).not.toHaveBeenCalled();
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    // A duplicate Stop with no foreign turn open must not wake again.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+
+  it('fires when a pty that died mid-foreign-turn releases the flag', async () => {
+    const host = makeHost();
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnEnd });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    host.killSession(ptyId, 1);
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+});
+
+describe('an automation turn racing the human`s Enter', () => {
+  it('stands down when the UserPromptSubmit lands inside the double-check window', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 40 });
+    // Establish a live pty with a finished turn, so the ambient send below
+    // takes the "already spawned" path and reaches the double-check.
+    const first = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await first;
+    const writesBefore = host.writes.length;
+
+    // The ambient turn starts while the adapter still reads idle — the human's
+    // Enter is already typed but its hook has not arrived yet.
+    expect(adapter.busy).toBe(false);
+    const ambient = collect(adapter.send('ambient wake', { origin: 'automation' }));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+
+    expect(await ambient).toEqual([
+      {
+        type: 'error',
+        message: 'the human is mid-turn in the terminal brain — the ambient turn stood down',
+      },
+    ]);
+    // Nothing was typed into the TUI the human just claimed.
+    expect(host.writes.length).toBe(writesBefore);
+    adapter.dispose();
+  });
+
+  it('proceeds when no foreign turn opened during the window', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 5 });
+    const turn = collect(adapter.send('ambient wake', { origin: 'automation' }));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    expect(host.writes[0].data).toBe('ambient wake');
+    deliverBrainPtyHookSignal(
+      signal('agent.stop', host.created[0].id, {
+        agentSessionId: 'sess-1',
+        payload: { transcript_path: '/tmp/t.jsonl' },
+      }),
+    );
+    expect(await turn).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('does not delay a human-origin send', async () => {
+    const host = makeHost();
+    // A recheck window long enough that a human send waiting on it would fail
+    // the waitFor below.
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 5_000 });
+    const turn = collect(adapter.send('typed by a person'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0), { timeout: 1_000 });
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's' }));
+    await turn;
+    adapter.dispose();
+  });
+});
+
 // ── hook bus isolation ──────────────────────────────────────────────────────
 
 describe('brainPtyHookBus', () => {
@@ -985,5 +1189,32 @@ describe('createBrainPtyHost.write', () => {
     };
     const host = createBrainPtyHost(client as unknown as DaemonClientLike);
     expect(() => host.write('brain-1', 'hi')).not.toThrow();
+  });
+});
+
+describe('a session id learned from a foreign Stop', () => {
+  it('adopts it and reports it, so a TUI-only conversation survives a restart', async () => {
+    const host = makeHost();
+    const reported: string[] = [];
+    const adapter = makeAdapter(host, { onForeignSessionId: (id: string) => reported.push(id) });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    // Our OWN turn's Stop persists through turn-end, never through the dep.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-own', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    await turn;
+    expect(reported).toEqual([]);
+
+    // A TUI-typed turn: its Stop carries the transcript the human is now on.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-tui', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(reported).toEqual(['sess-tui']);
+    expect(adapter.sessionId).toBe('sess-tui');
+
+    // Same id again (duplicate foreign Stop) — adopted once, reported once.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-tui', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(reported).toEqual(['sess-tui']);
+    adapter.dispose();
   });
 });

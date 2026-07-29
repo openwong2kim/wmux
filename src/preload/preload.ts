@@ -399,6 +399,11 @@ const electronAPI = {
       }>,
     interrupt: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
+    // The dock's Wake button (the pty layout has no composer): run one ambient
+    // turn on this workspace's orchestrator right now. Busy-rejects like any
+    // other ambient driver.
+    wake: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC.DECK_WAKE, { workspaceId }) as Promise<{ ok: boolean; code?: string }>,
     fullPowerSet: (enabled: boolean) =>
       ipcRenderer.invoke(IPC.DECK_FULLPOWER_SET, { enabled }) as Promise<{
         ok: true;

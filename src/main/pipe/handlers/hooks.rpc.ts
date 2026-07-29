@@ -484,6 +484,14 @@ export function registerHooksRpc(
         ? { ok: true, block: { reason: brainVerdict.block } }
         : { ok: true };
     }
+    // A prompt-submit only ever means something to the brain lane above — it
+    // exists to open the foreign-turn flag. One arriving UNCLAIMED is a brain
+    // pty that already died (teardown raced the hook): letting it fall through
+    // would surface a "Prompt submitted" fleet notification for a pane the
+    // human never saw. Drop it silently.
+    if (signal.kind === 'agent.user_prompt_submit') {
+      return { ok: true };
+    }
 
     // 2. Latency observability runs BEFORE workspace match so that
     //    plugin signals from cwds outside any wmux workspace still
@@ -1209,6 +1217,10 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Session started`;
     case 'agent.awaiting_input':
       return `${display}: Awaiting input`;
+    // Brain-pty only: claimed by the deck lane long before dispatch. Mapped so
+    // the switch stays exhaustive.
+    case 'agent.user_prompt_submit':
+      return `${display}: Prompt submitted`;
   }
 }
 
@@ -1228,6 +1240,7 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     case 'agent.stop':
     case 'agent.activity':
     case 'agent.session_start':
+    case 'agent.user_prompt_submit':
       return 'agent-turn';
   }
 }
@@ -1247,6 +1260,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Session initialized';
     case 'agent.awaiting_input':
       return 'Approval requested';
+    case 'agent.user_prompt_submit':
+      return 'Prompt submitted';
   }
 }
 

@@ -284,6 +284,9 @@ export const ko = {
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/assist/auto).
   'deck.limit.window': '사용량',
   'deck.brainTerminal': '브레인 터미널',
+  'deck.wakeNow': '깨우기',
+  'deck.reportRail': '보고 {count}',
+  'deck.reportRailDecision': '결정 1건',
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
   'deck.limit.onAccount': ' · {account}',

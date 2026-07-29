@@ -151,6 +151,12 @@ export const IPC = {
   DECK_SEND: 'deck:send',
   DECK_STREAM: 'deck:stream',
   DECK_INTERRUPT: 'deck:interrupt',
+  //   DECK_WAKE       (invoke) renderer → main: the dock's Wake button. The
+  //                   pty layout has no composer, so this is the human's way to
+  //                   ask for one ambient turn NOW. Rides the same ambient turn
+  //                   path as the heartbeat/scheduler (busy precheck, fleet
+  //                   slot, turn-start announce); resolves { ok, code? }.
+  DECK_WAKE: 'deck:wake',
   DECK_STATUS: 'deck:status',
   DECK_FULLPOWER_SET: 'deck:fullpower:set',
   //   DECK_BRAIN_VENDOR_SET (invoke) renderer → main: sync the orchestrator

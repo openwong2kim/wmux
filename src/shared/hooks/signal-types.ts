@@ -37,7 +37,12 @@ export type AgentSignalKind =
   | 'agent.activity'
   | 'agent.subagent_stop'
   | 'agent.session_start'
-  | 'agent.awaiting_input';
+  | 'agent.awaiting_input'
+  // A prompt was submitted INSIDE the agent's own TUI. Only the deck's brain
+  // pty configures this hook, and the brain-pty lane claims the signal before
+  // it can reach the fleet ledger — it exists so the orchestrator's "one turn
+  // at a time" contract still holds when the human types into the TUI directly.
+  | 'agent.user_prompt_submit';
 
 /**
  * SLUG-form agent identifiers. Matches AgentPattern.slug in AgentDetector.ts.
@@ -180,7 +185,8 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.activity' &&
     v['kind'] !== 'agent.subagent_stop' &&
     v['kind'] !== 'agent.session_start' &&
-    v['kind'] !== 'agent.awaiting_input'
+    v['kind'] !== 'agent.awaiting_input' &&
+    v['kind'] !== 'agent.user_prompt_submit'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;

@@ -16,7 +16,12 @@
 // reject is a backstop for a racing double-submit, surfaced as an `error`
 // event rather than silently dropped.
 
-import type { BrainAdapter, BrainEvent, BrainStartOptions } from './BrainAdapter';
+import type {
+  BrainAdapter,
+  BrainEvent,
+  BrainSendOptions,
+  BrainStartOptions,
+} from './BrainAdapter';
 
 export type CommanderStatus = 'idle' | 'busy' | 'disposed';
 
@@ -91,8 +96,17 @@ export class CommanderSessionManager {
     this._lastReportedSessionId = deps.startOptions?.resumeSessionId ?? null;
   }
 
+  /** A turn the ADAPTER is aware of but did not start — the `claude-pty` brain
+   *  reports one when the human types into its embedded TUI. Adapters without
+   *  the getter (every other vendor, and the test fakes) are never foreign-busy. */
+  private get adapterBusy(): boolean {
+    return (this.adapter as { busy?: boolean }).busy === true;
+  }
+
   getStatus(): CommanderStatusSnapshot {
-    return { status: this._status, sessionId: this.adapter.sessionId };
+    const status: CommanderStatus =
+      this._status === 'idle' && this.adapterBusy ? 'busy' : this._status;
+    return { status, sessionId: this.adapter.sessionId };
   }
 
   /**
@@ -101,13 +115,17 @@ export class CommanderSessionManager {
    * is disposed. Resolves after the turn's stream completes; the caller (IPC
    * handler) returns the accept/reject result immediately and lets the events
    * flow over the push channel.
+   *
+   * `opts.origin` rides through to the adapter untouched: an ambient driver
+   * (heartbeat / loop / schedule) marks its turn `'automation'` so a brain that
+   * can race a human's own input has a chance to re-check before it commits.
    */
-  async send(text: string): Promise<CommanderSendResult> {
+  async send(text: string, opts: BrainSendOptions = {}): Promise<CommanderSendResult> {
     if (this._status === 'disposed') {
       this.sink({ type: 'error', message: 'commander session is closed' });
       return { ok: false, code: 'disposed' };
     }
-    if (this._status === 'busy') {
+    if (this._status === 'busy' || this.adapterBusy) {
       this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
       return { ok: false, code: 'busy' };
     }
@@ -128,7 +146,7 @@ export class CommanderSessionManager {
     let sawTurnEnd = false;
     let sawErrorEvent = false;
     try {
-      for await (const ev of this.adapter.send(trimmed)) {
+      for await (const ev of this.adapter.send(trimmed, opts)) {
         // Disposed mid-turn (app quitting): stop forwarding. The adapter's
         // interrupt() was already fired by dispose(). Read through a widening
         // cast — TS narrows the field to 'busy' here, but dispose() can flip it
@@ -168,21 +186,50 @@ export class CommanderSessionManager {
       // Never clobber a `disposed` flip that happened during the turn.
       if (this._status === 'busy') {
         this._status = 'idle';
-        // Wake the coalescer on a LATER tick — never synchronously here, or the
-        // callback could re-enter send() while this turn is still unwinding.
-        if (this.onIdle) {
-          const cb = this.onIdle;
-          this.deferIdle(() => {
-            // A dispose() between the flip and this tick must cancel the wake.
-            if (this._status === 'disposed') return;
-            try {
-              cb();
-            } catch {
-              /* the coalescer flush is best-effort — never surface here */
-            }
-          });
-        }
+        this.scheduleIdleWake();
       }
+    }
+  }
+
+  /** Wake the coalescer on a LATER tick — never synchronously from a caller's
+   *  stack, or the callback could re-enter send() while a turn is still
+   *  unwinding. A dispose() between here and the tick cancels the wake. */
+  private scheduleIdleWake(): void {
+    if (!this.onIdle) return;
+    const cb = this.onIdle;
+    this.deferIdle(() => {
+      if (this._status === 'disposed') return;
+      try {
+        cb();
+      } catch {
+        /* the coalescer flush is best-effort — never surface here */
+      }
+    });
+  }
+
+  /**
+   * The adapter closed a turn this manager never started — the human typed
+   * into the terminal brain's embedded TUI and their turn just ended.
+   *
+   * `getStatus()` reported busy for that whole turn, so anything the coalescer
+   * buffered meanwhile is holding for a flush trigger that the normal
+   * turn-end path will never fire. This is that trigger. Ignored while a
+   * manager-run turn is live (its own finally will wake) or once disposed.
+   */
+  notifyForeignTurnEnd(): void {
+    if (this._status !== 'idle') return;
+    this.scheduleIdleWake();
+  }
+
+  /** Persist a session id learned from a foreign (TUI-typed) turn's Stop.
+   *  Same dedup + best-effort contract as the turn-end path above. */
+  notifyForeignSessionId(sessionId: string): void {
+    if (!sessionId || sessionId === this._lastReportedSessionId) return;
+    this._lastReportedSessionId = sessionId;
+    try {
+      this.onSessionId?.(sessionId);
+    } catch {
+      /* persistence is best-effort — never fail the live turn */
     }
   }
 

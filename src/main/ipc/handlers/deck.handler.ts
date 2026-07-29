@@ -121,6 +121,13 @@ export interface RegisterDeckHandlerOptions {
      *  embeds. Passed to every factory — including an injected one — so the
      *  embed plumbing is exercisable without a live daemon. */
     onPtySpawned: (ptyId: string | null) => void;
+    /** How an adapter reports that a turn IT did not start has ended (the
+     *  `claude-pty` human-typed-into-the-TUI case). Passed to every factory so
+     *  the wake plumbing is exercisable without a live daemon. */
+    onForeignTurnEnd: () => void;
+    /** How an adapter reports a session id learned from a foreign turn's Stop
+     *  (TUI-only conversations must survive a restart). */
+    onForeignSessionId: (sessionId: string) => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -225,6 +232,8 @@ export function registerDeckHandler(
       fullPower?: boolean;
       vendor?: BrainVendor;
       onPtySpawned: (ptyId: string | null) => void;
+      onForeignTurnEnd: () => void;
+      onForeignSessionId: (sessionId: string) => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
@@ -251,6 +260,8 @@ export function registerDeckHandler(
                 snapshot: getWorkspaceMirror().getFleetSnapshot(workspaceId),
                 consecutiveBlocks,
               }),
+            onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
+            onForeignSessionId: adapterOpts.onForeignSessionId,
             // The model picker applies to the TUI brain too (`--model`);
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).
@@ -371,11 +382,18 @@ export function registerDeckHandler(
     // persisted sessions keep resuming across this change.
     const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
     const persisted = loadCommanderSession(sessionKey);
+    // The adapter's foreign-turn callback needs the manager the adapter is
+    // about to be constructed INTO — late-bound through this holder, exactly
+    // like the coalescer's own forward reference above. It can only fire long
+    // after the assignment below.
+    let managerRef: CommanderSessionManager | undefined;
     const manager = new CommanderSessionManager({
       adapter: createAdapter({
         workspaceId,
         vendor,
         onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
+        onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
+        onForeignSessionId: (sessionId) => managerRef?.notifyForeignSessionId(sessionId),
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -407,6 +425,7 @@ export function registerDeckHandler(
       // flush into the next one.
       onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
+    managerRef = manager;
     managers.set(workspaceId, { manager, model, fullPower, vendor });
     return manager;
   };
@@ -539,7 +558,9 @@ export function registerDeckHandler(
       // optimistic user bubble, visible to the brain. If this human turn carried
       // a resolved decision's block, consume it (id-scoped) so it never re-injects.
       const injectedDecision = loadWorkspaceDecision(workspaceId);
-      const verdict = await mgr.send(withLoopContext(workspaceId, text));
+      // A human at the composer: no double-check delay — they are waiting on it,
+      // and a turn they typed themselves cannot be racing their own TUI input.
+      const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
         void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
@@ -796,7 +817,11 @@ export function registerDeckHandler(
         prompted = withLoopContext(workspaceId, prompt);
       }
       emit(workspaceId, { type: 'turn-start', prompt });
-      const verdict = await mgr.send(prompted);
+      // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
+      // loop, scheduler, decision resume, startup reconcile) — never a human at
+      // the composer. Marking the origin lets the terminal brain re-check for a
+      // human turn it may have raced before it types into the shared TUI.
+      const verdict = await mgr.send(prompted, { origin: 'automation' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok) {
         if (runOpts.reExamine) {
@@ -866,6 +891,35 @@ export function registerDeckHandler(
       globalTurnGate.release(token);
     }
   };
+
+  // The dock's Wake button (the pty layout has no composer, so this is the
+  // human's one-click "take a turn now"). The prompt is deliberately open-ended
+  // — the human gave no instruction, they asked the orchestrator to look around.
+  const WAKE_BUTTON_PROMPT =
+    'The operator pressed the Wake button. Review the current state of your fleet ' +
+    'and any pending work or reports, act on anything that needs you (within your ' +
+    'autonomy caps), and report briefly — or say all is quiet. Then end your turn.';
+
+  ipcMain.removeHandler(IPC.DECK_WAKE);
+  ipcMain.handle(
+    IPC.DECK_WAKE,
+    wrapHandler(IPC.DECK_WAKE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // Non-queued on purpose: a button press wants an immediate verdict — a
+      // busy reject (this workspace mid-turn, or the fleet gate full) returns
+      // right away and the human just presses again later. runTurnForWorkspace
+      // announces turn-start and prepends the loop/decision context, so the
+      // wake renders in the thread exactly like a scheduled run.
+      return runTurnForWorkspace(WAKE_BUTTON_PROMPT, workspaceId);
+    }),
+  );
 
   // The first turn a freshly started/resumed loop takes. Without this, START
   // only writes loop-state + caps and RETURNS — the loop sits at status=running
@@ -1818,6 +1872,7 @@ export function registerDeckHandler(
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
+    ipcMain.removeHandler(IPC.DECK_WAKE);
     ipcMain.removeHandler(IPC.DECK_STATUS);
     ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
     ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);

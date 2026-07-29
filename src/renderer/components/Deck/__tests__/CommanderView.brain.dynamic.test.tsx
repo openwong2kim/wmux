@@ -13,6 +13,15 @@ import { CommanderViewContent, type CommanderViewContentProps } from '../Command
 import { applyBrainEvent, type DeckBrainMessage } from '../deckBrain';
 import { t, setLocale } from '../../../i18n';
 
+// The embed attaches a real xterm to a real daemon session (window.electronAPI),
+// neither of which exists in jsdom. This suite is about the dock's LAYOUT, so
+// the terminal is stubbed down to the element the layout places.
+vi.mock('../BrainTerminalEmbed', () => ({
+  __esModule: true,
+  default: ({ ptyId }: { ptyId: string }) =>
+    createElement('div', { 'data-commander-brain-terminal': true, 'data-pty-id': ptyId }),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -214,6 +223,63 @@ describe('CommanderViewContent — brain surface', () => {
     mount({ quickActions: [] });
     expect(container.querySelector('[data-deck-control-bar]')).toBeNull();
     expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
+  });
+
+  it('the pty layout is the TUI: terminal, no composer, rail collapsed until clicked', () => {
+    // Real translator: the rail header interpolates {count} into the locale
+    // string, which a key-echoing stub would silently swallow.
+    setLocale('en');
+    mount({ brainPtyId: 'pty-1', brainMessages: brainTurn(), activeWorkspaceId: 'ws-1', t });
+    // The TUI replaces the chat surface entirely.
+    expect(container.querySelector('[data-commander-brain-terminal]')).not.toBeNull();
+    expect(container.querySelector('[data-channel-composer-input]')).toBeNull();
+    // The control bar survives the merge into the top row.
+    expect(container.querySelector('[data-deck-control-bar]')).not.toBeNull();
+    // The report rail is collapsed by default (hidden, NOT unmounted) …
+    const body = container.querySelector('[data-commander-threads]') as HTMLElement;
+    expect(body.className).toContain('hidden');
+    const toggle = container.querySelector(
+      '[data-commander-report-rail-toggle]',
+    ) as HTMLButtonElement;
+    expect(toggle.textContent).toContain('1'); // one closed assistant report
+    // … and opens on click.
+    act(() => toggle.click());
+    const opened = container.querySelector('[data-commander-threads]') as HTMLElement;
+    expect(opened.className).not.toContain('hidden');
+    expect(opened.textContent).toContain('Spawned a worker.');
+  });
+
+  it('the pty layout has a Wake button that fires deck.wake for the workspace', () => {
+    // The pty layout has no composer, so the button is the human's only way to
+    // ask for a turn. The preload API doesn't exist in jsdom — stub it.
+    const wake = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { wake } };
+    try {
+      mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1' });
+      const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
+      expect(btn).not.toBeNull();
+      expect(btn.disabled).toBe(false);
+      act(() => btn.click());
+      expect(wake).toHaveBeenCalledWith('ws-1');
+    } finally {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('disables the Wake button while a brain turn streams; hides it without a pty', () => {
+    mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1', brainBusy: true });
+    const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    // The bubble layouts keep their composer instead — no Wake button.
+    mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
+    expect(container.querySelector('[data-commander-wake-now]')).toBeNull();
+  });
+
+  it('without a brain pty the SDK layout is untouched: composer, no terminal', () => {
+    mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
+    expect(container.querySelector('[data-commander-brain-terminal]')).toBeNull();
+    expect(container.querySelector('[data-channel-composer-input]')).not.toBeNull();
+    expect(container.querySelector('[data-commander-report-rail-toggle]')).toBeNull();
   });
 
   it('an event-woken turn renders as a compact wake badge, not a user bubble wall', () => {

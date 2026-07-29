@@ -44,7 +44,12 @@ import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
 import { resolveClaudeExecutable, resolveMcpBundlePath, DISALLOWED_TOOLS } from './ClaudeSdkAdapter';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
-import type { BrainAdapter, BrainEvent, BrainStartOptions } from './BrainAdapter';
+import type {
+  BrainAdapter,
+  BrainEvent,
+  BrainSendOptions,
+  BrainStartOptions,
+} from './BrainAdapter';
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,16 @@ const SUBMIT_DELAY_MS = 400;
  *  damage if it never arrives at all (the credit would otherwise sit forever
  *  and swallow a healthy turn's Stop). */
 const SUPERSEDED_STOP_WINDOW_MS = 60_000;
+/** How long an AUTOMATION-origin send() waits before re-reading `busy`.
+ *
+ *  The human's Enter and the UserPromptSubmit hook that reports it are not
+ *  simultaneous: the TUI accepts the keystroke, then claude spawns the hook
+ *  command, which connects to main's pipe and sends `hooks.signal`. Measured at
+ *  tens to a couple hundred milliseconds. An ambient turn that read `busy`
+ *  inside that window saw idle and typed a second prompt into a TUI the human
+ *  had just claimed. Sleeping one window and re-reading closes the common case
+ *  cheaply — ambient turns are never latency-sensitive. */
+const FOREIGN_TURN_RECHECK_MS = 250;
 /** Claude Code's own wording when `--resume <id>` names a transcript it cannot
  *  find. Matched case-insensitively on the spawn banner only. */
 const STALE_RESUME_MARKER = 'no conversation found';
@@ -368,7 +383,10 @@ export function buildBrainSettingsProfile(opts: {
     })),
   };
   if (opts.bridgePath) {
-    for (const event of ['Stop', 'SessionStart'] as const) {
+    // UserPromptSubmit is the human-typed-into-the-TUI signal: with no composer
+    // in the dock's pty layout it is the only way the adapter learns a turn it
+    // did not start is open, so automation can defer to it.
+    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit'] as const) {
       // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
       // response and exits 2 when the adapter refuses to end the turn. The
       // verdict has to travel on this one round trip — a second, independent
@@ -554,6 +572,20 @@ export interface ClaudePtyBrainAdapterDeps {
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
   onPtySpawned?: (ptyId: string | null) => void;
+  /** Fired when a turn the ADAPTER did not start finishes — the human typed
+   *  into the embedded TUI and their turn just ended. The workspace was
+   *  reporting busy for its whole duration, so whatever accumulated in the
+   *  deck's event coalescer meanwhile has no other trigger to flush it: without
+   *  this the buffered events sat until some unrelated event arrived. Wired to
+   *  the session manager's ordinary idle wake. */
+  onForeignTurnEnd?: () => void;
+  /** How the adapter reports a session id it learned from a FOREIGN turn's
+   *  Stop. A human conversation held entirely in the TUI (or one that swapped
+   *  the transcript via /resume there) never yields a `turn-end`, which is the
+   *  only other place the manager persists the id — without this, a restart
+   *  resumed the previous (or an empty) session and the TUI-only conversation
+   *  was lost. */
+  onForeignSessionId?: (sessionId: string) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
@@ -567,6 +599,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Pause between writing the prompt and writing the submitting Enter.
    *  Tests shrink this to keep the suite fast. */
   submitDelayMs?: number;
+  /** How long an automation-origin send() waits before re-reading `busy`.
+   *  Tests shrink this. See FOREIGN_TURN_RECHECK_MS. */
+  foreignTurnRecheckMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -625,6 +660,17 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  Stop and on every pty teardown; feeds the gate's own refusal cap, which is
    *  what keeps a gate from turning into a 30-minute trap. */
   private consecutiveStopBlocks = 0;
+  /** True while a turn THIS ADAPTER DID NOT START is open — the human typed
+   *  into the embedded TUI. Opened by UserPromptSubmit, closed by the Stop that
+   *  no waiter claims. Automation reads it through `busy` and defers, exactly
+   *  as it does for an adapter-started turn. */
+  private foreignTurnOpen = false;
+  /** When the open foreign turn started, or null when none is open. A foreign
+   *  turn has no waiter and no timer of its own, so a Stop that never arrives
+   *  (a hook command that failed to reach main, a claude build that skipped it)
+   *  would strand `busy` forever — `busy` releases the flag past this stamp
+   *  plus the turn timeout. */
+  private foreignTurnOpenedAt: number | null = null;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -642,6 +688,41 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  /** True when the TUI is mid-turn on a prompt the ADAPTER did not send (the
+   *  human typed into the embedded terminal). The session manager folds this
+   *  into its own status so a heartbeat / loop / schedule tick never pushes a
+   *  second prompt into a busy TUI. */
+  get busy(): boolean {
+    if (!this.foreignTurnOpen) return false;
+    // Self-releasing read (the getter is the only thing that observes a foreign
+    // turn, so this is where the backstop belongs). A foreign turn is closed by
+    // its Stop hook and nothing else; a Stop that is never delivered would keep
+    // this workspace busy for the rest of the app's life. Past the same ceiling
+    // an adapter-started turn gets, assume the turn is long over.
+    const openedAt = this.foreignTurnOpenedAt;
+    const limit = this.deps.turnTimeoutMs ?? TURN_TIMEOUT_MS;
+    if (openedAt !== null && Date.now() - openedAt > limit) {
+      console.warn('[deck] a terminal-brain turn the human started never reported its Stop — releasing it');
+      this.closeForeignTurn();
+      return false;
+    }
+    return true;
+  }
+
+  /** Close an open foreign turn (or no-op when none is). The one place the flag
+   *  and its stamp are cleared together. */
+  private closeForeignTurn(): void {
+    const wasOpen = this.foreignTurnOpen;
+    this.foreignTurnOpen = false;
+    this.foreignTurnOpenedAt = null;
+    if (!wasOpen) return;
+    try {
+      this.deps.onForeignTurnEnd?.();
+    } catch {
+      /* the coalescer wake is best-effort — never surface into a hook */
+    }
   }
 
   /** The live pty the deck embeds, or null before the first turn spawned one. */
@@ -672,7 +753,39 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       this.sessionStarted?.resolve();
       return;
     }
+    // The human submitted a prompt in the TUI. Only a turn we did NOT start
+    // counts: during our own send() the hook fires for our keystroke too, and
+    // that turn is already tracked by `turnStop`.
+    if (signal.kind === 'agent.user_prompt_submit') {
+      if (this.turnStop === null) {
+        this.foreignTurnOpen = true;
+        this.foreignTurnOpenedAt = Date.now();
+      }
+      return;
+    }
     if (signal.kind !== 'agent.stop') return;
+    // A Stop no waiter claims is a FOREIGN turn's (or a superseded one from
+    // the same pty session) — either way its session id is the transcript the
+    // TUI is actually on. Adopt it and let the manager persist it, or a
+    // restart resumes a conversation the human already left behind.
+    if (this.turnStop === null && signal.agentSessionId && signal.agentSessionId !== this._sessionId) {
+      this._sessionId = signal.agentSessionId;
+      try {
+        this.deps.onForeignSessionId?.(signal.agentSessionId);
+      } catch {
+        /* persistence is best-effort — never surface into a hook */
+      }
+    }
+    // A FOREIGN turn's Stop outranks a superseded credit. Both are "a Stop no
+    // waiter claims", but the credit is bookkeeping for a turn we already gave
+    // up on, while the foreign flag is the live reason this workspace reports
+    // busy. Letting the credit eat this Stop first left foreignTurnOpen set
+    // with nothing else able to clear it — the workspace stayed busy forever
+    // and every ambient turn deferred to a human who had long since finished.
+    if (this.foreignTurnOpen && this.turnStop === null) {
+      this.closeForeignTurn();
+      return;
+    }
     // A superseded (timed-out) turn's Stop arrives late and is
     // INDISTINGUISHABLE from the current turn's — the hook carries no turn
     // identity — so a credit banked at timeout drops exactly one Stop.
@@ -686,7 +799,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // the embedded TUI directly) — deliberately dropped, so the open turn
     // still ends exactly once.
     const waiter = this.turnStop;
-    if (!waiter) return;
+    if (!waiter) {
+      // Still dropped as a turn signal — it just closes the foreign turn it
+      // belongs to, so the workspace stops reporting busy. (The flag is already
+      // clear on this path; the branch above owns the open case.) The gate
+      // below never applies here: refusing a Stop nobody awaits would strand it.
+      this.closeForeignTurn();
+      return;
+    }
     // The gate only ever applies to a turn this adapter opened: a Stop with no
     // waiter was already dropped above, so refusing one here can never strand a
     // turn nobody is awaiting.
@@ -1006,6 +1126,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  session. Shared by killPty and the failed-spawn rollback. */
   private detachPty(): void {
     this.ptyId = null;
+    // A pty that died mid-foreign-turn will never fire its Stop; leaving the
+    // flag set would strand the workspace busy forever. This is the one choke
+    // point every teardown path goes through.
+    this.closeForeignTurn();
     this.bannerWatching = false;
     this.consecutiveStopBlocks = 0;
     this.unregisterHooks?.();
@@ -1063,7 +1187,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}`;
   }
 
-  async *send(text: string): AsyncIterable<BrainEvent> {
+  async *send(text: string, opts: BrainSendOptions = {}): AsyncIterable<BrainEvent> {
     if (this._disposed) {
       yield { type: 'error', message: 'commander session disposed' };
       return;
@@ -1119,7 +1243,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           type: 'error',
           message:
             'Claude Code is waiting on a prompt of its own (folder trust, permissions, or sign-in). ' +
-            'Answer it in the terminal above, then send your message again.',
+            'Answer it in the terminal, then send your message again.',
         };
         return;
       }
@@ -1129,6 +1253,33 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (!ptyId) {
       yield { type: 'error', message: 'the terminal brain is not running' };
       return;
+    }
+
+    // FOREIGN-TURN DOUBLE-CHECK (automation only).
+    //
+    // The manager read `busy` before it called us, but the human's Enter and
+    // the UserPromptSubmit hook that reports it are separated by a real window
+    // (see FOREIGN_TURN_RECHECK_MS) — so an ambient turn can pass a busy check
+    // against a TUI a human has already claimed and then type over them. One
+    // short sleep plus a re-read closes that window for the ambient drivers,
+    // which are the only callers with no human waiting on latency.
+    //
+    // RESIDUAL RACE, deliberately not closed here: a human who presses Enter
+    // DURING this sleep — or after it, while the writes below are in flight —
+    // is still not visible to us. Closing it fully means the renderer's own
+    // input path taking the same lock before it forwards a keystroke to the
+    // pty, which is a wider change than this fix; the window shrinks from
+    // "the whole hook latency" to "the write window".
+    if (opts.origin === 'automation') {
+      await delay(this.deps.foreignTurnRecheckMs ?? FOREIGN_TURN_RECHECK_MS);
+      if (this._disposed) return;
+      if (this.busy) {
+        yield {
+          type: 'error',
+          message: 'the human is mid-turn in the terminal brain — the ambient turn stood down',
+        };
+        return;
+      }
     }
 
     const prompt = flattenPromptForPty(this.composePrompt(text));
@@ -1261,7 +1412,7 @@ function never<T>(): Promise<T> {
 export function describePtyExit(exitCode: number | null): string {
   const code = exitCode === null ? '' : ` (exit code ${exitCode})`;
   return (
-    `the terminal brain's Claude Code session ended${code} — check the terminal above ` +
+    `the terminal brain's Claude Code session ended${code} — check the terminal ` +
     '(sign-in, a crash, or a manual quit), then send your message again to restart it.'
   );
 }

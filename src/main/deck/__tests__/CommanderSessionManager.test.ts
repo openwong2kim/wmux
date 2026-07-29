@@ -206,6 +206,40 @@ describe('CommanderSessionManager', () => {
     expect(onIdle).not.toHaveBeenCalled();
   });
 
+  it('notifyForeignTurnEnd wakes the coalescer on a later tick when idle', () => {
+    const adapter = new FakeAdapter();
+    const onIdle = vi.fn();
+    const deferred: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      onIdle,
+      deferIdle: (fn) => deferred.push(fn),
+    });
+    // The human's TUI turn ended. The manager ran no turn of its own, so this
+    // is the only thing that can flush what the coalescer buffered meanwhile.
+    mgr.notifyForeignTurnEnd();
+    expect(onIdle).not.toHaveBeenCalled();
+    expect(deferred).toHaveLength(1);
+    deferred.forEach((fn) => fn());
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifyForeignTurnEnd is ignored once disposed', () => {
+    const adapter = new FakeAdapter();
+    const onIdle = vi.fn();
+    const deferred: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      onIdle,
+      deferIdle: (fn) => deferred.push(fn),
+    });
+    mgr.dispose();
+    mgr.notifyForeignTurnEnd();
+    expect(deferred).toHaveLength(0);
+  });
+
   it('a throwing onIdle never surfaces', async () => {
     const adapter = new FakeAdapter();
     adapter.setScript([{ type: 'turn-end', sessionId: 's' }]);
