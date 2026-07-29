@@ -179,16 +179,19 @@ describe('registerBrowserRpc', () => {
   // volunteers another workspace's live targets to a caller that identifies
   // itself. cdpPort/shellUrl stay unscoped (workspace-agnostic).
   describe('browser.cdp.info workspace scoping (#580)', () => {
-    // A three-target catalog spanning two workspaces plus one untagged target.
-    function registerMultiWs(): RpcRouter {
+    const multiWorkspaceTargets = [
+      { surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' },
+      { surfaceId: 'surface-b', targetId: 'target-b', workspaceId: 'ws-b' },
+      { surfaceId: 'surface-untagged', targetId: 'target-u' },
+    ];
+
+    function registerMultiWs(
+      listTargets = vi.fn(() => multiWorkspaceTargets),
+    ): { router: RpcRouter; listTargets: typeof listTargets } {
       const router = new RpcRouter();
       const webviewCdpManager = {
         getTarget: vi.fn(),
-        listTargets: vi.fn(() => [
-          { surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' },
-          { surfaceId: 'surface-b', targetId: 'target-b', workspaceId: 'ws-b' },
-          { surfaceId: 'surface-untagged', targetId: 'target-u' },
-        ]),
+        listTargets,
         getCdpPort: vi.fn(() => 18800),
         waitForTarget: vi.fn(),
         ensureAwake: vi.fn(async () => null),
@@ -199,11 +202,11 @@ describe('registerBrowserRpc', () => {
         releaseRpcLease: vi.fn(() => true),
       };
       registerBrowserRpc(router, () => null, webviewCdpManager as never);
-      return router;
+      return { router, listTargets };
     }
 
     it('filters targets to the caller workspace and marks the response scoped', async () => {
-      const router = registerMultiWs();
+      const { router } = registerMultiWs();
 
       const response = await router.dispatch({
         id: 'ws1',
@@ -226,24 +229,73 @@ describe('registerBrowserRpc', () => {
     });
 
     it('returns an empty scoped list when the caller owns no live target', async () => {
-      const router = registerMultiWs();
+      vi.useFakeTimers();
+      try {
+        const { router, listTargets } = registerMultiWs();
 
-      const response = await router.dispatch({
-        id: 'ws2',
-        method: 'browser.cdp.info',
-        params: { workspaceId: 'ws-none' },
-      });
+        const responsePromise = router.dispatch({
+          id: 'ws2',
+          method: 'browser.cdp.info',
+          params: { workspaceId: 'ws-none' },
+        });
+        await vi.advanceTimersByTimeAsync(1500);
+        const response = await responsePromise;
 
-      expect(response.ok).toBe(true);
-      if (response.ok) {
-        // Empty + targetsScoped is the signal the engine reads as "own none",
-        // distinct from a legacy main that cannot scope at all.
-        expect(response.result).toEqual({ cdpPort: 18800, targetsScoped: true, workspaceBackend: 'builtin', targets: [] });
+        expect(listTargets).toHaveBeenCalledTimes(2);
+        expect(response.ok).toBe(true);
+        if (response.ok) {
+          // Empty + targetsScoped is the signal the engine reads as "own none",
+          // distinct from a legacy main that cannot scope at all.
+          expect(response.result).toEqual({ cdpPort: 18800, targetsScoped: true, workspaceBackend: 'builtin', targets: [] });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('waits for the caller target when another workspace is already registered', async () => {
+      vi.useFakeTimers();
+      try {
+        const foreignTarget = {
+          surfaceId: 'surface-b',
+          targetId: 'target-b',
+          workspaceId: 'ws-b',
+        };
+        const callerTarget = {
+          surfaceId: 'surface-a',
+          targetId: 'target-a',
+          workspaceId: 'ws-a',
+        };
+        const listTargets = vi.fn()
+          .mockReturnValueOnce([foreignTarget])
+          .mockReturnValue([foreignTarget, callerTarget]);
+        const { router } = registerMultiWs(listTargets);
+
+        const responsePromise = router.dispatch({
+          id: 'ws-race',
+          method: 'browser.cdp.info',
+          params: { workspaceId: 'ws-a' },
+        });
+        expect(listTargets).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(1500);
+        const response = await responsePromise;
+
+        expect(listTargets).toHaveBeenCalledTimes(2);
+        expect(response.ok).toBe(true);
+        if (response.ok) {
+          expect(response.result).toMatchObject({
+            targetsScoped: true,
+            targets: [callerTarget],
+          });
+        }
+      } finally {
+        vi.useRealTimers();
       }
     });
 
     it('returns every target and no scoped flag when no workspaceId is supplied (legacy)', async () => {
-      const router = registerMultiWs();
+      const { router } = registerMultiWs();
 
       const response = await router.dispatch({
         id: 'ws3',

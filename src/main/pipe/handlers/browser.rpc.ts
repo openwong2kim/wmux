@@ -553,21 +553,34 @@ export function registerBrowserRpc(
         ? params['workspaceId']
         : undefined;
 
-    let targets = webviewCdpManager.listTargets();
+    const listRelevantTargets = () => {
+      const targets = webviewCdpManager.listTargets();
+      // Server-side workspace scoping. An untagged target (older registration
+      // path) is dropped from a scoped response rather than leaked, since it
+      // cannot be proven to belong to the caller.
+      return callerWorkspaceId
+        ? targets.filter((t) => t.workspaceId === callerWorkspaceId)
+        : targets;
+    };
+    let scopedTargets = listRelevantTargets();
 
-    // If no targets yet, wait briefly for in-flight registrations to complete.
-    // This eliminates the race where MCP queries before registerWebview() finishes.
-    if (targets.length === 0) {
+    // If the caller has no relevant builtin target yet, wait briefly for an
+    // in-flight registration. A foreign workspace target must not suppress
+    // this grace period. Only 'external' skips the wait — it is the one backend
+    // that never registers a builtin target, so waiting could add latency to a
+    // guaranteed miss. Any other value waits, which costs at most the grace
+    // period; skipping costs a duplicate surface.
+    if (backend() !== 'external' && scopedTargets.length === 0) {
       await new Promise((r) => setTimeout(r, 1500));
-      targets = webviewCdpManager.listTargets();
+      scopedTargets = listRelevantTargets();
     }
 
-    // Server-side workspace scoping. An untagged target (older registration
-    // path) is dropped from a scoped response rather than leaked, since it
-    // cannot be proven to belong to the caller.
-    const scopedTargets = callerWorkspaceId
-      ? targets.filter((t) => t.workspaceId === callerWorkspaceId)
-      : targets;
+    // Read after the wait, not before: the Settings UI can flip the backend
+    // over IPC while the grace period is pending, and a stale 'builtin' here
+    // would send the caller into target-miss retries when the honest answer is
+    // the external-backend contract error. The wait decision is the entry
+    // value's to make; the reported value is the current one.
+    const workspaceBackend = backend();
 
     const cdpPort: number = webviewCdpManager.getCdpPort();
 
@@ -593,7 +606,7 @@ export function registerBrowserRpc(
       // #517 backend fork: with zero targets + 'external' the engine returns
       // the shared contract error instead of the generic target-miss (which
       // would send agents into pointless retry loops).
-      workspaceBackend: backend(),
+      workspaceBackend,
       targets: scopedTargets.map((t) => ({
         surfaceId: t.surfaceId,
         targetId: t.targetId,
