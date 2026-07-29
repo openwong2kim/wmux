@@ -27,10 +27,11 @@
 //         mid-stream must never get bytes spliced into its input; input
 //         activity echoes as output for both shells and TUIs, so output
 //         quiet is the conservative proxy for both).
-//   Target discipline — inject only when the pane is unambiguous: a live
-//         non-claude session whose detected agent slug equals the member id,
-//         else the ONLY live non-claude session in the workspace. Ambiguity
-//         = no injection (polling fallback), never a guess.
+//   Target discipline — a stable principal coordinate must resolve to that
+//         exact live agent pane or no injection occurs. Legacy rows without a
+//         usable principal lookup use the slug/only-live-agent heuristic.
+//         Ambiguity or an invalid exact target = polling fallback, never a
+//         guess.
 //   Re-nudge policy — mention-unread re-nudges with backoff up to a hard
 //         cap, then STOPS and emits `channel.nudgeExhausted` (loop-storm
 //         guard: two agents must not ping-pong each other's token budgets
@@ -386,9 +387,10 @@ export class ChannelWakeWorker {
  *   - an ATTACHED claude pane → null — the renderer Stop-hook owns it. Do not
  *     fall back to the heuristic (re-routing to the wrong single pane = double
  *     delivery + wasted budget);
- *   - if the session the registry points to is dead (race) or the workspace
- *     mismatches (stale registry), do not assert — fall back to the existing
- *     heuristic.
+ *   - if the exact coordinate is missing, dead, in another workspace, or no
+ *     longer hosts an agent, fail closed. A stable principal must never be
+ *     re-routed to a sibling by the heuristic;
+ *   - use the heuristic only for legacy rows without a principal id or lookup.
  */
 export function pickTargetWithPrincipal(
   sessions: WakeSessionView[],
@@ -397,26 +399,19 @@ export function pickTargetWithPrincipal(
   principalId: string | undefined,
   principalPtyIdOf: ((principalId: string) => string | undefined) | undefined,
 ): WakeSessionView | null {
-  if (principalId && principalPtyIdOf) {
-    const ptyId = principalPtyIdOf(principalId);
-    if (ptyId) {
-      const s = sessions.find((x) => x.id === ptyId && x.deferred !== true);
-      if (s && s.workspaceId === workspaceId) {
-        if (s.lastDetectedAgent === 'claude' && s.attached === true) return null;
-        // Same agent-required discipline as the heuristic fallback (Codex
-        // micro-pass on the 2026-07-05 shell-nudge fix): a registry row's
-        // ptyId can outlive the agent — the agent exits, the pane keeps its
-        // shell, the row stays live until the next upsert/purge. A direct
-        // hit on a session with NO detected agent must not auto-submit into
-        // that bare shell; fall through to the heuristic (which now refuses
-        // agent-less panes too).
-        if (s.lastDetectedAgent) return s;
-      }
-      // Session gone / workspace mismatch / agent-less pane → heuristic
-      // fallback (never guess).
-    }
-  }
-  return pickTarget(sessions, workspaceId, memberId);
+  if (!principalId || !principalPtyIdOf) return pickTarget(sessions, workspaceId, memberId);
+
+  const ptyId = principalPtyIdOf(principalId);
+  if (!ptyId) return null;
+
+  const session = sessions.find((candidate) => candidate.id === ptyId && candidate.deferred !== true);
+  if (!session || session.workspaceId !== workspaceId) return null;
+  if (session.lastDetectedAgent === 'claude' && session.attached === true) return null;
+
+  // A registry coordinate can outlive the agent: the agent exits while the
+  // pane keeps its shell. Never auto-submit there, and never redirect a nudge
+  // addressed to this stable principal into a sibling pane.
+  return session.lastDetectedAgent ? session : null;
 }
 
 export function pickTarget(
