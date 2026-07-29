@@ -92,6 +92,30 @@ export function formatChatTime(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+/**
+ * The report rail's view of a brain thread: what still deserves a durable
+ * bubble once the `claude-pty` TUI owns the dock.
+ *
+ * A pure SELECTOR, never a store mutation — `applyBrainEvent` keeps every
+ * message, so the SDK/hermes layouts still render the full bubble log and a
+ * mid-session `brainPtyId` retraction falls back to it for free.
+ *
+ * Kept: assistant messages that CLOSED (`done` / `error`) and carry something
+ * to read (prose or an error). Dropped: user echoes (the operator typed them
+ * into the TUI and watched them there), and still-`streaming` messages (the
+ * `claude-pty` adapter emits one text-delta then turn-end, so a streaming
+ * message is never a finished report). Tool chips are not filtered because
+ * this vendor emits none.
+ */
+export function selectReportRail(messages: DeckBrainMessage[]): DeckBrainMessage[] {
+  return messages.filter(
+    (m) =>
+      m.role === 'assistant' &&
+      (m.status === 'done' || m.status === 'error') &&
+      (m.text.trim().length > 0 || !!m.errorText),
+  );
+}
+
 /** Strip the `mcp__wmux__` (or any `mcp__x__`) prefix for a compact chip label. */
 export function shortToolName(name: string): string {
   const m = /^mcp__[^_]+__(.+)$/.exec(name);
