@@ -39,6 +39,7 @@ import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/command
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty, type BrainPtyHookBlock } from './brainPtyHookBus';
+import { installBrainSkills } from './brainSkills';
 import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
 import { resolveClaudeExecutable, resolveMcpBundlePath, DISALLOWED_TOOLS } from './ClaudeSdkAdapter';
@@ -921,6 +922,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       const brainHome = resolveBrainHomeDir(this.wmuxDir, this._workspaceId);
       try {
         fs.mkdirSync(brainHome, { recursive: true });
+        // The orchestrator's execution contract, as skills rather than
+        // preamble text. Regenerated per spawn so they cannot drift behind the
+        // profile; installBrainSkills never throws, so a skills write that
+        // fails costs the skills, never the spawn.
+        installBrainSkills(brainHome);
       } catch {
         /* an unmakeable home surfaces as the spawn error below */
       }
