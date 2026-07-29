@@ -44,7 +44,12 @@ import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
 import { resolveClaudeExecutable, resolveMcpBundlePath, DISALLOWED_TOOLS } from './ClaudeSdkAdapter';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
-import type { BrainAdapter, BrainEvent, BrainStartOptions } from './BrainAdapter';
+import type {
+  BrainAdapter,
+  BrainEvent,
+  BrainSendOptions,
+  BrainStartOptions,
+} from './BrainAdapter';
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,16 @@ const SUBMIT_DELAY_MS = 400;
  *  damage if it never arrives at all (the credit would otherwise sit forever
  *  and swallow a healthy turn's Stop). */
 const SUPERSEDED_STOP_WINDOW_MS = 60_000;
+/** How long an AUTOMATION-origin send() waits before re-reading `busy`.
+ *
+ *  The human's Enter and the UserPromptSubmit hook that reports it are not
+ *  simultaneous: the TUI accepts the keystroke, then claude spawns the hook
+ *  command, which connects to main's pipe and sends `hooks.signal`. Measured at
+ *  tens to a couple hundred milliseconds. An ambient turn that read `busy`
+ *  inside that window saw idle and typed a second prompt into a TUI the human
+ *  had just claimed. Sleeping one window and re-reading closes the common case
+ *  cheaply — ambient turns are never latency-sensitive. */
+const FOREIGN_TURN_RECHECK_MS = 250;
 /** Claude Code's own wording when `--resume <id>` names a transcript it cannot
  *  find. Matched case-insensitively on the spawn banner only. */
 const STALE_RESUME_MARKER = 'no conversation found';
@@ -570,6 +585,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Pause between writing the prompt and writing the submitting Enter.
    *  Tests shrink this to keep the suite fast. */
   submitDelayMs?: number;
+  /** How long an automation-origin send() waits before re-reading `busy`.
+   *  Tests shrink this. See FOREIGN_TURN_RECHECK_MS. */
+  foreignTurnRecheckMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -1096,7 +1114,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}`;
   }
 
-  async *send(text: string): AsyncIterable<BrainEvent> {
+  async *send(text: string, opts: BrainSendOptions = {}): AsyncIterable<BrainEvent> {
     if (this._disposed) {
       yield { type: 'error', message: 'commander session disposed' };
       return;
@@ -1162,6 +1180,33 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (!ptyId) {
       yield { type: 'error', message: 'the terminal brain is not running' };
       return;
+    }
+
+    // FOREIGN-TURN DOUBLE-CHECK (automation only).
+    //
+    // The manager read `busy` before it called us, but the human's Enter and
+    // the UserPromptSubmit hook that reports it are separated by a real window
+    // (see FOREIGN_TURN_RECHECK_MS) — so an ambient turn can pass a busy check
+    // against a TUI a human has already claimed and then type over them. One
+    // short sleep plus a re-read closes that window for the ambient drivers,
+    // which are the only callers with no human waiting on latency.
+    //
+    // RESIDUAL RACE, deliberately not closed here: a human who presses Enter
+    // DURING this sleep — or after it, while the writes below are in flight —
+    // is still not visible to us. Closing it fully means the renderer's own
+    // input path taking the same lock before it forwards a keystroke to the
+    // pty, which is a wider change than this fix; the window shrinks from
+    // "the whole hook latency" to "the write window".
+    if (opts.origin === 'automation') {
+      await delay(this.deps.foreignTurnRecheckMs ?? FOREIGN_TURN_RECHECK_MS);
+      if (this._disposed) return;
+      if (this.busy) {
+        yield {
+          type: 'error',
+          message: 'the human is mid-turn in the terminal brain — the ambient turn stood down',
+        };
+        return;
+      }
     }
 
     const prompt = flattenPromptForPty(this.composePrompt(text));

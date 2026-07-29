@@ -16,7 +16,12 @@
 // reject is a backstop for a racing double-submit, surfaced as an `error`
 // event rather than silently dropped.
 
-import type { BrainAdapter, BrainEvent, BrainStartOptions } from './BrainAdapter';
+import type {
+  BrainAdapter,
+  BrainEvent,
+  BrainSendOptions,
+  BrainStartOptions,
+} from './BrainAdapter';
 
 export type CommanderStatus = 'idle' | 'busy' | 'disposed';
 
@@ -110,8 +115,12 @@ export class CommanderSessionManager {
    * is disposed. Resolves after the turn's stream completes; the caller (IPC
    * handler) returns the accept/reject result immediately and lets the events
    * flow over the push channel.
+   *
+   * `opts.origin` rides through to the adapter untouched: an ambient driver
+   * (heartbeat / loop / schedule) marks its turn `'automation'` so a brain that
+   * can race a human's own input has a chance to re-check before it commits.
    */
-  async send(text: string): Promise<CommanderSendResult> {
+  async send(text: string, opts: BrainSendOptions = {}): Promise<CommanderSendResult> {
     if (this._status === 'disposed') {
       this.sink({ type: 'error', message: 'commander session is closed' });
       return { ok: false, code: 'disposed' };
@@ -137,7 +146,7 @@ export class CommanderSessionManager {
     let sawTurnEnd = false;
     let sawErrorEvent = false;
     try {
-      for await (const ev of this.adapter.send(trimmed)) {
+      for await (const ev of this.adapter.send(trimmed, opts)) {
         // Disposed mid-turn (app quitting): stop forwarding. The adapter's
         // interrupt() was already fired by dispose(). Read through a widening
         // cast — TS narrows the field to 'busy' here, but dispose() can flip it

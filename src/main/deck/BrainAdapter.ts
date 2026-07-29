@@ -127,6 +127,17 @@ export interface BrainStartOptions {
   resumeSessionId?: string;
 }
 
+/** Per-turn metadata the session manager passes into `send()`. Adapters that
+ *  have no use for it ignore it entirely (every vendor but `claude-pty`). */
+export interface BrainSendOptions {
+  /** What caused this turn. `'human'` is a person pressing send in the deck
+   *  composer; `'automation'` is an ambient driver — a heartbeat wake, a loop
+   *  tick, or a schedule. The terminal brain uses it to decide whether it may
+   *  re-check for a human turn it might have raced (see ClaudePtyBrainAdapter).
+   *  Absent means `'human'`. */
+  origin?: 'human' | 'automation';
+}
+
 /**
  * The swappable brain. One instance owns one logical conversation (its
  * `sessionId` threads turns together / survives a process for resume). The deck
@@ -141,7 +152,7 @@ export interface BrainAdapter {
 
   /** Run one turn. Yields normalized events in order and completes when the turn
    *  ends. Implementations must be safe to iterate exactly once per call. */
-  send(text: string): AsyncIterable<BrainEvent>;
+  send(text: string, opts?: BrainSendOptions): AsyncIterable<BrainEvent>;
 
   /** Abort the in-flight turn (best-effort). Safe to call when idle. */
   interrupt(): void;

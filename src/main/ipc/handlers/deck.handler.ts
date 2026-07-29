@@ -539,7 +539,9 @@ export function registerDeckHandler(
       // optimistic user bubble, visible to the brain. If this human turn carried
       // a resolved decision's block, consume it (id-scoped) so it never re-injects.
       const injectedDecision = loadWorkspaceDecision(workspaceId);
-      const verdict = await mgr.send(withLoopContext(workspaceId, text));
+      // A human at the composer: no double-check delay — they are waiting on it,
+      // and a turn they typed themselves cannot be racing their own TUI input.
+      const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
         void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
@@ -796,7 +798,11 @@ export function registerDeckHandler(
         prompted = withLoopContext(workspaceId, prompt);
       }
       emit(workspaceId, { type: 'turn-start', prompt });
-      const verdict = await mgr.send(prompted);
+      // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
+      // loop, scheduler, decision resume, startup reconcile) — never a human at
+      // the composer. Marking the origin lets the terminal brain re-check for a
+      // human turn it may have raced before it types into the shared TUI.
+      const verdict = await mgr.send(prompted, { origin: 'automation' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok) {
         if (runOpts.reExamine) {

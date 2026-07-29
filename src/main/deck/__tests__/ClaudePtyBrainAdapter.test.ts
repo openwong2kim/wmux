@@ -989,6 +989,68 @@ describe('a turn the human started in the TUI', () => {
   });
 });
 
+describe('an automation turn racing the human`s Enter', () => {
+  it('stands down when the UserPromptSubmit lands inside the double-check window', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 40 });
+    // Establish a live pty with a finished turn, so the ambient send below
+    // takes the "already spawned" path and reaches the double-check.
+    const first = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await first;
+    const writesBefore = host.writes.length;
+
+    // The ambient turn starts while the adapter still reads idle — the human's
+    // Enter is already typed but its hook has not arrived yet.
+    expect(adapter.busy).toBe(false);
+    const ambient = collect(adapter.send('ambient wake', { origin: 'automation' }));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+
+    expect(await ambient).toEqual([
+      {
+        type: 'error',
+        message: 'the human is mid-turn in the terminal brain — the ambient turn stood down',
+      },
+    ]);
+    // Nothing was typed into the TUI the human just claimed.
+    expect(host.writes.length).toBe(writesBefore);
+    adapter.dispose();
+  });
+
+  it('proceeds when no foreign turn opened during the window', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 5 });
+    const turn = collect(adapter.send('ambient wake', { origin: 'automation' }));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    expect(host.writes[0].data).toBe('ambient wake');
+    deliverBrainPtyHookSignal(
+      signal('agent.stop', host.created[0].id, {
+        agentSessionId: 'sess-1',
+        payload: { transcript_path: '/tmp/t.jsonl' },
+      }),
+    );
+    expect(await turn).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('does not delay a human-origin send', async () => {
+    const host = makeHost();
+    // A recheck window long enough that a human send waiting on it would fail
+    // the waitFor below.
+    const adapter = makeAdapter(host, { foreignTurnRecheckMs: 5_000 });
+    const turn = collect(adapter.send('typed by a person'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0), { timeout: 1_000 });
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's' }));
+    await turn;
+    adapter.dispose();
+  });
+});
+
 // ── hook bus isolation ──────────────────────────────────────────────────────
 
 describe('brainPtyHookBus', () => {
