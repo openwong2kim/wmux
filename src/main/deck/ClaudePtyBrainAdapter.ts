@@ -38,7 +38,8 @@ import { getAccountStore } from '../account/accountStore';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
-import { registerBrainPty } from './brainPtyHookBus';
+import { registerBrainPty, type BrainPtyHookBlock } from './brainPtyHookBus';
+import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
 import { resolveClaudeExecutable, resolveMcpBundlePath, DISALLOWED_TOOLS } from './ClaudeSdkAdapter';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
@@ -291,13 +292,19 @@ export function buildBrainSettingsProfile(opts: {
   };
   if (opts.bridgePath) {
     for (const event of ['Stop', 'SessionStart'] as const) {
+      // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
+      // response and exits 2 when the adapter refuses to end the turn. The
+      // verdict has to travel on this one round trip — a second, independent
+      // Stop hook would fire in PARALLEL with this one, so the turn would
+      // already have ended by the time the block landed.
+      const gateFlag = event === 'Stop' ? ' --gate' : '';
       hooks[event] = [
         {
           matcher: '',
           hooks: [
             {
               type: 'command',
-              command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.bridgePath)} ${event}`,
+              command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.bridgePath)} ${event}${gateFlag}`,
             },
           ],
         },
@@ -472,6 +479,11 @@ export interface ClaudePtyBrainAdapterDeps {
   onPtySpawned?: (ptyId: string | null) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
+  /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
+   *  which is what the SDK-era tests and any non-deck embedding get. Injected
+   *  rather than imported so the adapter never reaches into the WorkspaceMirror
+   *  itself — the deck owns that lookup. */
+  evaluateStopGate?: (workspaceId: string, consecutiveBlocks: number) => StopGateVerdict;
   sessionStartTimeoutMs?: number;
   turnTimeoutMs?: number;
   staleResumeWindowMs?: number;
@@ -532,6 +544,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  swallows exactly one Stop. */
   private supersededTurns = 0;
   private supersededTimer: ReturnType<typeof setTimeout> | null = null;
+  /** How many times in a ROW the Stop gate has refused. Reset on any allowed
+   *  Stop and on every pty teardown; feeds the gate's own refusal cap, which is
+   *  what keeps a gate from turning into a 30-minute trap. */
+  private consecutiveStopBlocks = 0;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -566,8 +582,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   // ── hook ingest ─────────────────────────────────────────────────────────
 
-  /** Every hook signal from THIS pty. Only two kinds carry turn meaning. */
-  private onHookSignal(signal: AgentSignal): void {
+  /** Every hook signal from THIS pty. Only two kinds carry turn meaning.
+   *
+   *  Returning `{ block }` refuses the hook: the reason travels back down the
+   *  `hooks.signal` response and the gated bridge turns it into exit 2, so the
+   *  TUI keeps working. The turn stays open — `turnStop` is neither nulled nor
+   *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
+   *  backstop. */
+  private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock {
     if (signal.kind === 'agent.session_start') {
       this.sessionStartSeen = true;
       this.sessionStarted?.resolve();
@@ -588,8 +610,32 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // still ends exactly once.
     const waiter = this.turnStop;
     if (!waiter) return;
+    // The gate only ever applies to a turn this adapter opened: a Stop with no
+    // waiter was already dropped above, so refusing one here can never strand a
+    // turn nobody is awaiting.
+    const verdict = this.evaluateStopGate();
+    if (verdict) {
+      this.consecutiveStopBlocks += 1;
+      return { block: verdict };
+    }
+    this.consecutiveStopBlocks = 0;
     this.turnStop = null;
     waiter.resolve(signal);
+  }
+
+  /** Run the injected Stop gate. Returns the refusal reason, or null to allow.
+   *  Fails OPEN on every error path: no predicate, no workspace, or a predicate
+   *  that threw all mean "let the turn end". */
+  private evaluateStopGate(): string | null {
+    const gate = this.deps.evaluateStopGate;
+    if (!gate || !this._workspaceId) return null;
+    try {
+      const verdict = gate(this._workspaceId, this.consecutiveStopBlocks);
+      return verdict.block ? verdict.reason : null;
+    } catch (err) {
+      console.warn(`[deck] terminal-brain stop gate threw — allowing the turn to end: ${String(err)}`);
+      return null;
+    }
   }
 
   /** Bank a Stop-swallowing credit for a turn we gave up on, and ESC the TUI
@@ -863,6 +909,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private detachPty(): void {
     this.ptyId = null;
     this.bannerWatching = false;
+    this.consecutiveStopBlocks = 0;
     this.unregisterHooks?.();
     this.unregisterHooks = null;
     this.unsubscribeData?.();

@@ -31,6 +31,7 @@ import {
   resolveBrainBridgePath,
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
+import { evaluateStopGate } from '../../deck/stopGate';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -242,6 +243,14 @@ export function registerDeckHandler(
             host: createBrainPtyHost(client),
             bridgePath: resolveBrainBridgePath(),
             onPtySpawned: adapterOpts.onPtySpawned,
+            // The Stop gate: the orchestrator may not end a turn while worker
+            // panes are still running or waiting on it. The mirror lookup lives
+            // here, not in the adapter, so the predicate stays pure.
+            evaluateStopGate: (workspaceId, consecutiveBlocks) =>
+              evaluateStopGate({
+                snapshot: getWorkspaceMirror().getFleetSnapshot(workspaceId),
+                consecutiveBlocks,
+              }),
             // The model picker applies to the TUI brain too (`--model`);
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).

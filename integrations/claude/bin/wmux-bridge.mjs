@@ -14,7 +14,12 @@
 //           The pre-M1 path; kept for an older wmux, and forced by
 //           WMUX_HOOKS_TO_MAIN=1 (kill switch).
 //   5. Logs the outcome (and which endpoint served it) to ~/.wmux/bridge.log.
-//   6. Exits 0 ALWAYS (so a wmux problem never breaks Claude Code).
+//   6. Exits 0 (so a wmux problem never breaks Claude Code) — UNLESS invoked
+//      with `--gate` and the endpoint answers with a `block`, in which case the
+//      reason goes to stderr and the exit code is 2 (Claude Code's "do not let
+//      this hook's action proceed" contract). Only the terminal orchestrator's
+//      Stop hook is wired that way; every other invocation is byte-for-byte
+//      what it always was.
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside a Claude Code plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -152,7 +157,13 @@ function readTokenFile(tokenPath) {
 // skipped — an absent token means that endpoint has never run, so connecting
 // could only produce an `unauthorized` round-trip. WMUX_HOOKS_TO_MAIN=1 drops
 // the daemon target entirely (kill switch: byte-for-byte the pre-M1 routing).
-function resolveTargets() {
+// `gateMode` narrows the walk to MAIN. The gate verdict is produced by the
+// brain-pty lane inside main's `hooks.signal`; the daemon does not serve it, so
+// a fallback to the daemon would answer `{ok:true}` with no block and silently
+// turn every refusal into an allowed Stop. The brain already forces
+// WMUX_HOOKS_TO_MAIN=1, so this is a no-op in practice — it is here so the
+// no-fallback rule holds even if that env is ever lost.
+function resolveTargets(gateMode = false) {
   // WMUX_PIPE_NAME collapses the walk to ONE explicit pipe, matching the codex
   // and opencode bridges (which have had it all along — this one did not, which
   // meant no harness could exercise this bridge without aiming it at the real
@@ -170,11 +181,15 @@ function resolveTargets() {
     const token = readTokenFile(getDaemonAuthTokenPath()) || readTokenFile(getAuthTokenPath());
     if (!token) return [];
     // Addressed as the daemon, because that is what M1 made the bridge talk to
-    // and what a probe needs to observe.
-    return [{ name: 'daemon', pipe: pipeOverride, token, method: 'daemon.hooks.signal' }];
+    // and what a probe needs to observe. In gate mode the override still aims
+    // the socket wherever the harness points it, but the request is addressed
+    // to MAIN — the daemon has no gate to consult.
+    return gateMode
+      ? [{ name: 'main', pipe: pipeOverride, token, method: 'hooks.signal' }]
+      : [{ name: 'daemon', pipe: pipeOverride, token, method: 'daemon.hooks.signal' }];
   }
   const targets = [];
-  if (process.env.WMUX_HOOKS_TO_MAIN !== '1') {
+  if (!gateMode && process.env.WMUX_HOOKS_TO_MAIN !== '1') {
     const token = readTokenFile(getDaemonAuthTokenPath());
     if (token) {
       targets.push({ name: 'daemon', pipe: getDaemonPipeName(), token, method: 'daemon.hooks.signal' });
@@ -657,6 +672,9 @@ async function sendToTargets(targets, buildRequest) {
 
 async function main() {
   const hookName = process.argv[2];
+  // Second argv token. `--gate` is the only one recognised; anything else is
+  // ignored, so an older wmux running a newer profile just behaves as before.
+  const gateMode = process.argv.slice(3).includes('--gate');
   if (!hookName || !HOOK_TO_KIND[hookName]) {
     logEvent('unknown-hook-name', { argv: process.argv });
     return; // exit 0 below
@@ -700,7 +718,7 @@ async function main() {
 
   // Endpoints to try, daemon first (see resolveTargets). No token for either
   // endpoint means wmux has never run for this user — drop as before.
-  const targets = resolveTargets();
+  const targets = resolveTargets(gateMode);
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;
@@ -845,6 +863,24 @@ async function main() {
     });
   }
 
+  // Gate verdict. Only read in gate mode, and only when the handler actually
+  // answered: a transport failure, a rejection, or a wmux that predates the
+  // field all leave `block` undefined, which allows the hook. The gate fails
+  // OPEN by construction — a hook can only ever be blocked by an explicit,
+  // successfully delivered refusal.
+  let gateExitCode = 0;
+  if (gateMode && innerOk) {
+    const block = rpcResult.result.block;
+    const reason = block && typeof block.reason === 'string' ? block.reason : null;
+    if (reason) {
+      // Exit 2 + stderr is Claude Code's contract for "block this and tell the
+      // model why"; stderr is what the model is shown.
+      process.stderr.write(`${reason}\n`);
+      gateExitCode = 2;
+      logEvent('gate-blocked', { hook: hookName, target: targetName });
+    }
+  }
+
   // X6 ③: a session-lifecycle capture that did NOT durably reach wmux (anything
   // but innerOk — ENOENT, no-workspace-match, timeout, internal-error) would be
   // lost forever. Spool it so the daemon reconciles it on its next boot/connect
@@ -866,13 +902,18 @@ async function main() {
       ts: envelope.ts,
     });
   }
+
+  return gateExitCode;
 }
 
-// Run; never throw upward (every error path logs and falls through to exit 0).
+// Run; never throw upward (every error path logs and returns the allow code).
+// main() resolves to the process exit code: 0 everywhere except a gated hook
+// that was explicitly refused.
 main()
   .catch((err) => {
     logEvent('uncaught', { error: String(err) });
+    return 0;
   })
-  .finally(() => {
-    process.exit(0);
+  .then((code) => {
+    process.exit(typeof code === 'number' ? code : 0);
   });

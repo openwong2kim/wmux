@@ -169,6 +169,10 @@ function makeAdapter(host: FakeHost, over: Record<string, unknown> = {}): Claude
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Drain an adapter turn, feeding hook signals as the fake bridge would. */
 async function collect(iterable: AsyncIterable<BrainEvent>): Promise<BrainEvent[]> {
   const out: BrainEvent[] = [];
@@ -558,7 +562,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     // The hook bus registration lands just after createSession resolves, so
     // retry until the signal is actually claimed by this pty's lane.
     await vi.waitFor(() =>
-      expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId))).toBe(true),
+      expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId)).consumed).toBe(true),
     );
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
@@ -691,7 +695,7 @@ describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {
     expect(host.destroyed).toEqual([host.created[0].id]);
     expect(adapter.brainPtyId).toBeNull();
     // A late hook signal from the abandoned pty must not be claimed any more.
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id))).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id)).consumed).toBe(false);
     adapter.dispose();
   });
 
@@ -740,6 +744,99 @@ describe('ClaudePtyBrainAdapter — spawn lifecycle', () => {
   });
 });
 
+// ── the Stop gate ───────────────────────────────────────────────────────────
+
+describe('the Stop gate', () => {
+  it('keeps the turn open on a blocked Stop and ends it exactly once when allowed', async () => {
+    const host = makeHost();
+    const calls: number[] = [];
+    let blocking = true;
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: (_ws: string, consecutiveBlocks: number) => {
+        calls.push(consecutiveBlocks);
+        return blocking
+          ? { block: true, reason: 'worker-a (running) still needs you' }
+          : { block: false };
+      },
+    });
+    const turn = collect(adapter.send('delegate the build'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+
+    // The refusal rides the delivery result — this is what the gated bridge
+    // turns into exit 2.
+    const blocked = deliverBrainPtyHookSignal(
+      signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }),
+    );
+    expect(blocked.consumed).toBe(true);
+    expect(blocked.block).toContain('worker-a (running)');
+
+    // The turn must NOT have ended. Nothing else can prove that from out here,
+    // so race the pending iterator against a tick.
+    const settled = await Promise.race([turn.then(() => 'ended'), delay(20).then(() => 'open')]);
+    expect(settled).toBe('open');
+
+    // A second refusal reports a RISEN consecutive count — that counter is what
+    // caps the refusal run.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    expect(calls).toEqual([0, 1]);
+
+    blocking = false;
+    deliverBrainPtyHookSignal(
+      signal('agent.stop', ptyId, {
+        agentSessionId: 'sess-1',
+        payload: { transcript_path: '/tmp/t.jsonl' },
+      }),
+    );
+    const events = await turn;
+    expect(events).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    // The allowed Stop reset the run, so the NEXT turn starts from zero.
+    expect(calls).toEqual([0, 1, 2]);
+    adapter.dispose();
+  });
+
+  it('is never consulted for a Stop with no open turn', async () => {
+    const host = makeHost();
+    let consulted = 0;
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: () => {
+        consulted += 1;
+        return { block: true, reason: 'nope' };
+      },
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    adapter.dispose();
+    await turn;
+    // Dispose released the id; a late Stop is not even delivered, let alone
+    // gated — a refusal there would strand a turn nobody is awaiting.
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId)).consumed).toBe(false);
+    expect(consulted).toBe(0);
+  });
+
+  it('fails open when the predicate throws', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, {
+      evaluateStopGate: () => {
+        throw new Error('mirror exploded');
+      },
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const result = deliverBrainPtyHookSignal(
+      signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-x' }),
+    );
+    expect(result.block).toBeUndefined();
+    const events = await turn;
+    expect(events.some((e) => e.type === 'turn-end')).toBe(true);
+    adapter.dispose();
+  });
+});
+
 // ── hook bus isolation ──────────────────────────────────────────────────────
 
 describe('brainPtyHookBus', () => {
@@ -750,13 +847,13 @@ describe('brainPtyHookBus', () => {
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const ptyId = host.created[0].id;
     // A worker pane's signal falls through to the fleet path untouched.
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', 'pane-42'))).toBe(false);
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's' }))).toBe(true);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', 'pane-42')).consumed).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's' })).consumed).toBe(true);
     await turn;
     // After dispose the id is released — a late signal must not be swallowed
     // by a dead adapter.
     adapter.dispose();
-    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId))).toBe(false);
+    expect(deliverBrainPtyHookSignal(signal('agent.stop', ptyId)).consumed).toBe(false);
   });
 });
 
