@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => '/repo', getPath: () => '/home' },
@@ -30,6 +31,7 @@ import {
   ClaudePtyBrainAdapter,
   scrubBrainSpawnEnv,
   buildBrainSettingsProfile,
+  buildDenyScript,
   buildBrainLaunchCommand,
   flattenPromptForPty,
   resolveBrainHomeDir,
@@ -295,11 +297,14 @@ describe('buildBrainSettingsProfile', () => {
   const profile = buildBrainSettingsProfile({
     bridgePath: '/home/.wmux/hooks/wmux-bridge.mjs',
     nodePath: '/usr/bin/node',
+    denyScriptPath: '/tmp/brain-profiles/deny-1.js',
   });
 
-  it('denies every built-in the SDK adapter disallows, plus Write', () => {
+  it('denies every built-in the SDK adapter disallows, plus Write and AskUserQuestion', () => {
     const deny = (profile.permissions as { deny: string[] }).deny;
-    expect(deny).toEqual(['Agent', 'Task', 'Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
+    expect(deny).toEqual([
+      'Agent', 'Task', 'Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write', 'AskUserQuestion',
+    ]);
   });
 
   it('pre-approves exactly the commander MCP surface', () => {
@@ -308,24 +313,70 @@ describe('buildBrainSettingsProfile', () => {
     expect(allow.every((t) => t.startsWith('mcp__wmux__'))).toBe(true);
   });
 
-  it('wires Stop + SessionStart to the bundled bridge', () => {
+  it('wires Stop + SessionStart to the bundled bridge, and only Stop gates', () => {
     const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     for (const event of ['Stop', 'SessionStart']) {
       const command = hooks[event][0].hooks[0].command;
       expect(command).toContain('wmux-bridge.mjs');
       expect(command).toContain(event);
     }
+    expect(hooks.Stop[0].hooks[0].command).toContain('--gate');
+    expect(hooks.SessionStart[0].hooks[0].command).not.toContain('--gate');
   });
 
-  it('backstops each denied tool with a PreToolUse hook that exits 2', () => {
+  it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
-    expect(pre.PreToolUse.map((g) => g.matcher)).toContain('Bash');
+    const matchers = pre.PreToolUse.map((g) => g.matcher);
+    expect(matchers).toContain('Bash');
+    expect(matchers).toContain('AskUserQuestion');
+    for (const group of pre.PreToolUse) {
+      const command = group.hooks[0].command;
+      expect(command).toContain('/tmp/brain-profiles/deny-1.js');
+      expect(command.endsWith(` ${group.matcher}`)).toBe(true);
+      // Windows-quoting regression guard (F8): the hook command is run by
+      // Claude Code's OWN shell — a PowerShell on Windows, which reads neither
+      // of this module's quoters. Exactly two double-quoted path arguments and
+      // a bare tool name is the only shape that survives both shells, so no
+      // quoted argument may contain a quote of its own.
+      expect(command).toMatch(/^"[^"]+" "[^"]+" [A-Za-z]+$/);
+    }
+  });
+
+  it('falls back to a bare exit 2 when no deny script could be written', () => {
+    const noScript = buildBrainSettingsProfile({
+      bridgePath: null,
+      nodePath: '/usr/bin/node',
+      denyScriptPath: null,
+    });
+    const pre = noScript.hooks as { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
     expect(pre.PreToolUse[0].hooks[0].command).toContain('process.exit(2)');
   });
 
   it('omits the signal hooks when no bridge could be located', () => {
     const noBridge = buildBrainSettingsProfile({ bridgePath: null, nodePath: '/usr/bin/node' });
     expect((noBridge.hooks as Record<string, unknown>).Stop).toBeUndefined();
+  });
+});
+
+describe('buildDenyScript', () => {
+  it('exits 2 and points AskUserQuestion at the decision gate', () => {
+    const script = buildDenyScript();
+    expect(script).toContain('process.exit(2)');
+    expect(script).toContain('mcp__wmux__deck_ask_decision');
+    // The reason has to reach stderr — that is the only channel Claude Code
+    // shows the model on a blocked call.
+    expect(script).toContain('process.stderr.write');
+  });
+
+  it('runs as real node, blocking with the tool-specific reason', () => {
+    const scriptPath = path.join(tmpDir, 'deny.js');
+    fs.writeFileSync(scriptPath, buildDenyScript(), 'utf8');
+    const result = spawnSync(process.execPath, [scriptPath, 'Bash'], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('no shell');
+    // An unknown tool still blocks rather than falling through.
+    const unknown = spawnSync(process.execPath, [scriptPath, 'SomethingElse'], { encoding: 'utf8' });
+    expect(unknown.status).toBe(2);
   });
 });
 
@@ -600,7 +651,7 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     const turn = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const dir = path.join(tmpDir, 'brain-profiles');
-    expect(fs.readdirSync(dir).length).toBe(2); // settings + mcp config
+    expect(fs.readdirSync(dir).length).toBe(3); // settings + mcp config + deny script
     adapter.dispose();
     await turn;
     expect(fs.readdirSync(dir)).toEqual([]);
