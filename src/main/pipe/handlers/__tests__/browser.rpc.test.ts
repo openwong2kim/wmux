@@ -814,6 +814,12 @@ describe('registerBrowserRpc — scoped callers stay inside their workspace (#69
     vi.clearAllMocks();
     mockWebContents.isDestroyed.mockReturnValue(false);
     sendToRendererMock.mockResolvedValue({ ok: true });
+    // Primed here, not inherited: without it validateUrl throws a TypeError
+    // and every navigate case below fails before reaching what it tests —
+    // which makes the ok:false assertions pass for the wrong reason and only
+    // shows up when this block is run on its own.
+    validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
+    mockWebContents.loadURL.mockResolvedValue(undefined);
   });
 
   it('does not evaluate in a surface owned by another workspace', async () => {
@@ -910,5 +916,124 @@ describe('registerBrowserRpc — scoped callers stay inside their workspace (#69
     expect(response.ok).toBe(true);
     if (response.ok) expect(response.result).toEqual({ token: null });
     expect(cdp.acquireRpcLease).not.toHaveBeenCalled();
+  });
+});
+
+// ── #695 round two: the navigate fallback, in every combination ──────────────
+// The first attempt guarded on `scope && surfaceId`, which left the case the
+// issue is actually about — a scoped caller with no surface id, whose default
+// selection is the workspace-blind one — still falling through. It also refused
+// a caller whose ownership had already been proven and whose CDP call merely
+// failed. Both directions are pinned here.
+describe('registerBrowserRpc — navigate fallback under a scope (#695)', () => {
+  const OWN = {
+    surfaceId: 'own-surface', webContentsId: 42,
+    targetId: 'target-own', wsUrl: 'ws://127.0.0.1/devtools/page/own', workspaceId: 'ws-a',
+  };
+  const FOREIGN = {
+    surfaceId: 'foreign-surface', webContentsId: 43,
+    targetId: 'target-foreign', wsUrl: 'ws://127.0.0.1/devtools/page/foreign', workspaceId: 'ws-b',
+  };
+
+  function registerWith(sessions: Map<string, typeof OWN>) {
+    const owns = (t: typeof OWN, ws?: string) => !ws || t.workspaceId === ws;
+    const cdp = {
+      getTarget: vi.fn((surfaceId?: string, ws?: string) => {
+        if (surfaceId) {
+          const t = sessions.get(surfaceId);
+          return t && owns(t, ws) ? t : null;
+        }
+        for (const t of sessions.values()) if (owns(t, ws)) return t;
+        return null;
+      }),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      listTargets: vi.fn(() => [...sessions.values()]),
+      getCdpPort: vi.fn(() => 18800),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    const router = new RpcRouter();
+    registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
+    return { router, cdp };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    // Primed here, not inherited: without it validateUrl throws a TypeError
+    // and every navigate case below fails before reaching what it tests —
+    // which makes the ok:false assertions pass for the wrong reason and only
+    // shows up when this block is run on its own.
+    validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
+    mockWebContents.loadURL.mockResolvedValue(undefined);
+  });
+
+  it('refuses a scoped caller that owns nothing, with no surface id to hide behind', async () => {
+    // The bridge would have picked its own default here — someone else's pane.
+    const { router } = registerWith(new Map([[FOREIGN.surfaceId, FOREIGN]]));
+
+    const response = await router.dispatch({
+      id: 'nv1', method: 'browser.navigate',
+      params: { url: 'https://example.com', workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('still lets a proven owner use the bridge when CDP itself fails', async () => {
+    // Ownership was established before the CDP attempt, so a loadURL failure
+    // is a transport problem, not an authorization one.
+    mockWebContents.loadURL.mockRejectedValueOnce(new Error('CDP navigation failed'));
+    const { router } = registerWith(new Map([[OWN.surfaceId, OWN]]));
+
+    const response = await router.dispatch({
+      id: 'nv2', method: 'browser.navigate',
+      params: { url: 'https://example.com', surfaceId: OWN.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate',
+      expect.objectContaining({ surfaceId: OWN.surfaceId }),
+    );
+  });
+
+  it('pins the bridge to the resolved surface when a scoped caller named none', async () => {
+    // Without this the bridge falls back to its own default pick, which is the
+    // workspace-blind selection the scope just avoided.
+    mockWebContents.loadURL.mockRejectedValueOnce(new Error('CDP navigation failed'));
+    const { router } = registerWith(new Map([[FOREIGN.surfaceId, FOREIGN], [OWN.surfaceId, OWN]]));
+
+    const response = await router.dispatch({
+      id: 'nv3', method: 'browser.navigate',
+      params: { url: 'https://example.com', workspaceId: 'ws-a' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate',
+      expect.objectContaining({ surfaceId: OWN.surfaceId }),
+    );
+  });
+
+  it('leaves the unscoped fallback exactly as it was', async () => {
+    const { router } = registerWith(new Map());
+
+    const response = await router.dispatch({
+      id: 'nv4', method: 'browser.navigate',
+      params: { url: 'https://example.com' },
+    });
+
+    expect(response.ok).toBe(true);
+    // No surfaceId sent, no workspace pinned — the historical shape.
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(), 'browser.navigate', { url: 'https://example.com' },
+    );
   });
 });

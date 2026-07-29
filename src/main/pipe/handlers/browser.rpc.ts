@@ -399,14 +399,23 @@ export function registerBrowserRpc(
       }
     }
 
-    // Fallback to renderer bridge. The renderer resolves a surface id without
-    // any workspace check, so a scoped caller that just failed the lookup
-    // above must not be handed this path: forwarding the same foreign
-    // surfaceId one layer down would drive the pane the scope just refused,
-    // and the refusal would have bought nothing (#695). Unscoped callers keep
-    // the fallback — it is the packaged-build route for the whole tool set.
-    if (scopeOf(params) && surfaceId) {
-      throw new Error('browser.navigate: no webview target registered');
+    // Fallback to the renderer bridge, which resolves a surface with no
+    // workspace check of its own — it picks the caller-supplied id, or its own
+    // default when there is none. Neither choice is safe to hand a scoped
+    // caller unless this side has already proven ownership (#695).
+    if (scopeOf(params)) {
+      // No target means the scoped lookup refused one, or there is none to
+      // own. Routing that to the bridge would reinstate exactly the
+      // workspace-blind selection this change removes, so refuse instead.
+      if (!target) throw new Error('browser.navigate: no webview target registered');
+      // A target did resolve and CDP merely failed on it. Ownership is already
+      // established, so the bridge is fine — but pin it to that exact surface.
+      // Leaving the id absent would let the bridge choose its own default,
+      // which is the workspace-blind pick all over again.
+      return sendToRenderer(getWindow, 'browser.navigate', {
+        url: params['url'],
+        surfaceId: target.surfaceId,
+      });
     }
     return sendToRenderer(getWindow, 'browser.navigate', {
       url: params['url'],
