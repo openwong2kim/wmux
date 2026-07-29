@@ -1,6 +1,8 @@
 import { ipcMain, shell, app } from 'electron';
 import { spawn, execFile } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -243,13 +245,119 @@ function resolveCommand(cmd: string): Promise<string | null> {
   });
 }
 
-async function getAvailableFolderApps(): Promise<FolderAppEntry[]> {
-  // Explorer is always present — shell.openPath handles it, no probe needed.
-  const apps: FolderAppEntry[] = [
-    { id: 'explorer', name: 'File Explorer', command: '', args: [] },
-  ];
+/** macOS launcher — `open` hands the folder to the app bundle's own handler. */
+const MACOS_OPEN = '/usr/bin/open';
 
-  // Non-Windows: shell.openPath already covers Finder / xdg-open, and no
+/**
+ * Where a `.app` bundle can live. `/Applications` is the normal install target;
+ * `~/Applications` is where a per-user install (and Homebrew Cask's `--appdir`
+ * variants) put it. Both are checked, in that order.
+ *
+ * `path.posix` throughout, not bare `path`: these are macOS paths, so they must
+ * not pick up win32 separator semantics from whatever host the code is compiled
+ * or tested on.
+ */
+function darwinAppDirs(): string[] {
+  return ['/Applications', path.posix.join(os.homedir(), 'Applications')];
+}
+
+interface DarwinFolderAppCandidate {
+  id: string;
+  name: string;
+  /**
+   * Bundle names to look for, in preference order. A bare name is resolved
+   * against `darwinAppDirs()`; an absolute path is taken as-is, which is how
+   * Apple's own bundles under `/System` are reached.
+   */
+  bundles: string[];
+}
+
+/**
+ * Candidates on macOS, in menu order — the same shortlist as Windows, with the
+ * platform's terminals standing in for Windows Terminal.
+ *
+ * Detection is by bundle presence on disk rather than by PATH, because PATH is
+ * not usable here: a GUI app launched from Finder or the Dock never runs a login
+ * shell, so its PATH is the bare `/usr/bin:/bin:/usr/sbin:/sbin` and contains
+ * neither `/usr/local/bin` (where VS Code installs its `code` shim) nor
+ * Homebrew's `/opt/homebrew/bin`. Probing PATH would report "nothing installed"
+ * on a machine full of editors.
+ *
+ * GitHub Desktop solves the same problem by asking LaunchServices for the path
+ * of a bundle identifier (app/src/lib/editors/darwin.ts, MIT). That is more
+ * thorough — it finds a bundle wherever the user dragged it — but it needs a
+ * compiled Swift helper (sindresorhus/app-path ships one) invoked per lookup.
+ * A signed and notarized app pays real cost for an extra Mach-O, so this checks
+ * the two conventional directories instead: no subprocess at all, and the miss
+ * case is an editor installed somewhere unconventional.
+ */
+const DARWIN_FOLDER_APP_CANDIDATES: readonly DarwinFolderAppCandidate[] = [
+  { id: 'code', name: 'VS Code', bundles: ['Visual Studio Code.app'] },
+  { id: 'code-insiders', name: 'VS Code - Insiders', bundles: ['Visual Studio Code - Insiders.app'] },
+  { id: 'cursor', name: 'Cursor', bundles: ['Cursor.app'] },
+  { id: 'windsurf', name: 'Windsurf', bundles: ['Windsurf.app'] },
+  {
+    id: 'terminal',
+    name: 'Terminal',
+    // Ships with the OS. Relocated under /System in Catalina; the /Applications
+    // path is the pre-Catalina home, kept so an older machine still finds it.
+    bundles: ['/System/Applications/Utilities/Terminal.app', '/Applications/Utilities/Terminal.app'],
+  },
+  { id: 'iterm', name: 'iTerm', bundles: ['iTerm.app'] },
+];
+
+/** True when `p` exists and is reachable. Never throws. */
+async function exists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** First bundle in `bundles` that is present on disk, or null. */
+async function resolveBundle(bundles: string[]): Promise<string | null> {
+  for (const bundle of bundles) {
+    const paths = path.posix.isAbsolute(bundle)
+      ? [bundle]
+      : darwinAppDirs().map(dir => path.posix.join(dir, bundle));
+    for (const candidate of paths) {
+      if (await exists(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** The always-present entry that shell.openPath serves, named for the platform. */
+function explorerEntry(): FolderAppEntry {
+  const name = process.platform === 'darwin' ? 'Finder'
+    : process.platform === 'win32' ? 'File Explorer'
+    : 'File manager';
+  return { id: 'explorer', name, command: '', args: [] };
+}
+
+async function getAvailableFolderApps(): Promise<FolderAppEntry[]> {
+  // The file manager is always available — shell.openPath handles it, no probe.
+  const apps: FolderAppEntry[] = [explorerEntry()];
+
+  if (process.platform === 'darwin') {
+    const resolved = await Promise.all(
+      DARWIN_FOLDER_APP_CANDIDATES.map(app => resolveBundle(app.bundles)),
+    );
+    DARWIN_FOLDER_APP_CANDIDATES.forEach((app, i) => {
+      const bundle = resolved[i];
+      if (!bundle) return;
+      // `open -a <bundle> <folder>` — LaunchServices picks the executable inside
+      // the bundle and reuses a running instance, which is what a user expects
+      // from a Dock app. Spawning the inner Mach-O directly would start a second
+      // copy. Plain argv, so none of the Windows quoting applies here.
+      apps.push({ id: app.id, name: app.name, command: MACOS_OPEN, args: ['-a', bundle] });
+    });
+    return apps;
+  }
+
+  // Linux and anything else: shell.openPath already covers xdg-open, and no
   // extra launcher is wired up yet, so there is nothing to probe for.
   if (process.platform !== 'win32') {
     return apps;
@@ -302,8 +410,10 @@ function expandableVars(s: string): string[] {
  *   • every token is quoted, so cmd's metacharacters (`&`, `|`, `<`, `>`, `^`)
  *     are literal — quoting is the whole defense, which is why an embedded `"`
  *     is refused rather than escaped. Windows paths cannot contain one.
- * Anything else (Windows Terminal's `wt.exe`) is spawned directly with an
- * argv array, no shell in the picture at all.
+ * Anything else is spawned directly from its absolute path with an argv array
+ * and no shell in the picture — Windows Terminal's `wt.exe`, and on macOS
+ * `/usr/bin/open -a <bundle>`, where `open` does the quoting-free handoff to
+ * LaunchServices for us.
  *
  * Resolves the same `{ ok, error }` shape either way, decided by the real
  * `spawn` / `error` event rather than optimistically — the renderer shows a
@@ -311,7 +421,9 @@ function expandableVars(s: string): string[] {
  */
 function launchFolderApp(entry: FolderAppEntry, folderPath: string): Promise<{ ok: boolean; error?: string }> {
   const ext = path.extname(entry.command).toLowerCase();
-  const isBatch = ext === '.cmd' || ext === '.bat';
+  // Windows-only route. Scoped explicitly so a launcher that merely happens to
+  // end in .cmd on another platform is never handed to a cmd.exe that is not there.
+  const isBatch = process.platform === 'win32' && (ext === '.cmd' || ext === '.bat');
 
   let file: string;
   let args: string[];

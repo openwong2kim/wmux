@@ -81,6 +81,19 @@ vi.mock('child_process', () => ({
   }),
 }));
 
+// Bundle presence on macOS is checked with fs.access rather than a subprocess,
+// so the darwin tests drive this set instead of the execFile queue.
+const presentPaths = new Set<string>();
+vi.mock('fs/promises', () => ({
+  access: vi.fn((p: string) => (presentPaths.has(p)
+    ? Promise.resolve()
+    : Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })))),
+}));
+
+vi.mock('os', () => ({
+  homedir: () => '/Users/me',
+}));
+
 import * as electron from 'electron';
 import { registerShellHandlers } from '../shell.handler';
 import { IPC } from '../../../../shared/constants';
@@ -121,6 +134,7 @@ describe('shell.handler "Open with"', () => {
   beforeEach(() => {
     execFileCalls.length = 0;
     spawnCalls.length = 0;
+    presentPaths.clear();
     spawnOutcome = { kind: 'spawn' };
     dispose = registerShellHandlers();
   });
@@ -194,11 +208,88 @@ describe('shell.handler "Open with"', () => {
       expect(apps.map(a => a.id)).toEqual(['explorer']);
     });
 
-    it('returns Explorer alone on non-Windows without spawning a probe', async () => {
+    it('names the always-present entry after the platform file manager', async () => {
+      setPlatform('win32');
+      const win = detectApps();
+      resolveProbes({});
+      expect((await win)[0]).toEqual({ id: 'explorer', name: 'File Explorer' });
+
       setPlatform('darwin');
+      expect((await detectApps())[0]).toEqual({ id: 'explorer', name: 'Finder' });
+
+      setPlatform('linux');
+      expect((await detectApps())[0]).toEqual({ id: 'explorer', name: 'File manager' });
+    });
+
+    it('returns the file manager alone on Linux without probing', async () => {
+      setPlatform('linux');
       const apps = await detectApps();
       expect(apps.map(a => a.id)).toEqual(['explorer']);
       expect(execFileCalls).toHaveLength(0);
+    });
+  });
+
+  describe('detection on macOS', () => {
+    // PATH is unusable here: a GUI app launched from Finder or the Dock never
+    // runs a login shell, so /usr/local/bin and /opt/homebrew/bin are absent and
+    // probing PATH would report an empty machine. Detection is bundle presence.
+    it('finds bundles in /Applications and spawns no probe at all', async () => {
+      setPlatform('darwin');
+      presentPaths.add('/Applications/Visual Studio Code.app');
+      presentPaths.add('/Applications/iTerm.app');
+      const apps = await detectApps();
+      expect(apps.map(a => a.id)).toEqual(['explorer', 'code', 'iterm']);
+      expect(execFileCalls).toHaveLength(0);
+      expect(spawnCalls).toHaveLength(0);
+    });
+
+    it('also looks in the per-user ~/Applications', async () => {
+      setPlatform('darwin');
+      presentPaths.add('/Users/me/Applications/Cursor.app');
+      const apps = await detectApps();
+      expect(apps.map(a => a.id)).toEqual(['explorer', 'cursor']);
+    });
+
+    it('finds Terminal.app at its post-Catalina /System location', async () => {
+      setPlatform('darwin');
+      presentPaths.add('/System/Applications/Utilities/Terminal.app');
+      const apps = await detectApps();
+      expect(apps.map(a => a.id)).toEqual(['explorer', 'terminal']);
+    });
+
+    it('falls back to the pre-Catalina Terminal.app location', async () => {
+      setPlatform('darwin');
+      presentPaths.add('/Applications/Utilities/Terminal.app');
+      const apps = await detectApps();
+      expect(apps.map(a => a.id)).toEqual(['explorer', 'terminal']);
+    });
+
+    it('launches through `open -a <bundle>`, not the executable inside it', async () => {
+      setPlatform('darwin');
+      const bundle = '/Applications/Visual Studio Code.app';
+      presentPaths.add(bundle);
+      const folder = '/Users/me/my project & repo';
+      const res = await openWith('code', folder);
+      expect(res).toEqual({ ok: true });
+      expect(spawnCalls).toHaveLength(1);
+      const { file, args, opts } = spawnCalls[0];
+      // LaunchServices reuses a running instance; spawning the inner Mach-O
+      // directly would start a second copy of the editor.
+      expect(file).toBe('/usr/bin/open');
+      // Plain argv — no shell, so the space and the `&` need no escaping and
+      // none of the Windows quoting rules apply. (The handler normalizes with
+      // the host's `path`, which is a no-op for a posix path on macOS.)
+      expect(args).toEqual(['-a', bundle, nodePath.normalize(folder)]);
+      expect(args[2]).toContain('my project & repo');
+      expect(opts.windowsVerbatimArguments).toBe(false);
+      expect(opts.detached).toBe(true);
+    });
+
+    it('never routes through cmd.exe on macOS', async () => {
+      setPlatform('darwin');
+      presentPaths.add('/Applications/Cursor.app');
+      await openWith('cursor', '/Users/me/repo');
+      expect(spawnCalls[0].file.toLowerCase()).not.toContain('cmd.exe');
     });
   });
 

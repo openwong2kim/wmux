@@ -177,6 +177,37 @@ function showCopyToast(text: string): void {
 }
 
 /**
+ * Detected apps whose entry should read as a terminal rather than a generic
+ * external app — Windows Terminal, and macOS Terminal.app / iTerm.
+ */
+const TERMINAL_APP_IDS = new Set(['wt', 'terminal', 'iterm']);
+
+/**
+ * The OS's own word for its file manager. Localized because "Finder" and "File
+ * Explorer" are user-facing OS vocabulary — a Korean user expects 파일 탐색기 —
+ * and which one applies comes from the platform, not from any string main sent.
+ */
+function fileManagerName(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  const platform = window.electronAPI?.platform;
+  if (platform === 'darwin') return t('workspace.finder');
+  if (platform === 'win32') return t('workspace.fileExplorer');
+  return t('workspace.fileManager');
+}
+
+/**
+ * Label for one "Open with…" entry. Editor names are product names and stay as
+ * main reported them; only the built-in file manager is localized.
+ */
+function folderAppLabel(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  app: { id: string; name: string },
+): string {
+  return app.id === 'explorer' ? fileManagerName(t) : app.name;
+}
+
+/**
  * "Open in explorer / open with" 실패 피드백. OS가 폴더를 열지 못한 경우
  * (경로 삭제, 권한 거부, 연결 프로그램 실행 실패) 클릭이 무반응으로 보이지
  * 않도록 원인을 붙여 경고 토스트로 알린다.
@@ -647,12 +678,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
-        {/* Folder icon — opens this workspace's cwd in the OS file explorer. */}
+        {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
         <button
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
           onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
-          title={t('workspace.openInExplorer')}
-          aria-label={t('workspace.openInExplorer')}
+          title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+          aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
         >
           <IconFolder size={11} />
         </button>
@@ -733,7 +764,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               >
                 {folderApps.map((app) => {
                   const Icon = app.id === 'explorer' ? IconFolder
-                    : app.id === 'wt' ? IconTerminal
+                    : TERMINAL_APP_IDS.has(app.id) ? IconTerminal
                     : IconExternalLink;
                   return (
                     <button
@@ -743,7 +774,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                       onClick={() => handleOpenWith(app.id)}
                     >
                       <span className="opacity-60"><Icon size={12} /></span>
-                      <span>{app.name}</span>
+                      <span>{folderAppLabel(t, app)}</span>
                     </button>
                   );
                 })}
