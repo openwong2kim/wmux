@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   buildShimCmd,
   buildPathEditScript,
@@ -179,19 +179,28 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
 
   // Must stay below the suite's per-test budget above: a spawn that outlives it
   // can only ever surface as a bare vitest timeout, which says nothing about
-  // which of the three or four spawns in a case actually hung.
+  // which of the three or four spawns in a case actually hung. Warm spawns
+  // measure ~1s, so this is a wide margin over anything legitimate.
   const SPAWN_TIMEOUT_MS = 10_000;
+  // The first powershell.exe in a process pays a one-time cold start — its own
+  // binaries and the .NET images are not in the OS file cache yet. #576
+  // measured 5.6s for it; a run on this branch exceeded 10s. It is absorbed
+  // once in a hook with a budget of its own rather than billed to whichever
+  // case happens to run first, which is how #576 flaked and what its 5s → 15s
+  // widening left unaddressed — a wider budget moves that threshold, it does
+  // not stop a one-time cost from landing inside a per-test one.
+  const WARMUP_TIMEOUT_MS = 60_000;
 
-  const ps = (script: string) => {
+  const ps = (script: string, timeoutMs: number = SPAWN_TIMEOUT_MS) => {
     try {
       return { code: 0, out: execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
-        encoding: 'utf8', windowsHide: true, timeout: SPAWN_TIMEOUT_MS,
+        encoding: 'utf8', windowsHide: true, timeout: timeoutMs,
       }), err: '' };
     } catch (e) {
       const err = e as { status?: number | null; stdout?: string; stderr?: string; signal?: string };
       // A timeout kills the child with a signal and leaves status null. Say so —
       // "hung" and "exited non-zero" need different fixes.
-      const killed = err.signal ? `killed by ${err.signal} after ${SPAWN_TIMEOUT_MS} ms` : '';
+      const killed = err.signal ? `killed by ${err.signal} after ${timeoutMs} ms` : '';
       return {
         code: err.status ?? -1,
         out: err.stdout ?? '',
@@ -208,8 +217,8 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
    * is #690, where a seed that never created the key surfaced as READ_FAILED
    * and read as a genuine regression.
    */
-  const psOk = (label: string, script: string) => {
-    const r = ps(script);
+  const psOk = (label: string, script: string, timeoutMs?: number) => {
+    const r = ps(script, timeoutMs);
     if (r.code !== 0) {
       throw new Error(`fixture "${label}" failed with exit ${r.code}\n${r.err || r.out}`.trim());
     }
@@ -254,6 +263,13 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
     return ps(prefix + buildPathEditScript(BIN, op, SUB, BAK));
   };
 
+  // Pay the cold start here, where it has its own budget and its own name. If
+  // PowerShell is genuinely unusable this reports that once, up front, instead
+  // of disguising it as the first case's failure.
+  beforeAll(() => {
+    psOk('warm up powershell', 'exit 0', WARMUP_TIMEOUT_MS);
+  }, WARMUP_TIMEOUT_MS + 5_000);
+
   afterEach(() => {
     // Also checked: teardown that could not run leaves keys behind, and the
     // damage lands on the *next* case — the failure would be attributed to
@@ -264,7 +280,11 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
   it('a failed fixture spawn reports itself instead of running the case', () => {
     // Guards the #690 fix itself: if psOk ever goes back to swallowing an exit
     // code, a broken fixture returns to impersonating the shim and this fails.
-    expect(() => psOk('deliberate failure', 'exit 3')).toThrow(/deliberate failure.*exit 3/s);
+    // Asserted on the label, not on the exit value: the property is that a
+    // fixture failure carries its own name. Pinning the code made this fail on
+    // a slow runner for a spawn that had been killed rather than exiting —
+    // which is psOk working, reported as psOk broken.
+    expect(() => psOk('deliberate failure', 'exit 3')).toThrow(/fixture "deliberate failure" failed with exit/);
   });
 
   for (const constrained of [false, true]) {
