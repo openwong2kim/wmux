@@ -12,19 +12,32 @@
 // a mirror, a pty, or a claude. Everything stateful (the consecutive-block
 // counter, the snapshot lookup) lives in the adapter that calls this.
 //
-// Two fail-open rules, both deliberate:
+// Three fail-open rules, all deliberate:
 //   1. A null snapshot never blocks. The gate INFERS outstanding work from pane
 //      status; a derived signal cannot prove absence, so a missing or stale
 //      mirror must not wedge the brain.
-//   2. A run of consecutive blocks is capped. A model that cannot resolve a
+//   2. A stale snapshot is treated as a null one. The mirror is pushed by the
+//      renderer, so a backgrounded/wedged/reloading renderer leaves the last
+//      push sitting in main indefinitely. Blocking a turn on panes that were
+//      "running" a quarter of an hour ago is a trap, not a gate — the same
+//      rule 1 reasoning, applied to a snapshot that merely LOOKS present.
+//   3. A run of consecutive blocks is capped. A model that cannot resolve a
 //      parked pane would otherwise be refused until TURN_TIMEOUT_MS (30 min),
 //      which ends in the worst possible way — an ESC into the TUI and a
-//      superseded-turn credit. The cap is what makes this a gate and not a trap.
+//      superseded-turn credit. The cap is what makes this a gate and not a
+//      trap, so the deadlock-avoidance it buys is worth the turns it lets
+//      through: a wrongly-allowed Stop costs one wake event, a wrongly-held
+//      turn costs the whole fleet its orchestrator.
 
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
 
 /** Default ceiling on consecutive refusals for one turn. */
 export const DEFAULT_MAX_CONSECUTIVE_BLOCKS = 3;
+
+/** How old a fleet snapshot may be and still be trusted to hold a turn open.
+ *  Comfortably above the renderer's push cadence, well below the point where
+ *  "running" means "was running when the renderer last got a frame". */
+export const DEFAULT_MAX_SNAPSHOT_AGE_MS = 30_000;
 
 export type StopGateVerdict = { block: false } | { block: true; reason: string };
 
@@ -53,9 +66,18 @@ export function evaluateStopGate(input: {
   /** How many times in a row this turn's Stop has already been refused. */
   consecutiveBlocks: number;
   maxConsecutiveBlocks?: number;
+  /** Injectable clock, so the staleness rule is testable without waiting. */
+  now?: number;
+  maxSnapshotAgeMs?: number;
 }): StopGateVerdict {
   const { snapshot } = input;
   if (!snapshot) return { block: false };
+  // Staleness → same verdict as absence. `ts` is a renderer clock, so a small
+  // skew can put it slightly in the future; that reads as age 0, which is the
+  // fail-open direction and needs no special case.
+  const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
+  const age = (input.now ?? Date.now()) - snapshot.ts;
+  if (age > maxAge) return { block: false };
   const max = input.maxConsecutiveBlocks ?? DEFAULT_MAX_CONSECUTIVE_BLOCKS;
   if (input.consecutiveBlocks >= max) return { block: false };
 

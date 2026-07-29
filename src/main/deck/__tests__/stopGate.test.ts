@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateStopGate } from '../stopGate';
+import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../stopGate';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../../shared/workspaceMirror';
 
 function pane(over: Partial<FleetSnapshotPane> = {}): FleetSnapshotPane {
@@ -73,6 +73,47 @@ describe('evaluateStopGate', () => {
     // A pane with no agent name falls back to its pty id rather than vanishing.
     expect(verdict.reason).toContain('pane-b (awaiting_input)');
     expect(verdict.reason).not.toContain('worker-c');
+  });
+
+  it('allows on a STALE snapshot — a renderer that stopped pushing must not wedge the brain', () => {
+    const now = 1_000_000;
+    const busy: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: now - DEFAULT_MAX_SNAPSHOT_AGE_MS - 1,
+      panes: [pane({ agentStatus: 'running' })],
+    };
+    expect(evaluateStopGate({ snapshot: busy, consecutiveBlocks: 0, now }).block).toBe(false);
+  });
+
+  it('still blocks on a snapshot that is exactly at the freshness limit', () => {
+    const now = 1_000_000;
+    const busy: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: now - DEFAULT_MAX_SNAPSHOT_AGE_MS,
+      panes: [pane({ agentStatus: 'running' })],
+    };
+    expect(evaluateStopGate({ snapshot: busy, consecutiveBlocks: 0, now }).block).toBe(true);
+  });
+
+  it('honours an explicit freshness budget', () => {
+    const now = 1_000_000;
+    const busy: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: now - 5_000,
+      panes: [pane({ agentStatus: 'running' })],
+    };
+    expect(evaluateStopGate({ snapshot: busy, consecutiveBlocks: 0, now, maxSnapshotAgeMs: 1_000 }).block).toBe(false);
+    expect(evaluateStopGate({ snapshot: busy, consecutiveBlocks: 0, now, maxSnapshotAgeMs: 10_000 }).block).toBe(true);
+  });
+
+  it('treats renderer clock skew into the future as fresh, not stale', () => {
+    const now = 1_000_000;
+    const busy: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: now + 5_000,
+      panes: [pane({ agentStatus: 'running' })],
+    };
+    expect(evaluateStopGate({ snapshot: busy, consecutiveBlocks: 0, now }).block).toBe(true);
   });
 
   it('cannot block on the orchestrator itself — brain ptys are not in the snapshot', () => {
