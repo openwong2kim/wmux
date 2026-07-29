@@ -44,6 +44,25 @@ function g(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+// Every case here builds a real repo plus a linked worktree and drives git
+// through it. On GitHub's Windows runner that I/O does not reliably finish
+// inside vitest's 5s default, so a correct test fails for being slow. Raise it
+// once for the file rather than decorating each describe: the cost of the
+// larger budget is only paid by a test that is genuinely stuck.
+vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * Remove a scenario's temp tree. Windows keeps the linked worktree's handles
+ * open for a beat after the last git call returns — and Defender may still be
+ * reading it — so a bare rmSync races the release and throws EBUSY out of
+ * afterEach. That fails the run and masks whatever the test was actually
+ * reporting. rmSync already retries exactly the EBUSY/EPERM/ENOTEMPTY family,
+ * so this is a parameter rather than a hand-rolled backoff loop.
+ */
+function removeScenarioTree(base: string): void {
+  rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 // A selection only adopts if it carries the adoption fingerprint of the file
 // entry it was picked from, so build selections from the read they were made
 // against — exactly like the renderer does.
@@ -90,7 +109,7 @@ function makeScenario(): {
     repoRoot,
     worktreePath,
     targetHeadOid,
-    cleanup: () => rmSync(base, { recursive: true, force: true }),
+    cleanup: () => removeScenarioTree(base),
   };
 }
 
@@ -809,7 +828,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
     g(repo, ['add', '-A']);
     g(repo, ['commit', '-q', '-m', 'base']);
   });
-  afterEach(() => rmSync(base, { recursive: true, force: true }));
+  afterEach(() => removeScenarioTree(base));
 
   it('staged+unstaged+untracked를 모두 반환, 스냅샷은 repo 자신', async () => {
     // staged 변경 + unstaged 변경 + untracked 신규.
@@ -919,7 +938,7 @@ describe('diff:resolveRepo — cwd 정규화', () => {
     g(repo, ['add', '-A']);
     g(repo, ['commit', '-q', '-m', 'base']);
   });
-  afterEach(() => rmSync(base, { recursive: true, force: true }));
+  afterEach(() => removeScenarioTree(base));
 
   it('서브디렉토리 cwd → repo toplevel 반환', async () => {
     const resolve = captured.get(IPC.DIFF_RESOLVE_REPO)!;
@@ -994,7 +1013,7 @@ describe('diff:applyHunks — per-hunk selection granularity and selection-wide 
       repoRoot,
       worktreePath,
       baseText,
-      cleanup: () => rmSync(base, { recursive: true, force: true }),
+      cleanup: () => removeScenarioTree(base),
     };
   }
 
