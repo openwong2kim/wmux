@@ -1049,5 +1049,5 @@ export const ko = {
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',
   'workspace.departed': '이탈',
   'workspace.openInExplorer': '파일 탐색기에서 열기',
-  'workspace.openInExplorerCtx': '폴더를 탐색기에서 열기',
+  'workspace.openInExplorerCtx': '연결 프로그램\u2026',
 } as const;

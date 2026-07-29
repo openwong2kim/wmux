@@ -158,6 +158,13 @@ const electronAPI = {
     // folder via showItemInFolder, so the renderer typically ignores it.
     openPath: (filePath: string) =>
       ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, filePath) as Promise<{ ok: boolean; error?: string }>,
+    // Detect folder-opening apps available on the system (VS Code, Windows
+    // Terminal, Cursor, etc.). Called on demand from the context menu.
+    detectApps: () =>
+      ipcRenderer.invoke(IPC.SHELL_DETECT_APPS) as Promise<{ id: string; name: string }[]>,
+    // Open a folder with a specific detected app by id.
+    openWith: (appId: string, folderPath: string) =>
+      ipcRenderer.invoke(IPC.SHELL_OPEN_WITH, { appId, folderPath }) as Promise<{ ok: boolean; error?: string }>,
   },
   fonts: {
     // Best-effort list of installed font-family names for the Settings font

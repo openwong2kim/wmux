@@ -60,7 +60,7 @@ export const en = {
   'workspace.openPortTooltip': 'Open http://localhost:{port} in a browser pane',
   'workspace.lastNotification': 'Latest notification',
   'workspace.openInExplorer': 'Open in file explorer',
-  'workspace.openInExplorerCtx': 'Open folder in Explorer',
+  'workspace.openInExplorerCtx': 'Open with\u2026',
 
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',

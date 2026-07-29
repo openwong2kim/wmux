@@ -1,4 +1,5 @@
 import { ipcMain, shell, app } from 'electron';
+import { spawn, execFileSync } from 'child_process';
 import * as path from 'path';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
@@ -135,6 +136,51 @@ export function registerShellHandlers(): () => void {
     return { enabled: setAutostartEnabled(enabled) };
   }));
 
+  // SHELL_DETECT_APPS — detect folder-opening apps available on the system.
+  // Called on demand from the workspace context menu; not cached.
+  ipcMain.removeHandler(IPC.SHELL_DETECT_APPS);
+  ipcMain.handle(IPC.SHELL_DETECT_APPS, wrapHandler(IPC.SHELL_DETECT_APPS, () => {
+    return getAvailableFolderApps();
+  }));
+
+  // SHELL_OPEN_WITH — open a folder with a specific detected app.
+  ipcMain.removeHandler(IPC.SHELL_OPEN_WITH);
+  ipcMain.handle(IPC.SHELL_OPEN_WITH, wrapHandler(IPC.SHELL_OPEN_WITH, async (_event, payload: { appId: string; folderPath: string }) => {
+    const { appId, folderPath } = payload ?? {};
+    if (!appId || typeof folderPath !== 'string') {
+      throw new Error('payload must contain appId and folderPath');
+    }
+    const normalized = path.normalize(folderPath);
+    if (!path.isAbsolute(normalized)) {
+      throw new Error('folderPath must be absolute');
+    }
+
+    if (appId === 'explorer') {
+      const err = await shell.openPath(normalized);
+      if (err) shell.showItemInFolder(normalized);
+      return { ok: !err, error: err || undefined };
+    }
+
+    const appEntry = getAvailableFolderApps().find(a => a.id === appId);
+    if (!appEntry) throw new Error(`Unknown app: ${appId}`);
+
+    try {
+      const proc = spawn(appEntry.command, [...appEntry.args, normalized], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      proc.on('error', (err) => {
+        // Log but can't reject — we've already unref'd and resolved
+        console.error(`[shell] failed to open with ${appId}:`, err.message);
+      });
+      proc.unref();
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  }));
+
   return () => {
     ipcMain.removeHandler(IPC.SHELL_LIST);
     ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
@@ -142,5 +188,59 @@ export function registerShellHandlers(): () => void {
     ipcMain.removeHandler(IPC.APP_MEMORY);
     ipcMain.removeHandler(IPC.AUTOSTART_GET);
     ipcMain.removeHandler(IPC.AUTOSTART_SET);
+    ipcMain.removeHandler(IPC.SHELL_DETECT_APPS);
+    ipcMain.removeHandler(IPC.SHELL_OPEN_WITH);
   };
+}
+
+interface FolderAppEntry {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+}
+
+function hasCommand(cmd: string): boolean {
+  try {
+    execFileSync('where', [cmd], { stdio: 'ignore', timeout: 1000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getAvailableFolderApps(): FolderAppEntry[] {
+  const apps: FolderAppEntry[] = [];
+  apps.push({ id: 'explorer', name: 'File Explorer', command: '', args: [] });
+
+  if (process.platform !== 'win32') {
+    // macOS: check for common apps
+    try {
+      execFileSync('which', ['open'], { stdio: 'ignore', timeout: 1000 });
+    } catch {}
+    return apps;
+  }
+
+  // VS Code
+  if (hasCommand('code.cmd')) {
+    apps.push({ id: 'code', name: 'VS Code', command: 'code.cmd', args: [] });
+  }
+  // VS Code Insiders
+  if (hasCommand('code-insiders.cmd')) {
+    apps.push({ id: 'code-insiders', name: 'VS Code - Insiders', command: 'code-insiders.cmd', args: [] });
+  }
+  // Cursor
+  if (hasCommand('cursor')) {
+    apps.push({ id: 'cursor', name: 'Cursor', command: 'cursor', args: [] });
+  }
+  // Windsurf
+  if (hasCommand('windsurf')) {
+    apps.push({ id: 'windsurf', name: 'Windsurf', command: 'windsurf', args: [] });
+  }
+  // Windows Terminal
+  if (hasCommand('wt')) {
+    apps.push({ id: 'wt', name: 'Windows Terminal', command: 'wt', args: ['-d'] });
+  }
+
+  return apps;
 }

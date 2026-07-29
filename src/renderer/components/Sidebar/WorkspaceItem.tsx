@@ -5,7 +5,7 @@ import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder } from '../icons';
+import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
@@ -205,6 +205,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
+  const [owOpen, setOwOpen] = useState(false);
+  const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -277,6 +279,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     if (!metadata?.cwd) return;
     window.electronAPI.shell.openPath(metadata.cwd);
   };
+
+  /** Open cwd with a specific detected app (VS Code, Terminal, etc.). */
+  const handleOpenWith = (appId: string) => {
+    if (!metadata?.cwd) return;
+    setMenuPos(null);
+    setOwOpen(false);
+    window.electronAPI.shell.openWith(appId, metadata.cwd);
+  };
+
+  // Detect available apps when the context menu opens, and clear when closed.
+  useEffect(() => {
+    if (menuPos && metadata?.cwd) {
+      window.electronAPI.shell.detectApps().then(setFolderApps).catch(() => setFolderApps([]));
+    } else {
+      setFolderApps([]);
+      setOwOpen(false);
+    }
+  }, [menuPos, metadata?.cwd]);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -653,13 +673,44 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.duplicate')}
           </button>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
-            style={{ color: 'var(--text-main)' }}
-            onClick={() => { setMenuPos(null); handleOpenExplorer(); }}
+          {/* Open with — hover to reveal detected folder-opening apps (Explorer,
+              VS Code, Terminal, etc.). Closes on click so focus returns to sidebar. */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOwOpen(true)}
+            onMouseLeave={() => setOwOpen(false)}
           >
-            {t('workspace.openInExplorerCtx')}
-          </button>
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+            >
+              <span>{t('workspace.openInExplorerCtx')}</span>
+              <span className="text-[var(--text-muted)]"><IconChevron /></span>
+            </button>
+            {owOpen && folderApps.length > 0 && (
+              <div
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[180px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              >
+                {folderApps.map((app) => {
+                  const Icon = app.id === 'explorer' ? IconFolder
+                    : app.id === 'wt' ? IconTerminal
+                    : IconExternalLink;
+                  return (
+                    <button
+                      key={app.id}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                      style={{ color: 'var(--text-main)' }}
+                      onClick={() => handleOpenWith(app.id)}
+                    >
+                      <span className="opacity-60"><Icon size={12} /></span>
+                      <span>{app.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Multi-account (M1): per-vendor account bind submenu. Hides itself
               when no accounts are registered. Bind-only (new terminals). */}
