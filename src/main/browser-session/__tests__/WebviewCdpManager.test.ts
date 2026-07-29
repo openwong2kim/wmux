@@ -110,6 +110,52 @@ describe('WebviewCdpManager', () => {
   });
 });
 
+// ── #695 workspace-scoped target selection ───────────────────────────────────
+// The default lookup used to answer "the first session in the process", which
+// is whichever workspace happened to open a browser first. A caller that can
+// prove its own workspace now gets only what it can be shown to own.
+describe('WebviewCdpManager workspace scoping (#695)', () => {
+  let manager: WebviewCdpManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    manager = new WebviewCdpManager(18800);
+  });
+
+  it('the default lookup stops depending on who registered first', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    await manager.register('a-surface', 42, 'ws-A');
+
+    // Unscoped: unchanged, still the first session in the process.
+    expect(manager.getTarget()?.surfaceId).toBe('b-surface');
+    // Scoped: registration order no longer decides whose page you get.
+    expect(manager.getTarget(undefined, 'ws-A')?.surfaceId).toBe('a-surface');
+    expect(manager.getTarget(undefined, 'ws-B')?.surfaceId).toBe('b-surface');
+  });
+
+  it('refuses a named surface belonging to another workspace', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    // Naming it exactly is not authority to reach it.
+    expect(manager.getTarget('b-surface')?.surfaceId).toBe('b-surface');
+    expect(manager.getTarget('b-surface', 'ws-A')).toBeNull();
+  });
+
+  it('gives a scoped caller that owns nothing null, never a stranger"s target', async () => {
+    await manager.register('b-surface', 41, 'ws-B');
+    expect(manager.getTarget(undefined, 'ws-A')).toBeNull();
+  });
+
+  it('refuses an untagged target to a scoped caller but still serves an unscoped one', async () => {
+    // Ownership is never inferred from being the only candidate — same rule
+    // browser.cdp.info applies to the target list (#591).
+    await manager.register('legacy', 42);
+    expect(manager.getTarget('legacy')).not.toBeNull();
+    expect(manager.getTarget(undefined)).not.toBeNull();
+    expect(manager.getTarget('legacy', 'ws-A')).toBeNull();
+    expect(manager.getTarget(undefined, 'ws-A')).toBeNull();
+  });
+});
+
 // ── #517 lightweight mode ────────────────────────────────────────────────────
 
 describe('WebviewCdpManager lightweight mode (#517)', () => {
@@ -469,6 +515,34 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(onWake).toHaveBeenCalledWith('s1');
     expect(target).not.toBeNull();
     expect(manager.isDiscarded('s1')).toBe(false);
+  });
+
+  it('ensureAwake will not wake another workspace"s discarded surface (#695)', async () => {
+    // Waking is not a read. It remounts somebody else's guest and reloads
+    // their page, so an unscoped wake is an action taken inside a workspace
+    // the caller does not own — worth more than the disclosure beside it.
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43, 'ws-B'); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await manager.register('b-surface', 42, 'ws-B');
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('b-surface', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    // The default scan finds nothing to wake for ws-A...
+    expect(await manager.ensureAwake(undefined, 'ws-A')).toBeNull();
+    // ...and naming the surface outright does not get past it either.
+    expect(await manager.ensureAwake('b-surface', 'ws-A')).toBeNull();
+    expect(onWake).not.toHaveBeenCalled();
+    expect(manager.isDiscarded('b-surface')).toBe(true);
+
+    // Its own workspace still wakes it — the scope refuses strangers, not owners.
+    const awake = manager.ensureAwake('b-surface', 'ws-B');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await awake).not.toBeNull();
+    expect(onWake).toHaveBeenCalledWith('b-surface');
   });
 
   it('ensureAwake returns null for a surface that is neither registered nor discarded', async () => {

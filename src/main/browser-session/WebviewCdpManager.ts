@@ -55,6 +55,20 @@ const DISCARD_AFTER_MS =
 // page has to fully reload before dom-ready re-registers it.
 const WAKE_TIMEOUT_MS = 15_000;
 
+/**
+ * Workspace ownership test for a target or guest (#695).
+ *
+ * A caller that named no workspace is unscoped and matches everything — that
+ * is the pre-#695 contract the pipe still depends on. A caller that named one
+ * matches only what it can be *proven* to own: an untagged target is refused
+ * rather than assumed, the same rule browser.cdp.info applies to the target
+ * list (#591). Ownership is never inferred from being the only candidate.
+ */
+function ownedBy(ownerWorkspaceId: string | undefined, callerWorkspaceId: string | undefined): boolean {
+  if (!callerWorkspaceId) return true;
+  return ownerWorkspaceId === callerWorkspaceId;
+}
+
 interface GuestState {
   /** Effective visibility reported by the renderer (workspace ∧ window ∧ ¬zoom ∧ selected). */
   visible: boolean;
@@ -75,6 +89,11 @@ interface GuestState {
   discarded: boolean;
   /** Dwell timer armed while the guest is throttle-eligible; fires a discard. */
   discardTimer: NodeJS.Timeout | null;
+  /** Owning workspace, mirrored from the last register() that reported one
+   *  (#695). It lives here rather than only on the session because a discarded
+   *  guest has no session, and ensureAwake() must still be able to tell whether
+   *  the surface it is about to wake belongs to the caller. */
+  workspaceId?: string;
 }
 
 export class WebviewCdpManager {
@@ -225,6 +244,12 @@ export class WebviewCdpManager {
     // re-register fires on every navigation, and re-arming grace there would
     // let a hidden page that reloads periodically stay unthrottled forever.
     const gs = this.ensureGuestState(surfaceId);
+    // Remember the owner so a later wake can be scoped (#695). Only ever
+    // recorded, never cleared: a legacy re-registration that reports no
+    // workspace must not silently downgrade a surface we already know the
+    // owner of. A surface belongs to one workspace for its whole life, so
+    // there is no case where this goes stale.
+    if (workspaceId) gs.workspaceId = workspaceId;
     // A registration IS the wake: the renderer remounted the webview (wake
     // signal, user click, or surface became visible again).
     gs.discarded = false;
@@ -369,21 +394,26 @@ export class WebviewCdpManager {
    * nothing to wake, or when the wake reload times out. Concurrent calls for
    * the same surface share one in-flight wake.
    */
-  async ensureAwake(surfaceId?: string): Promise<CdpTargetInfo | null> {
+  async ensureAwake(surfaceId?: string, workspaceId?: string): Promise<CdpTargetInfo | null> {
     let resolved = surfaceId;
     if (!resolved) {
-      const first = this.sessions.values().next();
-      if (!first.done) return first.value;
-      // No live session — wake the first discarded surface, if any.
+      const live = this.getTarget(undefined, workspaceId);
+      if (live) return live;
+      // No live session — wake the first discarded surface the caller owns.
+      // Unscoped this would remount somebody else's guest and hand it back:
+      // not merely a disclosure, an action taken in another workspace.
       for (const [sid, gs] of this.guestState) {
-        if (gs.discarded) { resolved = sid; break; }
+        if (gs.discarded && ownedBy(gs.workspaceId, workspaceId)) { resolved = sid; break; }
       }
       if (!resolved) return null;
     }
     const existing = this.sessions.get(resolved);
-    if (existing) return existing;
+    if (existing) return ownedBy(existing.workspaceId, workspaceId) ? existing : null;
     const gs = this.guestState.get(resolved);
     if (!gs?.discarded) return null;
+    // Explicit surfaceId reaches here too, so the wake is scoped on that path
+    // as well — a named foreign surface must not be woken either.
+    if (!ownedBy(gs.workspaceId, workspaceId)) return null;
     const inFlight = this.waking.get(resolved);
     if (inFlight) return inFlight;
     const sid = resolved;
@@ -631,12 +661,27 @@ export class WebviewCdpManager {
     }
   }
 
-  getTarget(surfaceId?: string): CdpTargetInfo | null {
+  /**
+   * Resolve a live CDP target.
+   *
+   * `workspaceId` is the caller's own workspace, when it can prove one (#695).
+   * Naming it restricts every branch below to targets that provably belong to
+   * it — including the explicit-surfaceId branch, since a surface id from
+   * another workspace is exactly the thing a scoped caller must not reach.
+   * Omitting it keeps the historical unscoped behavior, which is what the
+   * first-party pipe and single-workspace setups rely on.
+   */
+  getTarget(surfaceId?: string, workspaceId?: string): CdpTargetInfo | null {
     if (surfaceId) {
-      return this.sessions.get(surfaceId) ?? null;
+      const session = this.sessions.get(surfaceId) ?? null;
+      return session && ownedBy(session.workspaceId, workspaceId) ? session : null;
     }
-    const first = this.sessions.values().next();
-    return first.done ? null : first.value;
+    // Not "the first session" any more when a scope is named: the first
+    // session in the process routinely belongs to somebody else.
+    for (const session of this.sessions.values()) {
+      if (ownedBy(session.workspaceId, workspaceId)) return session;
+    }
+    return null;
   }
 
   waitForTarget(surfaceId: string, timeoutMs = 5000): Promise<CdpTargetInfo> {

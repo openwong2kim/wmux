@@ -761,3 +761,106 @@ describe('browser.screenshot capture fallback (#529)', () => {
     expect(response.ok).toBe(true);
   });
 });
+
+// ── #695 the caller's workspace must reach the target lookup ─────────────────
+// WebviewCdpManager can refuse a foreign target, but only if it is told whose
+// call this is. These cases pin the wiring: without them the scope exists and
+// is never engaged, which is exactly the state #695 describes.
+describe('registerBrowserRpc — workspace scope reaches target selection (#695)', () => {
+  const TARGET = {
+    surfaceId: 'surface-1',
+    webContentsId: 42,
+    targetId: 'target-1',
+    wsUrl: 'ws://127.0.0.1/devtools/page/target-1',
+    workspaceId: 'ws-a',
+  };
+
+  function registerScoped(getTarget = vi.fn(() => TARGET as typeof TARGET | null)) {
+    const router = new RpcRouter();
+    const ensureAwake = vi.fn(async () => null);
+    const cdp = {
+      getTarget,
+      ensureAwake,
+      listTargets: vi.fn(() => [TARGET]),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(async () => TARGET),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    registerBrowserRpc(router, () => null as unknown as BrowserWindow, cdp as never);
+    return { router, cdp, getTarget, ensureAwake };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+    sendToRendererMock.mockResolvedValue({ ok: true });
+  });
+
+  it('passes the caller workspace down on an automation op', async () => {
+    const { router, getTarget } = registerScoped();
+
+    await router.dispatch({
+      id: 'e1',
+      method: 'browser.evaluate',
+      params: { expression: '1+1', surfaceId: 'surface-1', workspaceId: 'ws-a' },
+    });
+
+    expect(getTarget).toHaveBeenCalledWith('surface-1', 'ws-a');
+  });
+
+  it('leaves a caller that names no workspace unscoped, exactly as before', async () => {
+    const { router, getTarget } = registerScoped();
+
+    await router.dispatch({
+      id: 'e2',
+      method: 'browser.evaluate',
+      params: { expression: '1+1' },
+    });
+
+    // undefined scope — the pipe stays same-trust for first-party callers.
+    expect(getTarget).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('scopes the lease path, which resolves a surface before any op runs', async () => {
+    const { router, getTarget, ensureAwake } = registerScoped(vi.fn(() => null));
+
+    await router.dispatch({
+      id: 'l1',
+      method: 'browser.lease.acquire',
+      params: { workspaceId: 'ws-a' },
+    });
+
+    expect(getTarget).toHaveBeenCalledWith(undefined, 'ws-a');
+    expect(ensureAwake).toHaveBeenCalledWith(undefined, 'ws-a');
+  });
+
+  it('browser.cdp.target refuses a foreign surface in the same words as a missing one', async () => {
+    // waitForTarget is exact-match and unscoped, so the refusal has to come
+    // from the re-resolve after it. The message must not distinguish "not
+    // yours" from "not there", or the error becomes the disclosure.
+    const { router } = registerScoped(vi.fn(() => null));
+
+    const foreign = await router.dispatch({
+      id: 'c1',
+      method: 'browser.cdp.target',
+      params: { surfaceId: 'surface-1', workspaceId: 'ws-other' },
+    });
+    const missing = await router.dispatch({
+      id: 'c2',
+      method: 'browser.cdp.target',
+      params: { workspaceId: 'ws-other' },
+    });
+
+    expect(foreign.ok).toBe(true);
+    expect(missing.ok).toBe(true);
+    if (foreign.ok && missing.ok) {
+      expect(foreign.result).toEqual({ error: 'no active browser webview' });
+      expect(foreign.result).toEqual(missing.result);
+      expect(JSON.stringify(foreign.result)).not.toContain('target-1');
+    }
+  });
+});

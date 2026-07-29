@@ -93,14 +93,32 @@ export function registerBrowserRpc(
   // a call without a surfaceId would then automate a pane its caller does not
   // own instead of delegating/failing closed (codex P1). With an explicit
   // surfaceId both lookups are exact-match, so mixed mode still works.
-  const resolveTargetSurface = async (surfaceId: string | undefined): Promise<string | undefined> => {
+  const resolveTargetSurface = async (
+    surfaceId: string | undefined,
+    workspaceId: string | undefined,
+  ): Promise<string | undefined> => {
     if (backend() === 'external' && !surfaceId) return undefined;
-    let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+    let resolved = webviewCdpManager.getTarget(surfaceId, workspaceId)?.surfaceId;
     if (!resolved) {
-      resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
+      resolved = (await webviewCdpManager.ensureAwake(surfaceId, workspaceId))?.surfaceId;
     }
     return resolved;
   };
+
+  /**
+   * The caller's own workspace, when it sent one (#695).
+   *
+   * Passing it to getTarget/ensureAwake is what stops a target lookup from
+   * landing on another workspace's guest. A caller that sends nothing is
+   * unscoped exactly as before — the pipe is same-trust for first-party CLI
+   * callers, and single-workspace setups would otherwise break for no gain.
+   * Every scoped lookup below reads it from params here rather than through a
+   * wrapper, so the scope is visible at each site it is meant to protect.
+   */
+  const scopeOf = (params: Record<string, unknown>): string | undefined =>
+    typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
+      ? params['workspaceId']
+      : undefined;
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
   // method-tagged error if no target is registered or the WebContents is gone.
@@ -109,12 +127,16 @@ export function registerBrowserRpc(
   // Single choke point for the external-backend contract error: a miss while the
   // backend is 'external' means the caller is asking for deep automation that
   // external mode cannot provide — say so explicitly instead of "no target".
-  const resolveWc = (surfaceId: string | undefined, method: string): Electron.WebContents => {
+  const resolveWc = (
+    surfaceId: string | undefined,
+    method: string,
+    workspaceId?: string,
+  ): Electron.WebContents => {
     // Same default-target rule as resolveTargetSurface: external + no
     // surfaceId must not grab another workspace's pane via the default lookup.
     const target = backend() === 'external' && !surfaceId
       ? null
-      : webviewCdpManager.getTarget(surfaceId);
+      : webviewCdpManager.getTarget(surfaceId, workspaceId);
     if (!target) {
       if (backend() === 'external') throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
       throw new Error(`${method}: no webview target registered`);
@@ -152,7 +174,7 @@ export function registerBrowserRpc(
       // (codex P1 — otherwise the default MCP path fails once the only pane is
       // discarded). In EXTERNAL mode the default lookup is blocked entirely —
       // see resolveTargetSurface.
-      const resolved = await resolveTargetSurface(surfaceId);
+      const resolved = await resolveTargetSurface(surfaceId, scopeOf(params));
       if (!resolved) {
         if (backend() === 'external') {
           if (externalFallback) return externalFallback(params);
@@ -175,7 +197,7 @@ export function registerBrowserRpc(
     // live target under its lease (#517 slice C). Without surfaceId this
     // defaults to any discarded surface in builtin mode; external mode blocks
     // the default lookup (see resolveTargetSurface).
-    const resolved = await resolveTargetSurface(surfaceId);
+    const resolved = await resolveTargetSurface(surfaceId, scopeOf(params));
     if (!resolved) return { token: null };
     return { token: webviewCdpManager.acquireRpcLease(resolved) };
   });
@@ -364,7 +386,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     // Try CDP direct navigation first
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (target) {
       try {
         const wc = webContents.fromId(target.webContentsId);
@@ -396,7 +418,7 @@ export function registerBrowserRpc(
   registerLeased('browser.goBack', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.goBack: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -626,7 +648,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const fullPage = params['fullPage'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.screenshot: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -694,7 +716,7 @@ export function registerBrowserRpc(
     if (!expression) throw new Error('browser.evaluate: missing "expression"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.evaluate: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -738,7 +760,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.console.get: no webview target registered');
 
     const state = await captureManager.ensure(target.webContentsId);
@@ -759,7 +781,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.network.get: no webview target registered');
 
     const state = await captureManager.ensure(target.webContentsId);
@@ -780,7 +802,7 @@ export function registerBrowserRpc(
     const urlPattern = typeof params['urlPattern'] === 'string' ? params['urlPattern'] : '';
     if (!urlPattern) throw new Error('browser.responseBody.get: missing "urlPattern"');
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.responseBody.get: no webview target registered');
 
     const state = await captureManager.ensure(target.webContentsId);
@@ -801,7 +823,7 @@ export function registerBrowserRpc(
     if (!text) throw new Error('browser.type.cdp: missing "text"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.type.cdp: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -821,7 +843,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.click.cdp: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -877,7 +899,7 @@ export function registerBrowserRpc(
     if (!key) throw new Error('browser.press.cdp: missing "key"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId);
+    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
     if (!target) throw new Error('browser.press.cdp: no webview target registered');
 
     const wc = webContents.fromId(target.webContentsId);
@@ -905,6 +927,14 @@ export function registerBrowserRpc(
     if (surfaceId) {
       try {
         const target = await webviewCdpManager.waitForTarget(surfaceId, 5000);
+        // waitForTarget is exact-match on surfaceId and applies no scope, so
+        // re-resolve through the scoped lookup before handing an id back. The
+        // refusal reuses the no-target message on purpose: "that surface is
+        // not yours" and "there is no such surface" must read the same, or the
+        // error itself becomes the disclosure this handler is closing.
+        if (!webviewCdpManager.getTarget(surfaceId, scopeOf(params))) {
+          return { error: 'no active browser webview' };
+        }
         return {
           targetId: target.targetId,
           surfaceId: target.surfaceId,
@@ -914,7 +944,7 @@ export function registerBrowserRpc(
       }
     }
 
-    const target = webviewCdpManager.getTarget();
+    const target = webviewCdpManager.getTarget(undefined, scopeOf(params));
     if (!target) return { error: 'no active browser webview' };
 
     return {
@@ -942,7 +972,7 @@ export function registerBrowserRpc(
   registerLeased('browser.cookies', async (params) => {
     const action = params['action'];
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.cookies');
+    const wc = resolveWc(surfaceId, 'browser.cookies', scopeOf(params));
 
     if (action === 'get') {
       const urls = Array.isArray(params['urls'])
@@ -999,7 +1029,7 @@ export function registerBrowserRpc(
       throw new Error('browser.resize: width and height must be numbers');
     }
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.resize');
+    const wc = resolveWc(surfaceId, 'browser.resize', scopeOf(params));
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
       width, height, deviceScaleFactor: 0, mobile: false,
     });
@@ -1021,7 +1051,7 @@ export function registerBrowserRpc(
    */
   registerLeased('browser.emulate', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.emulate');
+    const wc = resolveWc(surfaceId, 'browser.emulate', scopeOf(params));
     const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
       wc.debugger.sendCommand(method, p);
     const applied: string[] = [];
