@@ -1051,4 +1051,6 @@ export const ko = {
   'workspace.openInExplorer': '파일 탐색기에서 열기',
   'workspace.openInExplorerCtx': '연결 프로그램\u2026',
   'workspace.openFailed': '폴더를 열 수 없습니다',
+  'workspace.openFailedQuoting': '실행 프로그램에 전달할 수 없는 문자가 경로에 있습니다',
+  'workspace.openFailedEnvSyntax': '경로에 %-구문 {name}이 있어 실행 프로그램이 다른 폴더로 해석합니다',
 } as const;

@@ -62,6 +62,8 @@ export const en = {
   'workspace.openInExplorer': 'Open in file explorer',
   'workspace.openInExplorerCtx': 'Open with\u2026',
   'workspace.openFailed': 'Could not open the folder',
+  'workspace.openFailedQuoting': 'the path contains a character that cannot be passed to the launcher',
+  'workspace.openFailedEnvSyntax': 'the path contains {name} in %-syntax, which the launcher would resolve to a different folder',
 
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',

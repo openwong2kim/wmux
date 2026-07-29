@@ -138,9 +138,12 @@ export function registerShellHandlers(): () => void {
 
   // SHELL_DETECT_APPS — detect folder-opening apps available on the system.
   // Called on demand from the workspace context menu; not cached.
+  // Only { id, name } crosses the boundary: the resolved launcher paths are a
+  // main-process detail, and the renderer picks an app by id anyway.
   ipcMain.removeHandler(IPC.SHELL_DETECT_APPS);
-  ipcMain.handle(IPC.SHELL_DETECT_APPS, wrapHandler(IPC.SHELL_DETECT_APPS, () => {
-    return getAvailableFolderApps();
+  ipcMain.handle(IPC.SHELL_DETECT_APPS, wrapHandler(IPC.SHELL_DETECT_APPS, async () => {
+    const apps = await getAvailableFolderApps();
+    return apps.map(({ id, name }) => ({ id, name }));
   }));
 
   // SHELL_OPEN_WITH — open a folder with a specific detected app.
@@ -164,21 +167,7 @@ export function registerShellHandlers(): () => void {
     const appEntry = (await getAvailableFolderApps()).find(a => a.id === appId);
     if (!appEntry) throw new Error(`Unknown app: ${appId}`);
 
-    try {
-      const proc = spawn(appEntry.command, [...appEntry.args, normalized], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      proc.on('error', (err) => {
-        // Log but can't reject — we've already unref'd and resolved
-        console.error(`[shell] failed to open with ${appId}:`, err.message);
-      });
-      proc.unref();
-      return { ok: true };
-    } catch (err: any) {
-      return { ok: false, error: err.message };
-    }
+    return launchFolderApp(appEntry, normalized);
   }));
 
   return () => {
@@ -196,6 +185,17 @@ export function registerShellHandlers(): () => void {
 interface FolderAppEntry {
   id: string;
   name: string;
+  /**
+   * Absolute path to the launcher, as resolved by where.exe. Empty for the
+   * `explorer` pseudo-entry, which shell.openPath serves without a spawn.
+   *
+   * The resolved path — not the bare name we probed with — is what gets
+   * spawned. Node's spawn does not apply PATHEXT when completing a bare name,
+   * so `spawn('cursor')` fails with ENOENT even though `where cursor` finds
+   * `cursor.cmd`; and PATH itself is not dependable (a machine can be missing
+   * even the System32 entry). Every candidate here except Windows Terminal
+   * ships as a `.cmd` shim, so this is the difference between working and not.
+   */
   command: string;
   args: string[];
 }
@@ -204,16 +204,16 @@ interface FolderAppEntry {
 // PATH entry that where.exe walks) must not keep the submenu spinning.
 const WHERE_TIMEOUT_MS = 1000;
 
-// Absolute path to where.exe rather than bare 'where', matching the rest of the
-// main process (see autostart.ts regExe): a PATH-resolved name is attacker
-// influenceable, an absolute System32 path is not.
-function whereExe(): string {
+// Absolute path to a System32 tool rather than a bare name, matching the rest
+// of the main process (see autostart.ts regExe): a PATH-resolved name is
+// attacker influenceable, an absolute System32 path is not.
+function system32(exe: string): string {
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  return path.join(systemRoot, 'System32', 'where.exe');
+  return path.join(systemRoot, 'System32', exe);
 }
 
-// Candidate launchers, probed in menu order. Kept as data so the probe below
-// can fan out over all of them at once instead of one blocking call per app.
+// Candidate launchers, probed in menu order. `command` here is the *probe name*;
+// detection replaces it with the absolute path where.exe reported.
 const WIN_FOLDER_APP_CANDIDATES: readonly FolderAppEntry[] = [
   { id: 'code', name: 'VS Code', command: 'code.cmd', args: [] },
   { id: 'code-insiders', name: 'VS Code - Insiders', command: 'code-insiders.cmd', args: [] },
@@ -222,15 +222,23 @@ const WIN_FOLDER_APP_CANDIDATES: readonly FolderAppEntry[] = [
   { id: 'wt', name: 'Windows Terminal', command: 'wt', args: ['-d'] },
 ];
 
-// Async on purpose. execFileSync blocks the main process event loop for the
-// whole spawn, and this runs once per context-menu open with one probe per
-// candidate app — under AV interception that is seconds of frozen UI (no PTY
-// data pumped, no IPC served). execFile + Promise.all costs one event-loop
-// turn and the probes overlap, so the total is the slowest probe, not the sum.
-function hasCommand(cmd: string): Promise<boolean> {
+/**
+ * Absolute path of `cmd` as found on PATH, or null when it is not installed.
+ *
+ * Async on purpose. execFileSync blocks the main process event loop for the
+ * whole spawn, and detection runs once per context-menu open with one probe per
+ * candidate app — under AV interception that is seconds of frozen UI (no PTY
+ * data pumped, no IPC served). execFile + Promise.all costs one event-loop turn
+ * and the probes overlap, so the total is the slowest probe, not the sum.
+ */
+function resolveCommand(cmd: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(whereExe(), [cmd], { timeout: WHERE_TIMEOUT_MS, windowsHide: true }, (err) => {
-      resolve(!err);
+    execFile(system32('where.exe'), [cmd], { timeout: WHERE_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve(null);
+      // where.exe prints every match, one per line. First line wins — same
+      // precedence the shell would apply.
+      const first = String(stdout ?? '').split(/\r?\n/).map(l => l.trim()).find(Boolean);
+      resolve(first && path.isAbsolute(first) ? first : null);
     });
   });
 }
@@ -247,12 +255,113 @@ async function getAvailableFolderApps(): Promise<FolderAppEntry[]> {
     return apps;
   }
 
-  const found = await Promise.all(
-    WIN_FOLDER_APP_CANDIDATES.map(app => hasCommand(app.command)),
+  const resolved = await Promise.all(
+    WIN_FOLDER_APP_CANDIDATES.map(app => resolveCommand(app.command)),
   );
   WIN_FOLDER_APP_CANDIDATES.forEach((app, i) => {
-    if (found[i]) apps.push({ ...app });
+    const command = resolved[i];
+    if (command) apps.push({ ...app, command });
   });
 
   return apps;
+}
+
+/** Characters that cannot appear in a Windows path and would break quoting. */
+// eslint-disable-next-line no-control-regex
+const UNQUOTABLE = /["\r\n\u0000]/;
+
+/**
+ * Names in `%NAME%` pairs that cmd.exe would expand. Only a *defined* variable
+ * expands — cmd leaves `%NOPE%` alone — so this reports the exact subset of
+ * paths cmd would rewrite, rather than rejecting every path containing a `%`
+ * (`C:\100%done` is legal and safe: a lone `%` has no closing partner).
+ */
+function expandableVars(s: string): string[] {
+  const hits: string[] = [];
+  const defined = new Set(Object.keys(process.env).map(k => k.toUpperCase()));
+  for (const m of s.matchAll(/%([^%\r\n]+)%/g)) {
+    if (defined.has(m[1].toUpperCase())) hits.push(m[1]);
+  }
+  return hits;
+}
+
+/**
+ * Spawn a detached launcher for `folderPath`.
+ *
+ * Two routes, because Node cannot execute a batch file directly: since the
+ * CVE-2024-27980 hardening (18.20 / 20.12 / 21.7), `spawn('code.cmd')` throws
+ * EINVAL outright. A `.cmd` / `.bat` launcher therefore goes through cmd.exe:
+ *
+ *   cmd.exe /d /s /c ""C:\...\code.cmd" "D:\my project""
+ *
+ * with `windowsVerbatimArguments` so Node hands that line over untouched.
+ *   • `/d` skips the registry AutoRun command, so a per-user AutoRun value
+ *     cannot inject itself into our launch.
+ *   • `/s` + the outer quote pair make the stripping rule deterministic: cmd
+ *     removes the first and last quote and runs the rest verbatim.
+ *   • every token is quoted, so cmd's metacharacters (`&`, `|`, `<`, `>`, `^`)
+ *     are literal — quoting is the whole defense, which is why an embedded `"`
+ *     is refused rather than escaped. Windows paths cannot contain one.
+ * Anything else (Windows Terminal's `wt.exe`) is spawned directly with an
+ * argv array, no shell in the picture at all.
+ *
+ * Resolves the same `{ ok, error }` shape either way, decided by the real
+ * `spawn` / `error` event rather than optimistically — the renderer shows a
+ * toast on failure, so it has to be true.
+ */
+function launchFolderApp(entry: FolderAppEntry, folderPath: string): Promise<{ ok: boolean; error?: string }> {
+  const ext = path.extname(entry.command).toLowerCase();
+  const isBatch = ext === '.cmd' || ext === '.bat';
+
+  let file: string;
+  let args: string[];
+  let verbatim = false;
+
+  if (isBatch) {
+    const tokens = [entry.command, ...entry.args, folderPath];
+    const offender = tokens.find(t => UNQUOTABLE.test(t));
+    if (offender !== undefined) {
+      return Promise.resolve({ ok: false, error: 'PATH_NOT_QUOTABLE' });
+    }
+    const vars = expandableVars(folderPath);
+    if (vars.length > 0) {
+      // Proceeding would open whatever %NAME% expands to — a different folder,
+      // silently. Refuse instead and let the caller surface why.
+      return Promise.resolve({ ok: false, error: `PATH_HAS_ENV_SYNTAX:${vars[0]}` });
+    }
+    file = system32('cmd.exe');
+    args = ['/d', '/s', '/c', `"${tokens.map(t => `"${t}"`).join(' ')}"`];
+    verbatim = true;
+  } else {
+    file = entry.command;
+    args = [...entry.args, folderPath];
+  }
+
+  return new Promise((resolve) => {
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(file, args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        windowsVerbatimArguments: verbatim,
+      });
+    } catch (err) {
+      // spawn still throws synchronously for a malformed invocation.
+      resolve({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    let settled = false;
+    const settle = (result: { ok: boolean; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    proc.once('spawn', () => {
+      // Detach only once the child exists; unref before that loses the events.
+      proc.unref();
+      settle({ ok: true });
+    });
+    proc.once('error', (err) => settle({ ok: false, error: err.message }));
+  });
 }
