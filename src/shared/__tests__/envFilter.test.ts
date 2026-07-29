@@ -230,3 +230,45 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
   });
 });
+
+describe('terminal capability defaults (#680)', () => {
+  it('interactive build advertises TERM/COLORTERM/TERM_PROGRAM when absent', () => {
+    const env = buildInteractiveShellEnv({ PATH: '/p' });
+    expect(env.TERM).toBe('xterm-256color');
+    expect(env.COLORTERM).toBe('truecolor');
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('gated build advertises them too (both spawn paths stay in lockstep)', () => {
+    const env = buildGatedAutomationEnv({ PATH: '/p' });
+    expect(env.TERM).toBe('xterm-256color');
+    expect(env.COLORTERM).toBe('truecolor');
+    expect(env.TERM_PROGRAM).toBe('wmux');
+  });
+
+  it('base-env values always win (user/system override is never clobbered)', () => {
+    for (const build of [buildInteractiveShellEnv, buildGatedAutomationEnv]) {
+      const env = build({ TERM: 'vt100', COLORTERM: '0', TERM_PROGRAM: 'custom', PATH: '/p' });
+      expect(env.TERM).toBe('vt100');
+      expect(env.COLORTERM).toBe('0');
+      expect(env.TERM_PROGRAM).toBe('custom');
+    }
+  });
+
+  it('a case-variant base key blocks the default (win32 keys are case-insensitive)', () => {
+    // A user-set `Term` must suppress the `TERM` default — otherwise both keys
+    // survive on win32 and the OS picks one nondeterministically.
+    const env = buildInteractiveShellEnv({ Term: 'dumb-custom', PATH: '/p' });
+    expect(env.Term).toBe('dumb-custom');
+    expect(env.TERM).toBeUndefined();
+  });
+
+  it('defaults never resurrect a stripped credential or internal key', () => {
+    // The capability injection runs after filtering and adds only its three
+    // non-credential names — nothing filtered out can come back.
+    const env = buildGatedAutomationEnv({ GITHUB_TOKEN: 'g', ELECTRON_RUN_AS_NODE: '1', PATH: '/p' });
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(Object.keys(env).sort()).toEqual(['COLORTERM', 'PATH', 'TERM', 'TERM_PROGRAM'].sort());
+  });
+});

@@ -228,6 +228,85 @@ describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재�
   });
 });
 
+// ═══ Workspace-lifetime binding — the channel retention invariant ══════════
+//
+// The core of the owner policy: **a mission is bound to its workspace's lifetime,
+// but the channel survives.** The renderer fires mission.close when the task
+// workspace is deleted, so "that close does not destroy the channel" is the ground
+// the whole policy stands on (archive is only a fold; deletion happens solely when
+// a human explicitly empties the trash).
+
+describe('mission.close archives the channel, it never destroys it', () => {
+  it('keeps the channel row, its messages, and its members after a workspace-deletion close', async () => {
+    const writer = makeFakeWriter();
+    const channelSvc = newChannelService(writer);
+    const log = newLog();
+    const svc = newWorkTaskService(log, channelSvc as unknown as WorkTaskChannelPort);
+    await svc.boot();
+
+    const started = await svc.startMission({
+      title: 'Fan out five',
+      verifiedWorkspaceId: 'ws-owner',
+      memberId: 'lead',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const { taskId, channelId } = started;
+    await channelSvc.post({
+      channelId,
+      sender: { workspaceId: 'ws-owner', memberId: 'lead' },
+      text: 'what the agent did',
+      verifiedWorkspaceId: 'ws-owner',
+    });
+
+    // The close the renderer fires because the task workspace is gone.
+    const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(closed.ok).toBe(true);
+
+    // The mission is closed.
+    expect(svc.getTask(taskId)?.status).toBe('closed');
+    // The channel stays — archived (folded away), not absent.
+    const ch = channelSvc.get(channelId, 'ws-owner');
+    expect(ch).not.toBeNull();
+    expect(ch?.status).toBe('archived');
+    // It does not land in the trash either (the deletion path is for explicit human acts only).
+    expect(ch?.trashedAt).toBeUndefined();
+    // The record is intact.
+    expect(channelSvc.getMessages(channelId, undefined, 'ws-owner').map((m) => m.text)).toEqual([
+      'what the agent did',
+    ]);
+    expect(channelSvc.getMembers(channelId, 'ws-owner').length).toBeGreaterThan(0);
+  });
+});
+
+// ─── Channel retention anchor (consumed by ChannelService.sweepRetention) ──
+
+describe('hasOpenTaskForChannel — keeps the sweep off the channel of a live mission', () => {
+  it('is true only for an open mission\'s channel, and releases to false once it closes', async () => {
+    const writer = makeFakeWriter();
+    const channelSvc = newChannelService(writer);
+    const log = newLog();
+    const svc = newWorkTaskService(log, channelSvc as unknown as WorkTaskChannelPort);
+    await svc.boot();
+
+    const started = await svc.startMission({
+      title: 'Anchor me',
+      verifiedWorkspaceId: 'ws-owner',
+      memberId: 'lead',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    expect(svc.hasOpenTaskForChannel(started.channelId)).toBe(true);
+    // An unrelated channel and the empty string are not anchors.
+    expect(svc.hasOpenTaskForChannel('chan-unrelated')).toBe(false);
+    expect(svc.hasOpenTaskForChannel('')).toBe(false);
+
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(svc.hasOpenTaskForChannel(started.channelId)).toBe(false);
+  });
+});
+
 // ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════
 
 describe('§3 멱등', () => {

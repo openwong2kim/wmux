@@ -231,6 +231,34 @@ describe('ChannelStateWriter', () => {
     expect(ids).toContain('ch-live');
   });
 
+  it('load keeps a TRASHED zero-member channel past the empty TTL (30-day undo window)', () => {
+    // A trashed mission channel routinely ends up with zero members once
+    // purgeMembership sweeps its deleted workspace. Under the plain empty-TTL
+    // rule it would be pruned at 7 days — three weeks inside the undo window
+    // the trash UI promises, and with no destroy event for replicas to replay.
+    // Deleting trashed channels belongs to the retention sweep alone.
+    const HOUR = 60 * 60 * 1000;
+    const now = Date.now();
+    const trashed = makeChannel({
+      id: 'ch-trashed-old',
+      status: 'archived',
+      emptySince: now - 8 * 24 * HOUR,
+      trashedAt: now - 8 * 24 * HOUR,
+      trashedBy: 'ws-human',
+    });
+    // Regression guard: an UNtrashed zero-member channel of the same age is
+    // still pruned — the exemption must be exactly the trash marker.
+    const untrashed = makeChannel({
+      id: 'ch-untrashed-old',
+      emptySince: now - 8 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([trashed, untrashed]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).toContain('ch-trashed-old');
+    expect(ids).not.toContain('ch-untrashed-old');
+  });
+
   it('load keeps a channel with 0 members and no emptySince (never joined)', () => {
     // A real channel that exists on disk but has no members yet must
     // survive the empty-channel reaper — its TTL clock only starts

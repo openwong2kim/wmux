@@ -107,6 +107,20 @@ export interface DaemonState {
   bootId?: string;
 }
 
+/**
+ * Channel retention knobs (`config.json` → `channels`). See
+ * `DaemonConfig.channels` for why the two knobs default differently.
+ */
+export interface ChannelRetentionConfig {
+  /** Hours a channel stays in the trash before it is destroyed for good.
+   *  `0` = never auto-purge. Default `CHANNEL_TRASH_TTL_HOURS_DEFAULT` (30d). */
+  trashTtlHours: number;
+  /** Hours after archiving before a channel is moved to the trash on its own.
+   *  `0` = OFF (the default) — this is the only knob that discards a record
+   *  the operator never chose to discard. */
+  autoTrashArchivedHours: number;
+}
+
 /** Daemon configuration (~/.wmux/config.json) */
 export interface DaemonConfig {
   version: number;
@@ -187,6 +201,18 @@ export interface DaemonConfig {
      */
     detachedTtlHours: number;
   };
+  /**
+   * Channel retention policy. OPTIONAL — old config.json files predate it, so
+   * `validateConfig` deliberately ignores this field and `loadConfig` backfills
+   * it per-field (the lanlink convention: a malformed slice must not reset the
+   * rest of the file).
+   *
+   * Both knobs are hour counts, and `0` means "never" for both. The pair is
+   * split on purpose: `trashTtlHours` only finishes a deletion a human already
+   * started, so it ships ON; `autoTrashArchivedHours` is the one that would
+   * discard records nobody chose to discard, so it ships OFF.
+   */
+  channels?: ChannelRetentionConfig;
   /**
    * LanLink control-plane state (PR-3). OPTIONAL — old config.json files predate
    * it and must keep loading, so `validateConfig` deliberately ignores this field
