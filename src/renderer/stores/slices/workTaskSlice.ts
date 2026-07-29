@@ -22,9 +22,10 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 
-/** useRpcBridge가 설치하는 미션 읽기 브리지(단일 메서드 파사드). */
+/** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
 interface MissionRpcBridge {
   list: (params: Record<string, unknown>) => Promise<unknown>;
+  close?: (params: Record<string, unknown>) => Promise<unknown>;
 }
 
 function readMissionRpc(): MissionRpcBridge | undefined {
@@ -101,6 +102,16 @@ export interface WorkTaskSlice {
   registerTaskPtys: (entries: Array<{ ptyId: string } & TaskPtyEntry>) => void;
   /** J3 §4 — 태스크 워크스페이스의 이탈 상태 설정(cwd=null이면 해제). */
   setPaneGroupDeparted: (paneGroupId: string, cwd: string | null) => void;
+  /**
+   * Closes the mission of a task workspace when that workspace is deleted
+   * (workspace-lifetime binding). The daemon's close archives the mission channel,
+   * so as the workspace disappears the mission row drops out of the list and the
+   * channel folds down into the Archived group at the same time —
+   * **the channel is never destroyed** (the record is preserved). Best-effort: a
+   * failure is harmless because the sidebar's visibility rule looks only at workspace
+   * existence, and the next boot reconcile converges.
+   */
+  closeMissionForRemovedWorkspace: (paneGroupId: string) => Promise<void>;
 }
 
 export const createWorkTaskSlice: StateCreator<
@@ -173,5 +184,36 @@ export const createWorkTaskSlice: StateCreator<
   getMissionForPaneGroup: (paneGroupId) => {
     if (!paneGroupId) return undefined;
     return get().missionByPaneGroup[paneGroupId];
+  },
+
+  closeMissionForRemovedWorkspace: async (paneGroupId) => {
+    if (!paneGroupId) return;
+    const task = get().missionByPaneGroup[paneGroupId];
+    if (!task || task.status !== 'open') return; // Absent / already closed = no-op.
+    const bridge = readMissionRpc();
+    if (!bridge?.close) return;
+    let res: unknown;
+    try {
+      // The authz anchor is the task owner (daemon gate: owner OR CEO). The owner is the
+      // **parent**, not the deleted child workspace — calling with the child id is NOT_AUTHORIZED.
+      res = await bridge.close({
+        taskId: task.id,
+        verifiedWorkspaceId: task.owner.verifiedWorkspaceId,
+      });
+    } catch {
+      // Daemon not connected / transient failure — the boot reconcile converges
+      // (it retries the archive from the task side).
+      return;
+    }
+    // **Check** the response: this call used to be fire-and-forget, so a rejection
+    // vanished silently (that is why a 100% NOT_AUTHORIZED failure was symptomless).
+    // Still do not throw — the sidebar's visibility rule looks only at workspace
+    // existence, so the screen is correct even when this fails.
+    if (!isOkObject(unwrapRpc(res))) {
+      console.warn('[workTaskSlice] mission close rejected for task', task.id, res);
+      return;
+    }
+    // Reflect it in the local cache right away, so we do not wait for the next poll.
+    await get().refreshMissions(task.owner.verifiedWorkspaceId);
   },
 });

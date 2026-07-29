@@ -17,6 +17,7 @@ import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
+import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 import type { RegisterWmuxToolsOptions } from './toolCatalog';
@@ -1192,13 +1193,18 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
 
 server.tool(
   'send_message',
-  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID.',
+  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID. This is the delivery that STARTS an idle agent\'s turn — the receiver gets a one-line nudge pasted into its prompt (unless silent:true). Use it, not channel_post, when you are handing out work: a channel post only raises an unread badge and waits to be polled.',
   SEND_MESSAGE_SHAPE,
   sendMessageHandler,
 );
 
 // Keep a2a_task_send as alias for backward compatibility
-server.tool('a2a_task_send', 'Alias for send_message.', SEND_MESSAGE_SHAPE, sendMessageHandler);
+server.tool(
+  'a2a_task_send',
+  'Alias for send_message. This is how you hand work to another agent: the task is pasted into the receiver\'s prompt and starts its turn. A channel post does not — it is a notification an idle agent will only see when it polls.',
+  SEND_MESSAGE_SHAPE,
+  sendMessageHandler,
+);
 
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
@@ -1350,7 +1356,7 @@ server.tool(
 );
 
 // === A2A channel tools ===
-// Ten channel tools plus two WorkTask mission tools expose the
+// Ten channel tools plus three WorkTask mission tools expose the
 // a2a.channel.* / task.mission.* pipe surfaces. `channel_history` stays absent:
 // bounded history is already exposed by channel_read.
 // Workspace identity uses the same resolveWorkspaceId as the other
@@ -1377,6 +1383,23 @@ registerChannelTools(
   },
   MCP_CATALOG_OPTIONS,
 );
+
+// === Fan-out tool (J1 on the wire) ===
+// Same provenance rule as the channel tools above, and for the same reason:
+// task.fanout.start derives the caller's workspace AND repository from this
+// ptyId, so it MUST stay MY_PTY_ID (walk-hit only). Feeding the weak
+// WMUX_PTY_ID env hint here would let a spoofable env var choose which
+// workspace's repository gets N new worktrees. No hit → fan-out fails closed.
+// `resolveWorkspaceId` is passed for the same reason the channel tools get it:
+// the walked ptyId is a SIDE EFFECT of that lookup, so a tool that only reads
+// MY_PTY_ID sees '' until something has asked who the caller is. Every channel
+// tool asks; fan-out did not, which made it fail as the first tool called on a
+// fresh server. The resolved id is used only to warm the walk — the handler
+// derives the owning workspace from the ptyId and rejects a stated one.
+registerFanOutTools(server, {
+  getSenderPtyId: () => MY_PTY_ID,
+  resolveWorkspaceId: requireWorkspaceId,
+});
 
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /

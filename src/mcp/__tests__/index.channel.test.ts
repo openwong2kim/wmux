@@ -2,9 +2,10 @@
 // `a2a.channel.*` pipe RPC surface to first-party MCP clients.
 //
 // Coverage:
-//  1. All twelve tools register in their public order. There is deliberately
+//  1. All thirteen tools register in their public order. There is deliberately
 //     NO channel_archive tool — archive is humans-only (renderer-IPC), like
-//     kick — and no channel_mission_list tool.
+//     kick. channel_mission_list is full-profile only: it is absent from the
+//     commander manifest, so the commander surface still registers twelve.
 //  2. Each tool's params are forwarded to the right `a2a.channel.*` RPC and
 //     the typed `{ ok, ... }` / `{ ok: false, error }` envelope is reflected
 //     in `isError`.
@@ -137,7 +138,14 @@ const CHANNEL_TOOL_NAMES = [
   'channel_unread',
   'channel_mission_start',
   'channel_mission_close',
+  'channel_mission_list',
 ] as const;
+
+// channel_mission_list is not in COMMANDER_TOOL_SURFACE, so the commander
+// profile registers everything except it, in the same relative order.
+const CHANNEL_COMMANDER_TOOL_NAMES = CHANNEL_TOOL_NAMES.filter(
+  (name) => name !== 'channel_mission_list',
+);
 
 const CHANNEL_SCHEMA_KEYS = {
   channel_list: [],
@@ -170,6 +178,7 @@ const CHANNEL_SCHEMA_KEYS = {
     'idempotency_key',
   ],
   channel_mission_close: ['task_id', 'idempotency_key'],
+  channel_mission_list: [],
 } satisfies Record<(typeof CHANNEL_TOOL_NAMES)[number], readonly string[]>;
 
 const CHANNEL_INVOCATIONS: ReadonlyArray<{
@@ -237,6 +246,11 @@ const CHANNEL_INVOCATIONS: ReadonlyArray<{
     method: 'task.mission.close',
     args: { task_id: 'task-1' },
   },
+  {
+    name: 'channel_mission_list',
+    method: 'task.mission.list',
+    args: {},
+  },
 ];
 
 const registrations = collectRegistrations();
@@ -255,6 +269,7 @@ const channelAck = tools.get('channel_ack');
 const channelUnread = tools.get('channel_unread');
 const channelMissionStart = tools.get('channel_mission_start');
 const channelMissionClose = tools.get('channel_mission_close');
+const channelMissionList = tools.get('channel_mission_list');
 
 if (
   !channelCreate ||
@@ -268,7 +283,8 @@ if (
   !channelAck ||
   !channelUnread ||
   !channelMissionStart ||
-  !channelMissionClose
+  !channelMissionClose ||
+  !channelMissionList
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -278,11 +294,11 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all twelve tools in exact full and commander order', () => {
+  it('registers all thirteen tools in exact full order, twelve on commander', () => {
     expect([...tools.keys()]).toEqual(CHANNEL_TOOL_NAMES);
     expect(
       collectRegistrations(undefined, 'commander').map(({ name }) => name),
-    ).toEqual(CHANNEL_TOOL_NAMES);
+    ).toEqual(CHANNEL_COMMANDER_TOOL_NAMES);
   });
 
   it('keeps catalog profiles in commander-manifest lockstep and frozen', () => {
@@ -290,7 +306,9 @@ describe('channel_* tools: registration', () => {
 
     expect(specs.map(({ name }) => name)).toEqual(CHANNEL_TOOL_NAMES);
     expect(specs.map(({ profiles }) => profiles)).toEqual(
-      CHANNEL_TOOL_NAMES.map(() => ['full', 'commander']),
+      CHANNEL_TOOL_NAMES.map((name) =>
+        name === 'channel_mission_list' ? ['full'] : ['full', 'commander'],
+      ),
     );
     expectCommanderCatalogLockstep(specs);
     expectFrozenCatalog(specs);
@@ -328,6 +346,7 @@ describe('channel_* tools: registration', () => {
       'workspace_id',
       'name',
       'member_id',
+      'pane_id',
     ]);
     expect(nestedObjectKeys('channel_mission_start', 'invite')).toEqual([
       'workspace_id',
@@ -360,15 +379,48 @@ describe('channel_* tools: registration', () => {
     expect(tools.get('channel_archive')).toBeUndefined();
   });
 
-  it('registers the two WorkTask mission tools (J0)', () => {
+  it('registers the WorkTask mission tools (J0)', () => {
     expect(channelMissionStart).toBeDefined();
     expect(channelMissionClose).toBeDefined();
   });
 
-  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
-    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
-    // (fan-out) per §3 tool-surface minimalism.
-    expect(tools.get('channel_mission_list')).toBeUndefined();
+  it('registers channel_mission_list (J1 — the deferral ends with fan-out)', () => {
+    // J0 kept task.mission.list pipe-only per §3 tool-surface minimalism and
+    // deferred the tool to J1. J1 (fan-out on the wire) is the caller that
+    // needs it: fanout_start returns before the tasks exist, so this listing is
+    // how a caller follows what it spawned.
+    expect(tools.get('channel_mission_list')).toBeDefined();
+  });
+
+  it('channel_mission_list forwards the resolved workspace', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    const res = await channelMissionList({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('channel_mission_list carries the verified senderPtyId, which is what actually scopes it', async () => {
+    // The workspace ids above are NOT the scoping mechanism — the main-side
+    // handler resolves the owning workspace from this ptyId and stamps it over
+    // whatever the tool sent. `task.mission.list` now fails closed without it
+    // (it returns branches and absolute worktree paths for one owner, and the
+    // MCP workspace resolver falls back to the spoofable WMUX_WORKSPACE_ID env
+    // hint on a PID-map miss). So a registration that stops attaching the
+    // ptyId does not merely lose attribution — it loses the listing.
+    const scopedTools = collectTools({
+      resolveWorkspaceId: async () => 'ws-test',
+      getSenderPtyId: () => 'pty-verified',
+    });
+    mockSendRpc.mockResolvedValue({ ok: true, tasks: [] });
+    await scopedTools.get('channel_mission_list')!({});
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      senderPtyId: 'pty-verified',
+    });
   });
 
   it('keeps the verified sender resolver isolated per server registration', async () => {
@@ -683,6 +735,29 @@ describe('channel_post', () => {
       clientMsgId: 'msg-001',
     });
     expect(res.isError).toBeUndefined();
+  });
+
+  it('A1: forwards a mention\'s pane_id as paneId (and no pty coordinate)', async () => {
+    // The vocabulary this tool lacked: without pane_id an MCP caller could not
+    // express "this agent", so an agent-addressed mention could never be
+    // auto-delivered. There is deliberately no pty_id counterpart — the daemon
+    // fills the pty snapshot from the principal registry after it proves the
+    // pane belongs to workspace_id.
+    mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 2 } });
+    await channelPost({
+      channel_id: 'ch-1',
+      text: '@worker step 2',
+      member_id: 'm-1',
+      mentions: [
+        { workspace_id: 'ws-worker', name: 'worker', member_id: 'w1-2(claude)', pane_id: 'pane-2' },
+        { workspace_id: 'ws-other', name: 'other' }, // unpinned → no paneId key
+      ],
+    });
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.mentions).toEqual([
+      { workspaceId: 'ws-worker', name: 'worker', memberId: 'w1-2(claude)', paneId: 'pane-2' },
+      { workspaceId: 'ws-other', name: 'other' },
+    ]);
   });
 
   it('surfaces PERSIST_FAILED from the daemon as isError (U2 directive)', async () => {

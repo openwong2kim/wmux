@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot, IconGitBranch } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconHash } from '../icons';
 import WebToggle from '../StatusBar/WebToggle';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
@@ -91,6 +91,24 @@ export default function Sidebar() {
       setChannelDockVisible(true);
     }
   }, [gitOpen, setActiveDeckTab, setChannelDockVisible]);
+
+  // Channels button (below Git) — opens the deck on the Channels tab, and
+  // closes the deck when it is already there (toggle). The Channels tab
+  // defaults to OFF, so pressing this button IS the statement "I want to see
+  // channels" and switches the tab on too — otherwise the press would open an
+  // empty tab.
+  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
+  const channelsOpen = channelDockVisible && activeDeckTab === 'channels' && channelsTabVisible;
+  const toggleChannels = useCallback(() => {
+    if (channelsOpen) {
+      setChannelDockVisible(false);
+    } else {
+      setChannelsTabVisible(true);
+      setActiveDeckTab('channels');
+      setChannelDockVisible(true);
+    }
+  }, [channelsOpen, setChannelsTabVisible, setActiveDeckTab, setChannelDockVisible]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -267,11 +285,38 @@ export default function Sidebar() {
         )}
       </button>
 
-      {/* wmux web toggle — the third entry in this footer cluster (Agent · Git ·
-          web). Serving panes to a browser is a workspace-level capability like
-          the other two, so it belongs on the same rail rather than in the status
-          strip. Amber while the server is running (alive); the popover opens
-          upward from here. */}
+      {/* Channels toggle — below Git. Opens the deck on the Channels tab, or
+          closes the deck when it is already there. Open = steel (navigation) ·
+          unread = warm, with the count · everything else muted. */}
+      <button
+        type="button"
+        onClick={toggleChannels}
+        aria-pressed={channelsOpen}
+        title={t('sidebar.channelsTooltip') || 'Toggle the Channels panel'}
+        className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+          channelsOpen
+            ? 'text-[var(--accent-blue)]'
+            : channelUnreadTotal > 0
+              ? 'text-[var(--accent)] hover:opacity-80'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+        }`}
+        style={{ borderColor: 'var(--border-soft)' }}
+        data-sidebar-channels
+      >
+        <IconHash size={14} />
+        <span>{t('sidebar.channels') || 'Channels'}</span>
+        {channelUnreadTotal > 0 && (
+          <span className="ml-auto" data-sidebar-channels-unread>
+            {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
+          </span>
+        )}
+      </button>
+
+      {/* wmux web toggle — the last entry in this footer cluster (Agent · Git ·
+          Channels · web). Serving panes to a browser is a workspace-level
+          capability like the others, so it belongs on the same rail rather than
+          in the status strip. Amber while the server is running (alive); the
+          popover opens upward from here. */}
       <WebToggle variant="sidebar" />
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits

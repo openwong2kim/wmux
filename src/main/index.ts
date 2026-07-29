@@ -62,6 +62,8 @@ import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
+import { createFanOutService } from './worktask/createFanOutService';
+import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
@@ -632,8 +634,17 @@ registerProjectConfigHandlers();
 registerChannelLocalHandlers(() => daemonClient);
 // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
 // invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
-// 동일 renderer-trusted 신원, 파이프 미노출).
-registerFanOutHandler(() => daemonClient, () => mainWindow);
+// 동일 renderer-trusted 신원).
+//
+// ONE service instance, shared by both entry points: it owns the idempotency
+// LRU and the TaskWorktreeManager serial queue that keeps concurrent
+// `git worktree add` off the same repo. The renderer IPC path stays ungated
+// (the human's click is the authorization); the pipe/MCP path re-derives
+// identity + repo server-side and adds its own approval gate — see
+// pipe/handlers/fanout.rpc.ts.
+const fanOutService = createFanOutService(() => daemonClient, () => mainWindow);
+registerFanOutHandler(fanOutService);
+registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).

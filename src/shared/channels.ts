@@ -48,6 +48,28 @@ export interface Channel {
   /** workspaceId of archiver. */
   archivedBy?: string;
   /**
+   * Trash (soft delete) marker. Epoch ms, set by `a2a.channel.trash`.
+   *
+   * Trash is deliberately NOT a third `ChannelStatus` value: it is an
+   * ADDITIVE marker layered on top of `status: 'archived'` (trashing an
+   * active channel archives it in the same commit). Every read-only /
+   * join / comment gate in the codebase already keys on
+   * `status === 'archived'`, so a trashed channel inherits all of them
+   * unchanged, and a build that does not know this field still sees a
+   * correct — merely un-hidden — archived channel. A third enum value
+   * would instead turn every `!== 'archived'` check into a permission
+   * hole on a durable, sender-verified record.
+   *
+   * What the marker DOES drive: sidebar placement (trashed channels leave
+   * the archived list for a collapsed Trash group) and the retention
+   * sweep (`CHANNEL_TRASH_TTL_HOURS_DEFAULT`). Cleared by
+   * `a2a.channel.restore`, which returns the channel to the archived
+   * group — restore undoes the trashing, not the archiving.
+   */
+  trashedAt?: number;
+  /** workspaceId that moved the channel to the trash. Metadata only, never authz. */
+  trashedBy?: string;
+  /**
    * Monotonic per-channel counter for posts + membership events. Assigned
    * under the per-channel mutex (plan KTD2). Initialized to 1.
    */
@@ -260,16 +282,46 @@ export interface ChannelMention {
 }
 
 /**
- * A requested @mention that could NOT be routed because its target workspace is
- * not a member of the channel. `ChannelService.post` returns these to the sender
- * so a mis-targeted mention is visible feedback, not a silent drop (the dominant
- * A2A failure mode). `reason` is an enum so future drop causes (e.g. archived,
- * rate-limited) extend it without breaking callers.
+ * A requested @mention that could NOT be routed as asked. `ChannelService.post`
+ * returns these to the sender so a mis-targeted mention is visible feedback, not
+ * a silent drop (the dominant A2A failure mode). `reason` is an enum so future
+ * drop causes (e.g. archived, rate-limited) extend it without breaking callers.
+ *
+ * Reasons:
+ *  - `not_a_member` — the target workspace is not in the channel, so the whole
+ *    mention was dropped. You cannot ping a workspace that isn't in the room.
+ *  - `pane_not_in_workspace` — only the PANE PIN was refused: `paneId` is not a
+ *    known pane of the mentioned workspace, so the daemon could not prove the
+ *    caller is targeting a pane that workspace owns (a pin it cannot prove would
+ *    be a cross-workspace paste primitive). The mention itself still landed, at
+ *    workspace level (badge-only, the pre-pin behavior), and `paneId` carries the
+ *    pane that was refused.
+ *  - `pane_not_live` — the pane IS that workspace's, but no live session is
+ *    behind it: the pane was closed, or its session died. Refused rather than
+ *    routed, because a pin the receiving side cannot match does not fail — it
+ *    degrades to workspace level, and the workspace-level paste lands in
+ *    whichever agent that workspace still has. An instruction addressed to a
+ *    departed worker would silently start a sibling worker's turn. The mention
+ *    still lands at workspace level (badge-only) as above; what you are told is
+ *    that the pane you named is not the one that would have acted on it.
+ *
+ *    "Live" here means A LIVE PTY, not a live agent. An agent can exit back to
+ *    its shell while its pane and session stay perfectly alive; such a pin is
+ *    accepted and the text lands at a shell prompt. Nothing in the delivery path
+ *    models agent-exit today, so this reason does not promise more than it can
+ *    check.
+ *
+ *    The check runs on the daemon at post time, and the receiving renderer
+ *    re-checks at delivery time. A pane that dies between the two is still
+ *    subject to the degraded workspace-level fallback described above — this
+ *    narrows that window, it does not close it.
  */
 export interface ChannelDroppedMention {
   workspaceId: string;
   name?: string;
-  reason: 'not_a_member';
+  /** The refused pane pin. Present with `pane_not_in_workspace` / `pane_not_live`. */
+  paneId?: string;
+  reason: 'not_a_member' | 'pane_not_in_workspace' | 'pane_not_live';
 }
 
 /**
@@ -462,6 +514,28 @@ export const CHANNEL_MESSAGES_MAX = 5000;
 
 /** Empty-channel retention. Plan KTD8. */
 export const CHANNEL_EMPTY_TTL_HOURS_DEFAULT = 7 * 24;
+
+/**
+ * Trash retention: how long a channel sits in the trash before the retention
+ * sweep destroys it for good. 30 days is the trash convention users already
+ * hold (Finder, Gmail, Windows Recycle Bin), and it is safe to have ON by
+ * default because NOTHING reaches the trash except an explicit human action —
+ * the sweep only finishes a deletion the operator already started, it never
+ * starts one. Contrast `CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT`, which is
+ * the knob that WOULD discard records nobody chose to discard, and is off.
+ */
+export const CHANNEL_TRASH_TTL_HOURS_DEFAULT = 30 * 24;
+
+/**
+ * Periodic cleanup: age (hours) after which an ARCHIVED channel is moved to
+ * the trash automatically. `0` = OFF, and OFF is the default on purpose — this
+ * is the only knob that touches records the operator never chose to discard,
+ * and a durable, sender-verified message log must not shrink by default.
+ * Turning it on is still recoverable: it only moves channels to the trash, so
+ * the full `CHANNEL_TRASH_TTL_HOURS_DEFAULT` undo window applies before
+ * anything is destroyed.
+ */
+export const CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT = 0;
 
 /**
  * Outcome of a single `ChannelDelivery.deliver` call. The transport fills in

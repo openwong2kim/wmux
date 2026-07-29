@@ -632,6 +632,21 @@ export class WorkTaskService {
     return this.tasks.get(taskId);
   }
 
+  /**
+   * Channel retention anchor: is there an **open** task pointing at this channel
+   * as its mission channel? This stops the channel retention sweep
+   * (ChannelService.sweepRetention) from destroying the channel of a live mission
+   * and turning its `#` link into CHANNEL_NOT_FOUND. The projection is bounded by
+   * the closed-task GC, so the linear scan is cheap (called once per hour on this path).
+   */
+  hasOpenTaskForChannel(channelId: string): boolean {
+    if (!channelId) return false;
+    for (const task of this.tasks.values()) {
+      if (task.status === 'open' && task.missionChannelId === channelId) return true;
+    }
+    return false;
+  }
+
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
   get taskCount(): number {
     return this.tasks.size;

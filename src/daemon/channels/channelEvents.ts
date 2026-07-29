@@ -42,6 +42,43 @@ export type ChannelEventPayload =
       archivedBy: string;
     }
   | {
+      /**
+       * Trash (soft delete). Trashing an ACTIVE channel archives it in the
+       * same commit, so the payload carries both effects — 1 commit = 1
+       * envelope (D16). `archivedAt`/`archivedBy` are absent when the channel
+       * was already archived (the archive effect is then a no-op).
+       */
+      kind: 'trash';
+      channelId: string;
+      trashedAt: number;
+      trashedBy: string;
+      archivedAt?: number;
+      archivedBy?: string;
+    }
+  | {
+      /** Restore from trash. Clears the trash marker; the channel stays archived. */
+      kind: 'restore';
+      channelId: string;
+    }
+  | {
+      /**
+       * Permanent deletion of a trashed channel (empty-trash / TTL sweep).
+       * NOT to be confused with `purge`, which removes MEMBER rows. This drops
+       * the channel row and its members/messages/idempotency maps together —
+       * the same tuple `reapEmptyChannels` prunes.
+       *
+       * `destroyedBy`/`destroyedAt` are ADDITIVE-ONLY audit fields: the applier
+       * ignores them (the record is being removed, so there is nothing to stamp
+       * them on), and records written before they existed replay identically.
+       * They exist so the event log — the only surviving trace of an
+       * irreversible deletion — says who deleted the channel and when.
+       */
+      kind: 'destroy';
+      channelId: string;
+      destroyedBy?: string;
+      destroyedAt?: number;
+    }
+  | {
       kind: 'join';
       channelId: string;
       member: ChannelMember;
@@ -144,6 +181,38 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       ch.status = 'archived';
       ch.archivedAt = p.archivedAt;
       ch.archivedBy = p.archivedBy;
+      return;
+    }
+    case 'trash': {
+      const ch = state.channels.find((c) => c.id === p.channelId);
+      if (!ch) return;
+      // Idempotent: re-applying stamps the same decided values.
+      if (p.archivedAt !== undefined) {
+        ch.status = 'archived';
+        ch.archivedAt = p.archivedAt;
+        if (p.archivedBy !== undefined) ch.archivedBy = p.archivedBy;
+      }
+      ch.trashedAt = p.trashedAt;
+      ch.trashedBy = p.trashedBy;
+      return;
+    }
+    case 'restore': {
+      const ch = state.channels.find((c) => c.id === p.channelId);
+      if (!ch) return;
+      // Idempotent: deleting an absent field is a no-op. The channel stays
+      // archived — restore undoes the trashing, not the archiving.
+      delete ch.trashedAt;
+      delete ch.trashedBy;
+      return;
+    }
+    case 'destroy': {
+      // Idempotent: an already-destroyed channel filters to the same arrays.
+      // `destroyedBy`/`destroyedAt` are audit-only — deliberately not applied
+      // to state, so old records without them replay to the same result.
+      state.channels = state.channels.filter((c) => c.id !== p.channelId);
+      delete state.members[p.channelId];
+      delete state.messages[p.channelId];
+      delete state.idempotency[p.channelId];
       return;
     }
     case 'join':
