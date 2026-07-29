@@ -178,7 +178,14 @@ function resolveTargets(gateMode = false) {
   // token off disk, so redirecting the pipe grants nothing it did not have.
   const pipeOverride = process.env.WMUX_PIPE_NAME;
   if (typeof pipeOverride === 'string' && pipeOverride.length > 0) {
-    const token = readTokenFile(getDaemonAuthTokenPath()) || readTokenFile(getAuthTokenPath());
+    // Token order follows who the request is ADDRESSED to, not who owns the
+    // pipe: a gate request is a `hooks.signal` for MAIN, so main's token has to
+    // win. Preferring the daemon's here made a host with both tokens on disk
+    // authenticate the gate with the wrong credential — `unauthorized`, no
+    // verdict, and every refusal silently downgraded to an allowed Stop.
+    const token = gateMode
+      ? readTokenFile(getAuthTokenPath()) || readTokenFile(getDaemonAuthTokenPath())
+      : readTokenFile(getDaemonAuthTokenPath()) || readTokenFile(getAuthTokenPath());
     if (!token) return [];
     // Addressed as the daemon, because that is what M1 made the bridge talk to
     // and what a probe needs to observe. In gate mode the override still aims
@@ -652,6 +659,25 @@ function shouldTryNextTarget(result) {
   return true;
 }
 
+// Did a gate request reach a server and then lose its answer? `retryable ===
+// false` is set by sendRpc exactly when the request bytes were WRITTEN, so it
+// is the proof that the socket connected and main received the signal. Pair it
+// with the two no-answer outcomes and the result is the ambiguous case the gate
+// must fail closed on.
+//
+// Explicitly NOT lost, all failing open:
+//   - `connect-error` (ENOENT / ECONNREFUSED / …): nothing was written, so no
+//     main is holding a waiter. Almost always "Claude Code running outside
+//     wmux", which must never be gated.
+//   - `no-target`: no token on disk, same story.
+//   - an outer-ok response the handler rejected: main ANSWERED. It ran the gate
+//     lane and declined (no workspace match, not a brain pty). No block, allow.
+function isGateAnswerLost(result) {
+  if (!result || result.ok === true) return false;
+  if (result.retryable !== false) return false;
+  return result.error === 'timeout' || result.error === 'closed-without-response';
+}
+
 // Walk the targets in order under one shared deadline. Returns the last result
 // plus the target that produced it (logged, so bridge.log shows which endpoint
 // actually served the hook).
@@ -863,11 +889,19 @@ async function main() {
     });
   }
 
-  // Gate verdict. Only read in gate mode, and only when the handler actually
-  // answered: a transport failure, a rejection, or a wmux that predates the
-  // field all leave `block` undefined, which allows the hook. The gate fails
-  // OPEN by construction — a hook can only ever be blocked by an explicit,
-  // successfully delivered refusal.
+  // Gate verdict. Two outcomes can end the turn's Stop in exit 2, and they are
+  // deliberately NOT the same failure class:
+  //
+  //   - An explicit, successfully delivered refusal (`innerOk` + `block`).
+  //   - A request that PROVABLY reached main and then lost its answer (see
+  //     `isGateAnswerLost`). Main may be holding an open turn waiter for this
+  //     very Stop, so allowing it would end a turn main still thinks is live.
+  //     Fail CLOSED: exit 2 keeps the TUI working and the model stops again.
+  //
+  // Everything else still fails OPEN — above all a connect failure (ENOENT /
+  // ECONNREFUSED = no main at the other end), which carries no gate authority
+  // and must never wedge a Claude Code session that is merely running outside
+  // wmux.
   let gateExitCode = 0;
   if (gateMode && innerOk) {
     const block = rpcResult.result.block;
@@ -879,6 +913,13 @@ async function main() {
       gateExitCode = 2;
       logEvent('gate-blocked', { hook: hookName, target: targetName });
     }
+  } else if (gateMode && isGateAnswerLost(rpcResult)) {
+    process.stderr.write(
+      'wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). '
+        + 'Do not end the turn on this attempt — check the fleet and stop again.\n',
+    );
+    gateExitCode = 2;
+    logEvent('gate-fail-closed', { hook: hookName, target: targetName, error: rpcResult?.error });
   }
 
   // X6 ③: a session-lifecycle capture that did NOT durably reach wmux (anything
