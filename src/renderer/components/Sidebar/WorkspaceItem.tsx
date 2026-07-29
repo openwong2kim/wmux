@@ -175,6 +175,18 @@ function showCopyToast(text: string): void {
   useStore.getState().pushToast({ level: 'info', message: text });
 }
 
+/**
+ * "Open in explorer / open with" 실패 피드백. OS가 폴더를 열지 못한 경우
+ * (경로 삭제, 권한 거부, 연결 프로그램 실행 실패) 클릭이 무반응으로 보이지
+ * 않도록 원인을 붙여 경고 토스트로 알린다.
+ */
+function notifyOpenFailed(label: string, detail?: string): void {
+  useStore.getState().pushToast({
+    level: 'warn',
+    message: detail ? `${label}: ${detail}` : label,
+  });
+}
+
 /** Idle-duration label: minutes under an hour, then hours, then days. */
 function formatIdle(ms: number): string {
   const m = Math.floor(ms / 60_000);
@@ -277,7 +289,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   /** Open the workspace's current working directory in the OS file explorer. */
   const handleOpenExplorer = () => {
     if (!metadata?.cwd) return;
-    window.electronAPI.shell.openPath(metadata.cwd);
+    // Surface failures. Main answers { ok:false, error } for a missing or
+    // permission-denied folder, and the invoke itself rejects if the path
+    // fails main-side validation — an unhandled rejection here would leave
+    // the click looking like a silent no-op.
+    window.electronAPI.shell.openPath(metadata.cwd)
+      .then((res) => {
+        if (!res?.ok) notifyOpenFailed(t('workspace.openFailed'), res?.error);
+      })
+      .catch((err) => notifyOpenFailed(t('workspace.openFailed'), String(err?.message ?? err)));
   };
 
   /** Open cwd with a specific detected app (VS Code, Terminal, etc.). */
@@ -285,17 +305,29 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     if (!metadata?.cwd) return;
     setMenuPos(null);
     setOwOpen(false);
-    window.electronAPI.shell.openWith(appId, metadata.cwd);
+    window.electronAPI.shell.openWith(appId, metadata.cwd)
+      .then((res) => {
+        if (!res?.ok) notifyOpenFailed(t('workspace.openFailed'), res?.error);
+      })
+      .catch((err) => notifyOpenFailed(t('workspace.openFailed'), String(err?.message ?? err)));
   };
 
   // Detect available apps when the context menu opens, and clear when closed.
+  // `cancelled` drops a probe that lands after the menu closed (or reopened on
+  // another row): detectApps spawns one where.exe per candidate, so a slow AV
+  // scan can easily outlive the menu and would otherwise repopulate — or
+  // cross-populate — the submenu of a menu the user already dismissed.
   useEffect(() => {
-    if (menuPos && metadata?.cwd) {
-      window.electronAPI.shell.detectApps().then(setFolderApps).catch(() => setFolderApps([]));
-    } else {
+    if (!menuPos || !metadata?.cwd) {
       setFolderApps([]);
       setOwOpen(false);
+      return;
     }
+    let cancelled = false;
+    window.electronAPI.shell.detectApps()
+      .then((apps) => { if (!cancelled) setFolderApps(apps); })
+      .catch(() => { if (!cancelled) setFolderApps([]); });
+    return () => { cancelled = true; };
   }, [menuPos, metadata?.cwd]);
 
   useEffect(() => {

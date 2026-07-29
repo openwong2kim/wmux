@@ -1050,4 +1050,5 @@ export const ko = {
   'workspace.departed': '이탈',
   'workspace.openInExplorer': '파일 탐색기에서 열기',
   'workspace.openInExplorerCtx': '연결 프로그램\u2026',
+  'workspace.openFailed': '폴더를 열 수 없습니다',
 } as const;

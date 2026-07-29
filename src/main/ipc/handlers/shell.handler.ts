@@ -1,5 +1,5 @@
 import { ipcMain, shell, app } from 'electron';
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import * as path from 'path';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
@@ -161,7 +161,7 @@ export function registerShellHandlers(): () => void {
       return { ok: !err, error: err || undefined };
     }
 
-    const appEntry = getAvailableFolderApps().find(a => a.id === appId);
+    const appEntry = (await getAvailableFolderApps()).find(a => a.id === appId);
     if (!appEntry) throw new Error(`Unknown app: ${appId}`);
 
     try {
@@ -200,47 +200,59 @@ interface FolderAppEntry {
   args: string[];
 }
 
-function hasCommand(cmd: string): boolean {
-  try {
-    execFileSync('where', [cmd], { stdio: 'ignore', timeout: 1000 });
-    return true;
-  } catch {
-    return false;
-  }
+// Per-probe cap on where.exe. A wedged probe (AV interception, a stale network
+// PATH entry that where.exe walks) must not keep the submenu spinning.
+const WHERE_TIMEOUT_MS = 1000;
+
+// Absolute path to where.exe rather than bare 'where', matching the rest of the
+// main process (see autostart.ts regExe): a PATH-resolved name is attacker
+// influenceable, an absolute System32 path is not.
+function whereExe(): string {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return path.join(systemRoot, 'System32', 'where.exe');
 }
 
-function getAvailableFolderApps(): FolderAppEntry[] {
-  const apps: FolderAppEntry[] = [];
-  apps.push({ id: 'explorer', name: 'File Explorer', command: '', args: [] });
+// Candidate launchers, probed in menu order. Kept as data so the probe below
+// can fan out over all of them at once instead of one blocking call per app.
+const WIN_FOLDER_APP_CANDIDATES: readonly FolderAppEntry[] = [
+  { id: 'code', name: 'VS Code', command: 'code.cmd', args: [] },
+  { id: 'code-insiders', name: 'VS Code - Insiders', command: 'code-insiders.cmd', args: [] },
+  { id: 'cursor', name: 'Cursor', command: 'cursor', args: [] },
+  { id: 'windsurf', name: 'Windsurf', command: 'windsurf', args: [] },
+  { id: 'wt', name: 'Windows Terminal', command: 'wt', args: ['-d'] },
+];
 
+// Async on purpose. execFileSync blocks the main process event loop for the
+// whole spawn, and this runs once per context-menu open with one probe per
+// candidate app — under AV interception that is seconds of frozen UI (no PTY
+// data pumped, no IPC served). execFile + Promise.all costs one event-loop
+// turn and the probes overlap, so the total is the slowest probe, not the sum.
+function hasCommand(cmd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(whereExe(), [cmd], { timeout: WHERE_TIMEOUT_MS, windowsHide: true }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+async function getAvailableFolderApps(): Promise<FolderAppEntry[]> {
+  // Explorer is always present — shell.openPath handles it, no probe needed.
+  const apps: FolderAppEntry[] = [
+    { id: 'explorer', name: 'File Explorer', command: '', args: [] },
+  ];
+
+  // Non-Windows: shell.openPath already covers Finder / xdg-open, and no
+  // extra launcher is wired up yet, so there is nothing to probe for.
   if (process.platform !== 'win32') {
-    // macOS: check for common apps
-    try {
-      execFileSync('which', ['open'], { stdio: 'ignore', timeout: 1000 });
-    } catch {}
     return apps;
   }
 
-  // VS Code
-  if (hasCommand('code.cmd')) {
-    apps.push({ id: 'code', name: 'VS Code', command: 'code.cmd', args: [] });
-  }
-  // VS Code Insiders
-  if (hasCommand('code-insiders.cmd')) {
-    apps.push({ id: 'code-insiders', name: 'VS Code - Insiders', command: 'code-insiders.cmd', args: [] });
-  }
-  // Cursor
-  if (hasCommand('cursor')) {
-    apps.push({ id: 'cursor', name: 'Cursor', command: 'cursor', args: [] });
-  }
-  // Windsurf
-  if (hasCommand('windsurf')) {
-    apps.push({ id: 'windsurf', name: 'Windsurf', command: 'windsurf', args: [] });
-  }
-  // Windows Terminal
-  if (hasCommand('wt')) {
-    apps.push({ id: 'wt', name: 'Windows Terminal', command: 'wt', args: ['-d'] });
-  }
+  const found = await Promise.all(
+    WIN_FOLDER_APP_CANDIDATES.map(app => hasCommand(app.command)),
+  );
+  WIN_FOLDER_APP_CANDIDATES.forEach((app, i) => {
+    if (found[i]) apps.push({ ...app });
+  });
 
   return apps;
 }
