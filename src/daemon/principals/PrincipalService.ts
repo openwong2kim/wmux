@@ -97,13 +97,17 @@ export class PrincipalService {
   }
 
   /**
-   * For the wake worker: returns ptyId only when the principal is live. A
-   * stale record's ptyId may be a dead (or reused) session id, so it is never
-   * returned.
+   * Return a pane principal's last registered PTY coordinate.
+   *
+   * This deliberately does NOT interpret registry `liveness`: the daemon
+   * backfills every pane-agent to stale on restart, including idle panes whose
+   * persisted sessions were successfully rebuilt as detached. Callers must
+   * prove that the returned id is present in the daemon's live-session table
+   * before acting on it.
    */
-  livePtyIdOf(id: string): string | undefined {
+  ptyIdOf(id: string): string | undefined {
     const p = this.state.principals.find((r) => r.id === id);
-    if (!p || p.liveness !== 'live') return undefined;
+    if (!p || p.kind !== 'pane-agent') return undefined;
     return p.ptyId;
   }
 

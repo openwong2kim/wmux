@@ -4681,9 +4681,11 @@ async function main(): Promise<void> {
   channelWakeWorkerRef = new ChannelWakeWorker({
     memberWorkspaces: () => channelService.memberWorkspaces(),
     unreadFor: (ws) => channelService.unreadFor(ws),
-    // R2: member row principalId → direct LIVE ptyId lookup. A stale principal
-    // returns undefined and falls back to the existing slug heuristic.
-    livePtyIdOf: (principalId) => principalService.livePtyIdOf(principalId),
+    // R2: the registry supplies the member's last PTY coordinate even after
+    // restart backfill marks it stale. listLiveSessions below is the daemon-
+    // owned liveness authority: only attached/detached sessions enter the
+    // target snapshot, so a genuinely dead coordinate still falls back.
+    principalPtyIdOf: (principalId) => principalService.ptyIdOf(principalId),
     listLiveSessions: () =>
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,

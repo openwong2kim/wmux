@@ -87,10 +87,11 @@ export interface ChannelWakeWorkerDeps {
   unreadFor(workspaceId: string): WakeUnreadEntry[];
   /** Live sessions only (attached/detached — a usable PTY child exists). */
   listLiveSessions(): WakeSessionView[];
-  /** R2 — principal registry lookup: returns the ptyId (session id) of a LIVE
-   *  principal only. Stale → undefined → falls back to the existing heuristic.
-   *  Optional (test / legacy-wiring compatible). */
-  livePtyIdOf?(principalId: string): string | undefined;
+  /** R2 — principal registry lookup: returns the last registered ptyId
+   *  coordinate without interpreting registry liveness. This worker proves
+   *  liveness against listLiveSessions(), whose attached/detached snapshot is
+   *  daemon-owned and survives a restart. Optional (test / legacy compatible). */
+  principalPtyIdOf?(principalId: string): string | undefined;
   /** Write raw bytes into a session's PTY stdin. */
   write(sessionId: string, data: string): void;
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
@@ -291,7 +292,7 @@ export class ChannelWakeWorker {
           ws,
           entry.memberId,
           entry.principalId,
-          this.deps.livePtyIdOf?.bind(this.deps),
+          this.deps.principalPtyIdOf?.bind(this.deps),
         );
         if (!target) {
           // Ambiguity / no live pane / claude-only / agent-less shells →
@@ -376,7 +377,8 @@ export class ChannelWakeWorker {
  */
 /**
  * R2 — direct principal targeting. When the member row has a principalId and
- * the registry knows a LIVE ptyId, aim straight at that session (an auto-name
+ * the registry knows a ptyId that is present in the daemon's LIVE session
+ * snapshot, aim straight at that session (an auto-name
  * memberId never matches the slug heuristic, so without the principal path an
  * R2 pane member would never get nudged). Keeps the same discipline as the
  * existing pickTarget:
@@ -393,10 +395,10 @@ export function pickTargetWithPrincipal(
   workspaceId: string,
   memberId: string,
   principalId: string | undefined,
-  livePtyIdOf: ((principalId: string) => string | undefined) | undefined,
+  principalPtyIdOf: ((principalId: string) => string | undefined) | undefined,
 ): WakeSessionView | null {
-  if (principalId && livePtyIdOf) {
-    const ptyId = livePtyIdOf(principalId);
+  if (principalId && principalPtyIdOf) {
+    const ptyId = principalPtyIdOf(principalId);
     if (ptyId) {
       const s = sessions.find((x) => x.id === ptyId && x.deferred !== true);
       if (s && s.workspaceId === workspaceId) {

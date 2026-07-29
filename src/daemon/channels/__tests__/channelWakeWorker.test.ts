@@ -398,7 +398,7 @@ describe('pickTarget — never guess', () => {
 describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
   const PID = 'pane:ws-b/p1';
 
-  it('directly selects the LIVE principal\'s ptyId session without the heuristic (auto-name memberId)', () => {
+  it('directly selects the principal ptyId present in the live snapshot without the heuristic (auto-name memberId)', () => {
     // memberId "w2-1(codex)" never matches the slug heuristic — without the
     // principal path this member would never get nudged. With two same-slug
     // panes the heuristic would have returned null on ambiguity.
@@ -412,7 +412,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
     expect(target?.id).toBe('pty-y');
   });
 
-  it('a stale principal (undefined ptyId) falls back to the existing heuristic', () => {
+  it('a missing principal coordinate falls back to the existing heuristic', () => {
     const target = pickTargetWithPrincipal(
       [session({ id: 'only', lastDetectedAgent: 'codex' })],
       'ws-b',
@@ -501,7 +501,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
 
   it('the heuristic fallback carries the same agent-required discipline (no shell nudge)', () => {
     const PID2 = 'pane:ws-b/pX';
-    // Stale principal → heuristic fallback; the only pane is an agent-less
+    // Missing principal coordinate → heuristic fallback; the only pane is an agent-less
     // shell → null (never auto-submit into a bare shell).
     expect(
       pickTargetWithPrincipal(
