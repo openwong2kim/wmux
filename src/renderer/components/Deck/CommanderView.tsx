@@ -206,7 +206,7 @@ export function CommanderViewContent({
   // The orchestrator control bar — the persistent automation controls. Shared
   // by both layouts: below the thread in the bubble layout, merged into the pty
   // layout's single top row. `data-deck-control-bar` stays on it either way.
-  const renderControlBar = (className: string): React.ReactElement | null =>
+  const renderControlBar = (className: string, extra?: React.ReactNode): React.ReactElement | null =>
     activeWorkspaceId || quickActions.length > 0 ? (
       <div
         data-deck-control-bar
@@ -224,6 +224,7 @@ export function CommanderViewContent({
         {/* Schedules chip + inline panel — new schedules bind to THIS
             workspace's orchestrator (M1.5). */}
         <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+        {extra}
 
         {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
             recovery. Flows inline after the always-on controls (no ml-auto:
@@ -271,6 +272,27 @@ export function CommanderViewContent({
         {fleetSlot}
         {renderControlBar(
           'flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-[var(--bg-surface)] shrink-0',
+          // Wake button — pty-layout only. With no composer, this is the
+          // human's one-click "take a turn now"; the bubble layout's composer
+          // already covers it. Disabled mid-turn: the busy reject would be the
+          // only outcome. Same visual grammar as a quick action (neutral at
+          // rest, accent on hover).
+          activeWorkspaceId ? (
+            <button
+              type="button"
+              data-commander-wake-now
+              disabled={brainBusy}
+              onClick={() => {
+                void window.electronAPI?.deck?.wake?.(activeWorkspaceId).catch(() => {
+                  /* best-effort — a rejected wake just means the brain is busy */
+                });
+              }}
+              className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-amber)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {t('deck.wakeNow') || 'Wake'}
+            </button>
+          ) : null,
         )}
 
         {/* The TUI — the hero of this layout, taking every pixel the fixed rows

@@ -249,6 +249,32 @@ describe('CommanderViewContent — brain surface', () => {
     expect(opened.textContent).toContain('Spawned a worker.');
   });
 
+  it('the pty layout has a Wake button that fires deck.wake for the workspace', () => {
+    // The pty layout has no composer, so the button is the human's only way to
+    // ask for a turn. The preload API doesn't exist in jsdom — stub it.
+    const wake = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { wake } };
+    try {
+      mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1' });
+      const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
+      expect(btn).not.toBeNull();
+      expect(btn.disabled).toBe(false);
+      act(() => btn.click());
+      expect(wake).toHaveBeenCalledWith('ws-1');
+    } finally {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('disables the Wake button while a brain turn streams; hides it without a pty', () => {
+    mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1', brainBusy: true });
+    const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    // The bubble layouts keep their composer instead — no Wake button.
+    mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
+    expect(container.querySelector('[data-commander-wake-now]')).toBeNull();
+  });
+
   it('without a brain pty the SDK layout is untouched: composer, no terminal', () => {
     mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
     expect(container.querySelector('[data-commander-brain-terminal]')).toBeNull();

@@ -401,6 +401,7 @@ export const en = {
   'deck.limit.window': 'usage',
   'deck.brainTerminal': 'Brain terminal',
   // The dock's report rail (the terminal-orchestrator layout's footer).
+  'deck.wakeNow': 'Wake',
   'deck.reportRail': 'Reports {count}',
   'deck.reportRailDecision': '1 decision',
   'deck.limit.resetsSoon': 'resets soon',

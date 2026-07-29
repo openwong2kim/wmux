@@ -892,6 +892,35 @@ export function registerDeckHandler(
     }
   };
 
+  // The dock's Wake button (the pty layout has no composer, so this is the
+  // human's one-click "take a turn now"). The prompt is deliberately open-ended
+  // — the human gave no instruction, they asked the orchestrator to look around.
+  const WAKE_BUTTON_PROMPT =
+    'The operator pressed the Wake button. Review the current state of your fleet ' +
+    'and any pending work or reports, act on anything that needs you (within your ' +
+    'autonomy caps), and report briefly — or say all is quiet. Then end your turn.';
+
+  ipcMain.removeHandler(IPC.DECK_WAKE);
+  ipcMain.handle(
+    IPC.DECK_WAKE,
+    wrapHandler(IPC.DECK_WAKE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // Non-queued on purpose: a button press wants an immediate verdict — a
+      // busy reject (this workspace mid-turn, or the fleet gate full) returns
+      // right away and the human just presses again later. runTurnForWorkspace
+      // announces turn-start and prepends the loop/decision context, so the
+      // wake renders in the thread exactly like a scheduled run.
+      return runTurnForWorkspace(WAKE_BUTTON_PROMPT, workspaceId);
+    }),
+  );
+
   // The first turn a freshly started/resumed loop takes. Without this, START
   // only writes loop-state + caps and RETURNS — the loop sits at status=running
   // waiting for the next pane event or cadence tick, which (with the default
@@ -1843,6 +1872,7 @@ export function registerDeckHandler(
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
+    ipcMain.removeHandler(IPC.DECK_WAKE);
     ipcMain.removeHandler(IPC.DECK_STATUS);
     ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
     ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);
