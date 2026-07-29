@@ -146,3 +146,133 @@ describe('workTaskSlice', () => {
     });
   });
 });
+
+describe('workspace-lifetime binding — closeMissionForRemovedWorkspace', () => {
+  interface MockedWindow {
+    __wmuxMissionRpc?: {
+      list: (p: Record<string, unknown>) => Promise<unknown>;
+      close: (p: Record<string, unknown>) => Promise<unknown>;
+    };
+  }
+  const g = globalThis as unknown as { window?: MockedWindow };
+
+  function withMissionRpc(): { calls: Array<{ method: string; params: Record<string, unknown> }> } {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    g.window = {
+      __wmuxMissionRpc: {
+        list: async (params) => {
+          calls.push({ method: 'list', params });
+          return { ok: true, tasks: [] };
+        },
+        close: async (params) => {
+          calls.push({ method: 'close', params });
+          return { ok: true };
+        },
+      },
+    };
+    return { calls };
+  }
+
+  afterEach(() => {
+    delete g.window;
+  });
+
+  it('closes the open mission of a deleted task workspace under the owner identity', async () => {
+    const { calls } = withMissionRpc();
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+
+    const close = calls.find((c) => c.method === 'close');
+    expect(close).toBeDefined();
+    expect(close?.params).toEqual({ taskId: 'wtask-1', verifiedWorkspaceId: 'parent-a' });
+  });
+
+  it('does not call close when the mission is already closed or no mission matches', async () => {
+    const { calls } = withMissionRpc();
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1', status: 'closed', closedAt: 1 }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+    await store.getState().closeMissionForRemovedWorkspace('child-unknown');
+
+    expect(calls.filter((c) => c.method === 'close')).toHaveLength(0);
+  });
+
+  it('warns and skips the cache refetch when the daemon rejects the close', async () => {
+    // Regression: this call was fire-and-forget, so a 100% NOT_AUTHORIZED failure was symptomless.
+    const calls: string[] = [];
+    g.window = {
+      __wmuxMissionRpc: {
+        list: async () => {
+          calls.push('list');
+          return { ok: true, tasks: [] };
+        },
+        close: async () => {
+          calls.push('close');
+          return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'nope' } };
+        },
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+
+    await store.getState().closeMissionForRemovedWorkspace('child-1');
+
+    expect(calls).toEqual(['close']); // No list refetch after a rejection.
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('is a silent no-op with no bridge installed or no daemon (the sidebar looks only at workspace existence)', async () => {
+    g.window = {}; // A renderer with no bridge installed (before useRpcBridge mounts).
+    const store = createTestStore();
+    store.getState().setMissions('parent-a', [
+      mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
+    ]);
+    await expect(
+      store.getState().closeMissionForRemovedWorkspace('child-1'),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ─── Transport-path regression (source level) ─────────────────────────────────
+// `task.mission.close` is registered as mutating on the pipe RpcRouter, and that
+// forwarder blocks every mutating call whose senderPtyId it cannot resolve with
+// NOT_AUTHORIZED. A renderer call has no PTY, so sending it via `rpc.invoke` fails
+// silently 100% of the time. Runtime mocks cannot catch this (both paths return a
+// promise), so we pin the bridge source itself.
+// (Same source-assertion convention as workspaceSlice.retentionMigration.test.ts.)
+describe('mission close transport path (regression)', () => {
+  it('routes the close bridge through mutateChannelLocal, not rpc.invoke', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/renderer/hooks/useRpcBridge.ts'), 'utf8');
+    expect(src).toContain("mutateChannelLocal('task.mission.close'");
+    expect(src).not.toContain("invoke('task.mission.close'");
+  });
+});
+
+// ─── Deleting a parent workspace must not hide still-live child missions (regression) ──
+// If removeWorkspace unconditionally calls clearMissionsFor with the parent id, even
+// missions whose child workspace is still alive are wiped out (they vanish from the
+// sidebar, and later, when the child is deleted, closeMissionForRemovedWorkspace can no
+// longer find the task).
+describe('parent mission cache preservation (regression)', () => {
+  it('does not let removeWorkspace call clearMissionsFor unconditionally', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(process.cwd(), 'src/renderer/stores/slices/workspaceSlice.ts'), 'utf8');
+    expect(src).not.toContain('clearMissionsFor?.(id)');
+    // The child-id-keyed close wiring must still be in place.
+    expect(src).toContain('closeMissionForRemovedWorkspace?.(id)');
+  });
+});

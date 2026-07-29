@@ -343,6 +343,13 @@ export type RpcMethod =
   // 의도적으로 제외된다(설계 §2.3 / Codex #7).
   | 'a2a.channel.operatorJoin'
   | 'a2a.channel.operatorList'
+  // Channel trash lifecycle — soft delete, undo, and permanent deletion.
+  // Same humans-only grade as archive/kick/operator*: registered on the
+  // renderer-only channels:mutate-local IPC and deliberately absent from the
+  // pipe router, so no agent/MCP caller can hide or destroy a channel.
+  | 'a2a.channel.trash'
+  | 'a2a.channel.restore'
+  | 'a2a.channel.destroy'
   | 'a2a.principal.upsert'
   | 'a2a.principal.remove'
   | 'a2a.principal.markStaleWorkspace'
@@ -505,6 +512,10 @@ export const ALL_RPC_METHODS = [
   // operator-join (설계 §2.1/§2.2) — humans-only, 파이프 미등록. RpcMethod 완전성.
   'a2a.channel.operatorJoin',
   'a2a.channel.operatorList',
+  // Channel trash lifecycle — humans-only, pipe-unregistered. RpcMethod completeness.
+  'a2a.channel.trash',
+  'a2a.channel.restore',
+  'a2a.channel.destroy',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',
