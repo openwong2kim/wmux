@@ -275,13 +275,24 @@ export interface ChannelMention {
  *    workspace level (badge-only, the pre-pin behavior), and `paneId` carries the
  *    pane that was refused.
  *  - `pane_not_live` — the pane IS that workspace's, but no live session is
- *    behind it: the agent exited, or the pane was closed. Refused rather than
+ *    behind it: the pane was closed, or its session died. Refused rather than
  *    routed, because a pin the receiving side cannot match does not fail — it
  *    degrades to workspace level, and the workspace-level paste lands in
  *    whichever agent that workspace still has. An instruction addressed to a
  *    departed worker would silently start a sibling worker's turn. The mention
  *    still lands at workspace level (badge-only) as above; what you are told is
  *    that the pane you named is not the one that would have acted on it.
+ *
+ *    "Live" here means A LIVE PTY, not a live agent. An agent can exit back to
+ *    its shell while its pane and session stay perfectly alive; such a pin is
+ *    accepted and the text lands at a shell prompt. Nothing in the delivery path
+ *    models agent-exit today, so this reason does not promise more than it can
+ *    check.
+ *
+ *    The check runs on the daemon at post time, and the receiving renderer
+ *    re-checks at delivery time. A pane that dies between the two is still
+ *    subject to the degraded workspace-level fallback described above — this
+ *    narrows that window, it does not close it.
  */
 export interface ChannelDroppedMention {
   workspaceId: string;

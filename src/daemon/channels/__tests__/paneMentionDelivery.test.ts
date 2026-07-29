@@ -352,11 +352,12 @@ describe('A1 — pane-pinned channel mentions', () => {
     expect(post.droppedMentions ?? []).toEqual([]);
   });
 
-  it('without the registry resolver the pin stays opaque pass-through (unit-test construction)', async () => {
-    // The gate is an injected dependency; production always wires it
-    // (src/daemon/index.ts). This pins the documented absent-resolver behavior
-    // so a construction site that forgets it degrades to the pre-A1 semantics
-    // rather than silently refusing every pin.
+  it('without the registry resolver every pin is refused, not passed through', async () => {
+    // Previously this pinned the opposite: an absent resolver let the pin
+    // through unchecked. That made the gate optional in effect — nothing had
+    // proven the pane belonged to that workspace, which is the one thing the
+    // gate exists to establish, and any construction site that forgot the
+    // dependency reopened the cross-workspace paste primitive silently.
     const writer = makeWriter();
     const svc = new ChannelService({
       writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
@@ -380,9 +381,96 @@ describe('A1 — pane-pinned channel mentions', () => {
     });
     expect(post.ok).toBe(true);
     if (!post.ok) throw new Error('post failed');
-    expect(post.message.mentions).toEqual([
-      { workspaceId: 'ws-orch', name: 'lead', paneId: 'pane-1', ptyId: 'pty-1' },
+    // The mention still lands — badge-only, at workspace level.
+    expect(post.message.mentions).toEqual([{ workspaceId: 'ws-orch', name: 'lead' }]);
+    expect(post.droppedMentions).toEqual([
+      { workspaceId: 'ws-orch', paneId: 'pane-1', name: 'lead', reason: 'pane_not_in_workspace' },
     ]);
-    expect(post.droppedMentions).toBeUndefined();
+  });
+
+  // REGRESSION (#675 follow-up). The local composer attaches a ptyId to EVERY
+  // mention it sends (Composer.tsx), and the gate's liveness check used to sit
+  // behind `panePtyId.length === 0` — so it never ran on the path that produces
+  // most mentions. A human mentioning a pane whose agent had just exited sent a
+  // stale pty straight through, the receiving renderer's match missed, and the
+  // degraded workspace-level paste started a SIBLING's turn.
+  it('refuses a dead pin even when the caller supplies its own ptyId (composer shape)', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [
+        { workspaceId: 'ws-worker', paneId: 'pane-1', ptyId: '' },
+        { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' },
+      ],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker take this over',
+      // The shape the composer sends: paneId AND a ptyId snapshot it took when
+      // the mention was typed, by which time the agent may already be gone.
+      mentions: [{ workspaceId: 'ws-worker', paneId: 'pane-1', ptyId: 'pty-1-stale', name: 'worker' }],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.mentions).toEqual([{ workspaceId: 'ws-worker', name: 'worker' }]);
+    expect(post.droppedMentions).toEqual([
+      { workspaceId: 'ws-worker', paneId: 'pane-1', name: 'worker', reason: 'pane_not_live' },
+    ]);
+  });
+
+  // The pair is all-or-nothing. A pty coordinate with no pane cannot be proven,
+  // and the receiving renderer needs both to pin anything — so a half-pin must
+  // never leave here. This is a workspace-level mention, not a refusal: nothing
+  // was pinned, so there is nothing to report as dropped.
+  it('strips a ptyId that arrives without a paneId, without reporting a refusal', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [{ workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' }],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker heads up',
+      mentions: [{ workspaceId: 'ws-worker', ptyId: 'pty-2', name: 'worker' }],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.mentions).toEqual([{ workspaceId: 'ws-worker', name: 'worker' }]);
+    expect(post.droppedMentions ?? []).toEqual([]);
+  });
+
+  it('overwrites a caller-supplied ptyId with the daemon-proven one', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [{ workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' }],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker carry on',
+      // A sender must not get to choose which pty the receiving renderer
+      // matches against — that is the whole point of proving it server-side.
+      mentions: [
+        { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-attacker-chose', name: 'worker' },
+      ],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.mentions).toEqual([
+      { workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2', name: 'worker' },
+    ]);
+    expect(post.droppedMentions ?? []).toEqual([]);
   });
 });

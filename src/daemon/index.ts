@@ -29,8 +29,8 @@ import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
 import { manifestFileExists, pingFormatVersionField } from './eventlog/EventLogManifest';
 import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
-import { PrincipalService, PrincipalStateWriter } from './principals';
-import { isPrincipalUpsertInput, panePrincipalId } from '../shared/principals';
+import { PrincipalService, PrincipalStateWriter, resolvePanePin } from './principals';
+import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
@@ -4438,26 +4438,25 @@ async function main(): Promise<void> {
         : undefined;
     },
     // A1 (pane-pinned mentions): prove a mention's paneId is a pane OF the
-    // mentioned workspace. The registry key embeds the workspace
-    // (`pane:${workspaceId}/${paneId}`), so a hit is the ownership proof and a
-    // caller cannot pin a pane of a workspace it is merely mentioning.
+    // mentioned workspace, and hand back the pty that would act on it. The
+    // rules — and why ownership and liveness come from different authorities —
+    // live in `resolvePanePin`, which is pure so they are testable without a
+    // daemon. This is only the wiring.
     //
-    // Ownership and liveness are answered SEPARATELY, because they have
-    // different consequences. A stale record still proves ownership, so it is
-    // still a hit. But its ptyId may name a dead — or reused — session, and the
-    // receiving renderer matches on exactly that snapshot: a miss there does not
-    // stop the delivery, it degrades the mention to workspace level, where the
-    // flush pastes it into whatever agent the workspace still has. An
-    // instruction addressed to a departed worker would then start a SIBLING
-    // worker's turn, with nothing reported to the sender. So a stale record
-    // yields the ownership proof and no ptyId, which the caller turns into a
-    // reported refusal. Same rule PrincipalService.livePtyId() already applies
-    // for the wake worker, and for the same reason.
-    resolvePanePrincipal: (workspaceId, paneId) => {
-      const rec = principalService.find(panePrincipalId(workspaceId, paneId));
-      if (!rec || rec.kind !== 'pane-agent') return undefined;
-      return rec.ptyId && rec.liveness === 'live' ? { ptyId: rec.ptyId } : {};
-    },
+    // Liveness comes from the session table rather than the registry's
+    // `liveness` field on purpose: the daemon backfills every pane-agent to
+    // `stale` on its own restart, and only a renderer can undo that. An IDLE
+    // agent never emits, so nothing re-registers it — reading that field made
+    // a pin aimed at an idle agent refused forever after a restart.
+    resolvePanePrincipal: (workspaceId, paneId) =>
+      resolvePanePin(
+        {
+          findPrincipal: (id) => principalService.find(id),
+          sessionState: (ptyId) => sessionManager.getSession(ptyId)?.meta.state,
+        },
+        workspaceId,
+        paneId,
+      ),
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
     // not have a copy, so we pass `undefined` (creator-only archive)
