@@ -89,8 +89,12 @@ describe('resolvePanePin — liveness', () => {
 // to `liveness: 'stale'` on its own restart, and only a renderer re-registration
 // undoes that. An IDLE agent emits nothing, so nothing re-registers it — reading
 // `liveness` meant a pin aimed at an idle agent was refused FOREVER after a
-// restart, which is the one case pane-pinned mentions were built to serve. The
-// session table is the daemon's own and survives the restart intact.
+// restart, which is the one case pane-pinned mentions were built to serve.
+//
+// The session table does not survive the restart in memory — it is rebuilt from
+// persisted metadata, each session re-created as `detached`, with no renderer in
+// the path. That is what makes it answerable where the registry's field is not,
+// and it is why the fixture below pairs a `stale` principal with a live session.
 describe('resolvePanePin — after a daemon restart', () => {
   it('still proves an idle pane whose principal was backfilled to stale', () => {
     const l = lookups([paneRecord('ws-a', 'pane-1', 'pty-1', 'stale')], { 'pty-1': 'detached' });

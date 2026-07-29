@@ -31,6 +31,12 @@
 //   pane-pinned mentions exist to serve. The daemon owns the PTYs, so it can
 //   answer this itself and does.
 //
+//   That answer survives a restart because the session table is REBUILT from
+//   persisted metadata before anything asks it: recovery re-creates each
+//   session through `createSession`, which stamps `detached`. Nothing in that
+//   path waits on a renderer, which is the whole reason it can be trusted where
+//   the registry's own field cannot.
+//
 // "Live" here means A LIVE PTY, not a live agent: an agent can exit back to its
 // shell while the session stays attached. Callers get the same guarantee the
 // rest of the daemon works from (`listLiveSessions` encodes the same two

@@ -422,6 +422,31 @@ describe('A1 — pane-pinned channel mentions', () => {
     ]);
   });
 
+  // The pair is all-or-nothing. A pty coordinate with no pane cannot be proven,
+  // and the receiving renderer needs both to pin anything — so a half-pin must
+  // never leave here. This is a workspace-level mention, not a refusal: nothing
+  // was pinned, so there is nothing to report as dropped.
+  it('strips a ptyId that arrives without a paneId, without reporting a refusal', async () => {
+    const { svc, channelId } = await makeChannelWith(
+      [
+        { workspaceId: 'ws-orch', memberId: 'lead' },
+        { workspaceId: 'ws-worker', memberId: 'worker' },
+      ],
+      [{ workspaceId: 'ws-worker', paneId: 'pane-2', ptyId: 'pty-2' }],
+    );
+    const post = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-orch', memberId: 'lead' },
+      verifiedWorkspaceId: 'ws-orch',
+      text: '@worker heads up',
+      mentions: [{ workspaceId: 'ws-worker', ptyId: 'pty-2', name: 'worker' }],
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.mentions).toEqual([{ workspaceId: 'ws-worker', name: 'worker' }]);
+    expect(post.droppedMentions ?? []).toEqual([]);
+  });
+
   it('overwrites a caller-supplied ptyId with the daemon-proven one', async () => {
     const { svc, channelId } = await makeChannelWith(
       [

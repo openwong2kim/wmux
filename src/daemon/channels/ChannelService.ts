@@ -2110,6 +2110,16 @@ export class ChannelService {
         // A refused pin does NOT fail the post: the mention degrades to workspace
         // level (badge-only — exactly the pre-A1 behavior) and is reported in
         // droppedMentions, because this file's discipline is "never drop silently".
+        //
+        // Liveness is proven HERE too, not just ownership. A caller's own `ptyId`
+        // is never carried forward: `panePtyId` starts empty and is only ever
+        // filled from the resolver. Two consequences worth stating, because both
+        // are deliberate:
+        //   - A mention carrying a ptyId but NO paneId loses it. A pty coordinate
+        //     with no pane cannot be proven and nothing downstream reads one (the
+        //     receiving renderer needs both), so there is nothing to preserve.
+        //   - The pair is all-or-nothing: a mention leaves here with BOTH paneId
+        //     and ptyId, or with neither. No half-pin can reach the renderer.
         const requestedPaneId = typeof mn.paneId === 'string' ? mn.paneId : '';
         let paneId = requestedPaneId;
         let panePtyId = '';
@@ -2133,16 +2143,16 @@ export class ChannelService {
                 : {}),
             });
           };
+          // No resolver injected is treated exactly like a failed lookup, NOT
+          // like a pass. Nothing has proven the pane belongs to that workspace,
+          // and an unproven pin is a cross-workspace paste primitive — the one
+          // thing this gate exists to prevent. A gate that opens when its
+          // dependency is missing is decorative.
+          const resolve = this.resolvePanePrincipal;
           let pane: { ptyId?: string } | undefined;
-          let lookupFailed = false;
+          let lookupFailed = !resolve;
           try {
-            // No resolver injected is treated exactly like a failed lookup, NOT
-            // like a pass. Nothing has proven the pane belongs to that
-            // workspace, and an unproven pin is a cross-workspace paste
-            // primitive — the one thing this gate exists to prevent. A gate that
-            // opens when its dependency is missing is decorative.
-            pane = this.resolvePanePrincipal?.(mn.workspaceId, requestedPaneId);
-            if (!this.resolvePanePrincipal) lookupFailed = true;
+            pane = resolve?.(mn.workspaceId, requestedPaneId);
           } catch (err) {
             // Fail CLOSED: a registry that cannot answer has not proven anything,
             // so the pin is refused rather than passed through unchecked.
