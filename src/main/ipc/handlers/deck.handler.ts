@@ -121,6 +121,10 @@ export interface RegisterDeckHandlerOptions {
      *  embeds. Passed to every factory — including an injected one — so the
      *  embed plumbing is exercisable without a live daemon. */
     onPtySpawned: (ptyId: string | null) => void;
+    /** How an adapter reports that a turn IT did not start has ended (the
+     *  `claude-pty` human-typed-into-the-TUI case). Passed to every factory so
+     *  the wake plumbing is exercisable without a live daemon. */
+    onForeignTurnEnd: () => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -225,6 +229,7 @@ export function registerDeckHandler(
       fullPower?: boolean;
       vendor?: BrainVendor;
       onPtySpawned: (ptyId: string | null) => void;
+      onForeignTurnEnd: () => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
@@ -251,6 +256,7 @@ export function registerDeckHandler(
                 snapshot: getWorkspaceMirror().getFleetSnapshot(workspaceId),
                 consecutiveBlocks,
               }),
+            onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
             // The model picker applies to the TUI brain too (`--model`);
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).
@@ -371,11 +377,17 @@ export function registerDeckHandler(
     // persisted sessions keep resuming across this change.
     const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
     const persisted = loadCommanderSession(sessionKey);
+    // The adapter's foreign-turn callback needs the manager the adapter is
+    // about to be constructed INTO — late-bound through this holder, exactly
+    // like the coalescer's own forward reference above. It can only fire long
+    // after the assignment below.
+    let managerRef: CommanderSessionManager | undefined;
     const manager = new CommanderSessionManager({
       adapter: createAdapter({
         workspaceId,
         vendor,
         onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
+        onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -407,6 +419,7 @@ export function registerDeckHandler(
       // flush into the next one.
       onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
+    managerRef = manager;
     managers.set(workspaceId, { manager, model, fullPower, vendor });
     return manager;
   };

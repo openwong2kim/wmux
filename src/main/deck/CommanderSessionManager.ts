@@ -186,22 +186,39 @@ export class CommanderSessionManager {
       // Never clobber a `disposed` flip that happened during the turn.
       if (this._status === 'busy') {
         this._status = 'idle';
-        // Wake the coalescer on a LATER tick — never synchronously here, or the
-        // callback could re-enter send() while this turn is still unwinding.
-        if (this.onIdle) {
-          const cb = this.onIdle;
-          this.deferIdle(() => {
-            // A dispose() between the flip and this tick must cancel the wake.
-            if (this._status === 'disposed') return;
-            try {
-              cb();
-            } catch {
-              /* the coalescer flush is best-effort — never surface here */
-            }
-          });
-        }
+        this.scheduleIdleWake();
       }
     }
+  }
+
+  /** Wake the coalescer on a LATER tick — never synchronously from a caller's
+   *  stack, or the callback could re-enter send() while a turn is still
+   *  unwinding. A dispose() between here and the tick cancels the wake. */
+  private scheduleIdleWake(): void {
+    if (!this.onIdle) return;
+    const cb = this.onIdle;
+    this.deferIdle(() => {
+      if (this._status === 'disposed') return;
+      try {
+        cb();
+      } catch {
+        /* the coalescer flush is best-effort — never surface here */
+      }
+    });
+  }
+
+  /**
+   * The adapter closed a turn this manager never started — the human typed
+   * into the terminal brain's embedded TUI and their turn just ended.
+   *
+   * `getStatus()` reported busy for that whole turn, so anything the coalescer
+   * buffered meanwhile is holding for a flush trigger that the normal
+   * turn-end path will never fire. This is that trigger. Ignored while a
+   * manager-run turn is live (its own finally will wake) or once disposed.
+   */
+  notifyForeignTurnEnd(): void {
+    if (this._status !== 'idle') return;
+    this.scheduleIdleWake();
   }
 
   /** Abort the in-flight turn (best-effort). No-op when idle/disposed. */

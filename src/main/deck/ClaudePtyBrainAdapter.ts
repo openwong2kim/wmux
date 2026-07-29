@@ -572,6 +572,13 @@ export interface ClaudePtyBrainAdapterDeps {
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
   onPtySpawned?: (ptyId: string | null) => void;
+  /** Fired when a turn the ADAPTER did not start finishes — the human typed
+   *  into the embedded TUI and their turn just ended. The workspace was
+   *  reporting busy for its whole duration, so whatever accumulated in the
+   *  deck's event coalescer meanwhile has no other trigger to flush it: without
+   *  this the buffered events sat until some unrelated event arrived. Wired to
+   *  the session manager's ordinary idle wake. */
+  onForeignTurnEnd?: () => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
@@ -700,8 +707,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** Close an open foreign turn (or no-op when none is). The one place the flag
    *  and its stamp are cleared together. */
   private closeForeignTurn(): void {
+    const wasOpen = this.foreignTurnOpen;
     this.foreignTurnOpen = false;
     this.foreignTurnOpenedAt = null;
+    if (!wasOpen) return;
+    try {
+      this.deps.onForeignTurnEnd?.();
+    } catch {
+      /* the coalescer wake is best-effort — never surface into a hook */
+    }
   }
 
   /** The live pty the deck embeds, or null before the first turn spawned one. */

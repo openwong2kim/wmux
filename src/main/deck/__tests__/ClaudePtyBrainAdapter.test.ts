@@ -1028,6 +1028,44 @@ describe('a foreign turn that could get stuck open', () => {
   });
 });
 
+describe('the foreign-turn-end notification', () => {
+  it('fires once when the human`s Stop closes their turn, and not for our own turns', async () => {
+    const host = makeHost();
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnEnd });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    // Our own turn ends through the manager's normal path — no foreign wake.
+    expect(onForeignTurnEnd).not.toHaveBeenCalled();
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    // A duplicate Stop with no foreign turn open must not wake again.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+
+  it('fires when a pty that died mid-foreign-turn releases the flag', async () => {
+    const host = makeHost();
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnEnd });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    host.killSession(ptyId, 1);
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+});
+
 describe('an automation turn racing the human`s Enter', () => {
   it('stands down when the UserPromptSubmit lands inside the double-check window', async () => {
     const host = makeHost();
