@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   buildShimCmd,
   buildPathEditScript,
@@ -177,21 +177,78 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
   const SEED = '%USERPROFILE%\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs';
   const PS = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 
-  const ps = (script: string) => {
+  // Must stay below the suite's per-test budget above: a spawn that outlives it
+  // can only ever surface as a bare vitest timeout, which says nothing about
+  // which of the three or four spawns in a case actually hung. Warm spawns
+  // measure ~1s, so this is a wide margin over anything legitimate.
+  const SPAWN_TIMEOUT_MS = 10_000;
+  // The first powershell.exe in a process pays a one-time cold start — its own
+  // binaries and the .NET images are not in the OS file cache yet. #576
+  // measured 5.6s for it; a run on this branch exceeded 10s. It is absorbed
+  // once in a hook with a budget of its own rather than billed to whichever
+  // case happens to run first, which is how #576 flaked and what its 5s → 15s
+  // widening left unaddressed — a wider budget moves that threshold, it does
+  // not stop a one-time cost from landing inside a per-test one.
+  const WARMUP_TIMEOUT_MS = 60_000;
+
+  const ps = (script: string, timeoutMs: number = SPAWN_TIMEOUT_MS) => {
     try {
       return { code: 0, out: execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
-        encoding: 'utf8', windowsHide: true, timeout: 20000,
-      }) };
+        encoding: 'utf8', windowsHide: true, timeout: timeoutMs,
+      }), err: '' };
     } catch (e) {
-      const err = e as { status?: number; stdout?: string };
-      return { code: err.status ?? -1, out: err.stdout ?? '' };
+      const err = e as { status?: number | null; stdout?: string; stderr?: string; signal?: string };
+      // A timeout kills the child with a signal and leaves status null. Say so —
+      // "hung" and "exited non-zero" need different fixes.
+      const killed = err.signal ? `killed by ${err.signal} after ${timeoutMs} ms` : '';
+      return {
+        code: err.status ?? -1,
+        out: err.stdout ?? '',
+        err: [killed, err.stderr].filter(Boolean).join('\n').trim(),
+      };
     }
   };
 
-  const seed = () => ps(
+  /**
+   * Spawn for fixture work, where a non-zero exit is a broken *harness* and
+   * never a finding about the code under test. It has to say that itself: the
+   * cases below assert exit codes from the real shim, so a silently failed
+   * setup does not vanish — it comes back wearing the shim's own failure. That
+   * is #690, where a seed that never created the key surfaced as READ_FAILED
+   * and read as a genuine regression.
+   */
+  const psOk = (label: string, script: string, timeoutMs?: number) => {
+    const r = ps(script, timeoutMs);
+    if (r.code !== 0) {
+      throw new Error(`fixture "${label}" failed with exit ${r.code}\n${r.err || r.out}`.trim());
+    }
+    return r;
+  };
+
+  /**
+   * Remove sandbox keys, loudly if it cannot. Deliberately *not*
+   * `-ErrorAction SilentlyContinue`: that suppresses the message but still
+   * leaves `$?` false, so `powershell.exe -Command` exits 1 and "there was
+   * nothing to delete" is indistinguishable from "the delete failed" — the
+   * same conflation this file is fixing. Test-Path answers the first question
+   * up front, so a non-zero exit can only mean the second.
+   */
+  const dropKeys = (label: string, ...subs: string[]) => psOk(label,
+    `$ErrorActionPreference = 'Stop'\n` +
+    subs.map((s) => `if (Test-Path 'HKCU:\\${s}') { Remove-Item 'HKCU:\\${s}' -Recurse -Force }`).join('\n'),
+  );
+
+  const seed = () => psOk('seed sandbox key',
+    `$ErrorActionPreference = 'Stop'\n` +
     `if (Test-Path 'HKCU:\\${SUB}') { Remove-Item 'HKCU:\\${SUB}' -Recurse -Force }\n` +
     `New-Item -Path 'HKCU:\\${SUB}' -Force | Out-Null\n` +
-    `Set-ItemProperty -Path 'HKCU:\\${SUB}' -Name 'Path' -Value '${SEED}' -Type ExpandString`,
+    `Set-ItemProperty -Path 'HKCU:\\${SUB}' -Name 'Path' -Value '${SEED}' -Type ExpandString\n` +
+    // Post-condition, in the same spawn rather than a second one: prove the key
+    // holds what every case below depends on, not merely that no step threw.
+    // DoNotExpandEnvironmentNames because the %VAR% entry must still be raw —
+    // that is the property these cases exist to protect.
+    `$raw = (Get-Item 'HKCU:\\${SUB}').GetValue('Path', $null, 'DoNotExpandEnvironmentNames')\n` +
+    `if ($raw -ne '${SEED}') { throw "seed left Path as '$raw'" }`,
   );
 
   /** Raw (unexpanded) current value of the sandbox Path, via reg.exe. */
@@ -206,9 +263,28 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
     return ps(prefix + buildPathEditScript(BIN, op, SUB, BAK));
   };
 
+  // Pay the cold start here, where it has its own budget and its own name. If
+  // PowerShell is genuinely unusable this reports that once, up front, instead
+  // of disguising it as the first case's failure.
+  beforeAll(() => {
+    psOk('warm up powershell', 'exit 0', WARMUP_TIMEOUT_MS);
+  }, WARMUP_TIMEOUT_MS + 5_000);
+
   afterEach(() => {
-    ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue\n` +
-       `Remove-Item 'HKCU:\\${BAK}' -Recurse -Force -ErrorAction SilentlyContinue`);
+    // Also checked: teardown that could not run leaves keys behind, and the
+    // damage lands on the *next* case — the failure would be attributed to
+    // whichever test ran after the one that actually broke.
+    dropKeys('teardown sandbox keys', SUB, BAK);
+  });
+
+  it('a failed fixture spawn reports itself instead of running the case', () => {
+    // Guards the #690 fix itself: if psOk ever goes back to swallowing an exit
+    // code, a broken fixture returns to impersonating the shim and this fails.
+    // Asserted on the label, not on the exit value: the property is that a
+    // fixture failure carries its own name. Pinning the code made this fail on
+    // a slow runner for a spawn that had been killed rather than exiting —
+    // which is psOk working, reported as psOk broken.
+    expect(() => psOk('deliberate failure', 'exit 3')).toThrow(/fixture "deliberate failure" failed with exit/);
   });
 
   for (const constrained of [false, true]) {
@@ -240,7 +316,10 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
 
     it(`${mode}: an unreadable key fails closed — exits READ_FAILED and writes nothing`, () => {
       // No sandbox key at all — both readers must fail rather than invent an empty PATH.
-      ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue`);
+      // This removal is the precondition, so it is checked like any other fixture:
+      // if it silently failed, the case would assert READ_FAILED against a key
+      // that still exists and pass for the wrong reason.
+      dropKeys('drop sandbox key', SUB);
       const r = run('add', constrained);
       expect(r.code).toBe(PATH_EDIT_EXIT.READ_FAILED);
       expect(explainPathEditExit(r.code, BIN)).toContain('ConstrainedLanguage');
