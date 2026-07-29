@@ -176,7 +176,7 @@ describe('shell.handler "Open with"', () => {
       setPlatform('win32');
       const pending = detectApps();
       for (const call of execFileCalls) {
-        expect(nodePath.isAbsolute(call.file)).toBe(true);
+        expect(nodePath.win32.isAbsolute(call.file)).toBe(true);
         expect(call.file.toLowerCase()).toContain('where.exe');
       }
       resolveProbes({});
@@ -277,10 +277,8 @@ describe('shell.handler "Open with"', () => {
       // directly would start a second copy of the editor.
       expect(file).toBe('/usr/bin/open');
       // Plain argv — no shell, so the space and the `&` need no escaping and
-      // none of the Windows quoting rules apply. (The handler normalizes with
-      // the host's `path`, which is a no-op for a posix path on macOS.)
-      expect(args).toEqual(['-a', bundle, nodePath.normalize(folder)]);
-      expect(args[2]).toContain('my project & repo');
+      // none of the Windows quoting rules apply.
+      expect(args).toEqual(['-a', bundle, folder]);
       expect(opts.windowsVerbatimArguments).toBe(false);
       expect(opts.detached).toBe(true);
     });
@@ -310,7 +308,7 @@ describe('shell.handler "Open with"', () => {
       expect(spawnCalls).toHaveLength(1);
       const { file, args, opts } = spawnCalls[0];
       expect(file.toLowerCase()).toContain('cmd.exe');
-      expect(nodePath.isAbsolute(file)).toBe(true);
+      expect(nodePath.win32.isAbsolute(file)).toBe(true);
       // /d blocks the registry AutoRun command; /s fixes the quote-stripping rule.
       expect(args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
       // One outer quote pair, each token quoted inside it — that quoting is what
@@ -385,6 +383,22 @@ describe('shell.handler "Open with"', () => {
       await expect(openWith('code', 'relative\\path')).rejects.toThrow(/absolute/);
       expect(execFileCalls).toHaveLength(0);
       expect(spawnCalls).toHaveLength(0);
+    });
+
+    it('judges absoluteness by the platform it runs as, not by the build host', async () => {
+      // The handler branches on process.platform for batch dispatch and bundle
+      // probing; if the path flavour came from the compile host instead, a drive
+      // path would stop looking absolute the moment the same code ran on a POSIX
+      // machine — which is exactly how these tests run on Linux CI.
+      setPlatform('win32');
+      const pending = openWith('code', 'D:\\repo');
+      await Promise.resolve();
+      resolveProbes({ 'code.cmd': CODE_CMD });
+      await expect(pending).resolves.toEqual({ ok: true });
+
+      // ...and a Windows drive path is not absolute for a macOS run.
+      setPlatform('darwin');
+      await expect(openWith('code', 'D:\\repo')).rejects.toThrow(/absolute/);
     });
   });
 });

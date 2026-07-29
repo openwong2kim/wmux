@@ -155,8 +155,8 @@ export function registerShellHandlers(): () => void {
     if (!appId || typeof folderPath !== 'string') {
       throw new Error('payload must contain appId and folderPath');
     }
-    const normalized = path.normalize(folderPath);
-    if (!path.isAbsolute(normalized)) {
+    const normalized = plat().normalize(folderPath);
+    if (!plat().isAbsolute(normalized)) {
       throw new Error('folderPath must be absolute');
     }
 
@@ -206,12 +206,23 @@ interface FolderAppEntry {
 // PATH entry that where.exe walks) must not keep the submenu spinning.
 const WHERE_TIMEOUT_MS = 1000;
 
+/**
+ * Path helpers for the platform we are running *as*, not for the host the code
+ * was compiled on. In production those are the same thing, but everything in
+ * this section already branches on `process.platform` — batch dispatch, bundle
+ * probing — so the path flavour has to follow the same switch, or the two can
+ * disagree and a Windows path stops looking absolute.
+ */
+function plat(): typeof path.win32 {
+  return process.platform === 'win32' ? path.win32 : path.posix;
+}
+
 // Absolute path to a System32 tool rather than a bare name, matching the rest
 // of the main process (see autostart.ts regExe): a PATH-resolved name is
 // attacker influenceable, an absolute System32 path is not.
 function system32(exe: string): string {
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  return path.join(systemRoot, 'System32', exe);
+  return path.win32.join(systemRoot, 'System32', exe);
 }
 
 // Candidate launchers, probed in menu order. `command` here is the *probe name*;
@@ -240,7 +251,7 @@ function resolveCommand(cmd: string): Promise<string | null> {
       // where.exe prints every match, one per line. First line wins — same
       // precedence the shell would apply.
       const first = String(stdout ?? '').split(/\r?\n/).map(l => l.trim()).find(Boolean);
-      resolve(first && path.isAbsolute(first) ? first : null);
+      resolve(first && path.win32.isAbsolute(first) ? first : null);
     });
   });
 }
@@ -420,7 +431,7 @@ function expandableVars(s: string): string[] {
  * toast on failure, so it has to be true.
  */
 function launchFolderApp(entry: FolderAppEntry, folderPath: string): Promise<{ ok: boolean; error?: string }> {
-  const ext = path.extname(entry.command).toLowerCase();
+  const ext = plat().extname(entry.command).toLowerCase();
   // Windows-only route. Scoped explicitly so a launcher that merely happens to
   // end in .cmd on another platform is never handed to a cmd.exe that is not there.
   const isBatch = process.platform === 'win32' && (ext === '.cmd' || ext === '.bat');
