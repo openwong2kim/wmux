@@ -1048,4 +1048,12 @@ export const ko = {
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',
   'workspace.departed': '이탈',
+  'workspace.openInExplorer': '{app}에서 열기',
+  'workspace.openInExplorerCtx': '연결 프로그램\u2026',
+  'workspace.finder': 'Finder',
+  'workspace.fileExplorer': '파일 탐색기',
+  'workspace.fileManager': '파일 관리자',
+  'workspace.openFailed': '폴더를 열 수 없습니다',
+  'workspace.openFailedQuoting': '실행 프로그램에 전달할 수 없는 문자가 경로에 있습니다',
+  'workspace.openFailedEnvSyntax': '경로에 %-구문 {name}이 있어 실행 프로그램이 다른 폴더로 해석합니다',
 } as const;

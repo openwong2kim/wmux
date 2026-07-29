@@ -329,6 +329,14 @@ export const IPC = {
   // Triggered by Ctrl+click (mac: Cmd+click) on a path token rendered in the terminal.
   // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
   SHELL_OPEN_PATH: 'shell:open-path',
+  // Renderer → main: detect folder-opening apps available on the system.
+  // Returns AppEntry[] — the renderer uses this to populate the "Open with"
+  // submenu on workspace items. Called on demand (context menu open), not cached.
+  SHELL_DETECT_APPS: 'shell:detect-apps',
+  // Renderer → main: open a folder with a specific detected app.
+  // Payload: { appId: string, folderPath: string }.
+  // Resolves { ok: boolean, error?: string }.
+  SHELL_OPEN_WITH: 'shell:open-with',
   GIT_STATUS: 'git:status',
   // J2 — diff 리뷰·hunk 채택
   DIFF_READ: 'diff:read',

@@ -4,8 +4,9 @@ import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
+import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell } from '../icons';
+import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
@@ -175,6 +176,56 @@ function showCopyToast(text: string): void {
   useStore.getState().pushToast({ level: 'info', message: text });
 }
 
+/**
+ * Detected apps whose entry should read as a terminal rather than a generic
+ * external app — Windows Terminal, and macOS Terminal.app / iTerm.
+ */
+const TERMINAL_APP_IDS = new Set(['wt', 'terminal', 'iterm']);
+
+/**
+ * The OS's own word for its file manager. Localized because "Finder" and "File
+ * Explorer" are user-facing OS vocabulary — a Korean user expects 파일 탐색기 —
+ * and which one applies comes from the platform, not from any string main sent.
+ */
+function fileManagerName(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  const platform = window.electronAPI?.platform;
+  if (platform === 'darwin') return t('workspace.finder');
+  if (platform === 'win32') return t('workspace.fileExplorer');
+  return t('workspace.fileManager');
+}
+
+/**
+ * Label for one "Open with…" entry. Editor names are product names and stay as
+ * main reported them; only the built-in file manager is localized.
+ */
+function folderAppLabel(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  app: { id: string; name: string },
+): string {
+  return app.id === 'explorer' ? fileManagerName(t) : app.name;
+}
+
+/**
+ * "Open in explorer / open with" 실패 피드백. OS가 폴더를 열지 못한 경우
+ * (경로 삭제, 권한 거부, 연결 프로그램 실행 실패) 클릭이 무반응으로 보이지
+ * 않도록 원인을 붙여 경고 토스트로 알린다.
+ *
+ * main이 배치 셰임 실행을 거부할 때 쓰는 두 구조화 코드는 사용자가 읽을 수 있는
+ * 문장으로 바꾼다. 그 외의 detail(OS 오류 문자열)은 그대로 덧붙인다.
+ */
+function notifyOpenFailed(t: (key: TranslationKey, params?: Record<string, string | number>) => string, detail?: string): void {
+  const label = t('workspace.openFailed');
+  let message = detail ? `${label}: ${detail}` : label;
+  if (detail === 'PATH_NOT_QUOTABLE') {
+    message = `${label}: ${t('workspace.openFailedQuoting')}`;
+  } else if (detail?.startsWith('PATH_HAS_ENV_SYNTAX:')) {
+    message = `${label}: ${t('workspace.openFailedEnvSyntax', { name: detail.slice('PATH_HAS_ENV_SYNTAX:'.length) })}`;
+  }
+  useStore.getState().pushToast({ level: 'warn', message });
+}
+
 /** Idle-duration label: minutes under an hour, then hours, then days. */
 function formatIdle(ms: number): string {
   const m = Math.floor(ms / 60_000);
@@ -205,6 +256,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
+  const [owOpen, setOwOpen] = useState(false);
+  const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -271,6 +324,49 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     useStore.getState().setActiveWorkspace(workspaceId);
     openUrlInBrowserPane(`http://localhost:${port}`, { workspaceId });
   };
+
+  /**
+   * Report a failed open. Main answers `{ ok:false, error }` for a missing or
+   * permission-denied folder and for the two paths it refuses to hand to
+   * cmd.exe, and the invoke itself rejects when validation fails — an unhandled
+   * rejection here would leave the click looking like a silent no-op.
+   */
+  const reportOpen = (p: Promise<{ ok: boolean; error?: string }>) => {
+    p.then((res) => { if (!res?.ok) notifyOpenFailed(t, res?.error); })
+      .catch((err) => notifyOpenFailed(t, String(err?.message ?? err)));
+  };
+
+  /** Open the workspace's current working directory in the OS file explorer. */
+  const handleOpenExplorer = () => {
+    if (!metadata?.cwd) return;
+    reportOpen(window.electronAPI.shell.openPath(metadata.cwd));
+  };
+
+  /** Open cwd with a specific detected app (VS Code, Terminal, etc.). */
+  const handleOpenWith = (appId: string) => {
+    if (!metadata?.cwd) return;
+    setMenuPos(null);
+    setOwOpen(false);
+    reportOpen(window.electronAPI.shell.openWith(appId, metadata.cwd));
+  };
+
+  // Detect available apps when the context menu opens, and clear when closed.
+  // `cancelled` drops a probe that lands after the menu closed (or reopened on
+  // another row): detectApps spawns one where.exe per candidate, so a slow AV
+  // scan can easily outlive the menu and would otherwise repopulate — or
+  // cross-populate — the submenu of a menu the user already dismissed.
+  useEffect(() => {
+    if (!menuPos || !metadata?.cwd) {
+      setFolderApps([]);
+      setOwOpen(false);
+      return;
+    }
+    let cancelled = false;
+    window.electronAPI.shell.detectApps()
+      .then((apps) => { if (!cancelled) setFolderApps(apps); })
+      .catch(() => { if (!cancelled) setFolderApps([]); });
+    return () => { cancelled = true; };
+  }, [menuPos, metadata?.cwd]);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -582,6 +678,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
+        {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
+        <button
+          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
+          onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
+          title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+          aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+        >
+          <IconFolder size={11} />
+        </button>
+
         {/* Copy session info button */}
         <button
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
@@ -637,6 +743,44 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.duplicate')}
           </button>
+          {/* Open with — hover to reveal detected folder-opening apps (Explorer,
+              VS Code, Terminal, etc.). Closes on click so focus returns to sidebar. */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOwOpen(true)}
+            onMouseLeave={() => setOwOpen(false)}
+          >
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+            >
+              <span>{t('workspace.openInExplorerCtx')}</span>
+              <span className="text-[var(--text-muted)]"><IconChevron /></span>
+            </button>
+            {owOpen && folderApps.length > 0 && (
+              <div
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[180px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              >
+                {folderApps.map((app) => {
+                  const Icon = app.id === 'explorer' ? IconFolder
+                    : TERMINAL_APP_IDS.has(app.id) ? IconTerminal
+                    : IconExternalLink;
+                  return (
+                    <button
+                      key={app.id}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                      style={{ color: 'var(--text-main)' }}
+                      onClick={() => handleOpenWith(app.id)}
+                    >
+                      <span className="opacity-60"><Icon size={12} /></span>
+                      <span>{folderAppLabel(t, app)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Multi-account (M1): per-vendor account bind submenu. Hides itself
               when no accounts are registered. Bind-only (new terminals). */}
