@@ -40,12 +40,17 @@ export function DeckDecisionCard({
   api,
   onStream,
   workspaceId,
+  onPendingChange,
   t: tProp,
 }: {
   api?: DeckDecisionApi;
   onStream?: DeckDecisionStream;
   /** The workspace this deck view is bound to — the decision is per-workspace. */
   workspaceId?: string;
+  /** Told whether a PENDING decision is on screen. The dock's report rail is
+   *  collapsed by default, so its header has to say a decision is waiting even
+   *  though the card itself is hidden inside the rail body. */
+  onPendingChange?: (pending: boolean) => void;
   t?: (key: string) => string;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
@@ -110,6 +115,14 @@ export function DeckDecisionCard({
       off();
     };
   }, [resolvedStream, workspaceId, refresh]);
+
+  // Mirror "a decision is pending" out to the surrounding surface (the rail
+  // header badge). An effect, not a render-time call, so the parent's state
+  // update never happens during this component's render.
+  const pending = !!resolvedApi && decision?.status === 'pending';
+  useEffect(() => {
+    onPendingChange?.(pending);
+  }, [pending, onPendingChange]);
 
   if (!resolvedApi) return null;
   // Only a PENDING decision blocks and needs the human; a resolved one is

@@ -1119,7 +1119,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           type: 'error',
           message:
             'Claude Code is waiting on a prompt of its own (folder trust, permissions, or sign-in). ' +
-            'Answer it in the terminal above, then send your message again.',
+            'Answer it in the terminal, then send your message again.',
         };
         return;
       }
@@ -1261,7 +1261,7 @@ function never<T>(): Promise<T> {
 export function describePtyExit(exitCode: number | null): string {
   const code = exitCode === null ? '' : ` (exit code ${exitCode})`;
   return (
-    `the terminal brain's Claude Code session ended${code} — check the terminal above ` +
+    `the terminal brain's Claude Code session ended${code} — check the terminal ` +
     '(sign-in, a crash, or a manual quit), then send your message again to restart it.'
   );
 }
