@@ -132,17 +132,21 @@ export function buildBrainSkills(): BrainSkillFile[] {
  *  as a claim of ownership. */
 const MARKER_SEARCH_WINDOW = 512;
 
-/** Whether an existing file at `filePath` is one wmux may overwrite. A file we
- *  cannot read is treated as ours (the write below will fail loudly enough). */
+/** Whether the given content carries wmux's ownership marker. */
 export function isWmuxOwnedSkill(content: string): boolean {
   return content.slice(0, MARKER_SEARCH_WINDOW).includes(WMUX_SKILL_MARKER);
 }
 
+/** Whether the file at `filePath` is one wmux may overwrite. Unreadable is NOT
+ *  ownable: EACCES/EISDIR/EIO leave us unable to prove the marker is there, and
+ *  guessing "ours" would silently destroy an operator's own skill. Only ENOENT
+ *  (the file vanished between existsSync and here) means there is nothing to
+ *  protect, so it is ours to create. */
 function readIsWmuxOwned(filePath: string): boolean {
   try {
     return isWmuxOwnedSkill(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
   }
 }
 

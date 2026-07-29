@@ -77,6 +77,31 @@ describe('installBrainSkills', () => {
       .toContain(WMUX_SKILL_MARKER);
   });
 
+  it('does not claim ownership of a file it could not read', () => {
+    // A directory where SKILL.md belongs: existsSync says "something is here",
+    // readFileSync fails with EISDIR. Treating that as ours would mean deleting
+    // whatever an operator actually has there — an unreadable file is NOT proof
+    // of ownership, so the install must leave it exactly as it found it.
+    const delegateDir = path.join(tmpDir, '.claude', 'skills', 'delegate');
+    fs.mkdirSync(path.join(delegateDir, 'SKILL.md'), { recursive: true });
+
+    expect(() => installBrainSkills(tmpDir)).not.toThrow();
+    expect(fs.statSync(path.join(delegateDir, 'SKILL.md')).isDirectory()).toBe(true);
+    // The readable sibling is still installed — one unreadable file costs one skill.
+    expect(fs.readFileSync(path.join(tmpDir, '.claude', 'skills', 'approve', 'SKILL.md'), 'utf8'))
+      .toContain(WMUX_SKILL_MARKER);
+  });
+
+  it('installs over a path that vanished after the existence check (ENOENT is ours)', () => {
+    // The ENOENT branch of the ownership read: nothing is there to protect, so
+    // the skill is written rather than skipped.
+    installBrainSkills(tmpDir);
+    const delegate = path.join(tmpDir, '.claude', 'skills', 'delegate', 'SKILL.md');
+    fs.rmSync(delegate);
+    installBrainSkills(tmpDir);
+    expect(fs.readFileSync(delegate, 'utf8')).toContain(WMUX_SKILL_MARKER);
+  });
+
   it('never throws when the target cannot be written', () => {
     // A regular file where the skills directory must go: every mkdir under it
     // fails, and the spawn must not care.
