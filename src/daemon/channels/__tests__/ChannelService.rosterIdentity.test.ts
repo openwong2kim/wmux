@@ -35,6 +35,9 @@ function makeFakeWriter(initial?: ChannelState) {
 function makeService(opts: {
   initialState?: ChannelState;
   resolvePrincipalDisplay?: (principalId: string) => string | undefined;
+  /** Panes the pin gate should be able to prove. Omit when the test posts no
+   *  pane-pinned mention — an absent resolver refuses every pin by design. */
+  panes?: { workspaceId: string; paneId: string; ptyId: string }[];
 } = {}) {
   const writer = makeFakeWriter(opts.initialState);
   const emit = vi.fn<ChannelServiceEmit>();
@@ -44,6 +47,16 @@ function makeService(opts: {
     emit,
     now: () => 1_700_000_000_000,
     resolvePrincipalDisplay: opts.resolvePrincipalDisplay,
+    ...(opts.panes
+      ? {
+          resolvePanePrincipal: (workspaceId: string, paneId: string) => {
+            const hit = opts.panes?.find(
+              (p) => p.workspaceId === workspaceId && p.paneId === paneId,
+            );
+            return hit ? { ptyId: hit.ptyId } : undefined;
+          },
+        }
+      : {}),
   });
   return { svc, writer, emit };
 }
@@ -274,7 +287,9 @@ describe('1c — feedback + mention hardening (code-review round)', () => {
   });
 
   it('mention memberId maps onto a single-row target workspace; multi-row stays verbatim (Codex #3)', async () => {
-    const { svc } = makeService();
+    // p-2 must be registry-proven: the third mention is identified by its pane
+    // pin, and the daemon strips a pin it cannot prove.
+    const { svc } = makeService({ panes: [{ workspaceId: 'ws-3', paneId: 'p-2', ptyId: 'pty-3-2' }] });
     const channel = await createChannel(svc, {
       members: [
         { workspaceId: 'ws-2', memberId: 'w2-1(codex)' },          // single row

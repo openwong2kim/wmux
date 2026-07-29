@@ -145,10 +145,16 @@ const CHANNEL_POST_SHAPE = {
         workspace_id: z.string().describe('Mentioned member workspace id. Dropped server-side unless it is a CURRENT channel member.'),
         name: z.string().optional().describe('Display name for the @mention (defaults to the workspace id).'),
         member_id: z.string().optional().describe('Narrow the mention to a specific member; omit for a workspace-level mention.'),
+        pane_id: z
+          .string()
+          .optional()
+          .describe(
+            'Pin the mention to ONE agent pane of that workspace (paneId from a2a_discover / pane_list). A PINNED mention is delivered into that agent\'s prompt at its next idle moment — this is the only mention shape that reaches an agent by itself. WITHOUT it the mention is badge-only: it raises an unread count and waits for the agent to poll. The pane must belong to `workspace_id` and have a live session behind it. A pane the server cannot prove belongs there is refused with reason "pane_not_in_workspace"; one whose session is gone is refused with "pane_not_live" — it is NOT redirected to a sibling pane, which is what an unrefused dead pin would silently do. Either way the refusal is reported in `droppedMentions` and the mention still lands, badge-only. Note the server checks that a PTY is live, not that an AGENT is: a pane whose agent exited to its shell still accepts a pin, and the text lands at the shell prompt.',
+          ),
       }),
     )
     .optional()
-    .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox.'),
+    .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox. Add `pane_id` to actually reach a specific idle agent — see that field.'),
 };
 
 const CHANNEL_JOIN_SHAPE = {
@@ -310,7 +316,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // ── channel_post ──────────────────────────────────────────────────
   server.tool(
     'channel_post',
-    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
+    'Post a message to a channel. A channel post is a NOTIFICATION, not a delivery: it does NOT start an idle agent\'s turn. An agent that has finished its work sees nothing until it polls (channel_unread / channel_read), so instructions posted to a channel can sit unread indefinitely while the sender reads the silence as "still working". To make an agent act, either send it a task (a2a_task_send, which is pasted into its prompt) or @-mention it with `pane_id` set (see the mentions field). Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
     CHANNEL_POST_SHAPE,
     async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
@@ -332,6 +338,11 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
           workspaceId: m.workspace_id,
           name: m.name ?? m.workspace_id,
           ...(m.member_id !== undefined ? { memberId: m.member_id } : {}),
+          // A1: the pane pin. There is deliberately no `pty_id` counterpart —
+          // the daemon fills the route-time pty snapshot from the principal
+          // registry after it has proven the pane belongs to workspace_id, so
+          // the caller never carries (or forges) a second pane coordinate.
+          ...(m.pane_id !== undefined ? { paneId: m.pane_id } : {}),
         }));
       }
       return callRpc('a2a.channel.post' as RpcMethod, params);
@@ -543,6 +554,31 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       };
       if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
       return callRpc('task.mission.close' as RpcMethod, params);
+    },
+  );
+
+  // ── channel_mission_list (WorkTask J0 read) ───────────────────────
+  // Owner-scoped listing of the caller's missions, including the J1
+  // materialization fields (branch / worktreePath / paneGroupId) — so an agent
+  // that started a fan-out can see where each task landed and whether it is
+  // still open.
+  //
+  // Scoping, stated exactly: `callRpc` attaches this server's verified
+  // senderPtyId, and the main-side handler resolves the owning workspace from
+  // it and stamps `verifiedWorkspaceId` over whatever is sent. Unlike the other
+  // reads here, the method fails closed when that ptyId does not resolve — the
+  // rows it returns (branches, absolute worktree paths, channel ids) belong to
+  // one owner, so falling back to a caller-supplied scope would hand them to
+  // whoever named the workspace. The residual is the #113 same-user ceiling on
+  // the ptyId itself, shared with every other method on this surface; the tool
+  // description below must not promise more than that.
+  server.tool(
+    'channel_mission_list',
+    'List the missions (WorkTasks) you own, with their status and — once materialized — branch, worktreePath, paneGroupId (the task workspace) and missionChannelId. This is how you check on tasks started by fanout_start or channel_mission_start. The listing is scoped to the workspace the server resolves from your verified terminal — you cannot ask for another workspace\'s missions, and the call is refused outright if your identity cannot be verified.',
+    {},
+    async () => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callRpc('task.mission.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
     },
   );
 }

@@ -260,16 +260,46 @@ export interface ChannelMention {
 }
 
 /**
- * A requested @mention that could NOT be routed because its target workspace is
- * not a member of the channel. `ChannelService.post` returns these to the sender
- * so a mis-targeted mention is visible feedback, not a silent drop (the dominant
- * A2A failure mode). `reason` is an enum so future drop causes (e.g. archived,
- * rate-limited) extend it without breaking callers.
+ * A requested @mention that could NOT be routed as asked. `ChannelService.post`
+ * returns these to the sender so a mis-targeted mention is visible feedback, not
+ * a silent drop (the dominant A2A failure mode). `reason` is an enum so future
+ * drop causes (e.g. archived, rate-limited) extend it without breaking callers.
+ *
+ * Reasons:
+ *  - `not_a_member` — the target workspace is not in the channel, so the whole
+ *    mention was dropped. You cannot ping a workspace that isn't in the room.
+ *  - `pane_not_in_workspace` — only the PANE PIN was refused: `paneId` is not a
+ *    known pane of the mentioned workspace, so the daemon could not prove the
+ *    caller is targeting a pane that workspace owns (a pin it cannot prove would
+ *    be a cross-workspace paste primitive). The mention itself still landed, at
+ *    workspace level (badge-only, the pre-pin behavior), and `paneId` carries the
+ *    pane that was refused.
+ *  - `pane_not_live` — the pane IS that workspace's, but no live session is
+ *    behind it: the pane was closed, or its session died. Refused rather than
+ *    routed, because a pin the receiving side cannot match does not fail — it
+ *    degrades to workspace level, and the workspace-level paste lands in
+ *    whichever agent that workspace still has. An instruction addressed to a
+ *    departed worker would silently start a sibling worker's turn. The mention
+ *    still lands at workspace level (badge-only) as above; what you are told is
+ *    that the pane you named is not the one that would have acted on it.
+ *
+ *    "Live" here means A LIVE PTY, not a live agent. An agent can exit back to
+ *    its shell while its pane and session stay perfectly alive; such a pin is
+ *    accepted and the text lands at a shell prompt. Nothing in the delivery path
+ *    models agent-exit today, so this reason does not promise more than it can
+ *    check.
+ *
+ *    The check runs on the daemon at post time, and the receiving renderer
+ *    re-checks at delivery time. A pane that dies between the two is still
+ *    subject to the degraded workspace-level fallback described above — this
+ *    narrows that window, it does not close it.
  */
 export interface ChannelDroppedMention {
   workspaceId: string;
   name?: string;
-  reason: 'not_a_member';
+  /** The refused pane pin. Present with `pane_not_in_workspace` / `pane_not_live`. */
+  paneId?: string;
+  reason: 'not_a_member' | 'pane_not_in_workspace' | 'pane_not_live';
 }
 
 /**

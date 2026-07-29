@@ -29,7 +29,7 @@
 
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
 import {
   PartialSequenceTracker,
   MarginTracker,
@@ -188,8 +188,7 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     logLevel: 'off',
   });
   try {
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = '11';
+    applyUnicodeWidthModel(terminal);
 
     let utf8Carry: Buffer = Buffer.alloc(0);
     let bytesIn = 0;
@@ -287,11 +286,12 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
   const serializer = new SerializeAddon();
   try {
     terminal.loadAddon(serializer);
-    // Width parity with the renderer (useTerminal sets the same): without
-    // Unicode 11 tables, CJK/emoji rows advance the cursor differently here
-    // than on screen and the snapshot paints cell-shifted tears.
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = '11';
+    // Width parity with the renderer (useTerminal calls the same helper):
+    // without the Unicode 11 tables, CJK/emoji rows advance the cursor
+    // differently here than on screen and the snapshot paints cell-shifted
+    // tears. Going through the shared helper is what keeps the two sides from
+    // drifting — do not inline the addon here.
+    applyUnicodeWidthModel(terminal);
 
     const partialTail = new PartialSequenceTracker();
     const margins = new MarginTracker();

@@ -76,6 +76,9 @@ function makeService(opts: {
   failNext?: boolean;
   now?: () => number;
   ceoWorkspaceId?: string;
+  /** Panes the pin gate should be able to prove. Omit when the test posts no
+   *  pane-pinned mention — an absent resolver refuses every pin by design. */
+  panes?: { workspaceId: string; paneId: string; ptyId: string }[];
 } = {}) {
   const writer = makeFakeWriter({ failNext: opts.failNext });
   const emit = vi.fn<ChannelServiceEmit>();
@@ -86,6 +89,16 @@ function makeService(opts: {
     ceoWorkspaceId: opts.ceoWorkspaceId,
     emit,
     now,
+    ...(opts.panes
+      ? {
+          resolvePanePrincipal: (workspaceId: string, paneId: string) => {
+            const hit = opts.panes?.find(
+              (p) => p.workspaceId === workspaceId && p.paneId === paneId,
+            );
+            return hit ? { ptyId: hit.ptyId } : undefined;
+          },
+        }
+      : {}),
   });
   return { svc, writer, emit, now };
 }
@@ -981,9 +994,15 @@ describe('ChannelService', () => {
 
     it('mentions two panes in the same workspace (split) without merging; preserves paneId/ptyId', async () => {
       // Agent-pane redesign: (workspaceId, paneId) dedup lets two agents in ONE
-      // workspace (split panes) both be mentioned in a single post. paneId/ptyId
-      // pass through opaquely — the receiving renderer owns live-pane resolution.
-      const { svc } = makeService();
+      // workspace (split panes) both be mentioned in a single post. Both panes
+      // must be registry-proven — the daemon refuses a pin it cannot prove, so
+      // an unproven fixture would test dedup against two stripped mentions.
+      const { svc } = makeService({
+        panes: [
+          { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a' },
+          { workspaceId: 'ws-2', paneId: 'pane-b', ptyId: 'pty-b' },
+        ],
+      });
       const created = await svc.create({
         name: 'general',
         visibility: 'public',

@@ -98,6 +98,18 @@ export function registerA2aChannelRpc(
     params: unknown,
     mutating: boolean,
     ctx?: RpcContext,
+    /**
+     * A READ that is nonetheless scoped to the caller's own rows, and therefore
+     * cannot fall back to a caller-supplied `verifiedWorkspaceId` the way the
+     * channel reads do. Channel reads are scoped by MEMBERSHIP inside the
+     * daemon, so a self-claimed workspace buys nothing a same-user process
+     * could not already read; an OWNER-scoped read hands back that owner's rows
+     * directly. `task.mission.list` is the case: it returns titles, branches,
+     * absolute worktree paths, pane group ids and channel ids for whatever
+     * workspace the caller names. First-party dispatch (the renderer bridge,
+     * which has no PTY) keeps the process-boundary trust; the wire does not.
+     */
+    ownerScoped = false,
   ): Promise<unknown> => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
@@ -214,6 +226,24 @@ export function registerA2aChannelRpc(
           },
         };
       }
+      if (ownerScoped && !ctx?.firstParty) {
+        // An owner-scoped read off the wire with no resolvable senderPtyId
+        // would answer for whatever workspace the caller named. The MCP
+        // resolver falls back to the spoofable WMUX_WORKSPACE_ID env hint on a
+        // PID-map miss, and sends no senderPtyId at all on that path — so a
+        // process started with another workspace's id would read that
+        // workspace's missions. Fail closed instead, and mirror it in the tool
+        // description: this is now scoped the same way the mutations are, i.e.
+        // to a resolvable senderPtyId, with the same #113 same-user ceiling on
+        // that ptyId and no claim beyond it.
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: `${method} requires a verifiable caller (no resolvable senderPtyId)`,
+          },
+        };
+      }
       // W1 hardening (Codex P1) — a wire client must not self-claim the reserved
       // human workspace on READS. The identityRefs guards above reject ws-human
       // as a caller/target ref but deliberately exempt the bare
@@ -277,14 +307,19 @@ export function registerA2aChannelRpc(
 
   // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating
   // start/close require a resolvable senderPtyId (fail-closed) and get a
-  // server-pinned verifiedWorkspaceId over any client-supplied value; list is
-  // a read (owner-scoped by the stamped/advisory workspace). These MUST be
-  // registered here or the MCP mission tools die with "Unknown method"
+  // server-pinned verifiedWorkspaceId over any client-supplied value. These
+  // MUST be registered here or the MCP mission tools die with "Unknown method"
   // (J0 3-model review — Codex, conf 10: capability map + FIRST_PARTY had the
   // methods but the router forward was the missing link).
   router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
   router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
-  router.register('task.mission.list', (p, ctx) => forward('task.mission.list', p, false, ctx));
+  // `list` is a read, but an OWNER-scoped one: it was registered as an ordinary
+  // read, which left a caller-supplied verifiedWorkspaceId in place whenever no
+  // senderPtyId resolved — so a wire caller could read another workspace's
+  // mission titles, branches and absolute worktree paths while the tool
+  // description promised the opposite. Raised to require a verifiable caller
+  // (or first-party dispatch, which is the renderer's own PTY-less read).
+  router.register('task.mission.list', (p, ctx) => forward('task.mission.list', p, false, ctx, true));
   // task.mission.update(J1 §5) — 물질화 커밋. 변이라 verifiable caller 필수(start/
   // close와 동일 forwarder·스탬프 규율). MCP 도구 표면은 없지만(FanOutService 내부
   // 경로), 이 router 등록으로 first-party 파이프 클라이언트는 도달 가능하다 — "도구

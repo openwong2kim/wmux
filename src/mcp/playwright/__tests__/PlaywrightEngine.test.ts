@@ -41,7 +41,11 @@ vi.mock('../lazyPlaywright', () => ({
 }));
 
 // Import after mocks are declared.
-import { PlaywrightEngine, isElectronShellUrl } from '../PlaywrightEngine';
+import {
+  PlaywrightEngine,
+  isElectronShellUrl,
+  WORKSPACE_SCOPE_UNRESOLVED_CODE,
+} from '../PlaywrightEngine';
 import {
   EXTERNAL_BACKEND_UNSUPPORTED_CODE,
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
@@ -312,33 +316,54 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     const shellPage = makePage(shellUrl);
     const webviewPage = makePage('https://example.com/');
 
+    // The caller's own registered guest, as Target.getTargets sees it.
+    const session = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: [
+                { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
+              ],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
     // A context whose pages() exposes both the shell and the webview.
     const ctx = {
       pages: vi.fn().mockReturnValue([shellPage, webviewPage]),
-      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      newCDPSession: vi.fn().mockImplementation(async () => session),
     };
     shellPage.context.mockReturnValue(ctx);
     webviewPage.context.mockReturnValue(ctx);
 
     const browser = {
       isConnected: vi.fn().mockReturnValue(true),
-      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => session),
       contexts: vi.fn().mockReturnValue([ctx]),
       close: vi.fn().mockResolvedValue(undefined),
     };
     mockConnectOverCDP.mockResolvedValue(browser);
 
-    // cdp.info advertises the shell URL and no registered webview target, so
-    // positive targetId matching yields nothing and the negative filter runs —
-    // which must skip the exact-match shell page and pick the webview.
-    mockSendRpc.mockImplementation((method: string) => {
+    // cdp.info advertises the shell URL alongside the caller's own guest, so
+    // discovery must resolve the guest and never hand back the exact-match
+    // shell page that shares the context.
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
       if (method === 'browser.cdp.info') {
-        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          ...(ws && { targetsScoped: true }),
+          targets: [{ surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' }],
+        });
       }
       return Promise.resolve({});
     });
 
     const engine = PlaywrightEngine.getInstance();
+    (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
+      .setWorkspaceIdResolver(async () => 'ws-A');
     await engine.connect(9222);
 
     const page = await engine.getPage();
@@ -402,7 +427,7 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
 // shell-URL tests reach their internals.
 interface AutoOpenInternals {
   setWorkspaceIdResolver(resolver: () => Promise<string>): void;
-  attemptAutoOpen(): Promise<boolean>;
+  attemptAutoOpen(): Promise<{ surfaceId?: string } | null>;
 }
 function autoOpen(engine: PlaywrightEngine): AutoOpenInternals {
   return engine as unknown as AutoOpenInternals;
@@ -418,9 +443,11 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
   it('sends browser.open with the workspaceId from the wired resolver', async () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
-    mockSendRpc.mockResolvedValue({});
+    mockSendRpc.mockResolvedValue({ ok: true, surfaceId: 'surf-new' });
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(true);
+    // The reply's surfaceId comes back so the caller can pin the surface it
+    // just asked for, without having to prove ownership of it afterwards.
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toEqual({ surfaceId: 'surf-new' });
 
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   });
@@ -431,7 +458,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       throw new Error('Workspace identity unknown');
     });
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -440,7 +467,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => '');
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -448,16 +475,16 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
   it('fails closed when no resolver is wired', async () => {
     const engine = PlaywrightEngine.getInstance();
 
-    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBeNull();
 
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('getPage never issues a workspace-less browser.open when identity is unavailable', async () => {
-    // End-to-end through the page-discovery loop: no page exists anywhere and
-    // no resolver is wired. The misrouting shape is browser.open carrying no
-    // workspaceId — the renderer then falls back to the UI-active workspace.
-    // The engine must skip auto-open entirely (fail closed) and give up.
+    // No page exists anywhere and no resolver is wired. The misrouting shape is
+    // browser.open carrying no workspaceId — the renderer then falls back to
+    // the UI-active workspace. getPage now refuses at scope resolution (it can
+    // no longer select a page unscoped either), so no browser.open is issued.
     const sessions: FakeSession[] = [];
     mockConnectOverCDP.mockImplementation(async () => makeFakeBrowser(sessions));
     mockSendRpc.mockImplementation((method: string) => {
@@ -468,9 +495,8 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     });
 
     const engine = PlaywrightEngine.getInstance();
-    const page = await engine.getPage();
 
-    expect(page).toBeNull();
+    await expect(engine.getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
     const browserOpenCalls = mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open');
     expect(browserOpenCalls).toHaveLength(0);
   }, 15_000);
@@ -488,22 +514,45 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       url: vi.fn().mockReturnValue('https://example.com/'),
       context: vi.fn(),
     };
+    // The just-opened guest registers a workspace-tagged CDP target, which is
+    // what lets the post-open re-resolve pin it (mirrors a real main — the
+    // engine can no longer fall back to an unscoped "any page" selection).
+    const openedSession = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: opened
+                ? [{ targetId: 'wc-new', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+                : [],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
     const ctx = {
       pages: vi.fn().mockImplementation(() => (opened ? [webviewPage] : [])),
-      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      newCDPSession: vi.fn().mockImplementation(async () => openedSession),
     };
     webviewPage.context.mockReturnValue(ctx);
 
     const browser = {
       isConnected: vi.fn().mockReturnValue(true),
-      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => openedSession),
       contexts: vi.fn().mockImplementation(() => (opened ? [ctx] : [])),
       close: vi.fn().mockResolvedValue(undefined),
     };
     mockConnectOverCDP.mockResolvedValue(browser);
-    mockSendRpc.mockImplementation((method: string) => {
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
       if (method === 'browser.cdp.info') {
-        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          ...(ws && { targetsScoped: true }),
+          targets: opened
+            ? [{ surfaceId: 'surf-new', targetId: 'wc-new', workspaceId: 'ws-caller-1' }]
+            : [],
+        });
       }
       if (method === 'browser.open') {
         opened = true;
@@ -520,6 +569,73 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(page).toBe(webviewPage);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
+
+  it('auto-open still returns a page against a main too old to tag targets', async () => {
+    // The one legacy case this PR keeps functional: a main that ignores the
+    // scope request and reports NO live targets at all is unambiguous — nothing
+    // exists to cross into — so we auto-open our own surface.
+    //
+    // Re-deriving the surface afterwards did not work here. The just-opened
+    // target carries no workspaceId, so resolveCallerSurface() found nothing
+    // tagged and THREW; the throw was swallowed by the auto-open catch,
+    // callerHasNoSurface stayed true, discovery stayed skipped, and getPage()
+    // returned null. The panel opened and its page was unreachable — the
+    // exception documented as "still functional" was not. The surfaceId now
+    // comes from browser.open's own reply, which needs no tagging.
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    let opened = false;
+
+    const webviewPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://example.com/'),
+      context: vi.fn(),
+    };
+    const openedSession = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: opened
+                ? [{ targetId: 'wc-legacy', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+                : [],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockImplementation(() => (opened ? [webviewPage] : [])),
+      newCDPSession: vi.fn().mockImplementation(async () => openedSession),
+    };
+    webviewPage.context.mockReturnValue(ctx);
+
+    mockConnectOverCDP.mockResolvedValue({
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => openedSession),
+      contexts: vi.fn().mockImplementation(() => (opened ? [ctx] : [])),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        // No `targetsScoped`, and the opened target carries no workspaceId —
+        // this main does not tag anything.
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          targets: opened ? [{ surfaceId: 'surf-legacy', targetId: 'wc-legacy' }] : [],
+        });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true, surfaceId: 'surf-legacy' });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+
+    await expect(engine.getPage()).resolves.toBe(webviewPage);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
+  }, 15_000);
 });
 
 /*
@@ -534,15 +650,15 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
  * resolveCallerSurface() is the scoping primitive — it maps the caller's
  * resolved workspace to its own surfaceId from the workspace-tagged
  * browser.cdp.info target list, and reports 'none' (own workspace has no
- * surface) or 'unscoped' (identity/tags unavailable → stay lenient) so the
- * caller never falls through to another workspace's page.
+ * surface) so the caller never falls through to another workspace's page.
+ * When it cannot establish that mapping at all it throws — see the
+ * fail-closed block below.
  */
 interface ScopeInternals {
   setWorkspaceIdResolver(resolver: () => Promise<string>): void;
   resolveCallerSurface(): Promise<
     | { kind: 'surface'; surfaceId: string; workspaceId: string }
     | { kind: 'none'; workspaceId: string }
-    | { kind: 'unscoped' }
   >;
   resolveSelectionContext(
     explicitSurfaceId?: string,
@@ -594,38 +710,6 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     });
   });
 
-  it("stays 'unscoped' (legacy lenient) when the main doesn't tag targets with a workspaceId", async () => {
-    mockSendRpc.mockImplementation((method: string) =>
-      method === 'browser.cdp.info'
-        ? Promise.resolve({ cdpPort: 9222, targets: [{ surfaceId: 'surf-A', targetId: 'wc-1' }] })
-        : Promise.resolve({}),
-    );
-    const engine = PlaywrightEngine.getInstance();
-    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
-
-    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
-  });
-
-  it("stays 'unscoped' when no resolver is wired or identity cannot be resolved", async () => {
-    mockSendRpc.mockImplementation((method: string) =>
-      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
-    );
-    const engine = PlaywrightEngine.getInstance();
-
-    // No resolver wired.
-    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
-
-    // Resolver throws (server-walk failed).
-    scope(engine).setWorkspaceIdResolver(async () => {
-      throw new Error('identity unknown');
-    });
-    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
-
-    // Resolver returns empty id.
-    scope(engine).setWorkspaceIdResolver(async () => '');
-    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
-  });
-
   // The in-flight getPage lock, the auto-open latch, and the fast-fail latch
   // are all keyed by this context. A per-workspace key is what keeps a
   // concurrent call from another workspace from sharing the first caller's
@@ -674,6 +758,150 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     expect(ctxC.callerHasNoSurface).toBe(true);
     expect(ctxD.callerHasNoSurface).toBe(true);
     expect(ctxC.key).not.toBe(ctxD.key); // each surfaceless workspace auto-opens independently
+  });
+});
+
+/*
+ * Fail-closed page selection when the caller cannot be scoped.
+ *
+ * resolveCallerSurface used to answer { kind: 'unscoped' } whenever identity
+ * could not be established, and an unscoped selection reaches ANY workspace's
+ * live guest: findViaTargetDomain falls back to `cdp.info.targets[0]` and
+ * _getPageImpl falls back to "the first non-shell page in any context". Every
+ * sibling on the same identity miss already refuses — browser_open /
+ * browser_close throw from requireWorkspaceId, browser_tabs answers
+ * BROWSER_TABS_WORKSPACE_UNRESOLVED, engine auto-open issues no RPC — so page
+ * selection was the one path that stayed open.
+ *
+ * This matters without any spoofing: a sandboxed Codex legitimately cannot
+ * resolve its own identity (src/mcp/index.ts lookupPidMapWorkspace), so a
+ * well-behaved agent reached another workspace's browser under normal
+ * conditions. The refusal now carries WORKSPACE_SCOPE_UNRESOLVED plus the
+ * specific reason, so the caller can tell WHY rather than seeing a silent miss.
+ */
+describe('PlaywrightEngine fail-closed page selection (unresolvable caller)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  const liveForeignTargets = {
+    cdpPort: 9222,
+    targets: [{ surfaceId: 'surf-victim', targetId: 'wc-victim', workspaceId: 'ws-victim' }],
+  };
+
+  it('refuses instead of returning ANOTHER workspace\'s live page when identity is unresolvable', async () => {
+    // The reachable shape (src/mcp/index.ts:846 wires requireWorkspaceId, which
+    // THROWS on a miss): a sandboxed agent whose process-tree walk is blocked.
+    // ws-victim owns the only live guest; the caller must not get it.
+    const victimPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://victim.example/secret'),
+      context: vi.fn(),
+    };
+    const victimCtx = {
+      pages: vi.fn().mockReturnValue([victimPage]),
+      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+    };
+    victimPage.context.mockReturnValue(victimCtx);
+    mockConnectOverCDP.mockResolvedValue({
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockReturnValue([victimCtx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(liveForeignTargets) : Promise.resolve({}),
+    );
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => {
+      throw new Error('Workspace identity unknown.');
+    });
+
+    await expect(engine.getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
+    // The refusal happens before any page selection: no CDP connection is made,
+    // so the foreign page is never even a candidate.
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+    expect(victimCtx.pages).not.toHaveBeenCalled();
+    // And nothing was opened in an unspecified workspace either.
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
+  });
+
+  it('names the specific reason for each unresolvable path (observable refusal)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(liveForeignTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    // No resolver wired.
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(/no workspace resolver wired/);
+
+    // Resolver throws (sandboxed walk / server-walk failed) — the underlying
+    // message rides along so the caller can act on it.
+    scope(engine).setWorkspaceIdResolver(async () => {
+      throw new Error('Workspace identity unknown.');
+    });
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(
+      /workspace identity unresolved: Workspace identity unknown\./,
+    );
+
+    // Resolver returns an empty id.
+    scope(engine).setWorkspaceIdResolver(async () => '');
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(/empty id/);
+
+    // Every refusal carries the stable code, not just prose.
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(
+      WORKSPACE_SCOPE_UNRESOLVED_CODE,
+    );
+  });
+
+  it('refuses when browser.cdp.info itself fails (cannot prove ownership of anything)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.reject(new Error('pipe closed'))
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(
+      /browser\.cdp\.info unavailable: pipe closed/,
+    );
+  });
+
+  it('refuses when a main too old to tag targets returns live untagged targets', async () => {
+    // Legacy main (pre-#580/#554): no targetsScoped flag and no workspaceId on
+    // the targets, so no client-side filter can decide whose guest this is.
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 9222, targets: [{ surfaceId: 'surf-A', targetId: 'wc-1' }] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).rejects.toThrow(
+      /does not tag browser targets with a workspace/,
+    );
+  });
+
+  it("still reports 'none' for a legacy main with NO live targets (nothing to cross into)", async () => {
+    // The case the old leniency actually protected: a single-workspace setup
+    // where no guest exists anywhere. There is nothing to select wrongly, so
+    // this stays functional — the caller auto-opens its OWN surface.
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 9222, targets: [] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'none',
+      workspaceId: 'ws-A',
+    });
   });
 });
 

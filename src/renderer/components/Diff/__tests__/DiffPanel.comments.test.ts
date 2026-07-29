@@ -7,7 +7,12 @@
 // 자체는 데몬 테스트(ChannelService.unreadFor / wake worker)가 이미 커버하므로 여기선
 // "포스트가 어떤 mentions/text를 실었는가"만 박제한다.
 import { describe, it, expect } from 'vitest';
-import { extractDiffComments, resolveDiffMentionTargets, formatDiffCommentText } from '../DiffPanel';
+import {
+  extractDiffComments,
+  resolveDiffMentionTargets,
+  formatDiffCommentText,
+  staleSelectionPaths,
+} from '../DiffPanel';
 import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../../shared/channels';
 
 describe('extractDiffComments — F10 앵커 역조회', () => {
@@ -144,5 +149,38 @@ describe('formatDiffCommentText — J4 §S2 텍스트 앵커', () => {
     const anchor = out.slice(out.indexOf('@ ') + 2, out.indexOf('] '));
     expect(anchor).toBe(longHeader.slice(0, 80));
     expect(anchor.length).toBe(80);
+  });
+});
+
+// The adoption integrity gate is only worth having if the digest it sends is
+// the one the hunks were ticked against. A reload deliberately keeps the
+// selection, so a file that moved underneath must lose its ticks — otherwise
+// indices from the old rendering ride into the new one and main, handed a
+// digest read from that same new entry, has nothing to compare against.
+describe('staleSelectionPaths — which ticks a reload invalidates', () => {
+  const loaded = (entries: Record<string, string>) =>
+    new Map(Object.entries(entries).map(([path, digest]) => [path, { digest }]));
+
+  it('keeps a path whose file did not move', () => {
+    expect(staleSelectionPaths({ 'a.ts': 'd1' }, loaded({ 'a.ts': 'd1' }))).toEqual([]);
+  });
+
+  it('drops a path the agent rewrote while the selection was held', () => {
+    expect(staleSelectionPaths({ 'a.ts': 'd1' }, loaded({ 'a.ts': 'd2' }))).toEqual(['a.ts']);
+  });
+
+  it('drops a path that left the diff entirely', () => {
+    expect(staleSelectionPaths({ 'a.ts': 'd1' }, loaded({ 'b.ts': 'd9' }))).toEqual(['a.ts']);
+  });
+
+  it('drops only what moved, so an untouched file keeps its ticks', () => {
+    const recorded = { 'a.ts': 'd1', 'b.ts': 'd2', 'c.ts': 'd3' };
+    expect(staleSelectionPaths(recorded, loaded({ 'a.ts': 'd1', 'b.ts': 'CHANGED', 'c.ts': 'd3' }))).toEqual([
+      'b.ts',
+    ]);
+  });
+
+  it('treats a path recorded with no digest as stale rather than adoptable', () => {
+    expect(staleSelectionPaths({ 'a.ts': '' }, loaded({ 'a.ts': 'd1' }))).toEqual(['a.ts']);
   });
 });
