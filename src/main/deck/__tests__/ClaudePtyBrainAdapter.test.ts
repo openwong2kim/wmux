@@ -924,6 +924,71 @@ describe('the Stop gate', () => {
   });
 });
 
+// ── foreign turns (the human types into the TUI) ─────────────────────────────
+
+describe('a turn the human started in the TUI', () => {
+  it('marks the adapter busy on UserPromptSubmit and clears it on the Stop', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const first = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    // Our OWN turn's UserPromptSubmit is not a foreign turn — turnStop owns it.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(false);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(await first).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+
+    // Now the human types into the TUI directly: no send(), no waiter.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(adapter.busy).toBe(false);
+
+    // The foreign turn emitted no turn-end of its own: the next adapter turn
+    // still ends exactly once (the manager's exactly-once contract).
+    const second = collect(adapter.send('again'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(3));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-3', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    expect(await second).toEqual([
+      { type: 'text-delta', text: 'final answer' },
+      { type: 'turn-end', sessionId: 'sess-3' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('clears the flag when the pty dies mid-turn, so the workspace is not stranded busy', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1', payload: { transcript_path: '/tmp/t.jsonl' } }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(adapter.busy).toBe(true);
+    host.killSession(ptyId, 1);
+    expect(adapter.busy).toBe(false);
+
+    // dispose() takes the same path for a live pty.
+    const host2 = makeHost();
+    const adapter2 = makeAdapter(host2);
+    const t2 = collect(adapter2.send('hi'));
+    await vi.waitFor(() => expect(host2.writes.length).toBeGreaterThan(0));
+    const pty2 = host2.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', pty2, { agentSessionId: 's' }));
+    await t2;
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', pty2));
+    expect(adapter2.busy).toBe(true);
+    adapter2.dispose();
+    expect(adapter2.busy).toBe(false);
+  });
+});
+
 // ── hook bus isolation ──────────────────────────────────────────────────────
 
 describe('brainPtyHookBus', () => {

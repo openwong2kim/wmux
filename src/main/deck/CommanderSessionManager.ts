@@ -91,8 +91,17 @@ export class CommanderSessionManager {
     this._lastReportedSessionId = deps.startOptions?.resumeSessionId ?? null;
   }
 
+  /** A turn the ADAPTER is aware of but did not start — the `claude-pty` brain
+   *  reports one when the human types into its embedded TUI. Adapters without
+   *  the getter (every other vendor, and the test fakes) are never foreign-busy. */
+  private get adapterBusy(): boolean {
+    return (this.adapter as { busy?: boolean }).busy === true;
+  }
+
   getStatus(): CommanderStatusSnapshot {
-    return { status: this._status, sessionId: this.adapter.sessionId };
+    const status: CommanderStatus =
+      this._status === 'idle' && this.adapterBusy ? 'busy' : this._status;
+    return { status, sessionId: this.adapter.sessionId };
   }
 
   /**
@@ -107,7 +116,7 @@ export class CommanderSessionManager {
       this.sink({ type: 'error', message: 'commander session is closed' });
       return { ok: false, code: 'disposed' };
     }
-    if (this._status === 'busy') {
+    if (this._status === 'busy' || this.adapterBusy) {
       this.sink({ type: 'error', message: 'a command is already running — wait for it to finish' });
       return { ok: false, code: 'busy' };
     }

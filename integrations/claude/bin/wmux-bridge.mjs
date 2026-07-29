@@ -81,6 +81,8 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
+  // Deck brain ptys only — no ordinary pane's profile registers this hook.
+  UserPromptSubmit: 'agent.user_prompt_submit',
 };
 
 // ----- Path helpers (Node built-ins only) ---------------------------------

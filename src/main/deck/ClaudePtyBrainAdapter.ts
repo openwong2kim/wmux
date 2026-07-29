@@ -368,7 +368,10 @@ export function buildBrainSettingsProfile(opts: {
     })),
   };
   if (opts.bridgePath) {
-    for (const event of ['Stop', 'SessionStart'] as const) {
+    // UserPromptSubmit is the human-typed-into-the-TUI signal: with no composer
+    // in the dock's pty layout it is the only way the adapter learns a turn it
+    // did not start is open, so automation can defer to it.
+    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit'] as const) {
       // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
       // response and exits 2 when the adapter refuses to end the turn. The
       // verdict has to travel on this one round trip — a second, independent
@@ -625,6 +628,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  Stop and on every pty teardown; feeds the gate's own refusal cap, which is
    *  what keeps a gate from turning into a 30-minute trap. */
   private consecutiveStopBlocks = 0;
+  /** True while a turn THIS ADAPTER DID NOT START is open — the human typed
+   *  into the embedded TUI. Opened by UserPromptSubmit, closed by the Stop that
+   *  no waiter claims. Automation reads it through `busy` and defers, exactly
+   *  as it does for an adapter-started turn. */
+  private foreignTurnOpen = false;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -642,6 +650,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  /** True when the TUI is mid-turn on a prompt the ADAPTER did not send (the
+   *  human typed into the embedded terminal). The session manager folds this
+   *  into its own status so a heartbeat / loop / schedule tick never pushes a
+   *  second prompt into a busy TUI. */
+  get busy(): boolean {
+    return this.foreignTurnOpen;
   }
 
   /** The live pty the deck embeds, or null before the first turn spawned one. */
@@ -672,6 +688,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       this.sessionStarted?.resolve();
       return;
     }
+    // The human submitted a prompt in the TUI. Only a turn we did NOT start
+    // counts: during our own send() the hook fires for our keystroke too, and
+    // that turn is already tracked by `turnStop`.
+    if (signal.kind === 'agent.user_prompt_submit') {
+      if (this.turnStop === null) this.foreignTurnOpen = true;
+      return;
+    }
     if (signal.kind !== 'agent.stop') return;
     // A superseded (timed-out) turn's Stop arrives late and is
     // INDISTINGUISHABLE from the current turn's — the hook carries no turn
@@ -686,7 +709,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // the embedded TUI directly) — deliberately dropped, so the open turn
     // still ends exactly once.
     const waiter = this.turnStop;
-    if (!waiter) return;
+    if (!waiter) {
+      // Still dropped as a turn signal — it just closes the foreign turn it
+      // belongs to, so the workspace stops reporting busy. The gate below
+      // never applies here: refusing a Stop nobody awaits would strand it.
+      this.foreignTurnOpen = false;
+      return;
+    }
     // The gate only ever applies to a turn this adapter opened: a Stop with no
     // waiter was already dropped above, so refusing one here can never strand a
     // turn nobody is awaiting.
@@ -1006,6 +1035,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  session. Shared by killPty and the failed-spawn rollback. */
   private detachPty(): void {
     this.ptyId = null;
+    // A pty that died mid-foreign-turn will never fire its Stop; leaving the
+    // flag set would strand the workspace busy forever. This is the one choke
+    // point every teardown path goes through.
+    this.foreignTurnOpen = false;
     this.bannerWatching = false;
     this.consecutiveStopBlocks = 0;
     this.unregisterHooks?.();
