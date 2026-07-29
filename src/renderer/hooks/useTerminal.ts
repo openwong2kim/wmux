@@ -25,7 +25,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
-import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -696,6 +696,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         term.reset();
         term.write(bytes);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
+        term.write(STALE_REPLAY_DISPLAY_RESETS);
         for (const chunk of st.buffer) term.write(chunk);
         markTerminalClean(term);
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
@@ -1636,6 +1637,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (terminalRef.current !== terminal) return;
         if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
           terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
+          terminal.write(STALE_REPLAY_DISPLAY_RESETS);
         }
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };

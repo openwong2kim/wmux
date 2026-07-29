@@ -37,3 +37,33 @@ export const STALE_REPLAY_INPUT_MODE_RESETS =
   '\x1b[?1006l' + // SGR extended mouse encoding
   '\x1b[?1004l' + // focus in/out reporting
   '\x1b[?2004l'; // bracketed paste
+
+/**
+ * Stale-replay display-state reset ("frozen scroll window" bug).
+ *
+ * A TUI agent that dies mid-run can leave a DECSTBM scroll region armed
+ * (ESC[<top>;<bottom>r, used to pin its input box to the bottom of the
+ * screen) with no matching ESC[r to release it. The replayed ring buffer
+ * re-executes that sequence into the fresh xterm instance, which then only
+ * scrolls inside that narrow region — new output renders into a fixed
+ * window while everything outside it (including real prior scrollback)
+ * stays frozen on screen. Scrolling up does not reach history; it reveals
+ * whatever was frozen there when the region was armed.
+ *
+ * ESC[r resets the scroll region to full-screen WITHOUT erasing any cell,
+ * so unlike the ?1049/?25 display state called out above, resetting it
+ * cannot visibly alter restored scrollback — it only un-narrows where
+ * future writes are allowed to scroll.
+ *
+ * xterm.js's CSI r handler also snaps the cursor to (0,0) as a side effect
+ * of resetting the margins (see InputHandler.ts setScrollRegion), which
+ * would otherwise clobber wherever the replayed buffer left the cursor.
+ * DECSC/DECRC (ESC 7 / ESC 8) bracket the reset to save and restore the
+ * cursor position across it, so releasing the region never moves the
+ * cursor the replay positioned.
+ */
+export const STALE_REPLAY_DISPLAY_RESETS =
+  '\x1b7' + // DECSC: save cursor position (CSI r below would otherwise clobber it)
+  '\x1b[?6l' + // DECOM: origin mode off (cursor addressing absolute again)
+  '\x1b[r' + // DECSTBM: scroll region back to full screen
+  '\x1b8'; // DECRC: restore the cursor position saved above
