@@ -516,33 +516,62 @@ export class LanLinkServer {
       this.destroy(conn);
       return;
     }
-    // Success: persist the peer, establish AEAD, send respMac as the first record.
-    // (The PAKE slot was already released when onHello's scrypt settled.)
-    //
-    // The commit can throw — a win32 owner-DACL failure makes the store refuse to
-    // hold secrets (C12 fail-closed), a failed atomic rename does the same, and a
-    // full store rejects the pairing outright. It is atomic since #658, so a throw
-    // leaves NO in-memory record and both sides stay unpaired. Catch it here so
-    // the failure is logged as a pairing outcome rather than unwinding into
-    // pump()'s broad wall, where it was indistinguishable from a wire error.
+
+    // Complete every deterministic, locally fallible response step BEFORE the
+    // durable peer commit. In particular, packaged runtimes can throw while
+    // constructing ChaCha20-Poly1305 or sealing/encoding the first AEAD record.
+    // Persisting first made those failures a permanent responder-only half-pair.
+    let opener: AeadOpener;
+    let sealer: AeadSealer;
+    let responseFrame: Buffer;
     try {
-      this.deps.peers.upsertPaired(r.result);
+      opener = new AeadOpener(r.sessionKeys.c2sKey, 1);
+      sealer = new AeadSealer(r.sessionKeys.s2cKey, 2);
+      responseFrame = encodeFrame(AEAD_RECORD, sealer.seal(r.respMac));
+    } catch (err) {
+      console.error('[LanLinkServer] pairing response preparation failed, not pairing:', err instanceof Error ? err.message : err);
+      this.destroy(conn);
+      return;
+    }
+
+    // Keep a rollback for the remaining synchronous activation/write window. The
+    // rollback restores the exact previous store (including a re-pair or an LRU
+    // eviction), unlike revoke(peerUuid), which could destroy valid prior state.
+    let commit: ReturnType<PeerStore['commitPaired']>;
+    try {
+      commit = this.deps.peers.commitPaired(r.result);
     } catch (err) {
       console.error('[LanLinkServer] pairing commit failed, not pairing:', err instanceof Error ? err.message : err);
       this.destroy(conn);
       return;
     }
-    this.establishAead(conn, r.result.peerUuid, r.sessionKeys);
-    // seal() inside the try: it is evaluated as an ARGUMENT to send(), so a throw
-    // here would escape send()'s own catch and unwind into the frame dispatcher.
-    let record: Buffer;
+
+    let stage = 'AEAD activation';
     try {
-      record = conn.sealer!.seal(r.respMac);
-    } catch {
+      this.activateAead(conn, r.result.peerUuid, opener, sealer);
+      stage = 'confirmation write';
+      if (conn.state === 'dead' || conn.socket.destroyed) throw new Error('connection closed before confirmation write');
+      // Use the sealer that prepared responseFrame: its counter is already 1.
+      // Constructing a fresh sealer here would reuse nonce/counter 1.
+      conn.socket.write(responseFrame);
+    } catch (err) {
+      let rollbackError: unknown = null;
+      try {
+        commit.rollback();
+      } catch (rollbackErr) {
+        rollbackError = rollbackErr;
+      }
+      if (rollbackError === null) {
+        console.error(`[LanLinkServer] pairing ${stage} failed; durable pairing rolled back:`, err instanceof Error ? err.message : err);
+      } else {
+        console.error(`[LanLinkServer] pairing ${stage} failed and rollback was not durable:`, err instanceof Error ? err.message : err);
+        console.error(
+          '[LanLinkServer] pairing rollback persistence failed; in-memory state was restored, but the tentative disk generation may survive recovery and reload after restart:',
+          rollbackError instanceof Error ? rollbackError.message : rollbackError,
+        );
+      }
       this.destroy(conn);
-      return;
     }
-    this.send(conn, AEAD_RECORD, record);
   }
 
   private onReconnectHello(conn: Conn, body: Buffer): void {
@@ -571,8 +600,12 @@ export class LanLinkServer {
     // Responder: opens c2s (joiner->host), seals s2c (host->joiner).
     const c2s: Direction = 1;
     const s2c: Direction = 2;
-    conn.opener = new AeadOpener(keys.c2sKey, c2s);
-    conn.sealer = new AeadSealer(keys.s2cKey, s2c);
+    this.activateAead(conn, peerUuid, new AeadOpener(keys.c2sKey, c2s), new AeadSealer(keys.s2cKey, s2c));
+  }
+
+  private activateAead(conn: Conn, peerUuid: string, opener: AeadOpener, sealer: AeadSealer): void {
+    conn.opener = opener;
+    conn.sealer = sealer;
     conn.peerUuid = peerUuid;
     conn.state = 'aead';
     if (conn.deadline) {

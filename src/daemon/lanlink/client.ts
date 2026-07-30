@@ -108,21 +108,21 @@ export async function pairWithPeer(opts: PairJoinOptions): Promise<PairResult> {
     const { confirm, pending } = await ini.onPake2(pake2);
     socket.write(encodeFrame(CONFIRM, confirm));
     // A close HERE — after the peer accepted our CONFIRM but before it confirmed
-    // back — is the one that cost two teams hours in #658. The bare 'connection
-    // closed' reads like a transport fault, so they went looking below lanlink;
-    // the actual cause was the peer failing to save the pairing. Name the two
-    // possibilities rather than the symptom. (Not a wire-level error frame: the
-    // responder has no authenticated channel to send one on yet, and a cleartext
-    // one would be both a PIN oracle and injectable.)
+    // back — is ambiguous: the responder may have failed locally before committing,
+    // or it may have committed and then lost the confirmation on the transport.
+    // Keep this as a local diagnostic rather than an unauthenticated wire error,
+    // which would be injectable and could become a PIN oracle.
     let firstAead: Buffer;
     try {
       firstAead = await stream.next(AEAD_RECORD);
     } catch (err) {
-      if (err instanceof Error && err.message === 'connection closed') {
+      const confirmationMissing =
+        err instanceof Error && (err.message === 'connection closed' || err.message === 'LanLink client: frame timeout');
+      if (confirmationMissing) {
         throw new Error(
-          'LanLink pairing: the peer hung up after accepting the PIN but before confirming — ' +
-            'it most likely failed to save the pairing (check the peer daemon log), ' +
-            'or the connection dropped. Neither side is paired.',
+          'LanLink pairing: confirmation did not arrive after the peer accepted the PIN — ' +
+            'check the peer daemon log. The peer may have failed to save the pairing, ' +
+            'or it may already have committed it; inspect both peer lists before retrying.',
         );
       }
       throw err;
