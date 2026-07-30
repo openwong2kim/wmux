@@ -16,6 +16,14 @@ import {
   type WakeUnreadEntry,
   type WakeSessionView,
 } from '../channelWakeWorker';
+import {
+  PrincipalService,
+  type PrincipalWriterLike,
+} from '../../principals/PrincipalService';
+import {
+  panePrincipalId,
+  type PrincipalState,
+} from '../../../shared/principals';
 
 function entry(partial: Partial<WakeUnreadEntry>): WakeUnreadEntry {
   return {
@@ -53,7 +61,9 @@ interface Harness {
   setWriteError(err: Error | null): void;
 }
 
-function makeHarness(): Harness {
+function makeHarness(
+  principalPtyIdOf?: (principalId: string) => string | undefined,
+): Harness {
   let entries: WakeUnreadEntry[] = [];
   let sessions: WakeSessionView[] = [];
   let nowMs = 1_000_000;
@@ -65,6 +75,7 @@ function makeHarness(): Harness {
     memberWorkspaces: () => ['ws-b'],
     unreadFor: () => entries,
     listLiveSessions: () => sessions,
+    principalPtyIdOf,
     write: (sessionId, data) => {
       if (writeError) throw writeError;
       writes.push({ sessionId, data });
@@ -94,6 +105,41 @@ afterEach(() => {
 });
 
 const flushEnter = () => vi.advanceTimersByTime(5);
+
+function restartedPrincipalService(
+  principalId: string,
+  workspaceId: string,
+  paneId: string,
+  ptyId: string,
+): PrincipalService {
+  const persisted: PrincipalState = {
+    version: 1,
+    principals: [{
+      id: principalId,
+      kind: 'pane-agent',
+      display: 'w2-1(codex)',
+      reachability: 'pty-nudge',
+      liveness: 'live',
+      workspaceId,
+      paneId,
+      ptyId,
+      memberId: 'w2-1(codex)',
+      agentSlug: 'codex',
+      createdAt: 1,
+      lastSeenAt: 1,
+    }],
+  };
+  const clone = (): PrincipalState => ({
+    version: persisted.version,
+    principals: persisted.principals.map((principal) => ({ ...principal })),
+  });
+  const writer: PrincipalWriterLike = {
+    load: clone,
+    saveImmediate: () => true,
+    saveDebounced: () => undefined,
+  };
+  return new PrincipalService({ writer, now: () => 2 });
+}
 
 describe('ChannelWakeWorker — injection mechanics', () => {
   it('injects the nudge line and the Enter as TWO separate writes (F2)', () => {
@@ -143,6 +189,47 @@ describe('ChannelWakeWorker — injection mechanics', () => {
     h.worker.tickOnce();
     // eslint-disable-next-line no-control-regex
     expect(h.writes[0].data).not.toMatch(/[\x00-\x1f\x7f]/);
+  });
+});
+
+describe('ChannelWakeWorker — principal routing after daemon restart', () => {
+  it('wakes the exact rebuilt live session even though its registry row was backfilled stale', () => {
+    const principalId = panePrincipalId('ws-b', 'pane-1');
+    const principalService = restartedPrincipalService(
+      principalId,
+      'ws-b',
+      'pane-1',
+      'pty-exact',
+    );
+    expect(principalService.find(principalId)?.liveness).toBe('stale');
+
+    const h = makeHarness((id) => principalService.ptyIdOf(id));
+    h.setEntries([entry({ memberId: 'w2-1(codex)', principalId, mentionUnread: 1 })]);
+    h.setSessions([
+      session({ id: 'pty-sibling', lastDetectedAgent: 'codex' }),
+      session({ id: 'pty-exact', lastDetectedAgent: 'codex' }),
+    ]);
+
+    h.worker.tickOnce();
+    expect(h.writes).toEqual([
+      expect.objectContaining({ sessionId: 'pty-exact' }),
+    ]);
+    flushEnter();
+    expect(h.writes.map((write) => write.sessionId)).toEqual([
+      'pty-exact',
+      'pty-exact',
+    ]);
+  });
+
+  it('does not wake a sibling when the stable principal target is no longer live', () => {
+    const principalId = panePrincipalId('ws-b', 'pane-gone');
+    const h = makeHarness((id) => (id === principalId ? 'pty-gone' : undefined));
+    h.setEntries([entry({ memberId: 'codex', principalId, mentionUnread: 1 })]);
+    h.setSessions([session({ id: 'pty-sibling', lastDetectedAgent: 'codex' })]);
+
+    h.worker.tickOnce();
+    flushEnter();
+    expect(h.writes).toEqual([]);
   });
 });
 
@@ -398,7 +485,7 @@ describe('pickTarget — never guess', () => {
 describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
   const PID = 'pane:ws-b/p1';
 
-  it('directly selects the LIVE principal\'s ptyId session without the heuristic (auto-name memberId)', () => {
+  it('directly selects the principal ptyId present in the live snapshot without the heuristic (auto-name memberId)', () => {
     // memberId "w2-1(codex)" never matches the slug heuristic — without the
     // principal path this member would never get nudged. With two same-slug
     // panes the heuristic would have returned null on ambiguity.
@@ -412,7 +499,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
     expect(target?.id).toBe('pty-y');
   });
 
-  it('a stale principal (undefined ptyId) falls back to the existing heuristic', () => {
+  it('a missing exact principal coordinate fails closed instead of waking a sibling', () => {
     const target = pickTargetWithPrincipal(
       [session({ id: 'only', lastDetectedAgent: 'codex' })],
       'ws-b',
@@ -420,12 +507,10 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
       PID,
       () => undefined,
     );
-    // Fallback rule 3: the only eligible agent session (a bare shell would
-    // hand off to polling — see the agent-required fallback test).
-    expect(target?.id).toBe('only');
+    expect(target).toBeNull();
   });
 
-  it('falls back if the session the registry points to is dead (race), and does not assert on workspace mismatch', () => {
+  it('refuses a dead exact principal target or workspace mismatch rather than waking a sibling', () => {
     const dead = pickTargetWithPrincipal(
       [session({ id: 'other', lastDetectedAgent: 'codex' })],
       'ws-b',
@@ -433,7 +518,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
       PID,
       () => 'pty-gone',
     );
-    expect(dead?.id).toBe('other'); // heuristic rule 2 (slug match)
+    expect(dead).toBeNull();
 
     const wsMismatch = pickTargetWithPrincipal(
       [session({ id: 'pty-z', workspaceId: 'ws-OTHER', lastDetectedAgent: 'codex' })],
@@ -464,7 +549,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
     expect(pickTargetWithPrincipal(sessions, 'ws-b', 'codex', undefined, undefined)?.id).toBe('b');
   });
 
-  it('a principal DIRECT HIT on an agent-less session falls through to the heuristic (no shell nudge)', () => {
+  it('an agent-less exact principal target fails closed instead of waking a sibling', () => {
     // Codex micro-pass on the shell-nudge fix: a registry row's ptyId can
     // outlive the agent (agent exits, pane keeps its shell, row stays live
     // until the next upsert/purge). The direct-hit branch must carry the
@@ -481,10 +566,8 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
         () => 'was-agent-now-shell',
       ),
     ).toBeNull();
-    // Direct hit agent-less, but the heuristic SLUG-MATCHES a real agent
-    // pane → the fall-through still delivers. (With an auto-name memberId
-    // the two-pane case stays null — the heuristic never guesses between a
-    // shell and an unmatched agent pane; that ambiguity rule is unchanged.)
+    // Even a slug-matching sibling must not receive a nudge addressed to the
+    // principal whose exact pane has fallen back to a shell.
     expect(
       pickTargetWithPrincipal(
         [
@@ -495,13 +578,13 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
         'codex',
         PID3,
         () => 'was-agent-now-shell',
-      )?.id,
-    ).toBe('real-agent');
+      ),
+    ).toBeNull();
   });
 
-  it('the heuristic fallback carries the same agent-required discipline (no shell nudge)', () => {
+  it('the legacy heuristic fallback carries the same agent-required discipline (no shell nudge)', () => {
     const PID2 = 'pane:ws-b/pX';
-    // Stale principal → heuristic fallback; the only pane is an agent-less
+    // No principal resolver (legacy wiring); the only pane is an agent-less
     // shell → null (never auto-submit into a bare shell).
     expect(
       pickTargetWithPrincipal(
@@ -509,7 +592,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
         'ws-b',
         'w2-1(codex)',
         PID2,
-        () => undefined,
+        undefined,
       ),
     ).toBeNull();
     // …but a lone AGENT pane still gets the fallback nudge.
@@ -519,7 +602,7 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
         'ws-b',
         'w2-1(codex)',
         PID2,
-        () => undefined,
+        undefined,
       )?.id,
     ).toBe('agent');
   });

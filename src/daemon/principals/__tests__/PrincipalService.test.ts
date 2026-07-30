@@ -3,7 +3,7 @@
 //   1. upsert → list round trip + liveness live
 //   2. On restart (reconstruction) every pane-agent is backfilled stale + human:me seed
 //   3. markStaleByPtyId / markStaleByWorkspace / remove
-//   4. livePtyIdOf returns ptyId only when live (no stale ptyId leakage)
+//   4. ptyIdOf preserves the routing coordinate independently of liveness
 // The writer is injected as an in-memory fake, per the ChannelService.test convention.
 
 import { describe, it, expect, vi } from 'vitest';
@@ -117,13 +117,21 @@ describe('PrincipalService', () => {
     expect(svc.find(HUMAN_SELF_PRINCIPAL_ID)).toBeDefined();
   });
 
-  it('livePtyIdOf: returns ptyId only when live — a stale ptyId must not leak into wake targeting', () => {
-    const svc = new PrincipalService({ writer: makeFakeWriter() });
-    svc.upsert(paneInput(1));
+  it('ptyIdOf: preserves the routing coordinate across restart backfill', () => {
+    const writer = makeFakeWriter();
+    const svc1 = new PrincipalService({ writer });
+    svc1.upsert(paneInput(1));
     const id = panePrincipalId('ws-1', 'pane-1');
 
-    expect(svc.livePtyIdOf(id)).toBe('pty-1');
-    svc.markStaleByPtyId('pty-1');
-    expect(svc.livePtyIdOf(id)).toBeUndefined();
+    // Restart backfill makes the registry row stale even though the daemon
+    // rebuilds the persisted session as detached. Callers that already hold a
+    // live-session snapshot still need the coordinate so that snapshot — not
+    // renderer-owned registry liveness — can decide whether the PTY exists.
+    const svc2 = new PrincipalService({ writer });
+    expect(svc2.find(id)?.liveness).toBe('stale');
+    expect(svc2.ptyIdOf(id)).toBe('pty-1');
+
+    svc2.remove(id);
+    expect(svc2.ptyIdOf(id)).toBeUndefined();
   });
 });
