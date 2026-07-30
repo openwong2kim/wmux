@@ -218,8 +218,20 @@ describe('deck handler — the commander system prompt per vendor', () => {
   });
 
   it('keeps the Write/memory policy for the SDK brain', async () => {
+    // Explicit: the terminal brain is the DEFAULT vendor now, so this case has
+    // to select the SDK brain rather than lean on whatever the default is.
+    await setVendor('claude');
     await send('ws-2');
     const prompt = adapters[0].startOptions?.systemPrompt ?? '';
     expect(prompt).toContain('You have a Write tool');
+  });
+
+  it('defaults to the terminal brain before the renderer syncs a vendor', async () => {
+    // The main-side vendor is authoritative for turns that beat the renderer's
+    // first DECK_BRAIN_VENDOR_SET (a schedule or event wake at launch). It must
+    // agree with the store default, or those turns silently run the SDK brain.
+    await send('ws-1');
+    const prompt = adapters[0].startOptions?.systemPrompt ?? '';
+    expect(prompt).toContain('You have NO durable memory in this mode');
   });
 });

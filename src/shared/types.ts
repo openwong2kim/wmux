@@ -619,8 +619,12 @@ export interface SessionData {
    *  Code ecosystem (skills/CLAUDE.md/hooks) into brain turns. Absent/false =
    *  raw mode (the safe default). */
   deckBrainFullPower?: boolean;
-  /** Orchestrator brain vendor (BYOB M0). Absent/'claude' = the Claude SDK
-   *  brain; 'hermes' = the generic ACP adapter configured for Hermes Agent. */
+  /** Orchestrator brain vendor (BYOB M0). Absent = 'claude-pty', the terminal
+   *  brain that drives the user's own claude binary (the default since
+   *  2026-07-30); 'claude' = the Claude SDK brain; 'hermes' = the generic ACP
+   *  adapter configured for Hermes Agent. A recorded 'claude' is an explicit
+   *  choice and is restored as-is — only an absent/unknown value takes the
+   *  default. */
   deckBrainVendor?: BrainVendor;
   /** Whether the deck shows the Channels tab (human channel UI). Default
    *  false — the orchestrator is the single interface; the tab is an

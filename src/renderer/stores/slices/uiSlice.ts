@@ -879,7 +879,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.deckBrainFullPower = enabled;
   }),
 
-  deckBrainVendor: 'claude',
+  // The terminal brain is the default orchestrator (owner decision 2026-07-30):
+  // it drives the user's OWN claude binary, so it needs no API key and reads
+  // its per-workspace CLAUDE.md from disk on every spawn. The SDK brain stays
+  // selectable — and is still the automatic fallback when there is no daemon.
+  deckBrainVendor: 'claude-pty',
 
   setDeckBrainVendor: (vendor) => set((state) => {
     state.deckBrainVendor = vendor;

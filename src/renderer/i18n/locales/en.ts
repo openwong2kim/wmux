@@ -374,9 +374,9 @@ export const en = {
   'settings.orchestrator': 'Orchestrator',
   'settings.orchestratorBrain': 'Orchestrator brain',
   'settings.orchestratorBrainDesc':
-    'Which agent runtime drives the Command Deck. Claude Code is the default; Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
-  'settings.orchestratorBrainClaude': 'Claude Code (default)',
-  'settings.orchestratorBrainClaudePty': 'Claude Code (terminal) — subscription',
+    'Which agent runtime drives the Command Deck. The terminal brain is the default — it drives your own claude binary on your subscription. Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
+  'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
+  'settings.orchestratorBrainClaudePty': 'Claude Code (terminal, default) — subscription',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — experimental',
   'settings.orchestratorModel': 'Orchestrator model',
   'settings.orchestratorModelDesc':
@@ -385,6 +385,8 @@ export const en = {
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
+  'settings.orchestratorFullPowerSdkOnly':
+    'Applies to the Claude Code (SDK) brain only. The terminal brain already runs your own Claude Code setup, and Hermes ignores the flag — switch the orchestrator brain above to change this.',
   // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
   'settings.roleBindings': 'Role → model enforcement',
   'settings.roleBindingsDesc':

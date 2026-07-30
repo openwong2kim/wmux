@@ -321,7 +321,11 @@ export function registerDeckHandler(
   let fullPowerEnabled = false;
 
   // Brain vendor (BYOB M0) — same main-authority contract as full power.
-  let brainVendor: BrainVendor = 'claude';
+  // Defaults to the terminal brain (owner decision 2026-07-30) so a turn that
+  // races the renderer's first DECK_BRAIN_VENDOR_SET sync lands on the same
+  // vendor the store defaults to. createAdapter still falls back to the SDK
+  // brain when daemon mode is unavailable.
+  let brainVendor: BrainVendor = 'claude-pty';
 
   // Event-push coalescer. Declared here, constructed below once
   // runTurnForWorkspace exists — the manager's onIdle closure references it
@@ -357,13 +361,21 @@ export function registerDeckHandler(
     const fullPower = fullPowerEnabled;
     const vendor = brainVendor;
     const existing = managers.get(workspaceId);
-    // model/fullPower are Claude-specific — an ACP brain ignores them, so a
-    // change must not needlessly dispose+respawn a non-Claude brain (GLM
-    // review): only vendor-relevant settings participate in the swap check.
-    const claudeSettingsChanged =
-      vendor === 'claude' && existing
-        ? model !== existing.model || fullPower !== existing.fullPower
-        : false;
+    // Only vendor-RELEVANT settings participate in the swap check, so a change
+    // never needlessly dispose+respawns a brain that ignores it (GLM review).
+    // The two knobs have different reach, and conflating them left the model
+    // picker dead on the terminal brain (harmless while it was opt-in, a
+    // default-path bug once it became the default):
+    //   model     — reaches BOTH Claude runtimes; createAdapter forwards it to
+    //               the SDK brain and to the TUI's `--model` alike.
+    //   fullPower — SDK-only: it tunes settingSources/canUseTool, which an
+    //               interactive session has no equivalent for.
+    // An ACP brain ignores both.
+    const modelApplies = vendor === 'claude' || vendor === 'claude-pty';
+    const claudeSettingsChanged = existing
+      ? (modelApplies && model !== existing.model) ||
+        (vendor === 'claude' && fullPower !== existing.fullPower)
+      : false;
     if (
       existing &&
       (vendor !== existing.vendor || claudeSettingsChanged) &&

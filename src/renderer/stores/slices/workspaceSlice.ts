@@ -711,10 +711,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Fail closed to raw mode: only an explicit true enables full power.
       state.deckBrainFullPower = data.deckBrainFullPower === true;
       // Fail closed to the default brain: only known vendor ids are restored.
+      // 'claude' must be listed EXPLICITLY now that it is no longer the
+      // fallback — it is a deliberate SDK choice, and a session that recorded
+      // it must keep resuming its own conversation instead of being migrated
+      // onto the terminal brain (which keys its sessions separately). An
+      // ABSENT field means the user never chose, so it takes the new default.
       state.deckBrainVendor =
-        data.deckBrainVendor === 'hermes' || data.deckBrainVendor === 'claude-pty'
+        data.deckBrainVendor === 'claude' ||
+        data.deckBrainVendor === 'hermes' ||
+        data.deckBrainVendor === 'claude-pty'
           ? data.deckBrainVendor
-          : 'claude';
+          : 'claude-pty';
       // Fail closed to hidden: only an explicit boolean shows the (frozen)
       // human channel UI.
       if (typeof data.channelsTabVisible === 'boolean') {

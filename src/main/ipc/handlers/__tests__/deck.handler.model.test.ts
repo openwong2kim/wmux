@@ -92,6 +92,13 @@ const send = (payload: Record<string, unknown>) =>
     code?: string;
   }>;
 
+/** Select the brain vendor. Needed by the full-power cases: full power is an
+ *  SDK-only knob, and the DEFAULT vendor is the terminal brain, which ignores
+ *  it (so it must not swap on a toggle). The model cases deliberately stay on
+ *  the default — `--model` reaches the terminal brain too. */
+const setVendor = (vendor: string) =>
+  captured.get(IPC.DECK_BRAIN_VENDOR_SET)!({}, { vendor }) as Promise<{ vendor: string }>;
+
 beforeEach(() => {
   captured.clear();
   adapters = [];
@@ -120,6 +127,26 @@ describe('deck:send — orchestrator model override', () => {
     expect(adapters).toHaveLength(2);
     expect(adapters[0].disposed).toBe(true);
     expect(adapters[1].model).toBe('sonnet');
+  });
+
+  it('swaps the TERMINAL brain too — `--model` reaches its TUI as well', async () => {
+    // Regression: the swap check used to gate on vendor==='claude', so a model
+    // change never respawned the terminal brain even though createAdapter
+    // forwards `model` to it. The picker looked live and did nothing.
+    await setVendor('claude-pty');
+    await send({ text: 'hi', model: 'opus' });
+    await send({ text: 'again', model: 'sonnet' });
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0].disposed).toBe(true);
+    expect(adapters[1].model).toBe('sonnet');
+  });
+
+  it('leaves an ACP brain alone on a model change (it ignores the flag)', async () => {
+    await setVendor('hermes');
+    await send({ text: 'hi', model: 'opus' });
+    await send({ text: 'again', model: 'sonnet' });
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].disposed).toBe(false);
   });
 
   it('switching back to default is also a swap', async () => {
@@ -231,6 +258,7 @@ describe('deck full-power mode (BYOB approach A) — MAIN-side authority', () =>
       return a;
     });
 
+    await setVendor('claude'); // full power is an SDK-only knob
     const turn = send({ text: 'long turn' });
     await setFullPower(true);
     expect(adapters[0].disposed).toBe(false); // in-flight turn survives

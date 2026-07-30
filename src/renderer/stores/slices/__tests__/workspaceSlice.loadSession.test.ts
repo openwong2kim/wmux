@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
-import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Company, type Pane, type SessionData, type Workspace } from '../../../../shared/types';
+import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type BrainVendor, type Company, type Pane, type SessionData, type Workspace } from '../../../../shared/types';
 
 // Fix 0 — minimum cross-slice state surface that workspaceSlice.loadSession
 // and clearAllPtyState mutate. We intentionally don't pull in the full
@@ -47,6 +47,8 @@ type TestState = WorkspaceSlice & {
   newConversationCommand: string;
   // #517 — main-owned browser backend mirror (NOT a SessionData key).
   browserBackend: 'builtin' | 'external';
+  // Orchestrator brain vendor — loadSession re-coerces it on every load.
+  deckBrainVendor: BrainVendor;
 };
 
 function createTestStore() {
@@ -91,6 +93,7 @@ function createTestStore() {
       // #517 — main-owned backend mirror. Seeded here so the non-persistence
       // test can prove loadSession never writes it (it isn't a SessionData key).
       browserBackend: 'builtin',
+      deckBrainVendor: 'claude-pty',
     }))
   );
 }
@@ -669,5 +672,50 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     } finally {
       (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
     }
+  });
+});
+
+// The terminal brain became the default orchestrator (owner decision
+// 2026-07-30). The coercion below is the whole migration: 'claude' stopped
+// being the fallback, so it has to be whitelisted explicitly or a user who
+// deliberately picked the SDK brain gets silently moved onto the terminal one
+// — and onto a different session key, orphaning their live conversation.
+describe('loadSession — orchestrator brain vendor coercion', () => {
+  function sessionWithVendor(vendor: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'WS',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      ...(vendor === undefined ? {} : { deckBrainVendor: vendor }),
+    } as unknown as SessionData;
+  }
+
+  it('takes the terminal-brain default when the session never recorded a vendor', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithVendor(undefined));
+    expect(store.getState().deckBrainVendor).toBe('claude-pty');
+  });
+
+  it('restores an explicit SDK choice instead of migrating it to the default', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithVendor('claude'));
+    expect(store.getState().deckBrainVendor).toBe('claude');
+  });
+
+  it('restores an explicit hermes choice', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithVendor('hermes'));
+    expect(store.getState().deckBrainVendor).toBe('hermes');
+  });
+
+  it('falls back to the default for an unknown vendor id (session.json is hand-editable)', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithVendor('gpt-9'));
+    expect(store.getState().deckBrainVendor).toBe('claude-pty');
   });
 });
