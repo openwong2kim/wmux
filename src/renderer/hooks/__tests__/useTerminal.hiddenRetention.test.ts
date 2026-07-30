@@ -103,10 +103,13 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     expect(src).toMatch(/export\s+async\s+function\s+hydrateTerminalForRead/);
     expect(src).toMatch(/hydrateRegistry\.set\(ptyId,\s*hydrateForRead\)/);
     expect(src).toMatch(/hydrateRegistry\.get\(ptyId\)\s*===\s*hydrateForRead[\s\S]{0,120}hydrateRegistry\.delete\(ptyId\)/);
-    // Hydration ends with a parse barrier so callers read a settled buffer.
+    // Hydration ends with a parse barrier so callers read a settled buffer —
+    // a BOUNDED one, so a wedged xterm write buffer (a handler that threw
+    // mid-drain strands every queued callback) cannot hang the read instead.
     const idx = src.indexOf('const hydrateForRead');
     const body = src.slice(idx, idx + 900);
-    expect(body).toMatch(/terminal\.write\(''\s*,\s*resolve\)/);
+    expect(body).toMatch(/await\s+awaitParseBarrier\(terminal\)/);
+    expect(src).toMatch(/import\s+\{\s*awaitParseBarrier\s*\}\s+from\s+'\.\.\/terminal\/parseBarrier'/);
     // Teardown silences any in-flight resync.
     // Cleanup cancels with the effect's CAPTURED ptyId (not the mutable ref —
     // a PTY swap could clear the wrong pane's badge; CodeRabbit PR #470).

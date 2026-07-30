@@ -25,6 +25,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
+import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
@@ -1946,7 +1947,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // daemon resync; otherwise hand over any retained backlog. The trailing
     // empty write is a parse barrier — its callback runs only after xterm
     // has parsed everything handed above, so the caller reads a settled
-    // buffer.
+    // buffer. The barrier is BOUNDED: a pane whose xterm write buffer has
+    // wedged (a handler that threw mid-drain strands every queued callback)
+    // would otherwise never call back, and the read would burn its whole RPC
+    // deadline and return nothing. See parseBarrier.ts.
     const hydrateForRead = async (): Promise<void> => {
       if (terminalRef.current !== terminal) return;
       if (isTerminalDirty(terminal)) {
@@ -1954,9 +1958,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } else {
         flushTerminalOutput(terminal);
       }
-      await new Promise<void>((resolve) => {
-        try { terminal.write('', resolve); } catch { resolve(); }
-      });
+      const parsed = await awaitParseBarrier(terminal);
+      if (!parsed) {
+        console.warn(
+          `[useTerminal] parse barrier timed out ptyId=${ptyIdRef.current} — reading a possibly unsettled buffer (xterm write buffer may be wedged)`,
+        );
+      }
     };
     if (ptyId) hydrateRegistry.set(ptyId, hydrateForRead);
 
