@@ -116,9 +116,11 @@ export async function pairWithPeer(opts: PairJoinOptions): Promise<PairResult> {
     try {
       firstAead = await stream.next(AEAD_RECORD);
     } catch (err) {
-      if (err instanceof Error && err.message === 'connection closed') {
+      const confirmationMissing =
+        err instanceof Error && (err.message === 'connection closed' || err.message === 'LanLink client: frame timeout');
+      if (confirmationMissing) {
         throw new Error(
-          'LanLink pairing: the peer hung up after accepting the PIN but before confirmation arrived — ' +
+          'LanLink pairing: confirmation did not arrive after the peer accepted the PIN — ' +
             'check the peer daemon log. The peer may have failed to save the pairing, ' +
             'or it may already have committed it; inspect both peer lists before retrying.',
         );
