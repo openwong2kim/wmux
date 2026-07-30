@@ -20,13 +20,24 @@
  *   caller's RPC deadline is 5s and a timeout returns nothing at all, whereas a
  *   bounded wait still returns the pane's real (if fractionally older) content.
  *   So the barrier gives xterm a budget and then reads regardless.
+ *
+ *   The budget has to clear the slowest HEALTHY parse, not just be small. Too
+ *   tight and a pane replaying a full daemon ring is treated as wedged, and the
+ *   read scans a partially applied replay and reports it as complete — worse
+ *   than the timeout it replaced, because nothing says the answer is short.
+ *   See PARSE_BARRIER_TIMEOUT_MS.
  */
 
-/** Budget for the barrier. Generous next to an ordinary parse (xterm drains in
- *  12ms slices and a settled pane calls back on the next tick) and comfortably
- *  inside the 5s RPC deadline, so a busy-but-healthy pane still settles fully
- *  while a wedged one costs the reader a fraction of its budget. */
-export const PARSE_BARRIER_TIMEOUT_MS = 1_000;
+/** Budget for the barrier. Sized by the largest LEGITIMATE parse, not by a
+ *  round number: a dirty pane that falls back to a raw replay hands the whole
+ *  daemon ring (≤8MB — see RESYNC_BUFFER_MAX_CHARS in useTerminal.ts) to xterm
+ *  and settles BEFORE that backlog is parsed, and xterm parses ~5–35MB/s
+ *  (xterm.js flow-control docs), so a healthy full-ring replay can need ~2s.
+ *  A tighter budget would expire on such a pane and the reader would silently
+ *  scan a half-applied replay — the failure this barrier exists to prevent,
+ *  reintroduced in a quieter form. 3s clears that worst case and still leaves
+ *  2s of headroom under the caller's 5s RPC deadline. */
+export const PARSE_BARRIER_TIMEOUT_MS = 3_000;
 
 /** The subset of xterm's Terminal this barrier needs. */
 export interface BarrierWritable {
