@@ -417,3 +417,5 @@
 - **Why:** Corrected private-WS measurement will likely show agent CLI processes dominate — weight wmux cannot shrink. Attribution converts "wmux is heavy" complaints into correct blame + user action. No competitor has it (CEO voice F15).
 - **Context:** plans/app-weight-reduction-2026-07-16.md. Re-evaluate AFTER P0-0 corrected measurements land; needs its own design pass (UI surface).
 - **Depends on:** P0-0 measurement fixes. **Effort:** M → S-M (CC). **Priority:** P2-P3.
+
+- [ ] Update the release procedure in CLAUDE.md: main is a protected branch, so the chore(release) commit must land through a release PR (squash), with the v* tag pushed onto the release commit — direct `git push` to main is rejected. (2026-07-30, found while shipping v3.38.1)
