@@ -165,6 +165,17 @@ export const IPC = {
   //                   turn path consults it, idle stale-vendor brains retire
   //                   on change, renderer pushes on change + after hydration.
   DECK_BRAIN_VENDOR_SET: 'deck:brainvendor:set',
+  //   DECK_MODEL_SET  (invoke) renderer → main: sync the orchestrator model
+  //                   picker. Same main-authority contract as
+  //                   DECK_FULLPOWER_SET / DECK_BRAIN_VENDOR_SET, and it
+  //                   exists for the same reason those do: the model used to
+  //                   ride ONLY on the DECK_SEND payload, so it reached main
+  //                   just when a human typed into the deck composer. The
+  //                   terminal brain has no composer (its TUI is the input
+  //                   path), which left the picker inert for that vendor, and
+  //                   automation-driven turns spawned brains on whatever model
+  //                   the last typed turn happened to leave behind.
+  DECK_MODEL_SET: 'deck:model:set',
   //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
   //                   spawned its interactive TUI in daemon session <ptyId>.
   //                   One-way and additive to DECK_STREAM (which carries only

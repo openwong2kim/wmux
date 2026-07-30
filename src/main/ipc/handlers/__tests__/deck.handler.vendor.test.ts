@@ -17,12 +17,18 @@ vi.mock('electron', () => ({
 }));
 
 const sessionKeys: string[] = [];
+/** Keys DECK_CONVERSATION_CLEAR actually targeted. A clear that names a key
+ *  nothing ever wrote is a silent no-op, so the key itself is the assertion. */
+const clearedKeys: string[] = [];
 vi.mock('../../../deck/commanderSessionStore', () => ({
   loadCommanderSession: vi.fn((key: string) => {
     sessionKeys.push(key);
     return null;
   }),
   saveCommanderSession: vi.fn(async () => undefined),
+  clearCommanderSession: vi.fn(async (key: string) => {
+    clearedKeys.push(key);
+  }),
 }));
 
 vi.mock('../../../deck/deckPolicy', () => ({
@@ -126,6 +132,7 @@ beforeEach(() => {
   prompts = [];
   failNextTurn = false;
   sessionKeys.length = 0;
+  clearedKeys.length = 0;
   cleanup?.();
   cleanup = null;
   register();
@@ -138,9 +145,12 @@ describe('deck handler — brain vendor narrowing', () => {
     expect((await setVendor('claude')).vendor).toBe('claude');
   });
 
-  it('fails closed to claude for anything unknown', async () => {
+  it('fails closed to the terminal brain for anything unknown', async () => {
+    // The fail-closed target follows the DEFAULT, which moved with the store's
+    // (uiSlice / loadSession). Coercing to a different vendor than the renderer
+    // would also split the commander session key for the same bad input.
     for (const bad of ['gpt', '', null, 42, { vendor: 'claude-pty' }]) {
-      expect((await setVendor(bad)).vendor).toBe('claude');
+      expect((await setVendor(bad)).vendor).toBe('claude-pty');
     }
   });
 
@@ -218,8 +228,131 @@ describe('deck handler — the commander system prompt per vendor', () => {
   });
 
   it('keeps the Write/memory policy for the SDK brain', async () => {
+    // Explicit: the terminal brain is the DEFAULT vendor now, so this case has
+    // to select the SDK brain rather than lean on whatever the default is.
+    await setVendor('claude');
     await send('ws-2');
     const prompt = adapters[0].startOptions?.systemPrompt ?? '';
     expect(prompt).toContain('You have a Write tool');
+  });
+
+  it('no daemon → the terminal brain resolves to the SDK brain, key and policy together', async () => {
+    // The terminal brain's pty IS a daemon session, so with no daemon the deck
+    // serves an SDK brain instead. Everything derived from the vendor has to
+    // follow that runtime, not the request: otherwise an SDK session id lands
+    // under the `::claude-pty` key (leaving the real terminal conversation
+    // unresumable) and an SDK brain that DOES have Write is told it has no
+    // durable memory.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    sessionKeys.length = 0;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => null,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    expect(adapters[0].vendor).toBe('claude');
+    expect(sessionKeys).toContain('ws-1');
+    expect(sessionKeys).not.toContain('ws-1::claude-pty');
+    expect(adapters[0].startOptions?.systemPrompt ?? '').toContain('You have a Write tool');
+  });
+
+  it('promotes the fallback brain back to the terminal one once the daemon returns', async () => {
+    // The fallback manager must be recorded as what it IS ('claude'), or the
+    // swap check compares two REQUESTS ('claude-pty' vs 'claude-pty'), finds
+    // them equal, and strands the workspace on the SDK brain until restart.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    let daemon: unknown = null;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => daemon as never,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    expect(adapters[0].vendor).toBe('claude');
+    daemon = {};
+    await send('ws-1');
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0].disposed).toBe(true);
+    expect(adapters[1].vendor).toBe('claude-pty');
+  });
+
+  it('clears the key the workspace actually WROTE, not the one it selected', async () => {
+    // A `/clear` on a fallen-back workspace used to target
+    // `ws-1::claude-pty` — a key nothing had written — so it no-op'd and the
+    // conversation survived its own reset with no error anywhere.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    sessionKeys.length = 0;
+    clearedKeys.length = 0;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => null,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    await captured.get(IPC.DECK_CONVERSATION_CLEAR)!({}, { workspaceId: 'ws-1' });
+    expect(clearedKeys).toEqual(['ws-1']);
+  });
+
+  it('clears the composite key for a real terminal brain', async () => {
+    await setVendor('claude-pty');
+    await send('ws-1');
+    await captured.get(IPC.DECK_CONVERSATION_CLEAR)!({}, { workspaceId: 'ws-1' });
+    expect(clearedKeys).toEqual(['ws-1::claude-pty']);
+  });
+
+  it('keeps injecting ambient blocks into a fallen-back headless brain', async () => {
+    // The changed-only rule exists because a VISIBLE TUI types its whole prompt
+    // on screen. A fallback SDK brain is headless, so gating it like the TUI
+    // silently stopped autonomy/policy edits from reaching it after turn one.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    prompts = [];
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => null,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    await send('ws-1');
+    await send('ws-1');
+    expect(prompts).toHaveLength(3);
+    for (const p of prompts) expect(p).toContain('[autonomy]');
+  });
+
+  it('defaults to the terminal brain before the renderer syncs a vendor', async () => {
+    // The main-side vendor is authoritative for turns that beat the renderer's
+    // first DECK_BRAIN_VENDOR_SET (a schedule or event wake at launch). It must
+    // agree with the store default, or those turns silently run the SDK brain.
+    await send('ws-1');
+    const prompt = adapters[0].startOptions?.systemPrompt ?? '';
+    expect(prompt).toContain('You have NO durable memory in this mode');
   });
 });

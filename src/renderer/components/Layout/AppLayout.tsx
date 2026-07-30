@@ -228,6 +228,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // a user who deliberately turned it off (CodeRabbit, PR #474).
     deckBrainFullPower: state.deckBrainFullPower,
     deckBrainVendor: state.deckBrainVendor,
+    // Must persist, or the one-shot terminal-brain upgrade re-runs on every
+    // load and overrides a user who picks the SDK brain back.
+    deckBrainVendorMigrated: state.deckBrainVendorMigrated,
     channelsTabVisible: state.channelsTabVisible,
     paneActionsVisible: state.paneActionsVisible,
     splitInheritsCwd: state.splitInheritsCwd,
@@ -934,6 +937,14 @@ export default function AppLayout() {
   useEffect(() => {
     void window.electronAPI?.deck?.brainVendorSet?.(deckBrainVendorLive);
   }, [deckBrainVendorLive]);
+
+  // …and for the orchestrator model. The composer still rides it on each send,
+  // but that path does not exist for the terminal brain (no composer — the TUI
+  // is the input) and never covered scheduled / event-woken turns.
+  const deckBrainModelLive = useStore((s) => s.deckBrainModel);
+  useEffect(() => {
+    void window.electronAPI?.deck?.modelSet?.(deckBrainModelLive);
+  }, [deckBrainModelLive]);
 
   // ─── First-run onboarding (spotlight) detection ─────────────────────
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always

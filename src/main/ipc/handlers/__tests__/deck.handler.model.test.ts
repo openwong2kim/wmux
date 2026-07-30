@@ -92,6 +92,23 @@ const send = (payload: Record<string, unknown>) =>
     code?: string;
   }>;
 
+/** Select the brain vendor. Needed by the full-power cases: full power is an
+ *  SDK-only knob, and the DEFAULT vendor is the terminal brain, which ignores
+ *  it (so it must not swap on a toggle). The model cases deliberately stay on
+ *  the default — `--model` reaches the terminal brain too. */
+const setVendor = (vendor: string) =>
+  captured.get(IPC.DECK_BRAIN_VENDOR_SET)!({}, { vendor }) as Promise<{ vendor: string }>;
+
+/** Sync the orchestrator model picker (main-side authority). */
+const setModel = (model: unknown) =>
+  captured.get(IPC.DECK_MODEL_SET)!({}, { model }) as Promise<{ model: string }>;
+
+/** A turn that did NOT come from the deck composer — the Wake button, a
+ *  schedule, an event push. This is the ONLY turn shape the terminal brain has
+ *  (its layout has no composer), so it is where the model has to apply. */
+const wake = (workspaceId = 'ws-1') =>
+  captured.get(IPC.DECK_WAKE)!({}, { workspaceId }) as Promise<{ ok: boolean }>;
+
 beforeEach(() => {
   captured.clear();
   adapters = [];
@@ -120,6 +137,77 @@ describe('deck:send — orchestrator model override', () => {
     expect(adapters).toHaveLength(2);
     expect(adapters[0].disposed).toBe(true);
     expect(adapters[1].model).toBe('sonnet');
+  });
+
+  it('applies the picker to a composer-less terminal brain (main-side authority)', async () => {
+    // The regression this whole seam exists for: the terminal brain's layout
+    // has no composer, so DECK_SEND — the only way the model used to reach
+    // main — never fires for it. The picker was inert for the DEFAULT vendor.
+    await setVendor('claude-pty');
+    await setModel('opus');
+    await wake();
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].model).toBe('opus');
+  });
+
+  it('retires an idle stale-model brain on the set, so the next turn is on the new model', async () => {
+    await setVendor('claude-pty');
+    await setModel('opus');
+    await wake();
+    await setModel('sonnet');
+    expect(adapters[0].disposed).toBe(true);
+    await wake();
+    expect(adapters).toHaveLength(2);
+    expect(adapters[1].model).toBe('sonnet');
+  });
+
+  it('leaves an ACP brain alone on a model set (it ignores the flag)', async () => {
+    await setVendor('hermes');
+    await setModel('opus');
+    await wake();
+    await setModel('sonnet');
+    expect(adapters[0].disposed).toBe(false);
+    expect(adapters).toHaveLength(1);
+  });
+
+  it('sanitizes a hostile model on the authority path too (never reaches the CLI)', async () => {
+    await setModel('opus; rm -rf /');
+    expect((await setModel('opus; rm -rf /')).model).toBe('');
+    await wake();
+    expect(adapters[0].model).toBeUndefined();
+  });
+
+  it('an autonomous turn no longer pins a brain to the vendor default', async () => {
+    // Previously the autonomous path passed `managers.get(ws)?.model ?? ''`, so
+    // a schedule that woke first spawned on '' and the operator's picker only
+    // took effect once something was TYPED — which then dispose+respawned the
+    // brain (killing a live TUI) on the very next composer send.
+    await setModel('opus');
+    await wake();
+    expect(adapters[0].model).toBe('opus');
+    await send({ text: 'hi', model: 'opus' });
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].disposed).toBe(false);
+  });
+
+  it('swaps the TERMINAL brain too — `--model` reaches its TUI as well', async () => {
+    // Regression: the swap check used to gate on vendor==='claude', so a model
+    // change never respawned the terminal brain even though createAdapter
+    // forwards `model` to it. The picker looked live and did nothing.
+    await setVendor('claude-pty');
+    await send({ text: 'hi', model: 'opus' });
+    await send({ text: 'again', model: 'sonnet' });
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0].disposed).toBe(true);
+    expect(adapters[1].model).toBe('sonnet');
+  });
+
+  it('leaves an ACP brain alone on a model change (it ignores the flag)', async () => {
+    await setVendor('hermes');
+    await send({ text: 'hi', model: 'opus' });
+    await send({ text: 'again', model: 'sonnet' });
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].disposed).toBe(false);
   });
 
   it('switching back to default is also a swap', async () => {
@@ -231,6 +319,7 @@ describe('deck full-power mode (BYOB approach A) — MAIN-side authority', () =>
       return a;
     });
 
+    await setVendor('claude'); // full power is an SDK-only knob
     const turn = send({ text: 'long turn' });
     await setFullPower(true);
     expect(adapters[0].disposed).toBe(false); // in-flight turn survives

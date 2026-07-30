@@ -283,16 +283,20 @@ interface ToggleProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  /** Inert + dimmed. For a setting the CURRENT vendor/mode ignores, so the row
+   *  explains itself instead of silently doing nothing when clicked. */
+  disabled?: boolean;
 }
 
-function Toggle({ checked, onChange, label }: ToggleProps) {
+function Toggle({ checked, onChange, label, disabled }: ToggleProps) {
   return (
     <button
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${FOCUS_RING}`}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`}
       style={{ backgroundColor: checked ? 'var(--accent-blue)' : 'var(--bg-overlay)' }}
     >
       <span
@@ -869,7 +873,7 @@ function OrchestratorSection() {
         <SettingSelect
           value={deckBrainVendor}
           onChange={(v) =>
-            setDeckBrainVendor(v === 'hermes' || v === 'claude-pty' ? v : 'claude')
+            setDeckBrainVendor(v === 'claude' || v === 'hermes' ? v : 'claude-pty')
           }
           options={[
             { value: 'claude', label: t('settings.orchestratorBrainClaude') },
@@ -891,14 +895,25 @@ function OrchestratorSection() {
         />
       </SettingRow>
       <RoleBindingEditor />
+      {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
+          terminal brain (an interactive TUI) and ACP brains ignore the flag
+          entirely (see createAdapter in deck.handler), so with the terminal
+          brain now the default the row would otherwise read as a toggle that
+          does nothing when clicked. Inert + a reason instead of hidden: the
+          setting still exists, it just belongs to the other vendor. */}
       <SettingRow
         label={t('settings.orchestratorFullPower')}
-        description={t('settings.orchestratorFullPowerDesc')}
+        description={
+          deckBrainVendor === 'claude'
+            ? t('settings.orchestratorFullPowerDesc')
+            : t('settings.orchestratorFullPowerSdkOnly')
+        }
       >
         <Toggle
           checked={deckBrainFullPower}
           onChange={setDeckBrainFullPower}
           label={t('settings.orchestratorFullPower')}
+          disabled={deckBrainVendor !== 'claude'}
         />
       </SettingRow>
       <SettingRow
