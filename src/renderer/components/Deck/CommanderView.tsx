@@ -66,6 +66,7 @@ import {
 import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
 import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
+import { NewSessionChipContainer } from './NewSessionChip';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
@@ -224,6 +225,13 @@ export function CommanderViewContent({
         {/* Schedules chip + inline panel — new schedules bind to THIS
             workspace's orchestrator (M1.5). */}
         <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+        {/* Brain lifecycle — the last ALWAYS-ON control, so in the pty layout
+            it lands next to Wake and the two "what is the brain doing" buttons
+            sit together. Deliberately not disabled while a turn streams: a
+            stuck turn is the main reason to want a fresh orchestrator. */}
+        {activeWorkspaceId && (
+          <NewSessionChipContainer t={t} workspaceId={activeWorkspaceId} busy={brainBusy} />
+        )}
         {extra}
 
         {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
