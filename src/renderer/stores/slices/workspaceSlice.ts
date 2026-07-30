@@ -728,7 +728,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // which is what lets a user pick the SDK brain back and keep it.
       const recordedVendor = data.deckBrainVendor;
       const explicitlyPicked = recordedVendor === 'hermes' || recordedVendor === 'claude-pty';
-      state.deckBrainVendor = data.deckBrainVendorMigrated
+      // Strict boolean, like deckBrainFullPower above: session.json is
+      // hand-editable, and a truthy non-boolean (`"false"`) would otherwise
+      // pass as a migrated marker and lock a legacy 'claude' in as a choice.
+      const alreadyMigrated = data.deckBrainVendorMigrated === true;
+      state.deckBrainVendor = alreadyMigrated
         ? (recordedVendor === 'claude' || explicitlyPicked ? recordedVendor : 'claude-pty')
         : (explicitlyPicked ? recordedVendor : 'claude-pty');
       // Loading a session always leaves the profile migrated — the next save

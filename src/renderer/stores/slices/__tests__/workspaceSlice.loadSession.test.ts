@@ -734,6 +734,17 @@ describe('loadSession — orchestrator brain vendor coercion', () => {
     expect(store.getState().deckBrainVendor).toBe('claude');
   });
 
+  it('treats a non-boolean marker as unmigrated (session.json is hand-editable)', () => {
+    // `"false"` is truthy: read loosely it would pass as a migrated marker and
+    // lock a legacy 'claude' in as a deliberate choice, permanently exempting
+    // that profile from the upgrade.
+    for (const junk of ['false', 'true', 1, {}]) {
+      const store = createTestStore();
+      store.getState().loadSession(sessionWithVendor('claude', junk as never));
+      expect(store.getState().deckBrainVendor).toBe('claude-pty');
+    }
+  });
+
   it('falls back to the default for an unknown vendor id, migrated or not', () => {
     for (const migrated of [undefined, true]) {
       const store = createTestStore();

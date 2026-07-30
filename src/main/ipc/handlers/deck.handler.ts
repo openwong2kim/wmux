@@ -337,6 +337,42 @@ export function registerDeckHandler(
     return /^[A-Za-z0-9._-]{1,64}$/.test(trimmed) ? trimmed : '';
   };
 
+  /**
+   * The vendor that will actually serve a spawn right now. It diverges from the
+   * SELECTED one in exactly one place: the terminal brain's pty IS a daemon
+   * session, so with no daemon createAdapter hands back an SDK brain instead.
+   *
+   * A MISSING accessor is not the same signal as one that returns null: the
+   * former means this host never wired daemon mode into the deck at all (the
+   * unit-test harness, which injects its own factory), the latter is the real
+   * "the daemon is gone" report createAdapter falls back on. Only the latter
+   * downgrades, so a test that selects the terminal brain still gets
+   * terminal-brain semantics.
+   */
+  const resolveEffectiveVendor = (requested: BrainVendor): BrainVendor => {
+    const daemonAvailable = opts.getDaemonClient ? !!opts.getDaemonClient() : true;
+    return requested === 'claude-pty' && !daemonAvailable ? 'claude' : requested;
+  };
+
+  /**
+   * What a workspace is actually RUNNING as: the live manager's recorded
+   * runtime, or — with nothing spawned — what a spawn right now would resolve
+   * to. Every decision derived from the vendor has to read this rather than the
+   * raw selection, or it describes a brain that isn't there. The two that did:
+   * `/clear` computed a session key nothing had ever written (so clearing a
+   * fallen-back workspace silently kept its conversation), and the ambient
+   * dedup treated a headless SDK brain as the visible TUI (so autonomy/policy
+   * edits stopped reaching it after the first turn).
+   */
+  const vendorForWorkspace = (workspaceId: string): BrainVendor =>
+    managers.get(workspaceId)?.vendor ?? resolveEffectiveVendor(brainVendor);
+
+  /** BYOB M0: each vendor keeps its OWN conversation thread. Bare workspaceId
+   *  for the SDK brain so sessions persisted before vendors existed keep
+   *  resuming; composite for everyone else. */
+  const sessionKeyFor = (workspaceId: string, vendor: BrainVendor): string =>
+    vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
+
   // Brain vendor (BYOB M0) — same main-authority contract as full power.
   // Defaults to the terminal brain (owner decision 2026-07-30) so a turn that
   // races the renderer's first DECK_BRAIN_VENDOR_SET sync lands on the same
@@ -388,16 +424,7 @@ export function registerDeckHandler(
     // is unresumable), an SDK brain told it has no Write tool, and a fallback
     // manager tagged 'claude-pty' that the daemon coming back could never
     // dislodge — because `vendor !== existing.vendor` compared two requests.
-    const requestedVendor = brainVendor;
-    // A MISSING accessor is not the same signal as one that returns null: the
-    // former means this host never wired daemon mode into the deck at all (the
-    // unit-test harness, which injects its own factory), the latter is the real
-    // "the daemon is gone" report that createAdapter falls back on. Only the
-    // latter downgrades, so a test that selects the terminal brain still gets
-    // terminal-brain semantics.
-    const daemonAvailable = opts.getDaemonClient ? !!opts.getDaemonClient() : true;
-    const vendor: BrainVendor =
-      requestedVendor === 'claude-pty' && !daemonAvailable ? 'claude' : requestedVendor;
+    const vendor = resolveEffectiveVendor(brainVendor);
     const existing = managers.get(workspaceId);
     // Only vendor-RELEVANT settings participate in the swap check, so a change
     // never needlessly dispose+respawns a brain that ignores it (GLM review).
@@ -427,10 +454,7 @@ export function registerDeckHandler(
     if (current) return current.manager;
     // P3a: resume this workspace's persisted conversation from the previous
     // app run. A dead id is soft — the adapter falls back to a fresh session.
-    // BYOB M0: each vendor keeps its OWN conversation thread — a composite
-    // store key for non-default vendors, the bare wsId for Claude so existing
-    // persisted sessions keep resuming across this change.
-    const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
+    const sessionKey = sessionKeyFor(workspaceId, vendor);
     const persisted = loadCommanderSession(sessionKey);
     // The adapter's foreign-turn callback needs the manager the adapter is
     // about to be constructed INTO — late-bound through this holder, exactly
@@ -551,7 +575,13 @@ export function registerDeckHandler(
     // still applies on the very next turn; unchanged rules stop drowning the
     // terminal. Headless brains keep the unconditional every-turn injection.
     const ambientText = ambient.join('\n\n');
-    if (brainVendor === 'claude-pty') {
+    // Gate on what this workspace is RUNNING, not what was selected. A
+    // `claude-pty` request that fell back to the SDK brain is headless, and
+    // treating it as the visible TUI applies the changed-only rule to a brain
+    // nothing is drowning — so an autonomy/policy edit would stop reaching it
+    // after the first turn. Unknown workspace → the else branch, which injects
+    // unconditionally: the safe direction.
+    if (vendorForWorkspace(workspaceId) === 'claude-pty') {
       if (ambientText && shownAmbientBlocks.get(workspaceId) !== ambientText) {
         pendingAmbientBlocks.set(workspaceId, ambientText);
         blocks.push(ambientText);
@@ -659,8 +689,13 @@ export function registerDeckHandler(
         managers.delete(workspaceId);
         forgetAmbient(workspaceId);
       }
-      const vendor = brainVendor;
-      const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
+      // The vendor this workspace actually RAN as, not the one selected: a
+      // `claude-pty` request that fell back to the SDK brain persisted under
+      // the bare workspaceId, so keying the clear off the selection would
+      // target `${workspaceId}::claude-pty` — a key nothing ever wrote. The
+      // clear would no-op and the conversation would survive its own reset.
+      // `entry` is captured above, so this still reads the retired manager.
+      const sessionKey = sessionKeyFor(workspaceId, entry?.vendor ?? resolveEffectiveVendor(brainVendor));
       await clearCommanderSession(sessionKey);
       return { ok: true };
     }),
