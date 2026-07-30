@@ -183,6 +183,10 @@ export interface UISlice {
   // the deck. Main-authoritative like fullPower — AppLayout syncs it.
   deckBrainVendor: import('../../../shared/types').BrainVendor;
   setDeckBrainVendor: (vendor: import('../../../shared/types').BrainVendor) => void;
+  /** Whether this session has been through the terminal-brain default
+   *  migration. Persisted so the one-shot upgrade cannot re-run and override a
+   *  user who picks the SDK brain back AFTER it. See SessionData. */
+  deckBrainVendorMigrated: boolean;
 
   // Whether the deck shows the Channels tab (the human channel UI). Default
   // OFF: the orchestrator is the single interface and channels are its
@@ -885,8 +889,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // selectable — and is still the automatic fallback when there is no daemon.
   deckBrainVendor: 'claude-pty',
 
+  // A store with no session loaded is a FRESH profile — it starts on the new
+  // default and has nothing to migrate. loadSession flips this for a session
+  // that predates the migration.
+  deckBrainVendorMigrated: true,
+
   setDeckBrainVendor: (vendor) => set((state) => {
     state.deckBrainVendor = vendor;
+    // An explicit pick is exactly what the marker records: from here on the
+    // stored vendor is authoritative and must never be re-upgraded.
+    state.deckBrainVendorMigrated = true;
   }),
 
   channelsTabVisible: false,

@@ -49,6 +49,7 @@ type TestState = WorkspaceSlice & {
   browserBackend: 'builtin' | 'external';
   // Orchestrator brain vendor — loadSession re-coerces it on every load.
   deckBrainVendor: BrainVendor;
+  deckBrainVendorMigrated: boolean;
 };
 
 function createTestStore() {
@@ -94,6 +95,9 @@ function createTestStore() {
       // test can prove loadSession never writes it (it isn't a SessionData key).
       browserBackend: 'builtin',
       deckBrainVendor: 'claude-pty',
+      // Seeded false (not the uiSlice default) so the marker assertions prove
+      // loadSession sets it rather than reading back the fixture.
+      deckBrainVendorMigrated: false,
     }))
   );
 }
@@ -681,7 +685,7 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
 // deliberately picked the SDK brain gets silently moved onto the terminal one
 // — and onto a different session key, orphaning their live conversation.
 describe('loadSession — orchestrator brain vendor coercion', () => {
-  function sessionWithVendor(vendor: unknown): SessionData {
+  function sessionWithVendor(vendor: unknown, migrated?: boolean): SessionData {
     const ws: Workspace = {
       id: 'ws-1',
       name: 'WS',
@@ -692,30 +696,49 @@ describe('loadSession — orchestrator brain vendor coercion', () => {
       workspaces: [ws],
       activeWorkspaceId: ws.id,
       ...(vendor === undefined ? {} : { deckBrainVendor: vendor }),
+      ...(migrated === undefined ? {} : { deckBrainVendorMigrated: migrated }),
     } as unknown as SessionData;
   }
 
-  it('takes the terminal-brain default when the session never recorded a vendor', () => {
+  // ── pre-migration sessions (no marker) — every install on disk looks like this
+  it("upgrades a pre-migration 'claude' — it is the OLD DEFAULT, not a choice", () => {
+    // The load-bearing case. AppLayout always serialized the vendor, so an
+    // untouched pre-migration profile carries a literal 'claude'; reading that
+    // as a deliberate pick would strand the whole install base on the SDK brain
+    // and leave the new default reaching new profiles only.
     const store = createTestStore();
-    store.getState().loadSession(sessionWithVendor(undefined));
+    store.getState().loadSession(sessionWithVendor('claude'));
     expect(store.getState().deckBrainVendor).toBe('claude-pty');
   });
 
-  it('restores an explicit SDK choice instead of migrating it to the default', () => {
+  it('keeps a pre-migration hermes/claude-pty pick (only reachable explicitly)', () => {
+    for (const picked of ['hermes', 'claude-pty'] as const) {
+      const store = createTestStore();
+      store.getState().loadSession(sessionWithVendor(picked));
+      expect(store.getState().deckBrainVendor).toBe(picked);
+    }
+  });
+
+  it('marks any loaded session migrated so the upgrade cannot run twice', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWithVendor('claude'));
+    expect(store.getState().deckBrainVendorMigrated).toBe(true);
+  });
+
+  // ── post-migration sessions (marker present) — the vendor is authoritative
+  it('restores an SDK choice made AFTER the migration', () => {
+    // Without the marker this would be re-upgraded on every load and the user
+    // could never stay on the SDK brain.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithVendor('claude', true));
     expect(store.getState().deckBrainVendor).toBe('claude');
   });
 
-  it('restores an explicit hermes choice', () => {
-    const store = createTestStore();
-    store.getState().loadSession(sessionWithVendor('hermes'));
-    expect(store.getState().deckBrainVendor).toBe('hermes');
-  });
-
-  it('falls back to the default for an unknown vendor id (session.json is hand-editable)', () => {
-    const store = createTestStore();
-    store.getState().loadSession(sessionWithVendor('gpt-9'));
-    expect(store.getState().deckBrainVendor).toBe('claude-pty');
+  it('falls back to the default for an unknown vendor id, migrated or not', () => {
+    for (const migrated of [undefined, true]) {
+      const store = createTestStore();
+      store.getState().loadSession(sessionWithVendor('gpt-9', migrated));
+      expect(store.getState().deckBrainVendor).toBe('claude-pty');
+    }
   });
 });

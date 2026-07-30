@@ -320,6 +320,23 @@ export function registerDeckHandler(
   // Synced by DECK_FULLPOWER_SET: on change and once after session hydration.
   let fullPowerEnabled = false;
 
+  // Orchestrator model — same main-authority contract as full power and the
+  // vendor. Previously the model rode ONLY on the DECK_SEND payload, so it
+  // reached main exactly when a human typed into the deck composer. That made
+  // it invisible on two paths that matter: the terminal brain has no composer
+  // at all (its TUI is the input path), and automation-driven turns spawned
+  // brains on whatever the last typed turn happened to leave cached — or on
+  // the SDK default when nothing had been typed yet.
+  let brainModel = '';
+
+  /** Sanitize a model override to a plausible token. It ends up on the brain
+   *  subprocess command line (`--model`), so anything outside this alphabet is
+   *  dropped to '' (the vendor default) rather than forwarded. */
+  const sanitizeModel = (raw: unknown): string => {
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    return /^[A-Za-z0-9._-]{1,64}$/.test(trimmed) ? trimmed : '';
+  };
+
   // Brain vendor (BYOB M0) — same main-authority contract as full power.
   // Defaults to the terminal brain (owner decision 2026-07-30) so a turn that
   // races the renderer's first DECK_BRAIN_VENDOR_SET sync lands on the same
@@ -359,7 +376,28 @@ export function registerDeckHandler(
     // authority (fullPowerEnabled), never from the caller — every turn path
     // gets the same answer.
     const fullPower = fullPowerEnabled;
-    const vendor = brainVendor;
+    // The vendor the operator SELECTED vs. the runtime that will actually
+    // serve this workspace. They diverge in exactly one place: the terminal
+    // brain's pty IS a daemon session, so with no daemon createAdapter hands
+    // back an SDK brain instead. Resolving that here rather than leaving it
+    // buried in the factory is what keeps the derived state honest —
+    // sessionKey, the memory policy, the swap check and the recorded entry all
+    // key off the runtime that exists, not the one that was asked for.
+    // Consequences of getting it wrong, all previously live: an SDK session id
+    // written under the `::claude-pty` key (so the real terminal conversation
+    // is unresumable), an SDK brain told it has no Write tool, and a fallback
+    // manager tagged 'claude-pty' that the daemon coming back could never
+    // dislodge — because `vendor !== existing.vendor` compared two requests.
+    const requestedVendor = brainVendor;
+    // A MISSING accessor is not the same signal as one that returns null: the
+    // former means this host never wired daemon mode into the deck at all (the
+    // unit-test harness, which injects its own factory), the latter is the real
+    // "the daemon is gone" report that createAdapter falls back on. Only the
+    // latter downgrades, so a test that selects the terminal brain still gets
+    // terminal-brain semantics.
+    const daemonAvailable = opts.getDaemonClient ? !!opts.getDaemonClient() : true;
+    const vendor: BrainVendor =
+      requestedVendor === 'claude-pty' && !daemonAvailable ? 'claude' : requestedVendor;
     const existing = managers.get(workspaceId);
     // Only vendor-RELEVANT settings participate in the swap check, so a change
     // never needlessly dispose+respawns a brain that ignores it (GLM review).
@@ -548,10 +586,11 @@ export function registerDeckHandler(
       if (fleetContext && fleetContext.length > FLEET_CONTEXT_MAX_CHARS) {
         fleetContext = fleetContext.slice(0, FLEET_CONTEXT_MAX_CHARS) + '\n…(truncated)';
       }
-      // Model override: sanitize to a plausible model token — this ends up on
-      // the SDK subprocess command line, so reject anything but [A-Za-z0-9._-].
-      const rawModel = typeof req.model === 'string' ? req.model.trim() : '';
-      const model = /^[A-Za-z0-9._-]{1,64}$/.test(rawModel) ? rawModel : '';
+      // A send may still carry the model (the composer rides it along), but it
+      // is no longer the only way main learns it — fall back to the synced
+      // authority so a payload that omits it does not silently reset the brain
+      // to the vendor default.
+      const model = sanitizeModel(req.model) || brainModel;
       const mgr = ensureManager(workspaceId, fleetContext, model);
       // Human input resets this workspace's auto-wake budget and subsumes any
       // buffered push events (the human's own turn re-observes live state) —
@@ -674,6 +713,43 @@ export function registerDeckHandler(
     }),
   );
 
+  ipcMain.removeHandler(IPC.DECK_MODEL_SET);
+  ipcMain.handle(
+    IPC.DECK_MODEL_SET,
+    wrapHandler(IPC.DECK_MODEL_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: true; model: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const model = sanitizeModel(req.model);
+      if (model !== brainModel) {
+        brainModel = model;
+        // Retire IDLE managers on the stale model so the next turn on ANY path
+        // spawns on the new one. Busy managers finish their in-flight turn and
+        // ensureManager swaps them on their next (never-swap-mid-turn). Gated
+        // on the vendors the model actually reaches — an ACP brain ignores it,
+        // and respawning one would cost a conversation for nothing.
+        for (const [workspaceId, entry] of [...managers]) {
+          const modelApplies = entry.vendor === 'claude' || entry.vendor === 'claude-pty';
+          if (
+            modelApplies &&
+            entry.model !== model &&
+            entry.manager.getStatus().status !== 'busy'
+          ) {
+            entry.manager.dispose();
+            managers.delete(workspaceId);
+            forgetAmbient(workspaceId);
+            // A retired terminal brain takes its embedded pty with it.
+            emitBrainPty(workspaceId, null);
+          }
+        }
+      }
+      return { ok: true, model };
+    }),
+  );
+
   ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);
   ipcMain.handle(
     IPC.DECK_BRAIN_VENDOR_SET,
@@ -684,9 +760,15 @@ export function registerDeckHandler(
       const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
         ? (raw as Record<string, unknown>)
         : {};
-      // Fail closed to the default: only known vendor ids are accepted.
+      // Fail closed to the default: only known vendor ids are accepted. The
+      // default is the terminal brain, matching every other default site
+      // (uiSlice, loadSession, brainVendor above) — coercing to 'claude' here
+      // would split main and the store onto different vendors, and with them
+      // onto different commander session keys, for the same bad input.
       const vendor: BrainVendor =
-        req.vendor === 'hermes' || req.vendor === 'claude-pty' ? req.vendor : 'claude';
+        req.vendor === 'claude' || req.vendor === 'hermes' || req.vendor === 'claude-pty'
+          ? req.vendor
+          : 'claude-pty';
       if (vendor !== brainVendor) {
         brainVendor = vendor;
         // Retire IDLE stale-vendor brains now (same contract as full power):
@@ -743,9 +825,12 @@ export function registerDeckHandler(
     // a workspace already running a turn must not momentarily consume — or, for
     // the queued path, sit and WAIT on — one of the scarce global slots. ensureManager
     // still runs first (unchanged lazy-creation semantics), we just don't hold the
-    // gate across the check. Scheduled/event-woken turns reuse the live manager's
-    // model; full power always comes from the main-side authority in ensureManager.
-    const preMgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+    // gate across the check. Scheduled/event-woken turns take the model from the
+    // main-side authority, exactly like full power and the vendor — reusing the
+    // live manager's cached model instead meant an autonomous turn could pin a
+    // brain to '' (the vendor default) and the operator's picker never applied
+    // to a workspace nothing had been typed into.
+    const preMgr = ensureManager(workspaceId, undefined, brainModel);
     if (preMgr.getStatus().status !== 'idle') {
       return { ok: false, code: 'busy' as const };
     }
@@ -767,7 +852,7 @@ export function registerDeckHandler(
       // settings-driven manager swap) could have started/retired this workspace's
       // brain during the wait. From here the status check and send are one
       // synchronous sequence (nothing awaits between them).
-      const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+      const mgr = ensureManager(workspaceId, undefined, brainModel);
       if (mgr.getStatus().status !== 'idle') {
         return { ok: false, code: 'busy' as const };
       }
@@ -1887,6 +1972,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_WAKE);
     ipcMain.removeHandler(IPC.DECK_STATUS);
     ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
+    ipcMain.removeHandler(IPC.DECK_MODEL_SET);
     ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);

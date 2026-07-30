@@ -138,9 +138,12 @@ describe('deck handler — brain vendor narrowing', () => {
     expect((await setVendor('claude')).vendor).toBe('claude');
   });
 
-  it('fails closed to claude for anything unknown', async () => {
+  it('fails closed to the terminal brain for anything unknown', async () => {
+    // The fail-closed target follows the DEFAULT, which moved with the store's
+    // (uiSlice / loadSession). Coercing to a different vendor than the renderer
+    // would also split the commander session key for the same bad input.
     for (const bad of ['gpt', '', null, 42, { vendor: 'claude-pty' }]) {
-      expect((await setVendor(bad)).vendor).toBe('claude');
+      expect((await setVendor(bad)).vendor).toBe('claude-pty');
     }
   });
 
@@ -224,6 +227,61 @@ describe('deck handler — the commander system prompt per vendor', () => {
     await send('ws-2');
     const prompt = adapters[0].startOptions?.systemPrompt ?? '';
     expect(prompt).toContain('You have a Write tool');
+  });
+
+  it('no daemon → the terminal brain resolves to the SDK brain, key and policy together', async () => {
+    // The terminal brain's pty IS a daemon session, so with no daemon the deck
+    // serves an SDK brain instead. Everything derived from the vendor has to
+    // follow that runtime, not the request: otherwise an SDK session id lands
+    // under the `::claude-pty` key (leaving the real terminal conversation
+    // unresumable) and an SDK brain that DOES have Write is told it has no
+    // durable memory.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    sessionKeys.length = 0;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => null,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    expect(adapters[0].vendor).toBe('claude');
+    expect(sessionKeys).toContain('ws-1');
+    expect(sessionKeys).not.toContain('ws-1::claude-pty');
+    expect(adapters[0].startOptions?.systemPrompt ?? '').toContain('You have a Write tool');
+  });
+
+  it('promotes the fallback brain back to the terminal one once the daemon returns', async () => {
+    // The fallback manager must be recorded as what it IS ('claude'), or the
+    // swap check compares two REQUESTS ('claude-pty' vs 'claude-pty'), finds
+    // them equal, and strands the workspace on the SDK brain until restart.
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    let daemon: unknown = null;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      getDaemonClient: () => daemon as never,
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.vendor, opts.workspaceId, opts.onPtySpawned, opts.model);
+        adapters.push(a);
+        return a;
+      },
+    });
+
+    await setVendor('claude-pty');
+    await send('ws-1');
+    expect(adapters[0].vendor).toBe('claude');
+    daemon = {};
+    await send('ws-1');
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0].disposed).toBe(true);
+    expect(adapters[1].vendor).toBe('claude-pty');
   });
 
   it('defaults to the terminal brain before the renderer syncs a vendor', async () => {

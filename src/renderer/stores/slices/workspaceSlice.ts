@@ -710,18 +710,30 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);
       // Fail closed to raw mode: only an explicit true enables full power.
       state.deckBrainFullPower = data.deckBrainFullPower === true;
-      // Fail closed to the default brain: only known vendor ids are restored.
-      // 'claude' must be listed EXPLICITLY now that it is no longer the
-      // fallback — it is a deliberate SDK choice, and a session that recorded
-      // it must keep resuming its own conversation instead of being migrated
-      // onto the terminal brain (which keys its sessions separately). An
-      // ABSENT field means the user never chose, so it takes the new default.
-      state.deckBrainVendor =
-        data.deckBrainVendor === 'claude' ||
-        data.deckBrainVendor === 'hermes' ||
-        data.deckBrainVendor === 'claude-pty'
-          ? data.deckBrainVendor
-          : 'claude-pty';
+      // Brain vendor. Fail closed to the default: only known ids are restored.
+      //
+      // The marker — not the value — decides whether a recorded 'claude' is a
+      // CHOICE. AppLayout has always serialized deckBrainVendor unconditionally,
+      // so "absent" describes no real install: every pre-migration session on
+      // disk carries a literal 'claude' regardless of whether its user ever
+      // opened Settings. Keying off the value alone would therefore pin the
+      // entire existing install base to the SDK brain and leave the new default
+      // reaching new profiles only.
+      //
+      // Pre-migration (no marker): 'claude' is read as the OLD DEFAULT and
+      // upgraded once. 'hermes'/'claude-pty' were only ever reachable by an
+      // explicit pick, so they are kept. Non-destructive — sessions are keyed
+      // per vendor and nothing is cleared, so Settings restores the exact SDK
+      // conversation. Post-migration: every recorded vendor is authoritative,
+      // which is what lets a user pick the SDK brain back and keep it.
+      const recordedVendor = data.deckBrainVendor;
+      const explicitlyPicked = recordedVendor === 'hermes' || recordedVendor === 'claude-pty';
+      state.deckBrainVendor = data.deckBrainVendorMigrated
+        ? (recordedVendor === 'claude' || explicitlyPicked ? recordedVendor : 'claude-pty')
+        : (explicitlyPicked ? recordedVendor : 'claude-pty');
+      // Loading a session always leaves the profile migrated — the next save
+      // records it, so the one-shot upgrade cannot run twice.
+      state.deckBrainVendorMigrated = true;
       // Fail closed to hidden: only an explicit boolean shows the (frozen)
       // human channel UI.
       if (typeof data.channelsTabVisible === 'boolean') {

@@ -510,6 +510,13 @@ const electronAPI = {
           code?: string;
         }>,
     },
+    // Orchestrator model picker → main-side authority, so scheduled and
+    // event-woken turns (and the composer-less terminal brain) all see it.
+    modelSet: (model: string) =>
+      ipcRenderer.invoke(IPC.DECK_MODEL_SET, { model }) as Promise<{
+        ok: true;
+        model: string;
+      }>,
     // The operator's `/clear` — resets one workspace orchestrator's brain
     // context (fresh SDK conversation on the next turn). Transcript stays.
     conversation: {

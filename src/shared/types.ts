@@ -619,13 +619,31 @@ export interface SessionData {
    *  Code ecosystem (skills/CLAUDE.md/hooks) into brain turns. Absent/false =
    *  raw mode (the safe default). */
   deckBrainFullPower?: boolean;
-  /** Orchestrator brain vendor (BYOB M0). Absent = 'claude-pty', the terminal
-   *  brain that drives the user's own claude binary (the default since
-   *  2026-07-30); 'claude' = the Claude SDK brain; 'hermes' = the generic ACP
-   *  adapter configured for Hermes Agent. A recorded 'claude' is an explicit
-   *  choice and is restored as-is — only an absent/unknown value takes the
-   *  default. */
+  /** Orchestrator brain vendor (BYOB M0). 'claude-pty' = the terminal brain
+   *  that drives the user's own claude binary (the default since 2026-07-30);
+   *  'claude' = the Claude SDK brain; 'hermes' = the generic ACP adapter
+   *  configured for Hermes Agent. Read together with deckBrainVendorMigrated —
+   *  before that marker exists a recorded 'claude' cannot be trusted as a
+   *  choice. */
   deckBrainVendor?: BrainVendor;
+  /** One-shot marker for the terminal-brain default migration (2026-07-30).
+   *
+   *  It exists because the old schema recorded no INTENT. AppLayout has always
+   *  serialized deckBrainVendor unconditionally, so every pre-migration session
+   *  carries a literal 'claude' whether the user picked the SDK brain or simply
+   *  never opened Settings — the two are indistinguishable by value, and
+   *  treating them alike either strands the whole install base on the old
+   *  default or silently overrides deliberate picks on every load.
+   *
+   *  Absent = pre-migration: 'claude' is read as the OLD DEFAULT and upgraded
+   *  once ('hermes'/'claude-pty' were only ever reachable by an explicit pick,
+   *  so they survive). Present = every recorded vendor is authoritative,
+   *  including a 'claude' the user chooses AFTER the migration.
+   *
+   *  The upgrade is non-destructive: commander sessions are keyed per vendor
+   *  and nothing is cleared, so switching back in Settings resumes the exact
+   *  SDK conversation the migration stepped away from. */
+  deckBrainVendorMigrated?: boolean;
   /** Whether the deck shows the Channels tab (human channel UI). Default
    *  false — the orchestrator is the single interface; the tab is an
    *  opt-in inspection surface (Settings). */
