@@ -1,3 +1,65 @@
+## [3.38.1] — 2026-07-30
+
+### Added
+
+- **Open a workspace folder from the sidebar.** Every workspace row now carries a
+  folder button that reveals its working directory in Finder or File Explorer,
+  and the right-click menu gained an **Open with…** submenu listing the editors
+  actually installed on the machine — VS Code, VS Code Insiders, Cursor, Windsurf,
+  plus Windows Terminal on Windows and Terminal / iTerm on macOS. Before this you
+  had to copy the path out of the session info and paste it somewhere else to get
+  at the files.
+
+  Detection is per-platform because the two systems hide their editors in
+  different places. On Windows it probes PATH, all candidates at once so opening
+  the menu never stalls the terminals, and remembers each launcher by the absolute
+  path `where.exe` reported — most of these editors ship as a `.cmd` shim, which
+  Windows cannot start from a bare name and which Node refuses to execute
+  directly, so they are dispatched through `cmd.exe` with each argument quoted. On
+  macOS PATH is useless (a Dock-launched app never sees `/usr/local/bin`), so it
+  looks for the `.app` bundles in `/Applications` and `~/Applications` — no
+  subprocess at all — and launches with `open -a`, which reuses a running
+  instance instead of starting a second copy. A folder that cannot be opened says
+  so in a toast instead of swallowing the click. (#702)
+
+- **The terminal orchestrator will not end a turn while it still has work out there.** Its worst habit was stopping the moment it had dispatched something: delegate, say "delegated", stop — and nothing drove the fleet again until some wake event happened to fire. Now, when the orchestrator tries to finish a turn while worker panes are still running or waiting on it, the turn simply does not end: it is told which panes need it and what to do about them, and it keeps going. The gate deliberately gives up rather than trapping the brain — a missing fleet snapshot never blocks, and after three refusals in a row the turn ends anyway, so a pane nobody can resolve costs a nudge instead of a frozen dock. (#693)
+
+- **The orchestrator ships with its own `delegate` and `approve` skills.** Its operating rules used to be preamble text, re-sent every turn and gone as soon as the turn scrolled away. They are skills now, installed into the brain's home and fired by the situation: `delegate` when it reaches for a shell it does not have, `approve` when a worker pane is waiting on it. `approve` in particular says the thing that matters — read what is actually on the pane's screen before pressing anything, and raise a decision card rather than approving something you were never asked to approve. Rewrite either file yourself and it is yours; wmux stops regenerating it. (#693)
+
+### Changed
+
+- **Blocked tools now explain themselves.** A tool the orchestrator may not call used to fail with a bare error code, which told it a call had failed and nothing else — so it would try again, or try something adjacent. Each block now names the boundary and the alternative: no shell, so split a worker pane; no file writes, so delegate the edit with its acceptance check. (#693)
+
+- **`AskUserQuestion` is no longer available to the orchestrator.** It draws a question box in a terminal nobody is watching, so reaching for it stalled the whole fleet until someone happened to notice. Questions go to the deck's decision card (`deck_ask_decision`) instead, where they wait for you durably and can be answered from the app. (#693)
+
+- **The terminal orchestrator now owns the dock.** With the `claude-pty` brain
+  selected, the Orchestrator tab is the Claude Code TUI itself: one compressed
+  control row on top, the terminal filling everything below it, and the turn
+  reports collapsed into a footer rail you open when you want the receipt. You
+  type into the terminal — the separate deck composer is gone for this vendor
+  (the SDK and hermes brains keep theirs, where it is still the only way in).
+  Before, the terminal was a 42vh panel pinned above a chat log that mostly
+  restated it. (#689)
+
+- **A Wake button in the terminal dock's control row.** With the composer gone,
+  one click asks the orchestrator to take an ambient turn now — review the
+  fleet, act on anything pending, and report. Disabled while a turn is already
+  streaming. (#689)
+
+- **A turn you start by typing into the terminal now counts as a turn.** The
+  orchestrator's heartbeat, loops, and schedules wait for it to finish instead
+  of pushing a second prompt into a terminal that is already working. (#689)
+
+### Fixed
+
+- **Channel delivery wakes idle agents again after a daemon restart.** Restart
+  recovery marks every pane principal stale, and an agent that has finished and
+  is waiting produces no output to refresh that flag, so the wake worker could
+  leave it unwakeable indefinitely. The registry now supplies only the pane's
+  PTY coordinate; the daemon's rebuilt attached/detached session table decides
+  whether that target is live. Exact principal targets that cannot be verified
+  are skipped rather than redirected to a sibling agent. (#705)
+
 ## [3.38.0] — 2026-07-29
 
 ### Added
