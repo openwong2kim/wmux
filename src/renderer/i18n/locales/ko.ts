@@ -287,6 +287,11 @@ export const ko = {
   'deck.limit.window': '사용량',
   'deck.brainTerminal': '브레인 터미널',
   'deck.wakeNow': '깨우기',
+  'deck.newSession': '새 세션',
+  'deck.newSessionConfirm': '새 세션을 시작할까요?',
+  'deck.newSessionConfirmBusy': '중단하고 새 세션을 시작할까요?',
+  'deck.newSessionTooltip':
+    '이 워크스페이스의 agent를 새 세션으로 교체합니다. 낡은 가정 없이 프로젝트 파일부터 다시 읽습니다. pane·워크트리·대화 기록은 그대로 남고, 루프와 예약은 계속 동작합니다.',
   'deck.reportRail': '보고 {count}',
   'deck.reportRailDecision': '결정 1건',
   'deck.limit.resetsSoon': '곧 초기화됨',

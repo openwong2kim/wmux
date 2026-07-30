@@ -412,6 +412,11 @@ export const en = {
   'deck.brainTerminal': 'Brain terminal',
   // The dock's report rail (the terminal-orchestrator layout's footer).
   'deck.wakeNow': 'Wake',
+  'deck.newSession': 'New session',
+  'deck.newSessionConfirm': 'Start a new session?',
+  'deck.newSessionConfirmBusy': 'Interrupt & start new session?',
+  'deck.newSessionTooltip':
+    'Replace this workspace’s orchestrator with a fresh session, so it starts from your project files with no stale assumptions. Panes, worktrees and the conversation history stay; loops and schedules keep running.',
   'deck.reportRail': 'Reports {count}',
   'deck.reportRailDecision': '1 decision',
   'deck.limit.resetsSoon': 'resets soon',
