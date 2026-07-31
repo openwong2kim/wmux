@@ -689,7 +689,45 @@ export default function AppLayout() {
         // clear is logged at warn so it lands in the main log file and can be
         // correlated with the daemon's pty.list count.
         if (absentCandidates.length > 0 && !signal?.aborted) {
-          const firstAbsent = absentCandidates.map((c) => c.ptyId);
+          // Fix B — before destructively clearing, attempt to promote cap-skipped
+          // suspended sessions on demand. A successful promote + reconnect keeps
+          // the ptyId stable and restores scrollback from the daemon's ring buffer.
+          const stillAbsent: typeof absentCandidates = [];
+          if (window.electronAPI?.pty?.promote) {
+            // Ask the daemon for suspended sessions that match our absent ptyIds.
+            const allRes = await ipcInvoke<{ id: string; state?: string }[]>(() =>
+              window.electronAPI.pty.list({ includeSuspended: true }),
+            );
+            const suspendedIds = new Set(
+              allRes.ok
+                ? allRes.data.filter((s) => s.state === 'suspended').map((s) => s.id)
+                : [],
+            );
+            for (const candidate of absentCandidates) {
+              if (signal?.aborted) break;
+              if (!suspendedIds.has(candidate.ptyId)) {
+                stillAbsent.push(candidate);
+                continue;
+              }
+              // Try to promote this suspended session.
+              const promoteRes = await ipcInvoke<{ success: boolean; error?: string }>(() =>
+                window.electronAPI.pty.promote(candidate.ptyId),
+              );
+              if (promoteRes.ok && promoteRes.data.success) {
+                // Promoted! The ptyId is now active — useTerminal mount will reconnect.
+                console.log(`[lifecycle] reconcile PROMOTED suspended ptyId=${candidate.ptyId} → active (Fix B)`);
+              } else {
+                // Promote failed (cap hit, spawn error) — fall through to clear path.
+                console.warn(`[lifecycle] reconcile promote FAILED ptyId=${candidate.ptyId}: ${promoteRes.ok ? promoteRes.data.error : 'ipc error'}`);
+                stillAbsent.push(candidate);
+              }
+            }
+          } else {
+            stillAbsent.push(...absentCandidates);
+          }
+
+          // Continue with the 2-strike re-query for truly absent ptyIds.
+          const firstAbsent = stillAbsent.map((c) => c.ptyId);
           // v2 RCA fix (axis B-lite hardening): capture the re-query's FULL
           // payload. Rebind targets must come from the freshest snapshot — a
           // session that died between the two snapshots must not be picked
@@ -714,7 +752,7 @@ export default function AppLayout() {
           // ptyId); no match → clear→self-create (axis A's immediate save covers
           // empty-pane-origin sessions that carry no surfaceId). Rebind targets
           // come from the SECOND snapshot when the re-query succeeded.
-          const rebindActions = resolveReconcileRebind(absentCandidates, toClear, secondSnapshot ?? activePtys);
+          const rebindActions = resolveReconcileRebind(stillAbsent, toClear, secondSnapshot ?? activePtys);
           for (const a of rebindActions) {
             if (signal?.aborted) break;
             // CAS guard (adversarial review): the decision was computed from a

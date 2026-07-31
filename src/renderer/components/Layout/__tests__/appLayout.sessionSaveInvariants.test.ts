@@ -49,8 +49,66 @@ describe('AppLayout — axis A session-save invariants', () => {
     expect(source).not.toMatch(/addEventListener\('beforeunload', saveSession\)/);
   });
 
+  // Fix B — cap-skipped suspended promote. Boot recovery honours a session cap,
+  // so a workspace beyond the cap came back with its ptyId absent and reconcile
+  // destructively cleared it (losing the pane's scrollback and identity). The
+  // promote attempt must therefore run BEFORE the clear path, and only ptyIds
+  // that are still absent afterwards may be cleared or rebound.
+  describe('Fix B — promote before clear', () => {
+    function reconcileRegion(): string {
+      const start = source.indexOf('if (absentCandidates.length > 0');
+      expect(start, 'absent-candidate branch not found').toBeGreaterThanOrEqual(0);
+      return source.slice(start, start + 4000);
+    }
+
+    it('attempts a promote before computing the clear set', () => {
+      const region = reconcileRegion();
+      const promoteAt = region.indexOf('pty.promote(');
+      const clearAt = region.indexOf('const firstAbsent');
+      expect(promoteAt, 'promote call not found').toBeGreaterThanOrEqual(0);
+      expect(clearAt, 'firstAbsent not found').toBeGreaterThanOrEqual(0);
+      expect(promoteAt).toBeLessThan(clearAt);
+    });
+
+    it('only asks the daemon to promote ptyIds it confirmed are SUSPENDED', () => {
+      const region = reconcileRegion();
+      // The suspended set comes from an includeSuspended listing, not from the
+      // absent set — promoting an id that is merely missing would spawn a
+      // session the daemon never had.
+      expect(region).toMatch(/pty\.list\(\{ includeSuspended: true \}\)/);
+      expect(region).toMatch(/state === 'suspended'/);
+      expect(region).toMatch(/if \(!suspendedIds\.has\(candidate\.ptyId\)\) \{[\s\S]*?stillAbsent\.push\(candidate\);/);
+    });
+
+    it('keeps a FAILED promote on the clear path (cap hit / spawn error)', () => {
+      const region = reconcileRegion();
+      // Both the ipc-level failure and a {success:false} body must fall through
+      // to stillAbsent, or a pane whose promote failed would be left bound to a
+      // ptyId that does not exist.
+      expect(region).toMatch(/if \(promoteRes\.ok && promoteRes\.data\.success\)/);
+      const elseAt = region.indexOf('} else {', region.indexOf('promoteRes.ok && promoteRes.data.success'));
+      expect(elseAt).toBeGreaterThan(0);
+      expect(region.slice(elseAt, elseAt + 400)).toContain('stillAbsent.push(candidate)');
+    });
+
+    it('falls back to the pre-Fix-B behaviour when the promote API is absent', () => {
+      // An older main process (or local mode) exposes no pty.promote; reconcile
+      // must then treat every absent candidate exactly as before.
+      const region = reconcileRegion();
+      expect(region).toMatch(/if \(window\.electronAPI\?\.pty\?\.promote\)/);
+      expect(region).toMatch(/stillAbsent\.push\(\.\.\.absentCandidates\)/);
+    });
+
+    it('respects the abort signal inside the promote loop', () => {
+      const region = reconcileRegion();
+      const loopAt = region.indexOf('for (const candidate of absentCandidates)');
+      expect(loopAt).toBeGreaterThanOrEqual(0);
+      expect(region.slice(loopAt, loopAt + 200)).toMatch(/if \(signal\?\.aborted\) break;/);
+    });
+  });
+
   it('rebind/clear actions CAS-guard on the surface’s current ptyId', () => {
-    const idx = source.indexOf('resolveReconcileRebind(absentCandidates');
+    const idx = source.indexOf('resolveReconcileRebind(stillAbsent');
     expect(idx, 'rebind decision call not found').toBeGreaterThanOrEqual(0);
     const applyRegion = source.slice(idx, idx + 3000);
     expect(applyRegion).toMatch(/currentPtyId !== a\.stalePtyId/);

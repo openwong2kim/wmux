@@ -2031,13 +2031,15 @@ function registerRpcHandlers(
   });
 
   // daemon.listSessions
-  pipeServer.onRpc('daemon.listSessions', async () => {
+  pipeServer.onRpc('daemon.listSessions', async (rawParams) => {
+    const params = (rawParams ?? {}) as Record<string, unknown>;
+    const includeSuspended = params['includeSuspended'] === true;
     // X8: join the supervisor's volatile runtime (restart counts, pending
     // backoff) onto supervised sessions — additive field consumed by
     // `wmux list --json` and the sidebar badge.
     // X6 ②: attach resumeAgent ONLY for sessions recovered-this-boot that were
     // interactive agents (recoveredAgentShellIds) — drives the resume pill.
-    return sessionManager.listSessions().map((s) => {
+    const activeSessions = sessionManager.listSessions().map((s) => {
       // The slug is held in the map (captured from the persisted session at
       // recovery) — NOT read off the live meta, which is a fresh shell here.
       const resumeAgent = recoveredAgentShellIds.get(s.id);
@@ -2111,6 +2113,117 @@ function registerRpcHandlers(
         ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
       };
     });
+
+    // Fix B: when includeSuspended is requested, append cap-skipped suspended
+    // sessions from the persisted state that aren't already in the active set.
+    if (includeSuspended) {
+      const activeIdSet = new Set(activeSessions.map((s: { id: string }) => s.id));
+      const persistedState = stateWriter.load();
+      const suspendedEntries = persistedState.sessions
+        .filter((s) => s.state === 'suspended' && !activeIdSet.has(s.id))
+        .map((s) => ({
+          id: s.id,
+          shell: s.cmd,
+          state: 'suspended' as const,
+          cwd: s.cwd,
+          createdAt: s.createdAt,
+          lastActivity: s.lastActivity,
+        }));
+      return [...activeSessions, ...suspendedEntries];
+    }
+    return activeSessions;
+  });
+
+  // daemon.promoteSession — on-demand recovery of a cap-skipped suspended
+  // session. Boot recovery honours a session cap, so a workspace beyond the cap
+  // came back with its ptyId absent and reconcile destructively cleared it. This
+  // lets the renderer spawn exactly the one session it still needs, keeping the
+  // ptyId stable so scrollback restores from the daemon's ring buffer.
+  pipeServer.onRpc('daemon.promoteSession', async (rawParams) => {
+    const params = (rawParams ?? {}) as Record<string, unknown>;
+    const sessionId = typeof params['id'] === 'string' ? params['id'] : '';
+    if (!sessionId) {
+      return { ok: false, error: { code: 'INVALID_PARAMS', message: 'id is required' } };
+    }
+
+    // Idempotent: if already active, succeed silently.
+    const existing = sessionManager.getSession(sessionId);
+    if (existing) {
+      return { ok: true, alreadyActive: true };
+    }
+
+    const state = stateWriter.load();
+    const session = state.sessions.find((s) => s.id === sessionId && s.state === 'suspended');
+    if (!session) {
+      return { ok: false, error: { code: 'NOT_FOUND', message: `No suspended session with id ${sessionId}` } };
+    }
+
+    // createSession enforces the same cap as boot recovery and throws
+    // RESOURCE_EXHAUSTED when it is already full.
+    try {
+      let scrollbackData: Buffer | undefined;
+      if (session.bufferDumpPath && fs.existsSync(session.bufferDumpPath)) {
+        scrollbackData = fs.readFileSync(session.bufferDumpPath);
+      }
+      const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+
+      const PROMOTE_RETRIES = 4;
+      let promoted: ReturnType<typeof sessionManager.createSession> | undefined;
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= PROMOTE_RETRIES; attempt++) {
+        try {
+          promoted = sessionManager.createSession({
+            id: session.id,
+            cmd: session.cmd,
+            cwd,
+            spawnCwd: session.spawnCwd,
+            env: session.env,
+            cols: session.cols,
+            rows: session.rows,
+            agent: session.agent,
+            createdAt: session.createdAt,
+            lastActivity: session.lastActivity,
+            deadTtlHours: session.deadTtlHours,
+            exec: session.exec,
+            supervision: session.supervision,
+            scrollbackData,
+            deferOutput: true,
+          });
+          break;
+        } catch (err) {
+          lastErr = err;
+          const msg = err instanceof Error ? err.message : String(err);
+          // ConPTY error 87 is the known transient spawn race; anything else is
+          // a real failure and must not be retried.
+          if (!msg.includes('error code: 87')) break;
+          if (attempt < PROMOTE_RETRIES) {
+            await new Promise((resolve) => setTimeout(resolve, 200 + attempt * 100));
+          }
+        }
+      }
+      if (!promoted) {
+        throw lastErr ?? new Error('PTY spawn failed during promote');
+      }
+
+      processMonitor.watch(promoted.id, promoted.pid, () => {
+        const managed = sessionManager.getSession(promoted!.id);
+        if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
+          managed.meta.state = 'dead';
+          sessionManager.emit('session:died', { id: promoted!.id, exitCode: null, reason: 'promote' });
+        }
+      });
+
+      if (session.bufferDumpPath) {
+        try { fs.unlinkSync(session.bufferDumpPath); } catch { /* ignore */ }
+      }
+
+      log('info', `[promote] Promoted suspended session ${sessionId} in ${cwd}`);
+      return { ok: true, alreadyActive: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('error', `[promote] Failed to promote session ${sessionId}: ${msg}`);
+      return { ok: false, error: { code: 'SPAWN_FAILED', message: msg } };
+    }
   });
 
   // wmux web (read-only-by-default browser terminal). Lives in the daemon so it

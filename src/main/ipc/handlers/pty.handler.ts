@@ -772,8 +772,9 @@ export function registerPTYHandlers(
   // pty:list
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
-      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async (_event: Electron.IpcMainInvokeEvent, opts?: { includeSuspended?: boolean }) => {
+      const includeSuspended = opts?.includeSuspended === true;
+      const sessions = await daemonClient.rpc('daemon.listSessions', { includeSuspended }) as Array<{
         id: string;
         cmd: string;
         state: string;
@@ -871,6 +872,15 @@ export function registerPTYHandlers(
   // pty:reconnect
   ipcMain.removeHandler(IPC.PTY_RECONNECT);
   if (useDaemon && daemonClient) {
+    // Fix B — pty:promote: on-demand recovery of a cap-skipped suspended session.
+    ipcMain.removeHandler(IPC.PTY_PROMOTE);
+    ipcMain.handle(IPC.PTY_PROMOTE, wrapHandler(IPC.PTY_PROMOTE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
+      if (!id) return { success: false, error: 'id is required' };
+      const res = await daemonClient.rpc('daemon.promoteSession', { id }) as { ok: boolean; error?: { message: string } };
+      if (res.ok) return { success: true };
+      return { success: false, error: res.error?.message ?? 'promote failed' };
+    }));
+
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
         const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number; cwd?: string }>;
@@ -1228,6 +1238,7 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_RESIZE);
     ipcMain.removeHandler(IPC.PTY_DISPOSE);
     ipcMain.removeHandler(IPC.PTY_LIST);
+    ipcMain.removeHandler(IPC.PTY_PROMOTE);
     ipcMain.removeHandler(IPC.PTY_RECONNECT);
     ipcMain.removeHandler(IPC.PTY_RESYNC);
     ipcMain.removeHandler(IPC.SUPERVISE_REARM);

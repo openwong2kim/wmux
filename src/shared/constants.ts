@@ -7,6 +7,7 @@ export const IPC = {
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
+  PTY_PROMOTE: 'pty:promote',
   // TASK-6 — per-pane agent resource attribution for the Fleet View cockpit.
   // Renderer → main invoke: takes a list of ptyIds, resolves each to its shell
   // PID (via daemon.listSessions), takes ONE Win32_Process CIM snapshot, walks

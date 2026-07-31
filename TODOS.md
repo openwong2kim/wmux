@@ -192,14 +192,11 @@
 - **Depends on:** 알림 파이프라인 복구 ship + 사용자가 minimize 사용 빈도 확인
 - **Priority:** P2
 
-## Fix B — Scrollback restore cap-aware suspended-session promote
-- **What:** `daemon.listSessions`에 `{includeSuspended}` 파라미터 추가 + `daemon.promoteSession(id)` 신규 RPC. `AppLayout.reconcilePtys` fallback 직전에 promote 시도. cap=40 초과로 자동 복구되지 못한 suspended session도 reconnect 가능하게.
-- **Why:** Fix 0 (mount gate + saved ptyId 보존)는 cap *안*의 graceful Quit session만 복원. cap *초과* session (50+ panes 사용자, 또는 force-kill 후 daemon snapshot은 살아있지만 cap에 밀린 case)은 여전히 fresh terminal. design doc §5 + Update에 spec.
-- **Pros:** scrollback restore feature 100% 완성 (cap 안 + 초과 모두). power user 사용성 결정적.
-- **Cons:** RPC 2개 추가 + dynamic test R2-R5 (cap-skipped promote 4 scenario). Effort ~3-4시간.
-- **Context:** `docs/internal/scrollback-restore-design.md` §5 (Fix B) — full implementation sketch + failure modes + test matrix 이미 작성됨. 구현 시 그대로 따라가면 됨.
-- **Depends on:** Fix 0 (plan `wiggly-booping-cascade.md`) ship + 최소 1주 dogfood. dogfood에서 stale-state / RPC guard / generation race 회귀 없는 것을 확인한 *후*에야 Fix B 진행 (한 번에 두 가지 architecture change 검증 어려움).
-- **Priority:** P1 (Fix 0 dogfood 통과 후)
+## ✅ Fix B — cap-aware suspended-session promote (2026-07-30)
+- `daemon.listSessions({includeSuspended})` + 신규 `daemon.promoteSession(id)`. `pty:promote` IPC를 통해 `AppLayout.reconcilePtys`가 파괴적 clear **직전에** promote 시도. cap 초과로 자동 복구되지 못한 session도 ptyId를 유지한 채 reconnect.
+- promote 실패(cap hit / spawn 실패)는 기존 clear 경로로 그대로 흘러간다. `pty.promote`가 없는 구버전 main·local mode는 Fix B 이전 동작 유지.
+- 이미 active면 멱등 성공, suspended가 아니면 NOT_FOUND, transient ConPTY error 87만 제한 재시도.
+- **남은 검증:** 실제 PTY spawn·scrollback dump 재생·cap RESOURCE_EXHAUSTED 경로는 라이브 데몬 dogfood 필요. 구조 불변식은 `pty.handler.promote.test.ts` + `appLayout.sessionSaveInvariants.test.ts`가 고정.
 
 ## (Phase 2 / Eureka) Agent stop-hook OSC 9 signal — promoted to design doc
 - **Status:** Draft plan exists at `plans/agent-hook-integration.md` (209 lines).

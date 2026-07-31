@@ -58,11 +58,14 @@ const electronAPI = {
     // `supervision` (X8) is additive and present only on supervised daemon-mode
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
-    list: () =>
+    // `includeSuspended` (Fix B) additionally returns cap-skipped suspended
+    // sessions from the persisted state so reconcile can promote one on demand
+    // instead of destructively clearing its ptyId.
+    list: (opts?: { includeSuspended?: boolean }) =>
       // `surfaceId` (axis B, reboot-reattach): present only on sessions created
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
     // walking each pane shell's descendant process tree from ONE CIM snapshot.
@@ -78,6 +81,9 @@ const electronAPI = {
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
       ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean }>,
+    // Fix B — on-demand promote of a cap-skipped suspended session.
+    promote: (id: string) =>
+      ipcRenderer.invoke(IPC.PTY_PROMOTE, id) as Promise<{ success: boolean; error?: string }>,
     // Phase 3 PR-B — live-pipe re-flush. Unlike `reconnect` (opens a fresh
     // socket), this re-runs the flush on the EXISTING session socket, so input
     // never pauses. Three success shapes: a live re-flush ('snapshot'|'raw'), a
