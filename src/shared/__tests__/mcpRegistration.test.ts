@@ -185,6 +185,50 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     writeCodex('model = "x"\n');
     expect(readCodexNotifyStatus(home).state).toBe('none');
   });
+
+  // A `notify` slot that is present but not a string array is user-owned or
+  // unknown either way. It used to fall through the array-shaped read as
+  // "absent" and get overwritten; anything wmux cannot PROVE it owns is now a
+  // conflict and is left exactly as written.
+  describe('a notify slot wmux cannot prove it owns', () => {
+    it('treats a plain-string notify as foreign', () => {
+      const p = writeCodex('notify = "my-script.sh"\n');
+      const r = registerCodexNotify(home, NOTIFY);
+      expect(r.skipped).toBe('foreign');
+      expect(r.wrote).toBe(false);
+      expect(fs.readFileSync(p, 'utf8')).toContain('my-script.sh');
+      expect(readCodexNotifyStatus(home).state).toBe('foreign');
+    });
+
+    it('treats an array with non-string entries as foreign', () => {
+      const p = writeCodex('notify = ["node", 42]\n');
+      const r = registerCodexNotify(home, NOTIFY);
+      expect(r.skipped).toBe('foreign');
+      expect(fs.readFileSync(p, 'utf8')).toContain('42');
+      expect(readCodexNotifyStatus(home).state).toBe('foreign');
+    });
+
+    it('CLAIMS an empty array — it names no program, so nothing is clobbered', () => {
+      writeCodex('notify = []\n');
+      const r = registerCodexNotify(home, NOTIFY);
+      expect(r.skipped).toBeNull();
+      expect(r.wrote).toBe(true);
+      expect(readCodexNotifyStatus(home)).toMatchObject({ state: 'wmux', path: NOTIFY });
+    });
+
+    it('reports a malformed config distinctly from "no notify"', () => {
+      writeCodex('this = = broken [[');
+      expect(readCodexNotifyStatus(home).state).toBe('malformed');
+    });
+
+    it('still adopts a wmux-shaped notify that merely points at an old path', () => {
+      writeCodex(`notify = ["node", "C:\\\\old\\\\wmux-codex-notify.mjs"]\n`);
+      const r = registerCodexNotify(home, NOTIFY);
+      expect(r.skipped).toBeNull();
+      expect(r.wrote).toBe(true);
+      expect(readCodexNotifyStatus(home)).toMatchObject({ state: 'wmux', path: NOTIFY });
+    });
+  });
 });
 
 describe('registerTarget — Gemini (unverified, never created)', () => {
