@@ -176,6 +176,8 @@ export interface PushPayload {
   body: string;
   approvalId?: string;
   sessionId?: string;
+  /** True when a lock-screen affirmative cannot express the required choice. */
+  requiresInAppChoice?: boolean;
   [key: string]: unknown;
 }
 

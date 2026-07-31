@@ -14,7 +14,7 @@ import {
   SCREEN_TAIL_ROWS,
   SCREEN_TAIL_ROW_CHARS,
 } from '../approvalStore';
-import { keystrokesForAgent, looksLikeApprovalPrompt } from '../approvalKeystrokes';
+import { keystrokesForAgent, looksLikeApprovalPrompt, looksLikeChoiceOnScreen } from '../approvalKeystrokes';
 import { MAX_OPTIONS, MAX_OPTION_LABEL_CHARS, MAX_QUESTION_CHARS } from '../askUserQuestion';
 import type { ApprovalEvent } from '../types';
 
@@ -104,7 +104,7 @@ function awaitingInput(
   registry: ApprovalRegistry,
   sessionId = 'pty-a',
   agent = 'claude',
-  extras: { question?: string; options?: string[] } = {},
+  extras: { question?: string; options?: string[]; choices?: Array<{ key: string; label: string }> } = {},
 ): Promise<void> {
   return registry.noteHookAwaitingInput({ sessionId, agent, workspaceId: 'ws-1', ...extras });
 }
@@ -788,5 +788,259 @@ it('logs the SANITIZED label, not the raw parameter', async () => {
     for (const row of screenTail.split('\n')) {
       expect(row.length).toBeLessThanOrEqual(SCREEN_TAIL_ROW_CHARS);
     }
+  });
+});
+
+describe('choices and choiceKey — per-option resolve', () => {
+  const CHOICES_INPUT = {
+    question: 'Which approach?',
+    options: ['Rewrite the parser', 'Patch the existing one'],
+    choices: [
+      { key: '1', label: 'Rewrite the parser' },
+      { key: '2', label: 'Patch the existing one' },
+    ],
+  };
+
+  /** A screen that shows option 2 with a cursor on it. */
+  const SCREEN_WITH_CHOICE_2 = [
+    '╭──────────────────────────────────────────╮',
+    '│ Which approach?                           │',
+    '│                                          │',
+    '│   1. Rewrite the parser                   │',
+    '│ ❯ 2. Patch the existing one              │',
+    '╰──────────────────────────────────────────╯',
+  ];
+
+  it('carries choices onto the pending record', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+
+    const pending = h.registry.list().pending[0];
+    expect(pending.choices).toEqual(CHOICES_INPUT.choices);
+  });
+
+  it('choices are deep-copied — a consumer cannot mutate registry state', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+
+    const pending = h.registry.list().pending[0];
+    pending.choices![0].key = '99';
+    pending.choices!.push({ key: '3', label: 'injected' });
+
+    expect(h.registry.list().pending[0].choices).toEqual(CHOICES_INPUT.choices);
+  });
+
+  it('resolving with a valid choiceKey sends that digit (not the default "1")', async () => {
+    const h = makeRegistry();
+    h.setScreen(SCREEN_WITH_CHOICE_2);
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '2',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '2' }]);
+  });
+
+  it('persists selectedChoiceKey on the resolved record', async () => {
+    const h = makeRegistry();
+    h.setScreen(SCREEN_WITH_CHOICE_2);
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '2',
+    });
+
+    const resolved = h.registry.list().recentlyResolved[0];
+    expect(resolved.selectedChoiceKey).toBe('2');
+  });
+
+  it('choiceKey that does not belong to the stored choices fails with invalid-choice-key', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '9',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    expect(h.writes).toHaveLength(0);
+    // Request stays pending — a valid key can still be sent.
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('choiceKey on a request with no choices fails with invalid-choice-key', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude'); // no choices
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '1',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('choiceKey fails when the option is not visible on screen', async () => {
+    const h = makeRegistry();
+    // Screen only shows option 1, not option 2
+    h.setScreen([
+      '╭──────────────────────────────────────────╮',
+      '│ ❯ 1. Rewrite the parser                   │',
+      '╰──────────────────────────────────────────╯',
+    ]);
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '2',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    expect(h.writes).toHaveLength(0);
+    // Still pending — not expired, because the prompt IS there, just not this choice.
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('omitting choiceKey preserves default behavior: approve sends "1"', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      // No choiceKey
+    });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+
+  it('omitting choiceKey preserves default behavior: deny sends ESC', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'deny',
+      resolvedBy: 'phone',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '\x1b' }]);
+  });
+
+  it('empty string choiceKey fails closed instead of pressing the first option', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'approve',
+      resolvedBy: 'phone',
+      choiceKey: '',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('deny with a choiceKey fails closed instead of sending an affirmative digit', async () => {
+    const h = makeRegistry();
+    h.setScreen(SCREEN_WITH_CHOICE_2);
+    await awaitingInput(h.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'deny',
+      resolvedBy: 'phone',
+      choiceKey: '2',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('choices survive a restart on the history record', async () => {
+    const first = makeRegistry();
+    await awaitingInput(first.registry, 'pty-a', 'claude', CHOICES_INPUT);
+
+    const second = makeRegistry();
+    await settle();
+
+    expect(second.registry.list().recentlyResolved[0].choices).toEqual(CHOICES_INPUT.choices);
+  });
+
+  it('selectedChoiceKey survives a restart', async () => {
+    const first = makeRegistry();
+    first.setScreen(SCREEN_WITH_CHOICE_2);
+    await awaitingInput(first.registry, 'pty-a', 'claude', CHOICES_INPUT);
+    await settle();
+    await first.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone', choiceKey: '2' });
+
+    const second = makeRegistry();
+    await settle();
+
+    const record = second.registry.list().recentlyResolved.find((r) => r.id === 'req-1');
+    expect(record?.selectedChoiceKey).toBe('2');
+  });
+});
+
+describe('looksLikeChoiceOnScreen', () => {
+  it('finds a visible option with the correct digit and label prefix', () => {
+    const rows = ['│ ❯ 2. Patch the existing one              │'];
+    expect(looksLikeChoiceOnScreen(rows, '2', 'Patch the existing one')).toBe(true);
+  });
+
+  it('matches partial label (20-char prefix)', () => {
+    const rows = ['  > 1. This is a very long option label that goes on and on'];
+    expect(looksLikeChoiceOnScreen(rows, '1', 'This is a very long option label that goes on')).toBe(true);
+  });
+
+  it('rejects a different digit for the same label', () => {
+    const rows = ['│ ❯ 2. Patch the existing one              │'];
+    expect(looksLikeChoiceOnScreen(rows, '1', 'Patch the existing one')).toBe(false);
+  });
+
+  it('rejects when the label is not on screen at all', () => {
+    const rows = ['│ ❯ 1. Rewrite the parser                   │'];
+    expect(looksLikeChoiceOnScreen(rows, '2', 'Patch the existing one')).toBe(false);
+  });
+
+  it('works with ) separator', () => {
+    const rows = ['  ❯ 3) Third option here'];
+    expect(looksLikeChoiceOnScreen(rows, '3', 'Third option here')).toBe(true);
+  });
+
+  it('returns false for empty rows', () => {
+    expect(looksLikeChoiceOnScreen([], '1', 'anything')).toBe(false);
   });
 });

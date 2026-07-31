@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   extractAskUserQuestion,
+  sanitizeChoices,
   sanitizeOptions,
   sanitizeQuestion,
   MAX_OPTIONS,
@@ -42,6 +43,10 @@ describe('extractAskUserQuestion — normal extraction', () => {
     expect(extractAskUserQuestion(canonical())).toEqual({
       question: 'Which approach should I take?',
       options: ['Rewrite the parser', 'Patch the existing one'],
+      choices: [
+        { key: '1', label: 'Rewrite the parser' },
+        { key: '2', label: 'Patch the existing one' },
+      ],
     });
   });
 
@@ -54,14 +59,22 @@ describe('extractAskUserQuestion — normal extraction', () => {
     const out = extractAskUserQuestion({
       tool_input: { question: 'Proceed?', options: [{ label: 'Yes' }, { label: 'No' }] },
     });
-    expect(out).toEqual({ question: 'Proceed?', options: ['Yes', 'No'] });
+    expect(out).toEqual({
+      question: 'Proceed?',
+      options: ['Yes', 'No'],
+      choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+    });
   });
 
   it('tolerates bare-string options', () => {
     const out = extractAskUserQuestion({
       tool_input: { questions: [{ question: 'Proceed?', options: ['Yes', 'No'] }] },
     });
-    expect(out).toEqual({ question: 'Proceed?', options: ['Yes', 'No'] });
+    expect(out).toEqual({
+      question: 'Proceed?',
+      options: ['Yes', 'No'],
+      choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+    });
   });
 
   it('reads only the FIRST question — the keystroke can only answer that one', () => {
@@ -75,6 +88,7 @@ describe('extractAskUserQuestion — normal extraction', () => {
     });
     expect(out.question).toBe('First?');
     expect(out.options).toEqual(['A']);
+    expect(out.choices).toEqual([{ key: '1', label: 'A' }]);
   });
 
   it('keeps a question with no options, and options with no question', () => {
@@ -83,6 +97,7 @@ describe('extractAskUserQuestion — normal extraction', () => {
     });
     expect(extractAskUserQuestion({ tool_input: { options: ['Yes'] } })).toEqual({
       options: ['Yes'],
+      choices: [{ key: '1', label: 'Yes' }],
     });
   });
 });
@@ -208,5 +223,92 @@ describe('read-back sanitisers (a hand-edited approvals.json)', () => {
     expect(sanitizeOptions('nope')).toBeUndefined();
     expect(sanitizeOptions([])).toBeUndefined();
     expect(sanitizeOptions(['  ', null])).toBeUndefined();
+  });
+});
+
+describe('extractAskUserQuestion — choices preserve original 1-based indices', () => {
+  it('choices keys are 1-based indices matching the original array position', () => {
+    const out = extractAskUserQuestion({
+      tool_input: { options: ['Alpha', 'Beta', 'Gamma'] },
+    });
+    expect(out.choices).toEqual([
+      { key: '1', label: 'Alpha' },
+      { key: '2', label: 'Beta' },
+      { key: '3', label: 'Gamma' },
+    ]);
+  });
+
+  it('dropped entries advance the index — gaps preserve original digits', () => {
+    // Entry at index 0 is blank (dropped), entries at 1 and 2 are kept.
+    // Their keys should be '2' and '3', NOT '1' and '2'.
+    const out = extractAskUserQuestion({
+      tool_input: { options: ['', 'Beta', 'Gamma'] },
+    });
+    expect(out.options).toEqual(['Beta', 'Gamma']);
+    expect(out.choices).toEqual([
+      { key: '2', label: 'Beta' },
+      { key: '3', label: 'Gamma' },
+    ]);
+  });
+
+  it('null entries advance the index too', () => {
+    const out = extractAskUserQuestion({
+      tool_input: { options: [null, { label: '' }, { label: 'Third' }] },
+    });
+    expect(out.options).toEqual(['Third']);
+    expect(out.choices).toEqual([{ key: '3', label: 'Third' }]);
+  });
+
+  it('absent options yield no choices', () => {
+    const out = extractAskUserQuestion({ tool_input: { question: 'Hello?' } });
+    expect(out.choices).toBeUndefined();
+  });
+});
+
+describe('sanitizeChoices (read-back from disk)', () => {
+  it('accepts well-formed choices', () => {
+    expect(sanitizeChoices([
+      { key: '1', label: 'Yes' },
+      { key: '2', label: 'No' },
+    ])).toEqual([
+      { key: '1', label: 'Yes' },
+      { key: '2', label: 'No' },
+    ]);
+  });
+
+  it('drops entries with invalid keys', () => {
+    expect(sanitizeChoices([
+      { key: 'abc', label: 'Bad key' },
+      { key: '1', label: 'Good' },
+      { key: '999', label: 'Too long' },
+    ])).toEqual([{ key: '1', label: 'Good' }]);
+  });
+
+  it('drops entries with empty labels', () => {
+    expect(sanitizeChoices([
+      { key: '1', label: '   ' },
+      { key: '2', label: 'Valid' },
+    ])).toEqual([{ key: '2', label: 'Valid' }]);
+  });
+
+  it('returns undefined for non-array input', () => {
+    expect(sanitizeChoices(undefined)).toBeUndefined();
+    expect(sanitizeChoices('nope')).toBeUndefined();
+    expect(sanitizeChoices(null)).toBeUndefined();
+  });
+
+  it('returns undefined for an empty array', () => {
+    expect(sanitizeChoices([])).toBeUndefined();
+  });
+
+  it('caps at MAX_OPTIONS', () => {
+    const big = Array.from({ length: 50 }, (_, i) => ({ key: String(i + 1), label: `opt-${i}` }));
+    const out = sanitizeChoices(big);
+    expect(out).toHaveLength(MAX_OPTIONS);
+  });
+
+  it('cleans control characters from labels', () => {
+    const out = sanitizeChoices([{ key: '1', label: 'Hello\x00World' }]);
+    expect(out?.[0].label).toBe('Hello World');
   });
 });

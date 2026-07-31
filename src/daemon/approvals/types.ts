@@ -11,6 +11,23 @@
 export type ApprovalDecision = 'approve' | 'deny';
 
 /**
+ * A structured approval choice. Each carries a `key` the resolver sends back
+ * and a human-readable `label`. The key is the 1-based index string ('1', '2',
+ * …) that identifies the original option in Claude Code's AskUserQuestion TUI —
+ * preserving the digit even when unlabeled entries are dropped from `options`.
+ *
+ * Additive alongside the legacy `options` array: old clients that only know
+ * `options` continue to render label-only rows, and new clients that understand
+ * `choices` get the key they need to resolve a specific option.
+ */
+export interface ApprovalChoice {
+  /** The keystroke digit ('1', '2', …) that selects this option in the TUI. */
+  key: string;
+  /** Sanitized display label — same content as the corresponding `options` entry. */
+  label: string;
+}
+
+/**
  * Lifecycle of one request. Only `pending` is actionable; the other three are
  * terminal.
  *   - resolved   a human answered it and the keystroke reached the PTY
@@ -60,6 +77,17 @@ export interface ApprovalRequest {
    */
   options?: string[];
   /**
+   * Structured choices with key+label, additive alongside `options`. Each
+   * `key` is the 1-based digit that selects the option in Claude Code's TUI,
+   * preserving the original index even when unlabeled entries are dropped from
+   * `options`. New clients use this to send `choiceKey` on resolve; old clients
+   * fall back to `options` for display-only rendering.
+   *
+   * Present only when the payload carried at least one usable option with a
+   * deterministic key. Absent (not empty) when no choices could be extracted.
+   */
+  choices?: ApprovalChoice[];
+  /**
    * A HINT that the question names a destructive action — set at creation when
    * `question`/`options` match the daemon's existing critical-action patterns
    * (shared/criticalPatterns.ts, the same list the PTY scanner uses).
@@ -82,6 +110,11 @@ export interface ApprovalRequest {
   resolvedBy?: string;
   resolvedAt?: number;
   decision?: ApprovalDecision;
+  /**
+   * When resolved with a specific `choiceKey`, the key that was selected. Lets
+   * the history UI show WHICH option was chosen, not just approve/deny.
+   */
+  selectedChoiceKey?: string;
   /**
    * The pane tail the registry actually looked at when it made the resolve
    * decision — the verified screen on a success, the REJECTED screen on a
@@ -107,13 +140,19 @@ export interface ApprovalRequest {
  * same answer to the caller ("this request is dead, re-read the list"), and
  * the precise state is on `request.state` for a caller that wants to say which.
  * A refused pre-write re-verify reports `prompt-gone` and expires the request.
+ *
+ * `invalid-choice-key` is returned when a `choiceKey` was provided but it does
+ * not belong to this request's `choices` set, or when the screen re-verify
+ * cannot confirm the selected option row is visible. Fails closed — never
+ * types a digit for a choice it cannot verify.
  */
 export type ApprovalResolveFailure =
   | 'not-found'
   | 'already-resolved'
   | 'expired'
   | 'unsupported-agent'
-  | 'prompt-gone';
+  | 'prompt-gone'
+  | 'invalid-choice-key';
 
 export type ApprovalResolveResult =
   | {
@@ -175,6 +214,8 @@ export interface ApprovalHookSink {
     /** A4 — already extracted and sanitized by the envelope-aware caller. */
     question?: string;
     options?: string[];
+    /** Structured choices with key+label, extracted alongside options. */
+    choices?: ApprovalChoice[];
   }): void;
   expireForSession(sessionId: string, reason: ApprovalExpiryReason): void;
 }
@@ -190,6 +231,17 @@ export interface ApprovalResolveParams {
   decision: ApprovalDecision;
   /** Free-form label for the 409 UX. Empty string is accepted, not rejected. */
   resolvedBy: string;
+  /**
+   * When present, selects a specific option by its `choices[].key` rather than
+   * using the default mapping (approve → first option, deny → ESC). The daemon
+   * validates the key belongs to the stored request, re-verifies the
+   * corresponding option row is visible on screen, and sends exactly that one
+   * digit. Invalid or absent keys fail closed.
+   *
+   * Omitting this field preserves existing behavior byte-for-byte: approve
+   * sends '1', deny sends ESC.
+   */
+  choiceKey?: string;
 }
 
 /**

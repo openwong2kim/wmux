@@ -44,7 +44,7 @@
 
 import crypto from 'node:crypto';
 import { hasCriticalRisk } from '../../shared/criticalPatterns';
-import { keystrokesForAgent, looksLikeApprovalPrompt } from './approvalKeystrokes';
+import { keystrokesForAgent, looksLikeApprovalPrompt, looksLikeChoiceOnScreen } from './approvalKeystrokes';
 import {
   formatScreenTail,
   loadApprovalState,
@@ -72,7 +72,11 @@ import type {
  * would be editing registry state through the back door.
  */
 function copyRequest(r: ApprovalRequest): ApprovalRequest {
-  return { ...r, ...(r.options ? { options: [...r.options] } : {}) };
+  return {
+    ...r,
+    ...(r.options ? { options: [...r.options] } : {}),
+    ...(r.choices ? { choices: r.choices.map((c) => ({ ...c })) } : {}),
+  };
 }
 
 export interface ApprovalRegistryDeps {
@@ -202,6 +206,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     workspaceId?: string;
     question?: string;
     options?: string[];
+    choices?: Array<{ key: string; label: string }>;
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -215,6 +220,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       workspaceId: input.workspaceId,
       question: input.question,
       options: input.options ? [...input.options] : undefined,
+      choices: input.choices ? input.choices.map((c) => ({ ...c })) : undefined,
     };
     return this.mutate(() => {
       const superseded = this.requests.find(
@@ -237,6 +243,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         // request.
         ...(snapshot.question ? { question: snapshot.question } : {}),
         ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
+        ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
         // Danger HINT for UI step-up, computed once at creation from the same
         // pattern list the PTY critical-action scanner uses. A miss or a false
         // positive changes nothing about whether this request can be answered.
@@ -304,6 +311,49 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }
 
+      // ── choiceKey validation ──────────────────────────────────────────────
+      // When present, the caller is selecting a specific option rather than the
+      // default first-option mapping. Validate that the key belongs to this
+      // request's stored choices — fail closed on any mismatch.
+      let choiceDigit: string | null = null;
+      let choiceLabel: string | null = null;
+      if (params.choiceKey !== undefined) {
+        // Only an affirmative can select an option. Empty is malformed rather
+        // than "absent": silently defaulting it would press option 1.
+        if (params.decision !== 'approve' || params.choiceKey === '') {
+          return {
+            result: {
+              ok: false,
+              reason: 'invalid-choice-key',
+              request: copyRequest(record),
+            } as ApprovalResolveResult,
+          };
+        }
+        if (!record.choices || record.choices.length === 0) {
+          // choiceKey sent for a request that has no choices — invalid.
+          return {
+            result: {
+              ok: false,
+              reason: 'invalid-choice-key',
+              request: copyRequest(record),
+            } as ApprovalResolveResult,
+          };
+        }
+        const match = record.choices.find((c) => c.key === params.choiceKey);
+        if (!match) {
+          // choiceKey not in the stored set — fail closed.
+          return {
+            result: {
+              ok: false,
+              reason: 'invalid-choice-key',
+              request: copyRequest(record),
+            } as ApprovalResolveResult,
+          };
+        }
+        choiceDigit = match.key;
+        choiceLabel = match.label;
+      }
+
       const rows = await this.safeReadScreen(record.sessionId);
       if (!rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)) {
         // Refusal expires the request: whatever the pane is showing now, it is
@@ -322,7 +372,37 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }
 
-      const data = params.decision === 'approve' ? keys.approve : keys.deny;
+      // ── choiceKey screen re-verify ────────────────────────────────────────
+      // When resolving with a specific choiceKey, verify that the option row
+      // matching that key+label is visible on screen. This prevents stale
+      // choices from typing digits into a prompt that has redrawn with different
+      // options. The check looks for `<digit>. <label-substring>` or
+      // `<digit>) <label-substring>` on a row that also has the selection cursor.
+      if (choiceDigit && choiceLabel) {
+        if (!looksLikeChoiceOnScreen(rows, choiceDigit, choiceLabel)) {
+          // The option is not visible — fail closed without expiring. The prompt
+          // may still be valid for a default approve/deny, just not for this
+          // specific choice (e.g. a re-render reordered options).
+          this.deps.log?.(
+            'info',
+            `[approvals] refused choiceKey '${choiceDigit}' on ${record.id}: option not visible on screen`,
+          );
+          return {
+            result: {
+              ok: false,
+              reason: 'invalid-choice-key',
+              request: copyRequest(record),
+            } as ApprovalResolveResult,
+          };
+        }
+      }
+
+      // Determine the data to send: choiceKey overrides the default mapping.
+      // When choiceKey is set, we send exactly that digit — no CR.
+      // When absent, existing behaviour: approve → '1', deny → ESC.
+      const data = params.decision === 'deny'
+        ? keys.deny
+        : (choiceDigit ?? keys.approve);
       let delivered = false;
       try {
         delivered = this.deps.writeToSession(record.sessionId, data);
@@ -353,13 +433,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
       record.resolvedAt = this.now();
       record.screenTail = formatScreenTail(rows);
+      // Persist which specific choice was selected (if any).
+      if (choiceDigit) record.selectedChoiceKey = choiceDigit;
       this.deps.log?.(
         'info',
         // The SANITIZED value, not the raw param. Sanitizing only what gets
         // stored left the log line taking a CR/LF straight from the caller,
         // which is the forged-log-line injection sanitizeResolvedBy exists to
         // prevent — the field was clean on disk and dirty in the log.
-        `[approvals] ${params.decision} ${record.id} on ${record.sessionId} by ${record.resolvedBy || 'unknown'}`,
+        `[approvals] ${params.decision} ${record.id} on ${record.sessionId} by ${record.resolvedBy || 'unknown'}${choiceDigit ? ` (choice ${choiceDigit})` : ''}`,
       );
       return {
         events: [{ type: 'resolve' as ApprovalEventType, request: copyRequest(record) }],

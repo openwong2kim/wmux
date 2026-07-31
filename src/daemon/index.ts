@@ -2415,6 +2415,7 @@ function registerRpcHandlers(
       id?: unknown;
       decision?: unknown;
       resolvedBy?: unknown;
+      choiceKey?: unknown;
     };
     const id = typeof p.id === 'string' ? p.id : '';
     // Anything that is not exactly one of the two decisions is refused rather
@@ -2430,8 +2431,25 @@ function registerRpcHandlers(
     // pipe client must not be able to send an unbounded or control-character
     // string through it.
     const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
+    // Presence-sensitive for the same reason as the HTTP route: never turn a
+    // malformed choice into a legacy first-option press, and never let a deny
+    // request smuggle an affirmative choice digit.
+    const hasChoiceKey = p.choiceKey !== undefined;
+    if (hasChoiceKey && (
+      decision !== 'approve'
+      || typeof p.choiceKey !== 'string'
+      || !/^\d{1,2}$/.test(p.choiceKey)
+    )) {
+      return { ok: false, reason: 'invalid-choice-key' };
+    }
+    const choiceKey = hasChoiceKey ? p.choiceKey as string : undefined;
     if (!approvalRegistry) return { ok: false, reason: 'not-found' };
-    return approvalRegistry.resolve({ id, decision, resolvedBy });
+    return approvalRegistry.resolve({
+      id,
+      decision,
+      resolvedBy,
+      ...(choiceKey !== undefined ? { choiceKey } : {}),
+    });
   });
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
@@ -4312,6 +4330,7 @@ async function main(): Promise<void> {
         body: r.question ?? 'A pane is waiting on an answer.',
         approvalId: r.id,
         sessionId: r.sessionId,
+        ...(r.choices?.length ? { requiresInAppChoice: true } : {}),
       },
       // One pending request per pane, so a re-prompt should replace the old
       // banner rather than stack under it.
