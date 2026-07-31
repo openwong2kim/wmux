@@ -1,0 +1,348 @@
+import { describe, it, expect } from 'vitest';
+import {
+  selectWorkspaceAgentRoster,
+  createWorkspaceAgentRosterSelector,
+} from '../workspaceAgentRoster';
+import { HOOK_RUNNING_TTL_MS } from '../fleet';
+import { BRAIN_PTY_ID_PREFIX } from '../../../../shared/constants';
+import type { StoreState } from '../../index';
+import type { Workspace, Pane, Surface, AgentStatus } from '../../../../shared/types';
+
+// ─── Fixtures ──────────────────────────────────────────────────────────────
+
+function surface(id: string, ptyId: string, extra: Partial<Surface> = {}): Surface {
+  return { id, ptyId, title: id, shell: 'pwsh', cwd: `C:\\repo\\${id}`, surfaceType: 'terminal', ...extra };
+}
+function leaf(id: string, surfaces: Surface[], activeSurfaceId?: string): Pane {
+  return { id, type: 'leaf', surfaces, activeSurfaceId: activeSurfaceId ?? surfaces[0]?.id ?? '' };
+}
+function branch(id: string, children: Pane[]): Pane {
+  return { id, type: 'branch', direction: 'horizontal', children };
+}
+function workspace(id: string, rootPane: Pane, activePaneId: string): Workspace {
+  return { id, name: id, rootPane, activePaneId };
+}
+
+const NOW = 1_000_000;
+
+interface StateOverrides {
+  workspaces?: Workspace[];
+  activeWorkspaceId?: string;
+  surfaceAgent?: Record<string, { name?: string; status: AgentStatus }>;
+  surfaceAgentStatus?: Record<string, AgentStatus>;
+  surfacePendingQuestion?: Record<string, string>;
+  surfaceActivity?: Record<string, string>;
+  surfaceActivityAt?: Record<string, number>;
+  paneLabel?: Record<string, string>;
+  agentClockMs?: number;
+}
+
+function state(overrides: StateOverrides = {}): StoreState {
+  return {
+    workspaces: [],
+    activeWorkspaceId: '',
+    surfaceAgent: {},
+    surfaceAgentStatus: {},
+    surfacePendingQuestion: {},
+    surfaceActivity: {},
+    surfaceActivityAt: {},
+    paneLabel: {},
+    agentClockMs: NOW,
+    ...overrides,
+  } as unknown as StoreState;
+}
+
+describe('selectWorkspaceAgentRoster', () => {
+  it('returns an empty projection for an unknown workspace', () => {
+    const r = selectWorkspaceAgentRoster(state(), 'nope');
+    expect(r).toEqual({ rows: [], agentCount: 0, needsAttentionCount: 0 });
+  });
+
+  it('lists only surfaces that actually carry a detected agent', () => {
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1'), surface('s2', 'pty-2')]), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        // pty-2 has no agent → not an agent row.
+        surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'waiting' } },
+      }),
+      'ws-1',
+    );
+    expect(r.agentCount).toBe(1);
+    expect(r.rows[0]).toMatchObject({ ptyId: 'pty-1', agentName: 'Claude Code', status: 'waiting' });
+  });
+
+  it('keeps status attached to the SAME pty, including a background surface', () => {
+    // The whole reason this selector does not reuse selectFleetPanes: Fleet
+    // aggregates the most urgent status in a leaf onto that leaf's ACTIVE
+    // surface, which would report a background tab's status under the wrong
+    // agent. Here each row's status must be its own pty's status.
+    const ws = workspace(
+      'ws-1',
+      leaf('p1', [surface('s-bg', 'pty-bg'), surface('s-fg', 'pty-fg')], 's-fg'),
+      'p1',
+    );
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          'pty-bg': { name: 'Codex', status: 'waiting' },
+          'pty-fg': { name: 'Claude Code', status: 'waiting' },
+        },
+        surfaceAgentStatus: { 'pty-bg': 'awaiting_input' },
+      }),
+      'ws-1',
+    );
+    const bg = r.rows.find((x) => x.ptyId === 'pty-bg')!;
+    const fg = r.rows.find((x) => x.ptyId === 'pty-fg')!;
+    expect(bg.status).toBe('awaiting_input');
+    expect(fg.status).toBe('waiting');
+    expect(r.needsAttentionCount).toBe(2); // awaiting_input + waiting both need a human
+  });
+
+  it('walks nested branches, not just the root leaf', () => {
+    const ws = workspace(
+      'ws-1',
+      branch('b', [
+        leaf('p1', [surface('s1', 'pty-1')]),
+        branch('b2', [leaf('p2', [surface('s2', 'pty-2')])]),
+      ]),
+      'p1',
+    );
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          'pty-1': { name: 'A', status: 'idle' },
+          'pty-2': { name: 'B', status: 'idle' },
+        },
+      }),
+      'ws-1',
+    );
+    expect(r.rows.map((x) => x.ptyId)).toEqual(['pty-1', 'pty-2']);
+  });
+
+  describe('status precedence', () => {
+    const base = (extra: StateOverrides) => {
+      const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
+      return selectWorkspaceAgentRoster(state({ workspaces: [ws], ...extra }), 'ws-1').rows[0];
+    };
+
+    it('a transcript-derived pending question is the strongest evidence', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'running' } },
+        surfaceAgentStatus: { 'pty-1': 'complete' },
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+        surfaceActivityAt: { 'pty-1': NOW },
+      });
+      expect(row.status).toBe('awaiting_input');
+      expect(row.pendingQuestion).toBe('Shall I merge?');
+      expect(row.needsAttention).toBe(true);
+    });
+
+    it('an unseen attention state outranks the retained lifecycle state', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'running' } },
+        surfaceAgentStatus: { 'pty-1': 'error' },
+        surfaceActivityAt: { 'pty-1': NOW },
+      });
+      expect(row.status).toBe('error');
+      expect(row.hasAttention).toBe(true);
+    });
+
+    it('treats identity-only "running" with NO activity as idle (boot hydration)', () => {
+      // A recovered pane is seeded `running` without any activity signal. Left
+      // as-is it would pulse forever and disagree with the workspace aggregate.
+      const row = base({ surfaceAgent: { 'pty-1': { name: 'A', status: 'running' } } });
+      expect(row.status).toBe('idle');
+      expect(row.needsAttention).toBe(false);
+    });
+
+    it('promotes idle to running on a FRESH activity stamp', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceActivityAt: { 'pty-1': NOW - 1_000 },
+        surfaceActivity: { 'pty-1': '✎ fleet.ts' },
+      });
+      expect(row.status).toBe('running');
+      expect(row.activity).toBe('✎ fleet.ts');
+    });
+
+    it('does NOT promote on a STALE activity stamp (older than the TTL)', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceActivityAt: { 'pty-1': NOW - HOOK_RUNNING_TTL_MS - 1 },
+        surfaceActivity: { 'pty-1': '✎ old.ts' },
+      });
+      expect(row.status).toBe('idle');
+      expect(row.activity).toBeUndefined();
+    });
+
+    it('keeps an explicit complete state even with fresh activity', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceAgentStatus: { 'pty-1': 'complete' },
+        surfaceActivityAt: { 'pty-1': NOW },
+      });
+      expect(row.status).toBe('complete');
+    });
+
+    it('hides the activity line for a non-running row', () => {
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceAgentStatus: { 'pty-1': 'complete' },
+        surfaceActivityAt: { 'pty-1': NOW },
+        surfaceActivity: { 'pty-1': '✎ fleet.ts' },
+      });
+      expect(row.activity).toBeUndefined();
+    });
+  });
+
+  it('excludes orchestrator brain ptys — a brain is not a fleet agent', () => {
+    const brainPty = `${BRAIN_PTY_ID_PREFIX}ws-1`;
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', brainPty), surface('s2', 'pty-1')]), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          [brainPty]: { name: 'Claude Code', status: 'running' },
+          'pty-1': { name: 'Codex', status: 'idle' },
+        },
+      }),
+      'ws-1',
+    );
+    expect(r.rows.map((x) => x.ptyId)).toEqual(['pty-1']);
+  });
+
+  it('skips unspawned surfaces and non-terminal surfaces', () => {
+    const ws = workspace(
+      'ws-1',
+      leaf('p1', [
+        surface('s-empty', ''),
+        surface('s-browser', 'pty-browser', { surfaceType: 'browser' }),
+        surface('s-term', 'pty-term'),
+      ]),
+      'p1',
+    );
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          'pty-browser': { name: 'X', status: 'idle' },
+          'pty-term': { name: 'Y', status: 'idle' },
+        },
+      }),
+      'ws-1',
+    );
+    expect(r.rows.map((x) => x.ptyId)).toEqual(['pty-term']);
+  });
+
+  it('marks isFocused only for the focused surface of the focused pane in the ACTIVE workspace', () => {
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1'), surface('s2', 'pty-2')], 's2'), 'p1');
+    const agents = {
+      'pty-1': { name: 'A', status: 'idle' as AgentStatus },
+      'pty-2': { name: 'B', status: 'idle' as AgentStatus },
+    };
+
+    const active = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], activeWorkspaceId: 'ws-1', surfaceAgent: agents }),
+      'ws-1',
+    );
+    expect(active.rows.find((x) => x.ptyId === 'pty-2')!.isFocused).toBe(true);
+    expect(active.rows.find((x) => x.ptyId === 'pty-1')!.isFocused).toBe(false);
+
+    // A background workspace has no focused row even though its own pane/surface
+    // pointers still say so — focus is global.
+    const background = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], activeWorkspaceId: 'ws-other', surfaceAgent: agents }),
+      'ws-1',
+    );
+    expect(background.rows.every((x) => !x.isFocused)).toBe(true);
+  });
+
+  it('counts only rows that genuinely need a human', () => {
+    const ws = workspace(
+      'ws-1',
+      leaf('p1', [surface('s1', 'p1'), surface('s2', 'p2'), surface('s3', 'p3'), surface('s4', 'p4')]),
+      'p1',
+    );
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          p1: { name: 'A', status: 'idle' },
+          p2: { name: 'B', status: 'idle' },
+          p3: { name: 'C', status: 'idle' },
+          p4: { name: 'D', status: 'idle' },
+        },
+        surfaceAgentStatus: {
+          p1: 'awaiting_input',
+          p2: 'waiting',
+          p3: 'error',
+          p4: 'complete',
+        },
+      }),
+      'ws-1',
+    );
+    expect(r.agentCount).toBe(4);
+    expect(r.needsAttentionCount).toBe(3); // complete does not need a human
+  });
+
+  it('surfaces the pane label and multi-surface position for the row location', () => {
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1', { title: 'build' }), surface('s2', 'pty-2')]), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        paneLabel: { p1: 'api' },
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+      }),
+      'ws-1',
+    );
+    expect(r.rows[0]).toMatchObject({
+      paneName: 'api',
+      surfaceTitle: 'build',
+      surfaceIndex: 0,
+      surfaceCount: 2,
+    });
+  });
+});
+
+describe('createWorkspaceAgentRosterSelector memoization', () => {
+  const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
+  const agents = { 'pty-1': { name: 'A', status: 'idle' as AgentStatus } };
+
+  it('returns the SAME reference when nothing this workspace cares about changed', () => {
+    // Every WorkspaceItem subscribes independently; without this a write in one
+    // workspace would rerender every sidebar row.
+    const select = createWorkspaceAgentRosterSelector('ws-1');
+    const first = select(state({ workspaces: [ws], surfaceAgent: agents }));
+    const second = select(state({
+      workspaces: [ws],
+      surfaceAgent: agents,
+      // An unrelated write: another pane's activity.
+      surfaceActivity: { 'pty-elsewhere': '$ noise' },
+    }));
+    expect(second).toBe(first);
+  });
+
+  it('returns a NEW reference when a row actually changes', () => {
+    const select = createWorkspaceAgentRosterSelector('ws-1');
+    const first = select(state({ workspaces: [ws], surfaceAgent: agents }));
+    const second = select(state({
+      workspaces: [ws],
+      surfaceAgent: agents,
+      surfaceAgentStatus: { 'pty-1': 'awaiting_input' },
+    }));
+    expect(second).not.toBe(first);
+    expect(second.rows[0].status).toBe('awaiting_input');
+    expect(second.needsAttentionCount).toBe(1);
+  });
+
+  it('returns a NEW reference when a row is added or removed', () => {
+    const select = createWorkspaceAgentRosterSelector('ws-1');
+    const first = select(state({ workspaces: [ws], surfaceAgent: agents }));
+    const second = select(state({ workspaces: [ws], surfaceAgent: {} }));
+    expect(second).not.toBe(first);
+    expect(second.agentCount).toBe(0);
+  });
+});

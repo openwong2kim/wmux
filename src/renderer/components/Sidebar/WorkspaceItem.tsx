@@ -13,6 +13,7 @@ import { collectTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
+import WorkspaceAgentRoster from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 
 interface WorkspaceItemProps {
@@ -394,6 +395,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     if (!workspace) return;
+    // Roster controls live inside this draggable card. Chromium chooses the
+    // nearest draggable ancestor as the native source, so `draggable={false}`
+    // on a nested button is not enough. Reject a drag whose pointer originated
+    // over the roster; clicks still handle disclosure and exact agent focus.
+    const pointerTarget = document.elementFromPoint(e.clientX, e.clientY);
+    if (pointerTarget?.closest('[data-workspace-agent-roster]')) {
+      e.preventDefault();
+      return;
+    }
     dragStartTimeRef.current = Date.now();
     // dataTransfer carries ONLY the markdown so external chat composers
     // see a clean text drop. The source index for sidebar reorder is
@@ -557,7 +567,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       <div
         draggable
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row flex items-start gap-2 px-3 py-1.5 cursor-pointer rounded-md select-none ${
+        className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
@@ -572,6 +582,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        <div className="flex min-w-0 items-start gap-2">
         {/* Status indicator */}
         {(() => {
           const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
@@ -707,6 +718,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         >
           <IconX size={11} />
         </button>
+        </div>
+        {!editing && (
+          <WorkspaceAgentRoster workspaceId={workspaceId} isActive={isActive} />
+        )}
       </div>
 
       {/* 드롭 인디케이터 - 아래. pointer-events-none so it never participates

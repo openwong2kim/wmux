@@ -679,8 +679,20 @@ export function useNotificationListener() {
         // Fleet View per-pane activity line: store the (already main-side
         // sanitized + throttled) string in the transient per-ptyId map. Main
         // only sets `activity` on its own; an empty string clears the entry.
+        // A non-empty activity-only hook is also an ordered proof that the
+        // agent resumed after any older complete/waiting state. Reconcile both
+        // mirrors here, where event order is known; a selector cannot compare
+        // the timestamp with an attention state that carries no timestamp.
         if (typeof activity === 'string') {
           state.setSurfaceActivity(ptyId, activity);
+          // Only activity-ONLY payloads need lifecycle reconciliation. When
+          // the same payload carries an explicit complete/waiting/input state,
+          // that state is authoritative and must not be overwritten by the
+          // additive activity field.
+          if (activity.length > 0 && typeof rest.agentStatus !== 'string') {
+            state.setSurfaceAgentStatus(ptyId, 'running');
+            state.setSurfaceAgent(ptyId, undefined, 'running');
+          }
         }
         // Same shape as `activity`: main derives + truncates it, the renderer
         // only stores. Written on EVERY stop, so an empty string is the clear

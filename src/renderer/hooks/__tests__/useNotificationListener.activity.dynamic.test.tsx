@@ -21,6 +21,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useNotificationListener } from '../useNotificationListener';
 import { useStore } from '../../stores';
 import { createWorkspace, type MetadataUpdatePayload, type Surface } from '../../../shared/types';
+import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
 
 // React 19 logs a warning unless the test env flags act() support.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -192,5 +193,68 @@ describe('useNotificationListener — Fleet activity line (METADATA_UPDATE.activ
     expect(useStore.getState().surfaceActivity['pty-1']).toBe('✎ x.ts');
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId)!;
     expect((ws.metadata as Record<string, unknown> | undefined)?.activity).toBeUndefined();
+  });
+
+  // A non-empty activity-only hook is ordered proof that the agent resumed AFTER
+  // any older complete/waiting state. Only this listener knows the event order:
+  // a selector cannot compare an activity timestamp against an attention state
+  // that carries no timestamp. Without this reconciliation a roster row shows a
+  // stale `complete`/`Needs input` while the agent is visibly producing output.
+  describe('activity-only lifecycle reconciliation', () => {
+    it('clears a stale attention state and marks the pane running', () => {
+      seedActivePaneSurface('pty-rec');
+      // Activity only ever flows for a pane whose agent was already detected —
+      // setSurfaceAgent(ptyId, undefined, status) updates an existing entry and
+      // deliberately cannot mint an agent row without a name.
+      act(() => { useStore.getState().setSurfaceAgent('pty-rec', 'Claude Code', 'complete'); });
+      act(() => { metaCb!({ ptyId: 'pty-rec', agentStatus: 'complete' }); });
+      expect(useStore.getState().surfaceAgentStatus['pty-rec']).toBe('complete');
+
+      act(() => { metaCb!({ ptyId: 'pty-rec', activity: '✎ resumed.ts' }); });
+
+      // surfaceAgentStatus is the ATTENTION-only map: 'running' is not an
+      // attention status, so reconciling to running CLEARS the stale 'complete'
+      // rather than storing a value. The lifecycle mirror carries the running.
+      expect(useStore.getState().surfaceAgentStatus['pty-rec']).toBeUndefined();
+      expect(useStore.getState().surfaceAgent['pty-rec']?.status).toBe('running');
+      expect(useStore.getState().surfaceAgent['pty-rec']?.name).toBe('Claude Code');
+      expect(useStore.getState().surfaceActivity['pty-rec']).toBe('✎ resumed.ts');
+    });
+
+    it('the roster row therefore reads running, not a stale Complete', () => {
+      // The user-visible point of the reconciliation.
+      seedActivePaneSurface('pty-rec4');
+      act(() => {
+        useStore.getState().setSurfaceAgent('pty-rec4', 'Claude Code', 'running');
+      });
+      act(() => { metaCb!({ ptyId: 'pty-rec4', agentStatus: 'complete' }); });
+      const wsId = useStore.getState().activeWorkspaceId;
+      expect(selectWorkspaceAgentRoster(useStore.getState(), wsId)
+        .rows.find((r) => r.ptyId === 'pty-rec4')!.status).toBe('complete');
+
+      act(() => { metaCb!({ ptyId: 'pty-rec4', activity: '✎ resumed.ts' }); });
+
+      const row = selectWorkspaceAgentRoster(useStore.getState(), wsId)
+        .rows.find((r) => r.ptyId === 'pty-rec4')!;
+      expect(row.status).toBe('running');
+      expect(row.needsAttention).toBe(false);
+      expect(row.activity).toBe('✎ resumed.ts');
+    });
+
+    it('an EMPTY activity string does not reopen running (it only clears)', () => {
+      seedActivePaneSurface('pty-rec2');
+      act(() => { metaCb!({ ptyId: 'pty-rec2', agentStatus: 'awaiting_input' }); });
+      act(() => { metaCb!({ ptyId: 'pty-rec2', activity: '' }); });
+      // The pane is still blocked; a cleared activity line is not progress.
+      expect(useStore.getState().surfaceAgentStatus['pty-rec2']).toBe('awaiting_input');
+    });
+
+    it('an explicit state on the SAME payload stays authoritative', () => {
+      // The additive activity field must never overwrite a state the payload
+      // itself declares — that state is the newer, stronger evidence.
+      seedActivePaneSurface('pty-rec3');
+      act(() => { metaCb!({ ptyId: 'pty-rec3', activity: '✎ x.ts', agentStatus: 'awaiting_input' }); });
+      expect(useStore.getState().surfaceAgentStatus['pty-rec3']).toBe('awaiting_input');
+    });
   });
 });
