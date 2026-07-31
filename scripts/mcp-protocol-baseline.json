@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "profiles": {
     "full": {
-      "maxListBytes": 75000,
-      "wireResultSha256": "1113ca73b44f01bd8d85040a3c99d6e2f9cdd1dcdbbb025d3512b2701527a33a",
+      "maxListBytes": 80000,
+      "wireResultSha256": "6b51db8f0b0b906e35903f48ed371ab1622b1297d0cad613106547d7baf59ee3",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -49,6 +49,7 @@
         "terminal_read_events",
         "terminal_send",
         "terminal_send_key",
+        "deck_complete_work",
         "deck_ask_decision",
         "deck_resolve_decision",
         "workspace_list",
@@ -95,14 +96,15 @@
       ]
     },
     "commander": {
-      "maxListBytes": 45000,
-      "wireResultSha256": "4f01211774ba14652f8c9d318e77d586593f51d1463b65b3fdd16080aead6c18",
+      "maxListBytes": 47000,
+      "wireResultSha256": "68529d69c040a8b11d2da12b0ac82ecd4b560dd42a90a1acd5e7e15ca8ab7db3",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
         "terminal_read_events",
         "terminal_send",
         "terminal_send_key",
+        "deck_complete_work",
         "deck_ask_decision",
         "deck_resolve_decision",
         "workspace_list",
