@@ -234,6 +234,7 @@ export type RpcMethod =
   | 'perf.status'
   | 'deck.resolvePaneRoute'
   | 'deck.resolveCommanderWorkspace'
+  | 'deck.completeWork'
   | 'deck.requestDecision'
   | 'deck.resolveDecision'
   | 'browser.tabs'
@@ -408,6 +409,7 @@ export const ALL_RPC_METHODS = [
   'perf.status',
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
+  'deck.completeWork',
   'deck.requestDecision',
   'deck.resolveDecision',
   'browser.tabs',

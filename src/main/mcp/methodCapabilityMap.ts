@@ -260,6 +260,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     capability gate here would be redundant.
   'deck.resolvePaneRoute': { capability: null },
   'deck.resolveCommanderWorkspace': { capability: null },
+  // Final-response barrier for a direct human request. Own commander-token auth
+  // plus server-side worker/A2A checks make a separate capability redundant.
+  'deck.completeWork': { capability: null },
   // Brain-raised decision gate. Carries its OWN commander-token auth
   // (deck.rpc.ts), so no capability gate — same posture as the deck.resolve* pair.
   'deck.requestDecision': { capability: null },

@@ -63,6 +63,9 @@ function describePane(pane: FleetSnapshotPane): string {
 export function evaluateStopGate(input: {
   /** `getWorkspaceMirror().getFleetSnapshot(workspaceId)`, or null when absent. */
   snapshot: FleetSnapshot | null;
+  /** A durable human request that still belongs to this commander. Unlike pane
+   *  state, this is authoritative even when the renderer snapshot is absent. */
+  activeWork?: { id: string } | null;
   /** How many times in a row this turn's Stop has already been refused. */
   consecutiveBlocks: number;
   maxConsecutiveBlocks?: number;
@@ -70,19 +73,36 @@ export function evaluateStopGate(input: {
   now?: number;
   maxSnapshotAgeMs?: number;
 }): StopGateVerdict {
-  const { snapshot } = input;
-  if (!snapshot) return { block: false };
-  // Staleness → same verdict as absence. `ts` is a renderer clock, so a small
-  // skew can put it slightly in the future; that reads as age 0, which is the
-  // fail-open direction and needs no special case.
-  const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
-  const age = (input.now ?? Date.now()) - snapshot.ts;
-  if (age > maxAge) return { block: false };
+  const { snapshot, activeWork } = input;
   const max = input.maxConsecutiveBlocks ?? DEFAULT_MAX_CONSECUTIVE_BLOCKS;
   if (input.consecutiveBlocks >= max) return { block: false };
 
+  // A durable active-work record is stronger than the renderer-derived pane
+  // snapshot. Even with no/freshness-lost snapshot, give the brain a bounded
+  // chance to explicitly finalize the request instead of silently ending its
+  // turn. The consecutive-block cap above still prevents a broken tool/store
+  // from trapping the TUI indefinitely.
+  const finalizeReason = activeWork
+    ? `The human request ${activeWork.id} is still ACTIVE. Do not claim completion or end yet. ` +
+      'Inspect the delegated results and acceptance checks; when everything is actually complete, call ' +
+      'deck_complete_work({summary, verification}). If work remains, delegate or unblock the next step.'
+    : null;
+  if (!snapshot) {
+    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+  }
+  // Staleness means pane state cannot be used to infer outstanding workers. An
+  // active-work record can still hold the turn because it is durable runtime
+  // state rather than a stale renderer inference.
+  const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
+  const age = (input.now ?? Date.now()) - snapshot.ts;
+  if (age > maxAge) {
+    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+  }
+
   const outstanding = snapshot.panes.filter((p) => isOutstanding(p.agentStatus));
-  if (outstanding.length === 0) return { block: false };
+  if (outstanding.length === 0) {
+    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+  }
 
   // This string is the ONLY thing the model reads about the refusal, so it
   // names the panes, their statuses, and the action that clears the gate.
@@ -92,7 +112,7 @@ export function evaluateStopGate(input: {
     block: true,
     reason:
       `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
-      'Check each one (read its screen, answer what it is waiting on, or delegate the next step), ' +
-      'then finish. If there is genuinely nothing left for you to do, say so and stop again.',
+      'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +
+      (finalizeReason ?? 'If there is genuinely nothing left for you to do, say so and stop again.'),
   };
 }

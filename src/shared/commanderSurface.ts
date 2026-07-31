@@ -83,6 +83,9 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'a2a_broadcast',
   'a2a_set_skills',
   'send_message',
+  // Final-response barrier for the active human request. It can only close the
+  // commander's own durable work after server-side worker/A2A checks.
+  'deck_complete_work',
   // Decision gate — pause-and-ask, the opposite of destructive.
   'deck_ask_decision',
   // WP3 — self-resolve of the brain's OWN stale decision (server-gated:
@@ -120,6 +123,7 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   // command deck routing / identity / decision gate
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
+  'deck.completeWork',
   'deck.requestDecision',
   'deck.resolveDecision',
   // events

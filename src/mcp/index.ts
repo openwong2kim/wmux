@@ -100,6 +100,17 @@ const TERMINAL_SEND_KEY_SHAPE = {
   ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
 };
 
+const DECK_COMPLETE_WORK_SHAPE = {
+  summary: z
+    .string()
+    .min(8)
+    .describe('Concise final summary of the completed human request (at least 8 characters).'),
+  verification: z
+    .string()
+    .min(12)
+    .describe('Concrete verification performed and its outcome (at least 12 characters).'),
+};
+
 const DECK_ASK_DECISION_SHAPE = {
   question: z
     .string()
@@ -972,6 +983,17 @@ server.tool(
 );
 
 // === Orchestrator (Command Deck) tools ===
+
+server.tool(
+  'deck_complete_work',
+  'Finalize the current human-request work only after every delegated pane and A2A task has completed and you have verified the result. The server rejects this call while a worker is still running or awaiting input, when a tracked A2A task is not canonically completed, or when the summary/verification is insubstantial. Call this immediately before your final answer to the human; a successful call closes the durable active-work lease and stops follow-up wakes.',
+  DECK_COMPLETE_WORK_SHAPE,
+  async ({ summary, verification }) => callRpc('deck.completeWork', {
+    token: ctx.commanderToken,
+    summary,
+    verification,
+  }),
+);
 
 server.tool(
   'deck_ask_decision',
