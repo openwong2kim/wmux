@@ -1,4 +1,4 @@
-import { type CSSProperties } from 'react';
+import { type CSSProperties, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -93,6 +93,11 @@ export default function StatusBar() {
   //    number 반환이라 zustand 기본 Object.is 비교로 값이 바뀔 때만 리렌더된다.
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
+
+  // E5 — push unread count to main for the dock/tray badge whenever it changes.
+  useEffect(() => {
+    window.electronAPI?.notification?.setBadgeCount?.(unreadCount);
+  }, [unreadCount]);
   // Bridge P2 rev2 — fleet vitals as APPEARING chips (owner call: the always-on
   // bottom instrument strip read as dead chrome at "0 running", so it's gone;
   // the signal moved here and renders ONLY when nonzero). Derived-number

@@ -179,3 +179,19 @@ export function destroyTray(): void {
   trayWindow = null;
   trayCallbacks = null;
 }
+
+/**
+ * E5 — Set the platform unread badge. macOS: dock badge (number or empty).
+ * Windows: tray tooltip prefix. Called from main whenever the renderer sends
+ * a NOTIFICATION_BADGE_COUNT update.
+ */
+export function updateUnreadBadge(count: number): void {
+  if (process.platform === 'darwin') {
+    // app.dock.setBadge expects a string; empty string clears the badge.
+    app.dock?.setBadge(count > 0 ? String(count > 999 ? '999+' : count) : '');
+  } else if (tray) {
+    // Windows/Linux: prefix the tooltip with the count when non-zero.
+    const base = 'wmux';
+    tray.setToolTip(count > 0 ? `[${count}] ${base}` : base);
+  }
+}

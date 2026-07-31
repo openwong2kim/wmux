@@ -183,14 +183,11 @@
      list; `useNotificationPolicy` skips toast/sound/ring/flashFrame for muted
      workspaces while still recording the entry in the panel (policy A4). -->
 
-## (E5) Tray icon unread badge (cross-platform)
-- **What:** `src/main/tray.ts`에 unread count를 표시. macOS: `app.dock.setBadge(N)`, Windows: tray tooltip prefix `[N] wmux`, Linux: best-effort (NotificationServer 표준은 제한적).
-- **Why:** wmux 창이 minimize/hide 상태에서는 OS 토스트 한 번 외에는 알림 신호 부재. tray가 영구 신호 채널.
-- **Pros:** 창 안 열어도 unread 인지. macOS 사용자에게 자연스러운 UX.
-- **Cons:** Cross-platform 차이 큼 — 3 OS에서 각각 QA 세션 필요. Linux fallback 정책 결정 필요.
-- **Context:** memory `project_cross_platform_branch_policy` 정책에 따라 **feature branch + PR**로 진행. `src/main/notification/ToastManager.ts`와 같은 자리에 `TrayBadgeManager` 추가 고려. Renderer store unread count 변경 → main으로 push → tray 갱신. CC 추정 30-45분 + 3 OS QA.
-- **Depends on:** 알림 파이프라인 복구 ship + 사용자가 minimize 사용 빈도 확인
-- **Priority:** P2
+## ✅ (E5) Tray icon unread badge — DONE (2026-07-30)
+- macOS: `app.dock?.setBadge(N)` (999+ cap, 0이면 빈 문자열로 클리어). Windows/Linux: tray tooltip `[N] wmux`.
+- Renderer StatusBar에서 `computeUnreadCount` 변경 시 `useEffect`로 `IPC.NOTIFICATION_BADGE_COUNT` 전송.
+- main `registerHandlers.ts`가 렌더러 값을 음이 아닌 정수로 정규화한 뒤 `tray.ts:updateUnreadBadge()` 호출.
+- 3 OS QA는 별도. 단위 테스트로 두 플랫폼 분기·클리어·캡·정규화를 고정.
 
 ## Fix B — Scrollback restore cap-aware suspended-session promote
 - **What:** `daemon.listSessions`에 `{includeSuspended}` 파라미터 추가 + `daemon.promoteSession(id)` 신규 RPC. `AppLayout.reconcilePtys` fallback 직전에 promote 시도. cap=40 초과로 자동 복구되지 못한 suspended session도 reconnect 가능하게.

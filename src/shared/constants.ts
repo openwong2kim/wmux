@@ -57,6 +57,10 @@ export const IPC = {
   SESSION_SAVE_ASYNC: 'session:saveAsync',
   SESSION_LOAD: 'session:load',
   NOTIFICATION: 'notification:new',
+  // E5 — dock/tray badge unread count. Renderer sends a count update whenever
+  // the total unread changes; main applies it to the platform badge surface
+  // (macOS dock, Windows tray tooltip).
+  NOTIFICATION_BADGE_COUNT: 'notification:badge-count',
   // X2 — OS toast click → jump to the originating pane. Main sends the
   // toast's {ptyId, workspaceId} context; renderer resolves and activates
   // the workspace/pane/surface (see useNotificationListener).

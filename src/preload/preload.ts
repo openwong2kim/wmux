@@ -230,6 +230,8 @@ const electronAPI = {
     // suppression. ptyId/workspaceId become the toast's click-jump context.
     showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null; windowsFlashEnabled?: boolean; dockBounceEnabled?: boolean }) =>
       ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
+    // E5 — push unread count to main for the dock/tray badge.
+    setBadgeCount: (count: number) => ipcRenderer.send(IPC.NOTIFICATION_BADGE_COUNT, count),
     // Fired once when useNotificationListener's effect mounts and subscribes
     // — confirms to main that IPC.NOTIFICATION sends will actually reach a
     // live listener, not just a live (but reloading/unmounted) window.

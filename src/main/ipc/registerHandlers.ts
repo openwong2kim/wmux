@@ -35,6 +35,7 @@ import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
+import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
@@ -269,6 +270,18 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
   ipcMain.on(IPC.NOTIFICATION_OS_TOAST, onOsToast);
 
+  // E5 — Dock/tray unread badge. Renderer sends a count whenever the total
+  // unread changes; main applies it to the platform badge surface. A hostile or
+  // buggy renderer value is normalized to a non-negative integer here so the
+  // platform call can never receive NaN / a fraction / a negative.
+  ipcMain.removeAllListeners(IPC.NOTIFICATION_BADGE_COUNT);
+  ipcMain.on(IPC.NOTIFICATION_BADGE_COUNT, (_event: Electron.IpcMainEvent, count: number) => {
+    const safe = typeof count === 'number' && Number.isFinite(count) && count > 0
+      ? Math.floor(count)
+      : 0;
+    updateUnreadBadge(safe);
+  });
+
   // Renderer confirms useNotificationListener's effect has subscribed —
   // dispatchNotification consults this before trusting webContents.send to
   // actually reach a listener. See rendererNotificationReadiness.ts.
@@ -416,6 +429,7 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
+    ipcMain.removeAllListeners(IPC.NOTIFICATION_BADGE_COUNT);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_LISTENER_READY);
   };
 }
