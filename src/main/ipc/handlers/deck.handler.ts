@@ -80,6 +80,14 @@ import {
   hasPendingDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
+import {
+  beginOrContinueDeckWork,
+  clearActiveDeckWork,
+  loadActiveDeckWork,
+  loadActiveDeckWorks,
+  recordDeckWorkA2aTask,
+  renderActiveDeckWorkBlock,
+} from '../../deck/deckWorkStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
   buildWorkspaceBriefing,
@@ -121,6 +129,9 @@ export interface RegisterDeckHandlerOptions {
      *  embeds. Passed to every factory — including an injected one — so the
      *  embed plumbing is exercisable without a live daemon. */
     onPtySpawned: (ptyId: string | null) => void;
+    /** How an adapter reports a human prompt submitted directly in the embedded
+     *  terminal brain, before that foreign turn finishes. */
+    onForeignTurnStart: (prompt: string) => void;
     /** How an adapter reports that a turn IT did not start has ended (the
      *  `claude-pty` human-typed-into-the-TUI case). Passed to every factory so
      *  the wake plumbing is exercisable without a live daemon. */
@@ -232,6 +243,7 @@ export function registerDeckHandler(
       fullPower?: boolean;
       vendor?: BrainVendor;
       onPtySpawned: (ptyId: string | null) => void;
+      onForeignTurnStart: (prompt: string) => void;
       onForeignTurnEnd: () => void;
       onForeignSessionId: (sessionId: string) => void;
     }) => {
@@ -252,12 +264,14 @@ export function registerDeckHandler(
             host: createBrainPtyHost(client),
             bridgePath: resolveBrainBridgePath(),
             onPtySpawned: adapterOpts.onPtySpawned,
+            onForeignTurnStart: adapterOpts.onForeignTurnStart,
             // The Stop gate: the orchestrator may not end a turn while worker
             // panes are still running or waiting on it. The mirror lookup lives
             // here, not in the adapter, so the predicate stays pure.
             evaluateStopGate: (workspaceId, consecutiveBlocks) =>
               evaluateStopGate({
                 snapshot: getWorkspaceMirror().getFleetSnapshot(workspaceId),
+                activeWork: loadActiveDeckWork(workspaceId),
                 consecutiveBlocks,
               }),
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
@@ -397,6 +411,20 @@ export function registerDeckHandler(
     }
   };
 
+  /** Persist request ownership without ever breaking a human turn. The store is
+   *  synchronous so the DECK_SEND idle-check → send sequence does not yield. */
+  const beginTrackedWork = (workspaceId: string, text: string): void => {
+    const objective = text.trim() || 'Continue the request submitted directly in the commander terminal.';
+    try {
+      beginOrContinueDeckWork(workspaceId, objective);
+    } catch (err) {
+      // A persistence failure costs autonomous follow-through, never the human's
+      // immediate turn. Keep the failure visible for diagnosis.
+      // eslint-disable-next-line no-console
+      console.warn('[deck] failed to persist active work:', err);
+    }
+  };
+
   const ensureManager = (
     workspaceId: string,
     fleetContext?: string,
@@ -466,6 +494,12 @@ export function registerDeckHandler(
         workspaceId,
         vendor,
         onPtySpawned: (ptyId) => emitBrainPty(workspaceId, ptyId),
+        onForeignTurnStart: (prompt) => {
+          // The default terminal brain has no deck composer: UserPromptSubmit is
+          // the only place main sees that a human explicitly assigned work.
+          beginTrackedWork(workspaceId, prompt);
+          coalescer?.notifyHumanSend(workspaceId);
+        },
         onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
         onForeignSessionId: (sessionId) => managerRef?.notifyForeignSessionId(sessionId),
         ...(model ? { model } : {}),
@@ -554,6 +588,7 @@ export function registerDeckHandler(
     const mode = loadWorkspaceMode(workspaceId);
     const decision = loadWorkspaceDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
+    const activeWork = loadActiveDeckWork(workspaceId);
     const blocks: string[] = [];
     // The [autonomy] block LEADS — it frames how the brain should read everything
     // below it (whether it has authority to resolve the policy/decision itself).
@@ -593,6 +628,7 @@ export function registerDeckHandler(
     // urgent trusted context. Both decision + loop survive a reboot as atomic
     // JSON, so a resumed brain re-reads exactly where it paused.
     if (decision) blocks.push(renderDecisionBlock(decision));
+    if (activeWork) blocks.push(renderActiveDeckWorkBlock(activeWork));
     if (loop) blocks.push(renderLoopStateBlock(loop));
     if (blocks.length === 0) return text;
     return `${blocks.join('\n\n')}\n\n${text}`;
@@ -631,6 +667,7 @@ export function registerDeckHandler(
       // (dogfood finding, 2026-07-12). Status check + send are one synchronous
       // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
       if (mgr.getStatus().status === 'idle') {
+        beginTrackedWork(workspaceId, text);
         coalescer?.notifyHumanSend(workspaceId);
       }
       // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
@@ -697,6 +734,12 @@ export function registerDeckHandler(
       // `entry` is captured above, so this still reads the retired manager.
       const sessionKey = sessionKeyFor(workspaceId, entry?.vendor ?? resolveEffectiveVendor(brainVendor));
       await clearCommanderSession(sessionKey);
+      try {
+        clearActiveDeckWork(workspaceId);
+      } catch {
+        // Conversation clear is still successful if the auxiliary work record
+        // could not be removed; the next prompt can supersede/reconcile it.
+      }
       return { ok: true };
     }),
   );
@@ -942,6 +985,8 @@ export function registerDeckHandler(
         const policy = loadDeckPolicyBlock();
         if (policy) blocks.push(policy);
         blocks.push(renderStaleDecisionBlock(injected, { ttlMinutes, mode }));
+        const activeWork = loadActiveDeckWork(workspaceId);
+        if (activeWork) blocks.push(renderActiveDeckWorkBlock(activeWork));
         const loop = loadWorkspaceLoopState(workspaceId);
         if (loop) blocks.push(renderLoopStateBlock(loop));
         prompted = `${blocks.join('\n\n')}\n\n${prompt}`;
@@ -1101,6 +1146,10 @@ export function registerDeckHandler(
       const loop = loadWorkspaceLoopState(workspaceId);
       return loop ? { running: loop.status === 'running', iterations: loop.iterations } : null;
     },
+    // A direct human request is a request-scoped opt-in to follow through even
+    // when the workspace's resting mode is off. The coalescer grants only
+    // follow-up instructions; approvalPress still comes from the standing mode.
+    getActiveWork: (workspaceId) => loadActiveDeckWork(workspaceId),
     // Global kill switch (Settings): OFF drops ambient wakes; running loops
     // still wake. Read fresh at every flush so the toggle applies immediately.
     isAutoWakeEnabled: () => loadAutoWakeEnabled(),
@@ -1117,6 +1166,59 @@ export function registerDeckHandler(
       buildFleetTailLine(getWorkspaceMirror().getFleetSnapshot(workspaceId)),
   });
   const offBus = eventBus.subscribe((ev) => {
+    // Cross-workspace task receipts belong to the SENDER commander. The base
+    // workspaceId is server-stamped === from, but use `from` explicitly so a
+    // future event-shape change cannot wake the receiver or a third workspace.
+    if (ev.type === 'a2a.task') {
+      try {
+        recordDeckWorkA2aTask(ev.from, {
+          taskId: ev.taskId,
+          to: ev.to,
+          state: ev.state,
+          ts: ev.ts,
+          ...(ev.verifiedItemCount !== undefined
+            ? { verifiedItemCount: ev.verifiedItemCount }
+            : {}),
+        });
+      } catch (err) {
+        // The durable A2A task remains canonical; losing the projection must not
+        // break EventBus delivery or strand other subscribers.
+        // eslint-disable-next-line no-console
+        console.warn('[deck] failed to project A2A task into active work:', err);
+      }
+      // submitted/working are tracked but not wake-worthy: the originating
+      // commander waits for a terminal or blocked transition instead of polling.
+      if (
+        ev.state !== 'completed' &&
+        ev.state !== 'failed' &&
+        ev.state !== 'input-required' &&
+        ev.state !== 'canceled'
+      ) return;
+      const kind =
+        ev.state === 'completed' ? 'a2a.completed' as const
+        : ev.state === 'failed' ? 'a2a.failed' as const
+        : ev.state === 'input-required' ? 'a2a.input_required' as const
+        : 'a2a.canceled' as const;
+      coalescer?.push({
+        workspaceId: ev.from,
+        ptyId: `a2a:${ev.taskId}`,
+        kind,
+        source: 'a2a',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        a2a: {
+          taskId: ev.taskId,
+          from: ev.from,
+          to: ev.to,
+          state: ev.state,
+          ...(ev.verifiedItemCount !== undefined
+            ? { verifiedItemCount: ev.verifiedItemCount }
+            : {}),
+        },
+      });
+      return;
+    }
     // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
     // Route it into the SAME coalescer as lifecycle events so it inherits the
     // mode/budget/decision-gate policy — auto drives a fix, assist reports, off
@@ -1207,6 +1309,9 @@ export function registerDeckHandler(
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
   const heartbeatWorkspaceIds = (): string[] => {
     const ids = new Set<string>(managers.keys());
+    // Durable direct requests survive a restart even when the workspace's
+    // resting autonomy mode is off and no brain manager has been recreated yet.
+    for (const workspaceId of Object.keys(loadActiveDeckWorks())) ids.add(workspaceId);
     // A workspace can be armed (autonomy on) before its brain has ever spawned a
     // manager — include every mirrored workspace whose resting mode isn't 'off'.
     const entries = getWorkspaceMirror().getEntries();
@@ -1963,6 +2068,11 @@ export function registerDeckHandler(
   // Deferred so the daemon's session recovery settles first (a resume turn
   // wants the recovered fleet); unref'd so it never keeps Electron alive.
   const DECISION_RECONCILE_DELAY_MS = 4000;
+  const ACTIVE_WORK_RECONCILE_PROMPT =
+    'A human request is still active after wmux startup (see [active-work]). Reconcile it now: ' +
+    'query every tracked A2A task, inspect current panes, continue or repair incomplete work, ' +
+    'and independently verify claimed results. If everything passes, finalize with ' +
+    'deck_complete_work({summary, verification}); otherwise leave a precise progress update.';
   const reconcileResolvedDecisions = async (): Promise<void> => {
     // Serial + QUEUED (P1): each resume awaits a fleet slot and runs to
     // completion before the next starts, so >2 resolved decisions ALL process —
@@ -1976,6 +2086,21 @@ export function registerDeckHandler(
           () => {},
         );
       }
+    }
+    // Direct requests are durable too. Reconcile them after decisions so a
+    // resolved human fork is consumed before its parent request continues. A
+    // still-pending decision deliberately keeps the request parked.
+    // Direct work follows the same absolute global kill switch as edge and
+    // heartbeat wakes. Keep the durable record parked so turning auto-wake
+    // back on (or a fresh human turn) can resume it without losing ownership.
+    if (!loadAutoWakeEnabled()) return;
+    for (const workspaceId of Object.keys(loadActiveDeckWorks())) {
+      if (hasPendingDecision(workspaceId)) continue;
+      await runTurnForWorkspace(ACTIVE_WORK_RECONCILE_PROMPT, workspaceId, { queued: true }).catch(
+        () => {
+          /* best-effort — durable active work remains for the next wake */
+        },
+      );
     }
   };
   const reconcileTimer = setTimeout(

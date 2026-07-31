@@ -1066,6 +1066,91 @@ describe('the foreign-turn-end notification', () => {
   });
 });
 
+// The default terminal brain has no deck composer, so UserPromptSubmit is the
+// ONLY place main learns that a human assigned work directly in the TUI. Without
+// this the deck never opens a durable work record for those requests and the
+// commander is free to stop after one turn.
+describe('the foreign-turn-START notification', () => {
+  it('fires with the human`s prompt text, and not for our own turns', async () => {
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    // Our own send is not a foreign turn.
+    expect(onForeignTurnStart).not.toHaveBeenCalled();
+
+    deliverBrainPtyHookSignal(
+      signal('agent.user_prompt_submit', ptyId, { payload: { prompt: '  fix the failing test  ' } }),
+    );
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(1);
+    expect(onForeignTurnStart).toHaveBeenCalledWith('fix the failing test');
+    adapter.dispose();
+  });
+
+  it('still fires with an empty string when an older hook omits the prompt', async () => {
+    // Losing the text is acceptable; losing OWNERSHIP of the turn is not — the
+    // deck substitutes a neutral objective.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
+    expect(onForeignTurnStart).toHaveBeenCalledWith('');
+    adapter.dispose();
+  });
+
+  it('reports EVERY human submit so a second message lands as a follow-up', async () => {
+    // Deliberately not deduped: the deck appends each message to the open work
+    // record. Firing once would silently drop the human's follow-up.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'one' } }));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'two' } }));
+    expect(onForeignTurnStart.mock.calls.map((c) => c[0])).toEqual(['one', 'two']);
+    adapter.dispose();
+  });
+
+  it('a throwing consumer never breaks the hook path', async () => {
+    // Work tracking is best-effort: a store failure must not surface into the
+    // human's turn.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn(() => { throw new Error('disk full'); });
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart, onForeignTurnEnd });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    expect(() =>
+      deliverBrainPtyHookSignal(
+        signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'x' } }),
+      ),
+    ).not.toThrow();
+    // …and the foreign turn is still tracked to its end.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+});
+
 describe('an automation turn racing the human`s Enter', () => {
   it('stands down when the UserPromptSubmit lands inside the double-check window', async () => {
     const host = makeHost();

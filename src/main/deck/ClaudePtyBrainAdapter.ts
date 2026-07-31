@@ -572,6 +572,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
   onPtySpawned?: (ptyId: string | null) => void;
+  /** Fired when a turn the ADAPTER did not start begins. UserPromptSubmit carries
+   *  the exact human prompt in `payload.prompt`; the deck uses it to create or
+   *  extend the durable active-work record before the foreign turn can finish. */
+  onForeignTurnStart?: (prompt: string) => void;
   /** Fired when a turn the ADAPTER did not start finishes — the human typed
    *  into the embedded TUI and their turn just ended. The workspace was
    *  reporting busy for its whole duration, so whatever accumulated in the
@@ -760,6 +764,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       if (this.turnStop === null) {
         this.foreignTurnOpen = true;
         this.foreignTurnOpenedAt = Date.now();
+        const prompt =
+          typeof signal.payload['prompt'] === 'string'
+            ? signal.payload['prompt'].trim()
+            : '';
+        try {
+          // Empty is still meaningful: older Claude hook payloads may omit the
+          // prompt. The deck supplies a neutral fallback objective rather than
+          // losing ownership of the foreign turn entirely.
+          this.deps.onForeignTurnStart?.(prompt);
+        } catch {
+          /* work tracking is best-effort — never surface into a hook */
+        }
       }
       return;
     }

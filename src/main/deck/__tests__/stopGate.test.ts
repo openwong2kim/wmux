@@ -123,3 +123,86 @@ describe('evaluateStopGate', () => {
     expect(evaluateStopGate({ snapshot: snapshot([]), consecutiveBlocks: 0 }).block).toBe(false);
   });
 });
+
+// A durable active-work record is stronger evidence than the renderer-derived
+// pane snapshot: it survives a restart and does not depend on a pane being
+// observable. Without it the commander could end its turn the moment every
+// worker went quiet, reporting a delegated request as done without ever
+// verifying it. The consecutive-block cap still bounds the gate so a broken
+// store or tool cannot trap the TUI.
+describe('evaluateStopGate — durable active work', () => {
+  const work = { id: 'work-42' };
+  const quiescent = () => snapshot([pane({ agentStatus: 'idle' })]);
+
+  it('blocks with a finalize instruction when no worker is outstanding', () => {
+    const verdict = evaluateStopGate({
+      snapshot: quiescent(),
+      activeWork: work,
+      consecutiveBlocks: 0,
+    });
+    expect(verdict.block).toBe(true);
+    expect(verdict.reason).toContain('work-42');
+    expect(verdict.reason).toContain('deck_complete_work');
+  });
+
+  it('blocks even with NO snapshot at all (durable state beats a missing signal)', () => {
+    const verdict = evaluateStopGate({ snapshot: null, activeWork: work, consecutiveBlocks: 0 });
+    expect(verdict.block).toBe(true);
+    expect(verdict.reason).toContain('deck_complete_work');
+  });
+
+  it('blocks on a STALE snapshot, where pane state proves nothing', () => {
+    const now = 1_000_000;
+    const stale: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: now - DEFAULT_MAX_SNAPSHOT_AGE_MS - 1,
+      panes: [pane({ agentStatus: 'idle' })],
+    };
+    const verdict = evaluateStopGate({ snapshot: stale, activeWork: work, consecutiveBlocks: 0, now });
+    expect(verdict.block).toBe(true);
+    expect(verdict.reason).toContain('deck_complete_work');
+  });
+
+  it('appends the finalize instruction to an outstanding-worker refusal', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([pane({ agentStatus: 'running' })]),
+      activeWork: work,
+      consecutiveBlocks: 0,
+    });
+    expect(verdict.block).toBe(true);
+    // Both facts must reach the model: who is still busy AND how to close out.
+    expect(verdict.reason).toMatch(/worker/);
+    expect(verdict.reason).toContain('deck_complete_work');
+    // …and it must NOT fall back to the "just stop again" wording, which is what
+    // let the commander end the turn without finalizing.
+    expect(verdict.reason).not.toContain('say so and stop again');
+  });
+
+  it('still yields to the consecutive-block cap (no unbounded trap)', () => {
+    // The cap is 3: block at 2, release at 3 — same boundary as the
+    // outstanding-worker path, so a broken store cannot wedge the TUI.
+    expect(
+      evaluateStopGate({ snapshot: quiescent(), activeWork: work, consecutiveBlocks: 2 }).block,
+    ).toBe(true);
+    expect(
+      evaluateStopGate({ snapshot: quiescent(), activeWork: work, consecutiveBlocks: 3 }).block,
+    ).toBe(false);
+    expect(
+      evaluateStopGate({ snapshot: null, activeWork: work, consecutiveBlocks: 3 }).block,
+    ).toBe(false);
+    expect(
+      evaluateStopGate({
+        snapshot: null, activeWork: work, consecutiveBlocks: 1, maxConsecutiveBlocks: 1,
+      }).block,
+    ).toBe(false);
+  });
+
+  it('changes nothing when there is no active work', () => {
+    for (const activeWork of [null, undefined]) {
+      expect(evaluateStopGate({ snapshot: quiescent(), activeWork, consecutiveBlocks: 0 }).block)
+        .toBe(false);
+      expect(evaluateStopGate({ snapshot: null, activeWork, consecutiveBlocks: 0 }).block)
+        .toBe(false);
+    }
+  });
+});

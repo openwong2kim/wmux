@@ -33,12 +33,28 @@ import {
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
 import { hasReExamineLease } from '../../deck/reExamineLease';
+import {
+  completeActiveDeckWork,
+  loadActiveDeckWork,
+} from '../../deck/deckWorkStore';
+import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
  *  decision; the server can't parse that intent, so it demands substance — a
  *  bare "yes"/"done" is refused. Not NLP, just a floor against empty self-grants. */
 const MIN_SELF_RESOLVE_CHARS = 20;
+const MIN_WORK_SUMMARY_CHARS = 8;
+const MIN_WORK_VERIFICATION_CHARS = 12;
+
+/** Pull a task's canonical state from either renderer or daemon query shape. */
+function readTaskState(task: unknown): string | null {
+  if (!task || typeof task !== 'object' || Array.isArray(task)) return null;
+  const status = (task as Record<string, unknown>)['status'];
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return null;
+  const state = (status as Record<string, unknown>)['state'];
+  return typeof state === 'string' ? state : null;
+}
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -87,6 +103,91 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
       throw new Error('deck.resolveCommanderWorkspace: not a live commander session');
     }
     return { workspaceId: tokenWorkspaceId };
+  });
+
+  // Final-response barrier for a direct human request. This does not trust the
+  // model's prose: it checks the live local worker snapshot and re-queries every
+  // A2A task projected into the durable work record before removing that record.
+  // The verification text is an auditable statement of what the commander
+  // actually checked; it is required but is not treated as executable proof.
+  router.register('deck.completeWork', async (params) => {
+    const token = params['token'];
+    const ws = commanderTokenWorkspace(token);
+    if (!ws) {
+      throw new Error('deck.completeWork: not a live commander session');
+    }
+    const work = loadActiveDeckWork(ws);
+    if (!work) return { ok: false, error: 'no_active_work' };
+
+    const summary = typeof params['summary'] === 'string' ? params['summary'].trim().slice(0, 8_000) : '';
+    const verification =
+      typeof params['verification'] === 'string'
+        ? params['verification'].trim().slice(0, 12_000)
+        : '';
+    if (summary.length < MIN_WORK_SUMMARY_CHARS) {
+      return { ok: false, error: 'summary_too_short' };
+    }
+    if (verification.length < MIN_WORK_VERIFICATION_CHARS) {
+      return { ok: false, error: 'verification_required' };
+    }
+
+    // Brain PTYs are excluded from the mirror upstream, so only worker panes can
+    // block. A stale/missing renderer snapshot cannot prove work outstanding and
+    // therefore does not wedge finalization; A2A has a durable query below.
+    const snapshot = getWorkspaceMirror().getFleetSnapshot(ws);
+    if (snapshot && Date.now() - snapshot.ts <= 30_000) {
+      const outstanding = snapshot.panes.filter(
+        (pane) => pane.agentStatus === 'running' || pane.agentStatus === 'awaiting_input',
+      );
+      if (outstanding.length > 0) {
+        return {
+          ok: false,
+          error: 'workers_outstanding',
+          panes: outstanding.map((pane) => ({
+            ptyId: pane.ptyId,
+            agent: pane.agentName,
+            status: pane.agentStatus,
+          })),
+        };
+      }
+    }
+
+    const trackedIds = Object.keys(work.a2aTasks);
+    if (trackedIds.length > 0) {
+      const query = await router.dispatch({
+        id: `deck-complete-${work.id}`,
+        method: 'a2a.task.query',
+        params: { workspaceId: ws },
+        ...(typeof token === 'string' ? { commanderToken: token } : {}),
+      });
+      if (!query.ok) return { ok: false, error: 'a2a_query_failed' };
+      const result = query.result;
+      const tasks =
+        result && typeof result === 'object' && !Array.isArray(result) &&
+        Array.isArray((result as Record<string, unknown>)['tasks'])
+          ? ((result as Record<string, unknown>)['tasks'] as unknown[])
+          : null;
+      if (!tasks) return { ok: false, error: 'a2a_state_unavailable' };
+      const canonical = new Map<string, string | null>();
+      for (const task of tasks) {
+        if (!task || typeof task !== 'object' || Array.isArray(task)) continue;
+        const id = (task as Record<string, unknown>)['id'];
+        if (typeof id === 'string') canonical.set(id, readTaskState(task));
+      }
+      const incomplete = trackedIds
+        .map((taskId) => ({ taskId, state: canonical.get(taskId) ?? null }))
+        .filter((task) => task.state !== 'completed');
+      if (incomplete.length > 0) {
+        return { ok: false, error: 'a2a_tasks_outstanding', tasks: incomplete };
+      }
+    }
+
+    // Compare-and-delete: a human prompt that arrived while the canonical query
+    // was in flight may have extended/replaced ownership. Never close a newer
+    // request with an older completion verdict.
+    const completed = completeActiveDeckWork(ws, work);
+    if (!completed) return { ok: false, error: 'active_work_changed' };
+    return { ok: true, workId: work.id, summary, verification };
   });
 
   // `deck.requestDecision` is how the commander brain RAISES a decision gate —
