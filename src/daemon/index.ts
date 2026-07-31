@@ -340,7 +340,7 @@ const recoveredResumeBindings = new Map<string, ResumeBinding>();
 // in sync with AgentSlug in src/shared/events.ts and ALLOWED_AGENT_SLUGS in
 // integrations/shared/signal-types.ts.
 const KNOWN_AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude',
+  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude', 'kiro',
 ]);
 
 // === Constants ===

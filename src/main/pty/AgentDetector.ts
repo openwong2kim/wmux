@@ -35,7 +35,7 @@ type CriticalEventCallback = (event: CriticalEvent) => void;
 // signals on this slug, so the two MUST stay in lock-step. New agents
 // added here must also be added to integrations/shared/signal-types.ts
 // (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
@@ -62,6 +62,7 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
     case 'OpenCode': return 'opencode';
     case 'GitHub Copilot CLI': return 'copilot';
     case 'OpenClaude': return 'openclaude';
+    case 'Kiro CLI': return 'kiro';
     default: return undefined;
   }
 }
@@ -102,6 +103,13 @@ export function agentStatusToSignalKind(
 // ---------------------------------------------------------------------------
 // Per-agent patterns — ONLY agent-specific, no generic patterns
 // ---------------------------------------------------------------------------
+
+// Kiro's TUI is identified by a compound signature. A product-name mention by
+// itself is not enough: agents routinely print logs/docs about other agents.
+// Require an anchored Kiro chrome line (the exact banner or trust-mode footer)
+// AND the anchored composer placeholder from the same PTY session.
+const KIRO_CHROME_LINE = /^(?:Kiro\s*CLI(?:\s+v?\d[\w.-]*)?|Trust\s*All\s*Tools\s*active,\s*confirmations\s*are\s*off(?:\s*·.*)?)$/i;
+const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s*task\s*↵?\s*$/i;
 
 const AGENT_PATTERNS: AgentPattern[] = [
   // ── Claude Code ────────────────────────────────────────────────────────────
@@ -268,6 +276,18 @@ const AGENT_PATTERNS: AgentPattern[] = [
     ],
   },
 
+  // ── Kiro CLI ──────────────────────────────────────────────────────────────
+  // The generic gate loop below special-cases this slug and opens it only
+  // after BOTH KIRO_CHROME_LINE and KIRO_PROMPT_LINE have been observed.
+  {
+    agent: 'Kiro CLI',
+    slug: 'kiro',
+    gate: KIRO_CHROME_LINE,
+    patterns: [
+      { regex: KIRO_PROMPT_LINE, status: 'waiting', message: 'Ready for input' },
+    ],
+  },
+
   // ── OpenCode ──────────────────────────────────────────────────────────────
   {
     agent: 'OpenCode',
@@ -319,6 +339,11 @@ export class AgentDetector {
   // ActivityMonitor 'active' transitions to label the running status with the
   // agent that owns this PTY.
   private lastAgent: string | null = null;
+  // Kiro uses a compound gate so another agent merely mentioning "Kiro CLI"
+  // cannot steal this PTY's identity. Evidence is scoped to this detector/PTy.
+  private kiroChromeSeen = false;
+  private kiroPromptSeen = false;
+  private kiroPromptEvidence: string | null = null;
 
   /**
    * Register a callback for agent status events.
@@ -396,12 +421,88 @@ export class AgentDetector {
    * 검사와 processLine 양쪽에서 사용). activeAgents 가드로 세션당 1회만 발화.
    */
   private checkGates(clean: string): void {
+    // Kiro has no hook fallback, so identify its live TUI from two independent
+    // pieces of chrome. Newer v3 builds show the docs URL instead of a "Kiro
+    // CLI" banner; their cursor-drawn composer can also collapse whitespace in
+    // the raw PTY stream. Probe only a bounded tail and only when a cheap
+    // literal hint is present. Once Kiro is active this entire path is skipped.
+    const kiroIsActive = this.activeAgents.has('Kiro CLI');
+    if (!kiroIsActive && (!this.kiroChromeSeen || !this.kiroPromptSeen)) {
+      const probe = clean.length > 4096 ? clean.slice(-4096) : clean;
+      const mayContainChrome = !this.kiroChromeSeen && (
+        probe.includes('kiro') ||
+        probe.includes('Kiro') ||
+        probe.includes('KIRO') ||
+        probe.includes('Trust All Tools')
+      );
+      const mayContainPrompt = !this.kiroPromptSeen && (
+        probe.includes('ask') || probe.includes('Ask')
+      );
+
+      if (mayContainChrome || mayContainPrompt) {
+        // feed/processLine also call this with an ANSI-stripped candidate. Avoid
+        // doing the regex replacement twice when this candidate is already clean.
+        const evidenceLine = probe.includes('\u001b')
+          ? probe.replace(ANSI_STRIP, '')
+          : probe;
+        const normalized = evidenceLine.trim();
+        const lower = normalized.toLowerCase();
+
+        if (
+          mayContainChrome &&
+          (lower.includes('kiro.dev/docs/cli/') || KIRO_CHROME_LINE.test(normalized))
+        ) {
+          this.kiroChromeSeen = true;
+        }
+
+        if (mayContainPrompt) {
+          const promptStart = lower.lastIndexOf('ask');
+          const compactPrompt = promptStart >= 0
+            ? lower.slice(promptStart, promptStart + 96).replace(/\s+/g, '')
+            : '';
+          const promptMatch = normalized.match(KIRO_PROMPT_LINE);
+          if (
+            promptMatch ||
+            compactPrompt.includes('askaquestionordescribeatask')
+          ) {
+            this.kiroPromptSeen = true;
+            // When this is a normal complete line, retain the exact value the
+            // ordinary pattern pass will see so its same-frame dedup hits. The
+            // canonical fallback is only for cursor-concatenated evidence that
+            // cannot match the line pattern later in processLine.
+            this.kiroPromptEvidence = promptMatch?.[0]
+              ?? 'ask a question or describe a task';
+          }
+        }
+      }
+    }
+
     for (const ap of AGENT_PATTERNS) {
-      if (ap.gate && !this.activeAgents.has(ap.agent) && ap.gate.test(clean)) {
-        this.activeAgents.add(ap.agent);
-        this.lastAgent = ap.agent;
-        for (const cb of this.callbacks) {
-          cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+      // Gate checks run on every PTY output chunk. Never re-run regexes for an
+      // already-active agent; this keeps full-screen repaint traffic O(inactive
+      // agents) and makes the Kiro additions cheaper than the previous loop.
+      if (!ap.gate || this.activeAgents.has(ap.agent)) continue;
+      const gateMatched = ap.slug === 'kiro'
+        ? this.kiroChromeSeen && this.kiroPromptSeen
+        : ap.gate.test(clean);
+      if (!gateMatched) continue;
+
+      this.activeAgents.add(ap.agent);
+      this.lastAgent = ap.agent;
+      for (const cb of this.callbacks) {
+        cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+      }
+      // The two Kiro evidence lines may arrive in either order. If the
+      // composer prompt arrived first, its normal pattern pass happened while
+      // the gate was still closed. Replay the saved evidence once.
+      if (ap.slug === 'kiro' && this.kiroPromptEvidence) {
+        const key = `${ap.agent}:waiting`;
+        const value = this.kiroPromptEvidence;
+        if (this.lastEmittedFor.get(key) !== value) {
+          this.lastEmittedFor.set(key, value);
+          for (const cb of this.callbacks) {
+            cb({ agent: ap.agent, status: 'waiting', message: 'Ready for input' });
+          }
         }
       }
     }

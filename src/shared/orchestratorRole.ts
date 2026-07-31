@@ -151,6 +151,7 @@ const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
   'opencode',
   'copilot',
   'openclaude',
+  'kiro-cli',
 ]);
 
 /** Max lengths for the binding fields at the normalization boundary. `args` is

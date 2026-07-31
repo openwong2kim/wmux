@@ -40,7 +40,7 @@ import type { PaneMetadata, WorkspaceMetadata, TaskState } from './types';
  * (shared depends on main). New agents added to the union MUST be added
  * to all three locations.
  */
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
 
 export type WmuxEventType =
   | 'pane.created'

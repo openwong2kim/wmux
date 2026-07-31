@@ -55,7 +55,7 @@ export type AgentSignalKind =
  * renderer layer, NOT carried in the envelope. This keeps envelopes
  * lowercase + whitespace-free for safe routing key construction.
  */
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
 
 /**
  * slug → display name. The exact inverse of `agentDisplayToSlug` in
@@ -77,6 +77,7 @@ export function agentSlugToDisplay(slug: AgentSlug): string {
     case 'opencode': return 'OpenCode';
     case 'copilot': return 'GitHub Copilot CLI';
     case 'openclaude': return 'OpenClaude';
+    case 'kiro': return 'Kiro CLI';
   }
 }
 
@@ -174,7 +175,7 @@ export interface HookSignalResponse {
  *  unknown agent values rather than accepting any string (codex round-2
  *  review P2 #9). Keep this in sync with the AgentSlug union above. */
 const ALLOWED_AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude',
+  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude', 'kiro',
 ]);
 
 export function isAgentSignal(value: unknown): value is AgentSignal {

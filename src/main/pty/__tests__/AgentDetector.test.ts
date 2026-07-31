@@ -362,4 +362,106 @@ describe('AgentDetector', () => {
       }));
     });
   });
+
+  // ── Kiro CLI ──────────────────────────────────────────────────────────────
+  // Kiro has no hook bridge, so its identity comes entirely from PTY chrome.
+  // A product-name mention is NOT enough: agents routinely print logs and docs
+  // that name other agents. The gate requires an anchored chrome line AND the
+  // anchored composer placeholder from the SAME detector (i.e. the same PTY).
+  describe('Kiro CLI compound gate', () => {
+    const KIRO_BANNER = 'Kiro CLI v0.9.3\n';
+    const KIRO_DOCS = 'https://kiro.dev/docs/cli/\n';
+    const KIRO_TRUST = 'Trust All Tools active, confirmations are off\n';
+    const KIRO_PROMPT = '▸ ask a question or describe a task ↵\n';
+
+    it('opens the gate only after BOTH chrome and prompt evidence arrive', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+
+      det.feed(KIRO_BANNER);
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
+
+      det.feed(KIRO_PROMPT);
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+      const statuses = cb.mock.calls.map((c) => c[0].status);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Kiro CLI', status: 'running' });
+      expect(statuses).toContain('waiting');
+    });
+
+    it('accepts the two evidence lines in EITHER order (prompt first)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+
+      // The composer placeholder can be painted before the banner scrolls in.
+      det.feed(KIRO_PROMPT);
+      expect(det.getLastAgent()).toBeNull();
+
+      det.feed(KIRO_BANNER);
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+      // The saved prompt evidence is replayed exactly once so the pane is not
+      // stuck at 'running' while it is really idle and waiting for input.
+      const waiting = cb.mock.calls.filter((c) => c[0].status === 'waiting');
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0][0]).toMatchObject({ agent: 'Kiro CLI', message: 'Ready for input' });
+    });
+
+    it('accepts the v3 docs-URL chrome variant as chrome evidence', () => {
+      const det = new AgentDetector();
+      det.feed(KIRO_DOCS);
+      expect(det.getLastAgent()).toBeNull();
+      det.feed(KIRO_PROMPT);
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
+    it('accepts the trust-mode footer as chrome evidence', () => {
+      const det = new AgentDetector();
+      det.feed(KIRO_TRUST);
+      det.feed(KIRO_PROMPT);
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
+    it('does NOT activate from a product mention alone (no prompt evidence)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Read the Kiro CLI release notes and compare with KIRO docs\n');
+      det.feed('$ grep -R "Kiro CLI" .\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('does NOT steal a PTY that another agent already owns while merely mentioning Kiro', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.172\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+      cb.mockClear();
+
+      // Claude printing Kiro's chrome text as quoted evidence must not hand the
+      // pane's identity to Kiro — only real Kiro chrome + composer can.
+      det.feed('The other pane printed "Kiro CLI v0.9.3" in its log\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBe('Claude Code');
+    });
+
+    it('evidence is per-detector: one PTY cannot satisfy another PTY’s gate', () => {
+      const a = new AgentDetector();
+      const b = new AgentDetector();
+      a.feed(KIRO_BANNER);
+      b.feed(KIRO_PROMPT);
+      expect(a.getLastAgent()).toBeNull();
+      expect(b.getLastAgent()).toBeNull();
+    });
+
+    it('maps the display name to the kiro slug in both directions', async () => {
+      const { agentDisplayToSlug } = await import('../AgentDetector');
+      const { agentSlugToDisplay } = await import('../../../shared/hooks/signal-types');
+      expect(agentDisplayToSlug('Kiro CLI')).toBe('kiro');
+      expect(agentSlugToDisplay('kiro')).toBe('Kiro CLI');
+    });
+  });
 });

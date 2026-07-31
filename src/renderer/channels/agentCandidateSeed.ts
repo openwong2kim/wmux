@@ -32,6 +32,7 @@ const AGENT_SLUGS: ReadonlySet<string> = new Set([
   'aider',
   'opencode',
   'copilot',
+  'kiro',
 ] satisfies AgentSlug[]);
 
 /** Narrow a daemon-reported agent identity to a known slug. The daemon's
