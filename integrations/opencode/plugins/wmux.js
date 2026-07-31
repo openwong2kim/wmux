@@ -66,23 +66,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Keep these formulas in lockstep with src/shared/constants.ts. A non-empty
 // suffix is an instance boundary: this plugin never probes production paths as
 // an implicit fallback when its selected namespace is suffixed.
-function dataSuffix() {
+export function dataSuffix() {
   return process.env.WMUX_DATA_SUFFIX || '';
 }
 
-function getHomeDir() {
+export function getHomeDir() {
   return process.env.USERPROFILE || process.env.HOME || homedir();
 }
 
-function getWmuxHomeDir() {
+export function getWmuxHomeDir() {
   return join(getHomeDir(), `.wmux${dataSuffix()}`);
 }
 
-function getAuthTokenPath() {
+export function getAuthTokenPath() {
   return join(getHomeDir(), `.wmux${dataSuffix()}-auth-token`);
 }
 
-function getPipeName() {
+export function getPipeName() {
   // WMUX_PIPE_NAME is an explicit single-endpoint override for isolated probes
   // and advanced multi-instance setups. It must not fall through to a real
   // daemon when the selected override is unavailable.
@@ -97,14 +97,14 @@ function getPipeName() {
 
 // ----- Daemon endpoint (hook ingest lives in the daemon) ------------------
 
-function getDaemonAuthTokenPath() {
+export function getDaemonAuthTokenPath() {
   return join(getWmuxHomeDir(), 'daemon-auth-token');
 }
 
 // The hint records the socket the daemon actually bound, including a zombie-
 // socket fallback rename. It is read only from the selected suffix namespace;
 // the derived fallback is in that same namespace as well.
-function getDaemonPipeName() {
+export function getDaemonPipeName() {
   try {
     const fromFile = readFileSync(join(getWmuxHomeDir(), 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
@@ -130,7 +130,7 @@ function readTokenFile(tokenPath) {
 // Ordered endpoints. Missing token files skip their endpoint. The existing
 // WMUX_PIPE_NAME override remains a MAIN-addressed, one-target escape hatch;
 // WMUX_HOOKS_TO_MAIN=1 is the main-only kill switch.
-function resolveTargets() {
+export function resolveTargets() {
   const mainToken = readTokenFile(getAuthTokenPath());
   const pipeOverride = process.env.WMUX_PIPE_NAME;
   if (typeof pipeOverride === 'string' && pipeOverride.length > 0) {
@@ -362,7 +362,7 @@ async function sendRpcWithRetry(pipePath, request, deadline = Date.now() + HOOK_
 // A dispatch/auth refusal from an old daemon has outer ok=false and no
 // retryable=false marker; falling back to main is safe because the lifecycle
 // handler did not run.
-function shouldTryNextTarget(result) {
+export function shouldTryNextTarget(result) {
   if (result && result.ok === true) return false;
   if (result && result.retryable === false) return false;
   return true;
