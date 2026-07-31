@@ -168,7 +168,6 @@ describe('request-scoped grant does NOT widen approvalPress', () => {
 
   it('buildEventPrompt gates drive verbs on workActive, not on the resting mode', () => {
     const ev: BufferedEvent = {
-      workspaceId: 'ws-1',
       ptyId: 'a2a:task-1',
       kind: 'a2a.input_required',
       source: 'a2a',
