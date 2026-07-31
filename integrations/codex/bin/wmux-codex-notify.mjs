@@ -1,33 +1,39 @@
 #!/usr/bin/env node
-// wmux ↔ Codex CLI notify bridge (resume-binding capture).
+// wmux-managed: codex-lifecycle-bridge
+// wmux ↔ Codex CLI notify bridge (lifecycle + resume-binding capture).
 //
 // Registered as Codex's `notify` program in ~/.codex/config.toml:
 //   notify = ["node", "<abs path to this file>"]
-// Codex spawns it on `agent-turn-complete`, appending ONE extra argv: a JSON
-// payload `{ session_id, transcript_path, cwd, hook_event_name, model, ... }`
-// (https://developers.openai.com/codex/config-advanced). The spawned process
-// inherits the pane env, so WMUX_PTY_ID pins the capture to the exact pane.
+// Codex spawns it on lifecycle notifications, appending ONE extra argv. The
+// official `agent-turn-complete` payload uses
+// `{ type, thread-id, turn-id, cwd, input-messages, last-assistant-message }`;
+// older Codex builds may use
+// `{ session_id, transcript_path, cwd, hook_event_name, model, ... }`.
+// The spawned process inherits the pane env, so WMUX_PTY_ID pins the capture to
+// the exact pane and WMUX_DATA_SUFFIX pins every endpoint/file to that instance.
 //
 // This script:
 //   1. Parses the LAST argv as the Codex notify JSON payload.
-//   2. Builds the canonical AgentSignal envelope (agent:'codex', kind:'agent.stop').
-//   3. Sends the envelope to the first wmux endpoint that answers: the DAEMON
-//      control pipe (`daemon.hooks.signal`, token ~/.wmux/daemon-auth-token —
-//      the always-on process, so this still lands with the GUI closed), else
-//      the MAIN pipe (`hooks.signal`, token ~/.wmux-auth-token). Either side
-//      builds the resume binding from signal.agent + agentSessionId + cwd +
+//   2. Ignores unrelated official lifecycle event types.
+//   3. Builds a canonical, metadata-only AgentSignal envelope
+//      (agent:'codex', kind:'agent.stop'); prompt and assistant content is never
+//      logged or forwarded.
+//   4. Sends the envelope to the first wmux endpoint that owns the request: the
+//      DAEMON control pipe (`daemon.hooks.signal`, suffix-scoped daemon token —
+//      the always-on process, so this still lands with the GUI closed), else the
+//      MAIN pipe (`hooks.signal`, suffix-scoped main token). Either side builds
+//      the resume binding from signal.agent + agentSessionId + cwd + optional
 //      transcript_path; both paths are fully agent-agnostic.
 //      WMUX_HOOKS_TO_MAIN=1 forces main-only.
-//   5. On failure, spools a resume-binding record the daemon drains on next boot.
+//   5. On failure, spools a suffix-scoped resume-binding record for daemon boot.
 //   6. Exits 0 ALWAYS, under a hard timeout, so a wmux problem never stalls Codex.
 //
 // SELF-CONTAINED: JS-only, Node built-ins only — no imports from src/ or
 // integrations/shared/ (mirrors integrations/claude/bin/wmux-bridge.mjs; the
 // Claude bridge's plugin constraint blocks a shared import, so full DRY across
-// the two is impossible — the shared ~120 lines of infra are duplicated by
-// design, per the codex-resume-support eng review, decision 2). This bridge is
-// LEANER than the Claude one: Codex gives session_id directly (no transcript
-// basename derivation), and has no permission-mode / usage to extract.
+// the two is impossible — the shared infra is duplicated by design). This
+// bridge is leaner than the Claude one: Codex supplies an official thread id (or
+// legacy session_id) directly and has no permission-mode / usage to extract.
 
 import { readFileSync, existsSync, mkdirSync, appendFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
@@ -36,9 +42,11 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
+const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 // Stamped on every codex-notify.log line; bump on behavior changes.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
-const BRIDGE_VERSION = '0.2.0';
+//   0.3.0 — official payload routing + suffix-isolated endpoint/state paths.
+const BRIDGE_VERSION = '0.3.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -47,52 +55,65 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
+// Keep these formulas in lockstep with src/shared/constants.ts. A non-empty
+// suffix is an instance boundary: this bridge never probes production paths as
+// a fallback when its selected namespace is suffixed.
+function dataSuffix() {
+  return process.env.WMUX_DATA_SUFFIX || '';
+}
+
+function getHomeDir() {
+  return process.env.USERPROFILE || process.env.HOME || homedir();
+}
+
+function getWmuxHomeDir() {
+  return join(getHomeDir(), `.wmux${dataSuffix()}`);
+}
+
 function getAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux-auth-token');
+  return join(getHomeDir(), `.wmux${dataSuffix()}-auth-token`);
 }
 
 function getPipeName() {
   // WMUX_PIPE_NAME override: for the isolated capture probe
   // (scripts/codex-resume-capture-probe.mjs) and advanced multi-instance setups.
-  // Not a security widening — a same-user process can already read the auth
-  // token from ~/.wmux-auth-token, so redirecting the pipe grants nothing new.
+  // Not a security widening — a same-user process can already read the selected
+  // namespace's auth token, so redirecting the pipe grants nothing new.
   const override = process.env.WMUX_PIPE_NAME;
   if (typeof override === 'string' && override.length > 0) return override;
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
-  return join(homedir() || '/tmp', '.wmux.sock');
+  return join(homedir() || '/tmp', `.wmux${dataSuffix()}.sock`);
 }
 
 // ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------
 //
 // The daemon is the always-on process and owns hook ingest, so it is tried
 // first; the main pipe stays as the fallback for an older wmux or a daemon that
-// is down. Same ~/.wmux (no data-suffix) limitation as the log path — the pane
-// env strips WMUX_DATA_SUFFIX, so a dev-suffix daemon is unreachable here.
+// is down. WMUX_DATA_SUFFIX is propagated into pane environments, so daemon and
+// main discovery stays inside the pane's selected instance namespace.
 function getDaemonAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux', 'daemon-auth-token');
+  return join(getWmuxHomeDir(), 'daemon-auth-token');
 }
 
-// Prefer the `daemon-pipe` hint file the daemon writes at boot (the name it
-// ACTUALLY bound, which differs from the convention after a zombie-pipe
-// fallback rename), then the derived name.
+// Prefer the suffix-scoped `daemon-pipe` hint the daemon writes at boot (the
+// name it ACTUALLY bound, which differs from the convention after a zombie-pipe
+// fallback rename), then derive a socket in that same namespace. Never consult
+// an unsuffixed hint or endpoint for a suffixed instance.
 function getDaemonPipeName() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
   try {
-    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    const fromFile = readFileSync(join(getWmuxHomeDir(), 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
-    // Hint file absent/unreadable — fall through to the derived name.
+    // Hint file absent/unreadable — derive within the selected namespace.
   }
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
-  return join(home, '.wmux', 'daemon.sock');
+  return join(getWmuxHomeDir(), 'daemon.sock');
 }
 
 function readTokenFile(tokenPath) {
@@ -128,8 +149,7 @@ function resolveTargets() {
 }
 
 function getLogPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux');
+  const dir = getWmuxHomeDir();
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch { /* appendFileSync below also fails → swallowed */ }
@@ -153,11 +173,9 @@ function logEvent(outcome, extra) {
 //
 // Same record shape + ptyId key + atomic temp→rename + don't-replace-newer rule
 // the daemon ingest expects (mirrors integrations/claude/bin/wmux-bridge.mjs).
-// Path matches the bridge convention (~/.wmux, no data-suffix — a reserved
-// WMUX_* var the pane env strips).
+// The spool lives in the same suffix-scoped data directory the daemon drains.
 function getResumeSpoolDir() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'resume-spool');
+  const dir = join(getWmuxHomeDir(), 'resume-spool');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch { /* writeFileSync below throws + is swallowed */ }
@@ -306,22 +324,34 @@ async function main() {
   let payload;
   try {
     payload = JSON.parse(raw);
-  } catch (err) {
-    logEvent('malformed-payload', { error: String(err) });
+  } catch {
+    // JSON parse diagnostics may quote the input; never copy them to the log.
+    logEvent('malformed-payload');
     return;
   }
-  if (!payload || typeof payload !== 'object') {
-    logEvent('non-object-payload', {});
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    logEvent('non-object-payload');
     return;
   }
 
-  const sessionId = nonEmptyStr(payload.session_id);
-  if (!sessionId) {
-    // No session id → nothing resumable to capture. (Non-turn events, or a
-    // Codex version that omits it.) Drop quietly.
-    logEvent('no-session-id', { event: payload.hook_event_name });
+  // Official lifecycle payloads are explicitly typed. If `type` is present it
+  // is authoritative: a legacy-looking session_id must not turn an unrelated
+  // official event into agent.stop. With no official type, retain the legacy
+  // notify behavior (including old clients that omitted hook_event_name).
+  const hasOfficialType = Object.prototype.hasOwnProperty.call(payload, 'type');
+  if (hasOfficialType && payload.type !== AGENT_TURN_COMPLETE) {
+    logEvent('ignored-event-type', { format: 'official' });
     return;
   }
+
+  const sessionId = nonEmptyStr(payload['thread-id']) ?? nonEmptyStr(payload.session_id);
+  if (!sessionId) {
+    // No thread/session id → nothing resumable to capture. Drop quietly without
+    // logging any caller-provided payload field.
+    logEvent('no-session-id', { format: hasOfficialType ? 'official' : 'legacy' });
+    return;
+  }
+  const turnId = nonEmptyStr(payload['turn-id']);
   const cwd = nonEmptyStr(payload.cwd) ?? process.cwd();
   const transcriptPath = nonEmptyStr(payload.transcript_path);
 
@@ -340,8 +370,9 @@ async function main() {
 
   // Canonical AgentSignal envelope. kind 'agent.stop' = a turn completed (the
   // strongest "task done" signal); it triggers the agent-agnostic resume-binding
-  // capture in hooks.rpc.ts. transcript_path rides in the payload — hooks.rpc
-  // reads signal.payload.transcript_path for the binding's D5 liveness probe.
+  // capture in hooks.rpc.ts. Only non-sensitive, allowlisted metadata rides in
+  // signal.payload: official turn-id and the legacy transcript_path used by the
+  // binding's D5 liveness probe. Native input/assistant content is never copied.
   const envelope = {
     kind: 'agent.stop',
     agent: 'codex',
@@ -350,7 +381,10 @@ async function main() {
     ...(envSurfaceId ? { surfaceId: envSurfaceId } : {}),
     ...(envPtyId ? { ptyId: envPtyId } : {}),
     cwd,
-    payload: { ...(transcriptPath ? { transcript_path: transcriptPath } : {}) },
+    payload: {
+      ...(turnId ? { 'turn-id': turnId } : {}),
+      ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+    },
     ts: Date.now(),
   };
 
