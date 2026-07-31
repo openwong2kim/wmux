@@ -587,6 +587,13 @@ export function registerBrowserRpc(
    * only need the port/shell URL.
    */
   router.register('browser.cdp.info', async (params) => {
+    if (webviewCdpManager.getCdpPort() <= 0) {
+      throw new Error(
+        'CDP remote debugging is disabled — browser automation is unavailable. ' +
+          'Enable it via ~/.wmux/config.json (browser.cdp.enabled = true) and restart wmux, ' +
+          'or unset the WMUX_DISABLE_CDP environment variable.',
+      );
+    }
     const callerWorkspaceId =
       typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
         ? params['workspaceId']

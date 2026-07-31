@@ -400,3 +400,60 @@ describe('loadConfig — channel retention coercion', () => {
     }
   });
 });
+
+describe('createDefaultConfig — browser.cdp (#613)', () => {
+  it('includes the ON-by-default browser.cdp slice', () => {
+    const c = createDefaultConfig();
+    expect(c.browser).toEqual({ cdp: { enabled: true } });
+  });
+});
+
+describe('loadConfig — browser.cdp backfill (#613, non-destructive)', () => {
+  // Same backward-compat guarantee as lanlink: an OLD config.json (predating the
+  // browser field) must keep loading, get backfilled to the ON default, and NOT
+  // lose any sibling field. A malformed slice degrades to ON (never silently
+  // disabling browser automation). An explicit `false` is honoured verbatim —
+  // that is the opt-out path the issue exists to provide.
+
+  it('REGRESSION: old config.json with no browser → backfilled to ON, all siblings preserved', () => {
+    const c0 = createDefaultConfig();
+    const sentinelPipe = '\\\\.\\pipe\\wmux-OLD-CONFIG-SENTINEL';
+    const old: Record<string, unknown> = {
+      ...c0,
+      daemon: { ...c0.daemon, pipeName: sentinelPipe },
+    };
+    delete old.browser; // an old file simply has no browser key
+    writeRawConfig(old);
+
+    const c = loadConfig();
+    expect(c.browser).toEqual({ cdp: { enabled: true } }); // backfilled ON
+    expect(c.daemon.pipeName).toBe(sentinelPipe); // sibling preserved
+  });
+
+  it('garbage browser (string) → default ON, pipeName NOT nuked', () => {
+    const c0 = createDefaultConfig();
+    const sentinelPipe = '\\\\.\\pipe\\wmux-GARBAGE-SENTINEL';
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, pipeName: sentinelPipe }, browser: 'totally-not-an-object' });
+    const c = loadConfig();
+    expect(c.daemon.pipeName).toBe(sentinelPipe);
+    expect(c.browser).toEqual({ cdp: { enabled: true } });
+  });
+
+  it('array-shaped browser is rejected (not treated as an object) → default ON', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, browser: [] });
+    expect(loadConfig().browser).toEqual({ cdp: { enabled: true } });
+  });
+
+  it('non-boolean enabled → default ON', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, browser: { cdp: { enabled: 'yes' } } });
+    expect(loadConfig().browser).toEqual({ cdp: { enabled: true } });
+  });
+
+  it('★ honours browser.cdp.enabled = false verbatim (the opt-out path)', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, browser: { cdp: { enabled: false } } });
+    expect(loadConfig().browser).toEqual({ cdp: { enabled: false } });
+  });
+});

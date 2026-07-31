@@ -222,4 +222,31 @@ export interface DaemonConfig {
    * IP. Always present at runtime after `loadConfig` normalises it.
    */
   lanlink?: LanLinkConfig;
+  /**
+   * Browser automation control. OPTIONAL — old config.json files predate it
+   * and must keep loading, so `validateConfig` deliberately ignores this field
+   * and `loadConfig` backfills it per-field without resetting the rest of the
+   * file (same convention as `lanlink`).
+   *
+   * `cdp.enabled` controls whether Electron's CDP (Chrome DevTools Protocol)
+   * remote-debugging port is opened on boot. CDP is what drives webview-based
+   * browser automation (MCP browser tools, screenshots, DOM snapshots). It is
+   * enabled by default because that automation is a core feature, but it is
+   * the single largest same-user attack surface (loopback socket only — no
+   * filesystem or process control needed, unlike other same-user vectors).
+   * Disabling it (config `browser.cdp.enabled = false` or env
+   * `WMUX_DISABLE_CDP=true`) closes the port; browser automation then fails
+   * with an explicit error instead of silently. See docs/SECURITY.md §3.
+   */
+  browser?: BrowserCdpConfig;
+}
+
+/**
+ * Browser automation control slice (issue #613). `cdp.enabled` defaults true
+ * for compatibility — disabling it closes Electron's remote-debugging port.
+ */
+export interface BrowserCdpConfig {
+  cdp: {
+    enabled?: boolean;
+  };
 }
