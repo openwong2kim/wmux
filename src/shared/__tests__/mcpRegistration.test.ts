@@ -185,6 +185,41 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     writeCodex('model = "x"\n');
     expect(readCodexNotifyStatus(home).state).toBe('none');
   });
+
+  // Regression: a non-array `notify` (e.g. a bare string) used to slip past the
+  // foreign guard (getNotify returned null for non-arrays) and be OVERWRITTEN.
+  // inspectNotifySlot now treats any present, non-string-array slot as a conflict.
+  it('NEVER clobbers a non-array (string) notify — reports foreign, untouched', () => {
+    const original = 'model = "x"\nnotify = "some-program"\n';
+    const p = writeCodex(original);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('foreign');
+    expect(r.wrote).toBe(false);
+    expect(fs.readFileSync(p, 'utf8')).toBe(original); // byte-stable
+    expect(readCodexNotifyStatus(home).state).toBe('foreign');
+  });
+
+  it('NEVER clobbers a notify array containing non-string elements', () => {
+    const original = 'model = "x"\nnotify = ["node", 123]\n';
+    const p = writeCodex(original);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('foreign');
+    expect(r.wrote).toBe(false);
+    expect(fs.readFileSync(p, 'utf8')).toBe(original);
+  });
+
+  it('claims an explicit empty notify array (a no-op slot)', () => {
+    writeCodex('model = "x"\nnotify = []\n');
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBeNull();
+    expect(r.wrote).toBe(true);
+    expect(readCodexNotifyStatus(home).state).toBe('wmux');
+  });
+
+  it('readCodexNotifyStatus reports malformed (not none) when config exists but is unparseable', () => {
+    writeCodex('this = = broken [[');
+    expect(readCodexNotifyStatus(home).state).toBe('malformed');
+  });
 });
 
 describe('registerTarget — Gemini (unverified, never created)', () => {
