@@ -28,7 +28,7 @@ describe('PluginFrame — events.poll workspace scoping', () => {
   });
 
   it('sends workspaceId on the events.poll call, on BOTH the first and subsequent polls', () => {
-    const call = src.match(/rpc\(\s*pluginName,\s*'events\.poll'[\s\S]*?\)\n/);
+    const call = src.match(/rpc\(\s*pluginName,\s*'events\.poll'[\s\S]*?\)\r?\n/);
     expect(call, 'events.poll call site not found').not.toBeNull();
     const text = call![0];
     // The cursor===null (first poll) and cursor branches are separate object
