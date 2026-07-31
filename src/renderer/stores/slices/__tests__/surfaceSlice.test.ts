@@ -7,6 +7,8 @@ type TestState = {
   activeWorkspaceId: string;
   surfaceAgent: Record<string, { name: string; status: string }>;
   surfaceActivity: Record<string, string>;
+  surfacePorts: Record<string, number[]>;
+  surfaceAgentStatus: Record<string, string>;
 };
 
 function createHarness() {
@@ -16,6 +18,8 @@ function createHarness() {
     activeWorkspaceId: workspace.id,
     surfaceAgent: {},
     surfaceActivity: {},
+    surfacePorts: {},
+    surfaceAgentStatus: {},
   };
 
   const set = (updater: (state: TestState) => void) => {
@@ -438,5 +442,63 @@ describe('surfaceSlice.closeSurface — surfaceActivity cleanup (Fleet activity 
 
     expect(state.surfaceActivity['pty-1']).toBeUndefined();
     expect(state.surfaceActivity['pty-2']).toBe('✎ keep.ts');
+  });
+});
+
+// surfacePorts and surfaceAgentStatus were the two transient per-ptyId maps
+// still leaking here: every closed surface left a dead entry behind, and a
+// REUSED ptyId inherited the previous surface's status (reading as blocked or
+// running from birth). Found in the fleet-activity adversarial review.
+describe('surfaceSlice.closeSurface — surfacePorts / surfaceAgentStatus cleanup', () => {
+  it('clears BOTH transient maps for the closed surface ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;
+    state.surfacePorts['pty-1'] = [5173];
+    state.surfaceAgentStatus['pty-1'] = 'awaiting_input';
+
+    slice.closeSurface(paneId, surfaceId);
+
+    expect(state.surfacePorts['pty-1']).toBeUndefined();
+    expect(state.surfaceAgentStatus['pty-1']).toBeUndefined();
+  });
+
+  it('leaves other surfaces’ ports and status untouched', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    slice.addSurface(paneId, 'pty-2', 'pwsh', 'C:\\b');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId1 = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;
+    state.surfacePorts['pty-1'] = [3000];
+    state.surfacePorts['pty-2'] = [4000];
+    state.surfaceAgentStatus['pty-1'] = 'running';
+    state.surfaceAgentStatus['pty-2'] = 'complete';
+
+    slice.closeSurface(paneId, surfaceId1);
+
+    expect(state.surfacePorts['pty-1']).toBeUndefined();
+    expect(state.surfacePorts['pty-2']).toEqual([4000]);
+    expect(state.surfaceAgentStatus['pty-1']).toBeUndefined();
+    expect(state.surfaceAgentStatus['pty-2']).toBe('complete');
+  });
+
+  it('a ptyId reused by a later surface starts with NO inherited status', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-reused', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const firstId = pane.surfaces.find((s) => s.ptyId === 'pty-reused')!.id;
+    state.surfaceAgentStatus['pty-reused'] = 'awaiting_input';
+
+    slice.closeSurface(paneId, firstId);
+    slice.addSurface(paneId, 'pty-reused', 'pwsh', 'C:\\a');
+
+    expect(state.surfaceAgentStatus['pty-reused']).toBeUndefined();
   });
 });

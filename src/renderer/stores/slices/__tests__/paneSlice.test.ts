@@ -673,6 +673,42 @@ describe('PaneSlice', () => {
     });
   });
 
+  // The two transient maps that were still leaking at this teardown site: a
+  // closed subtree left dead surfacePorts / surfaceAgentStatus entries behind,
+  // so a REUSED ptyId inherited the previous pane's status.
+  describe('surfacePorts / surfaceAgentStatus teardown', () => {
+    it('closePane clears BOTH maps for every surface under the closed subtree', () => {
+      const ws = getActiveWorkspace(store);
+      const rootLeafId = getLeafPanes(ws.rootPane)[0].id;
+      store.getState().splitPane(rootLeafId, 'horizontal');
+      const closing = getLeafPanes(getActiveWorkspace(store).rootPane)[1];
+      store.setState((s) => {
+        const leaf = getLeafPanes(s.workspaces[0].rootPane).find((l) => l.id === closing.id);
+        if (leaf) {
+          leaf.surfaces.push({ id: 'surf-p1', ptyId: 'pty-leak-1', title: 'x', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
+          leaf.surfaces.push({ id: 'surf-p2', ptyId: 'pty-leak-2', title: 'y', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
+        }
+        s.surfacePorts['pty-leak-1'] = [5173];
+        s.surfacePorts['pty-leak-2'] = [8080];
+        s.surfaceAgentStatus['pty-leak-1'] = 'awaiting_input';
+        s.surfaceAgentStatus['pty-leak-2'] = 'running';
+        // A surface OUTSIDE the closed subtree must survive.
+        s.surfacePorts['pty-keep'] = [4000];
+        s.surfaceAgentStatus['pty-keep'] = 'complete';
+      });
+
+      store.getState().closePane(closing.id);
+
+      const state = store.getState();
+      expect(state.surfacePorts['pty-leak-1']).toBeUndefined();
+      expect(state.surfacePorts['pty-leak-2']).toBeUndefined();
+      expect(state.surfaceAgentStatus['pty-leak-1']).toBeUndefined();
+      expect(state.surfaceAgentStatus['pty-leak-2']).toBeUndefined();
+      expect(state.surfacePorts['pty-keep']).toEqual([4000]);
+      expect(state.surfaceAgentStatus['pty-keep']).toBe('complete');
+    });
+  });
+
   // [REGRESSION] surfaceActivity must NEVER be persisted. buildSessionData
   // (AppLayout.tsx) is an allowlist-by-construction whose return type is
   // SessionData; a field absent from SessionData therefore cannot be written to

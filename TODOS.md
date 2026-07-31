@@ -339,10 +339,9 @@
 - **Depends on:** fleet-activity-line ship 후.
 - **Priority:** P2
 
-## (bug) transient per-ptyId 맵이 surface close 시 leak (P3, found in fleet-activity adversarial review)
-- **What:** `surfacePorts`(및 `surfaceAgentStatus`)가 `closePane`/`closeSurface`에서 정리 안 됨 → 죽은 ptyId 엔트리 잔존. fleet-activity PR이 `surfaceActivity`는 양 사이트에서 정리하지만 기존 두 맵은 미수정.
-- **Why:** 적대 리뷰가 "surfacePorts를 cleanup 선례로 쓰지 말라(그 자체로 leak)"며 발견. 장기 세션서 죽은 ptyId 누적.
-- **Pros:** store 위생, 미세 메모리.
+## ✅ (bug) transient per-ptyId 맵 leak — FIXED (2026-07-30)
+- `surfacePorts`와 `surfaceAgentStatus`를 `closePane`(paneSlice.ts)과 `closeSurface`(surfaceSlice.ts) 양쪽에서 정리하도록 추가.
+- 기존 `surfaceAgent`/`surfaceActivity`/`surfacePendingQuestion` 정리 패턴과 동일.
 - **Cons:** 영향 미미(엔트리 작음).
 - **Context:** `closePane`(paneSlice.ts:322) + `closeSurface`(surfaceSlice.ts:132)에 delete 추가. fleet-activity가 정리 패턴을 이미 깔아둠.
 - **Depends on:** 없음.

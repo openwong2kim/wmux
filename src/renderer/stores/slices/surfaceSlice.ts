@@ -228,6 +228,11 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // Drop the pending question too: a leaked entry would let a REUSED ptyId
     // inherit a dead pane's question and read as blocked from birth.
     if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
+    // Drop per-surface ports and agent status too (fleet-activity adversarial
+    // review): without this, every closed surface leaves a dead ptyId entry
+    // behind, and a REUSED ptyId inherits the previous surface's status.
+    if (closedPtyId && state.surfacePorts) delete state.surfacePorts[closedPtyId];
+    if (closedPtyId && state.surfaceAgentStatus) delete state.surfaceAgentStatus[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
