@@ -44,13 +44,20 @@
 //                 itself advertises, and it is the only mapping here that is
 //                 unambiguous for ANY question shape.
 //
-// KNOWN LIMITATION, deliberately shipped: for a yes/no question '1' is the
+// DEFAULT MAPPING + per-option override. For a yes/no question '1' is the
 // affirmative answer, but AskUserQuestion options are agent-authored, so on a
 // question whose first option is not the affirmative one, "approve" means
 // "pick the first option" rather than "say yes". Nothing on the wire tells us
-// which is which. The honest surface for a phone is therefore Deny (exact) +
-// Approve (first option); a richer per-option press belongs with the option
-// list in the phone UI, which is M5/M6 scope, not here.
+// which is which at the default-mapping layer.
+//
+// Per-option press is now supported: the registry extracts structured
+// `choices` (key = the original 1-based digit, label) from the hook payload,
+// and a resolver may send `choiceKey` to select a SPECIFIC option rather than
+// the default first. The registry validates the key belongs to the request,
+// re-verifies the option row is visible, then sends exactly that digit — no CR.
+// Omitting `choiceKey` preserves the default mapping byte-for-byte, so old
+// clients keep working. See ApprovalRegistry.resolve and the phone-client
+// contract (`docs/phone-client-contract.md`, "choices" / "choiceKey").
 
 /** The two byte sequences for one agent. Single presses — never a CR chaser. */
 export interface ApprovalKeystrokes {

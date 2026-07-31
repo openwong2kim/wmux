@@ -205,9 +205,6 @@ export function sanitizeOptions(value: unknown): string[] | undefined {
   return labels.length > 0 ? labels : undefined;
 }
 
-/** Cap for a choice key — a 1-based digit, never more than 2 characters. */
-export const MAX_CHOICE_KEY_CHARS = 2;
-
 /**
  * Re-apply caps to `choices` read back from disk. Each entry must have a
  * valid `key` (1-2 digit string) and a non-empty `label`. Entries that fail
