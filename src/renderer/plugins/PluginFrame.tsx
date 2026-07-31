@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useStore } from '../stores';
 import {
   PLUGIN_BRIDGE_VERSION,
   PLUGIN_PROTOCOL_SCHEME,
@@ -53,6 +54,9 @@ export default function PluginFrame({
   className?: string;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  // Fix: scope events.poll to the active workspace so plugins cannot observe
+  // other workspaces' lifecycle events (TODOS: "Unscoped plugin events.poll").
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 
   useEffect(() => {
     const iframe = frameRef.current;
@@ -86,7 +90,9 @@ export default function PluginFrame({
         if (disposed || inFlight) return;
         inFlight = true;
         window.electronAPI.plugins
-          .rpc(pluginName, 'events.poll', cursor === null ? {} : { cursor })
+          .rpc(pluginName, 'events.poll', cursor === null
+            ? { workspaceId: activeWorkspaceId }
+            : { cursor, workspaceId: activeWorkspaceId })
           .then((raw) => {
             const resp = raw as { ok?: boolean; result?: { events?: unknown[]; nextCursor?: number } } | null;
             if (!resp || resp.ok !== true || !resp.result) {
@@ -163,7 +169,7 @@ export default function PluginFrame({
       port?.close();
       port = null;
     };
-  }, [pluginName, entry, forwardEvents]);
+  }, [pluginName, entry, forwardEvents, activeWorkspaceId]);
 
   return (
     <iframe

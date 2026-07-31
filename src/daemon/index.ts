@@ -3090,8 +3090,10 @@ function registerRpcHandlers(
   // a2a.channel.operatorList — 비공개 채널 발견 어포던스(설계 §2.2, 읽기 전용).
   // operatorJoin과 동일한 humans-only 트랜스포트: private 채널은 list()에서 비멤버에게
   // 숨겨지므로 GUI가 "들어갈 수 있는 방"을 보여주려면 이 메서드가 필요하다. 읽기지만
-  // 파이프에 노출하면 에이전트가 전 private 채널 이름을 열거할 수 있으므로 파이프
-  // 미등록 + 렌더러 전용 경로만. §2.2 직결 잔여: 같은 호출자는 이미 디스크에서 동일
+  // 파이프에 노출하면 에이전트가 전 private 채널 이름을 열거할 수 있으므로 외부 파이프
+  // (main RpcRouter) 미등록 + 렌더러 전용 경로만. 이 daemon 내부 파이프(DaemonPipeServer)
+  // 에는 등록돼 있으나 main process만 접근 가능.
+  // §2.2 직결 잔여: 같은 호출자는 이미 디스크에서 동일
   // 정보+메시지 전문을 읽는다 — API가 디스크보다 강하지 않다(명시 수용).
   pipeServer.onRpc('a2a.channel.operatorList', async (params) => {
     const verifiedWorkspaceId =

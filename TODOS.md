@@ -46,11 +46,11 @@
 - **Context:** 스코핑 조사 판이 `gh pr diff 679`로 확인하던 중 판이 종료돼 결론을 못 봤다. 시작점: `PlaywrightEngine.ts`의 `resolveSelectionContext` / `explicitSurfaceId` 취급.
 - **Priority:** P0 — #679 머지 전에 답이 나와야 한다.
 
-## 스코핑 조사 U4·U8·U3 미검증 (P1)
-- **What:** `plans/workspace-scoping-survey.md`의 164지점 중 미검증 3건. **U8**(`meta.setStatus/setProgress`가 호출자 스코프 없이 사람이 보는 활성 워크스페이스에 씀)이 U7과 같은 계열로 보인다. U4(`principal.remove`/`markStaleWorkspace`가 스탬프 존재만 확인, 대상 비교 없음), U3(`operatorList` 주석은 "파이프 미등록"인데 `daemon/index.ts:3050`에 등록됨).
-- **Why:** U7은 REAL이라 PR #679가 됐고, U1은 검증 결과 ACCEPTED였다. 나머지도 갈라야 한다 — 관찰만 남기면 다음 사람이 어느 쪽인지 모른다.
-- **Context:** 판정 기준·1차 오판 사유가 문서에 기록돼 있다. 낮은 effort로 관찰 → 높은 effort로 검증 2단계가 U1에서 실효를 증명했다.
-- **Priority:** P1
+## ✅ 스코핑 조사 U4·U8·U3 검증 완료 (2026-07-30)
+- **U8** (`meta.setStatus/setProgress`): **REAL (P2) → FIXED** — `meta.rpc.ts`에 senderPtyId 기반 워크스페이스 해석 추가. 외부 caller는 서버가 해석한 ws만 쓰고, 해석 불가면 **거부**(fail-closed). 렌더러가 ws 없는 payload를 활성 워크스페이스에 적용하므로 `undefined` 통과는 취약점 그대로였다.
+- **U4** (`principal.remove`/`markStaleWorkspace`): **ACCEPTED** — transport-mitigated (renderer-only IPC + wmux.internal capability + same-user ceiling).
+- **U3** (`operatorList` "파이프 미등록"): **ACCEPTED** — 용어 혼란. 외부 facing RpcRouter에는 미등록, daemon 내부 파이프에만 등록. 주석 정정 완료.
+- 판정서: `plans/scoping-u4-u8-u3-verdict.md`
 
 ## A4 재정의 — 자식 워크스페이스 트리 대신 "막힘 노출" (P1)
 - **What:** 원안은 fan-out 태스크를 부모의 하위 워크스페이스로 만들어 오케스트레이터가 읽고 풀 수 있게 하는 것. **범위를 좁히자** — `agent.awaiting_input` 이벤트를 태스크 소유자에게만 보이게. 권한이 아니라 **가시성만**.
@@ -348,14 +348,10 @@
 - **Depends on:** 없음.
 - **Priority:** P3
 
-## (security) Unscoped plugin events.poll leaks cross-workspace lifecycle events (P2)
-- **What:** `PluginFrame.tsx:89`가 `events.poll`을 `{}`(workspaceId 없음)로 호출 → `events.rpc.ts:97` `caller ? e.workspaceId===caller : true`가 unscoped 호출에 **전 워크스페이스**의 `pane.created/closed/focused/process.*`를 통과시킴. `events.subscribe` capability를 declare한 플러그인이 다른 ws의 lifecycle을 관측 가능. `a2a.task`만 unscoped서 fail-closed.
-- **Why:** substrate 격리 원칙 위반. `a2a.task`의 `!!caller &&` fail-closed 절이 lifecycle 타입엔 없음. focus-rpc 리뷰(plan-eng-review, security 전문가)서 발견 — 선재 버그이며 focus 픽스가 만든 게 아니지만 EMIT이 약간 넓힘.
-- **Pros:** 플러그인 샌드박스의 cross-ws 관측 차단.
-- **Cons:** 둘 중 택1 — (a) `PluginFrame`이 호스트 프레임의 workspaceId를 poll에 실어보냄, 또는 (b) unscoped poll에서 lifecycle 타입도 fail-closed(`a2a.task`처럼). (a)가 깔끔하나 플러그인이 여러 ws를 의도적으로 보는 합법 케이스가 있는지 확인 필요.
-- **Context:** `src/main/pipe/handlers/events.rpc.ts:93-104`(post-filter), `src/renderer/plugins/PluginFrame.tsx:88-89`(unscoped poll). 시작점=poll params에 workspaceId 주입 vs 필터 fail-closed 결정.
-- **Depends on:** 없음 (focus 픽스와 독립).
-- **Priority:** P2 (보안 격리)
+## ✅ (security) Unscoped plugin events.poll — FIXED (2026-07-30)
+- 방안 (a) 채택: `PluginFrame.tsx`의 `events.poll` 호출에 `activeWorkspaceId`를 실어보냄(첫 poll·후속 poll 양쪽). 활성 워크스페이스가 바뀌면 effect가 재구독.
+- 플러그인은 이제 active workspace의 lifecycle 이벤트만 수신. 다른 ws의 `pane.created/closed/focused/process.*` 누출 차단.
+- PRIVATE 타입(a2a.task, channel.*)은 이미 unscoped poll에서 fail-closed였음 — 변경 없음.
 
 ## surface.focus capability를 pane.read로 통일 (P3)
 - **What:** `methodCapabilityMap.ts:181` `surface.focus` = `wmux.internal` → `pane.read`로(sibling `pane.focus:186`과 일치). first-party MCP에 surface.focus 도구 노출 + 서드파티 declarable.
