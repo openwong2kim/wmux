@@ -184,6 +184,20 @@ vi.mock('../../../deck/deckDecisionStore', () => ({
   ),
 }));
 
+// Active deck work: these loop/decision/autonomy tests pre-date the active-work
+// feature. Mock the store empty so real disk state (a stale deck-work.json from
+// another suite) can never leak an [active-work] block onto the wire prompt.
+vi.mock('../../../deck/deckWorkStore', () => ({
+  loadActiveDeckWork: vi.fn(() => null),
+  loadActiveDeckWorks: vi.fn(() => ({})),
+  beginOrContinueDeckWork: vi.fn(() => null),
+  recordDeckWorkA2aTask: vi.fn(() => null),
+  completeActiveDeckWork: vi.fn(() => null),
+  clearActiveDeckWork: vi.fn(() => undefined),
+  hasPendingDeckWorkA2aTasks: vi.fn(() => false),
+  renderActiveDeckWorkBlock: vi.fn(() => ''),
+}));
+
 // Policy channel: controllable in-memory block; seed is a no-op so tests never
 // touch the real ~/.wmux/deck-policy.md. Default null = no policy file present.
 let mockPolicyBlock: string | null = null;
