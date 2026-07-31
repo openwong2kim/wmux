@@ -24,18 +24,18 @@ import * as path from 'path';
  */
 
 const HELP_TEXT = `
-wmux setup-hooks — install Claude Code hooks without the marketplace plugin
+wmux setup-hooks — install official CLI lifecycle integrations
 
 USAGE
   wmux setup-hooks [--remove | --status] [--json]
 
 ACTIONS (mutually exclusive; default = install)
-  (default)    Install wmux hook entries into ~/.claude/settings.json and copy
-               the bridge to ~/.wmux/hooks/wmux-bridge.mjs.
-  --remove     Remove only the wmux-owned hook entries (leaves your other hooks).
-  --status     Report whether wmux hooks are installed, whether the copied bridge
-               is up to date, and a double-signal warning if the plugin is also
-               installed.
+  (default)    Install or refresh Claude Code hooks, the Codex notify bridge,
+               and the OpenCode lifecycle plugin. Existing foreign hooks,
+               notify commands, and plugin files are never overwritten.
+  --remove     Remove only wmux-owned Claude hook entries (legacy behavior;
+               Codex/OpenCode files and foreign configuration are untouched).
+  --status     Report Claude, Codex, and OpenCode lifecycle integration status.
 
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
@@ -85,8 +85,9 @@ export function defaultPaths(): SetupHooksPaths {
  *   - `cli-bundle/wmux-bridge.mjs`             (패키징 앱의 메인 프로세스 — __dirname이
  *                                               app.asar/.vite/build라 walk-up이
  *                                               Resources에 닿았을 때 cli-bundle/로 진입)
- *   - `dist/cli-bundle/wmux-bridge.mjs`        (repo dist after `build:cli`)
- *   - `integrations/claude/bin/wmux-bridge.mjs` (dev fallback — repo checkout)
+ *   - `integrations/claude/bin/wmux-bridge.mjs` (live dev checkout; preferred
+ *                                               over a potentially stale dist)
+ *   - `dist/cli-bundle/wmux-bridge.mjs`        (repo build fallback)
  * Returns null when none exist, in which case install aborts with guidance.
  * 주의: 이 함수는 CLI뿐 아니라 hooksBridge.handler(메인 프로세스, 인앱 "hook 설치"
  * 버튼)에서도 호출된다 — cli-bundle/ 후보가 없으면 인앱 설치가 항상 실패한다(#489 후속).
@@ -95,8 +96,9 @@ export function findBridgeSourceFrom(startDir: string): string | null {
   const candidates = [
     'wmux-bridge.mjs',
     path.join('cli-bundle', 'wmux-bridge.mjs'),
-    path.join('dist', 'cli-bundle', 'wmux-bridge.mjs'),
+    // Prefer live checkout source over a potentially stale dist build.
     path.join('integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
+    path.join('dist', 'cli-bundle', 'wmux-bridge.mjs'),
   ];
   let dir = startDir;
   for (let i = 0; i < 6; i++) {
@@ -714,6 +716,51 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
   }
 }
 
+// ----- Aggregate lifecycle integration printing ----------------------------
+
+interface PrintableAssetStatus {
+  sourcePath: string | null;
+  destinationPath: string;
+  state: string;
+  error: string | null;
+}
+
+function printAssetStatus(label: string, asset: PrintableAssetStatus): void {
+  switch (asset.state) {
+    case 'current':
+      console.log(`${label}: ${asset.destinationPath} (up to date)`);
+      break;
+    case 'missing':
+      console.log(`${label}: NOT installed (${asset.destinationPath})`);
+      break;
+    case 'stale':
+      console.log(`${label}: ${asset.destinationPath} (STALE — re-run \`wmux setup-hooks\`)`);
+      break;
+    case 'foreign':
+      console.warn(`${label}: CONFLICT — ${asset.destinationPath} is not wmux-owned; left untouched`);
+      break;
+    case 'source-missing':
+      console.log(`${label}: bundled source unavailable; reinstall or rebuild wmux`);
+      break;
+    default:
+      console.log(`${label}: ERROR${asset.error ? ` — ${asset.error}` : ''}`);
+      break;
+  }
+}
+
+function printAssetInstall(
+  label: string,
+  asset: PrintableAssetStatus & { action: 'none' | 'installed' | 'refreshed' },
+): void {
+  if (asset.action === 'installed') {
+    console.log(`${label}: installed → ${asset.destinationPath}`);
+  } else if (asset.action === 'refreshed') {
+    console.log(`${label}: refreshed → ${asset.destinationPath}`);
+  } else {
+    printAssetStatus(label, asset);
+  }
+}
+
 // ----- Dispatch -----------------------------------------------------------
 
 export async function handleSetupHooks(args: string[], jsonMode: boolean): Promise<void> {
@@ -743,15 +790,8 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   const paths = defaultPaths();
 
-  if (status) {
-    const outcome = statusHooks(paths);
-    printStatus(outcome, jsonMode);
-    // Scripted `wmux setup-hooks --status && …` must be able to gate on a
-    // corrupted settings.json.
-    if (outcome.settingsCorrupted) process.exit(1);
-    return;
-  }
-
+  // Preserve the historical --remove contract: it only edits Claude's
+  // settings.json and never deletes shared scripts or another CLI's config.
   if (remove) {
     const outcome = removeHooks(paths);
     printRemove(outcome, jsonMode);
@@ -759,7 +799,70 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
-  const outcome = installHooks(paths);
-  printInstall(outcome, jsonMode);
+  const lifecycle = await import('../../shared/lifecycleIntegrations');
+  const lifecyclePaths = lifecycle.resolveLifecycleIntegrationPaths(os.homedir(), __dirname);
+
+  if (status) {
+    const claude = statusHooks(paths);
+    const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
+    const outcome = { claude, ...integrations };
+    if (jsonMode) {
+      console.log(JSON.stringify(outcome, null, 2));
+    } else {
+      printStatus(claude, false);
+      printAssetStatus('codex bridge', integrations.codexBridge);
+      if (!integrations.codexNotify.configExists) {
+        console.log(`codex notify: Codex config not found (${integrations.codexNotify.configPath})`);
+      } else if (integrations.codexNotify.state === 'wmux') {
+        console.log(`codex notify: registered → ${integrations.codexNotify.path}`);
+      } else if (integrations.codexNotify.state === 'stale') {
+        console.warn(
+          `codex notify: STALE (${integrations.codexNotify.path ?? integrations.codexNotify.configPath}); ` +
+          're-run `wmux setup-hooks`',
+        );
+      } else if (integrations.codexNotify.state === 'foreign') {
+        console.warn(`codex notify: CONFLICT in ${integrations.codexNotify.configPath}; foreign notify left untouched`);
+      } else if (integrations.codexNotify.state === 'malformed') {
+        console.warn(`codex notify: MALFORMED config left untouched (${integrations.codexNotify.configPath})`);
+      } else {
+        console.log(`codex notify: NOT registered (${integrations.codexNotify.configPath})`);
+      }
+      printAssetStatus('opencode plugin', integrations.opencodePlugin);
+    }
+    // Keep the existing scripted contract: status is non-zero only when the
+    // Claude settings file is corrupt, not merely because an optional CLI is
+    // absent or a user-owned integration occupies its slot.
+    if (claude.settingsCorrupted) process.exit(1);
+    return;
+  }
+
+  // Run each integration independently so a corrupt Claude settings file does
+  // not prevent safe Codex/OpenCode installation (and vice versa).
+  const claude = installHooks(paths);
+  const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths);
+  const outcome = { ...integrations, ok: claude.ok && integrations.ok, claude };
+  if (jsonMode) {
+    console.log(JSON.stringify(outcome, null, 2));
+  } else {
+    printInstall(claude, false);
+    printAssetInstall('codex bridge', integrations.codexBridge);
+    if (!integrations.codexNotify) {
+      console.warn('codex notify: not registered because the bridge could not be installed safely');
+    } else if (integrations.codexNotify.skipped === 'absent') {
+      console.log(`codex notify: Codex config not found (${integrations.codexNotify.configPath})`);
+    } else if (integrations.codexNotify.skipped === 'foreign') {
+      console.warn(`codex notify: CONFLICT in ${integrations.codexNotify.configPath}; foreign notify left untouched`);
+    } else if (integrations.codexNotify.skipped === 'malformed') {
+      console.warn(`codex notify: malformed config left untouched (${integrations.codexNotify.configPath})`);
+    } else if (integrations.codexNotify.wrote) {
+      console.log(`codex notify: registered in ${integrations.codexNotify.configPath}`);
+    } else {
+      console.log(`codex notify: already registered in ${integrations.codexNotify.configPath}`);
+    }
+    printAssetInstall('opencode plugin', integrations.opencodePlugin);
+    if (integrations.opencodePlugin.action !== 'none') {
+      console.log('Restart existing OpenCode sessions so they load the wmux plugin.');
+    }
+  }
   if (!outcome.ok) process.exit(1);
 }

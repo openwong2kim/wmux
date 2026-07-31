@@ -1,3 +1,4 @@
+// wmux-managed: opencode-lifecycle-bridge
 // wmux ↔ OpenCode plugin bridge (turn-completion lifecycle signal).
 //
 // OpenCode plugins are IN-PROCESS modules loaded by the `opencode` CLI at
@@ -14,32 +15,45 @@
 // orchestrator that assigned work to an OpenCode pane never learned when it
 // finished. This plugin closes the gap on the DETERMINISTIC path: OpenCode's
 // `session.idle` event (a session finished its turn) → a canonical wmux
-// AgentSignal (agent:'opencode', kind:'agent.stop') sent over the same
-// `hooks.signal` pipe RPC the Codex/Claude bridges use. hooks.rpc.ts is fully
-// agent-agnostic, so no wmux-side change is needed to accept 'opencode'.
+// AgentSignal (agent:'opencode', kind:'agent.stop') sent daemon-first over
+// `daemon.hooks.signal`, with the main process's `hooks.signal` as the fallback
+// when the daemon was not reached. Both handlers are agent-agnostic.
 //
 // SELF-CONTAINED: Node built-ins only (Bun implements node:net / node:fs /
 // node:os / node:crypto), no imports from src/ or integrations/shared/ — the
-// plugin runtime cannot resolve TS or repo-relative modules. The ~120 lines of
-// pipe-RPC infra are duplicated from integrations/codex/bin/wmux-codex-notify.mjs
-// by design (same constraint the Codex/Claude bridges accept).
+// plugin runtime cannot resolve TS or repo-relative modules. The pipe-RPC infra
+// is duplicated from integrations/codex/bin/wmux-codex-notify.mjs by design
+// (same constraint the Codex/Claude bridges accept).
 //
 // Routing: the envelope carries WMUX_PTY_ID (injected by the wmux daemon into
-// the pane env at spawn) — the exact per-pane key hooks.rpc.ts prefers. Since
+// the pane env at spawn) — the exact per-pane key hook ingest prefers. Since
 // opencode runs INSIDE a wmux pane, the env propagates through and pins the
 // signal to the right pane even when a workspace has several panes.
 //
-// Best-effort + non-blocking: every failure is swallowed + logged to
-// ~/.wmux/opencode-bridge.log; a wmux problem must never stall an opencode turn.
+// Best-effort + non-blocking: every failure is swallowed + logged to the
+// selected ~/.wmux${WMUX_DATA_SUFFIX}/opencode-bridge.log namespace; a wmux
+// problem must never stall an opencode turn.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  appendFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+} from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 const HOOK_TIMEOUT_MS = 2000;
-const BRIDGE_VERSION = '0.1.0';
+// Stamped on every opencode-bridge.log line; bump on behavior changes.
+//   0.2.0 — suffix-isolated daemon-first lifecycle routing + durable stop metadata.
+//   0.2.1 — session.idle dispatch detached from the OpenCode event loop.
+//   0.2.2 — safe legacy-daemon fallback and canonical main socket discovery.
+const BRIDGE_VERSION = '0.2.2';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -48,27 +62,102 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
+// Keep these formulas in lockstep with src/shared/constants.ts. A non-empty
+// suffix is an instance boundary: this plugin never probes production paths as
+// an implicit fallback when its selected namespace is suffixed.
+function dataSuffix() {
+  return process.env.WMUX_DATA_SUFFIX || '';
+}
+
+function getHomeDir() {
+  return process.env.USERPROFILE || process.env.HOME || homedir();
+}
+
+function getWmuxHomeDir() {
+  return join(getHomeDir(), `.wmux${dataSuffix()}`);
+}
+
 function getAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux-auth-token');
+  return join(getHomeDir(), `.wmux${dataSuffix()}-auth-token`);
 }
 
 function getPipeName() {
-  // WMUX_PIPE_NAME override for isolated / suffixed instances (same escape hatch
-  // as the Codex bridge). Not a security widening — a same-user process can
-  // already read the auth token, so redirecting the pipe grants nothing new.
+  // WMUX_PIPE_NAME is an explicit single-endpoint override for isolated probes
+  // and advanced multi-instance setups. It must not fall through to a real
+  // daemon when the selected override is unavailable.
   const override = process.env.WMUX_PIPE_NAME;
   if (typeof override === 'string' && override.length > 0) return override;
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
-  return join(homedir() || '/tmp', '.wmux.sock');
+  return join(homedir() || '/tmp', `.wmux${dataSuffix()}.sock`);
+}
+
+// ----- Daemon endpoint (hook ingest lives in the daemon) ------------------
+
+function getDaemonAuthTokenPath() {
+  return join(getWmuxHomeDir(), 'daemon-auth-token');
+}
+
+// The hint records the socket the daemon actually bound, including a zombie-
+// socket fallback rename. It is read only from the selected suffix namespace;
+// the derived fallback is in that same namespace as well.
+function getDaemonPipeName() {
+  try {
+    const fromFile = readFileSync(join(getWmuxHomeDir(), 'daemon-pipe'), 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch {
+    // Hint absent/unreadable — derive inside the selected namespace.
+  }
+  if (process.platform === 'win32') {
+    const username = userInfo().username || 'default';
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
+  }
+  return join(getWmuxHomeDir(), 'daemon.sock');
+}
+
+function readTokenFile(tokenPath) {
+  try {
+    const token = readFileSync(tokenPath, 'utf8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+// Ordered endpoints. Missing token files skip their endpoint. The existing
+// WMUX_PIPE_NAME override remains a MAIN-addressed, one-target escape hatch;
+// WMUX_HOOKS_TO_MAIN=1 is the main-only kill switch.
+function resolveTargets() {
+  const mainToken = readTokenFile(getAuthTokenPath());
+  const pipeOverride = process.env.WMUX_PIPE_NAME;
+  if (typeof pipeOverride === 'string' && pipeOverride.length > 0) {
+    return mainToken
+      ? [{ name: 'main', pipe: pipeOverride, token: mainToken, method: 'hooks.signal' }]
+      : [];
+  }
+
+  const targets = [];
+  if (process.env.WMUX_HOOKS_TO_MAIN !== '1') {
+    const daemonToken = readTokenFile(getDaemonAuthTokenPath());
+    if (daemonToken) {
+      targets.push({
+        name: 'daemon',
+        pipe: getDaemonPipeName(),
+        token: daemonToken,
+        method: 'daemon.hooks.signal',
+      });
+    }
+  }
+  if (mainToken) {
+    targets.push({ name: 'main', pipe: getPipeName(), token: mainToken, method: 'hooks.signal' });
+  }
+  return targets;
 }
 
 function getLogPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux');
+  const dir = getWmuxHomeDir();
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch { /* appendFileSync below also fails → swallowed */ }
@@ -86,6 +175,43 @@ function logEvent(outcome, extra) {
   try {
     appendFileSync(getLogPath(), line + '\n', { encoding: 'utf8' });
   } catch { /* no writable home → swallow */ }
+}
+
+// ----- Resume-binding spool (daemon drains on next boot) -----------------
+
+function getResumeSpoolDir() {
+  const dir = join(getWmuxHomeDir(), 'resume-spool');
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch { /* writeFileSync below throws + is swallowed */ }
+  return dir;
+}
+
+// This is deliberately a resume-binding record, never a deferred signal. In
+// particular it cannot contain permission titles, prompt text, or any payload.
+function spoolResumeBinding(record) {
+  try {
+    if (!record || !record.ptyId || !record.sessionId) return;
+    const safe = String(record.ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safe) return;
+    const dir = getResumeSpoolDir();
+    const file = join(dir, `${safe}.json`);
+    const tmp = join(dir, `${safe}.${process.pid}.${randomUUID()}.json.tmp`);
+    writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    try {
+      if (existsSync(file)) {
+        const existing = JSON.parse(readFileSync(file, 'utf8'));
+        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
+          try { unlinkSync(tmp); } catch { /* ignore */ }
+          return;
+        }
+      }
+    } catch { /* replace a corrupt/unreadable existing spool */ }
+    renameSync(tmp, file);
+    logEvent('resume-spooled', { ptyId: record.ptyId, sessionId: record.sessionId });
+  } catch (err) {
+    logEvent('resume-spool-error', { error: String(err) });
+  }
 }
 
 // ----- Envelope builder (pure — exported for unit testing) -----------------
@@ -166,7 +292,10 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
       resolve(result);
     };
 
-    const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), timeoutMs);
+    const timer = setTimeout(
+      () => settle({ ok: false, error: 'timeout', retryable: !wrote }),
+      timeoutMs,
+    );
 
     sock.on('connect', () => {
       sock.write(JSON.stringify(request) + '\n');
@@ -174,14 +303,24 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     });
     sock.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
-      const nl = buffer.indexOf('\n');
-      if (nl !== -1) {
-        clearTimeout(timer);
+      // The daemon broadcasts agent events on this same connection. Ignore
+      // broadcasts, malformed lines, and other callers' replies; only our id
+      // can settle this request.
+      for (;;) {
+        const nl = buffer.indexOf('\n');
+        if (nl === -1) return;
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        let parsed;
         try {
-          settle(JSON.parse(buffer.slice(0, nl)));
+          parsed = JSON.parse(line);
         } catch {
-          settle({ ok: false, error: 'malformed-response' });
+          continue;
         }
+        if (!parsed || parsed.id !== request.id) continue;
+        clearTimeout(timer);
+        settle(parsed);
+        return;
       }
     });
     sock.on('error', (err) => {
@@ -190,15 +329,16 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     });
     sock.on('close', () => {
       clearTimeout(timer);
-      settle({ ok: false, error: 'closed-without-response' });
+      settle({ ok: false, error: 'closed-without-response', retryable: !wrote });
     });
   });
 }
 
-async function sendRpcWithRetry(pipePath, request) {
-  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+// A multi-target walk shares one deadline so daemon-first routing never doubles
+// the plugin's pre-existing maximum wait.
+async function sendRpcWithRetry(pipePath, request, deadline = Date.now() + HOOK_TIMEOUT_MS) {
   let attempt = 0;
-  let last = { ok: false, error: 'timeout' };
+  let last = { ok: false, error: 'timeout', retryable: true };
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return last;
@@ -215,68 +355,97 @@ async function sendRpcWithRetry(pipePath, request) {
   }
 }
 
-// ----- Signal dispatch -----------------------------------------------------
-
-/** Read the wmux auth token, or null (logged) when unavailable. */
-function readAuthToken() {
-  const tokenPath = getAuthTokenPath();
-  if (!existsSync(tokenPath)) {
-    logEvent('no-auth-token', { path: tokenPath });
-    return null;
-  }
-  let token;
-  try {
-    token = readFileSync(tokenPath, 'utf8').trim();
-  } catch (err) {
-    logEvent('auth-token-read-error', { error: String(err) });
-    return null;
-  }
-  if (!token) {
-    logEvent('empty-auth-token', {});
-    return null;
-  }
-  return token;
+// Advance only when the request provably never reached a server. Any outer-ok
+// reply (including an inner logical rejection such as no-workspace-match) owns
+// the signal, and a post-write disconnect is ambiguous, so both stop the walk.
+// A dispatch/auth refusal from an old daemon has outer ok=false and no
+// retryable=false marker; falling back to main is safe because the lifecycle
+// handler did not run.
+function shouldTryNextTarget(result) {
+  if (result && result.ok === true) return false;
+  if (result && result.retryable === false) return false;
+  return true;
 }
 
-/** Send one already-built AgentSignal envelope over the wmux hooks.signal pipe. */
+async function sendToTargets(targets, buildRequest) {
+  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+  let result = { ok: false, error: 'no-target', retryable: true };
+  let target = null;
+  for (const candidate of targets) {
+    if (Date.now() >= deadline) break;
+    target = candidate;
+    result = await sendRpcWithRetry(candidate.pipe, buildRequest(candidate), deadline);
+    if (!shouldTryNextTarget(result)) break;
+  }
+  return { result, target };
+}
+
+// ----- Signal dispatch -----------------------------------------------------
+
+function spoolStopResumeBinding(envelope) {
+  if (envelope.kind !== 'agent.stop' || !envelope.ptyId || !envelope.agentSessionId) return;
+  spoolResumeBinding({
+    ptyId: envelope.ptyId,
+    agent: 'opencode',
+    sessionId: envelope.agentSessionId,
+    cwd: envelope.cwd,
+    ts: envelope.ts,
+  });
+}
+
+/** Send one already-built AgentSignal envelope to daemon first, then main. */
 async function sendSignal(envelope, idPrefix) {
-  const token = readAuthToken();
-  if (!token) return;
-  const request = {
-    id: `${idPrefix}-${randomUUID()}`,
-    method: 'hooks.signal',
+  const targets = resolveTargets();
+  if (targets.length === 0) {
+    logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
+    spoolStopResumeBinding(envelope);
+    return;
+  }
+
+  // Reuse one id across the target walk so every accepted reply is correlated
+  // to this one lifecycle event.
+  const requestId = `${idPrefix}-${randomUUID()}`;
+  const { result: rpcResult, target } = await sendToTargets(targets, (candidate) => ({
+    id: requestId,
+    method: candidate.method,
     params: envelope,
-    token,
-  };
-  const rpcResult = await sendRpcWithRetry(getPipeName(), request);
+    token: candidate.token,
+  }));
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
   if (innerOk) {
-    logEvent('ok', { kind: envelope.kind, ptyId: envelope.ptyId, sessionId: envelope.agentSessionId });
+    logEvent('ok', {
+      kind: envelope.kind,
+      target: target?.name,
+      ptyId: envelope.ptyId,
+      sessionId: envelope.agentSessionId,
+    });
   } else {
     logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
       kind: envelope.kind,
+      target: target?.name,
       reason: rpcResult?.result?.reason,
       error: rpcResult?.error,
       detail: rpcResult?.detail,
     });
+    spoolStopResumeBinding(envelope);
   }
 }
 
 // ----- Plugin export -------------------------------------------------------
 
-/** How long a `permission.updated` may sit unanswered before we treat it as a
- *  genuine wait. Auto-approved permissions (opencode `"permission": "allow"`)
- *  fire permission.updated then permission.replied within milliseconds; holding
- *  briefly lets us cancel those and only surface awaiting_input for permissions
- *  a human/orchestrator actually has to act on. Not latency-critical. */
+/** How long a permission request may sit unanswered before we treat it as a
+ *  genuine wait. Auto-approved permissions fire an ask/update and then a reply
+ *  within milliseconds; holding briefly lets us cancel those and only surface
+ *  awaiting_input for permissions a human/orchestrator actually has to act on.
+ *  Not latency-critical. */
 const PERMISSION_SETTLE_MS = 500;
 
 /**
  * The OpenCode plugin. Subscribes to the event stream and forwards:
- *   - session.idle          → agent.stop           (a turn finished)
- *   - permission.updated    → agent.awaiting_input  (blocked on an approval),
- *                             debounced so auto-allowed permissions don't fire.
+ *   - session.idle                         → agent.stop
+ *   - permission.asked / permission.updated → agent.awaiting_input,
+ *                                             debounced for auto-approval.
  * Child (sub-agent) sessions are suppressed so the orchestrator wakes on the
  * root session's turns, not every sub-agent turn. Every branch is guarded +
  * best-effort — an exception here must never disrupt the opencode session.
@@ -287,8 +456,8 @@ const PERMISSION_SETTLE_MS = 500;
 export const WmuxBridge = async ({ directory, client } = {}) => {
   logEvent('loaded', { directory: nonEmptyStr(directory), hasClient: !!client });
   const cwd = nonEmptyStr(directory);
-  // permissionID → settle timer. A permission.replied for the same id before the
-  // timer fires cancels the awaiting_input (the permission auto-resolved).
+  // permission request id → settle timer. A permission.replied for the same id
+  // before the timer fires cancels awaiting_input (the permission auto-resolved).
   const pendingPermissions = new Map();
 
   return {
@@ -298,20 +467,33 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
 
         if (event.type === 'session.idle') {
           const sessionId = nonEmptyStr(event?.properties?.sessionID);
-          if (await isChildSession(client, sessionId)) {
-            logEvent('skip-child-idle', { sessionId });
-            return;
-          }
-          await sendSignal(buildOpencodeEnvelope('agent.stop', { cwd, sessionId }), 'opencode-idle');
+          // OpenCode awaits plugin event handlers. Detach the child lookup and
+          // pipe RPC so even a wedged endpoint cannot add the 2s transport cap
+          // to the TUI's idle transition. The OpenCode process is long-lived;
+          // sendSignal retains its own bounded deadline and error logging.
+          void (async () => {
+            try {
+              if (await isChildSession(client, sessionId)) {
+                logEvent('skip-child-idle', { sessionId });
+                return;
+              }
+              await sendSignal(buildOpencodeEnvelope('agent.stop', { cwd, sessionId }), 'opencode-idle');
+            } catch (err) {
+              logEvent('idle-signal-error', { error: String(err) });
+            }
+          })();
           return;
         }
 
-        if (event.type === 'permission.updated') {
-          // properties: Permission { id, sessionID, title, ... }
+        if (event.type === 'permission.asked' || event.type === 'permission.updated') {
+          // Current permission.asked and legacy permission.updated both carry a
+          // request-like object with id/sessionID; legacy builds may add title.
           const perm = event?.properties ?? {};
-          const permId = nonEmptyStr(perm.id);
+          const permId = nonEmptyStr(perm.id)
+            ?? nonEmptyStr(perm.requestID)
+            ?? nonEmptyStr(perm.permissionID);
           if (!permId || pendingPermissions.has(permId)) return;
-          const sessionId = nonEmptyStr(perm.sessionID);
+          const sessionId = nonEmptyStr(perm.sessionID) ?? nonEmptyStr(perm.sessionId);
           const title = nonEmptyStr(perm.title);
           const timer = setTimeout(() => {
             pendingPermissions.delete(permId);
@@ -342,8 +524,11 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
         }
 
         if (event.type === 'permission.replied') {
-          // properties: { sessionID, permissionID, response }
-          const permId = nonEmptyStr(event?.properties?.permissionID);
+          // Current/legacy SDKs have used requestID, permissionID, and id.
+          const reply = event?.properties ?? {};
+          const permId = nonEmptyStr(reply.requestID)
+            ?? nonEmptyStr(reply.permissionID)
+            ?? nonEmptyStr(reply.id);
           const timer = permId ? pendingPermissions.get(permId) : undefined;
           if (timer) {
             clearTimeout(timer);

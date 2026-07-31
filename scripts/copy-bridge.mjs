@@ -16,21 +16,35 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const destDir = join(repoRoot, 'dist', 'cli-bundle');
 
 // Self-contained agent bridges shipped in the CLI bundle (extraResource):
-//   - Claude Code hook bridge (installed to ~/.wmux/hooks by `wmux setup-hooks`)
-//   - Codex resume-capture notify bridge (installed + registered by McpRegistrar)
+//   - Claude Code hook/statusline bridges
+//   - Codex lifecycle notify bridge
+//   - OpenCode lifecycle plugin (renamed in the bundle to avoid generic wmux.js)
 const bridges = [
-  join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
-  join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-statusline.mjs'),
-  join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
+  {
+    src: join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
+    dest: 'wmux-bridge.mjs',
+  },
+  {
+    src: join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-statusline.mjs'),
+    dest: 'wmux-statusline.mjs',
+  },
+  {
+    src: join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
+    dest: 'wmux-codex-notify.mjs',
+  },
+  {
+    src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux.js'),
+    dest: 'wmux-opencode-plugin.js',
+  },
 ];
 
 mkdirSync(destDir, { recursive: true });
-for (const src of bridges) {
+for (const { src, dest: destBasename } of bridges) {
   if (!existsSync(src)) {
     console.error(`copy-bridge: source not found: ${src}`);
     process.exit(1);
   }
-  const dest = join(destDir, src.split(/[\\/]/).pop());
+  const dest = join(destDir, destBasename);
   copyFileSync(src, dest);
   console.log(`copy-bridge: ${src} -> ${dest}`);
 }

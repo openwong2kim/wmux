@@ -11,6 +11,14 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { stabilizeMcpBundle } from './stabilizeBundle';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
+  CODEX_NOTIFY_MANAGED_MARKER,
+  OPENCODE_PLUGIN_BUNDLE_BASENAME,
+  OPENCODE_PLUGIN_INSTALL_BASENAME,
+  OPENCODE_PLUGIN_MANAGED_MARKER,
+  findLifecycleAssetSourceFrom,
+  installLifecycleAsset,
+} from '../../shared/lifecycleIntegrations';
+import {
   readAllTargetStatuses,
   registerTarget,
   unregisterTarget,
@@ -193,13 +201,17 @@ export class McpRegistrar {
         }
       }
 
-      // X6 codex resume: register the Codex resume-capture `notify` bridge in the
-      // SAME codex config.toml. Isolated so a notify failure never aborts MCP
-      // registration (and vice-versa).
+      // Official lifecycle integrations are isolated so one agent's config or
+      // filesystem failure never aborts MCP registration or another bridge.
       try {
         this.installAndRegisterCodexNotify();
       } catch (err) {
         console.error('[McpRegistrar] Codex notify registration failed:', err);
+      }
+      try {
+        this.installOpenCodePlugin();
+      } catch (err) {
+        console.error('[McpRegistrar] OpenCode plugin installation failed:', err);
       }
 
       this.registered = true;
@@ -342,38 +354,87 @@ export class McpRegistrar {
   }
 
   /**
-   * Install the Codex notify bridge to a STABLE, version-free location
-   * (`~/.wmux/hooks/wmux-codex-notify.mjs`) and register it as Codex's `notify`
-   * program. Copying fresh on every boot keeps the installed script in lock-step
-   * with the running app version while the config path never goes stale (unlike
-   * the versioned resources path). Skip-if-foreign lives in registerCodexNotify.
+   * Install the Codex notify bridge to a stable path and register it without
+   * replacing a foreign destination or foreign root `notify` command.
    */
   private installAndRegisterCodexNotify(): void {
     const src = this.getCodexNotifySourcePath();
-    if (!src) {
-      console.warn('[McpRegistrar] Codex notify script not found — skipping notify registration.');
-      return;
-    }
     const dest = path.join(this.home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME);
-    try {
-      const destDir = path.dirname(dest);
-      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-      fs.copyFileSync(src, dest);
-    } catch (err) {
-      console.error('[McpRegistrar] Failed to install Codex notify script:', err);
+    const installed = installLifecycleAsset({
+      sourcePath: src,
+      destinationPath: dest,
+      ownershipMarkers: [CODEX_NOTIFY_MANAGED_MARKER],
+    });
+    if (installed.state !== 'current') {
+      const detail = installed.error ? `: ${installed.error}` : '';
+      console.warn(
+        `[McpRegistrar] Codex notify bridge ${installed.state}; left ${dest} untouched${detail}`,
+      );
       return;
     }
+    if (installed.action !== 'none') {
+      console.log(`[McpRegistrar] Codex notify bridge ${installed.action} → ${dest}`);
+    }
+
     const result = registerCodexNotify(this.home, dest);
     if (result.skipped === 'foreign') {
-      // Surface the skip (GLM outside-voice: don't silently downgrade). The
-      // user's own notify is preserved; Codex resume falls back to the pill's
-      // `codex resume --last`. Also queryable via getStatus().codexNotify.
+      // The user's own notify is preserved; Codex resume falls back to the
+      // pill's `codex resume --last`. Also queryable via getStatus().
       console.warn(
         `[McpRegistrar] Codex notify: skipped — a foreign notify occupies the slot in ${result.configPath}. ` +
         'Codex resume auto-capture is OFF; the resume pill falls back to `codex resume --last`.',
       );
+    } else if (result.skipped === 'malformed') {
+      console.warn(`[McpRegistrar] Codex notify: malformed config left untouched at ${result.configPath}`);
     } else if (result.wrote) {
       console.log(`[McpRegistrar] Codex notify → ${dest}`);
+    }
+  }
+
+  /** Resolve the bundled OpenCode plugin in packaged and development layouts. */
+  private getOpenCodePluginSourcePath(): string | null {
+    if (app.isPackaged) {
+      const bundled = path.join(
+        process.resourcesPath,
+        'cli-bundle',
+        OPENCODE_PLUGIN_BUNDLE_BASENAME,
+      );
+      return fs.existsSync(bundled) ? bundled : null;
+    }
+    return findLifecycleAssetSourceFrom(
+      app.getAppPath(),
+      OPENCODE_PLUGIN_BUNDLE_BASENAME,
+      ['integrations', 'opencode', 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME],
+    );
+  }
+
+  /**
+   * Install/refresh the global OpenCode lifecycle plugin only when OpenCode's
+   * config root already exists (or wmux previously installed the destination).
+   * A same-name user plugin without the wmux marker is always preserved.
+   */
+  private installOpenCodePlugin(): void {
+    const configRoot = path.join(this.home, '.config', 'opencode');
+    const dest = path.join(configRoot, 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME);
+    if (!fs.existsSync(configRoot) && !fs.existsSync(dest)) return;
+
+    const installed = installLifecycleAsset({
+      sourcePath: this.getOpenCodePluginSourcePath(),
+      destinationPath: dest,
+      ownershipMarkers: [
+        OPENCODE_PLUGIN_MANAGED_MARKER,
+        'wmux ↔ OpenCode plugin bridge',
+      ],
+    });
+    if (installed.state !== 'current') {
+      const detail = installed.error ? `: ${installed.error}` : '';
+      console.warn(
+        `[McpRegistrar] OpenCode lifecycle plugin ${installed.state}; left ${dest} untouched${detail}`,
+      );
+      return;
+    }
+    if (installed.action !== 'none') {
+      console.log(`[McpRegistrar] OpenCode lifecycle plugin ${installed.action} → ${dest}`);
     }
   }
 }

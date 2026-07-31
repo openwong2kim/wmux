@@ -8,12 +8,13 @@
 //   3. Builds the canonical AgentSignal envelope.
 //   4. Sends the envelope to the first wmux endpoint that answers:
 //        a. the DAEMON control pipe — `daemon.hooks.signal`, token from
-//           ~/.wmux/daemon-auth-token. The daemon is the always-on process,
-//           so this is the one that still works with the GUI closed.
-//        b. the MAIN pipe — `hooks.signal`, token from ~/.wmux-auth-token.
-//           The pre-M1 path; kept for an older wmux, and forced by
-//           WMUX_HOOKS_TO_MAIN=1 (kill switch).
-//   5. Logs the outcome (and which endpoint served it) to ~/.wmux/bridge.log.
+//           ~/.wmux${suffix}/daemon-auth-token. The daemon is the always-on
+//           process, so this is the one that still works with the GUI closed.
+//        b. the MAIN pipe — `hooks.signal`, token from
+//           ~/.wmux${suffix}-auth-token. The pre-M1 path; kept for an older
+//           wmux, and forced by WMUX_HOOKS_TO_MAIN=1 (kill switch).
+//   5. Logs the outcome (and which endpoint served it) to
+//      ~/.wmux${suffix}/bridge.log.
 //   6. Exits 0 (so a wmux problem never breaks Claude Code) — UNLESS invoked
 //      with `--gate` and the endpoint answers with a `block`, in which case the
 //      reason goes to stderr and the exit code is 2 (Claude Code's "do not let
@@ -39,7 +40,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 // which bridge produced it — the installed copy is refreshed by byte-comparison
 // (setupHooks.refreshHookBridge, run at boot), never by this number.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
-const BRIDGE_VERSION = '0.2.0';
+//   0.3.0 — suffix-isolated lifecycle routing and bridge state.
+const BRIDGE_VERSION = '0.3.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -87,19 +89,24 @@ const HOOK_TO_KIND = {
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
-// Instance suffix ('' in production, '-dev' under a dev build). Ordinary panes
-// never see WMUX_DATA_SUFFIX (it is stripped from their env), so this stays ''
-// for them and nothing changes. Brain ptys DO carry it — the deck spawns them
-// with the full instance env — and without honouring it here their signals
-// would be delivered to the PRODUCTION instance's pipe while the dev deck
-// waits forever (dogfood 2026-07-26).
+// Instance suffix ('' in production, '-dev' under a dev build). PTY spawn
+// propagation preserves WMUX_DATA_SUFFIX from the owning wmux process so every
+// hook resolves back to that same instance. With no suffix, every path remains
+// byte-identical to the production paths used before instance isolation.
 function instanceSuffix() {
   return process.env.WMUX_DATA_SUFFIX || '';
 }
 
+function getHomeDir() {
+  return process.env.USERPROFILE || process.env.HOME || homedir();
+}
+
+function getWmuxHomeDir() {
+  return join(getHomeDir(), `.wmux${instanceSuffix()}`);
+}
+
 function getAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, `.wmux${instanceSuffix()}-auth-token`);
+  return join(getHomeDir(), `.wmux${instanceSuffix()}-auth-token`);
 }
 
 function getPipeName() {
@@ -118,13 +125,11 @@ function getPipeName() {
 // at the daemon first and keep the main pipe as the fallback for an older wmux
 // (whose daemon has no `daemon.hooks.signal`) or a daemon that is down.
 //
-// Same ~/.wmux (NO data-suffix) limitation as bridge.log: the bridge cannot see
-// WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane env), so a
-// dev-suffix daemon is unreachable from here — packaged-only testing for this
-// path, unchanged from the pre-M1 bridge.
+// Daemon credentials, hints, and fallback endpoints belong to the same
+// suffix-aware wmux home as the hook. A suffixed event deliberately never
+// probes the unsuffixed production daemon token or hint as a migration fallback.
 function getDaemonAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux', 'daemon-auth-token');
+  return join(getWmuxHomeDir(), 'daemon-auth-token');
 }
 
 // Prefer the `daemon-pipe` hint file the daemon writes at boot — it carries the
@@ -132,18 +137,17 @@ function getDaemonAuthTokenPath() {
 // zombie pipe forced a `-N` fallback rename. Mirrors src/cli/client.ts
 // `resolveDaemonPipeName` + src/shared/constants.ts `getDaemonSocketPath`.
 function getDaemonPipeName() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
   try {
-    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    const fromFile = readFileSync(join(getWmuxHomeDir(), 'daemon-pipe'), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
     // Hint file absent/unreadable — fall through to the derived name.
   }
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\wmux-daemon${instanceSuffix()}-${username}`;
   }
-  return join(home, '.wmux', 'daemon.sock');
+  return join(getWmuxHomeDir(), 'daemon.sock');
 }
 
 function readTokenFile(tokenPath) {
@@ -212,8 +216,7 @@ function resolveTargets(gateMode = false) {
 }
 
 function getBridgeLogPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux');
+  const dir = getWmuxHomeDir();
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -231,14 +234,11 @@ function getBridgeLogPath() {
 // (recovery) and reconnect, attributing each record to the EXACT pane by its
 // WMUX_PTY_ID. Pipe-free local file write, so it never depends on wmux being up.
 //
-// Path matches the bridge.log convention (~/.wmux, NO data-suffix): the bridge
-// cannot see WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane
-// env), so dev/prod-concurrent isolation falls back to cwd routing — same
-// pre-existing limitation as bridge.log. In production (no suffix) and in the
-// USERPROFILE-isolated dogfood, bridge and daemon resolve the same dir.
+// The spool lives under the suffix-aware wmux home so the bridge and daemon
+// always resolve the same instance directory and concurrent instances cannot
+// consume or overwrite one another's recovery records.
 function getResumeSpoolDir() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'resume-spool');
+  const dir = join(getWmuxHomeDir(), 'resume-spool');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -287,11 +287,10 @@ function spoolResumeBinding(record) {
 
 // ----- PostToolUse activity stamp (source-side throttle) ------------------
 
-// Stamp files live next to bridge.log (same no-suffix ~/.wmux limitation).
+// Stamp files live next to bridge.log in the suffix-aware wmux home.
 // One zero-byte file per throttle key; mtime is the last-send timestamp.
 function getActivityStampPath(key) {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'activity-stamps');
+  const dir = join(getWmuxHomeDir(), 'activity-stamps');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {

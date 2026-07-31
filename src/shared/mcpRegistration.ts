@@ -28,7 +28,6 @@ import {
   isWmuxOwnedEntry,
   upsertMcpServer,
   removeMcpServers,
-  getNotify,
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
@@ -263,6 +262,22 @@ export interface RegisterNotifyResult {
 
 const norm = (p: string): string => p.replace(/\\/g, '/');
 
+/** Preserve any present root notify value we cannot prove is wmux-owned. */
+function inspectNotifySlot(parsed: Record<string, unknown>): {
+  present: boolean;
+  validStringArray: boolean;
+  notify: string[] | null;
+} {
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'notify')) {
+    return { present: false, validStringArray: true, notify: null };
+  }
+  const raw = parsed['notify'];
+  if (!Array.isArray(raw) || !raw.every((value) => typeof value === 'string')) {
+    return { present: true, validStringArray: false, notify: null };
+  }
+  return { present: true, validStringArray: true, notify: raw as string[] };
+}
+
 export function registerCodexNotify(home: string, notifyScript: string): RegisterNotifyResult {
   const target = getMcpTarget('codex');
   if (!target) return { configPath: '', skipped: 'absent', wrote: false };
@@ -282,11 +297,15 @@ export function registerCodexNotify(home: string, notifyScript: string): Registe
     return { configPath, skipped: 'malformed', wrote: false };
   }
 
-  const notify = getNotify(parsed);
-  if (notify && !isWmuxOwnedNotify(notify)) {
-    return { configPath, skipped: 'foreign', wrote: false }; // never clobber
+  const slot = inspectNotifySlot(parsed);
+  // A root notify slot that is non-array, contains non-string values, or names
+  // another program is user-owned/unknown. Treat all of those as a conflict so
+  // setup never rewrites a value it cannot prove belongs to wmux.
+  if (slot.present && (!slot.validStringArray || !isWmuxOwnedNotify(slot.notify))) {
+    return { configPath, skipped: 'foreign', wrote: false };
   }
-  if (isWmuxOwnedNotify(notify) && norm(notify![1]) === norm(notifyScript)) {
+  const notify = slot.notify;
+  if (isWmuxOwnedNotify(notify) && norm(notify?.[1] ?? '') === norm(notifyScript)) {
     return { configPath, skipped: null, wrote: false }; // already current — idempotent
   }
 
@@ -327,8 +346,9 @@ export interface CodexNotifyStatus {
   configPath: string;
   configExists: boolean;
   /** 'wmux' = our bridge is registered; 'foreign' = a user notify occupies the
-   *  slot (capture off — surfaced so the skip isn't silent); 'none' = no notify. */
-  state: 'wmux' | 'foreign' | 'none';
+   *  slot; 'malformed' = config could not be parsed and was left untouched;
+   *  'none' = no notify. */
+  state: 'wmux' | 'foreign' | 'malformed' | 'none';
   /** Our script path when state === 'wmux'. */
   path: string | null;
 }
@@ -346,11 +366,13 @@ export function readCodexNotifyStatus(home: string): CodexNotifyStatus {
   if (!configExists) return { configPath, configExists, state: 'none', path: null };
   try {
     const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), 'toml');
-    const notify = getNotify(parsed);
-    if (!notify) return { configPath, configExists, state: 'none', path: null };
-    if (isWmuxOwnedNotify(notify)) return { configPath, configExists, state: 'wmux', path: notify[1] };
-    return { configPath, configExists, state: 'foreign', path: null };
+    const slot = inspectNotifySlot(parsed);
+    if (!slot.present) return { configPath, configExists, state: 'none', path: null };
+    if (!slot.validStringArray || !isWmuxOwnedNotify(slot.notify)) {
+      return { configPath, configExists, state: 'foreign', path: null };
+    }
+    return { configPath, configExists, state: 'wmux', path: slot.notify?.[1] ?? null };
   } catch {
-    return { configPath, configExists, state: 'none', path: null };
+    return { configPath, configExists, state: 'malformed', path: null };
   }
 }
