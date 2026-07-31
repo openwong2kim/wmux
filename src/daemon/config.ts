@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { ChannelRetentionConfig, DaemonConfig } from './types';
+import type { BrowserCdpConfig, ChannelRetentionConfig, DaemonConfig } from './types';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
@@ -127,6 +127,11 @@ export function createDefaultConfig(): DaemonConfig {
     // LanLink control plane (PR-3) — OFF by default, explicit opt-in. NIC null
     // until the user selects one; port omitted (PR-4 picks a default).
     lanlink: defaultLanLinkConfig(),
+    // Browser automation control (issue #613). CDP remote-debugging port is
+    // enabled by default — it drives webview-based browser automation, a core
+    // feature. The slice exists so the port can be closed by config without an
+    // environment variable (see SECURITY.md §3 for the same-user threat model).
+    browser: { cdp: { enabled: true } },
   };
 }
 
@@ -161,6 +166,29 @@ function coerceChannelRetention(
       slice['autoTrashArchivedHours'],
       defaults.autoTrashArchivedHours,
     ),
+  };
+}
+
+/**
+ * Per-field backfill for the `browser.cdp` slice (issue #613). Same discipline
+ * as the channels retention: `validateConfig` deliberately ignores this field,
+ * so a garbage value here can never trigger the whole-file reset. Absent or
+ * malformed → the default (CDP enabled), preserving the behaviour every prior
+ * config.json shipped with. A boolean `enabled` is honoured verbatim.
+ */
+function coerceBrowserCdp(raw: unknown, defaults: BrowserCdpConfig): BrowserCdpConfig {
+  const slice = (raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {});
+  const cdpRaw = slice['cdp'];
+  const cdp = (cdpRaw !== null && typeof cdpRaw === 'object' && !Array.isArray(cdpRaw)
+    ? (cdpRaw as Record<string, unknown>)
+    : {});
+  const enabledRaw = cdp['enabled'];
+  return {
+    cdp: {
+      enabled: typeof enabledRaw === 'boolean' ? enabledRaw : defaults.cdp.enabled,
+    },
   };
 }
 
@@ -293,6 +321,12 @@ export function loadConfig(): DaemonConfig {
         autoTrashArchivedHours: CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
       },
     );
+
+    // ── Browser CDP control (issue #613): per-field backfill ──
+    // Absent slice (old config.json) → default enabled, preserving every prior
+    // install's behaviour. A malformed slice degrades to enabled too, never
+    // silently disabling browser automation. validateConfig ignores the field.
+    config.browser = coerceBrowserCdp(config.browser, defaults.browser ?? { cdp: { enabled: true } });
 
     return config;
   } catch (err) {

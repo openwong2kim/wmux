@@ -92,6 +92,7 @@ import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
+import { loadConfig } from '../daemon/config';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
@@ -128,17 +129,6 @@ markBoot('imports-done');
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
 app.commandLine.appendSwitch('lang', 'en-US');
-
-// CDP (Chrome DevTools Protocol) remote debugging
-let cdpPort = 0;
-if (process.env.WMUX_DISABLE_CDP !== 'true') {
-  // Randomize port within range to prevent predictable scanning
-  const basePort = 18800;
-  const range = 100;
-  cdpPort = basePort + crypto.randomInt(range);
-  app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
-  console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
-}
 
 // Handle Squirrel installer events.
 // We must run Update.exe to create/remove shortcuts, then exit cleanly.
@@ -299,6 +289,35 @@ if (process.env.WMUX_DATA_SUFFIX) {
 // on app.isPackaged, mirroring the WMUX_DATA_SUFFIX dev/packaged split above.
 if (process.platform === 'win32' && app.isPackaged) {
   app.setAppUserModelId('com.squirrel.wmux.wmux');
+}
+
+// CDP (Chrome DevTools Protocol) remote debugging.
+//
+// Must run AFTER the WMUX_DATA_SUFFIX block above: loadConfig() reads
+// ~/.wmux{suffix}/config.json, and the suffix is only resolved once that block
+// has executed. Reading it earlier would consult the production config in a dev
+// build (or vice-versa).
+//
+// Enabled by default — webview-based browser automation (MCP browser tools,
+// screenshots, DOM snapshots) depends on it — but configurable via
+// `~/.wmux/config.json` `browser.cdp.enabled` (issue #613). The
+// `WMUX_DISABLE_CDP=true` env var remains and force-disables regardless of
+// config. Closing the port is the single largest same-user surface reduction
+// in the app: CDP only needs a loopback socket, unlike other same-user vectors
+// which need filesystem or process control. See docs/SECURITY.md §3.
+const cdpEnabled =
+  process.env.WMUX_DISABLE_CDP !== 'true' &&
+  loadConfig().browser?.cdp?.enabled !== false;
+let cdpPort = 0;
+if (cdpEnabled) {
+  // Randomize port within range to prevent predictable scanning
+  const basePort = 18800;
+  const range = 100;
+  cdpPort = basePort + crypto.randomInt(range);
+  app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
+  console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
+} else {
+  console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
 
 let isQuitting = false;
