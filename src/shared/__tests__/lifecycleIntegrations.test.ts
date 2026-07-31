@@ -40,6 +40,10 @@ function writeCodexConfig(text: string): string {
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-life-'));
+  // Two tests assert the default ~/.config opencode destination. An ambient
+  // XDG_CONFIG_HOME in the runner env would silently reroute that and flake
+  // CI, so clear it; the XDG-honoring test sets its own value after this.
+  delete process.env.XDG_CONFIG_HOME;
 });
 afterEach(() => {
   try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -242,8 +246,10 @@ describe('statusLifecycleIntegrations — codexNotify staleness', () => {
     const paths = pathsWithSource();
     writeCodexConfig(`notify = ["node", "C:\\\\some\\\\other\\\\${CODEX_NOTIFY_BASENAME}"]\n`);
     const status = statusLifecycleIntegrations(paths);
-    // isWmuxOwnedNotify is true (ends with the basename), but the path is not the managed dest.
-    expect(['wmux', 'stale']).toContain(status.codexNotify.state);
+    // isWmuxOwnedNotify is true (ends with the basename), but the configured
+    // path differs from the managed destination → statusLifecycleIntegrations
+    // downgrades 'wmux' to 'stale'. Deterministic, not a maybe.
+    expect(status.codexNotify.state).toBe('stale');
   });
 
   it('marks codexNotify stale when the configured script no longer exists', () => {
