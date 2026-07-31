@@ -53,7 +53,8 @@ const HOOK_TIMEOUT_MS = 2000;
 //   0.2.0 — suffix-isolated daemon-first lifecycle routing + durable stop metadata.
 //   0.2.1 — session.idle dispatch detached from the OpenCode event loop.
 //   0.2.2 — safe legacy-daemon fallback and canonical main socket discovery.
-const BRIDGE_VERSION = '0.2.2';
+//   0.2.3 — consistent permission request/reply correlation.
+const BRIDGE_VERSION = '0.2.3';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -459,6 +460,9 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
   // permission request id → settle timer. A permission.replied for the same id
   // before the timer fires cancels awaiting_input (the permission auto-resolved).
   const pendingPermissions = new Map();
+  const permissionRequestId = (properties = {}) => nonEmptyStr(properties.id)
+    ?? nonEmptyStr(properties.requestID)
+    ?? nonEmptyStr(properties.permissionID);
 
   return {
     event: async ({ event }) => {
@@ -489,9 +493,7 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
           // Current permission.asked and legacy permission.updated both carry a
           // request-like object with id/sessionID; legacy builds may add title.
           const perm = event?.properties ?? {};
-          const permId = nonEmptyStr(perm.id)
-            ?? nonEmptyStr(perm.requestID)
-            ?? nonEmptyStr(perm.permissionID);
+          const permId = permissionRequestId(perm);
           if (!permId || pendingPermissions.has(permId)) return;
           const sessionId = nonEmptyStr(perm.sessionID) ?? nonEmptyStr(perm.sessionId);
           const title = nonEmptyStr(perm.title);
@@ -526,9 +528,7 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
         if (event.type === 'permission.replied') {
           // Current/legacy SDKs have used requestID, permissionID, and id.
           const reply = event?.properties ?? {};
-          const permId = nonEmptyStr(reply.requestID)
-            ?? nonEmptyStr(reply.permissionID)
-            ?? nonEmptyStr(reply.id);
+          const permId = permissionRequestId(reply);
           const timer = permId ? pendingPermissions.get(permId) : undefined;
           if (timer) {
             clearTimeout(timer);

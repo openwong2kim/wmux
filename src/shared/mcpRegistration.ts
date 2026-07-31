@@ -275,6 +275,10 @@ function inspectNotifySlot(parsed: Record<string, unknown>): {
   if (!Array.isArray(raw) || !raw.every((value) => typeof value === 'string')) {
     return { present: true, validStringArray: false, notify: null };
   }
+  // An explicit empty array names no program, so it is safe for wmux to claim.
+  if (raw.length === 0) {
+    return { present: false, validStringArray: true, notify: null };
+  }
   return { present: true, validStringArray: true, notify: raw as string[] };
 }
 

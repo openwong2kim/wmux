@@ -11,12 +11,9 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { stabilizeMcpBundle } from './stabilizeBundle';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
-  CODEX_NOTIFY_MANAGED_MARKER,
   OPENCODE_PLUGIN_BUNDLE_BASENAME,
-  OPENCODE_PLUGIN_INSTALL_BASENAME,
-  OPENCODE_PLUGIN_MANAGED_MARKER,
-  findLifecycleAssetSourceFrom,
   installLifecycleAsset,
+  resolveLifecycleIntegrationPaths,
 } from '../../shared/lifecycleIntegrations';
 import {
   readAllTargetStatuses,
@@ -358,12 +355,11 @@ export class McpRegistrar {
    * replacing a foreign destination or foreign root `notify` command.
    */
   private installAndRegisterCodexNotify(): void {
-    const src = this.getCodexNotifySourcePath();
-    const dest = path.join(this.home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME);
+    const spec = resolveLifecycleIntegrationPaths(this.home, app.getAppPath()).codex;
+    const dest = spec.destinationPath;
     const installed = installLifecycleAsset({
-      sourcePath: src,
-      destinationPath: dest,
-      ownershipMarkers: [CODEX_NOTIFY_MANAGED_MARKER],
+      ...spec,
+      sourcePath: this.getCodexNotifySourcePath(),
     });
     if (installed.state !== 'current') {
       const detail = installed.error ? `: ${installed.error}` : '';
@@ -392,7 +388,7 @@ export class McpRegistrar {
   }
 
   /** Resolve the bundled OpenCode plugin in packaged and development layouts. */
-  private getOpenCodePluginSourcePath(): string | null {
+  private getOpenCodePluginSourcePath(devSource: string | null): string | null {
     if (app.isPackaged) {
       const bundled = path.join(
         process.resourcesPath,
@@ -401,11 +397,7 @@ export class McpRegistrar {
       );
       return fs.existsSync(bundled) ? bundled : null;
     }
-    return findLifecycleAssetSourceFrom(
-      app.getAppPath(),
-      OPENCODE_PLUGIN_BUNDLE_BASENAME,
-      ['integrations', 'opencode', 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME],
-    );
+    return devSource;
   }
 
   /**
@@ -414,17 +406,14 @@ export class McpRegistrar {
    * A same-name user plugin without the wmux marker is always preserved.
    */
   private installOpenCodePlugin(): void {
-    const configRoot = path.join(this.home, '.config', 'opencode');
-    const dest = path.join(configRoot, 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME);
+    const spec = resolveLifecycleIntegrationPaths(this.home, app.getAppPath()).opencode;
+    const dest = spec.destinationPath;
+    const configRoot = path.dirname(path.dirname(dest));
     if (!fs.existsSync(configRoot) && !fs.existsSync(dest)) return;
 
     const installed = installLifecycleAsset({
-      sourcePath: this.getOpenCodePluginSourcePath(),
-      destinationPath: dest,
-      ownershipMarkers: [
-        OPENCODE_PLUGIN_MANAGED_MARKER,
-        'wmux ↔ OpenCode plugin bridge',
-      ],
+      ...spec,
+      sourcePath: this.getOpenCodePluginSourcePath(spec.sourcePath),
     });
     if (installed.state !== 'current') {
       const detail = installed.error ? `: ${installed.error}` : '';

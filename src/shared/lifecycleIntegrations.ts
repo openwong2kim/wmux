@@ -152,6 +152,13 @@ export interface LifecycleIntegrationPaths {
   opencode: LifecycleAssetSpec;
 }
 
+function resolveOpenCodeConfigHome(home: string): string {
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+  return xdgConfigHome && path.isAbsolute(xdgConfigHome)
+    ? xdgConfigHome
+    : path.join(home, '.config');
+}
+
 export function resolveLifecycleIntegrationPaths(home: string, startDir: string): LifecycleIntegrationPaths {
   return {
     home,
@@ -170,7 +177,12 @@ export function resolveLifecycleIntegrationPaths(home: string, startDir: string)
         OPENCODE_PLUGIN_BUNDLE_BASENAME,
         ['integrations', 'opencode', 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME],
       ),
-      destinationPath: path.join(home, '.config', 'opencode', 'plugins', OPENCODE_PLUGIN_INSTALL_BASENAME),
+      destinationPath: path.join(
+        resolveOpenCodeConfigHome(home),
+        'opencode',
+        'plugins',
+        OPENCODE_PLUGIN_INSTALL_BASENAME,
+      ),
       ownershipMarkers: [OPENCODE_PLUGIN_MANAGED_MARKER, 'wmux ↔ OpenCode plugin bridge'],
     },
   };

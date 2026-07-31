@@ -805,7 +805,9 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (status) {
     const claude = statusHooks(paths);
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
-    const outcome = { claude, ...integrations };
+    // Preserve the legacy Claude-only root fields for scripts while exposing
+    // the richer per-integration objects alongside them.
+    const outcome = { ...claude, claude, ...integrations };
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
     } else {
@@ -840,7 +842,12 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // not prevent safe Codex/OpenCode installation (and vice versa).
   const claude = installHooks(paths);
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths);
-  const outcome = { ...integrations, ok: claude.ok && integrations.ok, claude };
+  const outcome = {
+    ...claude,
+    ...integrations,
+    ok: claude.ok && integrations.ok,
+    claude,
+  };
   if (jsonMode) {
     console.log(JSON.stringify(outcome, null, 2));
   } else {
