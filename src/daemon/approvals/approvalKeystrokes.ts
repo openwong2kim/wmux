@@ -116,3 +116,38 @@ const CURSOR_OPTION_ROW =
 export function looksLikeApprovalPrompt(rows: readonly string[]): boolean {
   return rows.some((row) => CURSOR_OPTION_ROW.test(row));
 }
+
+/**
+ * Is a SPECIFIC option (identified by its digit and label) visible on screen?
+ *
+ * Looks for any row containing `<digit>.` or `<digit>)` followed (after some
+ * whitespace) by at least the first 20 characters of the label. We require only
+ * a prefix because the TUI may truncate long labels at the terminal width.
+ *
+ * Does NOT require the selection cursor — the option may not be highlighted,
+ * but it must be rendered. The cursor check is already done by
+ * `looksLikeApprovalPrompt` (which is called before this).
+ *
+ * Biased to refuse: a false negative costs the caller a fallback to the default
+ * approve/deny, not a lost answer. A false positive would type the wrong digit.
+ */
+export function looksLikeChoiceOnScreen(
+  rows: readonly string[],
+  digit: string,
+  label: string,
+): boolean {
+  // Use enough of the label to be distinctive but not so much that a TUI
+  // line-wrap causes a miss. 20 chars is ~3 words, well above ambiguity.
+  const labelPrefix = label.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match: optional framing, the digit followed by . or ), whitespace, then
+  // the label prefix.
+  const pattern = new RegExp(
+    `${escapeDigit(digit)}[.)][\\s]+${labelPrefix}`,
+  );
+  return rows.some((row) => pattern.test(row));
+}
+
+function escapeDigit(d: string): string {
+  // Digits are regex-safe, but be explicit for safety.
+  return d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

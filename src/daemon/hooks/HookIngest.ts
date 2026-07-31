@@ -577,6 +577,7 @@ export class HookIngest {
       ...(workspaceId ? { workspaceId } : {}),
       ...(asked.question ? { question: asked.question } : {}),
       ...(asked.options ? { options: asked.options } : {}),
+      ...(asked.choices ? { choices: asked.choices } : {}),
     });
   }
 

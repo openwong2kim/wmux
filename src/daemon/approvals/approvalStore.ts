@@ -15,7 +15,7 @@
 
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
-import { sanitizeOptions, sanitizeQuestion } from './askUserQuestion';
+import { sanitizeChoices, sanitizeOptions, sanitizeQuestion } from './askUserQuestion';
 import type { ApprovalDecision, ApprovalRequest, ApprovalState } from './types';
 
 const STATE_FILE = 'approvals.json';
@@ -110,6 +110,12 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (question) out.question = question;
   const options = sanitizeOptions(o['options']);
   if (options) out.options = options;
+  const choices = sanitizeChoices(o['choices']);
+  if (choices) out.choices = choices;
+  // selectedChoiceKey: a 1-2 digit string, validated against the choices set.
+  if (typeof o['selectedChoiceKey'] === 'string' && /^\d{1,2}$/.test(o['selectedChoiceKey'])) {
+    out.selectedChoiceKey = o['selectedChoiceKey'];
+  }
   // Closed set of one: anything else on disk is dropped rather than passed
   // through, so a hand-edited file cannot invent a risk level a client would
   // then have to interpret.

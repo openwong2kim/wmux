@@ -1965,8 +1965,29 @@ export class WebTerminalServer {
       if (decision !== 'approve' && decision !== 'deny') {
         return this.json(res, 400, { error: "decision must be 'approve' or 'deny'" });
       }
+      // choiceKey is presence-sensitive. A malformed, empty, or deny-side
+      // key must never be dropped into the legacy "approve first option" path.
+      const parsedBody = body as Record<string, unknown> | null;
+      const hasChoiceKey = parsedBody !== null
+        && typeof parsedBody === 'object'
+        && !Array.isArray(parsedBody)
+        && Object.prototype.hasOwnProperty.call(parsedBody, 'choiceKey');
+      const rawChoiceKey = hasChoiceKey ? parsedBody?.['choiceKey'] : undefined;
+      if (hasChoiceKey && (
+        decision !== 'approve'
+        || typeof rawChoiceKey !== 'string'
+        || !/^\d{1,2}$/.test(rawChoiceKey)
+      )) {
+        return this.json(res, 400, { error: 'invalid-choice-key' });
+      }
+      const choiceKey = hasChoiceKey ? rawChoiceKey as string : undefined;
       approvals
-        .resolve({ id, decision, resolvedBy: describePrincipal(principal) })
+        .resolve({
+          id,
+          decision,
+          resolvedBy: describePrincipal(principal),
+          ...(choiceKey !== undefined ? { choiceKey } : {}),
+        })
         .then((result) => {
           if (result.ok) {
             // 200 with `durable:false` rather than an error: the keystroke IS in
@@ -1997,6 +2018,11 @@ export class WebTerminalServer {
             // guess bytes. Not the caller's fault: 501, not 4xx.
             case 'unsupported-agent':
               return this.json(res, 501, { error: 'unsupported-agent' });
+            // The choiceKey does not belong to this request or the option is not
+            // visible on screen. The request is still pending — the caller can
+            // retry with a valid key or use the default approve/deny.
+            case 'invalid-choice-key':
+              return this.json(res, 422, { error: 'invalid-choice-key' });
             case 'not-found':
               return this.json(res, 404, { error: 'not-found' });
             default: {
@@ -2762,6 +2788,10 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     // options list is a fact the registry recorded, not a missing field.
     ...(typeof r.question === 'string' ? { question: r.question } : {}),
     ...(Array.isArray(r.options) ? { options: r.options } : {}),
+    // Structured choices with key+label for per-option resolve. Additive
+    // alongside options — old clients ignore it, new clients use it for
+    // choiceKey resolution.
+    ...(Array.isArray(r.choices) && r.choices.length > 0 ? { choices: r.choices } : {}),
     // A hint for UI step-up (see ApprovalRequest.risk). Never a permission:
     // every request on this list is answerable through POST regardless.
     ...(r.risk ? { risk: r.risk } : {}),
@@ -2769,6 +2799,8 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     ...(r.decision ? { decision: r.decision } : {}),
     ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
     ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+    // Which specific choice was selected, when resolved via choiceKey.
+    ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
   };
 }
 

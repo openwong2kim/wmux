@@ -1442,6 +1442,40 @@ describe('WebTerminalServer', () => {
     expect(resolveCalls[0].decision).toBe('deny');
   });
 
+  it('passes a valid choiceKey to the registry unchanged', async () => {
+    const info = await startRO();
+    approvalRecords.push(mkApproval({ id: 'ap-choice' }));
+    const res = await postApproval(info.token as string, 'ap-choice', {
+      decision: 'approve',
+      choiceKey: '2',
+    });
+    expect(res.status).toBe(200);
+    expect(resolveCalls).toEqual([{
+      id: 'ap-choice',
+      decision: 'approve',
+      choiceKey: '2',
+      resolvedBy: 'operator',
+    }]);
+  });
+
+  it('rejects malformed or deny-side choiceKey without reaching the registry', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    const bodies = [
+      { decision: 'approve', choiceKey: '' },
+      { decision: 'approve', choiceKey: 'abc' },
+      { decision: 'approve', choiceKey: 2 },
+      { decision: 'approve', choiceKey: null },
+      { decision: 'deny', choiceKey: '2' },
+    ];
+    for (const body of bodies) {
+      const res = await postApproval(token, 'ap-choice', body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid-choice-key' });
+    }
+    expect(resolveCalls).toEqual([]);
+  });
+
   it('maps every registry refusal onto its own status code', async () => {
     const cases: Array<{ result: ApprovalResolveResult; status: number; body: Record<string, unknown> }> = [
       // Someone else answered first — and the loser is told who.
@@ -1460,6 +1494,8 @@ describe('WebTerminalServer', () => {
         status: 410,
         body: { error: 'expired', state: 'superseded' },
       },
+      // A well-formed key that is not valid for this live request stays pending.
+      { result: { ok: false, reason: 'invalid-choice-key' }, status: 422, body: { error: 'invalid-choice-key' } },
       // No keystroke map for this agent — the daemon refuses to guess bytes.
       { result: { ok: false, reason: 'unsupported-agent' }, status: 501, body: { error: 'unsupported-agent' } },
       { result: { ok: false, reason: 'not-found' }, status: 404, body: { error: 'not-found' } },

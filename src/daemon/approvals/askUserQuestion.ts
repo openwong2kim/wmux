@@ -52,10 +52,12 @@ const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
 export interface ExtractedQuestion {
   question?: string;
   options?: string[];
+  /** Structured choices preserving the original 1-based index as key. */
+  choices?: Array<{ key: string; label: string }>;
 }
 
 /**
- * Extract `{question, options}` from a PreToolUse hook payload.
+ * Extract `{question, options, choices}` from a PreToolUse hook payload.
  *
  * The canonical Claude Code `AskUserQuestion` tool_input is
  * `{questions: [{question, header, multiSelect, options: [{label, description}]}]}`.
@@ -68,6 +70,13 @@ export interface ExtractedQuestion {
  * the first question — surfacing options from a later one would describe a
  * choice the press cannot make. (Multi-question prompts are a real gap here and
  * belong with the per-option press in M5/M6.)
+ *
+ * `choices` preserves the ORIGINAL 1-based index of each option in the payload
+ * array as the `key`. When a label is blank/unusable the entry is dropped from
+ * `options` (the legacy array), but the next entry's key still reflects its
+ * real position. This is critical: the digit that selects an option in the TUI
+ * is its 1-based position in the original array, not its position in the
+ * filtered list.
  *
  * Never throws. Any field it cannot make sense of is simply absent.
  */
@@ -87,8 +96,9 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
   const question = clean(readString(source, 'question'), MAX_QUESTION_CHARS);
   if (question) out.question = question;
 
-  const options = readOptionLabels(source);
+  const { options, choices } = readOptionLabelsWithChoices(source);
   if (options.length > 0) out.options = options;
+  if (choices.length > 0) out.choices = choices;
 
   return out;
 }
@@ -100,24 +110,41 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
  * is not promised to match the digit that selects it. Nothing presses by index
  * from this list today (approve is hard-coded to the first option); when M5/M6
  * adds per-option press it must carry the real index, not this array's.
+ *
+ * `choices` preserves the original 1-based index: each entry is `{key, label}`
+ * where `key` is the TUI digit (e.g. '1', '2', '3'). Dropped entries still
+ * advance the counter so subsequent keys are correct.
  */
-function readOptionLabels(source: Record<string, unknown>): string[] {
+function readOptionLabelsWithChoices(source: Record<string, unknown>): {
+  options: string[];
+  choices: Array<{ key: string; label: string }>;
+} {
   const raw = readArray(source, 'options');
-  if (!raw) return [];
-  const labels: string[] = [];
+  if (!raw) return { options: [], choices: [] };
+  const options: string[] = [];
+  const choices: Array<{ key: string; label: string }> = [];
   // Bound the entries INSPECTED, not just the labels accepted. Breaking only on
-  // `labels.length` meant an array of a million nulls yielded nothing and was
+  // `options.length` meant an array of a million nulls yielded nothing and was
   // walked in full, on the daemon's event loop, driven by a hook payload the
   // agent authors. `MAX_INSPECTED_OPTIONS` gives a malformed-but-honest payload
   // some slack while keeping the work constant.
-  for (const entry of raw.slice(0, MAX_INSPECTED_OPTIONS)) {
-    if (labels.length >= MAX_OPTIONS) break;
+  let inspected = 0;
+  for (let i = 0; i < raw.length && inspected < MAX_INSPECTED_OPTIONS; i++) {
+    inspected++;
+    if (options.length >= MAX_OPTIONS) break;
+    const entry = raw[i];
     const label = typeof entry === 'string'
       ? clean(entry, MAX_OPTION_LABEL_CHARS)
       : clean(readString(entry, 'label'), MAX_OPTION_LABEL_CHARS);
-    if (label) labels.push(label);
+    if (label) {
+      options.push(label);
+      // Key is the 1-based position in the ORIGINAL array — the digit Claude's
+      // TUI uses to select this option, regardless of how many prior entries
+      // were dropped for being unlabeled.
+      choices.push({ key: String(i + 1), label });
+    }
   }
-  return labels;
+  return { options, choices };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -176,4 +203,33 @@ export function sanitizeOptions(value: unknown): string[] | undefined {
     if (label) labels.push(label);
   }
   return labels.length > 0 ? labels : undefined;
+}
+
+/** Cap for a choice key — a 1-based digit, never more than 2 characters. */
+export const MAX_CHOICE_KEY_CHARS = 2;
+
+/**
+ * Re-apply caps to `choices` read back from disk. Each entry must have a
+ * valid `key` (1-2 digit string) and a non-empty `label`. Entries that fail
+ * are dropped.
+ */
+export function sanitizeChoices(
+  value: unknown,
+): Array<{ key: string; label: string }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: Array<{ key: string; label: string }> = [];
+  for (const entry of value.slice(0, MAX_INSPECTED_OPTIONS)) {
+    if (out.length >= MAX_OPTIONS) break;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const key = typeof e['key'] === 'string' ? e['key'] : '';
+    const label = clean(typeof e['label'] === 'string' ? e['label'] : '', MAX_OPTION_LABEL_CHARS);
+    // Key must be a 1-2 digit string (e.g. '1', '12') — reject the original,
+    // do not truncate. A key that does not match is a corrupt or hand-edited
+    // record and must be dropped.
+    if (/^\d{1,2}$/.test(key) && label) {
+      out.push({ key, label });
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }

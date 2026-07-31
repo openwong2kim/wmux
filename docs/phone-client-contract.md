@@ -252,6 +252,18 @@ Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
 
+Phone scrolling has two ownership modes. A terminal's normal buffer is local
+scrollback and must remain local (ordinary shells and Kiro use this path).
+Alternate-screen TUIs have no terminal scrollback. With `--allow-input`, a
+vertical phone drag may send line-granular wheel events only while the remote
+TUI has negotiated mouse reporting, and only encoded with that negotiated
+protocol. If no mouse mode is active and no wheel event was sent, the completed
+swipe may fall back to standard `PgUp`/`PgDn` terminal navigation. Claude Code's
+fullscreen renderer documents both wheel scrolling and those keys for its
+app-owned conversation history. Without `--allow-input`, send neither; never
+forward generic taps or drags, guess a mouse protocol, or pretend the alternate
+buffer is locally scrollable.
+
 ### Creating and closing panes
 
 ```
@@ -347,15 +359,69 @@ prompt, the daemon records a request any authenticated surface can answer.
 
 ```
 GET  /api/approvals          → {pending: [...], recentlyResolved: [...]}
-POST /api/approvals/<id>     body: {decision: 'approve' | 'deny'}
+POST /api/approvals/<id>     body: {decision: 'approve' | 'deny', choiceKey?: string}
 ```
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
-optionally `workspaceId`, `question`, `options`, `risk`, `screenTail`,
-`decision`, `resolvedBy`, `resolvedAt`.
+optionally `workspaceId`, `question`, `options`, `choices`, `risk`, `screenTail`,
+`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`.
 
 `question` and `options` are the agent's own text, sanitized and capped. Render
 them — a blind Approve button is not an informed answer.
+
+### `choices` — structured option keys for per-option resolution
+
+`choices` is an array of `{key, label}` objects, present when the daemon
+extracted usable options from the `AskUserQuestion` payload. Each `key` is the
+1-based digit ('1', '2', …) that selects that option in Claude Code's TUI,
+preserving the original index even when unlabeled entries are dropped from the
+legacy `options` array.
+
+A client that supports per-option buttons sends `choiceKey` in the resolve body
+instead of relying on the default first-option mapping. This is strictly opt-in:
+omitting `choiceKey` preserves existing behavior byte-for-byte.
+
+### `choiceKey` — selecting a specific option on resolve
+
+```json
+POST /api/approvals/<id>
+{
+  "decision": "approve",
+  "choiceKey": "2"
+}
+```
+
+When present:
+- The daemon validates `choiceKey` belongs to the stored request's `choices` set.
+- The screen re-verify confirms the corresponding option row is visible.
+- Exactly that digit is sent to the PTY — no CR, same as default approve.
+- On success, `selectedChoiceKey` is persisted on the resolved history record.
+
+When absent:
+- Existing behaviour: approve sends '1' (first option), deny sends ESC.
+- Byte-for-byte identical to clients that predate this field.
+
+Malformed keys (empty, non-string, non-digit, or attached to `deny`) return
+400 `{error: 'invalid-choice-key'}` before the registry is called. A well-formed
+but unknown or stale key returns 422 with the same error. In both cases the
+request stays pending — no default option is pressed.
+
+### Agent support — Claude native, others terminal-only
+
+Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
+extracts the question, options, and structured choices from the hook payload and
+maps resolve decisions to precise TUI keystrokes.
+
+Claude Code's **permission prompts** (tool-approval gate, "Do you want to
+proceed?") have no hook — they are detector-only. Until Claude Code exposes an
+authoritative hook for permission prompts, the phone cannot answer them.
+
+**Codex CLI, Kiro CLI, and other TUI-only agents** have no hook integration and
+no authoritative keystroke mapping. They report `unsupported-agent` (501). Their
+prompts are answered with the phone pane's terminal controls when `--allow-input`
+is enabled, or at the desktop otherwise. Structured choice
+support for these agents will be added only after their respective projects
+expose authoritative approval hooks — the daemon does not guess keystrokes.
 
 ### `risk` — a hint, not a gate
 
@@ -389,8 +455,10 @@ there before writing.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | `{state, durable}` | Answered. `durable: false` means the keystroke landed but the record did not survive — the answer is real, the history will not show it. Do **not** retry |
+| 400 | `{error: 'invalid-choice-key'}` | A supplied choice key is malformed or was attached to `deny`. Nothing is sent |
 | 409 | `{error: 'already-resolved', resolvedBy}` | Another surface won. `resolvedBy` names it (`operator`, or `device <name> (<id>)`) |
 | 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or the prompt left the screen. Stop showing it |
+| 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
 | 501 | `{error: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
 | 404 | `{error: 'not-found'}` | No such request |
 
@@ -399,10 +467,10 @@ deny sends ESC. Neither is followed by a carriage return: on a select, the digit
 both moves and confirms, and a stray CR would press whatever the TUI renders
 next.
 
-**Known limitation, shipped deliberately:** options are agent-authored, so
-Approve means "pick the first option", not "say yes". Deny is exact. A per-option
-press needs the option list in the UI — that is app-side work, and the wire
-already carries `options`.
+**Per-option press via `choiceKey`:** when `choices` is present on the request,
+a client can send `choiceKey` to select a specific option rather than always
+picking the first. The daemon sends exactly that digit — no CR. This removes the
+"blind first option" limitation for clients that render the choice list.
 
 ### Lifecycle you must reflect
 
@@ -444,6 +512,12 @@ HKDF with a **zero-length salt** and `info = "wmux:push:v1" || epk || spk` in
 that order; the timestamp interpolated into the AAD as an **integer, not a
 float**; standard base64 **with** padding (not base64url); a 12-byte nonce; and a
 byte-for-byte, case-sensitive `deviceId`.
+
+The decrypted plaintext is additive JSON: `title`, `body`, optional
+`approvalId`, optional `sessionId`, and optional `requiresInAppChoice`. When
+`requiresInAppChoice` is true, the Notification Service Extension must use an
+affirmative-free category: the person has to open the app and pick a structured
+choice. Older payloads omit the field and older extensions ignore it.
 
 Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 
