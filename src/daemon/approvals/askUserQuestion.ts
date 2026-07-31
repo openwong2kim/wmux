@@ -68,8 +68,8 @@ export interface ExtractedQuestion {
  * ONLY THE FIRST QUESTION is extracted. AskUserQuestion may carry several, but
  * the keystroke map presses one option on whatever the TUI is showing, which is
  * the first question — surfacing options from a later one would describe a
- * choice the press cannot make. (Multi-question prompts are a real gap here and
- * belong with the per-option press in M5/M6.)
+ * choice the press cannot make. Multi-question prompts remain a real gap: the
+ * daemon has no way to advance to a later question and answer it separately.
  *
  * `choices` preserves the ORIGINAL 1-based index of each option in the payload
  * array as the `key`. When a label is blank/unusable the entry is dropped from
@@ -107,9 +107,10 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
  * Option labels, from either `[{label}]` or `['label']`. Entries that yield no
  * usable label are DROPPED rather than kept as empty strings — a blank row on a
  * phone is worse than a shorter list — which is why the index of an option here
- * is not promised to match the digit that selects it. Nothing presses by index
- * from this list today (approve is hard-coded to the first option); when M5/M6
- * adds per-option press it must carry the real index, not this array's.
+ * is not promised to match the digit that selects it. Per-option press (via
+ * `choiceKey`) does NOT index into this array: it uses the authoritative key on
+ * the parallel `choices` array (see readOptionLabelsWithChoices below). The
+ * legacy `options` array is display-only.
  *
  * `choices` preserves the original 1-based index: each entry is `{key, label}`
  * where `key` is the TUI digit (e.g. '1', '2', '3'). Dropped entries still
