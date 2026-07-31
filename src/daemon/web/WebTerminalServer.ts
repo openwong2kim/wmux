@@ -1708,6 +1708,9 @@ export class WebTerminalServer {
       const body = Buffer.concat(chunks).toString('utf8');
       try {
         managed.ptyProcess.write(body);
+        // A phone can paste drafts containing newlines; bridge.noteInput keeps
+        // bracketed-paste bodies inert and only re-arms on a submitted CR/LF.
+        managed.bridge.noteInput?.(body);
       } catch (err) {
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
       }

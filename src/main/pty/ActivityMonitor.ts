@@ -79,6 +79,26 @@ export class ActivityMonitor {
     });
   }
 
+  /**
+   * Re-arm a cycle from an explicit submitted-input boundary. Unlike passive
+   * throughput detection, the next output byte is enough to prove this turn is
+   * running: short agent replies must not remain stuck in the previous
+   * waiting/complete state just because they never cross the 2 KB threshold.
+   * No callback fires until output actually arrives.
+   */
+  beginTurn(ptyId: string): void {
+    const s = this.states.get(ptyId);
+    if (!s) return;
+    if (s.idleTimer) clearTimeout(s.idleTimer);
+    s.bytes = 0;
+    s.windowStart = Date.now();
+    s.active = true;
+    s.notified = false;
+    s.activeFired = false;
+    s.idleTimer = null;
+    s.lastReschedule = 0;
+  }
+
   feed(ptyId: string, byteCount: number): void {
     const s = this.states.get(ptyId);
     if (!s) return;

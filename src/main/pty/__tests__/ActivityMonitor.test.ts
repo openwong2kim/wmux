@@ -177,4 +177,92 @@ describe('ActivityMonitor', () => {
       expect(cb).toHaveBeenCalledTimes(1); // not 2
     });
   });
+
+  // beginTurn is the explicit-input counterpart to passive throughput
+  // detection. Byte volume is a heuristic for "the agent is working"; a
+  // submitted Enter is PROOF. A short reply ("Done.") never crosses the 2 KB
+  // threshold, so without this the pane stays stuck in the previous
+  // waiting/complete state for the whole turn.
+  describe('beginTurn (explicit submitted-input boundary)', () => {
+    let activeFired: string[];
+
+    beforeEach(() => {
+      activeFired = [];
+      monitor.onActive((id) => activeFired.push(id));
+    });
+
+    it('does not fire anything on its own — output must still arrive', () => {
+      monitor.start('p1');
+      monitor.beginTurn('p1');
+      expect(activeFired).toEqual([]);
+      expect(fired).toEqual([]);
+    });
+
+    it('makes the FIRST output byte emit active, even far below the threshold', () => {
+      monitor.start('p1');
+      monitor.beginTurn('p1');
+      monitor.feed('p1', 1); // one byte
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('without beginTurn, a sub-threshold reply emits nothing (the bug it fixes)', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 1);
+      expect(activeFired).toEqual([]);
+    });
+
+    it('re-arms a cycle that had already notified idle', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      vi.advanceTimersByTime(5000);
+      expect(fired).toEqual(['p1']);
+      activeFired.length = 0;
+
+      // A new human turn: a tiny reply must still be reported as running, and
+      // must be able to reach idle again afterwards.
+      monitor.beginTurn('p1');
+      monitor.feed('p1', 5);
+      expect(activeFired).toEqual(['p1']);
+      vi.advanceTimersByTime(5000);
+      expect(fired).toEqual(['p1', 'p1']);
+    });
+
+    it('clears a pending idle timer so the previous cycle cannot fire late', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      // Half-way through the old idle countdown, a new turn starts.
+      vi.advanceTimersByTime(2_500);
+      monitor.beginTurn('p1');
+      // The old timer must be gone; nothing arrives, so nothing fires.
+      vi.advanceTimersByTime(10_000);
+      expect(fired).toEqual([]);
+    });
+
+    it('is per-pty and does not arm a sibling', () => {
+      monitor.start('p1');
+      monitor.start('p2');
+      monitor.beginTurn('p1');
+      monitor.feed('p2', 1);
+      expect(activeFired).toEqual([]);
+      monitor.feed('p1', 1);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('is a no-op for an unknown pty', () => {
+      expect(() => monitor.beginTurn('does-not-exist')).not.toThrow();
+      vi.advanceTimersByTime(10_000);
+      expect(fired).toEqual([]);
+      expect(activeFired).toEqual([]);
+    });
+
+    it('is a no-op after stop() (no resurrection of a disposed pane)', () => {
+      monitor.start('p1');
+      monitor.stop('p1');
+      monitor.beginTurn('p1');
+      monitor.feed('p1', 5000);
+      vi.advanceTimersByTime(10_000);
+      expect(activeFired).toEqual([]);
+      expect(fired).toEqual([]);
+    });
+  });
 });

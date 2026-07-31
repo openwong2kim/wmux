@@ -156,6 +156,9 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return false;
       managed.ptyProcess.write(data);
+      // Approval choices (digit/ESC) submit immediately without CR/LF. Mark
+      // this as a real turn edge only after the PTY accepted the write.
+      managed.bridge.noteInput(data, true);
       return true;
     },
     log: (level, message) => log(level, message),
@@ -1863,9 +1866,12 @@ function registerRpcHandlers(
       managed.bridge.on('data', onData);
       sessionDataListeners.set(p.id, { bridge: managed.bridge, listener: onData });
 
-      // Forward client input to PTY
+      // Forward client input to PTY. noteInput ignores ordinary typing and
+      // bracketed-paste newlines; only the submitted CR/LF re-arms running.
       pipe.onInput((data: Buffer) => {
-        managed.ptyProcess.write(data.toString());
+        const input = data.toString();
+        managed.ptyProcess.write(input);
+        managed.bridge.noteInput(input);
       });
 
       try {
@@ -2378,6 +2384,10 @@ function registerRpcHandlers(
     hookIngest = new HookIngest({
       listLiveSessions: () => sessionManager.listLiveSessions(),
       emitAgentEvent: (sessionId, data) => {
+        // Hook Stop/awaiting-input is authoritative inside the same daemon that
+        // owns byte activity. Settle the bridge before broadcasting so a later
+        // idle repaint cannot race the renderer back to stale running.
+        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
       },
@@ -4725,6 +4735,9 @@ async function main(): Promise<void> {
       const managed = sessionManager.getSession(sessionId);
       if (!managed) throw new Error(`session ${sessionId} is gone`);
       managed.ptyProcess.write(data);
+      // ChannelWakeWorker sends text and Enter separately. The text write is a
+      // draft; its later CR is the submitted turn boundary noteInput detects.
+      managed.bridge.noteInput(data);
     },
     // Envelope discipline (channelEventEnvelope.ts, plan R2 lesson): the
     // control pipe carries DaemonEvent {type, sessionId, data} — a raw

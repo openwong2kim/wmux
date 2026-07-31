@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
 import { OscParser } from '../main/pty/OscParser';
 import { TerminalNotificationParser } from '../main/pty/oscNotification';
-import { AgentDetector } from '../main/pty/AgentDetector';
+import { AgentDetector, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
@@ -74,9 +74,94 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private oscCwdSeen = false;
 
+  /**
+   * A detector/hook terminal state (waiting, complete, awaiting input, error)
+   * outranks passive byte throughput until a real submitted-input boundary
+   * starts the next turn. This prevents a full-screen idle redraw from
+   * resurrecting stale `running` metadata.
+   */
+  private explicitTerminalStatus = false;
+  private submittedTurnPending = false;
+
+  /** Track bracketed-paste input so newlines inside a pasted draft are not
+   * mistaken for Enter. The closing marker and the later CR are separate writes
+   * in the normal renderer path; only that CR starts a turn. */
+  private inputInBracketedPaste = false;
+  private static readonly BRACKETED_PASTE_START = '\x1b[200~';
+  private static readonly BRACKETED_PASTE_END = '\x1b[201~';
+
   /** Called by DaemonSessionManager.resizeSession on every applied resize. */
   noteResize(): void {
     this.lastResizeAtMs = Date.now();
+  }
+
+  /**
+   * Observe bytes successfully written to PTY stdin. A CR/LF outside bracketed
+   * paste is a submitted turn; callers that send an immediate TUI choice
+   * (approval digit/ESC) pass `forceSubmitted=true` because those controls do
+   * not include Enter but still resume the blocked turn.
+   */
+  noteInput(data: string, forceSubmitted = false): void {
+    const hasSubmitBoundary = this.scanSubmittedInput(data);
+    if (!forceSubmitted && !hasSubmitBoundary) return;
+
+    this.explicitTerminalStatus = false;
+    this.submittedTurnPending = true;
+    if (this.resizeGuardTimer) {
+      clearTimeout(this.resizeGuardTimer);
+      this.resizeGuardTimer = null;
+    }
+    this.agentDetector?.resetEmissionState();
+    if (this.activityMonitor && this.sessionId) {
+      this.activityMonitor.beginTurn(this.sessionId);
+    }
+  }
+
+  /**
+   * Apply an authoritative detector/hook lifecycle edge inside the daemon.
+   * Terminal states settle the turn and block later byte-only redraws;
+   * explicit running activity opens the gate again for autonomous work.
+   */
+  noteAgentStatus(status: AgentEventStatus): void {
+    if (status === 'running') {
+      this.explicitTerminalStatus = false;
+      return;
+    }
+    this.explicitTerminalStatus = true;
+    this.submittedTurnPending = false;
+    if (this.resizeGuardTimer) {
+      clearTimeout(this.resizeGuardTimer);
+      this.resizeGuardTimer = null;
+    }
+  }
+
+  private scanSubmittedInput(data: string): boolean {
+    let remaining = data;
+    let submitted = false;
+
+    while (remaining.length > 0) {
+      if (this.inputInBracketedPaste) {
+        const closeAt = remaining.indexOf(DaemonPTYBridge.BRACKETED_PASTE_END);
+        if (closeAt < 0) return submitted;
+        this.inputInBracketedPaste = false;
+        remaining = remaining.slice(
+          closeAt + DaemonPTYBridge.BRACKETED_PASTE_END.length,
+        );
+        continue;
+      }
+
+      const openAt = remaining.indexOf(DaemonPTYBridge.BRACKETED_PASTE_START);
+      const outsidePaste = openAt < 0 ? remaining : remaining.slice(0, openAt);
+      if (/[\r\n]/.test(outsidePaste)) submitted = true;
+      if (openAt < 0) break;
+
+      this.inputInBracketedPaste = true;
+      remaining = remaining.slice(
+        openAt + DaemonPTYBridge.BRACKETED_PASTE_START.length,
+      );
+    }
+
+    return submitted;
   }
 
   // Prompt-based CWD detection. Parsing is shared with the local PTYBridge via
@@ -98,45 +183,47 @@ export class DaemonPTYBridge extends EventEmitter {
     this.agentDetector = agentDetector;
 
     this.sessionId = sessionId;
+    this.explicitTerminalStatus = false;
+    this.submittedTurnPending = false;
+    this.inputInBracketedPaste = false;
 
     const activityMonitor = new ActivityMonitor();
     this.activityMonitor = activityMonitor;
     activityMonitor.start(sessionId);
 
-    // Activity → idle notification
+    // Activity → idle notification. Once a detector or hook has already
+    // settled this turn, byte silence is weaker evidence and must not clear the
+    // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
+      if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId });
     });
-    // Activity → active notification (start of a sustained output burst).
-    // Also resets AgentDetector emission dedup inside the daemon process so
-    // turn N+1's idle prompt fires again even if its text is identical to
-    // turn N. The reset MUST happen in-process: AgentDetector instances
-    // live in the daemon, so the main-side DaemonNotificationRouter can't
-    // reach into them the way local-mode PTYBridge does (Codex P1).
+    // Activity → active notification. Passive bursts are accepted only while
+    // no explicit terminal state owns the pane. A submitted turn is re-armed by
+    // beginTurn(), so its very first output emits running even for a short reply.
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
-      // Resize-redraw guard (twin of PTYBridge local mode): a burst that
-      // starts right after a resize is the TUI repainting at the new
-      // geometry, not new agent activity — resetting the emission dedup
-      // there re-fires the unchanged idle footer.
-      //
-      // onActive fires EXACTLY ONCE per active-to-idle cycle, so skipping
-      // the reset outright (rather than deferring it) would permanently
-      // skip it for the rest of THIS cycle too — if a genuinely new turn's
-      // output continues into the same cycle (no 5s idle gap after the
-      // repaint), its completion would never see a fresh dedup state and
-      // would be silently deduped as a repeat (codex review catch, mirrors
-      // the local-mode PTYBridge fix). Defer the reset to fire once the
-      // guard window elapses instead of skipping it.
-      const elapsed = Date.now() - this.lastResizeAtMs;
-      if (elapsed < RESIZE_REDRAW_GUARD_MS) {
-        if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
-        this.resizeGuardTimer = setTimeout(() => {
-          this.resizeGuardTimer = null;
+      if (this.explicitTerminalStatus) return;
+
+      const inputStartedTurn = this.submittedTurnPending;
+      this.submittedTurnPending = false;
+
+      // Real submitted input already reset detector dedup in noteInput(). For a
+      // passive startup/autonomous burst, retain the resize-redraw guard: a TUI
+      // repaint is not a new turn and must not make an unchanged footer emit
+      // another waiting notification.
+      if (!inputStartedTurn) {
+        const elapsed = Date.now() - this.lastResizeAtMs;
+        if (elapsed < RESIZE_REDRAW_GUARD_MS) {
+          if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
+          this.resizeGuardTimer = setTimeout(() => {
+            this.resizeGuardTimer = null;
+            this.agentDetector?.resetEmissionState();
+          }, RESIZE_REDRAW_GUARD_MS - elapsed);
+        } else {
           this.agentDetector?.resetEmissionState();
-        }, RESIZE_REDRAW_GUARD_MS - elapsed);
-      } else {
-        this.agentDetector?.resetEmissionState();
+        }
       }
+
       // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
       // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
@@ -194,8 +281,10 @@ export class DaemonPTYBridge extends EventEmitter {
       }
     });
 
-    // Agent detection
+    // Agent detection. Apply status priority before forwarding the event so a
+    // same-chunk/full-screen redraw cannot race a terminal state back to running.
     this.agentUnsubscribe = agentDetector.onEvent((agentEvent) => {
+      this.noteAgentStatus(agentEvent.status);
       this.emit('agent', { sessionId, event: agentEvent });
     });
 
@@ -210,12 +299,26 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
+      const buf = Buffer.from(data);
+
+      // Byte activity is weaker than a detector/hook terminal edge. Process it
+      // FIRST only while the pane is unsettled, so a waiting/complete pattern
+      // found in this same chunk is forwarded last and remains authoritative.
+      // While settled, ignore idle TUI repaints entirely until noteInput() sees
+      // a submitted turn (or an explicit running hook reopens the gate).
+      if (!this.muted && !this.explicitTerminalStatus) {
+        try {
+          activityMonitor.feed(sessionId, buf.length);
+        } catch {
+          // activity heuristics must never block detection or data forwarding.
+        }
+      }
+
       // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
       // 돌려야 한다. recovery 세션은 첫 resize 전까지 muted인데, 그 사이에
       // 에이전트 시작 배너("Claude Code vX" 등)가 출력되면 gate 정규식이 영구
       // 미활성화되어 이후 모든 status 감지가 죽는다(daemon mode agent detection
-      // 갭). feed만 muted 체크 앞으로 끌어올리고, ring buffer write·emit 등
-      // side effect는 여전히 muted로 차단해 geometry mismatch 오염은 막는다.
+      // 갭). activity보다 뒤에서 처리해 같은 chunk의 명시 상태가 최종 승자가 된다.
       try {
         agentDetector.feed(data);
       } catch {
@@ -227,9 +330,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer.
       if (this.muted) return;
       try {
-        const buf = Buffer.from(data);
         ringBuffer.write(buf);
-        activityMonitor.feed(sessionId, buf.length);
         oscParser.process(data);
 
         // Prompt-based CWD detection — fallback for shells WITHOUT the
@@ -254,7 +355,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.emit('data', buf);
       } catch (err) {
         // Still forward raw data even if parsing failed
-        this.emit('data', Buffer.from(data));
+        this.emit('data', buf);
       }
     });
     this.dataDisposable = () => onDataDisposable.dispose();
@@ -335,6 +436,9 @@ export class DaemonPTYBridge extends EventEmitter {
     }
 
     this.lastEmittedOscCwd = null;
+    this.explicitTerminalStatus = false;
+    this.submittedTurnPending = false;
+    this.inputInBracketedPaste = false;
     this.oscParser = null;
     this.agentDetector = null;
     this.activityMonitor = null;
