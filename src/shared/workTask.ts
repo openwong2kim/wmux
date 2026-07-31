@@ -63,6 +63,16 @@ export interface WorkTask {
   paneGroupId?: string;
   // ── J2 ──
   prUrl?: string;
+  /**
+   * Detach timestamp (non-destructive close marker). When set, this task was not a
+   * "harvest close" but **detached from its parent** — status is still `closed`, but
+   * its worktree/branch/PTY/dedicated workspace are untouched and still alive. This
+   * is the only signal distinguishing it from an ordinary close. Restored on replay
+   * from the close record's `evidence.detachedAt` (workspace-detached). An older
+   * daemon doesn't know this field but still recognizes status=closed, so it won't
+   * re-attach the child (prevents state resurrection).
+   */
+  detachedAt?: number;
   // ── §6.M 예약 (P2에서 활성화, J0 미구현 — §5 계약 참조) ──
   /** lease는 데몬 단독 소유(§5.3) — 어떤 caller도 wire로 쓰지 못한다. */
   lease?: { expiresAt: number; claimantRef: string };
@@ -83,13 +93,31 @@ export interface WorkTaskCreatePayload {
   task: WorkTask;
 }
 
-/** 태스크 종료 — id·closedAt. `evidence?`는 §6.M P2 예약 슬롯(J0 미해석). */
+/**
+ * Evidence for a non-destructive detach close (the first concrete consumer of the
+ * §6.M P2 evidence slot). When a close record carries this evidence, a newer daemon
+ * interprets it as detach (independence from the parent) and restores
+ * `WorkTask.detachedAt`. An older daemon ignores the evidence but still applies the
+ * close itself, so it only recognizes status=closed (the parent-child dependency is
+ * not resurrected).
+ */
+export interface WorkTaskDetachEvidence {
+  kind: 'workspace-detached';
+  /** Detach time (= the close's closedAt). The timestamp that distinguishes it from an ordinary close. */
+  detachedAt: number;
+}
+
+/**
+ * Task close — id, closedAt. `evidence?` used to be the §6.M P2 reserved slot;
+ * detach is its first consumer (WorkTaskDetachEvidence). Future evidence kinds
+ * widen this union.
+ */
 export interface WorkTaskClosePayload {
   kind: 'task.close';
   taskId: string;
   closedAt: number;
-  /** §6.M P2 완료증거 예약 슬롯 — J0 close는 사람 액션이라 게이트 없음(§5.5). */
-  evidence?: unknown;
+  /** §6.M P2 completion-evidence slot — detach's non-destructive close is the first concrete consumer (§5.5). */
+  evidence?: WorkTaskDetachEvidence;
 }
 
 /**

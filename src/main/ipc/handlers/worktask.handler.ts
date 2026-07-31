@@ -41,6 +41,8 @@ interface ProjectionTask {
   worktreePath?: string;
   paneGroupId?: string;
   prUrl?: string;
+  /** Detach-close marker — when present, the task is closed but its worktree/branch/PTY are still alive as an independent task. */
+  detachedAt?: number;
 }
 
 export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | null): () => void {
@@ -140,7 +142,12 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       // 활성 worktree가 orphan으로 오분류되는 것을 방지). taskId로 dedup.
       const byId = new Map<string, ScanOpenTask>();
       for (const t of tasks) {
-        if (t.status !== 'open') continue;
+        // Add both open tasks and detached tasks (closed but the worktree is still
+        // alive) to the protected set. This lets the scanner stop a detached task's
+        // live worktree from being misclassified as an orphan-dir (deletion
+        // candidate) (hardened after review).
+        const detached = t.detachedAt !== undefined;
+        if (t.status !== 'open' && !detached) continue;
         // 데몬 목록은 요청 owner 스코프라 owner = verifiedWorkspaceId(F1: close가
         // owner 스코프 authz라 엔트리에 owner를 실어 정합화 버튼이 올바른 신원을 쓰게).
         byId.set(t.id, {
@@ -148,6 +155,7 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
           title: t.title,
           ownerWorkspaceId: verifiedWorkspaceId,
           ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
+          ...(detached ? { detached: true } : {}),
         });
       }
       const known = Array.isArray((raw as Record<string, unknown>).knownOpen)

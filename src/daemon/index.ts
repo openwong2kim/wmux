@@ -3250,6 +3250,10 @@ function registerRpcHandlers(
       taskId,
       verifiedWorkspaceId,
       ...(typeof p['idempotencyKey'] === 'string' ? { idempotencyKey: p['idempotencyKey'] } : {}),
+      // Non-destructive detach close (frees the child from its parent). This RPC
+      // path never touches worktree/branch/PTY in the first place, so detach only
+      // adds evidence to the close record.
+      ...(p['detach'] === true ? { detach: true } : {}),
     });
   });
 

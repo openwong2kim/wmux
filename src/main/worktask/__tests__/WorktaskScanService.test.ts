@@ -101,6 +101,31 @@ describe('J3 §1 정리 스캔 4종 판정', () => {
   });
 });
 
+describe('detach 보호 — 살아있는 detached worktree는 정리 목록에서 완전히 제외', () => {
+  it('detached=true 매칭 worktree는 clean이든 dirty든 orphan-dir/preserved로 등재되지 않는다', async () => {
+    const wt = seedWorktree('detached-slug');
+    // Even when dirty (active independent work) it must not be listed — the orphan-dir misclassification is the core defect.
+    const svc = makeSvc(new Set([wt]));
+    const res = await svc.scan([{ taskId: 'wtask-d', title: 'Independent', worktreePath: wt, detached: true }]);
+    expect(res.entries.find((x) => x.worktreePath === wt)).toBeUndefined();
+    expect(res.entries).toHaveLength(0);
+  });
+
+  it('detached인데 worktree가 이미 없으면 disk-missing으로 잘못 등재하지 않는다(이미 closed)', async () => {
+    const svc = makeSvc();
+    const ghost = path.join(root, REPO_HASH, 'gone-detached');
+    const res = await svc.scan([{ taskId: 'wtask-dm', title: 'Gone', worktreePath: ghost, detached: true }]);
+    expect(res.entries).toHaveLength(0);
+  });
+
+  it('보호 대조: detached 플래그가 없으면 같은 dirty worktree는 preserved로 등재된다', async () => {
+    const wt = seedWorktree('not-detached-slug');
+    const svc = makeSvc(new Set([wt]));
+    const res = await svc.scan([{ taskId: 'wtask-nd', title: 'Harvest', worktreePath: wt }]);
+    expect(res.entries.find((x) => x.category === 'preserved' && x.worktreePath === wt)).toBeTruthy();
+  });
+});
+
 describe('J3 §1 GC 이후 역추적(closed 태스크 소멸 후 task.json)', () => {
   it('projection에서 GC된 closed 태스크의 worktree를 taskId·closedAt로 역추적', async () => {
     // closed 태스크가 7일 GC로 projection에서 사라진 상태 = openTasks에 부재.

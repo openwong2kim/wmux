@@ -127,6 +127,14 @@ export interface CloseMissionInput {
   /** 서버핀 authz 앵커(§3). */
   verifiedWorkspaceId: string;
   idempotencyKey?: string;
+  /**
+   * Non-destructive detach close. When true, performs the same log close + channel
+   * archive as an ordinary close, but stamps the close record with workspace-detached
+   * evidence to carve in `detachedAt`. worktree/branch/PTY/workspace are concerns
+   * outside this layer, so the daemon never touches them anyway (the caller bypasses
+   * the remove path). Result carries `detached: true`.
+   */
+  detach?: boolean;
 }
 
 /**
@@ -152,6 +160,8 @@ export type CloseMissionOk = {
   taskId: string;
   /** J3 §1(CX2): 채널 archive 미확정 — 부트 reconcile이 재시도 수렴. */
   archivePending?: boolean;
+  /** Was a detach close (for the caller's UI to check). Absent on an ordinary close. */
+  detached?: boolean;
 };
 export type UpdateMissionOk = { ok: true; taskId: string };
 
@@ -230,9 +240,18 @@ export class WorkTaskService {
       return;
     }
     if (p.kind === 'task.close') {
-      const taskId = (p as WorkTaskClosePayload).taskId;
+      const c = p as WorkTaskClosePayload;
+      const taskId = c.taskId;
       if (typeof taskId === 'string') {
-        this.idempotencyRecord('close', ws, rec.idempotencyKey, { ok: true, taskId });
+        // Restore the idempotency receipt for a detach close with detached:true too
+        // (hardened after review), so a retry after restart returns the same response
+        // as the original success.
+        const detached = c.evidence?.kind === 'workspace-detached';
+        this.idempotencyRecord('close', ws, rec.idempotencyKey, {
+          ok: true,
+          taskId,
+          ...(detached ? { detached: true } : {}),
+        });
       }
     }
   }
@@ -257,6 +276,12 @@ export class WorkTaskService {
       if (!task || task.status === 'closed') return;
       task.status = 'closed';
       task.closedAt = c.closedAt;
+      // If detach evidence is present, restore detachedAt (shared replay/runtime
+      // path). Old records lack evidence, so detachedAt stays unset — interpreted
+      // as an ordinary close (safe fallback).
+      if (c.evidence && c.evidence.kind === 'workspace-detached') {
+        task.detachedAt = c.evidence.detachedAt;
+      }
       return;
     }
     if (p.kind === 'task.update') {
@@ -330,6 +355,12 @@ export class WorkTaskService {
     const now = this.now();
     for (const [id, task] of this.tasks) {
       if (task.status !== 'closed' || task.closedAt === undefined) continue;
+      // Detached tasks are exempt from GC (hardened after review). Detach
+      // closes while leaving the child worktree alive, so evicting it from the
+      // projection would let the cleanup scanner misclassify that live worktree as
+      // an orphan-dir (deletion candidate). As long as detachedAt is set, keep it in
+      // the projection so the scanner/UI keep protecting it as a "live worktree".
+      if (task.detachedAt !== undefined) continue;
       if (now - task.closedAt <= WORKTASK_CLOSED_GC_MS) continue;
       this.tasks.delete(id);
     }
@@ -458,15 +489,31 @@ export class WorkTaskService {
       }
       // 재close: 이미 closed면 멱등 no-op ack. archive 재시도는 하지 않는다
       // (부트 reconcile 태스크 방향이 담당) — 성립한 close에 대해 caller는 성공을 받는다.
+      // A retry on a task already closed via detach reflects detached:true as-is
+      // (hardened after review), so the UI doesn't misread it as "detach
+      // failed". Conversely, requesting detach late on a task already closed via an
+      // ordinary close does not stamp detachedAt — an ordinary close may have
+      // already removed the worktree, so detach no longer means anything there.
       if (task.status === 'closed') {
-        const result: CloseMissionOk = { ok: true, taskId: task.id };
+        const result: CloseMissionOk = {
+          ok: true,
+          taskId: task.id,
+          ...(task.detachedAt !== undefined ? { detached: true } : {}),
+        };
         this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
         return result;
       }
 
-      // 1. task.close envelope append → projection 적용.
+      // 1. task.close envelope append → apply to projection. For detach, attach
+      //    workspace-detached evidence so a newer daemon can distinguish it from an
+      //    ordinary close via detachedAt.
       const closedAt = this.now();
-      const payload: WorkTaskClosePayload = { kind: 'task.close', taskId: task.id, closedAt };
+      const payload: WorkTaskClosePayload = {
+        kind: 'task.close',
+        taskId: task.id,
+        closedAt,
+        ...(input.detach ? { evidence: { kind: 'workspace-detached', detachedAt: closedAt } } : {}),
+      };
       const committed = await this.log.append(
         this.envelope(payload, input.verifiedWorkspaceId, input.idempotencyKey),
       );
@@ -484,6 +531,7 @@ export class WorkTaskService {
         ok: true,
         taskId: task.id,
         ...(archived ? {} : { archivePending: true }),
+        ...(input.detach ? { detached: true } : {}),
       };
       this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
       return result;

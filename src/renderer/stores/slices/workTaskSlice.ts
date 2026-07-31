@@ -112,6 +112,16 @@ export interface WorkTaskSlice {
    * existence, and the next boot reconcile converges.
    */
   closeMissionForRemovedWorkspace: (paneGroupId: string) => Promise<void>;
+  /**
+   * Detaches a dependent child task from its parent (non-destructive close):
+   * the mission is closed with a `workspace-detached` marker so the parent stops
+   * tracking it, while the child's **workspace, worktree, branch, PTY and running
+   * agent are left completely untouched** — it keeps running, just independently.
+   * The daemon archives the mission channel (records preserved, not destroyed),
+   * the same as an ordinary close. Returns true on success. Best-effort refresh
+   * of the local cache follows. Only open, still-materialized child tasks qualify.
+   */
+  detachMissionForPaneGroup: (paneGroupId: string) => Promise<boolean>;
 }
 
 export const createWorkTaskSlice: StateCreator<
@@ -215,5 +225,44 @@ export const createWorkTaskSlice: StateCreator<
     }
     // Reflect it in the local cache right away, so we do not wait for the next poll.
     await get().refreshMissions(task.owner.verifiedWorkspaceId);
+  },
+
+  detachMissionForPaneGroup: async (paneGroupId) => {
+    if (!paneGroupId) return false;
+    const task = get().missionByPaneGroup[paneGroupId];
+    if (!task) return false;
+    // Already detached (closed with a detachedAt marker) = idempotent success, not
+    // a failure — a double-click or a race against the cache refresh must NOT raise
+    // a "could not detach" toast for a task that is already independent.
+    if (task.status === 'closed') return task.detachedAt !== undefined;
+    // Only an open, still-dependent child can be detached.
+    if (task.status !== 'open') return false;
+    const bridge = readMissionRpc();
+    if (!bridge?.close) return false;
+    let res: unknown;
+    try {
+      // Same authz anchor as a lifetime close: the daemon gate is owner-OR-CEO and
+      // the owner is the PARENT, so pass the task owner (not the child) as the
+      // verified workspace. `detach: true` rides the same close RPC — the daemon
+      // stamps a workspace-detached marker and archives the channel, and the
+      // renderer/main path deliberately touches nothing else (worktree/branch/PTY).
+      res = await bridge.close({
+        taskId: task.id,
+        verifiedWorkspaceId: task.owner.verifiedWorkspaceId,
+        detach: true,
+      });
+    } catch {
+      // Daemon not connected / transient failure — the child keeps running; the
+      // user can retry. Boot reconcile does NOT auto-detach (detach is an explicit
+      // user action), so a failure simply leaves the dependency in place.
+      return false;
+    }
+    if (!isOkObject(unwrapRpc(res))) {
+      console.warn('[workTaskSlice] mission detach rejected for task', task.id, res);
+      return false;
+    }
+    // Refresh the parent's mission cache so the row reflects detached immediately.
+    await get().refreshMissions(task.owner.verifiedWorkspaceId);
+    return true;
   },
 });

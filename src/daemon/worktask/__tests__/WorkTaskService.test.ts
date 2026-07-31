@@ -19,7 +19,7 @@ import type { ChannelServiceDeps } from '../../channels/ChannelService';
 import type { ChannelState } from '../../../shared/channels';
 import { WorkTaskService } from '../WorkTaskService';
 import type { WorkTaskChannelPort } from '../WorkTaskService';
-import { missionTopicFor, taskIdFromMissionTopic, normalizeWorktreePath } from '../../../shared/workTask';
+import { missionTopicFor, taskIdFromMissionTopic, normalizeWorktreePath, WORKTASK_CLOSED_GC_MS } from '../../../shared/workTask';
 
 let dir: string;
 const syncOk = (): void => {
@@ -276,6 +276,126 @@ describe('mission.close archives the channel, it never destroys it', () => {
       'what the agent did',
     ]);
     expect(channelSvc.getMembers(channelId, 'ws-owner').length).toBeGreaterThan(0);
+  });
+});
+
+// ═══ Detach — non-destructive close carrying a workspace-detached marker ════
+//
+// Detach releases a dependent child task from its parent WITHOUT touching the
+// child's workspace/worktree/branch/PTY. It rides the same close RPC as an
+// ordinary close, so an old daemon still reads it as closed (no dependency
+// resurrection); a new daemon distinguishes it by the `detachedAt` timestamp
+// restored from the close record's workspace-detached evidence.
+
+describe('mission.close with detach — non-destructive close carries a detachedAt marker', () => {
+  it('stamps detachedAt on the projection, returns detached:true, and archives the channel', async () => {
+    const { port, channels } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port, { now: () => 5000 });
+    await svc.boot();
+
+    const started = await svc.startMission({ title: 'Child task', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const { taskId, channelId } = started;
+
+    const detached = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner', detach: true });
+    expect(detached.ok).toBe(true);
+    if (!detached.ok) return;
+    expect(detached.detached).toBe(true);
+
+    // status is still `closed` (so an old daemon never re-attaches), but detachedAt
+    // distinguishes it from a plain harvest close.
+    const task = svc.getTask(taskId);
+    expect(task?.status).toBe('closed');
+    expect(task?.detachedAt).toBe(5000);
+
+    // The channel is archived (records preserved), same as an ordinary close.
+    expect(channels.get(channelId)?.status).toBe('archived');
+  });
+
+  it('restores detachedAt from the close-record evidence on replay (survives restart)', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port, { now: () => 8000 });
+    await svc.boot();
+
+    const started = await svc.startMission({ title: 'Detach me', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) return;
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', detach: true });
+
+    // Restart: a fresh service replays the same log. detachedAt must come back
+    // from the persisted workspace-detached evidence, not from in-memory state.
+    // svc2 shares the fixed clock so the just-closed task stays inside the
+    // closed-projection GC window (a real Date.now() would evict closedAt=8000).
+    const { port: port2 } = makeFakeChannelPort();
+    const svc2 = newWorkTaskService(log, port2, { now: () => 8000 });
+    await svc2.boot();
+    expect(svc2.getTask(started.taskId)?.detachedAt).toBe(8000);
+  });
+
+  it('a plain close leaves detachedAt unset (evidence absent = ordinary close)', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port);
+    await svc.boot();
+
+    const started = await svc.startMission({ title: 'Harvest me', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) return;
+    const closed = await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(closed.ok).toBe(true);
+    if (!closed.ok) return;
+    expect(closed.detached).toBeUndefined();
+    expect(svc.getTask(started.taskId)?.detachedAt).toBeUndefined();
+  });
+
+  it('re-detach of an already-detached task returns detached:true (no false-failure)', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port, { now: () => 3000 });
+    await svc.boot();
+
+    const started = await svc.startMission({ title: 'Twice', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) return;
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', detach: true });
+
+    // Second detach (double-click / retry) must still report detached:true.
+    const again = await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', detach: true });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.detached).toBe(true);
+  });
+
+  it('gcClosedTasks exempts detached tasks so the live worktree stays protected', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    // Fixed clock far past the GC window relative to closedAt=1000.
+    const svc = newWorkTaskService(log, port, { now: () => 1000 });
+    await svc.boot();
+    const started = await svc.startMission({ title: 'Detached survivor', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) return;
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', detach: true });
+
+    // Advance the clock well beyond WORKTASK_CLOSED_GC_MS and run GC.
+    const svcAny = svc as unknown as { now: () => number };
+    svcAny.now = () => 1000 + WORKTASK_CLOSED_GC_MS + 1;
+    svc.gcClosedTasks();
+    // The detached task must survive GC (a plain-closed one would be evicted).
+    expect(svc.getTask(started.taskId)?.detachedAt).toBe(1000);
+  });
+
+  it('gcClosedTasks still evicts a plain-closed task past the window', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port, { now: () => 1000 });
+    await svc.boot();
+    const started = await svc.startMission({ title: 'Harvested', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) return;
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    const svcAny = svc as unknown as { now: () => number };
+    svcAny.now = () => 1000 + WORKTASK_CLOSED_GC_MS + 1;
+    svc.gcClosedTasks();
+    expect(svc.getTask(started.taskId)).toBeUndefined();
   });
 });
 

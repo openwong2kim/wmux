@@ -258,7 +258,12 @@ export function useRpcBridge(): void {
     (window as unknown as {
       __wmuxMissionRpc: {
         list: (params: { verifiedWorkspaceId: string }) => Promise<RpcResult>;
-        close: (params: { taskId: string; verifiedWorkspaceId: string }) => Promise<RpcResult>;
+        close: (params: {
+          taskId: string;
+          verifiedWorkspaceId: string;
+          /** Non-destructive detach close (worktree/branch/PTY untouched, only evidence added to the close record). */
+          detach?: boolean;
+        }) => Promise<RpcResult>;
       };
     }).__wmuxMissionRpc = {
       list: (params) =>

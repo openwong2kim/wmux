@@ -283,6 +283,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
   const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
+  // Detach: this workspace is a dependent child task iff its id is an open
+  // WorkTask's paneGroupId. When so, surface a "detach from parent" action that
+  // releases the mission (non-destructive close) while leaving this workspace,
+  // its worktree/branch/PTY and running agent completely untouched.
+  const childMission = useStore((s) => s.missionByPaneGroup[workspaceId]);
+  const detachMissionForPaneGroup = useStore((s) => s.detachMissionForPaneGroup);
+  const isDependentChild = childMission?.status === 'open';
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -334,6 +341,27 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const reportOpen = (p: Promise<{ ok: boolean; error?: string }>) => {
     p.then((res) => { if (!res?.ok) notifyOpenFailed(t, res?.error); })
       .catch((err) => notifyOpenFailed(t, String(err?.message ?? err)));
+  };
+
+  /**
+   * Detach this dependent child task from its parent. Non-destructive: the
+   * mission is closed with a workspace-detached marker and its channel archived,
+   * but this workspace, its worktree/branch/PTY and running agent stay exactly as
+   * they are — it simply stops being tracked as a child of the parent.
+   */
+  const handleDetach = () => {
+    setMenuPos(null);
+    detachMissionForPaneGroup(workspaceId)
+      .then((ok) => {
+        useStore.getState().pushToast(
+          ok
+            ? { level: 'info', message: t('workspace.detachDone') }
+            : { level: 'warn', message: t('workspace.detachFailed') },
+        );
+      })
+      .catch(() => {
+        useStore.getState().pushToast({ level: 'warn', message: t('workspace.detachFailed') });
+      });
   };
 
   /** Open the workspace's current working directory in the OS file explorer. */
@@ -843,6 +871,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               </div>
             )}
           </div>
+
+          {/* Detach from parent — only for a dependent child task workspace.
+              Releases the mission (non-destructive) without touching this
+              workspace, its worktree/branch/PTY, or the running agent. */}
+          {isDependentChild && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] border-t border-[color-mix(in_srgb,var(--bg-overlay)_60%,transparent)] mt-1 pt-2"
+              style={{ color: 'var(--text-main)' }}
+              onClick={handleDetach}
+              title={t('workspace.detachHint')}
+            >
+              {t('workspace.detach')}
+            </button>
+          )}
         </div>
       )}
 

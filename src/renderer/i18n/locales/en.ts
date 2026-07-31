@@ -43,6 +43,10 @@ export const en = {
   'workspace.closeConfirmDetail': '{count} terminal(s) will be closed',
   'workspace.closeCancel': 'Cancel',
   'workspace.closeConfirmYes': 'Close',
+  'workspace.detach': 'Detach from parent',
+  'workspace.detachHint': 'Release this task from its parent — keeps the workspace, worktree, branch and agent running',
+  'workspace.detachDone': 'Detached — now running independently',
+  'workspace.detachFailed': 'Could not detach this task',
 
   // X1 workspace-context sidebar (git branch / PR / ports / notification)
   'workspace.gitBranch': 'Git branch',

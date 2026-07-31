@@ -61,13 +61,22 @@ export interface WorktaskScanResult {
   entries: WorktaskScanEntry[];
 }
 
-/** projection 대조 입력(open 태스크만 — 호출측이 status로 필터). */
+/** Projection comparison input (open tasks + detached tasks — the caller filters by status). */
 export interface ScanOpenTask {
   taskId: string;
   title: string;
   /** F1 — owner(부모) ws id. 이상 엔트리 close를 owner 스코프로 부르는 재료. */
   ownerWorkspaceId?: string;
   worktreePath?: string;
+  /**
+   * A detached task (closed but its worktree/branch/PTY are still alive). When true,
+   * that worktree is a "normally working, independent workspace" and is excluded
+   * entirely from the cleanup list — classified neither as orphan-dir (deletion
+   * candidate) nor as preserved (needs harvesting). This is the protection line that
+   * upholds detach's "hands off the worktree" contract at the scanner layer
+   * (hardened after review).
+   */
+  detached?: boolean;
 }
 
 export interface WorktaskScanServiceOptions {
@@ -113,6 +122,11 @@ export class WorktaskScanService {
     const openByNormPath = new Map<string, ScanOpenTask>();
     for (const t of openTasks) {
       if (!t.worktreePath) {
+        // Detached tasks only ever arrive already materialized, so they have a
+        // worktreePath. Defensively, a detached task with no worktree has nothing
+        // to protect and nothing to reconcile (the independent workspace was
+        // already deleted) — skip it silently.
+        if (t.detached) continue;
         entries.push({
           category: 'unmaterialized-open',
           taskId: t.taskId,
@@ -133,6 +147,10 @@ export class WorktaskScanService {
       seen.add(norm);
       const matched = openByNormPath.get(norm);
       if (matched) {
+        // Detached — a live, independent workspace. Whether clean or dirty, it is
+        // never a cleanup candidate, so exclude it entirely from the list (this
+        // blocks orphan-dir/deletion misclassification — the core protection line).
+        if (matched.detached) continue;
         // linked — dirty만 '보존 잔존'으로. clean은 정상 작업이라 제외.
         let dirty = false;
         try {
@@ -170,6 +188,10 @@ export class WorktaskScanService {
     // ── disk-missing: worktreePath를 주장하나 디스크에 없는 open 태스크 ──
     for (const [norm, t] of openByNormPath) {
       if (seen.has(norm)) continue;
+      // A detached task is already closed — if its worktree is gone, the user
+      // deleted the independent workspace themselves, so it's not a "reconcile via
+      // close" candidate (it's already closed). Skip it silently.
+      if (t.detached) continue;
       entries.push({
         category: 'disk-missing',
         taskId: t.taskId,
