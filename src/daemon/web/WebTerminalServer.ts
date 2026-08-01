@@ -481,6 +481,28 @@ let activeDiffs = 0;
  */
 const inFlightDiffs = new Map<string, Promise<SessionDiffResult>>();
 
+/**
+ * Widest geometry `POST /api/sessions/:id/resize` will forward to a PTY.
+ *
+ * The session manager floors cols and rows (a zsh SIGBUS guard) but caps
+ * neither — it never needed to, because its only caller was a renderer
+ * measuring its own pane. A number off the network is different: a PTY is
+ * asked to allocate for the geometry it is given, so an unbounded `rows` is a
+ * memory-allocation request written as two integers. 1000 is far above any real
+ * display and far below anything that costs the daemon.
+ */
+const MAX_REQUESTED_GEOMETRY = 1000;
+
+/** One side of a requested PTY geometry: an integer in `1..MAX_REQUESTED_GEOMETRY`. */
+function isGeometryValue(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_REQUESTED_GEOMETRY
+  );
+}
+
 interface SseClient {
   res: http.ServerResponse;
   sessionId: string;
@@ -1277,6 +1299,9 @@ export class WebTerminalServer {
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
       }
+      if (req.method === 'POST' && rest.endsWith('/resize')) {
+        return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
+      }
       if (req.method === 'DELETE') {
         return this.handleSessionDelete(res, rest);
       }
@@ -1451,6 +1476,98 @@ export class WebTerminalServer {
     // patch under today's prompt is the exact failure this route exists to
     // prevent.
     return this.json(res, 200, result.diff, { 'Cache-Control': 'no-store' });
+  }
+
+  // --- pane geometry -------------------------------------------------------
+
+  /**
+   * `POST /api/sessions/:id/resize` — body `{cols, rows}`, answer
+   * `{cols, rows, owner}`.
+   *
+   * WHY THE ROUTE EXISTS. A desk pane is commonly 151×47. A phone rendering
+   * that faithfully has two choices, and both are bad: shrink the font until 151
+   * columns fit (unreadable) or letterbox (a third of the screen wasted, and the
+   * agent's output still wrapped for a screen nobody is looking at). The daemon
+   * is the only thing that can fix it, because the wrapping happens in the PTY,
+   * before any client sees a byte.
+   *
+   * WHO OWNS THE SIZE, when a desk and a phone watch the same PTY. The desk
+   * does, whenever it is attached. There is exactly one PTY behind both views
+   * and one geometry it can have, so this is a choice between breaking the
+   * phone's layout and breaking the layout of a window somebody is looking at
+   * on a 27" display — and the desk client re-derives its geometry from its own
+   * pane bounds on every layout pass, so "let the last writer win" is not a
+   * policy but a fight: the phone resizes, the desk's next frame resizes back,
+   * and the PTY thrashes between two geometries while both views redraw.
+   *
+   * So: `attached` (a desk renderer has this pane wired) → `409 desk-owns-size`,
+   * carrying the current geometry so the caller can render to it without a
+   * second request. `detached` → the phone's numbers are applied. A pane that
+   * the desk later attaches resizes itself on mount, so ownership returns
+   * without anything here having to take it back.
+   *
+   * NOT GATED ON `--allow-input`, on the same reasoning as
+   * `GET /api/sessions/:id/diff` and `POST /api/approvals/:id`: this delivers a
+   * SIGWINCH and changes two numbers on a struct. No byte reaches the child's
+   * stdin, nothing is executed, and a caller who could resize but not type has
+   * gained nothing it could not already do by reading the pane. The Bearer gate
+   * still applies, so this is not a new reader either. The worst a hostile
+   * paired device achieves is an awkward geometry on a pane nobody is attached
+   * to, which the next desk attach corrects.
+   */
+  private handleSessionResize(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+  ): void {
+    const id = decodePathSegment(rawId);
+    if (id === null) return this.json(res, 404, { error: 'session not found' });
+    const managed = this.deps.sessionManager.getSession(id);
+    if (!managed) return this.json(res, 404, { error: 'session not found' });
+
+    this.readJsonBody(req, res, (body) => {
+      const b = (body ?? {}) as { cols?: unknown; rows?: unknown };
+      if (!isGeometryValue(b.cols) || !isGeometryValue(b.rows)) {
+        return this.json(res, 400, {
+          error: 'bad-geometry',
+          detail: `cols and rows must be integers in 1..${MAX_REQUESTED_GEOMETRY}`,
+        });
+      }
+
+      // Re-read rather than trusting the lookup above: the body arrives over
+      // however many TCP segments it takes, and a pane can die or be attached
+      // by the desk in between.
+      const current = this.deps.sessionManager.getSession(id);
+      if (!current) return this.json(res, 404, { error: 'session not found' });
+      if (current.meta.state === 'attached') {
+        return this.json(res, 409, {
+          error: 'desk-owns-size',
+          cols: current.meta.cols,
+          rows: current.meta.rows,
+          owner: 'desk',
+        });
+      }
+
+      try {
+        this.deps.sessionManager.resizeSession(id, b.cols, b.rows);
+      } catch (err) {
+        // `dead` and `suspended` both throw here. Neither is a bug on the
+        // caller's side — the pane list it decided from is a poll old.
+        this.deps.log('warn', `[web] resize failed for ${id}: ${errMsg(err)}`);
+        return this.json(res, 409, { error: 'resize-failed', detail: errMsg(err) });
+      }
+
+      // The APPLIED geometry, read back from the daemon's own record: the
+      // manager floors cols at MIN_SAFE_COLS (a zsh SIGBUS guard), so what was
+      // asked for and what the PTY now is are not always the same number, and
+      // a client that rendered to its request would wrap at the wrong width.
+      const after = this.deps.sessionManager.getSession(id);
+      return this.json(res, 200, {
+        cols: after?.meta.cols ?? b.cols,
+        rows: after?.meta.rows ?? b.rows,
+        owner: 'caller',
+      });
+    });
   }
 
   // --- pane lifecycle (opt-in) ---------------------------------------------

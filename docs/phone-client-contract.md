@@ -264,6 +264,43 @@ app-owned conversation history. Without `--allow-input`, send neither; never
 forward generic taps or drags, guess a mouse protocol, or pretend the alternate
 buffer is locally scrollable.
 
+### Resizing a pane — the desk owns the size whenever it is attached
+
+```
+POST /api/sessions/<id>/resize   body: {cols, rows}
+  → 200 {cols, rows, owner: 'caller'}
+  → 400 {error: 'bad-geometry'}                          not an integer in 1..1000
+  → 404 {error: 'session not found'}
+  → 409 {error: 'desk-owns-size', cols, rows, owner: 'desk'}
+  → 409 {error: 'resize-failed', detail}                 pane is dead or suspended
+```
+
+A desk pane is commonly 151×47, and no readable phone font fits 151 columns. The
+wrapping happens in the PTY, before any client sees a byte, so the daemon is the
+only thing that can fix it.
+
+**Ownership.** There is one PTY behind both views and it can have one geometry.
+While a desk renderer has the pane wired (`state: 'attached'` in
+`/api/sessions`), that geometry is the desk's: the 409 carries the current
+`cols`/`rows` so you can render to them without a second request. A `detached`
+pane takes your numbers. You do not have to hand ownership back — a desk client
+re-derives its geometry from its own bounds and resizes on attach.
+
+Do not treat the 409 as an error to retry. It is the answer: render at the size
+it names, and try again after the pane's `state` goes `detached`.
+
+**Render at the geometry in the 200, not at the one you asked for.** The daemon
+floors cols at 10 and rows at 2 (a zsh SIGBUS guard), so those can differ.
+
+The route is additive, so it does **not** move `protocolVersion` (§1). A daemon
+that predates it has no such route and answers 404 for a pane you just listed —
+which is the probe: treat a 404 for a live id exactly like the 409, render at the
+pane's own `cols`/`rows`, and do not ask again this connection.
+
+Available **without `--allow-input`**, unlike the keyboard and the two lifecycle
+routes below: this delivers a SIGWINCH and changes two numbers. No byte reaches
+the child's stdin and nothing is executed. The Bearer gate still applies.
+
 ### Creating and closing panes
 
 ```

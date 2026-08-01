@@ -70,6 +70,10 @@ function makeDeps() {
       cmd: '/usr/bin/bash -l',
     },
   ];
+  // Every geometry the resize route forwarded, and the escape hatch for a
+  // manager that refuses (a pane that died between the lookup and the body).
+  const resizeCalls: Array<{ id: string; cols: number; rows: number }> = [];
+  const resizeBox = { throws: '' };
   // The real DaemonSessionManager is an EventEmitter; the server tees its
   // session:critical / session:notification events, so the fake must emit too.
   const sessionManager = Object.assign(new EventEmitter(), {
@@ -79,10 +83,35 @@ function makeDeps() {
       if (id === 's1') return managed;
       const row = live.find((l) => l.id === id);
       return row
-        ? { ...managed, meta: { ...managed.meta, id, cwd: '/tmp/osc7-said-so', spawnCwd: row.cwd } }
+        ? {
+            ...managed,
+            // `state` is carried through because the resize route reads it —
+            // s2 is the attached pane the desk owns.
+            meta: {
+              ...managed.meta,
+              id,
+              state: row.state,
+              cols: row.cols,
+              rows: row.rows,
+              cwd: '/tmp/osc7-said-so',
+              spawnCwd: row.cwd,
+            },
+          }
         : undefined;
     },
     listLiveSessions: () => live,
+    resizeSession: (id: string, cols: number, rows: number) => {
+      resizeCalls.push({ id, cols, rows });
+      if (resizeBox.throws) throw new Error(resizeBox.throws);
+      // Mirrors the real manager's floor (MIN_SAFE_COLS / MIN_SAFE_ROWS) so a
+      // route that echoed the REQUEST rather than the applied geometry fails
+      // here rather than in the field.
+      const target = id === 's1' ? managed.meta : live.find((l) => l.id === id);
+      if (target) {
+        target.cols = Math.max(10, cols);
+        target.rows = Math.max(2, rows);
+      }
+    },
   }) as unknown as DaemonSessionManager;
   // Lifecycle stand-in for the daemon's own daemon.createSession /
   // daemon.destroySession handlers (src/daemon/index.ts). The real ones spawn a
@@ -144,6 +173,7 @@ function makeDeps() {
 
   return {
     sessionManager, bridge, write, live, managed,
+    resizeCalls, resizeBox,
     lifecycle, lifecycleCalls, lifecycleBox,
     git, gitCalls, gitScript, gitGate, uploadsDir,
     ...makeApprovals(), ...makeDevices(),
@@ -284,6 +314,8 @@ describe('WebTerminalServer', () => {
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let deviceTouchCalls: string[];
   let deviceBox: { mintThrows: boolean };
+  let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
+  let resizeBox: { throws: string };
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
   let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean };
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
@@ -308,6 +340,8 @@ describe('WebTerminalServer', () => {
     pushRegistrations = deps.pushRegistrations;
     deviceTouchCalls = deps.deviceTouchCalls;
     deviceBox = deps.deviceBox;
+    resizeCalls = deps.resizeCalls;
+    resizeBox = deps.resizeBox;
     lifecycleCalls = deps.lifecycleCalls;
     lifecycleBox = deps.lifecycleBox;
     gitCalls = deps.gitCalls;
@@ -2454,6 +2488,90 @@ describe('WebTerminalServer', () => {
     expect(server.disconnectDevice(device.deviceId)).toBe(0);
     pane.ac.abort();
   });
+  // ── pane geometry ─────────────────────────────────────────────────────────
+
+  const postResize = (id: string, cred: string, body: unknown) =>
+    fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/resize`, {
+      method: 'POST',
+      headers: { ...bearer(cred), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('★ resizes a detached pane, and answers with the geometry that was APPLIED', async () => {
+    const token = (await startRO()).token as string;
+
+    const res = await postResize('s1', token, { cols: 60, rows: 30 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cols: 60, rows: 30, owner: 'caller' });
+    expect(resizeCalls).toEqual([{ id: 's1', cols: 60, rows: 30 }]);
+    // Note the server: startRO. A SIGWINCH is not a keystroke, and gating this
+    // on --allow-input would leave the phone letterboxed on every daemon that
+    // has not opted into arbitrary execution.
+  });
+
+  it('★ refuses while the desk is attached, and says what to render at instead', async () => {
+    const token = (await startRO()).token as string;
+    // s2 is the attached pane. One PTY cannot be two geometries, and the desk
+    // re-derives its own on every layout pass — applying the phone's numbers
+    // here starts a fight, not a resize.
+    const res = await postResize('s2', token, { cols: 60, rows: 30 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'desk-owns-size',
+      cols: 80,
+      rows: 24,
+      owner: 'desk',
+    });
+    expect(resizeCalls).toEqual([]);
+  });
+
+  it('reports the floor the manager applied, not the numbers that were asked for', async () => {
+    const token = (await startRO()).token as string;
+    // MIN_SAFE_COLS is a zsh SIGBUS guard, so a narrow request is silently
+    // widened. A client that rendered to its own request would wrap wrong.
+    const res = await postResize('s1', token, { cols: 4, rows: 1 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cols: 10, rows: 2, owner: 'caller' });
+  });
+
+  it('rejects a geometry that is not an integer in range', async () => {
+    const token = (await startRO()).token as string;
+    for (const body of [
+      { cols: 0, rows: 30 },
+      { cols: 60, rows: 0 },
+      { cols: 60.5, rows: 30 },
+      { cols: 1001, rows: 30 },
+      { cols: 60, rows: 1001 },
+      { cols: '60', rows: 30 },
+      { rows: 30 },
+      {},
+    ]) {
+      const res = await postResize('s1', token, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect((await res.json()).error).toBe('bad-geometry');
+    }
+    // An unbounded `rows` is a memory-allocation request written as an integer,
+    // so nothing out of range may reach the PTY.
+    expect(resizeCalls).toEqual([]);
+  });
+
+  it('404s an unknown pane and 409s one the manager refuses', async () => {
+    const token = (await startRO()).token as string;
+    expect((await postResize('nope', token, { cols: 60, rows: 30 })).status).toBe(404);
+
+    resizeBox.throws = "Session 's1' is dead";
+    const res = await postResize('s1', token, { cols: 60, rows: 30 });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('resize-failed');
+  });
+
+  it('gates the resize route on the Bearer token, and a paired phone may call it', async () => {
+    await startRO();
+    expect((await postResize('s1', 'nonsense', { cols: 60, rows: 30 })).status).toBe(401);
+    const { token } = await pairDevice('Phone');
+    expect((await postResize('s1', token, { cols: 60, rows: 30 })).status).toBe(200);
+  });
+
   // ── pane diff (read-only git) ──────────────────────────────────────────────
 
   const getDiff = (id: string, cred: string) =>
