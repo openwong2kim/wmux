@@ -9,6 +9,31 @@ let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
 let trayCallbacks: TrayCallbacks | null = null;
 
+// The tooltip has two independent authors — the background-session nudge
+// (updateTraySessionCount, fired on hide/show) and the unread badge
+// (updateUnreadBadge, fired by the renderer). Each used to write the whole
+// string, so whichever spoke last erased the other: hiding to tray with unread
+// mail wiped the count off the only surface that was still showing it, which is
+// exactly the blind spot the badge exists to cover. Both now write to state and
+// the tooltip is composed in one place from both.
+let traySessionCount: number | null = null;
+let trayUnreadCount = 0;
+
+/**
+ * Compose and apply the tooltip from every signal that has one. Safe before the
+ * tray exists — the state is still recorded, and createTray applies it, so a
+ * badge that arrives during boot is not lost.
+ */
+function applyTrayTooltip(): void {
+  if (!tray) return;
+  const sessions =
+    typeof traySessionCount === 'number' && traySessionCount > 0
+      ? ` — ${traySessionCount} background session${traySessionCount === 1 ? '' : 's'} running`
+      : '';
+  const unread = trayUnreadCount > 0 ? `[${trayUnreadCount > 999 ? '999+' : trayUnreadCount}] ` : '';
+  tray.setToolTip(`${unread}wmux${sessions}`);
+}
+
 /**
  * Resolve a license-style file that ships in <exe>/resources/ when packaged
  * and lives at the repo root in dev. Returns null if the file is missing
@@ -116,12 +141,11 @@ function buildContextMenu(
  * no-op before the tray exists. Best-effort cosmetic surface — never throws.
  */
 export function updateTraySessionCount(sessionCount: number | null): void {
+  // Recorded before the guard: a count that arrives while the tray is being
+  // built must not be dropped, and it is half of the composed tooltip.
+  traySessionCount = sessionCount;
   if (!tray || !trayWindow || !trayCallbacks) return;
-  tray.setToolTip(
-    typeof sessionCount === 'number' && sessionCount > 0
-      ? `wmux — ${sessionCount} background session${sessionCount === 1 ? '' : 's'} running`
-      : 'wmux',
-  );
+  applyTrayTooltip();
   tray.setContextMenu(buildContextMenu(trayWindow, trayCallbacks, sessionCount));
 }
 
@@ -152,7 +176,11 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
   tray = new Tray(trayImage);
   trayWindow = mainWindow;
   trayCallbacks = callbacks;
-  tray.setToolTip('wmux');
+  // Not a bare 'wmux': an unread count can arrive before the tray is built
+  // (the renderer mounts its listener on its own schedule), and that badge
+  // would otherwise be dropped until the next time the count happened to
+  // change. applyTrayTooltip is a no-op when nothing has been recorded.
+  applyTrayTooltip();
 
   // License / About handlers — surface the MIT notice for wmux itself
   // and the bundled THIRD_PARTY_NOTICES so users (and downstream
@@ -178,20 +206,26 @@ export function destroyTray(): void {
   }
   trayWindow = null;
   trayCallbacks = null;
+  // Both tooltip inputs belong to the destroyed tray's lifetime. Leaving them
+  // behind would let a stale count compose itself onto the next tray.
+  traySessionCount = null;
+  trayUnreadCount = 0;
 }
 
 /**
  * E5 — Set the platform unread badge. macOS: dock badge (number or empty).
- * Windows: tray tooltip prefix. Called from main whenever the renderer sends
+ * Windows/Linux: tray tooltip prefix, composed with the background-session
+ * nudge instead of overwriting it. Called from main whenever the renderer sends
  * a NOTIFICATION_BADGE_COUNT update.
  */
 export function updateUnreadBadge(count: number): void {
   if (process.platform === 'darwin') {
     // app.dock.setBadge expects a string; empty string clears the badge.
     app.dock?.setBadge(count > 0 ? String(count > 999 ? '999+' : count) : '');
-  } else if (tray) {
-    // Windows/Linux: prefix the tooltip with the count when non-zero.
-    const base = 'wmux';
-    tray.setToolTip(count > 0 ? `[${count}] ${base}` : base);
+    return;
   }
+  // Windows/Linux: no dock, so the count rides the tray tooltip — composed
+  // with the background-session nudge rather than replacing it.
+  trayUnreadCount = count;
+  applyTrayTooltip();
 }

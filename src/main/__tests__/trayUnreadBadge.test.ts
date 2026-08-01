@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
     setToolTip = setToolTipMock;
     setContextMenu = vi.fn();
     on = vi.fn();
+    destroy = vi.fn();
   },
   Menu: { buildFromTemplate: vi.fn(() => ({})) },
   nativeImage: {
@@ -107,6 +108,82 @@ describe('updateUnreadBadge', () => {
       expect(() => updateUnreadBadge(2)).not.toThrow();
       expect(setToolTipMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+// The tooltip is the ONLY unread surface off macOS, and it has a second author:
+// updateTraySessionCount, fired whenever the window hides to or returns from
+// the tray. Each used to write the whole string, so hiding to tray with unread
+// mail erased the count from the one surface still showing it — precisely the
+// blind spot the badge was added for.
+describe('tray tooltip composition (badge + session nudge)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it('keeps the unread badge when the window hides to tray', async () => {
+    const { updateUnreadBadge, updateTraySessionCount } = await loadTray('win32', { withTray: true });
+    updateUnreadBadge(5);
+    updateTraySessionCount(7);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('[5] wmux — 7 background sessions running');
+  });
+
+  it('keeps the session nudge when an unread arrives while hidden', async () => {
+    const { updateUnreadBadge, updateTraySessionCount } = await loadTray('win32', { withTray: true });
+    updateTraySessionCount(3);
+    updateUnreadBadge(2);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('[2] wmux — 3 background sessions running');
+  });
+
+  it('keeps the badge when the window is shown again (nudge cleared to null)', async () => {
+    const { updateUnreadBadge, updateTraySessionCount } = await loadTray('win32', { withTray: true });
+    updateUnreadBadge(4);
+    updateTraySessionCount(6);
+    updateTraySessionCount(null);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('[4] wmux');
+  });
+
+  it('drops to the plain tooltip once both signals are clear', async () => {
+    const { updateUnreadBadge, updateTraySessionCount } = await loadTray('win32', { withTray: true });
+    updateUnreadBadge(4);
+    updateTraySessionCount(6);
+    updateUnreadBadge(0);
+    updateTraySessionCount(null);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('wmux');
+  });
+
+  it('singularizes a lone background session alongside the badge', async () => {
+    const { updateUnreadBadge, updateTraySessionCount } = await loadTray('win32', { withTray: true });
+    updateUnreadBadge(1);
+    updateTraySessionCount(1);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('[1] wmux — 1 background session running');
+  });
+
+  it('caps the tooltip badge at 999+ like the dock badge', async () => {
+    const { updateUnreadBadge } = await loadTray('win32', { withTray: true });
+    updateUnreadBadge(1000);
+    expect(setToolTipMock).toHaveBeenLastCalledWith('[999+] wmux');
+  });
+
+  it('applies a badge that arrived before the tray existed', async () => {
+    const mod = await loadTray('win32');
+    mod.updateUnreadBadge(3);
+    expect(setToolTipMock).not.toHaveBeenCalled();
+    const fakeWindow = { show: vi.fn(), focus: vi.fn() } as unknown as import('electron').BrowserWindow;
+    mod.createTray(fakeWindow, { onQuit: vi.fn(), onShutdownAll: vi.fn() });
+    expect(setToolTipMock).toHaveBeenCalledWith('[3] wmux');
+  });
+
+  it('does not carry a count across a destroyed tray', async () => {
+    const mod = await loadTray('win32', { withTray: true });
+    mod.updateUnreadBadge(8);
+    mod.updateTraySessionCount(2);
+    mod.destroyTray();
+    setToolTipMock.mockClear();
+    const fakeWindow = { show: vi.fn(), focus: vi.fn() } as unknown as import('electron').BrowserWindow;
+    mod.createTray(fakeWindow, { onQuit: vi.fn(), onShutdownAll: vi.fn() });
+    expect(setToolTipMock).not.toHaveBeenCalledWith(expect.stringContaining('[8]'));
   });
 });
 
