@@ -24,6 +24,7 @@ import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
+import { atlasGuard } from '../terminal/atlasGuard';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
@@ -1133,6 +1134,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // terminal.textarea exists once open() has run (above).
     terminal.textarea?.addEventListener('focus', onTextareaFocus);
 
+    // Shared-atlas page-merge guard (2026-08-01 report) — see atlasGuard.ts
+    // for the root cause. glyphRepaint's refresh() above never touches the
+    // shared texture atlas (by design, #191); the guard watches the atlas's
+    // page pool across ALL panes and performs a coherent clear+refresh-all
+    // before (or, worst case, right after) the addon's page-merge path runs —
+    // the merge is what corrupts glyph references pane-wide.
+    const unregisterAtlasGuard = atlasGuard.register({
+      getAddon: () => (terminalRef.current === terminal ? webglAddonRef.current : null),
+      refresh: () => {
+        try {
+          terminal.refresh(0, terminal.rows - 1);
+        } catch {
+          // terminal may already be disposed
+        }
+      },
+    });
+
     // Only fit immediately if the container is actually visible (non-zero size).
     // If the workspace starts hidden (display:none), skip the initial fit so we
     // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
@@ -2028,6 +2046,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
+      unregisterAtlasGuard();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
       deadInputWatchdog.dispose();
