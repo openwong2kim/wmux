@@ -60,6 +60,17 @@ const MODE_SKIN: Record<AgentMode, { btn: string; dot: string }> = {
   },
 };
 
+/** The mode arrives over IPC, so it is not guaranteed to be one of ours: a main
+ *  process from a different build (a downgrade, or a dev renderer hot-reloaded
+ *  ahead of a stale main) can still answer with a retired name like `auto`.
+ *  Indexing MODE_SKIN directly then yields undefined and `.btn` throws, which
+ *  takes the whole deck rail down through its ErrorBoundary — a cosmetic lookup
+ *  killing a surface the operator steers the fleet from. Fall back to the `off`
+ *  skin: the most conservative badge, and never a crash. */
+function modeSkin(mode: AgentMode): { btn: string; dot: string } {
+  return MODE_SKIN[mode] ?? MODE_SKIN.off;
+}
+
 function modeLabel(t: (k: string) => string, mode: AgentMode): string {
   return t(`deck.mode.${mode}`) || mode;
 }
@@ -140,13 +151,13 @@ export function AgentModeChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] hover:opacity-80 transition-opacity ${MODE_SKIN[mode].btn} ${FOCUS_RING}`}
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] hover:opacity-80 transition-opacity ${modeSkin(mode).btn} ${FOCUS_RING}`}
         title={modeDesc(t, mode)}
       >
         <span
           aria-hidden="true"
           data-agent-mode-dot
-          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${MODE_SKIN[mode].dot}`}
+          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${modeSkin(mode).dot}`}
         />
         {t('deck.mode.label') || 'Mode'}: {modeLabel(t, mode)}
       </button>

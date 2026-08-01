@@ -69,6 +69,28 @@ describe('AgentModeChip', () => {
     expect(container.querySelector('[data-mode-option="off"]')).toBeNull();
   });
 
+  // Caught live, not by review: a dev renderer hot-reloaded ahead of a stale
+  // main answered with the retired `auto`, `MODE_SKIN[mode]` came back
+  // undefined, and reading `.btn` threw — taking the whole deck rail down
+  // through its ErrorBoundary ("Crashed: Cannot read properties of undefined").
+  // The mode crosses an IPC boundary, so an unknown value must degrade, never
+  // throw. A downgrade to an older main would do exactly the same thing.
+  it('survives a mode the renderer does not know (stale/downgraded main)', async () => {
+    const api: AgentModeApi = {
+      get: async () => ({ mode: 'auto' as unknown as AgentMode }),
+      set: async () => ({ ok: true }),
+    };
+    const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    const chip = container.querySelector('[data-agent-mode-chip] > button');
+    expect(chip).toBeTruthy();
+    // Falls back to the OFF skin — the most conservative badge.
+    expect(chip!.className).toContain('border-transparent');
+    expect(container.querySelector('[data-agent-mode-dot]')!.className).toContain('--text-muted');
+  });
+
   it('renders nothing until the first read resolves (no label flash)', () => {
     const api: AgentModeApi = { get: () => new Promise(() => {}), set: async () => ({ ok: true }) };
     const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
