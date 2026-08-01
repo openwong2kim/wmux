@@ -13,6 +13,11 @@ const DL_URL = `https://github.com/openwong2kim/wmux/releases/download/v${NEW_VE
 const INSTALLER_BODY = Buffer.from('FAKE-INSTALLER-BYTES');
 const GOOD_SHA = createHash('sha256').update(INSTALLER_BODY).digest('hex');
 
+/** Quit hooks every AutoUpdater requires (see AutoUpdaterHooks). */
+function quitHooks() {
+  return { onBeforeInstallQuit: vi.fn(), onInstallQuitAborted: vi.fn() };
+}
+
 const realPlatform = process.platform;
 afterEach(() => {
   Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
@@ -137,7 +142,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
   it('a background check auto-downloads, streams progress, and emits downloaded (no auto-install)', async () => {
     const { AutoUpdater, sent, openPath, quit, win } = await loadWin32();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     // Background poll (not user-triggered): downloads + verifies, then STOPS.
@@ -160,7 +165,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
   it('a user-triggered check (UPDATE_CHECK) is one-shot: auto-installs once verified', async () => {
     const { AutoUpdater, ipcHandlers, openPath, quit, win } = await loadWin32();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     // The manual "check for updates" button routes through UPDATE_CHECK — a
@@ -176,7 +181,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
   it('UPDATE_INSTALL launches the downloaded file without re-fetching the manifest, then quits', async () => {
     const { AutoUpdater, ipcHandlers, requestUrls, openPath, quit, win } = await loadWin32();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     await backgroundCheck(updater);
@@ -197,7 +202,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   it('rejects on sha256 mismatch: emits error, no downloaded path, install is a no-op', async () => {
     const BAD_SHA = 'a'.repeat(64);
     const { AutoUpdater, ipcHandlers, sent, openPath, quit, win } = await loadWin32({ sha: BAD_SHA });
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     await backgroundCheck(updater);
@@ -217,7 +222,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
   it('a manual press mid-poll preserves the one-shot intent so the in-flight download installs', async () => {
     const { AutoUpdater, openPath, quit, win } = await loadWin32();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     const internals = updater as unknown as {
@@ -247,7 +252,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   it('a failed one-shot fast-path install clears the intent (no unattended restart later)', async () => {
     const { AutoUpdater, openPath, quit, win } = await loadWin32();
     openPath.mockResolvedValueOnce('launch failed'); // shell.openPath resolves with an error string, never throws
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     const internals = updater as unknown as {
@@ -274,7 +279,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   it('a failed one-shot download does not restart the app (install intent cleared)', async () => {
     const BAD_SHA = 'a'.repeat(64);
     const { AutoUpdater, ipcHandlers, openPath, quit, win } = await loadWin32({ sha: BAD_SHA });
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     // User pressed the button, but the download fails verification: the app
@@ -289,7 +294,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   it('removes the partial temp file when verification fails (no tampered artifact left in temp)', async () => {
     const BAD_SHA = 'a'.repeat(64);
     const { AutoUpdater, unlinkMock, win } = await loadWin32({ sha: BAD_SHA });
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     await backgroundCheck(updater);
@@ -303,7 +308,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
 
   it('a newer release supersedes a downloaded one: old artifact unlinked, new one downloaded', async () => {
     const { AutoUpdater, feed, sent, unlinkMock, win } = await loadWin32();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     // First poll downloads + verifies 9.9.10.

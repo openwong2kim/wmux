@@ -13,7 +13,7 @@
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
 import { createWriteStream } from 'node:fs';
-import { unlink } from 'node:fs/promises';
+import { readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
@@ -35,6 +35,23 @@ const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/${MANI
 // 업데이트 자동 확인 간격 (30분)
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
+// Once quitAndInstall() is called, terminating this process is Squirrel's job
+// and takes about a second. If we are still running after this, ShipIt is
+// waiting on a process that will never die — unwind instead of leaving the UI
+// silent forever (#update-hang).
+const INSTALL_HANDOFF_TIMEOUT_MS = 30_000;
+// Squirrel downloading and unpacking a ~120 MB bundle before it reports
+// 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
+// makes this minutes, and aborting a healthy update is worse than waiting.
+const INSTALL_STAGING_TIMEOUT_MS = 10 * 60 * 1000;
+
+// Verified installers are named `wmux-update-<version>-<pid>-<artifact>`. A
+// stage-then-stall leaves one behind (only the supersede and error paths
+// unlink), so they accumulate at ~120 MB each. Swept at startup; the age floor
+// keeps a concurrent instance's in-flight download safe.
+const TEMP_ARTIFACT_PREFIX = 'wmux-update-';
+const TEMP_ARTIFACT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 // In-app auto-update runs on Windows (Squirrel.Windows `.Setup.exe`) and on
 // Apple Silicon macOS (Squirrel.Mac, signed+notarized ZIP). Everything else —
 // Intel macOS (no build is produced) and Linux (users update via their package
@@ -51,9 +68,42 @@ interface UpdateInfo {
   url: string;
 }
 
+/**
+ * Main-process state the updater cannot reach on its own, but which decides
+ * whether an install can actually happen.
+ *
+ * `quitAndInstall()` asks Electron to close every window and only installs once
+ * the window list empties. A hide-to-tray `close` intercept cancels that close,
+ * so the install never runs and ShipIt waits on us forever. The main process
+ * therefore has to be told an install-quit is starting BEFORE we hand off — and
+ * told to undo it if the handoff stalls, or it is left with no window and a
+ * quit flag that makes it ignore Dock clicks and relaunch.
+ *
+ * Both hooks are required, not optional: the bug this interface exists to
+ * prevent was a quit signal that silently never arrived.
+ */
+export interface AutoUpdaterHooks {
+  /**
+   * Invoked synchronously immediately before Squirrel is told to install. Must
+   * let windows actually close, and must flush any state the normal quit path
+   * would have flushed — that path is skipped entirely on this route.
+   */
+  onBeforeInstallQuit: () => void;
+  /**
+   * Undo `onBeforeInstallQuit` after a handoff that never terminated us: clear
+   * the quit flag, restore anything the prepare tore down, and bring a window
+   * back. Without this the recovery path is worse than the failure it recovers
+   * from. Resolve only once the restored window can receive IPC — the updater
+   * waits on this before reporting, so the error is not sent into a renderer
+   * that has not attached its listeners yet.
+   */
+  onInstallQuitAborted: () => void | Promise<void>;
+}
+
 export class AutoUpdater {
   private checkTimer: ReturnType<typeof setInterval> | null = null;
   private getWindow: () => BrowserWindow | null;
+  private hooks: AutoUpdaterHooks;
   private isChecking = false;
   private enabled = true;
   private pendingUpdate: UpdateInfo | null = null;
@@ -70,8 +120,9 @@ export class AutoUpdater {
   // launch the installer twice.
   private isInstalling = false;
 
-  constructor(getWindow: () => BrowserWindow | null) {
+  constructor(getWindow: () => BrowserWindow | null, hooks: AutoUpdaterHooks) {
     this.getWindow = getWindow;
+    this.hooks = hooks;
   }
 
   start(): void {
@@ -89,11 +140,42 @@ export class AutoUpdater {
       return;
     }
 
+    void this.sweepStaleArtifacts();
+
     // 앱 시작 후 15초 뒤 첫 번째 확인 (시작 부하 방지)
     setTimeout(() => this.check(), 15_000);
 
     // 이후 주기적 확인
     this.checkTimer = setInterval(() => this.check(), CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Drop verified installers left in temp by an install that staged but never
+   * completed. Best-effort and never blocks startup: a failure here costs disk,
+   * not correctness. Only files older than TEMP_ARTIFACT_MAX_AGE_MS are removed
+   * so a second instance downloading right now keeps its artifact.
+   */
+  private async sweepStaleArtifacts(): Promise<void> {
+    const tempDir = app.getPath('temp');
+    let names: string[];
+    try {
+      names = await readdir(tempDir);
+    } catch {
+      return;
+    }
+    const cutoff = Date.now() - TEMP_ARTIFACT_MAX_AGE_MS;
+    for (const name of names) {
+      if (!name.startsWith(TEMP_ARTIFACT_PREFIX)) continue;
+      const full = join(tempDir, name);
+      try {
+        const info = await stat(full);
+        if (info.mtimeMs >= cutoff) continue;
+        await unlink(full);
+        console.log(`[AutoUpdater] swept stale update artifact ${name}`);
+      } catch {
+        /* best-effort — another instance may own it, or it vanished mid-sweep */
+      }
+    }
   }
 
   setEnabled(enabled: boolean): void {
@@ -418,15 +500,26 @@ export class AutoUpdater {
       console.log(`[AutoUpdater] install ignored on ${process.platform} — no in-app installer for this platform.`);
       return;
     }
+    // Both guards below used to return with only a console.log. Nothing reached
+    // the renderer, so a press that hit one of them looked identical to a press
+    // that did nothing at all — which is exactly how a stalled install
+    // presented: silent, and silent again on every retry. Every refusal now
+    // says so on UPDATE_ERROR, the one channel the UI already renders.
     const tempPath = this.downloadedPath;
     if (!tempPath) {
-      // The UI only surfaces the install button after 'downloaded' fired, so
-      // this is a defensive no-op (e.g. a prior download failed).
       console.log('[AutoUpdater] install ignored — no verified installer downloaded yet.');
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: 'No verified installer is ready yet. Check for updates again to download one.',
+      });
       return;
     }
     if (this.isInstalling) {
       console.log('[AutoUpdater] install already in progress — ignoring re-entrant call.');
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: 'An update install is already in progress. If nothing happens, restart wmux and try again.',
+      });
       return;
     }
     this.isInstalling = true;
@@ -480,15 +573,79 @@ export class AutoUpdater {
    * Fail-closed: any Squirrel error (most commonly "code signature" on a local
    * unsigned build) tears the feed down, clears the install guard, and surfaces
    * UPDATE_ERROR instead of leaving the UI stuck mid-install.
+   *
+   * Two phases, each with its own deadline, because they fail differently:
+   *
+   *   setFeedURL ─> checkForUpdates ─── staging (Squirrel downloads + unpacks
+   *        │                            120 MB over loopback) ──> update-downloaded
+   *        └── arm STAGING deadline ────────────────────────────────┐
+   *                                                                 │ (cleared)
+   *                        onBeforeInstallQuit ─> quitAndInstall ────┤
+   *                             └── arm HANDOFF deadline ───┐        │
+   *                                                         ▼        ▼
+   *                                      still alive? ─> unwind   process exits
+   *                                      (abort quit, restore window, report)
+   *
+   * The quit is prepared as late as possible — immediately before
+   * quitAndInstall, not before staging. Staging can legitimately take minutes on
+   * a slow disk or behind antivirus, and a tight deadline covering it would abort
+   * healthy updates; it also keeps the app in the dangerous "quitting" state
+   * (windows closable, broker stopped) for the shortest possible window.
+   *
+   * Every exit from an attempt runs through settleAttempt(), which detaches the
+   * Squirrel listeners. Without that, a late event from a torn-down attempt can
+   * re-enter — a stray 'error' double-reports, and a stray 'update-downloaded'
+   * calls quitAndInstall AFTER the abort restored the quit flag, re-creating the
+   * exact hang this fix exists to remove.
    */
   private async installDarwin(zipPath: string): Promise<void> {
     const feed = new LocalUpdateFeed();
-    const cleanup = () => { void feed.stop(); };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let quitPrepared = false;
+    let settled = false;
+
+    const armDeadline = (ms: number, onExpiry: () => void) => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; onExpiry(); }, ms);
+    };
+
+    /** Terminal for this attempt: no Squirrel callback may act after this. */
+    const settleAttempt = () => {
+      settled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      autoUpdater.removeAllListeners('update-downloaded');
+      autoUpdater.removeAllListeners('error');
+      void feed.stop();
+    };
+
     const failInstall = (message: string) => {
-      cleanup();
+      if (settled) return; // already reported — a late Squirrel event, ignore it
+      settleAttempt();
+      // Order matters: put the app back within reach BEFORE reporting, or the
+      // error lands on a process the user cannot bring to the front. The hook
+      // resolves once its window can actually receive IPC — a freshly created
+      // window has no listeners attached until its renderer has loaded, and
+      // sending into it early would drop the error and keep the UI silent.
+      const reachable = quitPrepared
+        ? (() => {
+          quitPrepared = false;
+          try {
+            return Promise.resolve(this.hooks.onInstallQuitAborted());
+          } catch (err) {
+            console.error('[AutoUpdater] onInstallQuitAborted threw — app may need a manual restart:', err);
+            return Promise.resolve();
+          }
+        })()
+        : Promise.resolve();
+
       this.isInstalling = false; // let the user retry
       console.error('[AutoUpdater] macOS install failed (fail-closed):', message);
-      this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message });
+      void reachable
+        .catch((err) => { console.error('[AutoUpdater] install-quit abort failed:', err); })
+        .then(() => { this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message }); });
     };
 
     try {
@@ -496,16 +653,36 @@ export class AutoUpdater {
       autoUpdater.removeAllListeners('update-downloaded');
       autoUpdater.removeAllListeners('error');
       autoUpdater.on('update-downloaded', () => {
+        if (settled) return; // late event from an attempt that already failed
         console.log('[AutoUpdater] Squirrel.Mac staged the verified update — restarting to install (sessions persist in the daemon)');
-        cleanup();
         // Squirrel has its own staged copy now — drop our temp ZIP so it does
         // not survive the relaunch and pile up release after release.
         void unlink(zipPath).catch(() => { /* best-effort cleanup */ });
         this.downloadedPath = null;
+
+        // Let the windows close (the hide-to-tray intercept would otherwise
+        // cancel the close quitAndInstall waits on), then deadline the handoff:
+        // from here Squirrel owns terminating us, and if it does not, ShipIt
+        // waits forever on a process that will never exit.
+        quitPrepared = true;
+        this.hooks.onBeforeInstallQuit();
+        armDeadline(INSTALL_HANDOFF_TIMEOUT_MS, () => {
+          failInstall(
+            `The update was downloaded and verified, but installing it did not restart wmux within ${Math.round(INSTALL_HANDOFF_TIMEOUT_MS / 1000)}s. ` +
+            `Quit wmux completely and try again, or install the latest release manually from https://github.com/${REPO}/releases`,
+          );
+        });
         autoUpdater.quitAndInstall();
       });
       autoUpdater.on('error', (err: Error) => {
         failInstall(this.describeDarwinInstallError(err));
+      });
+
+      armDeadline(INSTALL_STAGING_TIMEOUT_MS, () => {
+        failInstall(
+          `The update was downloaded and verified, but macOS did not finish preparing it within ${Math.round(INSTALL_STAGING_TIMEOUT_MS / 60_000)} minutes. ` +
+          `Try again, or install the latest release manually from https://github.com/${REPO}/releases`,
+        );
       });
       autoUpdater.setFeedURL({ url: feedUrl, serverType: 'json' });
       autoUpdater.checkForUpdates();

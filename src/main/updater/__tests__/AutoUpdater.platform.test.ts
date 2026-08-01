@@ -27,6 +27,15 @@ const FAKE_VERSION = '9.9.9';
 const EXPECTED_WIN32_FEED = `https://update.electronjs.org/openwong2kim/wmux/win32/${FAKE_VERSION}`;
 const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/openwong2kim/wmux/darwin-arm64/${FAKE_VERSION}`;
 
+/**
+ * Quit hooks every AutoUpdater needs. Required, not optional: the macOS install
+ * hang existed because the main process's quit signal silently never arrived,
+ * so a construction that forgets to wire it must not compile.
+ */
+function quitHooks() {
+  return { onBeforeInstallQuit: vi.fn(), onInstallQuitAborted: vi.fn() };
+}
+
 /** Platforms with no in-app updater: [platform, arch]. */
 const UNSUPPORTED: ReadonlyArray<readonly [NodeJS.Platform, string]> = [
   ['linux', 'x64'],
@@ -151,7 +160,7 @@ describe('AutoUpdater platform gating', () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('win32');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
 
     // First check fires 15s after start.
@@ -165,7 +174,7 @@ describe('AutoUpdater platform gating', () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('win32');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
     await vi.advanceTimersByTimeAsync(15_000); // first check
     const afterFirst = requestUrls.length;
@@ -179,7 +188,7 @@ describe('AutoUpdater platform gating', () => {
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls } = await loadForPlatform('darwin');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
@@ -193,7 +202,7 @@ describe('AutoUpdater platform gating', () => {
     vi.useFakeTimers();
     const { AutoUpdater, ipcHandlers } = await loadForPlatform('darwin');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
 
     const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
@@ -209,7 +218,7 @@ describe('AutoUpdater platform gating', () => {
       vi.useFakeTimers();
       const { AutoUpdater, requestUrls } = await loadForPlatform(platform, undefined, arch);
 
-      const updater = new AutoUpdater(() => null);
+      const updater = new AutoUpdater(() => null, quitHooks());
       updater.start();
 
       // Advance well past the first-check delay AND a full interval.
@@ -225,7 +234,7 @@ describe('AutoUpdater platform gating', () => {
     async (platform, arch) => {
       const { AutoUpdater, ipcHandlers, requestUrls } = await loadForPlatform(platform, undefined, arch);
 
-      const updater = new AutoUpdater(() => null);
+      const updater = new AutoUpdater(() => null, quitHooks());
       updater.start();
 
       const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
@@ -248,7 +257,7 @@ describe('AutoUpdater platform gating', () => {
     vi.useFakeTimers();
     const { AutoUpdater, ipcHandlers } = await loadForPlatform('win32');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
 
     const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
@@ -324,7 +333,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
   async function downloadUpdateFor(loaded: Awaited<ReturnType<typeof loadForPlatform>>) {
     const { AutoUpdater, ipcHandlers } = loaded;
     const { win, sent } = makeWin();
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
 
     const installHandler = ipcHandlers.get(IPC.UPDATE_INSTALL);
@@ -366,7 +375,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
   it('win32: UPDATE_INSTALL with no downloaded installer neither launches nor quits', async () => {
     const loaded = await loadForPlatform('win32'); // 204 feed — nothing downloads
     const { AutoUpdater, ipcHandlers } = loaded;
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
 
     const installHandler = ipcHandlers.get(IPC.UPDATE_INSTALL);
@@ -430,13 +439,14 @@ describe('AutoUpdater darwin-arm64 install (Squirrel.Mac loopback feed)', () => 
         executeJavaScript: async () => undefined,
       },
     };
-    const updater = new loaded.AutoUpdater(() => win as never);
+    const hooks = quitHooks();
+    const updater = new loaded.AutoUpdater(() => win as never, hooks);
     (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
     await (updater as unknown as { check: (oneShot?: boolean) => Promise<void> }).check();
     await until(() => sent.some((m) => m.channel === IPC.UPDATE_AVAILABLE && m.data.status === 'downloaded'));
     const installHandler = loaded.ipcHandlers.get(IPC.UPDATE_INSTALL);
     if (typeof installHandler !== 'function') throw new Error('UPDATE_INSTALL handler was not registered');
-    return { loaded, installHandler, sent };
+    return { loaded, installHandler, sent, hooks, updater };
   }
 
   it('downloads the manifest-named .zip (not a Windows .Setup.exe)', async () => {
@@ -470,12 +480,134 @@ describe('AutoUpdater darwin-arm64 install (Squirrel.Mac loopback feed)', () => 
     await installHandler();
     await until(() => loaded.nativeUpdater.setFeedURL.mock.calls.length > 0);
     loaded.nativeUpdater.emit('error', new Error('Could not get code signature for running application'));
+    // The report waits on the abort hook (which may have to rebuild a window),
+    // so it lands a microtask later.
+    await until(() => sent.some((m) => m.channel === IPC.UPDATE_ERROR));
 
     const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
-    expect(err).toBeDefined();
     expect(String(err!.data.message)).toContain('not code-signed');
     expect(String(err!.data.message)).toContain('releases');
     expect(loaded.nativeUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  // Regression, macOS install hang: quitAndInstall() closes every window and
+  // only installs once the window list empties, so the main process has to be
+  // told to stop intercepting closes FIRST. Asserting quitAndInstall was called
+  // is not enough — that assertion passed for the entire life of the bug. The
+  // ordering is the contract.
+  it('prepares the install-quit at the handoff — after staging, before quitAndInstall', async () => {
+    const { loaded, installHandler, hooks } = await downloadOnDarwin();
+
+    await installHandler();
+    await until(() => loaded.nativeUpdater.setFeedURL.mock.calls.length > 0);
+
+    // Staging is Squirrel downloading and unpacking ~120 MB. Preparing the quit
+    // here would leave the app closable and the broker stopped for all of it.
+    expect(hooks.onBeforeInstallQuit).not.toHaveBeenCalled();
+
+    loaded.nativeUpdater.emit('update-downloaded');
+
+    expect(hooks.onBeforeInstallQuit).toHaveBeenCalledTimes(1);
+    expect(hooks.onInstallQuitAborted).not.toHaveBeenCalled();
+    const preparedAt = hooks.onBeforeInstallQuit.mock.invocationCallOrder[0]!;
+    const quitAt = loaded.nativeUpdater.quitAndInstall.mock.invocationCallOrder[0]!;
+    expect(preparedAt).toBeLessThan(quitAt);
+  });
+
+  it('a late Squirrel event after a failed attempt cannot re-trigger the install', async () => {
+    const { loaded, installHandler, sent, hooks } = await downloadOnDarwin();
+
+    await installHandler();
+    await until(() => loaded.nativeUpdater.setFeedURL.mock.calls.length > 0);
+    loaded.nativeUpdater.emit('error', new Error('boom'));
+    await until(() => sent.some((m) => m.channel === IPC.UPDATE_ERROR));
+
+    // Squirrel finishing late must not call quitAndInstall now: the abort has
+    // already restored the quit flag, so the close intercept is live again and
+    // the install would wedge exactly as it did before this fix.
+    loaded.nativeUpdater.emit('update-downloaded');
+    loaded.nativeUpdater.emit('error', new Error('late second error'));
+
+    expect(loaded.nativeUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(hooks.onBeforeInstallQuit).not.toHaveBeenCalled();
+    expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(1);
+  });
+
+  it('a handoff that never restarts the app unwinds: abort, retryable, reported', async () => {
+    // The download runs on real timers (the poll helper needs them); only the
+    // install handoff is put on fake ones so the 30s deadline is reachable.
+    const { loaded, installHandler, sent, hooks, updater } = await downloadOnDarwin();
+    vi.useFakeTimers();
+    try {
+      const install = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000); // performInstall's session-save wait
+      await install;
+      expect(loaded.nativeUpdater.setFeedURL).toHaveBeenCalled();
+
+      // Squirrel staged and called quitAndInstall, but the process is still
+      // alive — exactly the wedge that left ShipIt waiting forever.
+      loaded.nativeUpdater.emit('update-downloaded');
+      expect(hooks.onInstallQuitAborted).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The quit flag is undone, so the app is reachable again...
+      expect(hooks.onInstallQuitAborted).toHaveBeenCalledTimes(1);
+      // ...before the failure is reported, or the error lands on a process the
+      // user cannot bring to the front.
+      const abortedAt = hooks.onInstallQuitAborted.mock.invocationCallOrder[0]!;
+      expect(abortedAt).toBeGreaterThan(hooks.onBeforeInstallQuit.mock.invocationCallOrder[0]!);
+
+      const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+      expect(err).toBeDefined();
+      expect(String(err!.data.message)).toContain('did not restart wmux');
+      expect(String(err!.data.message)).toContain('releases');
+
+      // And the install guard is clear, so pressing the button again works.
+      expect((updater as unknown as { isInstalling: boolean }).isInstalling).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('staging is given minutes, not the handoff deadline', async () => {
+    const { loaded, installHandler, sent, hooks } = await downloadOnDarwin();
+    vi.useFakeTimers();
+    try {
+      const install = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await install;
+
+      // A slow disk or an antivirus scan can make Squirrel take this long to
+      // unpack ~120 MB. Aborting here would break healthy updates.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(0);
+      expect(hooks.onInstallQuitAborted).not.toHaveBeenCalled();
+
+      // ...but a stage that never finishes is still reported rather than silent.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+      expect(String(err?.data.message)).toContain('did not finish preparing');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the deadline stops once the install fails, so it cannot fire twice', async () => {
+    const { loaded, installHandler, sent } = await downloadOnDarwin();
+    vi.useFakeTimers();
+    try {
+      const install = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await install;
+      loaded.nativeUpdater.emit('error', new Error('boom'));
+
+      await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+
+      expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -493,7 +625,7 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
         send: (channel: string, data: Record<string, unknown>) => { sent.push({ channel, data }); },
       },
     };
-    const updater = new AutoUpdater(() => win as never);
+    const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
     // User turns auto-update OFF before the first scheduled check fires.
@@ -523,7 +655,7 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     vi.useFakeTimers();
     const { AutoUpdater, requestUrls, ipcListeners } = await loadForPlatform('win32');
 
-    const updater = new AutoUpdater(() => null);
+    const updater = new AutoUpdater(() => null, quitHooks());
     updater.start();
     ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
     await vi.advanceTimersByTimeAsync(15_000);

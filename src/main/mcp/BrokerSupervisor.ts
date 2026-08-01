@@ -190,4 +190,17 @@ export class BrokerSupervisor {
       this.child = null;
     }
   }
+
+  /**
+   * Undo `stop()` for a teardown that turned out not to happen — an install-quit
+   * that was prepared and then aborted (see AutoUpdaterHooks). `stop()` latches
+   * `stopped` so a dying app cannot respawn the broker, and `start()` refuses to
+   * run while that latch is set; an aborted teardown has to clear it or MCP
+   * stays down for the rest of the session with nothing saying so.
+   */
+  resume(): void {
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.start();
+  }
 }

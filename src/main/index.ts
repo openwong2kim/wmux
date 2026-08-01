@@ -359,7 +359,13 @@ let mainWindow: BrowserWindow | null = null;
 // reordering hook/router boot earlier than the PTY layer.
 let hookSignalRouter: HookSignalRouter | null = null;
 const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRouter);
-const autoUpdater = new AutoUpdater(() => mainWindow);
+// The hooks carry the two things the updater cannot reach: the quit flag that
+// lets windows actually close (without it quitAndInstall never installs — see
+// prepareInstallQuit) and the way back if that handoff stalls.
+const autoUpdater = new AutoUpdater(() => mainWindow, {
+  onBeforeInstallQuit: () => prepareInstallQuit(),
+  onInstallQuitAborted: () => abortInstallQuit(),
+});
 
 const rpcRouter = new RpcRouter();
 markBoot('pre-pipe-server-ctor');
@@ -1073,15 +1079,7 @@ app.on('ready', async () => {
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
 
-  attachWindowRecovery(mainWindow);
-
-  // Intercept window close — hide to tray instead of destroying
-  mainWindow.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow!.hide();
-    }
-  });
+  adoptMainWindow(mainWindow);
 
   // Phase 2 — UsagePoller hidden-window cost control. We treat tray-hide
   // as "user not looking" so the poller's 30-min skip threshold kicks in
@@ -1634,20 +1632,79 @@ app.on('window-all-closed', () => {
   // Actual quit is triggered from the tray "Quit" menu item.
 });
 
-// Squirrel.Mac's quitAndInstall() emits 'before-quit-for-update' and then
-// closes every window BEFORE any 'before-quit' fires — with isQuitting still
-// false, the hide-to-tray close intercept above would cancel that close and
-// stall the update restart forever. Flip the flag here so windows close
-// through. The renderer session save already ran in AutoUpdater.performInstall,
-// and the detached daemon keeps every session alive across the relaunch; the
-// broker is stopped explicitly since the full before-quit teardown is skipped
-// on this path.
-// (EventEmitter cast: the event is real but missing from this Electron
-// version's typed app-event union.)
-(app as unknown as NodeJS.EventEmitter).on('before-quit-for-update', () => {
+// quitAndInstall() closes every window and only installs once the window list
+// empties. With isQuitting still false the hide-to-tray close intercept above
+// cancels that close, so the window list never empties, the install never runs,
+// and ShipIt waits forever on a process that will not exit. Flipping the flag
+// here is what lets the windows close through.
+//
+// This used to hang off `app.on('before-quit-for-update')`. That listener never
+// fired: the event belongs to Electron's `autoUpdater`, not to `app`, and the
+// `as unknown as NodeJS.EventEmitter` cast that was added to "work around the
+// missing type" silenced the very error that said so. The updater now calls
+// this directly, so there is no event name left to get wrong.
+//
+// The full before-quit teardown is skipped on this path, so anything it
+// guarantees has to be done here: the broker is stopped explicitly, and the
+// session state is flushed the same way the darwin before-quit pass flushes it
+// (the renderer-side save already ran in AutoUpdater.performInstall, but that
+// does not cover the main process's pending debounced write).
+// Wiring every main window needs, wherever it was created. Boot, the Dock
+// 'activate' path and the aborted-install recovery all built windows their own
+// way, and only boot attached the hide-to-tray close intercept — a window from
+// either of the other two destroyed itself on close instead of hiding.
+function adoptMainWindow(win: BrowserWindow): void {
+  attachWindowRecovery(win);
+  // Intercept window close — hide to tray instead of destroying
+  win.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
+}
+
+function prepareInstallQuit(): void {
   isQuitting = true;
   mcpBrokerSupervisor.stop();
-});
+  try {
+    sessionManager.flushSync();
+  } catch (err) {
+    console.error('[Main] install-quit flushSync failed:', err);
+  }
+}
+
+// The handoff above is one-way unless it can be undone. If Squirrel never
+// terminates us, the windows are already gone and `isQuitting` makes
+// 'second-instance' and 'activate' early-return — a live process with no window
+// and no way back, recoverable only with kill -9 (observed 2026-07-12). The
+// updater's watchdog calls this to put the app back within reach before it
+// reports the failure.
+async function abortInstallQuit(): Promise<void> {
+  isQuitting = false;
+  // stop() latches, so start() alone would be a no-op — without resume() one
+  // aborted install leaves MCP down for the rest of the session, silently.
+  mcpBrokerSupervisor.resume();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    return;
+  }
+  // quitAndInstall already destroyed the window (isQuitting was true, so the
+  // hide-to-tray intercept let the close through). Build a new one and wait for
+  // its renderer, or the caller's error IPC lands before any listener exists.
+  const win = createWindow();
+  mainWindow = win;
+  adoptMainWindow(win);
+  await new Promise<void>((resolve) => {
+    if (win.isDestroyed()) { resolve(); return; }
+    if (!win.webContents.isLoading()) { resolve(); return; }
+    const done = () => { clearTimeout(cap); resolve(); };
+    // Never block the failure report on a renderer that will not finish.
+    const cap = setTimeout(done, 10_000);
+    win.webContents.once('did-finish-load', done);
+    win.once('closed', done);
+  });
+}
 
 app.on('before-quit', async (e) => {
   if (isQuitting) return; // second pass — let quit proceed
@@ -1919,7 +1976,7 @@ app.on('activate', () => {
   const windows = BrowserWindow.getAllWindows();
   if (windows.length === 0) {
     mainWindow = createWindow();
-    attachWindowRecovery(mainWindow);
+    adoptMainWindow(mainWindow);
     return;
   }
   // macOS: 창을 닫아도 hide()만 하고 파괴하지 않으므로(위 close 인터셉트)
