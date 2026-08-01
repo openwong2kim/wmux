@@ -194,6 +194,7 @@ vi.mock('../../../deck/deckWorkStore', () => ({
   loadLiveDeckWorks: vi.fn(() => ({})),
   isDeckWorkParked: vi.fn(() => false),
   setDeckWorkBootId: vi.fn(() => undefined),
+  unparkDeckWork: vi.fn(() => undefined),
   beginOrContinueDeckWork: vi.fn(() => null),
   recordDeckWorkA2aTask: vi.fn(() => null),
   completeActiveDeckWork: vi.fn(() => null),
