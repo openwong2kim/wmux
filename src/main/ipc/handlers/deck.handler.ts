@@ -31,7 +31,8 @@ import {
   resolveBrainBridgePath,
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
-import { evaluateStopGate } from '../../deck/stopGate';
+import { evaluateStopGate, outstandingPtyIds } from '../../deck/stopGate';
+import { noteGateVerdict } from '../../deck/stopGateState';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -268,12 +269,22 @@ export function registerDeckHandler(
             // The Stop gate: the orchestrator may not end a turn while worker
             // panes are still running or waiting on it. The mirror lookup lives
             // here, not in the adapter, so the predicate stays pure.
-            evaluateStopGate: (workspaceId, consecutiveBlocks) =>
-              evaluateStopGate({
-                snapshot: getWorkspaceMirror().getFleetSnapshot(workspaceId),
+            evaluateStopGate: (workspaceId, consecutiveBlocks) => {
+              const snapshot = getWorkspaceMirror().getFleetSnapshot(workspaceId);
+              const verdict = evaluateStopGate({
+                snapshot,
                 activeWork: loadActiveDeckWork(workspaceId),
                 consecutiveBlocks,
-              }),
+              });
+              // Record which panes are holding the gate so input.rpc can refuse
+              // session-terminating input aimed at them (#733). Cleared as soon
+              // as the gate lets a turn end.
+              noteGateVerdict(
+                workspaceId,
+                verdict.block ? outstandingPtyIds(snapshot) : null,
+              );
+              return verdict;
+            },
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
             onForeignSessionId: adapterOpts.onForeignSessionId,
             // The model picker applies to the TUI brain too (`--model`);

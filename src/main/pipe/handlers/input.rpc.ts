@@ -5,6 +5,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
 import { applyRoleBinding, normalizeRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
+import { isGateHeldOn } from '../../deck/stopGateState';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -145,6 +146,52 @@ export function makeRoleBindingResolver(getWindow: GetWindow): RoleBindingResolv
   };
 }
 
+/**
+ * Does this payload end the session rather than talk to it?
+ *
+ * Two shapes, both seen in #733: an `exit` command committed on its own line,
+ * and a raw EOT (Ctrl+D). Deliberately narrow — `exit 1` inside a script, or
+ * the word "exit" in a sentence, is not a match. False negatives are fine here
+ * (the guard is a backstop for one specific escalation, not a sandbox); false
+ * positives would block legitimate writes.
+ */
+export function isSessionTerminatingInput(text: string): boolean {
+  // eslint-disable-next-line no-control-regex -- EOT is the byte we are matching
+  if (/\x04/.test(text)) return true;
+  return text
+    .split(/[\r\n]/)
+    .some((line) => /^\s*(exit|logout)\s*$/i.test(line));
+}
+
+/**
+ * Refuse to end a pane the caller's Stop gate is currently blocked on (#733).
+ *
+ * The failure this exists for: a pane wedged at `running` held the gate, the
+ * brain was told "resolve these panes", and it resolved one by killing it —
+ * a live shell the human owned. The gate already names the panes it is waiting
+ * on, so the refusal is exactly that intersection and nothing wider. An
+ * orchestrator that is not gate-held, or one aiming at a pane the gate did not
+ * name, is unaffected.
+ *
+ * Throws so the caller gets the reason back and can act on it, rather than
+ * having the write silently swallowed.
+ */
+function assertNotKillingAGateHeldPane(
+  callerWs: string | undefined,
+  ptyId: string,
+  text: string,
+  op: string,
+): void {
+  if (!callerWs) return;
+  if (!isSessionTerminatingInput(text)) return;
+  if (!isGateHeldOn(callerWs, ptyId)) return;
+  throw new Error(
+    `${op}: refusing to end pane "${ptyId}" — your turn is currently held open by this pane. ` +
+      'A pane\'s status is not resolved by closing it, and this session belongs to the human. ' +
+      'Read its screen, answer what it is waiting on, or raise it with deck_ask_decision.',
+  );
+}
+
 export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
@@ -184,6 +231,8 @@ export function registerInputRpc(
     }
 
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
+
+    assertNotKillingAGateHeldPane(callerWs, ptyId, text, 'input.send');
 
     let safeText = params['raw'] === true ? text : sanitizePtyText(text);
 
@@ -311,6 +360,9 @@ export function registerInputRpc(
     }
 
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.sendKey');
+
+    // Ctrl+D arrives here as its escape sequence, so the same guard applies.
+    assertNotKillingAGateHeldPane(callerWs, ptyId, sequence, 'input.sendKey');
 
     const instance = ptyManager.get(ptyId);
     if (instance) {

@@ -47,6 +47,16 @@ function isOutstanding(status: FleetSnapshotPane['agentStatus']): boolean {
   return status === 'running' || status === 'awaiting_input';
 }
 
+/**
+ * The panes a gate refusal is blocking on. Same predicate the refusal string
+ * uses, exported so `input.rpc` can protect exactly the panes the model was
+ * just told to resolve — no second definition of "outstanding" to drift (#733).
+ */
+export function outstandingPtyIds(snapshot: FleetSnapshot | null): string[] {
+  if (!snapshot) return [];
+  return snapshot.panes.filter((p) => isOutstanding(p.agentStatus)).map((p) => p.ptyId);
+}
+
 /** Short human label for one blocking pane, used in the reason string. */
 function describePane(pane: FleetSnapshotPane): string {
   const name = pane.agentName && pane.agentName.length > 0 ? pane.agentName : pane.ptyId;
@@ -106,6 +116,14 @@ export function evaluateStopGate(input: {
 
   // This string is the ONLY thing the model reads about the refusal, so it
   // names the panes, their statuses, and the action that clears the gate.
+  //
+  // It also has to name what NOT to do. Issue #733: a pane wedged at `running`
+  // held the gate, and the brain escalated to `exit` and then Ctrl+D on a live
+  // user shell — reading "resolve the pane" as "end the pane". A reported
+  // status is not resolved by killing the thing it describes, and the pane
+  // belongs to a human who did not ask for it to close. `input.rpc` enforces
+  // this for the panes named here; the sentence exists so the model does not
+  // have to learn it by being refused.
   const list = outstanding.map(describePane).join(', ');
   const noun = outstanding.length === 1 ? 'pane' : 'panes';
   return {
@@ -113,6 +131,9 @@ export function evaluateStopGate(input: {
     reason:
       `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
       'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +
+      'Do NOT close or kill a pane to clear its status — no exit, no Ctrl+D, no kill. ' +
+      'Those sessions belong to the human. If a pane will not resolve, leave it running and ' +
+      'raise it with deck_ask_decision instead of ending it. ' +
       (finalizeReason ?? 'If there is genuinely nothing left for you to do, say so and stop again.'),
   };
 }
