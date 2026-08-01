@@ -520,6 +520,26 @@ const MIN_RESIZE_INTERVAL_MS = 250;
 /** Sessions tracked for rate limiting before the map is swept against the roster. */
 const RESIZE_TRACKING_CAP = 256;
 
+/**
+ * Did the caller mention this field at all — as opposed to sending a value the
+ * route will go on to reject?
+ *
+ * The presence question needs its own helper because `in` is the only way to
+ * ask it and `in` THROWS on a primitive. `readJsonBody` hands through whatever
+ * `JSON.parse` returned, and `123` is valid JSON: a body of exactly `123`
+ * reaches a handler as a number, `(body ?? {})` leaves it a number because it
+ * is neither null nor undefined, and `'x' in 123` is a `TypeError` raised
+ * inside the `req.on('end')` callback — where nothing catches it. That is a
+ * one-line request from any paired device that takes the daemon down, so the
+ * guard belongs here rather than at each call site that might forget it.
+ *
+ * Arrays are excluded too: `'0' in ['production']` is true, and an array is
+ * never the object shape any of these routes documents.
+ */
+function statesField(body: unknown, field: string): boolean {
+  return typeof body === 'object' && body !== null && !Array.isArray(body) && field in body;
+}
+
 /** One side of a requested PTY geometry. */
 function isGeometryValue(value: unknown, min: number): value is number {
   return (
@@ -2099,7 +2119,7 @@ export class WebTerminalServer {
       // guard and be stored as a stage the client never sent. The store
       // strict-compares against the two literals, so anything else (an array, a
       // number, `null`, an object) fails there and comes back 400.
-      const hasStage = 'apnsEnvironment' in b;
+      const hasStage = statesField(body, 'apnsEnvironment');
       let result: { ok: boolean; reason?: string };
       try {
         result = devices.registerPush!(principal.deviceId, {

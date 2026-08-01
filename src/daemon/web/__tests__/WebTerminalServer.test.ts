@@ -1976,6 +1976,39 @@ describe('WebTerminalServer', () => {
     }
   });
 
+  it('★ survives a JSON body that is a scalar, on every route that reads one', async () => {
+    // `123` is valid JSON. It reaches a handler as a NUMBER, `(body ?? {})`
+    // leaves it one, and `'field' in 123` is a TypeError thrown inside
+    // `req.on('end')` — where nothing catches it. That is one line of request
+    // body from any paired device taking the daemon down with it.
+    const info = await startRW();
+    const { token } = await pairDevice('Phone');
+    const scalars = ['123', '"production"', 'true', 'null', '[]'];
+    const routes: Array<[string, string]> = [
+      ['POST', '/api/push-registration'],
+      ['POST', '/api/sessions/s1/resize'],
+      ['POST', '/api/sessions'],
+      ['POST', `/api/approvals/${'ap-scalar'}`],
+    ];
+    approvalRecords.push(mkApproval({ id: 'ap-scalar' }));
+
+    for (const [method, path] of routes) {
+      for (const body of scalars) {
+        const res = await fetch(`${base()}${path}`, {
+          method,
+          headers: { ...bearer(token), 'Content-Type': 'application/json' },
+          body,
+        });
+        // Any answer is fine — 400, 404, 409. What must NOT happen is the
+        // socket dying because the handler threw.
+        expect(res.status, `${method} ${path} ← ${body}`).toBeLessThan(500);
+      }
+    }
+    // Still serving after all of that.
+    expect((await fetch(`${base()}/api/config`, { headers: bearer(token) })).status).toBe(200);
+    expect(info.running).toBe(true);
+  });
+
   it('rejects a malformed token or key with 400', async () => {
     await startRO();
     const { token } = await pairDevice('Phone');
