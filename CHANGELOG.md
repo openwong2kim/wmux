@@ -1,5 +1,9 @@
 ## [3.38.3] — 2026-08-02
 
+### Added
+
+- Phones can reshape a pane they are the only client of. `POST /api/sessions/<id>/resize` reflows the PTY to the phone's viewport, so a 151-column desk pane stops arriving letterboxed or shrunk past reading — the wrapping happens in the PTY, before any client sees a byte, so nothing on the phone could fix it. A desk client that has the pane attached keeps ownership: the route answers `409 desk-owns-size` with the current geometry rather than starting a resize fight the desk's next layout pass would win anyway. Available without `--allow-input`, like the diff route — it delivers a SIGWINCH, not a keystroke. (#743)
+
 ### Fixed
 
 - The Schedules panel's "Add schedule" button no longer gets clipped off the right edge of a narrow deck — the create row wraps and its time/repeat controls shrink.
@@ -20,6 +24,9 @@
   silently refusing for the rest of the session. Updates that were interrupted
   no longer leave their downloaded copy behind either, where they had been
   piling up at around 120 MB each. (#742)
+
+- The lock-screen Approve button never appeared on any notification. The iOS extension has nothing but the sealed payload, so it reads an absent `risk` as "unknown" and withholds the affirmative — but the daemon only ever set `risk` on the critical branch, which is right for `/api/approvals` and wrong here. Push payloads now always state `critical` or `normal`. (#743)
+- Two builds of the phone app on one tailnet took turns breaking each other's push. An APNs token does not say which stage minted it and Apple's two hosts reject each other's, so the relay's single `APNS_ENV` was one answer for every device — the symptom was a `BadDeviceToken` that traced back to nothing. The daemon now stores the stage the app reported per device and the relay routes on it, falling back to `APNS_ENV` when a device named none. (#743)
 
 ## [3.38.2] — 2026-08-01
 
