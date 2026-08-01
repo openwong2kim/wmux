@@ -1,3 +1,26 @@
+## [3.38.3] — 2026-08-02
+
+### Fixed
+
+- The Schedules panel's "Add schedule" button no longer gets clipped off the right edge of a narrow deck — the create row wraps and its time/repeat controls shrink.
+
+- Scattered wrong glyphs across several panes at once during CJK-heavy sessions. The shared WebGL glyph atlas's page-merge path corrupts sibling panes' cached glyph references when its page pool fills (16 pages on Apple Silicon; Hangul's 11,172 distinct syllables fill it fast); a new guard now rebuilds the atlas coherently for every sharing pane just before that path would run, and repairs within seconds if it ever does. (#741)
+
+- **Check for updates now installs the update on Apple Silicon Macs.** Pressing it downloaded
+  and verified the new version and then did nothing at all: no restart, no
+  error, and nothing on any press after that. Installing asks macOS to close
+  every window first and only goes ahead once they are all gone, but wmux keeps
+  its window alive so it can sit in the tray, so the close was cancelled and the
+  installer waited forever on a wmux that was never going to quit. The signal
+  that was meant to let those windows go was listening for something that is
+  never sent to it, so it never arrived. wmux now says so directly and there is
+  no message left to miss. If installing still fails to restart the app, wmux
+  stops waiting, brings the window back and tells you what happened instead of
+  going quiet, and the button works again on the next press rather than
+  silently refusing for the rest of the session. Updates that were interrupted
+  no longer leave their downloaded copy behind either, where they had been
+  piling up at around 120 MB each. (#742)
+
 ## [3.38.2] — 2026-08-01
 
 ### Added
