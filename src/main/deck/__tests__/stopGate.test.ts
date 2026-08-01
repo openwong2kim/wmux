@@ -143,4 +143,54 @@ describe('stop gate refusal names what not to do (#733)', () => {
     expect(reason).toMatch(/no exit, no Ctrl\+D, no kill/);
     expect(reason).toMatch(/deck_ask_decision/);
   });
+
+  // An active-work hold names NO pane, so `input.rpc` — which protects only the
+  // ptyIds a verdict names — cannot cover it. That makes the reason string the
+  // ONLY thing standing between a wedged record and the #733 escalation, and it
+  // is the branch a record stale across a restart actually lands on. All three
+  // active-work-only exits shipped without the prohibition; assert each one.
+  const activeWork = { id: 'work-1', workspaceId: 'ws-1' };
+  const cases: Array<[string, Parameters<typeof evaluateStopGate>[0]]> = [
+    ['no snapshot', { snapshot: null as unknown as FleetSnapshot, activeWork, consecutiveBlocks: 0 }],
+    [
+      'stale snapshot',
+      {
+        snapshot: { ts: Date.now() - 120_000, panes: [] } as unknown as FleetSnapshot,
+        activeWork,
+        consecutiveBlocks: 0,
+      },
+    ],
+    [
+      'fresh snapshot with every pane quiescent',
+      {
+        snapshot: { ts: Date.now(), panes: [{ ptyId: 'pty-a', agentStatus: 'idle' }] } as unknown as FleetSnapshot,
+        activeWork,
+        consecutiveBlocks: 0,
+      },
+    ],
+  ];
+
+  for (const [label, input] of cases) {
+    it(`forbids killing a pane on an active-work-only hold (${label})`, () => {
+      const verdict = evaluateStopGate(input);
+      expect(verdict.block).toBe(true);
+      const reason = verdict.block ? verdict.reason : '';
+      expect(reason).toMatch(/is still ACTIVE/);
+      expect(reason).toMatch(/Do NOT close or kill a pane/);
+      expect(reason).toMatch(/no exit, no Ctrl\+D, no kill/);
+    });
+  }
+
+  it('does not repeat the prohibition when panes are also outstanding', () => {
+    const verdict = evaluateStopGate({
+      snapshot: {
+        ts: Date.now(),
+        panes: [{ ptyId: 'pty-a', agentStatus: 'running' }],
+      } as unknown as FleetSnapshot,
+      activeWork,
+      consecutiveBlocks: 0,
+    });
+    const reason = verdict.block ? verdict.reason : '';
+    expect(reason.match(/Do NOT close or kill a pane/g)).toHaveLength(1);
+  });
 });

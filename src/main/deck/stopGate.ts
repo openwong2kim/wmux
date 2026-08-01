@@ -39,6 +39,15 @@ export const DEFAULT_MAX_CONSECUTIVE_BLOCKS = 3;
  *  "running" means "was running when the renderer last got a frame". */
 export const DEFAULT_MAX_SNAPSHOT_AGE_MS = 30_000;
 
+/** Every refusal has to say what NOT to do, not just what to do. Issue #733:
+ *  the brain read "resolve the pane" as "end the pane" and ran `exit` then
+ *  Ctrl+D on a live user shell. Shared so the pane branch and the active-work
+ *  branches cannot drift apart — the active-work branches shipped without it. */
+const NO_KILL_SENTENCE =
+  'Do NOT close or kill a pane to clear its status — no exit, no Ctrl+D, no kill. ' +
+  'Those sessions belong to the human. If a pane will not resolve, leave it running and ' +
+  'raise it with deck_ask_decision instead of ending it.';
+
 export type StopGateVerdict =
   | { block: false }
   /**
@@ -97,8 +106,19 @@ export function evaluateStopGate(input: {
       'Inspect the delegated results and acceptance checks; when everything is actually complete, call ' +
       'deck_complete_work({summary, verification}). If work remains, delegate or unblock the next step.'
     : null;
+  // An active-work hold names NO pane, so the pane branch's no-kill sentence
+  // never reaches the model here — and this is the branch a stale record wedges
+  // on. That is the #733 shape exactly: held with nothing to point at, the brain
+  // escalated to `exit`/Ctrl+D on a live user shell. `input.rpc` cannot cover it
+  // either, since it protects the panes the verdict names and this verdict names
+  // none. So the sentence has to be carried by the reason string itself.
+  const activeWorkOnlyReason = finalizeReason
+    ? `${finalizeReason} ${NO_KILL_SENTENCE}`
+    : null;
   if (!snapshot) {
-    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
+    return activeWorkOnlyReason
+      ? { block: true, reason: activeWorkOnlyReason, outstandingPtyIds: [] }
+      : { block: false };
   }
   // Staleness means pane state cannot be used to infer outstanding workers. An
   // active-work record can still hold the turn because it is durable runtime
@@ -106,12 +126,16 @@ export function evaluateStopGate(input: {
   const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
   const age = (input.now ?? Date.now()) - snapshot.ts;
   if (age > maxAge) {
-    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
+    return activeWorkOnlyReason
+      ? { block: true, reason: activeWorkOnlyReason, outstandingPtyIds: [] }
+      : { block: false };
   }
 
   const outstanding = snapshot.panes.filter((p) => isOutstanding(p.agentStatus));
   if (outstanding.length === 0) {
-    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
+    return activeWorkOnlyReason
+      ? { block: true, reason: activeWorkOnlyReason, outstandingPtyIds: [] }
+      : { block: false };
   }
 
   // This string is the ONLY thing the model reads about the refusal, so it
@@ -132,9 +156,7 @@ export function evaluateStopGate(input: {
     reason:
       `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
       'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +
-      'Do NOT close or kill a pane to clear its status — no exit, no Ctrl+D, no kill. ' +
-      'Those sessions belong to the human. If a pane will not resolve, leave it running and ' +
-      'raise it with deck_ask_decision instead of ending it. ' +
+      `${NO_KILL_SENTENCE} ` +
       (finalizeReason ?? 'If there is genuinely nothing left for you to do, say so and stop again.'),
   };
 }
