@@ -39,22 +39,22 @@ export const DEFAULT_MAX_CONSECUTIVE_BLOCKS = 3;
  *  "running" means "was running when the renderer last got a frame". */
 export const DEFAULT_MAX_SNAPSHOT_AGE_MS = 30_000;
 
-export type StopGateVerdict = { block: false } | { block: true; reason: string };
+export type StopGateVerdict =
+  | { block: false }
+  /**
+   * `outstandingPtyIds` is the set of panes this refusal is actually about, and
+   * it is EMPTY for a block that names none — an active-work hold with a
+   * missing or stale snapshot. `input.rpc` protects exactly this set (#733), so
+   * it has to travel with the verdict rather than be re-derived by the caller:
+   * a caller re-reading a stale snapshot would protect panes the model was
+   * never told about, which is the drift this field exists to make impossible.
+   */
+  | { block: true; reason: string; outstandingPtyIds: string[] };
 
 /** Pane statuses that mean "this pane still needs the orchestrator". The same
  *  attention set CommanderEventCoalescer treats as non-quiescent. */
 function isOutstanding(status: FleetSnapshotPane['agentStatus']): boolean {
   return status === 'running' || status === 'awaiting_input';
-}
-
-/**
- * The panes a gate refusal is blocking on. Same predicate the refusal string
- * uses, exported so `input.rpc` can protect exactly the panes the model was
- * just told to resolve — no second definition of "outstanding" to drift (#733).
- */
-export function outstandingPtyIds(snapshot: FleetSnapshot | null): string[] {
-  if (!snapshot) return [];
-  return snapshot.panes.filter((p) => isOutstanding(p.agentStatus)).map((p) => p.ptyId);
 }
 
 /** Short human label for one blocking pane, used in the reason string. */
@@ -98,7 +98,7 @@ export function evaluateStopGate(input: {
       'deck_complete_work({summary, verification}). If work remains, delegate or unblock the next step.'
     : null;
   if (!snapshot) {
-    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
   }
   // Staleness means pane state cannot be used to infer outstanding workers. An
   // active-work record can still hold the turn because it is durable runtime
@@ -106,12 +106,12 @@ export function evaluateStopGate(input: {
   const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
   const age = (input.now ?? Date.now()) - snapshot.ts;
   if (age > maxAge) {
-    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
   }
 
   const outstanding = snapshot.panes.filter((p) => isOutstanding(p.agentStatus));
   if (outstanding.length === 0) {
-    return finalizeReason ? { block: true, reason: finalizeReason } : { block: false };
+    return finalizeReason ? { block: true, reason: finalizeReason, outstandingPtyIds: [] } : { block: false };
   }
 
   // This string is the ONLY thing the model reads about the refusal, so it
@@ -128,6 +128,7 @@ export function evaluateStopGate(input: {
   const noun = outstanding.length === 1 ? 'pane' : 'panes';
   return {
     block: true,
+    outstandingPtyIds: outstanding.map((p) => p.ptyId),
     reason:
       `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
       'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +

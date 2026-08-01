@@ -17,8 +17,21 @@ import {
   resetGateVerdicts,
   GATE_VERDICT_TTL_MS,
 } from '../stopGateState';
-import { outstandingPtyIds } from '../stopGate';
+import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../stopGate';
 import type { FleetSnapshot } from '../../../shared/workspaceMirror';
+
+const NOW = 1_700_000_000_000;
+
+function snapshotAt(ts: number): FleetSnapshot {
+  return {
+    ts,
+    panes: [
+      { ptyId: 'pty-running', agentStatus: 'running' },
+      { ptyId: 'pty-waiting', agentStatus: 'awaiting_input' },
+      { ptyId: 'pty-idle', agentStatus: 'idle' },
+    ],
+  } as unknown as FleetSnapshot;
+}
 
 const WS = 'ws-1';
 
@@ -64,20 +77,47 @@ describe('stopGateState (#733)', () => {
   });
 
   it('records exactly the panes the refusal names', () => {
-    // One definition of "outstanding", shared with the reason string, so the
-    // guard can never protect a different set than the model was told about.
-    const snapshot = {
-      ts: Date.now(),
-      panes: [
-        { ptyId: 'pty-running', agentStatus: 'running' },
-        { ptyId: 'pty-waiting', agentStatus: 'awaiting_input' },
-        { ptyId: 'pty-idle', agentStatus: 'idle' },
-      ],
-    } as unknown as FleetSnapshot;
+    // The verdict carries the set, so the guard cannot protect a different one
+    // than the model was told about.
+    const verdict = evaluateStopGate({
+      snapshot: snapshotAt(NOW),
+      consecutiveBlocks: 0,
+      now: NOW,
+    });
+    expect(verdict.block).toBe(true);
 
-    noteGateVerdict(WS, outstandingPtyIds(snapshot));
+    noteGateVerdict(WS, verdict.block ? verdict.outstandingPtyIds : null);
     expect(isGateHeldOn(WS, 'pty-running')).toBe(true);
     expect(isGateHeldOn(WS, 'pty-waiting')).toBe(true);
     expect(isGateHeldOn(WS, 'pty-idle')).toBe(false);
+  });
+
+  // Regression for the review catch on this PR: a stale snapshot blocks on the
+  // active-work reason alone and names NO pane. Deriving the protected set from
+  // the snapshot instead of the verdict protected panes the model was never
+  // told about — the exact drift the verdict field exists to prevent.
+  it('protects nothing when the block names no pane (stale snapshot + active work)', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshotAt(NOW - DEFAULT_MAX_SNAPSHOT_AGE_MS - 1),
+      activeWork: { id: 'work-1' },
+      consecutiveBlocks: 0,
+      now: NOW,
+    });
+    expect(verdict.block).toBe(true);
+    // The refusal is about the work record, not about any pane.
+    expect(verdict.block && verdict.outstandingPtyIds).toEqual([]);
+
+    noteGateVerdict(WS, verdict.block ? verdict.outstandingPtyIds : null);
+    expect(isGateHeldOn(WS, 'pty-running')).toBe(false);
+  });
+
+  it('protects nothing when there is no snapshot at all', () => {
+    const verdict = evaluateStopGate({
+      snapshot: null,
+      activeWork: { id: 'work-1' },
+      consecutiveBlocks: 0,
+      now: NOW,
+    });
+    expect(verdict.block && verdict.outstandingPtyIds).toEqual([]);
   });
 });

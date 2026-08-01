@@ -31,8 +31,8 @@ import {
   resolveBrainBridgePath,
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
-import { evaluateStopGate, outstandingPtyIds } from '../../deck/stopGate';
-import { noteGateVerdict } from '../../deck/stopGateState';
+import { evaluateStopGate } from '../../deck/stopGate';
+import { noteGateVerdict, clearGateVerdict } from '../../deck/stopGateState';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -277,11 +277,14 @@ export function registerDeckHandler(
                 consecutiveBlocks,
               });
               // Record which panes are holding the gate so input.rpc can refuse
-              // session-terminating input aimed at them (#733). Cleared as soon
-              // as the gate lets a turn end.
+              // session-terminating input aimed at them (#733). The list comes
+              // off the verdict, never off the snapshot: an active-work hold on
+              // a stale snapshot blocks without naming a pane, and re-reading
+              // that snapshot here would protect panes the model was never told
+              // about. Cleared as soon as the gate lets a turn end.
               noteGateVerdict(
                 workspaceId,
-                verdict.block ? outstandingPtyIds(snapshot) : null,
+                verdict.block ? verdict.outstandingPtyIds : null,
               );
               return verdict;
             },
@@ -323,6 +326,17 @@ export function registerDeckHandler(
     vendor: BrainVendor;
   }
   const managers = new Map<string, ManagedCommander>();
+
+  /**
+   * Retire a workspace's commander. Every dispose path routes through here so
+   * the Stop-gate hold dies with the commander that created it (#733) — a new
+   * commander in the same workspace must not inherit the old one's protected
+   * pane set.
+   */
+  const retireManager = (workspaceId: string): void => {
+    managers.delete(workspaceId);
+    clearGateVerdict(workspaceId);
+  };
 
   // Fleet-wide ceiling on CONCURRENT autonomous turns. Each workspace's manager
   // is already one-turn-at-a-time, but a hook storm across many workspaces could
@@ -486,7 +500,7 @@ export function registerDeckHandler(
       existing.manager.getStatus().status !== 'busy'
     ) {
       existing.manager.dispose();
-      managers.delete(workspaceId);
+      retireManager(workspaceId);
       forgetAmbient(workspaceId);
     }
     const current = managers.get(workspaceId);
@@ -734,7 +748,7 @@ export function registerDeckHandler(
       const entry = managers.get(workspaceId);
       if (entry) {
         entry.manager.dispose(); // interrupts an in-flight turn, flips to disposed
-        managers.delete(workspaceId);
+        retireManager(workspaceId);
         forgetAmbient(workspaceId);
       }
       // The vendor this workspace actually RAN as, not the one selected: a
@@ -793,7 +807,7 @@ export function registerDeckHandler(
         for (const [workspaceId, entry] of [...managers]) {
           if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
-            managers.delete(workspaceId);
+            retireManager(workspaceId);
             forgetAmbient(workspaceId);
           }
         }
@@ -828,7 +842,7 @@ export function registerDeckHandler(
             entry.manager.getStatus().status !== 'busy'
           ) {
             entry.manager.dispose();
-            managers.delete(workspaceId);
+            retireManager(workspaceId);
             forgetAmbient(workspaceId);
             // A retired terminal brain takes its embedded pty with it.
             emitBrainPty(workspaceId, null);
@@ -866,7 +880,7 @@ export function registerDeckHandler(
         for (const [workspaceId, entry] of [...managers]) {
           if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
             entry.manager.dispose();
-            managers.delete(workspaceId);
+            retireManager(workspaceId);
             forgetAmbient(workspaceId);
             // The retired brain's embedded terminal is gone with it — retract
             // the pty id so the deck falls back to the bubble view instead of

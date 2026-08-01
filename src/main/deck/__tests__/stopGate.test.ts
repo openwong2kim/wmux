@@ -123,3 +123,24 @@ describe('evaluateStopGate', () => {
     expect(evaluateStopGate({ snapshot: snapshot([]), consecutiveBlocks: 0 }).block).toBe(false);
   });
 });
+
+// Regression: #733 — the brain read "resolve these panes" as "end these panes"
+// and ran `exit`, then Ctrl+D, in a live user shell. This string is the only
+// thing it reads about a block, so the prohibition has to be in it. Asserted on
+// the string the model actually receives, not on a copy.
+describe('stop gate refusal names what not to do (#733)', () => {
+  it('forbids closing a pane to clear its status, and points at the way out', () => {
+    const verdict = evaluateStopGate({
+      snapshot: {
+        ts: Date.now(),
+        panes: [{ ptyId: 'pty-a', agentStatus: 'running' }],
+      } as unknown as FleetSnapshot,
+      consecutiveBlocks: 0,
+    });
+    expect(verdict.block).toBe(true);
+    const reason = verdict.block ? verdict.reason : '';
+    expect(reason).toMatch(/Do NOT close or kill a pane/);
+    expect(reason).toMatch(/no exit, no Ctrl\+D, no kill/);
+    expect(reason).toMatch(/deck_ask_decision/);
+  });
+});
