@@ -13,10 +13,13 @@ export type MultiviewArrangement = 'auto' | 'columns' | 'rows';
 
 export const MULTIVIEW_ARRANGEMENTS: readonly MultiviewArrangement[] = ['auto', 'columns', 'rows'];
 
-/** Minimum tile size, in px. An explicit arrangement always wins over the tile
- *  count — `columns` with 6 tiles stays one row of 6 — but without a floor a
- *  1400px window gives 229px tiles ≈ 27 terminal columns, and a TUI needs ~80.
- *  So the tracks stop shrinking here and the grid scrolls instead. */
+/** Minimum tile size, in px, for an EXPLICIT arrangement only. `columns` with 6
+ *  tiles on a 1400px window would otherwise give 229px tiles ≈ 27 terminal
+ *  columns. 320px ≈ 38 columns is not comfortable either — it is a deliberate
+ *  compromise, not a "TUIs are happy here" number: a floor wide enough for a
+ *  full-width TUI (~640px) would force a scrollbar on the common 2-up case,
+ *  which is the layout people actually use. The floor exists to keep a tile
+ *  legible, and the grid scrolls rather than shrinking past it. */
 export const MULTIVIEW_MIN_TILE_WIDTH_PX = 320;
 export const MULTIVIEW_MIN_TILE_HEIGHT_PX = 200;
 
@@ -41,4 +44,28 @@ export function multiviewColumnCount(tileCount: number, arrangement: MultiviewAr
   if (arrangement === 'rows') return 1;
   if (arrangement === 'columns') return Math.max(1, tileCount);
   return tileCount <= 4 ? 2 : 3;
+}
+
+/** Grid track + overflow style for the multiview container.
+ *
+ *  `auto` keeps bare `1fr` tracks and no scrolling — byte-for-byte the layout
+ *  that shipped before this preference existed. That matters: a floor on the
+ *  default would push tiles off-screen for anyone whose terminal area is
+ *  narrower than cols × 320px, so every existing user on a narrow window would
+ *  get a scrollbar and a different PTY size purely by upgrading. Only a user
+ *  who explicitly picks `columns`/`rows` opts into floors and scrolling.
+ */
+export function multiviewGridStyle(
+  tileCount: number,
+  arrangement: MultiviewArrangement,
+): { gridTemplateColumns: string; gridAutoRows: string; overflow: 'auto' | undefined } {
+  const cols = multiviewColumnCount(tileCount, arrangement);
+  if (arrangement === 'auto') {
+    return { gridTemplateColumns: `repeat(${cols}, 1fr)`, gridAutoRows: '1fr', overflow: undefined };
+  }
+  return {
+    gridTemplateColumns: `repeat(${cols}, minmax(${MULTIVIEW_MIN_TILE_WIDTH_PX}px, 1fr))`,
+    gridAutoRows: `minmax(${MULTIVIEW_MIN_TILE_HEIGHT_PX}px, 1fr)`,
+    overflow: 'auto',
+  };
 }

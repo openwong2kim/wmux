@@ -17,11 +17,7 @@ import { memo, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
-import {
-  multiviewColumnCount,
-  MULTIVIEW_MIN_TILE_HEIGHT_PX,
-  MULTIVIEW_MIN_TILE_WIDTH_PX,
-} from '../../utils/multiviewGrid';
+import { multiviewGridStyle, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import type { Workspace } from '../../../shared/types';
 
 /** One single-view workspace pane subtree. Inactive → display:none (kept mounted).
@@ -66,6 +62,7 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   workspace,
   isActive,
   multiviewCount,
+  arrangement,
   onActivate,
   onRemove,
 }: {
@@ -73,16 +70,22 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   isActive: boolean;
   /** Count of multiview members — the close handler needs it to hand off focus. */
   multiviewCount: number;
+  /** Current grid arrangement — a layout change can move this tile out of view. */
+  arrangement: MultiviewArrangement;
   onActivate: (id: string) => void;
   onRemove: (id: string, isActive: boolean, multiviewCount: number) => void;
 }) {
-  // The grid scrolls once the tile floors bind (see multiviewGrid.ts), so a tile
-  // reached by Ctrl+Shift+Arrow can be off-screen. `nearest` on both axes is a
-  // no-op when the tile is already visible, so mouse activation is unaffected.
+  // An explicit arrangement lets the grid scroll (see multiviewGrid.ts), so a
+  // tile reached by Ctrl+Shift+Arrow can be off-screen. `nearest` scrolls the
+  // minimum needed: nothing at all for a fully visible tile, and just enough to
+  // reveal a partially visible one. Re-run on arrangement and tile count too —
+  // switching auto→columns can push the active tile out of view without
+  // `isActive` ever changing, which would strand the user on a tile they can't
+  // see. Under `auto` the container doesn't scroll, so this is inert there.
   const tileRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (isActive) tileRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [isActive]);
+  }, [isActive, arrangement, multiviewCount]);
 
   return (
     <div
@@ -185,14 +188,10 @@ export function WorkspaceViewport() {
         className="flex-1 min-h-0"
         style={{
           display: 'grid',
-          // Tracks have a floor and the grid scrolls rather than shrinking tiles
-          // past readability — an explicit arrangement never degrades to `auto`.
-          gridTemplateColumns: `repeat(${multiviewColumnCount(
-            multiviewIds.length,
-            multiviewArrangement,
-          )}, minmax(${MULTIVIEW_MIN_TILE_WIDTH_PX}px, 1fr))`,
-          gridAutoRows: `minmax(${MULTIVIEW_MIN_TILE_HEIGHT_PX}px, 1fr)`,
-          overflow: 'auto',
+          // Track count comes from `tiles`, not `multiviewIds` — an id whose
+          // workspace is gone is filtered out above, and counting it would
+          // leave an empty column in the grid.
+          ...multiviewGridStyle(tiles.length, multiviewArrangement),
           gap: '2px',
           backgroundColor: 'var(--bg-surface)',
         }}
@@ -203,6 +202,7 @@ export function WorkspaceViewport() {
             workspace={ws}
             isActive={ws.id === activeWorkspaceId}
             multiviewCount={multiviewIds.length}
+            arrangement={multiviewArrangement}
             onActivate={setActiveWorkspace}
             onRemove={handleRemoveTile}
           />

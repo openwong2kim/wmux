@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { multiviewColumnCount, MULTIVIEW_ARRANGEMENTS } from '../multiviewGrid';
+import { multiviewColumnCount, multiviewGridStyle, MULTIVIEW_ARRANGEMENTS } from '../multiviewGrid';
 
 describe('multiviewColumnCount', () => {
   // The whole point of this helper is that the grid CSS and
@@ -39,5 +39,33 @@ describe('multiviewColumnCount', () => {
     // degrade to the old grid, not blank it.
     // @ts-expect-error — deliberately outside the union
     expect(multiviewColumnCount(4, 'masonry')).toBe(2);
+  });
+});
+
+describe('multiviewGridStyle', () => {
+  // Counting columns is only half of "the default is unchanged". A floor or a
+  // scroll container on `auto` changes the rendered layout — and the PTY size —
+  // for anyone whose terminal area is narrower than cols x 320px, purely by
+  // upgrading. These assertions pin the exact tracks, not just the count.
+  it('auto emits bare 1fr tracks and never scrolls', () => {
+    for (const n of [2, 3, 4, 5, 9]) {
+      const style = multiviewGridStyle(n, 'auto');
+      expect(style.gridTemplateColumns).toBe(`repeat(${n <= 4 ? 2 : 3}, 1fr)`);
+      expect(style.gridAutoRows).toBe('1fr');
+      expect(style.overflow).toBeUndefined();
+    }
+  });
+
+  it('columns floors the track width and scrolls', () => {
+    const style = multiviewGridStyle(6, 'columns');
+    expect(style.gridTemplateColumns).toBe('repeat(6, minmax(320px, 1fr))');
+    expect(style.overflow).toBe('auto');
+  });
+
+  it('rows is a single floored column that scrolls', () => {
+    const style = multiviewGridStyle(6, 'rows');
+    expect(style.gridTemplateColumns).toBe('repeat(1, minmax(320px, 1fr))');
+    expect(style.gridAutoRows).toBe('minmax(200px, 1fr)');
+    expect(style.overflow).toBe('auto');
   });
 });
