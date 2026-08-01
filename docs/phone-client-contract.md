@@ -578,9 +578,9 @@ If the extension does not run, the lock screen shows a fixed placeholder
 
 ```
 POST /api/push-registration      (device credential, never the operator token)
-  body: {apnsToken, publicKey}
+  body: {apnsToken, publicKey, apnsEnvironment?: 'development' | 'production'}
   → 200 {ok: true}
-  → 400 {error: 'bad-token' | 'bad-key'}
+  → 400 {error: 'bad-token' | 'bad-key' | 'bad-apns-environment'}
   → 403 {error: 'push-is-for-devices'}
   → 409 {error: 'revoked' | 'not-found' | 'persist-failed'}
   → 503 {error: 'push-unavailable'}
@@ -591,6 +591,23 @@ X25519 public key. Register on every launch — APNs rotates tokens, and a
 registration replaces the previous one wholesale rather than merging, so a
 regenerated key pair never leaves the daemon sealing to a key you no longer
 hold.
+
+`apnsEnvironment` is which APNs stage minted your token — read it from
+`aps-environment` in your own embedded provisioning profile, never inferred from
+a build configuration.
+
+**Omit it, never guess it.** An APNs token does not say which stage it came
+from and Apple's two hosts reject each other's, so the daemon stores this per
+device and routes on it. Absent means "use whatever the relay was configured
+with", which is what happened for every device before this field existed and is
+the right answer for a build that cannot name its own stage (the simulator has
+no profile). A stage sent on a hunch earns a `BadDeviceToken` that traces back to
+nothing. A value that is neither word is a `400`, not a silent drop.
+
+A registration replaces the previous one wholesale, this field included: leaving
+it out on a later call **clears** a stage the daemon knew, rather than inheriting
+it. That is deliberate — the token now on file belongs to the build that just
+called, not to the one before it.
 
 A `410` from Apple makes the daemon forget your registration, so a reinstalled
 app must register again before it hears anything.

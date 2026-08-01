@@ -31,12 +31,28 @@ const COLLAPSE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 export const ALLOWED_PRIORITIES = [5, 10] as const;
 export type PushPriority = (typeof ALLOWED_PRIORITIES)[number];
 
+/**
+ * The two APNs stages. A token minted by one is rejected by the other, and the
+ * token itself does not say which — so the daemon has to, per device.
+ */
+export const ALLOWED_APNS_ENVIRONMENTS = ['development', 'production'] as const;
+export type ApnsEnvironment = (typeof ALLOWED_APNS_ENVIRONMENTS)[number];
+
 export interface PushRequest {
   apnsDeviceToken: string;
   /** Opaque. Never decoded by the relay. */
   ciphertext: string;
   priority: PushPriority;
   collapseId?: string;
+  /**
+   * Which Apple host this token belongs to. Absent means "use whatever this
+   * relay was configured with" (`APNS_ENV`), which is what every daemon that
+   * predates the field says and what the deployment did for all of them.
+   *
+   * An ALLOWLIST OF TWO LITERALS, never a host or a URL. The value picks
+   * between two compiled-in constants; nothing a caller sends reaches `fetch`.
+   */
+  apnsEnvironment?: ApnsEnvironment;
 }
 
 export type ValidationFailure = {
@@ -103,7 +119,18 @@ export function validatePushRequest(body: unknown): ValidationResult {
     collapseId = raw.collapseId;
   }
 
-  return { ok: true, value: { apnsDeviceToken: token, ciphertext, priority, collapseId } };
+  let apnsEnvironment: ApnsEnvironment | undefined;
+  if (raw.apnsEnvironment !== undefined) {
+    if (!ALLOWED_APNS_ENVIRONMENTS.includes(raw.apnsEnvironment as ApnsEnvironment)) {
+      return fail(400, 'bad-apns-environment');
+    }
+    apnsEnvironment = raw.apnsEnvironment as ApnsEnvironment;
+  }
+
+  return {
+    ok: true,
+    value: { apnsDeviceToken: token, ciphertext, priority, collapseId, apnsEnvironment },
+  };
 }
 
 /**

@@ -199,6 +199,51 @@ describe('forwarding to APNs', () => {
     expect(calls[0].url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN}`);
   });
 
+  it('★ lets the request pick the host, so two builds on one relay stop colliding', async () => {
+    // The relay-wide APNS_ENV says production; this device registered from a
+    // development build. Without the per-request override its token goes to the
+    // wrong Apple host and comes back BadDeviceToken with nothing to trace.
+    const calls = stubApns([{ status: 200 }, { status: 200 }]);
+    await push(validBody({ apnsEnvironment: 'development' }));
+    expect(calls[0].url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN}`);
+
+    // And the other way: a production token through a sandbox-configured relay.
+    await worker.fetch(
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body: JSON.stringify(validBody({ apnsEnvironment: 'production' })),
+        headers: { authorization: `Bearer ${SHARED_SECRET}` },
+      }),
+      { ...env, APNS_ENV: 'sandbox' },
+    );
+    expect(calls[1].url).toBe(`https://api.push.apple.com/3/device/${TOKEN}`);
+  });
+
+  it('falls back to APNS_ENV when the request names no stage', async () => {
+    // What every daemon that predates the field sends, and what a build with no
+    // provisioning profile (the simulator) sends. Guessing here would route a
+    // token to the wrong host.
+    const calls = stubApns([{ status: 200 }]);
+    await worker.fetch(
+      new Request('https://relay.example/push', {
+        method: 'POST',
+        body: JSON.stringify(validBody()),
+        headers: { authorization: `Bearer ${SHARED_SECRET}` },
+      }),
+      { ...env, APNS_ENV: 'sandbox' },
+    );
+    expect(calls[0].url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN}`);
+  });
+
+  it('refuses a stage that is not one of Apple two words', async () => {
+    const calls = stubApns([{ status: 200 }]);
+    const res = await push(validBody({ apnsEnvironment: 'https://evil.example' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).reason).toBe('bad-apns-environment');
+    // Refused before a JWT is signed or Apple is called at all.
+    expect(calls).toHaveLength(0);
+  });
+
   it('passes priority and collapseId through as headers', async () => {
     const calls = stubApns([{ status: 200 }]);
     await push(validBody({ priority: 5, collapseId: 'ap_42' }));

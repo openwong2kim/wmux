@@ -227,7 +227,7 @@ export interface WebDeviceResolver {
    */
   registerPush?(
     deviceId: string,
-    input: { apnsToken: string; publicKey: string },
+    input: { apnsToken: string; publicKey: string; apnsEnvironment?: string },
   ): { ok: boolean; reason?: string };
 }
 
@@ -1985,12 +1985,25 @@ export class WebTerminalServer {
       return this.json(res, 503, { error: 'push-unavailable' });
     }
     this.readJsonBody(req, res, (body) => {
-      const b = (body ?? {}) as { apnsToken?: unknown; publicKey?: unknown };
+      const b = (body ?? {}) as {
+        apnsToken?: unknown;
+        publicKey?: unknown;
+        apnsEnvironment?: unknown;
+      };
       const apnsToken = typeof b.apnsToken === 'string' ? b.apnsToken : '';
       const publicKey = typeof b.publicKey === 'string' ? b.publicKey : '';
+      // Passed through unvalidated on purpose — the store owns the allowlist,
+      // so there is one place that decides what a stage may be. Absent stays
+      // absent: a build that cannot name its own stage must not have one
+      // guessed for it here.
+      const apnsEnvironment = typeof b.apnsEnvironment === 'string' ? b.apnsEnvironment : undefined;
       let result: { ok: boolean; reason?: string };
       try {
-        result = devices.registerPush!(principal.deviceId, { apnsToken, publicKey });
+        result = devices.registerPush!(principal.deviceId, {
+          apnsToken,
+          publicKey,
+          ...(apnsEnvironment !== undefined ? { apnsEnvironment } : {}),
+        });
       } catch (err) {
         this.deps.log('warn', `[web] push registration threw: ${errMsg(err)}`);
         return this.json(res, 500, { error: 'push-registration-failed' });
@@ -1999,7 +2012,12 @@ export class WebTerminalServer {
       // `bad-token` / `bad-key` are the caller's fault; the rest are ours or the
       // operator's, and a device that was revoked mid-flight should hear that
       // rather than a generic 400.
-      const status = result.reason === 'bad-token' || result.reason === 'bad-key' ? 400 : 409;
+      const status =
+        result.reason === 'bad-token' ||
+        result.reason === 'bad-key' ||
+        result.reason === 'bad-apns-environment'
+          ? 400
+          : 409;
       return this.json(res, status, { error: result.reason ?? 'push-registration-failed' });
     });
   }

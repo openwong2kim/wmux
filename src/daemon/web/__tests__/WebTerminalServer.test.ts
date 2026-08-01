@@ -228,6 +228,15 @@ function makeDevices() {
       if (rec.revoked) return { ok: false, reason: 'revoked' };
       if (!/^[0-9a-f]{64,200}$/.test(input.apnsToken)) return { ok: false, reason: 'bad-token' };
       if (Buffer.from(input.publicKey, 'base64').length !== 32) return { ok: false, reason: 'bad-key' };
+      // The real store owns this allowlist; the fake mirrors it so the route's
+      // 400 mapping is exercised rather than assumed.
+      if (
+        input.apnsEnvironment !== undefined &&
+        input.apnsEnvironment !== 'development' &&
+        input.apnsEnvironment !== 'production'
+      ) {
+        return { ok: false, reason: 'bad-apns-environment' };
+      }
       return { ok: true };
     },
   };
@@ -1919,6 +1928,35 @@ describe('WebTerminalServer', () => {
     const asOperator = await post(info.token as string, { apnsToken, publicKey });
     expect(asOperator.status).toBe(403);
     expect((await asOperator.json()).error).toBe('push-is-for-devices');
+  });
+
+  it('★ carries the APNs stage the build named, and omits it when it named none', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const apnsToken = 'a'.repeat(64);
+    const publicKey = Buffer.alloc(32, 3).toString('base64');
+    const post = (body: unknown) =>
+      fetch(`${base()}/api/push-registration`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    expect((await post({ apnsToken, publicKey, apnsEnvironment: 'development' })).status).toBe(200);
+    expect(pushRegistrations.at(-1)).toEqual({
+      deviceId: 'dev-1', apnsToken, publicKey, apnsEnvironment: 'development',
+    });
+
+    // ABSENT STAYS ABSENT. The simulator has no provisioning profile to read a
+    // stage out of, and a stage guessed here routes the token to the host that
+    // rejects it — a BadDeviceToken that traces back to nothing.
+    expect((await post({ apnsToken, publicKey })).status).toBe(200);
+    expect(pushRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', apnsToken, publicKey });
+
+    // Present but not one of Apple's two words is a client bug, said out loud.
+    const bad = await post({ apnsToken, publicKey, apnsEnvironment: 'staging' });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toBe('bad-apns-environment');
   });
 
   it('rejects a malformed token or key with 400', async () => {

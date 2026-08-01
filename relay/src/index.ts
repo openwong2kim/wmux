@@ -61,6 +61,19 @@ export interface RelayEnv {
 const APNS_HOST_PRODUCTION = 'https://api.push.apple.com';
 const APNS_HOST_SANDBOX = 'https://api.sandbox.push.apple.com';
 
+/**
+ * Which Apple host to send to. Two compiled-in constants and nothing else — the
+ * request selects between them, it never supplies one.
+ *
+ * `development` is Apple's word in `aps-environment`, `sandbox` is Apple's word
+ * for the host, and they name the same stage. Both are accepted so neither the
+ * app's vocabulary nor the deployment's has to be translated at the call site.
+ */
+export function apnsHost(perRequest: string | undefined, configured: string | undefined): string {
+  const stage = perRequest ?? configured;
+  return stage === 'development' || stage === 'sandbox' ? APNS_HOST_SANDBOX : APNS_HOST_PRODUCTION;
+}
+
 /** Give up on Apple rather than hold a daemon's socket open indefinitely. */
 const APNS_TIMEOUT_MS = 10_000;
 
@@ -218,10 +231,29 @@ function extractApnsReason(bodyText: string): string | undefined {
 async function forwardToApns(
   env: RelayEnv,
   token: string,
-  request: { apnsDeviceToken: string; ciphertext: string; priority: number; collapseId?: string },
+  request: {
+    apnsDeviceToken: string;
+    ciphertext: string;
+    priority: number;
+    collapseId?: string;
+    apnsEnvironment?: 'development' | 'production';
+  },
   nowMs: number,
 ): Promise<{ status: number; reason?: string; apnsId?: string }> {
-  const host = env.APNS_ENV === 'sandbox' ? APNS_HOST_SANDBOX : APNS_HOST_PRODUCTION;
+  // PER REQUEST FIRST, `APNS_ENV` as the fallback.
+  //
+  // An APNs token does not say which stage minted it, and the two hosts reject
+  // each other's. `APNS_ENV` is one answer for the whole deployment, so a
+  // TestFlight build and a cable-installed build pushing through the same relay
+  // took turns silently breaking each other — the symptom is a `BadDeviceToken`
+  // that traces back to nothing. The daemon knows which stage each device
+  // registered from (the app reads `aps-environment` out of its own
+  // provisioning profile), so it says, per device.
+  //
+  // Absent still means "whatever this relay was configured with": a daemon that
+  // predates the field, or a build that cannot name its own stage (the
+  // simulator has no profile), must not have a stage guessed for it.
+  const host = apnsHost(request.apnsEnvironment, env.APNS_ENV);
   const headers: Record<string, string> = {
     authorization: `bearer ${token}`,
     'apns-topic': env.APNS_TOPIC,

@@ -104,6 +104,25 @@ describe('PushSender — enablement', () => {
 });
 
 describe('PushSender — sealing', () => {
+  it('★ forwards the device APNs stage, and omits it when the device named none', async () => {
+    // The relay picks the Apple host from this. Two builds of the app on one
+    // tailnet used to take turns breaking each other's push because the relay
+    // had one answer for the whole deployment.
+    const d = device('d1');
+    const staged = {
+      ...d.target,
+      push: { ...d.target.push, apnsEnvironment: 'development' as const },
+    };
+    const h = makeSender([200, 200], [staged, device('d2').target]);
+    h.sender.notify({ title: 't', body: 'b' });
+    await h.sender.flush();
+
+    const bodies = h.calls.map((c) => JSON.parse(String(c.init.body)) as Record<string, unknown>);
+    expect(bodies[0].apnsEnvironment).toBe('development');
+    // Absent stays absent — the relay must not have a stage guessed for it here.
+    expect(bodies[1]).not.toHaveProperty('apnsEnvironment');
+  });
+
   it('★ what leaves is opaque: the relay sees no title or body', async () => {
     const d = device('d1');
     const h = makeSender([200], [d.target]);

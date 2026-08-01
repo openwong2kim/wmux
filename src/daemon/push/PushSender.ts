@@ -23,7 +23,16 @@ import {
 export interface PushTarget {
   deviceId: string;
   name: string;
-  push: { apnsToken: string; publicKey: string };
+  push: {
+    apnsToken: string;
+    publicKey: string;
+    /**
+     * Which Apple host this token belongs to, as the device reported at
+     * registration. Forwarded verbatim; absent stays absent, and the relay then
+     * uses whatever it was configured with. See `DevicePushRegistration`.
+     */
+    apnsEnvironment?: 'development' | 'production';
+  };
 }
 
 export interface PushSenderDeps {
@@ -201,6 +210,13 @@ export class PushSender {
         ciphertext: blob,
         priority: PRIORITY_IMMEDIATE,
         ...(item.collapseId ? { collapseId: item.collapseId } : {}),
+        // Per device, so two builds of this app on one tailnet stop routing
+        // each other's tokens to the wrong Apple host. Omitted when the device
+        // could not name its own stage — the relay must not have one guessed
+        // for it here either.
+        ...(target.push.apnsEnvironment
+          ? { apnsEnvironment: target.push.apnsEnvironment }
+          : {}),
       });
 
       if (status === 200) {

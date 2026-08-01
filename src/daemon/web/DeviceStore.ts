@@ -204,6 +204,24 @@ export interface DevicePushRegistration {
   publicKey: string;
   /** When the device last told us these. */
   registeredAt: number;
+  /**
+   * Which APNs stage minted `apnsToken`, as the app read it out of its own
+   * embedded provisioning profile's `aps-environment`.
+   *
+   * PER DEVICE, because the alternative does not work. A token does not say
+   * which stage it came from and the two Apple hosts reject each other's, so a
+   * relay configured with one answer for the whole deployment means a
+   * TestFlight build and a cable-installed build on the same tailnet take turns
+   * silently breaking each other's push — the symptom is a `BadDeviceToken`
+   * that traces back to nothing.
+   *
+   * ABSENT IS NOT A DEFAULT TO FILL IN. It means the build could not name its
+   * own stage (the simulator has no profile) or predates the field, and a stage
+   * sent on a hunch routes the token to the wrong host. Absent is carried
+   * through as absent, and the relay then uses whatever it was configured with,
+   * which is exactly what happened before this field existed.
+   */
+  apnsEnvironment?: 'development' | 'production';
 }
 
 interface DeviceRecord {
@@ -472,8 +490,11 @@ export class DeviceStore {
    */
   registerPush(
     deviceId: string,
-    input: { apnsToken: string; publicKey: string },
-  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'bad-token' | 'bad-key' | 'persist-failed' } {
+    input: { apnsToken: string; publicKey: string; apnsEnvironment?: string },
+  ): {
+    ok: boolean;
+    reason?: 'not-found' | 'revoked' | 'bad-token' | 'bad-key' | 'bad-apns-environment' | 'persist-failed';
+  } {
     const record = this.devices.get(deviceId);
     if (!record) return { ok: false, reason: 'not-found' };
     if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked' };
@@ -484,8 +505,26 @@ export class DeviceStore {
     const publicKey = typeof input?.publicKey === 'string' ? input.publicKey.trim() : '';
     if (!isBase64Bytes(publicKey, PUSH_PUBLIC_KEY_BYTES)) return { ok: false, reason: 'bad-key' };
 
+    // Rejected rather than dropped when it is neither of Apple's two words: a
+    // silently ignored stage is a token routed to the wrong host, and the app
+    // omits the field entirely when it cannot name its own stage — so anything
+    // present and unrecognised is a client bug worth saying out loud.
+    const rawEnv = input?.apnsEnvironment;
+    if (rawEnv !== undefined && rawEnv !== 'development' && rawEnv !== 'production') {
+      return { ok: false, reason: 'bad-apns-environment' };
+    }
+
     const previous = record.push;
-    record.push = { apnsToken, publicKey, registeredAt: this.now() };
+    record.push = {
+      apnsToken,
+      publicKey,
+      registeredAt: this.now(),
+      // A re-registration replaces the record wholesale, so an omitted stage
+      // clears a previously known one rather than inheriting it. That is the
+      // honest reading: the build now talking to us is the one whose token this
+      // is, and it did not name a stage.
+      ...(rawEnv ? { apnsEnvironment: rawEnv } : {}),
+    };
     if (!this.persist()) {
       // Roll back rather than push to a token that a restart forgets: the app
       // would believe it is registered and silently receive nothing.
