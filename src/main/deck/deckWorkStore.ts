@@ -198,6 +198,26 @@ export function loadActiveDeckWorks(dir?: string): Record<string, ActiveDeckWork
   return loadFile(dir).active;
 }
 
+/** Re-stamp the record with the current boot, so a parked request becomes live
+ *  again. The ONLY caller is a human confirming this workspace — parking asks
+ *  "has anyone confirmed since launch?", and answering a decision is that
+ *  confirmation. Without it the resume path is a dead end: the human picks
+ *  "Resume it", the record stays parked, and the resume turn is handed the
+ *  PARKED block telling the brain to ask the human — which it just did.
+ *
+ *  Deliberately touches `bootId` alone. `updatedAt`, `objective`, `followUps`
+ *  and `a2aTasks` are the revision that `completeActiveDeckWork` compares, so
+ *  bumping any of them here would make a concurrent finalize fail
+ *  `active_work_changed` — turning the escape hatch into a wedge. No-op when
+ *  there is no record. */
+export function unparkDeckWork(workspaceId: string, dir?: string): void {
+  const file = loadFile(dir);
+  const current = file.active[workspaceId];
+  if (!current || current.bootId === currentBootId) return;
+  file.active[workspaceId] = { ...current, bootId: currentBootId };
+  saveFile(file, dir);
+}
+
 /** The read seam for every consumer that may ACT on a record: the record only
  * when it belongs to this boot, null when it is parked. Readers that merely
  * SHOW the record to a human, or that hold the Stop gate with it, keep using

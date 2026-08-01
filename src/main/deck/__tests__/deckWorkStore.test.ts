@@ -25,6 +25,7 @@ import {
   isDeckWorkParked,
   loadLiveDeckWork,
   loadLiveDeckWorks,
+  unparkDeckWork,
 } from '../deckWorkStore';
 
 let dir: string;
@@ -360,6 +361,35 @@ describe('deckWorkStore — boot-scoped permission (parked records)', () => {
     expect(Object.keys(loadActiveDeckWorks(dir)).sort()).toEqual(['ws-fresh', 'ws-stale']);
     expect(Object.keys(loadLiveDeckWorks(dir))).toEqual(['ws-fresh']);
     expect(loadLiveDeckWork('ws-stale', dir)).toBeNull();
+  });
+
+  // Without this the resume path is a dead end: the human answers "resume it",
+  // the record stays parked, and the resume turn is handed the PARKED block
+  // telling the brain to ask the human — which it just did. (CodeRabbit, #735)
+  it('unparkDeckWork makes a parked record live again without moving its revision', () => {
+    beginOrContinueDeckWork('ws-1', 'the original objective', dir);
+    restart();
+    expect(loadLiveDeckWork('ws-1', dir)).toBeNull();
+    const before = loadActiveDeckWork('ws-1', dir)!;
+
+    unparkDeckWork('ws-1', dir);
+
+    const after = loadLiveDeckWork('ws-1', dir);
+    expect(after).not.toBeNull();
+    // The objective is preserved — un-parking grants permission to act, it does
+    // not decide what the work is.
+    expect(after!.objective).toBe('the original objective');
+    // `completeActiveDeckWork` compares these; moving any of them would make a
+    // concurrent finalize fail `active_work_changed`.
+    expect(after!.updatedAt).toBe(before.updatedAt);
+    expect(after!.followUps).toEqual(before.followUps);
+    expect(after!.a2aTasks).toEqual(before.a2aTasks);
+    expect(after!.id).toBe(before.id);
+  });
+
+  it('unparkDeckWork is a no-op when there is no record', () => {
+    expect(() => unparkDeckWork('ws-none', dir)).not.toThrow();
+    expect(loadActiveDeckWork('ws-none', dir)).toBeNull();
   });
 });
 

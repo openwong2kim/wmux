@@ -93,6 +93,7 @@ import {
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
   setDeckWorkBootId,
+  unparkDeckWork,
 } from '../../deck/deckWorkStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
@@ -2052,6 +2053,14 @@ export function registerDeckHandler(
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
       }
+      // A human just answered, which is the confirmation parking waits for, so
+      // a record that survived the last shutdown becomes live again here. Doing
+      // it BEFORE the resume turn matters: the prompt renders the work block,
+      // and a still-parked record would render the PARKED text — "ask the human
+      // and wait" — at the exact moment the human has answered. The resolution
+      // itself rides the prompt, so a "drop it" answer is the brain's to act on;
+      // un-parking grants permission to act, not a decision about what to do.
+      unparkDeckWork(workspaceId);
       // Un-blocked now (hasPendingDecision is false). Kick a resume turn; a busy
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the
