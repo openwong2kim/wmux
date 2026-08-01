@@ -255,20 +255,23 @@ export function DeckSchedulesPanel({
               className="w-full text-[12.5px] rounded-md px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
               style={{ borderColor: 'var(--border-soft)' }}
             />
-            <div className="flex items-center gap-1.5">
+            {/* The native datetime-local control is wide and refuses to shrink
+                below its intrinsic width — without min-w-0 + wrapping it pushed
+                the Add button past the deck's right edge. */}
+            <div className="flex flex-wrap items-center gap-1.5">
               <input
                 type="datetime-local"
                 data-deck-schedule-when
                 value={when}
                 onChange={(e) => setWhen(e.target.value)}
-                className="text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                className="flex-1 min-w-0 basis-[150px] text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
                 style={{ borderColor: 'var(--border-soft)' }}
               />
               <select
                 data-deck-schedule-repeat
                 value={repeat}
                 onChange={(e) => setRepeat(Number(e.target.value))}
-                className="text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                className="min-w-0 shrink text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
                 style={{ borderColor: 'var(--border-soft)' }}
                 aria-label={t('deck.scheduleRepeat') || 'Repeat'}
               >
@@ -278,12 +281,11 @@ export function DeckSchedulesPanel({
                   </option>
                 ))}
               </select>
-              <div className="flex-1" />
               <button
                 type="button"
                 data-deck-schedule-create
                 onClick={() => void handleCreate()}
-                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                className={`ml-auto shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
                 {...tokenAttrs('accent', 'bg')}
               >
                 {t('deck.scheduleAdd') || 'Add schedule'}
