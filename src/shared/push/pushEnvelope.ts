@@ -120,6 +120,9 @@ export const PUSH_ENVELOPE_VERSION = 1 as const;
 /** HKDF info prefix. The ephemeral and static public keys follow it. */
 export const PUSH_HKDF_INFO = 'wmux:push:v1';
 
+/** `PushPayload.risk` when no destructive-action pattern matched. */
+export const PUSH_RISK_NORMAL = 'normal';
+
 export const PUSH_AAD_PREFIX = 'wmux:push:v1';
 export const PUSH_AAD_SEPARATOR = '|';
 
@@ -178,6 +181,26 @@ export interface PushPayload {
   sessionId?: string;
   /** True when a lock-screen affirmative cannot express the required choice. */
   requiresInAppChoice?: boolean;
+  /**
+   * The approval's risk, ALWAYS stated on an approval payload — `'critical'`
+   * when a destructive-action pattern matched, `PUSH_RISK_NORMAL` when none
+   * did.
+   *
+   * This is the one place the REST shape is deliberately not copied. On
+   * `/api/approvals` the field is omitted when nothing matched, and absence
+   * reads as "no pattern matched"; here absence has to read as *unknown*. The
+   * extension has no store to consult — the sealed payload is everything it
+   * knows — so it cannot tell a sender that predates this field from a sender
+   * that decided the approval was ordinary. It therefore withholds the
+   * lock-screen affirmative unless a value positively says the approval is
+   * ordinary, and an omitted field costs somebody a trip into the app while a
+   * wrong guess costs a destructive command approved from a pocket.
+   *
+   * Adding a new elevated level is therefore a two-sided change: the extension
+   * grants the affirmative to every value that is not `'critical'`, so a level
+   * introduced here alone would be silently treated as ordinary.
+   */
+  risk?: string;
   [key: string]: unknown;
 }
 

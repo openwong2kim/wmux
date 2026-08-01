@@ -514,10 +514,21 @@ float**; standard base64 **with** padding (not base64url); a 12-byte nonce; and 
 byte-for-byte, case-sensitive `deviceId`.
 
 The decrypted plaintext is additive JSON: `title`, `body`, optional
-`approvalId`, optional `sessionId`, and optional `requiresInAppChoice`. When
-`requiresInAppChoice` is true, the Notification Service Extension must use an
-affirmative-free category: the person has to open the app and pick a structured
-choice. Older payloads omit the field and older extensions ignore it.
+`approvalId`, optional `sessionId`, optional `requiresInAppChoice`, and `risk`.
+When `requiresInAppChoice` is true, the Notification Service Extension must use
+an affirmative-free category: the person has to open the app and pick a
+structured choice. Older payloads omit the field and older extensions ignore it.
+
+`risk` is the **one field whose sealed meaning differs from its REST meaning**.
+On `/api/approvals` it is omitted when no pattern matched (§6, "a hint, not a
+gate"). Here it is always present on an approval — `'critical'` or `'normal'` —
+because the extension has no store to consult and cannot tell a daemon that
+predates the field from one that judged the approval ordinary. It therefore
+withholds the lock-screen Approve button unless a value positively says
+`'normal'`: a missing field costs somebody a trip into the app, a wrong guess
+costs a destructive command approved from a locked pocket. Adding a third level
+is a two-sided change — the extension grants the affirmative to everything that
+is not `'critical'`, so a new level shipped daemon-side alone reads as ordinary.
 
 Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 

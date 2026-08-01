@@ -65,6 +65,7 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { PushSender } from './push/PushSender';
+import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { DeviceStore } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
@@ -4453,18 +4454,7 @@ async function main(): Promise<void> {
     // the thing the notification was asking for, already handled.
     if (event.type !== 'create') return;
     const r = event.request;
-    pushSender.notify(
-      {
-        title: 'Approval needed',
-        body: r.question ?? 'A pane is waiting on an answer.',
-        approvalId: r.id,
-        sessionId: r.sessionId,
-        ...(r.choices?.length ? { requiresInAppChoice: true } : {}),
-      },
-      // One pending request per pane, so a re-prompt should replace the old
-      // banner rather than stack under it.
-      { collapseId: `ap-${r.sessionId}`.slice(0, 64) },
-    );
+    pushSender.notify(buildApprovalPushPayload(r), { collapseId: approvalPushCollapseId(r) });
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
