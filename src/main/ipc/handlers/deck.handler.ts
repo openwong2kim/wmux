@@ -79,15 +79,20 @@ import {
   renderStaleDecisionBlock,
   isDecisionStale,
   hasPendingDecision,
+  raiseDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
+  isDeckWorkParked,
   loadActiveDeckWork,
   loadActiveDeckWorks,
+  loadLiveDeckWork,
+  loadLiveDeckWorks,
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
+  setDeckWorkBootId,
 } from '../../deck/deckWorkStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
@@ -219,6 +224,15 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
+  // Adopt one process-wide boot identity for durable work records (#733). The
+  // EventBus already mints a per-process UUID at construction, so reusing it
+  // keeps "this boot" meaning the same thing to the work store as it does to
+  // every event consumer. Imported from `events/EventBus` (where the singleton
+  // is defined) rather than from `main/index.ts`, so no cycle is introduced.
+  // Runs before anything can write a record, otherwise records stamped with the
+  // store's own seed value would come back parked.
+  setDeckWorkBootId(eventBus.bootId);
+
   // One-way push: which daemon session holds a workspace's embedded brain TUI
   // (`claude-pty` only; null retires it). Declared before createAdapter so the
   // default factory can hand it to a freshly spawned adapter.
@@ -1174,7 +1188,12 @@ export function registerDeckHandler(
     // A direct human request is a request-scoped opt-in to follow through even
     // when the workspace's resting mode is off. The coalescer grants only
     // follow-up instructions; approvalPress still comes from the standing mode.
-    getActiveWork: (workspaceId) => loadActiveDeckWork(workspaceId),
+    // LIVE only (#733): a parked record must not raise the wake policy to 'all'
+    // or lift the wake budget. At boot the daemon recovers sessions and the
+    // recovered panes emit stop/awaiting-input edges immediately; with the
+    // parked record counted as work-active, those echoes alone were enough to
+    // drive the fleet with nobody having asked for anything this launch.
+    getActiveWork: (workspaceId) => loadLiveDeckWork(workspaceId),
     // Global kill switch (Settings): OFF drops ambient wakes; running loops
     // still wake. Read fresh at every flush so the toggle applies immediately.
     isAutoWakeEnabled: () => loadAutoWakeEnabled(),
@@ -1334,9 +1353,13 @@ export function registerDeckHandler(
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
   const heartbeatWorkspaceIds = (): string[] => {
     const ids = new Set<string>(managers.keys());
-    // Durable direct requests survive a restart even when the workspace's
+    // Durable direct requests arm the heartbeat even when the workspace's
     // resting autonomy mode is off and no brain manager has been recreated yet.
-    for (const workspaceId of Object.keys(loadActiveDeckWorks())) ids.add(workspaceId);
+    // LIVE records only (#733): that bypass exists for a request the human is
+    // engaged with right now. A record that merely survived a shutdown must not
+    // arm a workspace nobody has spoken to since launch — that turns the
+    // safety-net heartbeat into an unattended driver.
+    for (const workspaceId of Object.keys(loadLiveDeckWorks())) ids.add(workspaceId);
     // A workspace can be armed (autonomy on) before its brain has ever spawned a
     // manager — include every mirrored workspace whose resting mode isn't 'off'.
     const entries = getWorkspaceMirror().getEntries();
@@ -2119,8 +2142,31 @@ export function registerDeckHandler(
     // heartbeat wakes. Keep the durable record parked so turning auto-wake
     // back on (or a fresh human turn) can resume it without losing ownership.
     if (!loadAutoWakeEnabled()) return;
-    for (const workspaceId of Object.keys(loadActiveDeckWorks())) {
+    for (const [workspaceId, work] of Object.entries(loadActiveDeckWorks())) {
       if (hasPendingDecision(workspaceId)) continue;
+      if (isDeckWorkParked(work)) {
+        // #733: a record that outlived the last shutdown is NOT permission to
+        // drive. This loop runs once, seconds after launch, and used to hand
+        // every surviving record an order to "continue or repair incomplete
+        // work" — with no autonomy mode and no wake budget consulted. That is
+        // what replayed an eight-hour-old objective into a live pane.
+        //
+        // Ask instead of act. A pending decision also blocks every other wake
+        // path for this workspace, so the record stays quiet until the human
+        // answers, and resolving it resumes through the normal path above.
+        // Guarded on hasPendingDecision because the decision store is
+        // last-writer-wins: a real question raised before this timer fired must
+        // never be clobbered by our bookkeeping.
+        await raiseDecision(workspaceId, {
+          question:
+            'A request from before this wmux session is still on the books. Resume it, or drop it?',
+          options: ['Resume it', 'Drop it'],
+          context: renderActiveDeckWorkBlock(work),
+        }).catch(() => {
+          /* best-effort — the record stays parked either way */
+        });
+        continue;
+      }
       await runTurnForWorkspace(ACTIVE_WORK_RECONCILE_PROMPT, workspaceId, { queued: true }).catch(
         () => {
           /* best-effort — durable active work remains for the next wake */

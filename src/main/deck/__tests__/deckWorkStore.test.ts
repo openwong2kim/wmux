@@ -21,11 +21,18 @@ import {
   hasPendingDeckWorkA2aTasks,
   renderActiveDeckWorkBlock,
   getDeckWorkPath,
+  setDeckWorkBootId,
+  isDeckWorkParked,
+  loadLiveDeckWork,
+  loadLiveDeckWorks,
 } from '../deckWorkStore';
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'wmux-deckwork-'));
+  // Every test starts from a known "current boot", so a record written by
+  // beginOrContinueDeckWork is live unless a test deliberately restarts.
+  setDeckWorkBootId('boot-current');
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -261,6 +268,101 @@ describe('deckWorkStore — corrupt / hostile file handling', () => {
   });
 });
 
+// #733: the record that drove `claude --continue` into a pane four seconds after
+// a restart was eight hours old and nobody had re-confirmed it. Permission is
+// scoped to the app launch that received it, so a record that outlives a
+// shutdown comes back PARKED. These assert the real file, not a mock: the four
+// unit tests that shipped with the original bug all mocked the culprit and
+// passed straight over it.
+describe('deckWorkStore — boot-scoped permission (parked records)', () => {
+  /** Simulate an app restart: same files on disk, a brand-new boot identity. */
+  const restart = (id = 'boot-next'): void => setDeckWorkBootId(id);
+
+  it('a record written this boot is LIVE', () => {
+    const work = beginOrContinueDeckWork('ws-1', 'ship it', dir)!;
+    expect(work.bootId).toBe('boot-current');
+    expect(isDeckWorkParked(loadActiveDeckWork('ws-1', dir)!)).toBe(false);
+  });
+
+  it('the SAME record is PARKED after a restart', () => {
+    beginOrContinueDeckWork('ws-1', 'ship it', dir);
+    restart();
+    // Still owned and still on disk — parked is not deleted.
+    const work = loadActiveDeckWork('ws-1', dir)!;
+    expect(work.objective).toBe('ship it');
+    expect(isDeckWorkParked(work)).toBe(true);
+  });
+
+  it('a record from a build with no bootId is PARKED (fail-closed)', () => {
+    writeFileSync(
+      getDeckWorkPath(dir),
+      JSON.stringify({
+        version: 1,
+        active: {
+          'ws-1': {
+            id: 'work-old', objective: 'from an older build', followUps: [],
+            startedAt: 1, updatedAt: 1, a2aTasks: {},
+          },
+        },
+      }),
+      'utf8',
+    );
+    const work = loadActiveDeckWork('ws-1', dir)!;
+    // The record still loads — an absent stamp is not a validation failure.
+    expect(work.objective).toBe('from an older build');
+    expect(work.bootId).toBeUndefined();
+    expect(isDeckWorkParked(work)).toBe(true);
+  });
+
+  it('a HUMAN follow-up re-arms a parked record', () => {
+    beginOrContinueDeckWork('ws-1', 'ship it', dir, 1_000);
+    restart();
+    const resumed = beginOrContinueDeckWork('ws-1', 'yes, carry on', dir, 2_000)!;
+    expect(resumed.bootId).toBe('boot-next');
+    expect(isDeckWorkParked(loadActiveDeckWork('ws-1', dir)!)).toBe(false);
+    // Re-arming keeps the same work item; workers under it keep their owner.
+    expect(resumed.followUps).toEqual(['yes, carry on']);
+  });
+
+  it('an A2A transition does NOT re-arm a parked record', () => {
+    // The decisive case. At boot the daemon recovers sessions and the recovered
+    // workers replay their own older tasks within seconds. If the fleet's echo
+    // could un-park the record, #733 would reproduce with the fix in place —
+    // which is why `updatedAt` is not the staleness signal.
+    beginOrContinueDeckWork('ws-1', 'ship it', dir, 1_000);
+    restart();
+    const after = recordDeckWorkA2aTask(
+      'ws-1',
+      { taskId: 'task-replay', to: 'ws-worker', state: 'working', ts: 9_000 },
+      dir,
+    )!;
+    expect(after.updatedAt).toBe(9_000);       // the projection did land
+    expect(after.bootId).toBe('boot-current'); // the stamp did not move
+    expect(isDeckWorkParked(loadActiveDeckWork('ws-1', dir)!)).toBe(true);
+  });
+
+  it('loadLiveDeckWork returns the record when live and null when parked', () => {
+    beginOrContinueDeckWork('ws-1', 'ship it', dir);
+    expect(loadLiveDeckWork('ws-1', dir)!.objective).toBe('ship it');
+    restart();
+    expect(loadLiveDeckWork('ws-1', dir)).toBeNull();
+    // The full record is still readable for the Stop gate and for the human.
+    expect(loadActiveDeckWork('ws-1', dir)).not.toBeNull();
+  });
+
+  it('loadLiveDeckWorks drops parked workspaces and keeps live ones', () => {
+    // This is the seam the heartbeat arms from and the coalescer asks for
+    // work-active: a workspace whose only claim is a parked record must not be
+    // driven, while one the human just spoke to still is.
+    beginOrContinueDeckWork('ws-stale', 'from the last session', dir);
+    restart();
+    beginOrContinueDeckWork('ws-fresh', 'asked for just now', dir);
+    expect(Object.keys(loadActiveDeckWorks(dir)).sort()).toEqual(['ws-fresh', 'ws-stale']);
+    expect(Object.keys(loadLiveDeckWorks(dir))).toEqual(['ws-fresh']);
+    expect(loadLiveDeckWork('ws-stale', dir)).toBeNull();
+  });
+});
+
 describe('renderActiveDeckWorkBlock', () => {
   it('carries the objective, follow-ups and the finalization instruction', () => {
     beginOrContinueDeckWork('ws-1', 'ship the roster', dir, 1_000);
@@ -286,5 +388,20 @@ describe('renderActiveDeckWorkBlock', () => {
     expect(block).toContain('to=ws-worker');
     expect(block).toContain('verified-evidence=0');
     expect(block).toMatch(/query canonical state/i);
+  });
+
+  it('PARKED renders without the ownership imperatives, keeping id and objective', () => {
+    beginOrContinueDeckWork('ws-1', 'Recover my agents after the reboot', dir, 1_000);
+    setDeckWorkBootId('boot-next');
+    const work = loadActiveDeckWork('ws-1', dir)!;
+    const block = renderActiveDeckWorkBlock(work);
+    // The human must still be able to recognise the request in the block.
+    expect(block).toContain(work.id);
+    expect(block).toContain('Recover my agents after the reboot');
+    expect(block).toContain('PARKED');
+    expect(block).toMatch(/predates the current wmux session/i);
+    // The two sentences that turned a stale record into an order.
+    expect(block).not.toContain('You OWN');
+    expect(block).not.toContain('Continue delegating');
   });
 });

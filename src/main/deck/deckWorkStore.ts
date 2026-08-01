@@ -10,6 +10,12 @@
 // abandoning workers that are already running. The commander closes the record
 // through `deck_complete_work`, after the server checks local workers and every
 // A2A task observed during this work item.
+//
+// Permission is scoped to the app launch that was granted it. Each record is
+// stamped with the current boot identity, and a record that survives a shutdown
+// comes back PARKED (#733): it is still owned, still holds the Stop gate and is
+// still shown to the human, but it no longer authorizes the orchestrator to act
+// on its own. Only a new human turn re-arms it.
 
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -39,6 +45,39 @@ export interface ActiveDeckWork {
   startedAt: number;
   updatedAt: number;
   a2aTasks: Record<string, DeckWorkA2aTask>;
+  /** Identity of the app boot that last received a HUMAN turn for this request.
+   * A record whose stamp is not the current boot is "parked" (see
+   * `isDeckWorkParked`): it survived a shutdown, so nobody has confirmed since
+   * launch that it is still what the human wants. Optional because records
+   * written by builds before this field existed must still load — they read as
+   * parked, which is the fail-closed answer. */
+  bootId?: string;
+}
+
+/** Identity of THIS app boot. Seeded per process so a record written and read
+ * inside one run is live even if nobody calls `setDeckWorkBootId`; the main
+ * process overwrites it with the EventBus boot id so every subsystem agrees on
+ * one identity. A UUID, deliberately not a timestamp: clock skew, NTP steps and
+ * a system clock rolled backwards can all make a time comparison declare a
+ * fresh record stale, and none of them can make two UUIDs collide. */
+let currentBootId: string = randomUUID();
+
+/** Adopt the process-wide boot identity (the EventBus's). Call once, during
+ * startup, BEFORE any record is written — records stamped with the previous
+ * value would otherwise read as parked. */
+export function setDeckWorkBootId(id: string): void {
+  const cleaned = cleanText(id, 128);
+  if (cleaned) currentBootId = cleaned;
+}
+
+/** TRUE when the record predates the current app boot, i.e. it must not
+ * autonomously drive the orchestrator. Fail-closed on a missing stamp: a record
+ * from an older build carries no boot id, and the whole point of #733 is that an
+ * unattended record drove the fleet after a restart. It stays PARKED, not
+ * deleted — it still holds the Stop gate and stays visible to the human. */
+export function isDeckWorkParked(work: ActiveDeckWork): boolean {
+  if (!work.bootId || !currentBootId) return true;
+  return work.bootId !== currentBootId;
 }
 
 interface DeckWorkFile {
@@ -107,6 +146,10 @@ function sanitizeWork(value: unknown, workspaceId: string): ActiveDeckWork | nul
       if (task) a2aTasks[task.taskId] = task;
     }
   }
+  // A missing or malformed stamp is NOT a validation failure — records written
+  // before this field existed are perfectly good work items. They simply load
+  // without a boot id and therefore read as parked.
+  const bootId = cleanText(value.bootId, 128);
   return {
     id,
     workspaceId,
@@ -115,6 +158,7 @@ function sanitizeWork(value: unknown, workspaceId: string): ActiveDeckWork | nul
     startedAt,
     updatedAt,
     a2aTasks,
+    ...(bootId ? { bootId } : {}),
   };
 }
 
@@ -154,6 +198,25 @@ export function loadActiveDeckWorks(dir?: string): Record<string, ActiveDeckWork
   return loadFile(dir).active;
 }
 
+/** The read seam for every consumer that may ACT on a record: the record only
+ * when it belongs to this boot, null when it is parked. Readers that merely
+ * SHOW the record to a human, or that hold the Stop gate with it, keep using
+ * `loadActiveDeckWork` — a parked request is still owned, it just may not drive
+ * the orchestrator on its own. */
+export function loadLiveDeckWork(workspaceId: string, dir?: string): ActiveDeckWork | null {
+  const work = loadActiveDeckWork(workspaceId, dir);
+  return work && !isDeckWorkParked(work) ? work : null;
+}
+
+/** Same seam for the whole-file walkers (heartbeat arming, startup reconcile). */
+export function loadLiveDeckWorks(dir?: string): Record<string, ActiveDeckWork> {
+  const out: Record<string, ActiveDeckWork> = {};
+  for (const [workspaceId, work] of Object.entries(loadActiveDeckWorks(dir))) {
+    if (!isDeckWorkParked(work)) out[workspaceId] = work;
+  }
+  return out;
+}
+
 /** Start ownership for a human request, or append a human follow-up to the
  * currently-owned request. Synchronous by design: DECK_SEND must not yield
  * between its idle check and manager.send(), or an ambient turn can win the
@@ -180,6 +243,10 @@ export function beginOrContinueDeckWork(
       ...current,
       followUps: followUps.slice(-MAX_FOLLOW_UPS),
       updatedAt: now,
+      // A human spoke to this request during THIS boot, so it is live again.
+      // This is the ONLY re-arming path, and it is deliberately gated on a human
+      // turn: nothing the fleet does on its own may un-park a record.
+      bootId: currentBootId,
     };
   } else {
     next = {
@@ -190,6 +257,7 @@ export function beginOrContinueDeckWork(
       startedAt: now,
       updatedAt: now,
       a2aTasks: {},
+      bootId: currentBootId,
     };
   }
   file.active[workspaceId] = next;
@@ -198,7 +266,14 @@ export function beginOrContinueDeckWork(
 }
 
 /** Project an A2A transition into the active human request. Events older than
- * the request cannot be adopted; they belong to earlier work. */
+ * the request cannot be adopted; they belong to earlier work.
+ *
+ * This deliberately does NOT stamp `bootId`, and that is also why `updatedAt` is
+ * not the staleness signal. At boot the daemon recovers sessions and the
+ * recovered workers replay their own older tasks; those transitions land here
+ * within seconds. If a transition refreshed the staleness signal, a parked
+ * record would re-arm itself from the fleet's own echo — exactly the #733 loop
+ * we are cutting. Only a human turn re-arms a record. */
 export function recordDeckWorkA2aTask(
   workspaceId: string,
   input: {
@@ -278,8 +353,9 @@ export function hasPendingDeckWorkA2aTasks(work: ActiveDeckWork): boolean {
 /** Trusted runtime context. The objective/follow-ups originated from the human;
  * A2A rows are pointers only and carry no worker-authored body text. */
 export function renderActiveDeckWorkBlock(work: ActiveDeckWork): string {
+  const parked = isDeckWorkParked(work);
   const lines = [
-    `[active-work] id: ${work.id}`,
+    `[active-work${parked ? ' PARKED' : ''}] id: ${work.id}`,
     `objective: ${work.objective}`,
   ];
   if (work.followUps.length > 0) {
@@ -295,6 +371,21 @@ export function renderActiveDeckWorkBlock(work: ActiveDeckWork): string {
         : ` verified-evidence=${task.verifiedItemCount}`;
       lines.push(`- task=${task.taskId} to=${task.to} state=${task.state}${verified}`);
     }
+  }
+  if (parked) {
+    // The PARKED variant carries no imperative. The record predates this app
+    // launch, so the ownership language ("you OWN this", "continue delegating")
+    // would be an order to act on a request nobody has re-confirmed since the
+    // restart — which is how #733 drove `claude --continue` into a pane four
+    // seconds after boot. The id and objective stay so the human can recognise
+    // the request and so a resume keeps the same work item.
+    lines.push(
+      'This request predates the current wmux session, so it is PARKED: it is recorded but NOT authorization to act.',
+      'Do not resume, delegate, or drive any pane for it on your own. Its state may be stale and its workers may be gone.',
+      'Ask the human whether to resume or drop it (deck_ask_decision) and wait for the answer. Their next instruction wins;',
+      'if they confirm it, the request becomes active again and normal ownership rules resume from there.',
+    );
+    return lines.join('\n');
   }
   lines.push(
     'You OWN this request until it is actually finished. Progress prose and a model turn ending do NOT finish it.',

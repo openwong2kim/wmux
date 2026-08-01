@@ -346,6 +346,26 @@
 - 플러그인은 이제 active workspace의 lifecycle 이벤트만 수신. 다른 ws의 `pane.created/closed/focused/process.*` 누출 차단.
 - PRIVATE 타입(a2a.task, channel.*)은 이미 unscoped poll에서 fail-closed였음 — 변경 없음.
 
+## (security) Unscoped `events.poll` is still an all-workspace firehose — ACCEPTED, tracked (2026-08-01)
+- **Measured, not inferred.** An external pipe caller on the main pipe
+  (`\\.\pipe\wmux<suffix>-<user>`, token `~/.wmux<suffix>-auth-token`) that polls
+  `events.poll` with **no** `workspaceId` receives non-PRIVATE lifecycle events
+  for **every** workspace. Verified live against the dogfood build: a single
+  unscoped poll returned events carrying two distinct `workspaceId`s; the same
+  poll scoped to one workspace returned only that one.
+- **Why this is not a regression of the fix above.** The 2026-07-30 change fixed
+  the *plugin client* (`PluginFrame.tsx` now always sends `activeWorkspaceId`).
+  The server-side behaviour for an unscoped poll was never narrowed.
+- **Accepted for now, same reasoning as U4:** transport-mitigated. Reaching this
+  requires the main pipe plus the on-disk auth token, i.e. same-user access, and
+  the trust ceiling is #113 (identity is self-reported). PRIVATE types
+  (`a2a.task`, `channel.*`) remain fail-closed.
+- **Revisit when** either the pipe stops being same-user-only (remote/relay
+  callers) or per-caller capability scoping lands — at that point an unscoped
+  poll should resolve the caller's workspace from `senderPtyId` and fail closed,
+  the way `meta.setStatus` now does.
+- **Priority:** P3.
+
 ## surface.focus capability를 pane.read로 통일 (P3)
 - **What:** `methodCapabilityMap.ts:181` `surface.focus` = `wmux.internal` → `pane.read`로(sibling `pane.focus:186`과 일치). first-party MCP에 surface.focus 도구 노출 + 서드파티 declarable.
 - **Why:** 동일 blast radius(focus 마커 이동)인 두 메서드가 다른 capability 클래스. security 전문가: 방어 가능(grandfather 경로 + self-asserted clientName이라 wmux.internal 라벨이 same-user 대상 보안 이득 0)하나 coherence 결함.
