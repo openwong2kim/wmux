@@ -1949,7 +1949,21 @@ export function registerDeckHandler(
       }
       // `off` is the kill switch: tear down running automation BEFORE writing
       // the mode+caps, so a stopped loop can't race a final wake in between.
-      if (mode === 'off') await tearDownAutomation(workspaceId);
+      if (mode === 'off') {
+        await tearDownAutomation(workspaceId);
+        // …and stop the brain that is ALREADY running. Refusing the next turn
+        // is not enough: a live `claude-pty` brain keeps its TUI on screen, and
+        // that terminal is itself an input path — the operator (or anything
+        // typing into it) drives on past a mode that says the brain does not
+        // run. Nothing else disposes it, so switching to off would leave the
+        // one mode that promises silence still holding a live session.
+        const entry = managers.get(workspaceId);
+        if (entry) {
+          entry.manager.dispose();
+          retireManager(workspaceId);
+          forgetAmbient(workspaceId);
+        }
+      }
       const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
       // setWorkspaceMode reset caps to the pure mode ceiling. If a loop is still
       // running, re-narrow that new ceiling by the loop tier — otherwise raising
