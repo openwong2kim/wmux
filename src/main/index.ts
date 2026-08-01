@@ -1085,27 +1085,6 @@ app.on('ready', async () => {
   // as "user not looking" so the poller's 30-min skip threshold kicks in
   // and we don't burn Anthropic quota for a UI nobody sees. Show always
   // unpauses immediately and forces a catch-up fetch.
-  mainWindow.on('hide', () => {
-    usagePoller.setWindowVisible(false);
-    accountUsageService.setWindowVisible(false);
-    // Quit-to-tray is the accumulation blind spot: the daemon keeps every
-    // live session (and any agent inside it) running with no visible UI.
-    // Refresh the tray's session-count nudge so the user can see how much is
-    // still alive in the background. Best-effort — a tray hint must never
-    // block window hide, and listSessions may reject mid daemon-respawn.
-    void refreshTraySessionCount();
-  });
-  mainWindow.on('show', () => {
-    usagePoller.setWindowVisible(true);
-    accountUsageService.setWindowVisible(true);
-    // Window is visible again — the panes speak for themselves, so clear the
-    // background-session nudge back to the plain "wmux" tooltip/menu. Bump the
-    // refresh token first so a slow in-flight hide refresh can't overwrite this
-    // clear with a stale count after it resolves. (codex review P3)
-    trayRefreshToken++;
-    updateTraySessionCount(null);
-  });
-
   // System tray — lets the app stay alive when window is closed.
   // Phase A — A3/A5 fix (codex review P1, session 019e2af8): the callback
   // used to set isQuitting=true before tray.ts then called app.quit(). The
@@ -1345,30 +1324,6 @@ app.on('ready', async () => {
   // cause, so this correctly re-arms for the full reload→remount window;
   // the renderer flips it back via IPC.NOTIFICATION_LISTENER_READY once
   // useNotificationListener's effect actually resubscribes.
-  mainWindow.webContents.on('did-start-loading', () => {
-    markRendererNotificationListenerNotReady();
-  });
-
-  let didFailLoadCount = 0;
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
-    if (errorCode === -3) return;
-    console.error('[Main] Page failed to load:', errorCode, errorDescription);
-    didFailLoadCount += 1;
-    if (didFailLoadCount > 10) {
-      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
-      return;
-    }
-    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
-    }, delay);
-  });
-  mainWindow.webContents.on('did-finish-load', () => {
-    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
-    console.log('[Main] Page loaded successfully');
-  });
-
   if (mainWindow && !mainWindow.isDestroyed()) {
     loadMainRenderer(mainWindow);
     markBoot('renderer-load-triggered');
@@ -1461,9 +1416,6 @@ app.on('ready', async () => {
     }
   });
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
   // M0-e — hydrate MetadataStore from disk, then wire the persist callback
   // so subsequent `metadataStore.set/clear/onPaneDeleted` flush to disk
   // BEFORE the `pane.metadata.changed` event publishes (race spec #1).
@@ -1655,12 +1607,75 @@ app.on('window-all-closed', () => {
 // either of the other two destroyed itself on close instead of hiding.
 function adoptMainWindow(win: BrowserWindow): void {
   attachWindowRecovery(win);
+
+  win.on('closed', () => {
+    // Guarded: a recovery window may be adopted while the old reference is
+    // still being torn down, and only the current one may clear the binding.
+    if (mainWindow === win) mainWindow = null;
+  });
+
   // Intercept window close — hide to tray instead of destroying
   win.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
       win.hide();
     }
+  });
+
+  // Phase 2 — UsagePoller hidden-window cost control. We treat tray-hide
+  // as "user not looking" so the poller's 30-min skip threshold kicks in
+  // and we don't burn Anthropic quota for a UI nobody sees. Show always
+  // unpauses immediately and forces a catch-up fetch.
+  win.on('hide', () => {
+    usagePoller.setWindowVisible(false);
+    accountUsageService.setWindowVisible(false);
+    // Quit-to-tray is the accumulation blind spot: the daemon keeps every
+    // live session (and any agent inside it) running with no visible UI.
+    // Refresh the tray's session-count nudge so the user can see how much is
+    // still alive in the background. Best-effort — a tray hint must never
+    // block window hide, and listSessions may reject mid daemon-respawn.
+    void refreshTraySessionCount();
+  });
+  win.on('show', () => {
+    usagePoller.setWindowVisible(true);
+    accountUsageService.setWindowVisible(true);
+    // Window is visible again — the panes speak for themselves, so clear the
+    // background-session nudge back to the plain "wmux" tooltip/menu. Bump the
+    // refresh token first so a slow in-flight hide refresh can't overwrite this
+    // clear with a stale count after it resolves. (codex review P3)
+    trayRefreshToken++;
+    updateTraySessionCount(null);
+  });
+
+  // A reload/remount means the renderer's notification listener is gone until
+  // it resubscribes; re-arm so a stale "ready" cannot outlive the old renderer.
+  // The renderer flips it back via IPC.NOTIFICATION_LISTENER_READY.
+  win.webContents.on('did-start-loading', () => {
+    markRendererNotificationListenerNotReady();
+  });
+
+  // Reload backoff. Attached here rather than at the boot site so every window
+  // gets it — the update-recovery window in particular exists only to render a
+  // failure message, and a blank window that never retries would reproduce the
+  // silence it was created to break.
+  let didFailLoadCount = 0;
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
+    if (errorCode === -3) return;
+    console.error('[Main] Page failed to load:', errorCode, errorDescription);
+    didFailLoadCount += 1;
+    if (didFailLoadCount > 10) {
+      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
+      return;
+    }
+    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.reload();
+    }, delay);
+  });
+  win.webContents.on('did-finish-load', () => {
+    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
+    console.log('[Main] Page loaded successfully');
   });
 }
 
@@ -1692,9 +1707,12 @@ async function abortInstallQuit(): Promise<void> {
   // quitAndInstall already destroyed the window (isQuitting was true, so the
   // hide-to-tray intercept let the close through). Build a new one and wait for
   // its renderer, or the caller's error IPC lands before any listener exists.
-  const win = createWindow();
+  // deferLoad so the reload backoff and console wiring are attached before the
+  // navigation starts — this window's whole job is to render the failure.
+  const win = createWindow({ deferLoad: true });
   mainWindow = win;
   adoptMainWindow(win);
+  loadMainRenderer(win);
   await new Promise<void>((resolve) => {
     if (win.isDestroyed()) { resolve(); return; }
     if (!win.webContents.isLoading()) { resolve(); return; }
