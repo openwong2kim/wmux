@@ -237,23 +237,68 @@ export function loadLiveDeckWorks(dir?: string): Record<string, ActiveDeckWork> 
   return out;
 }
 
+/** What a human turn did to this workspace's ownership. */
+export interface DeckWorkTurnResult {
+  /** The record that owns the workspace now. */
+  work: ActiveDeckWork;
+  /** Set only when this turn REPLACED an existing record (a parked one — see
+   *  `beginOrContinueDeckWork`). It is already gone from the store, and nothing
+   *  will ever call `deck_complete_work` on it, so the caller owes the human a
+   *  surface for it: it may still hold delegated A2A tasks
+   *  (`hasPendingDeckWorkA2aTasks`) that nobody now owns. Never persisted. */
+  superseded?: ActiveDeckWork;
+}
+
 /** Start ownership for a human request, or append a human follow-up to the
  * currently-owned request. Synchronous by design: DECK_SEND must not yield
  * between its idle check and manager.send(), or an ambient turn can win the
- * workspace while the request record is being written. */
+ * workspace while the request record is being written.
+ *
+ * The append/supersede fork turns on parking, not on age (#733 follow-up):
+ *
+ *  - A LIVE record APPENDS. Workers spawned under it are still running and
+ *    still belong to that objective; replacing the record would abandon them.
+ *    This is the original contract and it does not change.
+ *  - A PARKED record is SUPERSEDED — new id, the human's text as the objective,
+ *    empty follow-ups. Appending to it structurally demoted the human's actual
+ *    instruction to a footnote of a request from a previous app launch: the
+ *    rendered block led with the old objective and closed with "you OWN this
+ *    request, continue delegating", so "reply X, do nothing else" arrived as a
+ *    bullet under an hours-old "recover my agents after the reboot". Worse, the
+ *    append re-stamped that stale objective as live, which is the whole thing
+ *    parking exists to prevent.
+ *
+ * Resuming a parked request deliberately is a different path: the human answers
+ * the startup decision and `unparkDeckWork` re-arms the SAME record, objective
+ * intact. Typing a new instruction is not that answer. */
 export function beginOrContinueDeckWork(
   workspaceId: string,
   text: string,
   dir?: string,
   now = Date.now(),
-): ActiveDeckWork | null {
+): DeckWorkTurnResult | null {
   if (!WORKSPACE_ID_RE.test(workspaceId)) return null;
   const cleaned = cleanText(text, MAX_OBJECTIVE_CHARS);
   if (!cleaned) return null;
   const file = loadFile(dir);
   const current = file.active[workspaceId];
+  const startFresh = (): ActiveDeckWork => ({
+    id: `work-${randomUUID()}`,
+    workspaceId,
+    objective: cleaned,
+    followUps: [],
+    startedAt: now,
+    updatedAt: now,
+    // Pointers to the superseded record's tasks are NOT inherited: they were
+    // delegated for a different objective, and carrying them over would make
+    // this request un-finalizable behind work its human never asked for. The
+    // caller surfaces them instead.
+    a2aTasks: {},
+    bootId: currentBootId,
+  });
   let next: ActiveDeckWork;
-  if (current) {
+  let superseded: ActiveDeckWork | undefined;
+  if (current && !isDeckWorkParked(current)) {
     const followUp = cleanText(cleaned, MAX_FOLLOW_UP_CHARS);
     const followUps = [...current.followUps];
     if (followUp && followUp !== current.objective && followUps.at(-1) !== followUp) {
@@ -263,26 +308,19 @@ export function beginOrContinueDeckWork(
       ...current,
       followUps: followUps.slice(-MAX_FOLLOW_UPS),
       updatedAt: now,
-      // A human spoke to this request during THIS boot, so it is live again.
-      // This is the ONLY re-arming path, and it is deliberately gated on a human
-      // turn: nothing the fleet does on its own may un-park a record.
+      // A human spoke to this request during THIS boot, so it stays live. (A
+      // record that is already live is the only one that reaches this branch,
+      // so this re-stamp is a no-op today; it is kept because the stamp means
+      // "a human turn touched this record during this boot".)
       bootId: currentBootId,
     };
   } else {
-    next = {
-      id: `work-${randomUUID()}`,
-      workspaceId,
-      objective: cleaned,
-      followUps: [],
-      startedAt: now,
-      updatedAt: now,
-      a2aTasks: {},
-      bootId: currentBootId,
-    };
+    next = startFresh();
+    if (current) superseded = current;
   }
   file.active[workspaceId] = next;
   saveFile(file, dir);
-  return next;
+  return superseded ? { work: next, superseded } : { work: next };
 }
 
 /** Project an A2A transition into the active human request. Events older than
@@ -356,18 +394,57 @@ export function completeActiveDeckWork(
   return current;
 }
 
-export function clearActiveDeckWork(workspaceId: string, dir?: string): void {
-  if (!WORKSPACE_ID_RE.test(workspaceId)) return;
+/** Drop the record unconditionally — the "New session" escape hatch.
+ *
+ * It NEVER refuses, unlike `deck_complete_work` (which rejects on
+ * `a2a_tasks_outstanding`). That asymmetry is deliberate and load-bearing: a
+ * conversation clear is the confirmed way out of a wedged record, so a clear
+ * that could fail would leave a workspace with no way back at all.
+ *
+ * What it must not stay is BLIND. Returns the record it removed (null when
+ * there was none) so the caller can see what it just dropped and surface any
+ * delegated A2A work that outlives it — the delete succeeds either way. */
+export function clearActiveDeckWork(workspaceId: string, dir?: string): ActiveDeckWork | null {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return null;
   const file = loadFile(dir);
-  if (!file.active[workspaceId]) return;
+  const removed = file.active[workspaceId];
+  if (!removed) return null;
   delete file.active[workspaceId];
   saveFile(file, dir);
+  return removed;
 }
 
 export function hasPendingDeckWorkA2aTasks(work: ActiveDeckWork): boolean {
   return Object.values(work.a2aTasks).some(
     (task) => task.state === 'submitted' || task.state === 'working' || task.state === 'input-required',
   );
+}
+
+/** Render a record that has just LEFT the store — superseded by a newer human
+ * request, or dropped by a conversation clear.
+ *
+ * Deliberately NOT `renderActiveDeckWorkBlock`: that block's live variant ends
+ * in ownership imperatives ("You OWN this request… Continue delegating"), which
+ * is precisely wrong for a record nobody owns any more — it would re-issue a
+ * deleted request as an order the moment we quoted it back to the human. This
+ * block only states what was dropped and which delegated tasks outlived it.
+ *
+ * Same trust basis as the active block: objective/follow-ups came from the
+ * human, and A2A rows are pointers with no worker-authored body text. */
+export function renderStrandedDeckWorkBlock(work: ActiveDeckWork): string {
+  const lines = [`[dropped-work] id: ${work.id}`, `objective: ${work.objective}`];
+  if (work.followUps.length > 0) {
+    lines.push('human follow-ups:');
+    for (const followUp of work.followUps) lines.push(`- ${followUp}`);
+  }
+  const pending = Object.values(work.a2aTasks)
+    .filter((task) => task.state === 'submitted' || task.state === 'working' || task.state === 'input-required')
+    .sort((a, b) => a.updatedAt - b.updatedAt);
+  if (pending.length > 0) {
+    lines.push('delegated A2A tasks that outlived this record (query canonical state before acting):');
+    for (const task of pending) lines.push(`- task=${task.taskId} to=${task.to} state=${task.state}`);
+  }
+  return lines.join('\n');
 }
 
 /** Trusted runtime context. The objective/follow-ups originated from the human;

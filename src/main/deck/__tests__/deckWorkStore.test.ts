@@ -5,7 +5,8 @@
 // autonomy is `off`. The record outlives a turn, a pane stop, an A2A handoff and
 // an app restart, and is closed only by an explicit deck_complete_work the
 // server has verified. These lock the store's contract: one active item per
-// workspace, follow-ups appended (never silently replacing running work),
+// workspace, follow-ups appended to a LIVE record (never silently replacing
+// running work) while a PARKED one is superseded and handed back to the caller,
 // pointer-only A2A projection, and compare-and-delete on completion.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -20,6 +21,7 @@ import {
   loadActiveDeckWorks,
   hasPendingDeckWorkA2aTasks,
   renderActiveDeckWorkBlock,
+  renderStrandedDeckWorkBlock,
   getDeckWorkPath,
   setDeckWorkBootId,
   isDeckWorkParked,
@@ -41,7 +43,7 @@ afterEach(() => {
 
 describe('deckWorkStore — ownership lifecycle', () => {
   it('starts a request and loads it back from disk', () => {
-    const work = beginOrContinueDeckWork('ws-1', 'ship the badge PR', dir)!;
+    const work = beginOrContinueDeckWork('ws-1', 'ship the badge PR', dir)!.work;
     expect(work).toMatchObject({ workspaceId: 'ws-1', objective: 'ship the badge PR', followUps: [] });
     expect(work.id).toMatch(/^work-/);
     // Durability: a fresh read (no in-memory cache) must see it.
@@ -57,8 +59,8 @@ describe('deckWorkStore — ownership lifecycle', () => {
   });
 
   it('APPENDS a second human message instead of abandoning running work', () => {
-    const first = beginOrContinueDeckWork('ws-1', 'build it', dir)!;
-    const second = beginOrContinueDeckWork('ws-1', 'also add tests', dir)!;
+    const first = beginOrContinueDeckWork('ws-1', 'build it', dir)!.work;
+    const second = beginOrContinueDeckWork('ws-1', 'also add tests', dir)!.work;
     // Same work item — workers already running under it keep their owner.
     expect(second.id).toBe(first.id);
     expect(second.objective).toBe('build it');
@@ -67,14 +69,14 @@ describe('deckWorkStore — ownership lifecycle', () => {
 
   it('does not record a follow-up that merely repeats the objective', () => {
     beginOrContinueDeckWork('ws-1', 'build it', dir);
-    const again = beginOrContinueDeckWork('ws-1', 'build it', dir)!;
+    const again = beginOrContinueDeckWork('ws-1', 'build it', dir)!.work;
     expect(again.followUps).toEqual([]);
   });
 
   it('collapses an immediately repeated follow-up', () => {
     beginOrContinueDeckWork('ws-1', 'objective', dir);
     beginOrContinueDeckWork('ws-1', 'retry', dir);
-    const third = beginOrContinueDeckWork('ws-1', 'retry', dir)!;
+    const third = beginOrContinueDeckWork('ws-1', 'retry', dir)!.work;
     expect(third.followUps).toEqual(['retry']);
   });
 
@@ -97,8 +99,8 @@ describe('deckWorkStore — ownership lifecycle', () => {
   });
 
   it('preserves the ownership start while advancing updatedAt on a follow-up', () => {
-    const first = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!;
-    const second = beginOrContinueDeckWork('ws-1', 'follow', dir, 5_000)!;
+    const first = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!.work;
+    const second = beginOrContinueDeckWork('ws-1', 'follow', dir, 5_000)!.work;
     expect(first.startedAt).toBe(1_000);
     expect(second.startedAt).toBe(1_000);
     expect(second.updatedAt).toBe(5_000);
@@ -107,7 +109,7 @@ describe('deckWorkStore — ownership lifecycle', () => {
 
 describe('deckWorkStore — completion', () => {
   it('completes with a matching revision and removes the record', () => {
-    const work = beginOrContinueDeckWork('ws-1', 'objective', dir)!;
+    const work = beginOrContinueDeckWork('ws-1', 'objective', dir)!.work;
     expect(completeActiveDeckWork('ws-1', work, dir)).toMatchObject({ id: work.id });
     expect(loadActiveDeckWork('ws-1', dir)).toBeNull();
   });
@@ -115,9 +117,9 @@ describe('deckWorkStore — completion', () => {
   it('REFUSES to close a newer request with an older verdict (compare-and-delete)', () => {
     // The commander's completion check is async; a human prompt can land while
     // it is in flight. Closing on the stale record would silently drop the new work.
-    const first = beginOrContinueDeckWork('ws-1', 'objective', dir)!;
+    const first = beginOrContinueDeckWork('ws-1', 'objective', dir)!.work;
     completeActiveDeckWork('ws-1', first, dir);
-    const second = beginOrContinueDeckWork('ws-1', 'brand new request', dir)!;
+    const second = beginOrContinueDeckWork('ws-1', 'brand new request', dir)!.work;
     expect(second.id).not.toBe(first.id);
 
     expect(completeActiveDeckWork('ws-1', first, dir)).toBeNull();
@@ -127,7 +129,7 @@ describe('deckWorkStore — completion', () => {
   it('REFUSES when a human FOLLOW-UP landed mid-check (same id, new revision)', () => {
     // The id alone is not enough: a follow-up keeps the work id, so an id-only
     // comparison would delete ownership of instructions the brain never saw.
-    const before = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!;
+    const before = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!.work;
     beginOrContinueDeckWork('ws-1', 'also do this', dir, 2_000);
 
     expect(completeActiveDeckWork('ws-1', before, dir)).toBeNull();
@@ -137,7 +139,7 @@ describe('deckWorkStore — completion', () => {
   });
 
   it('REFUSES when an A2A transition landed mid-check (same id, new tasks)', () => {
-    const before = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!;
+    const before = beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000)!.work;
     recordDeckWorkA2aTask(
       'ws-1',
       { taskId: 'task-late', to: 'ws-worker', state: 'working', ts: 3_000 },
@@ -148,7 +150,7 @@ describe('deckWorkStore — completion', () => {
   });
 
   it('completing an absent record is a null no-op', () => {
-    const ghost = beginOrContinueDeckWork('ws-1', 'objective', dir)!;
+    const ghost = beginOrContinueDeckWork('ws-1', 'objective', dir)!.work;
     clearActiveDeckWork('ws-1', dir);
     expect(completeActiveDeckWork('ws-1', ghost, dir)).toBeNull();
   });
@@ -158,6 +160,26 @@ describe('deckWorkStore — completion', () => {
     clearActiveDeckWork('ws-1', dir);
     expect(loadActiveDeckWork('ws-1', dir)).toBeNull();
     expect(() => clearActiveDeckWork('ws-1', dir)).not.toThrow();
+  });
+
+  it('clearActiveDeckWork RETURNS what it removed, pending A2A tasks included', () => {
+    // "New session" must never start refusing — it is the escape hatch for a
+    // wedged record. It must not be BLIND either: the caller needs to see the
+    // delegated tasks that just outlived their owner.
+    beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000);
+    recordDeckWorkA2aTask(
+      'ws-1',
+      { taskId: 'task-orphan', to: 'ws-worker', state: 'working', ts: 2_000 },
+      dir,
+    );
+    const removed = clearActiveDeckWork('ws-1', dir);
+    expect(removed!.objective).toBe('objective');
+    expect(hasPendingDeckWorkA2aTasks(removed!)).toBe(true);
+    // The clear still succeeded — the record is gone whatever it was holding.
+    expect(loadActiveDeckWork('ws-1', dir)).toBeNull();
+    // Nothing to report the second time around.
+    expect(clearActiveDeckWork('ws-1', dir)).toBeNull();
+    expect(clearActiveDeckWork('../escape', dir)).toBeNull();
   });
 });
 
@@ -280,7 +302,7 @@ describe('deckWorkStore — boot-scoped permission (parked records)', () => {
   const restart = (id = 'boot-next'): void => setDeckWorkBootId(id);
 
   it('a record written this boot is LIVE', () => {
-    const work = beginOrContinueDeckWork('ws-1', 'ship it', dir)!;
+    const work = beginOrContinueDeckWork('ws-1', 'ship it', dir)!.work;
     expect(work.bootId).toBe('boot-current');
     expect(isDeckWorkParked(loadActiveDeckWork('ws-1', dir)!)).toBe(false);
   });
@@ -315,14 +337,85 @@ describe('deckWorkStore — boot-scoped permission (parked records)', () => {
     expect(isDeckWorkParked(work)).toBe(true);
   });
 
-  it('a HUMAN follow-up re-arms a parked record', () => {
-    beginOrContinueDeckWork('ws-1', 'ship it', dir, 1_000);
+  it('a HUMAN turn against a PARKED record starts a NEW record, live from this boot', () => {
+    // The demotion bug: the human's actual instruction used to be appended as a
+    // bullet under an objective from a previous app launch, and the append
+    // re-stamped that stale objective as live. Captured in the wild: "reply X,
+    // do nothing else" filed under "Recover my agents after the reboot".
+    const before = beginOrContinueDeckWork('ws-1', 'Recover my agents after the reboot', dir, 1_000)!.work;
     restart();
-    const resumed = beginOrContinueDeckWork('ws-1', 'yes, carry on', dir, 2_000)!;
-    expect(resumed.bootId).toBe('boot-next');
+    const result = beginOrContinueDeckWork('ws-1', 'reply X, do nothing else', dir, 2_000)!;
+    expect(result.work.id).not.toBe(before.id);
+    expect(result.work.objective).toBe('reply X, do nothing else');
+    expect(result.work.followUps).toEqual([]);
+    expect(result.work.startedAt).toBe(2_000);
+    expect(result.work.bootId).toBe('boot-next');
     expect(isDeckWorkParked(loadActiveDeckWork('ws-1', dir)!)).toBe(false);
-    // Re-arming keeps the same work item; workers under it keep their owner.
-    expect(resumed.followUps).toEqual(['yes, carry on']);
+    // The old objective is nowhere in the record that now owns the workspace.
+    expect(JSON.stringify(loadActiveDeckWork('ws-1', dir))).not.toContain('Recover my agents');
+  });
+
+  it('hands the SUPERSEDED record back instead of dropping it', () => {
+    // It can no longer be closed by deck_complete_work, so the caller owes the
+    // human a surface for it — starting with anything it delegated.
+    beginOrContinueDeckWork('ws-1', 'the old request', dir, 1_000);
+    recordDeckWorkA2aTask(
+      'ws-1',
+      { taskId: 'task-orphan', to: 'ws-worker', state: 'working', ts: 2_000 },
+      dir,
+    );
+    restart();
+    const result = beginOrContinueDeckWork('ws-1', 'a brand new request', dir, 3_000)!;
+    expect(result.superseded).toBeDefined();
+    expect(result.superseded!.objective).toBe('the old request');
+    expect(hasPendingDeckWorkA2aTasks(result.superseded!)).toBe(true);
+    // Pointers are NOT inherited: they were delegated for a different objective,
+    // and carrying them over would make the new request un-finalizable behind
+    // work its human never asked for.
+    expect(result.work.a2aTasks).toEqual({});
+  });
+
+  it('does NOT supersede a LIVE record — running workers keep their owner', () => {
+    const first = beginOrContinueDeckWork('ws-1', 'build it', dir, 1_000)!;
+    const second = beginOrContinueDeckWork('ws-1', 'also add tests', dir, 2_000)!;
+    expect(second.superseded).toBeUndefined();
+    expect(second.work.id).toBe(first.work.id);
+    expect(second.work.objective).toBe('build it');
+    expect(second.work.followUps).toEqual(['also add tests']);
+  });
+
+  it('a record with NO bootId (older build) is superseded, not appended to', () => {
+    // Fail-closed all the way through: an unstamped record reads as parked, so
+    // the next human turn owns the workspace outright.
+    writeFileSync(
+      getDeckWorkPath(dir),
+      JSON.stringify({
+        version: 1,
+        active: {
+          'ws-1': {
+            id: 'work-old', objective: 'from an older build', followUps: [],
+            startedAt: 1, updatedAt: 1, a2aTasks: {},
+          },
+        },
+      }),
+      'utf8',
+    );
+    const result = beginOrContinueDeckWork('ws-1', 'what I actually want', dir, 5_000)!;
+    expect(result.superseded!.id).toBe('work-old');
+    expect(result.work.objective).toBe('what I actually want');
+  });
+
+  it('unparkDeckWork is how a parked record RESUMES with its objective intact', () => {
+    // The two paths must not be confused: answering the startup decision
+    // ("Resume it") re-arms the SAME record; typing a new instruction replaces
+    // it. Nothing else may re-arm a record.
+    beginOrContinueDeckWork('ws-1', 'the original objective', dir, 1_000);
+    restart();
+    unparkDeckWork('ws-1', dir);
+    const result = beginOrContinueDeckWork('ws-1', 'and one more thing', dir, 2_000)!;
+    expect(result.superseded).toBeUndefined();
+    expect(result.work.objective).toBe('the original objective');
+    expect(result.work.followUps).toEqual(['and one more thing']);
   });
 
   it('an A2A transition does NOT re-arm a parked record', () => {
@@ -418,6 +511,36 @@ describe('renderActiveDeckWorkBlock', () => {
     expect(block).toContain('to=ws-worker');
     expect(block).toContain('verified-evidence=0');
     expect(block).toMatch(/query canonical state/i);
+  });
+
+  it('renderStrandedDeckWorkBlock states what was dropped and issues NO orders', () => {
+    // A record that has left the store cannot be handed back to the brain
+    // through the active block: its live variant ends in "You OWN this
+    // request… Continue delegating", which would re-issue a deleted request as
+    // an order the moment we quoted it to the human.
+    beginOrContinueDeckWork('ws-1', 'the dropped objective', dir, 1_000);
+    beginOrContinueDeckWork('ws-1', 'and this too', dir, 2_000);
+    recordDeckWorkA2aTask(
+      'ws-1',
+      { taskId: 'task-live', to: 'ws-worker', state: 'working', ts: 3_000 },
+      dir,
+    );
+    recordDeckWorkA2aTask(
+      'ws-1',
+      { taskId: 'task-done', to: 'ws-worker', state: 'completed', ts: 4_000 },
+      dir,
+    );
+    const block = renderStrandedDeckWorkBlock(clearActiveDeckWork('ws-1', dir)!);
+    expect(block).toContain('[dropped-work]');
+    expect(block).toContain('the dropped objective');
+    expect(block).toContain('and this too');
+    // Only the tasks that still need a human call — a finished one is not
+    // stranded work.
+    expect(block).toContain('task=task-live');
+    expect(block).not.toContain('task-done');
+    expect(block).not.toContain('You OWN');
+    expect(block).not.toContain('Continue delegating');
+    expect(block).not.toContain('deck_complete_work');
   });
 
   it('PARKED renders without the ownership imperatives, keeping id and objective', () => {

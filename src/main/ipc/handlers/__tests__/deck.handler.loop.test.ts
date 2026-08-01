@@ -198,9 +198,10 @@ vi.mock('../../../deck/deckWorkStore', () => ({
   beginOrContinueDeckWork: vi.fn(() => null),
   recordDeckWorkA2aTask: vi.fn(() => null),
   completeActiveDeckWork: vi.fn(() => null),
-  clearActiveDeckWork: vi.fn(() => undefined),
+  clearActiveDeckWork: vi.fn(() => null),
   hasPendingDeckWorkA2aTasks: vi.fn(() => false),
   renderActiveDeckWorkBlock: vi.fn(() => ''),
+  renderStrandedDeckWorkBlock: vi.fn(() => ''),
 }));
 
 // Policy channel: controllable in-memory block; seed is a no-op so tests never

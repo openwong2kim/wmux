@@ -85,6 +85,7 @@ import {
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
+  hasPendingDeckWorkA2aTasks,
   isDeckWorkParked,
   loadActiveDeckWork,
   loadActiveDeckWorks,
@@ -92,8 +93,10 @@ import {
   loadLiveDeckWorks,
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
+  renderStrandedDeckWorkBlock,
   setDeckWorkBootId,
   unparkDeckWork,
+  type ActiveDeckWork,
 } from '../../deck/deckWorkStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
@@ -482,12 +485,100 @@ export function registerDeckHandler(
     }
   };
 
+  /**
+   * A request record has LEFT the store — superseded by a newer human request,
+   * or dropped by a conversation clear. It can no longer be closed by
+   * `deck_complete_work`, so anything it delegated is now unowned.
+   *
+   * The surface is a DECISION (deckDecisionStore), for three reasons. It is
+   * durable — a toast or a stream event is gone the moment the window is, and
+   * #733 itself was caused by a state clear that only ever ran from a toast
+   * nobody had kept. It is already the channel this exact record class uses:
+   * the startup reconcile asks "resume it, or drop it?" the same way. And a
+   * pending decision suppresses auto-wake for the workspace, which is the right
+   * posture while delegated tasks have no owner.
+   *
+   * It is raised ONLY when the dropped record still has pending A2A tasks. That
+   * is the whole reason the pending state matters — and a decision has a cost:
+   * it blocks autonomous follow-through on the request the human JUST made
+   * until they answer. Charging that for a record with nothing outstanding
+   * would tax every normal supersede for bookkeeping, and train people to click
+   * through the one that matters. With nothing outstanding, the human's own
+   * newer instruction is the surfacing; a log line covers diagnosis.
+   *
+   * Cancelling the tasks outright is not this layer's call: the A2A client
+   * lives behind the pipe router (deck.rpc), main has no handle on it, and
+   * "cancel someone else's running worker" is exactly the kind of fork the
+   * decision gate exists to put in front of a human. So we ask.
+   *
+   * Never throws and never blocks its caller — the supersede/clear already
+   * happened on disk, and neither may fail because of this bookkeeping.
+   */
+  const surfaceStrandedWork = (
+    workspaceId: string,
+    work: ActiveDeckWork,
+    reason: 'superseded' | 'cleared',
+  ): void => {
+    try {
+      if (!hasPendingDeckWorkA2aTasks(work)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[deck] ${reason} work record ${work.id} (no delegated tasks outstanding)`);
+        return;
+      }
+      // The decision store is last-writer-wins, so a real question already
+      // waiting on this human must never be clobbered by our bookkeeping (same
+      // guard as the startup reconcile). The log keeps the drop diagnosable.
+      if (hasPendingDecision(workspaceId)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[deck] ${reason} work record ${work.id} has outstanding A2A tasks; ` +
+          'a decision is already pending, not replacing it',
+        );
+        return;
+      }
+      const question = reason === 'superseded'
+        ? 'A newer request replaced an earlier one that still has delegated tasks running. ' +
+          'Cancel those tasks, or adopt them into the new request?'
+        : 'Starting a new session dropped a request that still has delegated tasks running. ' +
+          'Cancel those tasks, or leave them running?';
+      void raiseDecision(workspaceId, {
+        question,
+        options: reason === 'superseded'
+          ? ['Cancel the old tasks', 'Adopt them into the current request']
+          : ['Cancel the old tasks', 'Leave them running'],
+        context: renderStrandedDeckWorkBlock(work),
+      }).catch(() => {
+        /* best-effort — the log line above is the fallback record */
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[deck] failed to surface stranded work:', err);
+    }
+  };
+
   /** Persist request ownership without ever breaking a human turn. The store is
    *  synchronous so the DECK_SEND idle-check → send sequence does not yield. */
   const beginTrackedWork = (workspaceId: string, text: string): void => {
-    const objective = text.trim() || 'Continue the request submitted directly in the commander terminal.';
+    const humanText = text.trim();
     try {
-      beginOrContinueDeckWork(workspaceId, objective);
+      // The placeholder stands in for a prompt main never saw — the terminal
+      // brain's UserPromptSubmit can carry an empty body. It is a fine objective
+      // for a workspace that owns nothing yet, and it is NOT allowed to be
+      // anything else: passed against an existing record it would either file
+      // itself as a meaningless follow-up or, worse, supersede a real objective
+      // with boilerplate. A blank turn therefore leaves the record exactly as it
+      // is — including parked, which is the fail-closed answer for a turn whose
+      // content we cannot read.
+      if (!humanText) {
+        if (loadActiveDeckWork(workspaceId)) return;
+        beginOrContinueDeckWork(
+          workspaceId,
+          'Continue the request submitted directly in the commander terminal.',
+        );
+        return;
+      }
+      const result = beginOrContinueDeckWork(workspaceId, humanText);
+      if (result?.superseded) surfaceStrandedWork(workspaceId, result.superseded, 'superseded');
     } catch (err) {
       // A persistence failure costs autonomous follow-through, never the human's
       // immediate turn. Keep the failure visible for diagnosis.
@@ -836,7 +927,14 @@ export function registerDeckHandler(
       const sessionKey = sessionKeyFor(workspaceId, entry?.vendor ?? resolveEffectiveVendor(brainVendor));
       await clearCommanderSession(sessionKey);
       try {
-        clearActiveDeckWork(workspaceId);
+        // Unconditional by contract — "New session" is the escape hatch for a
+        // wedged record and must never start refusing (deck_complete_work is
+        // the path that CAN refuse, on a2a_tasks_outstanding). But the clear is
+        // no longer blind: whatever it removed comes back, so delegated tasks
+        // that outlive the record are put in front of the human instead of
+        // being dropped with it.
+        const removed = clearActiveDeckWork(workspaceId);
+        if (removed) surfaceStrandedWork(workspaceId, removed, 'cleared');
       } catch {
         // Conversation clear is still successful if the auxiliary work record
         // could not be removed; the next prompt can supersede/reconcile it.
