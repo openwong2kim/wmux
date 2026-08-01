@@ -9,7 +9,7 @@ import { sanitizeTitle } from './titleDetect';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
-import { recentlySuppressed, recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
+import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import type { AgentStatus } from '../../shared/types';
@@ -79,11 +79,11 @@ export class PTYBridge {
       const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
       if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
-      // Suppress the activity fallback when the recent burst was actually
-      // a pty:resize redraw (workspace switch) or user keystroke echo —
-      // both spike ActivityMonitor's byte counter without being a real
-      // agent task ending. See idleSuppression.ts for rationale.
-      if (recentlySuppressed(ptyId, now)) return;
+      // No resize/typing gate here: this handler's only job is the status
+      // clear, and dropping it wedges the pane at `running` permanently
+      // (ActivityMonitor has already consumed the transition, and a quiet pane
+      // never produces another burst to re-fire it). See idleSuppression.ts
+      // and issue #733. The precise-status deference above still applies.
       try {
         const win = this.getWindow();
         // Clear stale 'running' → 'idle' so the sidebar dot self-heals when a

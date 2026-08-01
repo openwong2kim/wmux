@@ -25,7 +25,7 @@ import {
   type SessionDataHandler,
 } from './sessionDataDispatcher';
 import { updateCwd } from './metadata.handler';
-import { markResize, markUserWrite } from '../../notification/idleSuppression';
+import { markResize } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
 import {
@@ -586,10 +586,6 @@ export function registerPTYHandlers(
   }
 
   // pty:write
-  // User keystrokes echo back through the PTY (the shell/TUI writes them
-  // to the screen), so they show up to ActivityMonitor as agent output.
-  // Mark the user-write timestamp so the idle fallback suppresses itself
-  // while the user is typing (see idleSuppression.ts).
   //
   // Oversize backstop (defense-in-depth): the renderer chunks paste
   // payloads into PTY_WRITE_BACKSTOP_CHUNK_SIZE-byte segments before
@@ -636,7 +632,6 @@ export function registerPTYHandlers(
       if (data.length > PTY_WRITE_BACKSTOP) {
         console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
       }
-      markUserWrite(id);
       const segments = segmentOversize(data);
       let allDelivered = true;
       for (const segment of segments) {
@@ -667,7 +662,6 @@ export function registerPTYHandlers(
       if (data.length > PTY_WRITE_BACKSTOP) {
         console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
       }
-      markUserWrite(id);
       const segments = segmentOversize(data);
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));
@@ -678,10 +672,9 @@ export function registerPTYHandlers(
 
   // pty:resize
   // TUI agents (Claude, Codex, etc.) respond to SIGWINCH with a full-screen
-  // redraw, which spikes ActivityMonitor's byte counter and triggers the
-  // "Task may have finished" fallback when the user moves on within 5s.
-  // Mark the resize timestamp so the fallback suppresses itself for the
-  // suppression window (see idleSuppression.ts).
+  // redraw. Mark the resize timestamp so the AgentDetector emission-reset
+  // guard can tell that repaint from a genuinely new turn — an unchanged idle
+  // footer must not re-fire a stale "Ready for input" (see idleSuppression.ts).
   ipcMain.removeHandler(IPC.PTY_RESIZE);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RESIZE, wrapHandler(IPC.PTY_RESIZE, async (_event: Electron.IpcMainInvokeEvent, id: string, cols: number, rows: number) => {

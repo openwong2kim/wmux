@@ -61,7 +61,6 @@ vi.mock('../../../notification/sendNotification', () => ({
 }));
 
 vi.mock('../../../notification/idleSuppression', () => ({
-  recentlySuppressed: vi.fn().mockReturnValue(false),
   clearPty: vi.fn(),
 }));
 

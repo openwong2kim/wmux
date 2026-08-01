@@ -26,7 +26,6 @@ vi.mock('../sendNotification', () => ({
 }));
 
 vi.mock('../idleSuppression', () => ({
-  recentlySuppressed: vi.fn().mockReturnValue(false),
   clearPty: vi.fn(),
 }));
 

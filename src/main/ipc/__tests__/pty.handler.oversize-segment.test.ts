@@ -137,14 +137,4 @@ describe('pty.handler PTY_WRITE oversize segmentation (paste-truncation fix)', (
     expect(block).toMatch(/data\.length\s*>\s*PTY_WRITE_HARD_LIMIT/);
   });
 
-  it('preserves user-write marker so idle suppression still fires', () => {
-    const block = writeBlock();
-    // markUserWrite must run for every accepted write — the idle
-    // notification suppression (see idleSuppression.ts) depends on
-    // this stamp to avoid firing "task may have finished" while the
-    // user is actively typing/pasting. If a future refactor moves
-    // markUserWrite into the segmentation loop or skips it for
-    // oversize paths, idle notifications regress.
-    expect(block).toMatch(/markUserWrite\(id\)/);
-  });
 });

@@ -1,65 +1,41 @@
 /**
- * Per-PTY suppression for the ActivityMonitor "Task may have finished"
- * fallback notification.
+ * Per-PTY resize bookkeeping for the AgentDetector emission-reset guard.
  *
- * The fallback fires when output has been quiet for IDLE_DELAY_MS (5s) after
- * a sustained burst. That heuristic produces false positives in two
- * everyday cases:
+ * This module used to carry a second, much wider guard: a 30s window that
+ * suppressed the ActivityMonitor "Task may have finished" fallback
+ * NOTIFICATION after a resize redraw or a burst of typing. That toast was
+ * removed (see PTYBridge.onActiveToIdle / DaemonNotificationRouter.onIdle —
+ * the byte-silence heuristic cannot tell a finished turn from a mid-turn tool
+ * call, so it raised false "Task may have finished" toasts on plain shells).
  *
- *   1. PTY resize: switching to a workspace fits xterm, sends pty:resize,
- *      and TUI agents (Claude, Codex) respond with a full-screen redraw.
- *      The redraw is several KB → ActivityMonitor enters 'active'. If the
- *      user leaves the workspace within 5s, the idle timer fires later and
- *      a notification appears for a workspace the user just visited
- *      without typing anything.
+ * The window outlived the toast and kept gating the handler's only remaining
+ * job: clearing a stale `running` back to `idle`. That was strictly wrong.
+ * `onActive` was never gated, so a resize redraw — several KB of repaint —
+ * raised a false `running` and then the window blocked the very clear that
+ * would have corrected it. Worse, ActivityMonitor consumes its state
+ * transition BEFORE invoking callbacks, so a swallowed idle never retried:
+ * a quiet pane stayed `running` forever, and for a plain shell (no
+ * AgentDetector match, so no `session:agent` ever arrives) `session:idle` is
+ * the only path that can clear the status at all. See issue #733.
  *
- *   2. User typing: keystrokes echo back through the PTY (the shell or TUI
- *      writes the typed character to the screen). Long input, paste, or
- *      sustained typing crosses the active threshold; pausing to think
- *      then fires the idle notification while the user is still composing.
- *
- * Both PTYBridge (local mode) and DaemonNotificationRouter (daemon mode)
- * consult `recentlySuppressed(ptyId)` before emitting the activity
- * fallback, and skip when a recent resize / user write happened.
- *
- * AgentDetector emissions are NOT gated by this — they are precise signals
- * tied to specific prompt patterns, not throughput heuristics.
+ * What remains is the narrow, still-justified guard: a resize is followed
+ * within a couple of seconds by the TUI's full-screen redraw, and resetting
+ * AgentDetector's emission dedup on that burst would let an UNCHANGED idle
+ * footer re-match and re-fire a stale "Ready for input".
  */
 
-// Window length: bigger than ActivityMonitor's IDLE_DELAY_MS (5s) so any
-// idle timer that started during the suppression window still observes the
-// suppression when it fires. 30s gives ample headroom for slow typists
-// and large redraws without masking genuine long-running agent output.
-const SUPPRESSION_WINDOW_MS = 30_000;
-
 const lastResizeAt = new Map<string, number>();
-const lastUserWriteAt = new Map<string, number>();
 
 export function markResize(ptyId: string): void {
   lastResizeAt.set(ptyId, Date.now());
 }
 
-export function markUserWrite(ptyId: string): void {
-  lastUserWriteAt.set(ptyId, Date.now());
-}
-
-export function recentlySuppressed(ptyId: string, now: number = Date.now()): boolean {
-  const r = lastResizeAt.get(ptyId) ?? 0;
-  const w = lastUserWriteAt.get(ptyId) ?? 0;
-  return (now - r < SUPPRESSION_WINDOW_MS) || (now - w < SUPPRESSION_WINDOW_MS);
-}
-
 /**
- * Resize-only check with a caller-chosen (much shorter) window. Used by the
- * AgentDetector emission-reset guard in PTYBridge: a pty:resize is followed
- * within a couple of seconds by the TUI's full-screen redraw burst, and
- * resetting the detector's dedup on that burst lets the UNCHANGED idle
- * footer re-match and re-fire a stale "Ready for input". 3s is deliberately
- * far tighter than SUPPRESSION_WINDOW_MS: this guard delays a dedup RESET
- * (bookkeeping), not a user-visible notification — a genuinely new agent
- * turn re-arms on its next non-resize burst. The daemon process keeps its
- * own timestamp (DaemonPTYBridge.noteResize); these Maps are main-process
- * state only.
+ * Resize-recency check with a caller-chosen window. Used by the AgentDetector
+ * emission-reset guard in PTYBridge, which delays a dedup RESET (bookkeeping),
+ * never a user-visible status update — a genuinely new agent turn re-arms on
+ * its next non-resize burst. The daemon process keeps its own timestamp
+ * (DaemonPTYBridge.noteResize); this Map is main-process state only.
  */
 export const RESIZE_REDRAW_GUARD_MS = 3_000;
 
@@ -73,5 +49,4 @@ export function recentlyResized(
 
 export function clearPty(ptyId: string): void {
   lastResizeAt.delete(ptyId);
-  lastUserWriteAt.delete(ptyId);
 }

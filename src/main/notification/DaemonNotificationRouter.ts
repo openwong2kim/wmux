@@ -4,7 +4,7 @@ import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { IPC } from '../../shared/constants';
 import { dispatchNotification } from './dispatchNotification';
-import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
+import { clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { eventBus } from '../events/EventBus';
 import {
@@ -935,8 +935,11 @@ export class DaemonNotificationRouter {
       const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
       if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
-      // Same resize/typing suppression as local mode (see idleSuppression.ts).
-      if (recentlySuppressed(payload.sessionId, now)) return;
+      // No resize/typing gate here: this handler's only job is the status
+      // clear, and dropping it wedges the pane at `running` permanently
+      // (ActivityMonitor has already consumed the transition, and a quiet pane
+      // never produces another burst to re-fire it). See idleSuppression.ts
+      // and issue #733. The precise-status deference above still applies.
       try {
         const win = this.getWindow();
         // Daemon-mode twin of PTYBridge.onActiveToIdle: keep the stale-'running'
