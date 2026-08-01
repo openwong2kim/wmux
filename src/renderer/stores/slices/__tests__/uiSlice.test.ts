@@ -368,6 +368,42 @@ describe('UISlice — multiview', () => {
     expect(orphan.setActiveWorkspace).not.toHaveBeenCalled();
   });
 
+  // Arrangement is a second input to the grid geometry (#746). The column count
+  // lives in multiviewColumnCount(); these guard that arrow-nav reads the SAME
+  // count the CSS does, which is the failure the shared helper exists to prevent.
+
+  it('rows arrangement: up/down walk every tile, left/right no-op', () => {
+    // Layout (1 col): A / B / C / D
+    const { store, setActiveWorkspace } = withMvNav(['A', 'B', 'C', 'D'], 'A');
+    store.setState({ multiviewArrangement: 'rows' });
+    store.getState().focusMultiviewDirection('down'); // A→B
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    store.getState().focusMultiviewDirection('down'); // B→C
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('C');
+    store.getState().focusMultiviewDirection('up');   // C→B
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    setActiveWorkspace.mockClear();
+    store.getState().focusMultiviewDirection('left');
+    store.getState().focusMultiviewDirection('right');
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('columns arrangement: left/right walk every tile, up/down no-op', () => {
+    // Layout (4 cols): A B C D — note 4 tiles would be 2x2 under `auto`.
+    const { store, setActiveWorkspace } = withMvNav(['A', 'B', 'C', 'D'], 'A');
+    store.setState({ multiviewArrangement: 'columns' });
+    store.getState().focusMultiviewDirection('right'); // A→B
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    store.getState().focusMultiviewDirection('right'); // B→C
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('C');
+    store.getState().focusMultiviewDirection('left');  // C→B
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    setActiveWorkspace.mockClear();
+    store.getState().focusMultiviewDirection('up');
+    store.getState().focusMultiviewDirection('down');
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
   // ─── removeMultiviewWorkspace (close-button primitive) ─────────────────
   // Regression set for the multiview-X bug. Before the fix, the tile X
   // button called clearMultiview() so any tile collapsed the whole group.

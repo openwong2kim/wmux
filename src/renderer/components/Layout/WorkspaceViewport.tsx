@@ -13,10 +13,15 @@
 // an untouched workspace referentially stable, and `isActive` is a bool that
 // flips for only two slots on a switch.
 
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
+import {
+  multiviewColumnCount,
+  MULTIVIEW_MIN_TILE_HEIGHT_PX,
+  MULTIVIEW_MIN_TILE_WIDTH_PX,
+} from '../../utils/multiviewGrid';
 import type { Workspace } from '../../../shared/types';
 
 /** One single-view workspace pane subtree. Inactive → display:none (kept mounted).
@@ -71,8 +76,17 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   onActivate: (id: string) => void;
   onRemove: (id: string, isActive: boolean, multiviewCount: number) => void;
 }) {
+  // The grid scrolls once the tile floors bind (see multiviewGrid.ts), so a tile
+  // reached by Ctrl+Shift+Arrow can be off-screen. `nearest` on both axes is a
+  // no-op when the tile is already visible, so mouse activation is unaffected.
+  const tileRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isActive) tileRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [isActive]);
+
   return (
     <div
+      ref={tileRef}
       className="relative flex flex-col min-w-0 min-h-0 overflow-hidden cursor-pointer"
       style={{
         border: isActive ? '2px solid var(--accent-blue)' : '2px solid transparent',
@@ -128,6 +142,7 @@ export function WorkspaceViewport() {
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const multiviewIds = useStore((s) => s.multiviewIds);
+  const multiviewArrangement = useStore((s) => s.multiviewArrangement);
   // Cold-park (TASK-9): parked ids render a placeholder instead of PaneContainer.
   const parkedWorkspaceIds = useStore((s) => s.parkedWorkspaceIds);
   const paneGate = useStore((s) => s.paneGate);
@@ -170,9 +185,14 @@ export function WorkspaceViewport() {
         className="flex-1 min-h-0"
         style={{
           display: 'grid',
-          gridTemplateColumns:
-            multiviewIds.length === 2 ? '1fr 1fr' : multiviewIds.length <= 4 ? '1fr 1fr' : 'repeat(3, 1fr)',
-          gridAutoRows: '1fr',
+          // Tracks have a floor and the grid scrolls rather than shrinking tiles
+          // past readability — an explicit arrangement never degrades to `auto`.
+          gridTemplateColumns: `repeat(${multiviewColumnCount(
+            multiviewIds.length,
+            multiviewArrangement,
+          )}, minmax(${MULTIVIEW_MIN_TILE_WIDTH_PX}px, 1fr))`,
+          gridAutoRows: `minmax(${MULTIVIEW_MIN_TILE_HEIGHT_PX}px, 1fr)`,
+          overflow: 'auto',
           gap: '2px',
           backgroundColor: 'var(--bg-surface)',
         }}

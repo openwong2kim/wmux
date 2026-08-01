@@ -708,6 +708,8 @@ export interface SessionData {
    */
   a2aAutoApproveExecute?: boolean;
   sidebarPosition?: 'left' | 'right';
+  /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
+  multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;

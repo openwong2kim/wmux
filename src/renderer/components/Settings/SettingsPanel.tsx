@@ -25,6 +25,7 @@ import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
+import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
@@ -3355,6 +3356,8 @@ function TabAppearance() {
 
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
+  const multiviewArrangement = useStore((s) => s.multiviewArrangement);
+  const setMultiviewArrangement = useStore((s) => s.setMultiviewArrangement);
 
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
@@ -3451,6 +3454,30 @@ function TabAppearance() {
                 }}
               >
                 {pos === 'left' ? t('settings.sidebarLeft') : t('settings.sidebarRight')}
+              </button>
+            ))}
+          </div>
+        </SettingRow>
+        <SettingRow
+          label={t('settings.multiviewArrangement')}
+          description={t('settings.multiviewArrangementDesc')}
+        >
+          <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
+            {MULTIVIEW_ARRANGEMENTS.map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setMultiviewArrangement(mode)}
+                className="px-3 py-1 text-xs font-mono transition-colors"
+                style={{
+                  backgroundColor: multiviewArrangement === mode ? 'var(--accent-blue)' : 'var(--bg-surface)',
+                  color: multiviewArrangement === mode ? 'var(--bg-base)' : 'var(--text-subtle)',
+                }}
+              >
+                {mode === 'auto'
+                  ? t('settings.multiviewAuto')
+                  : mode === 'columns'
+                    ? t('settings.multiviewColumns')
+                    : t('settings.multiviewRows')}
               </button>
             ))}
           </div>

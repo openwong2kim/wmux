@@ -8,6 +8,7 @@ import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n'
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
+import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
@@ -818,6 +819,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.a2aAutoApproveExecute = data.a2aAutoApproveExecute;
       }
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
+      // Whitelisted, not a bare truthiness check: a forward-version session file
+      // that names a fourth arrangement must not park an unknown string in the
+      // store, where the settings control would render with nothing selected.
+      if (data.multiviewArrangement && MULTIVIEW_ARRANGEMENTS.includes(data.multiviewArrangement)) {
+        state.multiviewArrangement = data.multiviewArrangement;
+      }
       if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
       // Whitelist + dedupe on the way in: a corrupted or forward-version
       // session file must not park unknown strings in the store, where the

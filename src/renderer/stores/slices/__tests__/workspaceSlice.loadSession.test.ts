@@ -22,6 +22,7 @@ type TestState = WorkspaceSlice & {
   scrollbackLines: number;
   a2aAutoApproveExecute: boolean;
   sidebarPosition: 'left' | 'right';
+  multiviewArrangement: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
   notificationRingEnabled: boolean;
@@ -70,6 +71,7 @@ function createTestStore() {
       scrollbackLines: 10000,
       a2aAutoApproveExecute: false,
       sidebarPosition: 'left',
+      multiviewArrangement: 'auto',
       notificationSoundEnabled: true,
       toastEnabled: true,
       notificationRingEnabled: true,
@@ -530,6 +532,41 @@ describe('loadSession — A2A execute auto-approve', () => {
       a2aAutoApproveExecute: 'true',
     } as unknown as SessionData);
     expect(store.getState().a2aAutoApproveExecute).toBe(false);
+  });
+});
+
+describe('loadSession — multiview arrangement (#746)', () => {
+  function sessionWith(arrangement: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-mv',
+      name: 'MV',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      multiviewArrangement: arrangement,
+    } as unknown as SessionData;
+  }
+
+  it('restores a saved arrangement', () => {
+    // The save side (AppLayout.buildSessionPayload) and this read-back are
+    // separate edits; without this the pref silently resets on every restart.
+    const store = createTestStore();
+    expect(store.getState().multiviewArrangement).toBe('auto');
+    store.getState().loadSession(sessionWith('rows'));
+    expect(store.getState().multiviewArrangement).toBe('rows');
+  });
+
+  it('rejects an unknown arrangement instead of parking it in the store', () => {
+    // Downgrading from a build that ships a fourth mode: the string is truthy,
+    // so a bare `if (data.x)` would keep it and leave the settings segmented
+    // control with nothing selected.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith('masonry'));
+    expect(store.getState().multiviewArrangement).toBe('auto');
   });
 });
 

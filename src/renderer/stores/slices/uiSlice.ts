@@ -22,6 +22,7 @@ function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boole
 }
 const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
 import type { FleetSortMode } from '../selectors/fleet';
+import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
   normalizeRoleBinding,
   type OrchestratorRoleBindings,
@@ -469,10 +470,13 @@ export interface UISlice {
    * Move active-workspace focus to the spatially adjacent multiview tile.
    * No-op unless the multiview grid is actually showing (≥2 members AND the
    * active workspace is one of them — matches AppLayout's render gate). Column
-   * count mirrors AppLayout's grid (≤4 tiles → 2 cols, else 3) so arrow nav
-   * matches what the user sees on screen.
+   * count comes from multiviewColumnCount(), the same helper the grid CSS uses,
+   * so arrow nav matches what the user sees on screen under every arrangement.
    */
   focusMultiviewDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
+  /** How the multiview grid arranges its tiles. Persisted with the other UI prefs. */
+  multiviewArrangement: MultiviewArrangement;
+  setMultiviewArrangement: (arrangement: MultiviewArrangement) => void;
 
   // ─── Sidebar drag-reorder state ────────────────────────────────────────
   // Holds the source index of an in-flight sidebar reorder drag. We can't
@@ -1194,6 +1198,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: [] as string[],
 
+  multiviewArrangement: 'auto' as MultiviewArrangement,
+
+  setMultiviewArrangement: (arrangement) => set((state) => {
+    state.multiviewArrangement = arrangement;
+  }),
+
   toggleMultiviewWorkspace: (wsId) => set((state) => {
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx >= 0) {
@@ -1248,8 +1258,8 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (ids.length < 2) return;
     const idx = ids.indexOf(state.activeWorkspaceId);
     if (idx < 0) return;
-    // Column count mirrors AppLayout.tsx grid (≤4 tiles → 2 cols, else 3).
-    const cols = ids.length <= 4 ? 2 : 3;
+    // Same helper the grid CSS reads — see utils/multiviewGrid.ts.
+    const cols = multiviewColumnCount(ids.length, state.multiviewArrangement);
     const col = idx % cols;
     let target = -1;
     switch (direction) {
