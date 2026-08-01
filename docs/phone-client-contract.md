@@ -269,10 +269,11 @@ buffer is locally scrollable.
 ```
 POST /api/sessions/<id>/resize   body: {cols, rows}
   → 200 {cols, rows, owner: 'caller'}
-  → 400 {error: 'bad-geometry'}                          not an integer in 1..1000
+  → 400 {error: 'bad-geometry'}          cols 40..1000, rows 8..1000, integers
   → 404 {error: 'session not found'}
   → 409 {error: 'desk-owns-size', cols, rows, owner: 'desk'}
-  → 409 {error: 'resize-failed', detail}                 pane is dead or suspended
+  → 409 {error: 'resize-failed', detail} dead, suspended, or still recovering
+  → 429 {error: 'resize-too-often', cols, rows, retryAfterMs}
 ```
 
 A desk pane is commonly 151×47, and no readable phone font fits 151 columns. The
@@ -290,7 +291,19 @@ Do not treat the 409 as an error to retry. It is the answer: render at the size
 it names, and try again after the pane's `state` goes `detached`.
 
 **Render at the geometry in the 200, not at the one you asked for.** The daemon
-floors cols at 10 and rows at 2 (a zsh SIGBUS guard), so those can differ.
+answers with what it stored, which is not promised to equal the request.
+
+**Debounce, and bound the geometry.** One session accepts a resize at most every
+250 ms; anything sooner is `429` carrying `retryAfterMs` and the pane's current
+size. This is not only about load — every accepted resize arms the daemon's
+redraw guard, and a client resizing in a tight loop can stop new approvals from
+being detected at all. Drive this from settled layout, never from an animation
+frame.
+
+The floor is `cols >= 40`, `rows >= 8` — well above the 10/2 the daemon itself
+tolerates. That lower pair only promises the shell will not crash; a pane driven
+to 10 columns hard-wraps everything it prints, and scrollback does not re-flow,
+so those bytes stay ruined after the desk takes its size back.
 
 The route is additive, so it does **not** move `protocolVersion` (§1). A daemon
 that predates it has no such route and answers 404 for a pane you just listed —

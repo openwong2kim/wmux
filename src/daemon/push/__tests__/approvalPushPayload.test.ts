@@ -31,6 +31,39 @@ describe('buildApprovalPushPayload', () => {
     expect(buildApprovalPushPayload(request({ risk: 'critical' })).risk).toBe('critical');
   });
 
+  it('★ the softer tier is critical HERE, even though the record says nothing', () => {
+    // `ApprovalRequest.risk` is only ever set by `hasCriticalRisk`, which
+    // ignores the `review` tier — so the record for a `DELETE FROM` carries no
+    // risk at all. Copying that through would stamp `normal`, and `normal` is
+    // not a description: the extension reads it as "one tap on a locked screen
+    // is enough". A second look is exactly what a lock screen cannot give.
+    for (const question of ['DELETE FROM users WHERE 1=1?', 'run kubectl delete pod api-7?']) {
+      const payload = buildApprovalPushPayload(request({ question }));
+      expect(payload.risk, question).toBe('critical');
+    }
+  });
+
+  it('★ scans option and choice labels, not only the question', () => {
+    // The question can be blandly worded while the thing being agreed to sits
+    // in a label.
+    expect(
+      buildApprovalPushPayload(request({ question: 'Proceed?', options: ['rm -rf ./build'] })).risk,
+    ).toBe('critical');
+    expect(
+      buildApprovalPushPayload(
+        request({ question: 'Proceed?', choices: [{ key: '1', label: 'terraform destroy' }] }),
+      ).risk,
+    ).toBe('critical');
+  });
+
+  it('an ordinary question is still ordinary — the gate must not swallow everything', () => {
+    // A rule that answered `critical` to everything would be the same bug in
+    // the other direction: the button would never appear and the whole change
+    // would be pointless.
+    expect(buildApprovalPushPayload(request({ question: 'Write the file to src/a.ts?' })).risk)
+      .toBe(PUSH_RISK_NORMAL);
+  });
+
   it('quotes the question, and falls back when there is none', () => {
     expect(buildApprovalPushPayload(request({ question: 'Deploy to prod?' })).body).toBe(
       'Deploy to prod?',

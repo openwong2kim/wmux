@@ -227,7 +227,7 @@ export interface WebDeviceResolver {
    */
   registerPush?(
     deviceId: string,
-    input: { apnsToken: string; publicKey: string; apnsEnvironment?: string },
+    input: { apnsToken: string; publicKey: string; apnsEnvironment?: unknown },
   ): { ok: boolean; reason?: string };
 }
 
@@ -493,12 +493,39 @@ const inFlightDiffs = new Map<string, Promise<SessionDiffResult>>();
  */
 const MAX_REQUESTED_GEOMETRY = 1000;
 
-/** One side of a requested PTY geometry: an integer in `1..MAX_REQUESTED_GEOMETRY`. */
-function isGeometryValue(value: unknown): value is number {
+/**
+ * Narrowest geometry this ROUTE will forward — deliberately far above the
+ * session manager's own floor (10 cols, 2 rows).
+ *
+ * That floor is a crash guard: below ~7 columns an interactive zsh dies inside
+ * `zle.so`. It is not a claim that 10 columns is a usable terminal. A pane
+ * driven to 10 columns hard-wraps everything it prints, and those bytes are in
+ * the ring buffer for good — scrollback does not re-flow, so "the next desk
+ * attach fixes it" is true of future output and false of the transcript.
+ *
+ * A phone in the narrowest orientation still asks for far more than this, so
+ * the bound costs no real client anything.
+ */
+const MIN_REQUESTED_COLS = 40;
+const MIN_REQUESTED_ROWS = 8;
+
+/**
+ * Least time between two accepted resizes of ONE session.
+ *
+ * Sized to be invisible to a real client — the phone debounces its own layout
+ * passes at 250 ms — and to put a ceiling on what a hostile one can do.
+ */
+const MIN_RESIZE_INTERVAL_MS = 250;
+
+/** Sessions tracked for rate limiting before the map is swept against the roster. */
+const RESIZE_TRACKING_CAP = 256;
+
+/** One side of a requested PTY geometry. */
+function isGeometryValue(value: unknown, min: number): value is number {
   return (
     typeof value === 'number' &&
     Number.isInteger(value) &&
-    value >= 1 &&
+    value >= min &&
     value <= MAX_REQUESTED_GEOMETRY
   );
 }
@@ -698,6 +725,16 @@ export class WebTerminalServer {
 
   /** Lazily-built git runner for `/api/sessions/:id/diff` (see that handler). */
   private git: GitRunner | null = null;
+
+  /**
+   * When each session was last resized through `/api/sessions/:id/resize`.
+   *
+   * Per server rather than module-level, unlike the diff concurrency counter:
+   * that one bounds `git` (a machine-wide resource), this one bounds SIGWINCH
+   * to sessions this server can see, and a test that starts two servers must
+   * not have one inherit the other's history.
+   */
+  private lastResizeAt = new Map<string, number>();
 
   /**
    * Upload bodies currently buffering in memory. Bounded by
@@ -1527,10 +1564,15 @@ export class WebTerminalServer {
 
     this.readJsonBody(req, res, (body) => {
       const b = (body ?? {}) as { cols?: unknown; rows?: unknown };
-      if (!isGeometryValue(b.cols) || !isGeometryValue(b.rows)) {
+      if (
+        !isGeometryValue(b.cols, MIN_REQUESTED_COLS) ||
+        !isGeometryValue(b.rows, MIN_REQUESTED_ROWS)
+      ) {
         return this.json(res, 400, {
           error: 'bad-geometry',
-          detail: `cols and rows must be integers in 1..${MAX_REQUESTED_GEOMETRY}`,
+          detail:
+            `cols must be an integer in ${MIN_REQUESTED_COLS}..${MAX_REQUESTED_GEOMETRY}, ` +
+            `rows in ${MIN_REQUESTED_ROWS}..${MAX_REQUESTED_GEOMETRY}`,
         });
       }
 
@@ -1547,24 +1589,77 @@ export class WebTerminalServer {
           owner: 'desk',
         });
       }
+      // A session recovered from a reboot and not yet resized is MUTED, and
+      // `resizeSession` treats its first resize as the signal to unmute and
+      // start capturing. That is the desk's handshake, not ours: capture
+      // started here would begin at the phone's geometry, and the pre-resize
+      // output the mute exists to hold back would land in the ring buffer
+      // interleaved with output painted for a different width — permanently,
+      // because scrollback is not re-flowable. The route's claim that it only
+      // changes two numbers is only true once that handshake has happened.
+      if (current.deferred) {
+        return this.json(res, 409, {
+          error: 'resize-failed',
+          detail: 'the pane is still recovering and has not been attached yet',
+        });
+      }
+
+      // Frequency bound, per session. Without it a paired device can alternate
+      // two geometries as fast as it can post: every accepted resize delivers a
+      // SIGWINCH, makes a full-screen TUI reallocate and repaint, AND stamps
+      // `bridge.noteResize()`. That last one is the one that bites — the
+      // redraw guard it arms suppresses AgentDetector's emission dedup reset,
+      // so a device that keeps the guard permanently armed can stop new
+      // `awaiting_input` prompts from ever being detected. A rate limit here is
+      // not only about CPU; it is what keeps approvals from going silent.
+      const now = this.now();
+      const last = this.lastResizeAt.get(id);
+      if (last !== undefined && now - last < MIN_RESIZE_INTERVAL_MS) {
+        return this.json(res, 429, {
+          error: 'resize-too-often',
+          cols: current.meta.cols,
+          rows: current.meta.rows,
+          retryAfterMs: MIN_RESIZE_INTERVAL_MS - (now - last),
+        });
+      }
+      this.lastResizeAt.set(id, now);
+      // The map is keyed by a session id that outlives nothing else here, so it
+      // is swept against the live roster rather than left to grow with every
+      // pane the daemon has ever had.
+      if (this.lastResizeAt.size > RESIZE_TRACKING_CAP) this.sweepResizeTracking();
 
       try {
         this.deps.sessionManager.resizeSession(id, b.cols, b.rows);
       } catch (err) {
         // `dead` and `suspended` both throw here. Neither is a bug on the
-        // caller's side — the pane list it decided from is a poll old.
+        // caller's side — the pane list it decided from is a poll old. The
+        // daemon's own wording goes to the LOG, never onto the wire: it names
+        // session ids and can carry an errno or a path, and the caller's only
+        // useful action ("not this pane, not now") does not depend on which.
         this.deps.log('warn', `[web] resize failed for ${id}: ${errMsg(err)}`);
-        return this.json(res, 409, { error: 'resize-failed', detail: errMsg(err) });
+        return this.json(res, 409, {
+          error: 'resize-failed',
+          detail: 'the pane is not in a state that can be resized',
+        });
       }
 
       // The APPLIED geometry, read back from the daemon's own record: the
-      // manager floors cols at MIN_SAFE_COLS (a zsh SIGBUS guard), so what was
-      // asked for and what the PTY now is are not always the same number, and
-      // a client that rendered to its request would wrap at the wrong width.
+      // manager floors cols and rows, so what was asked for and what the PTY
+      // now is are not always the same number, and a client that rendered to
+      // its request would wrap at the wrong width.
       const after = this.deps.sessionManager.getSession(id);
+      if (!after) {
+        // The pane died between the resize and this read. Answering 200 with
+        // the REQUESTED geometry would be the one thing the paragraph above
+        // forbids — reporting a width no PTY ever had.
+        return this.json(res, 409, {
+          error: 'resize-failed',
+          detail: 'the pane is not in a state that can be resized',
+        });
+      }
       return this.json(res, 200, {
-        cols: after?.meta.cols ?? b.cols,
-        rows: after?.meta.rows ?? b.rows,
+        cols: after.meta.cols,
+        rows: after.meta.rows,
         owner: 'caller',
       });
     });
@@ -1992,17 +2087,25 @@ export class WebTerminalServer {
       };
       const apnsToken = typeof b.apnsToken === 'string' ? b.apnsToken : '';
       const publicKey = typeof b.publicKey === 'string' ? b.publicKey : '';
-      // Passed through unvalidated on purpose — the store owns the allowlist,
-      // so there is one place that decides what a stage may be. Absent stays
-      // absent: a build that cannot name its own stage must not have one
-      // guessed for it here.
-      const apnsEnvironment = typeof b.apnsEnvironment === 'string' ? b.apnsEnvironment : undefined;
+      // PRESENCE, not type. The store owns the allowlist so there is one place
+      // that decides what a stage may be — but only a field that is genuinely
+      // ABSENT may reach it as absent. Coercing a present-but-wrong value
+      // (`null`, a number, an object) to `undefined` here would answer 200 and,
+      // because a registration replaces the record wholesale, delete a stage
+      // the daemon already knew — routing that device's push to the host that
+      // rejects it, in response to a request the contract promises to refuse.
+      // Handed over RAW, never coerced. `String(['production'])` is
+      // `'production'` — a one-element array would sail through a stringifying
+      // guard and be stored as a stage the client never sent. The store
+      // strict-compares against the two literals, so anything else (an array, a
+      // number, `null`, an object) fails there and comes back 400.
+      const hasStage = 'apnsEnvironment' in b;
       let result: { ok: boolean; reason?: string };
       try {
         result = devices.registerPush!(principal.deviceId, {
           apnsToken,
           publicKey,
-          ...(apnsEnvironment !== undefined ? { apnsEnvironment } : {}),
+          ...(hasStage ? { apnsEnvironment: b.apnsEnvironment } : {}),
         });
       } catch (err) {
         this.deps.log('warn', `[web] push registration threw: ${errMsg(err)}`);
@@ -2350,6 +2453,21 @@ export class WebTerminalServer {
 
   private now(): number {
     return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /**
+   * Drop rate-limit entries for sessions that no longer exist.
+   *
+   * Called only when the map outgrows its cap, so the common case costs
+   * nothing. Forgetting a live session's entry would be harmless anyway — it
+   * grants one extra resize — which is why this can be lazy rather than wired
+   * into session teardown.
+   */
+  private sweepResizeTracking(): void {
+    const live = new Set(this.deps.sessionManager.listLiveSessions().map((s) => s.id));
+    for (const id of this.lastResizeAt.keys()) {
+      if (!live.has(id)) this.lastResizeAt.delete(id);
+    }
   }
 
   /** The exact JSON one attention event carries on the wire, live or replayed. */

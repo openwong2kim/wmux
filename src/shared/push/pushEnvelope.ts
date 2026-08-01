@@ -123,6 +123,13 @@ export const PUSH_HKDF_INFO = 'wmux:push:v1';
 /** `PushPayload.risk` when no destructive-action pattern matched. */
 export const PUSH_RISK_NORMAL = 'normal';
 
+/**
+ * `PushPayload.risk` when one did — at EITHER tier, which is wider than the
+ * REST field's `critical`. See `buildApprovalPushPayload` for why the lock
+ * screen draws the line in a different place than the UI does.
+ */
+export const PUSH_RISK_CRITICAL = 'critical';
+
 export const PUSH_AAD_PREFIX = 'wmux:push:v1';
 export const PUSH_AAD_SEPARATOR = '|';
 

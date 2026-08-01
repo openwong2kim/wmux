@@ -726,6 +726,39 @@ describe('DeviceStore — APNs stage, per device', () => {
     expect(s.pushTargets()[0]?.push.apnsEnvironment).toBeUndefined();
   });
 
+  it('★ survives a daemon restart', async () => {
+    // The bug this exists for: `persist` wrote the stage and the LOADER threw
+    // it away, so one restart put the whole roster back on the relay's single
+    // APNS_ENV — reintroducing the BadDeviceToken silently, at a moment nobody
+    // connects to a registration.
+    const first = store();
+    const minted = await first.mint({ name: 'Phone' });
+    first.registerPush(minted.deviceId, {
+      apnsToken: APNS_TOKEN, publicKey: PUBLIC_KEY, apnsEnvironment: 'development',
+    });
+
+    const reloaded = store();
+    expect(reloaded.pushTargets()[0]?.push.apnsEnvironment).toBe('development');
+  });
+
+  it('a junk stage on disk degrades to unknown rather than dropping the registration', async () => {
+    const s = store();
+    const minted = await s.mint({ name: 'Phone' });
+    s.registerPush(minted.deviceId, { apnsToken: APNS_TOKEN, publicKey: PUBLIC_KEY });
+    // Hand-edit the roster the way a bad merge or a half-written file would.
+    const statePath = getDeviceStatePath(dir);
+    const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    raw.devices[0].push.apnsEnvironment = 'staging';
+    fs.writeFileSync(statePath, JSON.stringify(raw));
+
+    const reloaded = store();
+    const target = reloaded.pushTargets()[0];
+    // The device is still pushable — losing the whole registration over one
+    // bad field would be a worse failure than falling back to the relay's env.
+    expect(target?.push.apnsToken).toBe(APNS_TOKEN);
+    expect(target?.push.apnsEnvironment).toBeUndefined();
+  });
+
   it('refuses a stage that is neither of Apple two words', async () => {
     const s = store();
     const minted = await s.mint({ name: 'Phone' });

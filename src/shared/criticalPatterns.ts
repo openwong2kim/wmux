@@ -53,3 +53,31 @@ export function hasCriticalRisk(...texts: (string | undefined | null)[]): boolea
   }
   return false;
 }
+
+/**
+ * Whether any piece of the supplied text names an action at EITHER tier.
+ *
+ * The counterpart to `hasCriticalRisk`, for the one caller whose question is
+ * not "is this the dangerous class?" but "may this be approved with one tap on
+ * a locked screen?".
+ *
+ * Those are different questions and the softer tier answers them differently.
+ * `DELETE FROM` and `kubectl delete` are `review` precisely because they are
+ * destructive-but-recoverable — worth a second look, not worth a red banner. A
+ * second look is exactly what a locked phone cannot give: there is no screen to
+ * read, no Face ID, and no undo behind the button. So for that decision the
+ * softer tier belongs on the same side as the harder one.
+ *
+ * See `buildApprovalPushPayload`, the only caller. Do not reach for this to set
+ * `ApprovalRequest.risk` — that field means `critical` and nothing else, and
+ * widening it would relabel every `DELETE FROM` in the UI.
+ */
+export function hasElevatedRisk(...texts: (string | undefined | null)[]): boolean {
+  for (const text of texts) {
+    if (typeof text !== 'string' || !text) continue;
+    for (const p of CRITICAL_PATTERNS) {
+      if (p.regex.test(text)) return true;
+    }
+  }
+  return false;
+}

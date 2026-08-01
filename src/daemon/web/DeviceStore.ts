@@ -490,7 +490,7 @@ export class DeviceStore {
    */
   registerPush(
     deviceId: string,
-    input: { apnsToken: string; publicKey: string; apnsEnvironment?: string },
+    input: { apnsToken: string; publicKey: string; apnsEnvironment?: unknown },
   ): {
     ok: boolean;
     reason?: 'not-found' | 'revoked' | 'bad-token' | 'bad-key' | 'bad-apns-environment' | 'persist-failed';
@@ -948,7 +948,20 @@ function coercePush(raw: unknown): DevicePushRegistration | null {
     typeof o['registeredAt'] === 'number' && Number.isFinite(o['registeredAt'])
       ? o['registeredAt']
       : 0;
-  return { apnsToken, publicKey, registeredAt };
+  // Restored, not re-derived. `persist` writes this field, so a loader that
+  // dropped it would lose every device's stage on the first daemon restart and
+  // silently put the whole roster back on the relay's single `APNS_ENV` — the
+  // exact BadDeviceToken this field exists to prevent, reappearing at a moment
+  // nobody connects to a registration.
+  //
+  // Anything that is not one of Apple's two words is IGNORED rather than
+  // rejected: a hand-edited or half-written record must degrade to "stage
+  // unknown" (which the relay already handles) instead of taking the whole
+  // registration down with it, and `registerPush` is where a live client is
+  // told its value was wrong.
+  const rawEnv = o['apnsEnvironment'];
+  const apnsEnvironment = rawEnv === 'development' || rawEnv === 'production' ? rawEnv : undefined;
+  return { apnsToken, publicKey, registeredAt, ...(apnsEnvironment ? { apnsEnvironment } : {}) };
 }
 
 function coerceKdf(raw: unknown): DeviceKdfParams | null {
