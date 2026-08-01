@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DeckHeartbeat, type DeckHeartbeatDeps } from '../DeckHeartbeat';
 import { CommanderEventCoalescer } from '../CommanderEventCoalescer';
-import type { WorkspaceAutonomy } from '../deckAutonomyStore';
+import { modeToWakePolicy, type WorkspaceAutonomy } from '../deckAutonomyStore';
 import type { WorkspaceDecision } from '../deckDecisionStore';
 import type { FleetSnapshot } from '../../../shared/workspaceMirror';
 
@@ -15,9 +15,13 @@ const INTERVAL = 180_000;
 
 const autonomy = (mode: WorkspaceAutonomy['mode']): WorkspaceAutonomy => ({
   mode,
+  // The heartbeat suite pre-dates the mode/wake-policy split: it only ever
+  // meant "this workspace wakes the way this mode used to imply", so seed the
+  // policy exactly as the migration does.
+  wakePolicy: modeToWakePolicy(mode),
   summarize: true,
   continueInstruction: mode !== 'off',
-  approvalPress: mode === 'auto',
+  approvalPress: mode === 'danger',
 });
 
 const attentionSnapshot = (ws = 'ws-1'): FleetSnapshot => ({
@@ -43,7 +47,7 @@ function makeDeps(over: Partial<DeckHeartbeatDeps> = {}): {
   const flush = vi.fn();
   const deps: DeckHeartbeatDeps = {
     getWorkspaceIds: () => ['ws-1'],
-    getAutonomy: () => autonomy('auto'),
+    getAutonomy: () => autonomy('danger'),
     isBusy: () => false,
     hasPendingDecision: () => false,
     getFleetSnapshot: () => attentionSnapshot(),
@@ -187,7 +191,7 @@ describe('DeckHeartbeat — WP3 stale-decision re-examine', () => {
     const flush = vi.fn();
     const deps: DeckHeartbeatDeps = {
       getWorkspaceIds: () => ['ws-1'],
-      getAutonomy: () => autonomy('auto'),
+      getAutonomy: () => autonomy('danger'),
       isBusy: () => false,
       hasPendingDecision: () => true,
       getFleetSnapshot: () => attentionSnapshot(),
@@ -274,7 +278,7 @@ describe('CommanderEventCoalescer.lastWakeAt (WP4 additive accessor)', () => {
     const coalescer = new CommanderEventCoalescer({
       runTurn: async () => ({ ok: true }),
       isBusy: () => false,
-      getAutonomy: () => autonomy('auto'),
+      getAutonomy: () => autonomy('danger'),
       now: () => 5_000,
     });
     expect(coalescer.lastWakeAt('ws-1')).toBeNull();

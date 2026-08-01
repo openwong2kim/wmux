@@ -203,9 +203,9 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
  */
 export function renderAutonomyBlock(mode: AgentMode): string | null {
   switch (mode) {
-    case 'auto':
+    case 'danger':
       return (
-        '[autonomy] mode: auto — you have DECISION AUTHORITY. Resolve forks yourself from ' +
+        '[autonomy] mode: danger — you have DECISION AUTHORITY. Resolve forks yourself from ' +
         'binding policy rules, standing conventions, and memory; escalate via ' +
         'deck_ask_decision ONLY for a genuine residual fork none of those settles (or a risky/' +
         'irreversible action).'
@@ -215,6 +215,28 @@ export function renderAutonomyBlock(mode: AgentMode): string | null {
         '[autonomy] mode: assist — report and recommend; do not drive panes beyond your ' +
         'caps. Escalate genuine forks via deck_ask_decision.'
       );
+    case 'off':
+      return null;
+  }
+}
+
+/**
+ * The workspace mode, as the terminal brain's LAUNCH posture (owner decision
+ * 2026-08-01 — the mode says HOW claude starts, not what wakes it):
+ *   assist → accept-edits, danger → bypass-permissions.
+ * `off` returns null because an off workspace has no brain to launch; the null
+ * is defensive only (refuseWhenModeOff stops every turn before a spawn), and it
+ * resolves to "no flag", i.e. claude's own prompting default. Pure + exported
+ * for unit testing.
+ */
+export function modeToPermissionMode(
+  mode: AgentMode,
+): 'acceptEdits' | 'bypassPermissions' | null {
+  switch (mode) {
+    case 'assist':
+      return 'acceptEdits';
+    case 'danger':
+      return 'bypassPermissions';
     case 'off':
       return null;
   }
@@ -304,6 +326,15 @@ export function registerDeckHandler(
             },
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
             onForeignSessionId: adapterOpts.onForeignSessionId,
+            // The workspace mode IS the launch policy (owner decision
+            // 2026-08-01): assist launches claude in accept-edits, danger in
+            // bypass. Read per spawn, from here rather than inside the adapter,
+            // so the adapter keeps no store dependency. `off` cannot reach a
+            // spawn at all (refuseWhenModeOff gates every turn entry point), so
+            // it maps to the same no-flag default a non-deck embedding gets.
+            resolvePermissionMode: () => modeToPermissionMode(
+              loadWorkspaceMode(adapterOpts.workspaceId),
+            ),
             // The model picker applies to the TUI brain too (`--model`);
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).
@@ -462,6 +493,32 @@ export function registerDeckHandler(
       // eslint-disable-next-line no-console
       console.warn('[deck] failed to persist active work:', err);
     }
+  };
+
+  /**
+   * `off` means the terminal brain DOES NOT RUN (owner decision 2026-08-01).
+   *
+   * Every turn entry point calls this before ensureManager, because
+   * ensureManager is what constructs the adapter whose first send spawns the
+   * pty — refusing here is what keeps an `off` workspace from ever having a
+   * live claude. Returns the refusal verdict to hand straight back to the
+   * caller (`{ ok: false, code: 'mode_off' }`, the `{ ok, code }` shape every
+   * other deck handler rejects with), or null to proceed.
+   *
+   * The renderer disables the composer for the same reason, but that is a
+   * courtesy, not the enforcement: schedules, loops, the heartbeat and the pipe
+   * RPC all start turns without going anywhere near it.
+   */
+  const refuseWhenModeOff = (workspaceId: string): { ok: false; code: 'mode_off' } | null => {
+    let mode: AgentMode;
+    try {
+      mode = loadWorkspaceMode(workspaceId);
+    } catch {
+      // An unreadable store already resolves to the product default (off) inside
+      // the loader; this catch only covers a throw it cannot itself absorb.
+      return { ok: false, code: 'mode_off' };
+    }
+    return mode === 'off' ? { ok: false, code: 'mode_off' } : null;
   };
 
   const ensureManager = (
@@ -687,6 +744,10 @@ export function registerDeckHandler(
       if (!text.trim()) return { ok: false, code: 'empty' };
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // Mode `off`: no brain, so nothing to send to. The composer is disabled
+      // in that state, so this is the race/stale-renderer path.
+      const refusal = refuseWhenModeOff(workspaceId);
+      if (refusal) return refusal;
       let fleetContext = typeof req.fleetContext === 'string' ? req.fleetContext : undefined;
       if (fleetContext && fleetContext.length > FLEET_CONTEXT_MAX_CHARS) {
         fleetContext = fleetContext.slice(0, FLEET_CONTEXT_MAX_CHARS) + '\n…(truncated)';
@@ -938,6 +999,13 @@ export function registerDeckHandler(
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
+    // Mode `off` = the brain does not run. Checked before the busy check and
+    // before the fleet-slot acquire so an off workspace never spawns a brain,
+    // never consumes a slot, and never waits on the queued gate. Every ambient
+    // driver (heartbeat, loop, scheduler, decision resume, startup reconcile)
+    // routes through here, so this one line is the whole kill switch for them.
+    const modeRefusal = refuseWhenModeOff(workspaceId);
+    if (modeRefusal) return modeRefusal;
     // Per-workspace busy check BEFORE the fleet-slot acquire (3-way review P3):
     // a workspace already running a turn must not momentarily consume — or, for
     // the queued path, sit and WAIT on — one of the scarce global slots. ensureManager
@@ -1840,8 +1908,12 @@ export function registerDeckHandler(
     }),
   );
 
-  // ── Per-workspace agent mode (off/assist/auto) ─────────────────────────────
-  const VALID_MODES: ReadonlySet<string> = new Set(['off', 'assist', 'auto']);
+  // ── Per-workspace agent mode (off/assist/danger) ───────────────────────────
+  // The wire accepts only the CURRENT names. A stale renderer sending 'auto'
+  // is rejected rather than silently mapped: LEGACY_MODE_MAP migrates values
+  // read off disk, and letting a live write take the same path would keep the
+  // old name alive on the wire indefinitely.
+  const VALID_MODES: ReadonlySet<string> = new Set(['off', 'assist', 'danger']);
 
   ipcMain.removeHandler(IPC.DECK_MODE_GET);
   ipcMain.handle(

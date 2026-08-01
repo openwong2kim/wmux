@@ -13,7 +13,7 @@ import {
 import { type WorkspaceAutonomy } from '../deckAutonomyStore';
 
 const AUTO_AUTONOMY: WorkspaceAutonomy = {
-  mode: 'auto',
+  mode: 'danger', wakePolicy: 'all',
   summarize: true,
   continueInstruction: true,
   approvalPress: true,

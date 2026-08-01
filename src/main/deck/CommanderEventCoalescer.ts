@@ -52,7 +52,7 @@
 // actions WITHIN a wake; the budget bounds wake FREQUENCY).
 
 import type { WorkspaceAutonomy, WakePolicy } from './deckAutonomyStore';
-import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
+import { DEFAULT_AUTONOMY } from './deckAutonomyStore';
 import type { AgentLastMessage } from '../../shared/events';
 // Type-only: the level-snapshot flush consumes the renderer-pushed fleet shape.
 // No runtime dependency on the mirror — the caller (WP4 heartbeat) hands us a
@@ -375,12 +375,12 @@ export class CommanderEventCoalescer {
     const autonomy = workActive
       ? { ...standingAutonomy, summarize: true, continueInstruction: true }
       : standingAutonomy;
-    const policy: WakePolicy = loopRunning || workActive
-      ? 'all'
-      : modeToWakePolicy(standingAutonomy.mode);
+    // The wake policy is its own STORED axis (2026-08-01) — read it, never
+    // re-derive it from the mode, which now only says how the brain is launched.
+    const policy: WakePolicy = loopRunning || workActive ? 'all' : standingAutonomy.wakePolicy;
     if (policy === 'none') return;
 
-    // Attention panes to surface. 'all' (auto/loop) surfaces every non-quiescent
+    // Attention panes to surface. 'all' (policy/loop) surfaces every non-quiescent
     // pane; 'value-filtered' (assist) narrows to the blocked ones — a plain
     // turn-ended/complete pane is the summary-spam the assist filter drops,
     // exactly as it drops a plain agent.stop edge.
@@ -800,16 +800,15 @@ export class CommanderEventCoalescer {
       this.consume(st, events);
       return;
     }
-    // Per-workspace mode wake policy. A running loop OR a direct human request
-    // is explicit work and therefore wakes on all relevant lifecycle/A2A edges.
+    // Per-workspace wake policy — a STORED axis of its own (2026-08-01), no
+    // longer derived from the mode. A running loop OR a direct human request is
+    // explicit work and therefore wakes on all relevant lifecycle/A2A edges.
     // Request-scoped follow-through grants drive, never approvalPress.
     const standingAutonomy = this.safeAutonomy(workspaceId);
     const autonomy = workActive
       ? { ...standingAutonomy, summarize: true, continueInstruction: true }
       : standingAutonomy;
-    const policy: WakePolicy = loopRunning || workActive
-      ? 'all'
-      : modeToWakePolicy(standingAutonomy.mode);
+    const policy: WakePolicy = loopRunning || workActive ? 'all' : standingAutonomy.wakePolicy;
     if (policy === 'none') {
       this.consume(st, events);
       return;
@@ -1033,7 +1032,7 @@ function renderEventLine(
     : 'awaiting';
   const mayDrive =
     autonomy.continueInstruction &&
-    (autonomy.mode === 'auto' || opts.loopRunning === true || opts.workActive === true);
+    (autonomy.mode === 'danger' || opts.loopRunning === true || opts.workActive === true);
   let verdict: string;
   if (e.kind === 'a2a.completed') {
     const grade =

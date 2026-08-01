@@ -14,7 +14,7 @@ import { DEFAULT_AUTONOMY, type WorkspaceAutonomy } from '../deckAutonomyStore';
 /** Wake-on-everything autonomy (mode=auto) — the harness default so the
  *  plumbing tests aren't affected by the assist value filter. */
 const AUTO_AUTONOMY: WorkspaceAutonomy = {
-  mode: 'auto',
+  mode: 'danger', wakePolicy: 'all',
   summarize: true,
   continueInstruction: true,
   approvalPress: true,
@@ -304,7 +304,7 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     // continue tier
     const drive = makeHarness({
       loop: { running: true, iterations: 10 },
-      autonomy: { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: false },
+      autonomy: { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: true, approvalPress: false },
     });
     drive.c.push(stop(1, 'ptyA'));
     drive.c.notifyIdle('ws-1');
@@ -319,7 +319,7 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     // report tier — a running loop with continueInstruction OFF (report-only).
     const report = makeHarness({
       loop: { running: true, iterations: 10 },
-      autonomy: { mode: 'off', summarize: false, continueInstruction: false, approvalPress: false },
+      autonomy: { mode: 'off', wakePolicy: 'none', summarize: false, continueInstruction: false, approvalPress: false },
     });
     report.c.push(stop(1, 'ptyA'));
     report.c.notifyIdle('ws-1');
@@ -381,7 +381,7 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('detector-source awaiting_input + approvalPress on → VERIFY THEN PRESS (never a blind press)', () => {
     const p = buildEventPrompt(
       [buf({ source: 'detector', kind: 'agent.awaiting_input' })],
-      { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: true },
+      { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: true, approvalPress: true },
       budget,
     );
     expect(p).toContain('VERIFY THEN PRESS');
@@ -393,7 +393,7 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('detector-source awaiting_input + approvalPress OFF → NOTIFY ONLY', () => {
     const p = buildEventPrompt(
       [buf({ source: 'detector', kind: 'agent.awaiting_input' })],
-      { mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false },
+      { mode: 'assist', wakePolicy: 'value-filtered', summarize: true, continueInstruction: true, approvalPress: false },
       budget,
     );
     expect(p).toContain('NOTIFY ONLY');
@@ -403,7 +403,7 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('approvalPress off → a hook awaiting_input is NOTIFY ONLY', () => {
     const off = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.awaiting_input' })],
-      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: false },
+      { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: false, approvalPress: false },
       budget,
     );
     expect(off).toContain('NOTIFY ONLY');
@@ -413,7 +413,7 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('approvalPress on + hook source → the press is authorized', () => {
     const on = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.awaiting_input' })],
-      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: true },
+      { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: false, approvalPress: true },
       budget,
     );
     expect(on).toContain('MAY press the approval');
@@ -422,14 +422,14 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('a stop is summarize-only unless continueInstruction is on', () => {
     const off = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.stop' })],
-      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: false },
+      { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: false, approvalPress: false },
       budget,
     );
     expect(off).toContain('summarize only');
 
     const on = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.stop' })],
-      { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: false },
+      { mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: true, approvalPress: false },
       budget,
     );
     expect(on).toContain('follow-up instruction');
@@ -507,10 +507,10 @@ describe('CommanderEventCoalescer — global auto-wake switch', () => {
 
 describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
   const assist: WorkspaceAutonomy = {
-    mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
+    mode: 'assist', wakePolicy: 'value-filtered', summarize: true, continueInstruction: true, approvalPress: false,
   };
   const offMode: WorkspaceAutonomy = {
-    mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
+    mode: 'off', wakePolicy: 'none', summarize: false, continueInstruction: false, approvalPress: false,
   };
 
   it('assist DROPS a plain stop (consumed, no turn) — the summary-spam fix', async () => {
@@ -586,10 +586,10 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
 
 describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
   const assist: WorkspaceAutonomy = {
-    mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
+    mode: 'assist', wakePolicy: 'value-filtered', summarize: true, continueInstruction: true, approvalPress: false,
   };
   const offMode: WorkspaceAutonomy = {
-    mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
+    mode: 'off', wakePolicy: 'none', summarize: false, continueInstruction: false, approvalPress: false,
   };
 
   it('auto wakes on a red CI and surfaces the PR pointer + fix verdict', async () => {
@@ -710,7 +710,7 @@ describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
   it('continueInstruction OFF (assist w/o drive) frames CI as report-only', () => {
     const p = buildEventPrompt(
       [buf({ seq: 7, kind: 'pr.ci_failed', source: 'pr', agent: null, detail: { prNumber: 9, url: 'u' } })],
-      { mode: 'assist', summarize: true, continueInstruction: false, approvalPress: false },
+      { mode: 'assist', wakePolicy: 'value-filtered', summarize: true, continueInstruction: false, approvalPress: false },
       { remaining: 5, total: 5 },
     );
     expect(p).toContain('report only');

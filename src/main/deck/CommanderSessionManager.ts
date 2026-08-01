@@ -33,12 +33,14 @@ export interface CommanderSendResult {
   /** Whether the turn was accepted and started streaming. */
   ok: boolean;
   /** Present on rejection: `busy` (a turn is running), `disposed`, `empty`,
-   *  or `invalid_workspace` (handler-level, M1.5 — the send carried no valid
-   *  workspaceId to route to an orchestrator). Additionally `errored` rides an
-   *  ok:true result when the turn RAN but the adapter threw mid-stream —
-   *  callers that must distinguish "completed" from "died mid-turn" (the
-   *  re-examine consume) check it; everyone else keys off `ok` alone. */
-  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'errored';
+   *  `invalid_workspace` (handler-level, M1.5 — the send carried no valid
+   *  workspaceId to route to an orchestrator), or `mode_off` (handler-level —
+   *  the workspace's agent mode is `off`, so the brain must not run at all).
+   *  Additionally `errored` rides an ok:true result when the turn RAN but the
+   *  adapter threw mid-stream — callers that must distinguish "completed" from
+   *  "died mid-turn" (the re-examine consume) check it; everyone else keys off
+   *  `ok` alone. */
+  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'mode_off' | 'errored';
 }
 
 export interface CommanderStatusSnapshot {

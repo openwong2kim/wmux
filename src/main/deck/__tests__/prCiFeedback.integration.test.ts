@@ -129,8 +129,8 @@ async function drive(mode: AgentMode) {
 }
 
 describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
-  it('auto: a red PR wakes the brain with a fix instruction + PR pointer', async () => {
-    const chain = await drive('auto');
+  it('danger: a red PR wakes the brain with a fix instruction + PR pointer', async () => {
+    const chain = await drive('danger');
     expect(chain.prompts).toHaveLength(1);
     const { ws, prompt } = chain.prompts[0];
     expect(ws).toBe(WS);
@@ -155,8 +155,8 @@ describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
     chain.dispose();
   });
 
-  it('review slice: a fresh reviewer comment wakes the auto brain through the real bus', async () => {
-    await setWorkspaceMode(WS, 'auto', dir);
+  it('review slice: a fresh reviewer comment wakes the danger brain through the real bus', async () => {
+    await setWorkspaceMode(WS, 'danger', dir);
     const chain = bootChain(dir);
 
     // Real PrReviewRouter, wired like metadata.handler: fake gh provider only.
@@ -211,7 +211,7 @@ describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
   });
 
   it('edge-trigger holds across the real bus: a PR that stays red wakes once', async () => {
-    await setWorkspaceMode(WS, 'auto', dir);
+    await setWorkspaceMode(WS, 'danger', dir);
     const chain = bootChain(dir);
     await chain.router.note(PTY, { ...failingPr, checks: 'passing' });
     await chain.router.note(PTY, failingPr); // red — fires

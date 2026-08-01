@@ -196,15 +196,15 @@ describe('renderStaleDecisionBlock', () => {
     raisedAt: 0,
   };
 
-  it('auto mode carries the self-resolve instruction and the id', () => {
-    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'auto' });
+  it('danger mode carries the self-resolve instruction and the id', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'danger' });
     expect(out).toContain('STALE');
     expect(out).toContain('30+ minutes');
     expect(out).toContain('Force-push to main?');
     expect(out).toContain('options: yes | no');
     expect(out).toContain('id: dec-42');
     expect(out).toContain('deck_resolve_decision');
-    expect(out).toContain('AUTO mode');
+    expect(out).toContain('DANGER mode');
   });
 
   it('assist mode does NOT offer self-resolve (restate/wait only)', () => {

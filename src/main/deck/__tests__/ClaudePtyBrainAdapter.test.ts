@@ -495,6 +495,65 @@ describe('buildBrainLaunchCommand', () => {
     expect(cmd).not.toContain('--resume');
     expect(cmd).not.toContain('--mcp-config');
   });
+
+  // ── the workspace mode as a launch flag (owner decision 2026-08-01) ────────
+
+  it('assist launches in accept-edits, BEFORE --resume', () => {
+    const cmd = buildBrainLaunchCommand({
+      executable: 'claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      permissionMode: 'acceptEdits',
+      resumeSessionId: 'sess-9',
+      platform: 'linux',
+    });
+    expect(cmd).toContain('--permission-mode "acceptEdits"');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+    expect(cmd.indexOf('--permission-mode')).toBeLessThan(cmd.indexOf('--resume'));
+  });
+
+  it('danger launches with --dangerously-skip-permissions (not a --permission-mode value)', () => {
+    const cmd = buildBrainLaunchCommand({
+      executable: 'claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      permissionMode: 'bypassPermissions',
+      resumeSessionId: 'sess-9',
+      platform: 'linux',
+    });
+    expect(cmd).toContain('--dangerously-skip-permissions');
+    expect(cmd).not.toContain('--permission-mode');
+    expect(cmd.indexOf('--dangerously-skip-permissions')).toBeLessThan(cmd.indexOf('--resume'));
+  });
+
+  it('no mode → no permission flag at all (the pre-mode behaviour)', () => {
+    for (const permissionMode of [undefined, null] as const) {
+      const cmd = buildBrainLaunchCommand({
+        executable: 'claude',
+        settingsPath: '/tmp/s.json',
+        mcpConfigPath: null,
+        allowedTools: [],
+        permissionMode,
+        platform: 'linux',
+      });
+      expect(cmd).not.toContain('--permission-mode');
+      expect(cmd).not.toContain('--dangerously-skip-permissions');
+    }
+  });
+
+  it('quotes the flag with the PLATFORM quoter (PowerShell literals on win32)', () => {
+    const cmd = buildBrainLaunchCommand({
+      executable: 'C:\\bin\\claude.exe',
+      settingsPath: 'C:\\s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      permissionMode: 'acceptEdits',
+      platform: 'win32',
+    });
+    expect(cmd).toContain("--permission-mode 'acceptEdits'");
+  });
 });
 
 describe('the spawned command line', () => {
@@ -504,6 +563,36 @@ describe('the spawned command line', () => {
     const turn = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.created.length).toBe(1));
     expect(host.created[0].command).toMatch(/--model ["']opus["']/);
+    adapter.dispose();
+    await turn;
+  });
+
+  it('carries the INJECTED workspace mode as the permission flag', async () => {
+    // The mode resolver is called per spawn (not captured at construction), so
+    // a mode flip applies to the next TUI without a manager swap.
+    let mode: 'acceptEdits' | 'bypassPermissions' | null = 'acceptEdits';
+    const host = makeHost();
+    const adapter = makeAdapter(host, { resolvePermissionMode: () => mode });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    expect(host.created[0].command).toMatch(/--permission-mode ["']acceptEdits["']/);
+    mode = 'bypassPermissions';
+    adapter.dispose();
+    await turn;
+  });
+
+  it('a resolver that THROWS costs the flag, never the spawn', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, {
+      resolvePermissionMode: () => {
+        throw new Error('store unreadable');
+      },
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    // No flag → claude's own prompting default, which is the safe direction.
+    expect(host.created[0].command).not.toContain('--permission-mode');
+    expect(host.created[0].command).not.toContain('--dangerously-skip-permissions');
     adapter.dispose();
     await turn;
   });

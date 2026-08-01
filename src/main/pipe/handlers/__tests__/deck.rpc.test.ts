@@ -33,7 +33,7 @@ const {
   raiseDecisionMock,
   replaceStaleDecisionMock,
 } = vi.hoisted(() => ({
-  modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
+  modeMock: vi.fn<() => 'off' | 'assist' | 'danger'>(() => 'danger'),
   ttlMock: vi.fn<() => number>(() => 30 * 60_000),
   decisionRef: { current: null as Decision | null },
   resolveDecisionMock: vi.fn(),
@@ -252,7 +252,7 @@ describe('deck.resolveDecision (WP3 self-resolve gate)', () => {
     // re-examine lease (round-5 gate 0) is granted so the mode/TTL/substance
     // conditions below are each exercised in isolation.
     grantReExamineLease('ws-1', 'dec-1');
-    modeMock.mockReturnValue('auto');
+    modeMock.mockReturnValue('danger');
     ttlMock.mockReturnValue(TTL);
     decisionRef.current = stalePending();
     resolveDecisionMock.mockImplementation(
@@ -371,7 +371,7 @@ describe('deck.resolveDecision — lost-clock polarity guard', () => {
     __resetCommanderTrustForTesting();
     __resetReExamineLeasesForTesting();
     grantReExamineLease('ws-1', 'dec-0'); // gate 0 satisfied — the polarity is under test
-    modeMock.mockReturnValue('auto');
+    modeMock.mockReturnValue('danger');
     ttlMock.mockReturnValue(TTL);
   });
 

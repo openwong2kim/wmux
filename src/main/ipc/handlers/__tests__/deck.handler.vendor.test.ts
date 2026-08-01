@@ -43,8 +43,8 @@ vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
   return {
     ...actual,
-    loadWorkspaceAutonomy: vi.fn(() => ({ mode: 'auto', ...actual.modeToCaps('auto') })),
-    loadWorkspaceMode: vi.fn(() => 'auto'),
+    loadWorkspaceAutonomy: vi.fn(() => ({ mode: 'danger', ...actual.modeToCaps('danger') })),
+    loadWorkspaceMode: vi.fn(() => 'danger'),
   };
 });
 

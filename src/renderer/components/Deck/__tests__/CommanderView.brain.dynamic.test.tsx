@@ -111,6 +111,28 @@ describe('CommanderViewContent — brain surface', () => {
     expect(input.disabled).toBe(true);
   });
 
+  it('disables the composer when the workspace mode is off, and says why', () => {
+    // `off` means the orchestrator does not run at all, so main refuses the
+    // send; a live composer would only produce a silent rejection.
+    mount({ modeOff: true });
+    const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    const shell = container.querySelector('[data-commander-composer]') as HTMLElement;
+    expect(shell.getAttribute('data-mode-off')).toBe('true');
+    // The reason is reachable both as a tooltip and as the placeholder.
+    expect(shell.getAttribute('title')).toBe('deck.composerModeOff');
+    expect(input.placeholder).toBe('deck.composerModeOff');
+  });
+
+  it('leaves the composer live in any other mode', () => {
+    mount({ modeOff: false });
+    const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(false);
+    expect(
+      (container.querySelector('[data-commander-composer]') as HTMLElement).getAttribute('data-mode-off'),
+    ).toBeNull();
+  });
+
   it('renders an assistant error inline', () => {
     mount({
       brainMessages: [

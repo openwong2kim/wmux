@@ -72,6 +72,8 @@ import { DeckDecisionCard } from './DeckDecisionCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
+import { onAgentModeChanged } from './deckModeBus';
+import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -132,6 +134,10 @@ export interface CommanderViewContentProps {
   channelsUnread?: number;
   /** Jump to the Channels tab (the briefing's unread-line affordance). */
   onJumpToChannels?: () => void;
+  /** True when the active workspace's agent mode is `off` — the orchestrator
+   *  does not run, so the composer is disabled and says why. Main refuses the
+   *  send with `mode_off` regardless; this is the explanation, not the gate. */
+  modeOff?: boolean;
   /** D1 briefing — fingerprint of the active workspace's status-relevant fleet
    *  state; the card refetches when it moves (the autonomy-'off' path, where no
    *  brain stream ever fires). */
@@ -163,9 +169,13 @@ export function CommanderViewContent({
   channelsUnread = 0,
   onJumpToChannels,
   fleetSignature,
+  modeOff = false,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  const modeOffReason =
+    t('deck.composerModeOff') ||
+    'The orchestrator is off for this workspace. Set Mode to Assist or Danger to talk to it.';
   // Collapsed state of the pty layout's report rail. Local by design: it is a
   // view preference, resets on remount, and needs no persistence. Default COLLAPSED: the TUI
   // is the conversation, the rail is the durable receipt you open when you want
@@ -549,18 +559,29 @@ export function CommanderViewContent({
 
       {/* Composer — the SAME pure shell the channel composer uses. No @mention →
             the Commander brain; @mention → the Phase 1 fan-out. Disabled while a
-            brain turn streams (the one-turn-at-a-time contract). */}
+            brain turn streams (the one-turn-at-a-time contract) AND while the
+            workspace's mode is `off`, where there is no orchestrator to talk to
+            at all — main refuses those sends with `mode_off`, so leaving the box
+            live would only produce a silent rejection. The title says which of
+            the two it is, and how to undo the `off` case. */}
       <div
         className="border-t border-[var(--bg-surface)] shrink-0"
         style={{ borderColor: 'var(--border-soft)' }}
+        title={modeOff ? modeOffReason : undefined}
+        data-commander-composer
+        data-mode-off={modeOff ? 'true' : undefined}
         {...tokenAttrs('bgSurface', 'border')}
       >
         <ComposerContent
           channelId={COMMANDER_CHANNEL_NAME}
           onSubmit={onSubmit}
           mentionCandidates={mentionCandidates}
-          disabled={brainBusy}
-          placeholder={t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'}
+          disabled={brainBusy || modeOff}
+          placeholder={
+            modeOff
+              ? modeOffReason
+              : t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'
+          }
           t={t}
         />
       </div>
@@ -955,6 +976,36 @@ function CommanderThreadItem({
 
 /** Store-connected Commander view: resolves the #commander thread + fleet-wide
  *  @-candidates and wires the fan-out send + pane jumps. */
+/** The active workspace's agent mode, read from main and refreshed whenever the
+ *  mode chip writes a new one (deckModeBus). Null while unknown — a preload
+ *  without the bridge, or before the first read resolves — and a null is
+ *  deliberately NOT treated as `off`: main is the enforcement, and guessing
+ *  `off` here would lock the composer on every surface that has no bridge. */
+function useActiveAgentMode(workspaceId: string): AgentMode | null {
+  const [mode, setMode] = useState<AgentMode | null>(null);
+  useEffect(() => {
+    const api = window.electronAPI?.deck?.mode;
+    if (!api || !workspaceId) {
+      setMode(null);
+      return;
+    }
+    let cancelled = false;
+    const read = (): void => {
+      api
+        .get(workspaceId)
+        .then((r) => { if (!cancelled) setMode(r.mode ?? null); })
+        .catch(() => { if (!cancelled) setMode(null); });
+    };
+    read();
+    const off = onAgentModeChanged(read);
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [workspaceId]);
+  return mode;
+}
+
 export function CommanderView(): React.ReactElement {
   const t = useT();
   const channels = useStore((s) => s.channels);
@@ -1357,6 +1408,9 @@ export function CommanderView(): React.ReactElement {
     [handleFanout, handleBrainSend],
   );
 
+  // Mode `off` = the orchestrator does not run, so the composer is disabled.
+  const agentMode = useActiveAgentMode(activeWorkspaceId);
+
   const onInterrupt = useCallback(() => {
     if (!activeWorkspaceId) return;
     window.electronAPI?.deck?.interrupt(activeWorkspaceId).catch(() => {
@@ -1387,6 +1441,7 @@ export function CommanderView(): React.ReactElement {
       channelsUnread={channelsUnread}
       onJumpToChannels={onJumpToChannels}
       fleetSignature={fleetSignature}
+      modeOff={agentMode === 'off'}
       t={t}
     />
   );

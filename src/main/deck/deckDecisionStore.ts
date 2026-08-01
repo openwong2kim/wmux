@@ -430,9 +430,9 @@ export function renderStaleDecisionBlock(
   if (d.options.length > 0) parts.push(`  options: ${d.options.join(' | ')}`);
   if (d.context) parts.push(`  context: ${d.context}`);
   parts.push(`  id: ${d.id}`);
-  if (opts.mode === 'auto') {
+  if (opts.mode === 'danger') {
     parts.push(
-      'You are in AUTO mode. If a BINDING policy rule or a standing convention actually ' +
+      'You are in DANGER mode. If a BINDING policy rule or a standing convention actually ' +
         'settles this question, resolve it YOURSELF: call ' +
         'deck_resolve_decision({ id, resolution }) with the resolution STATING the rule/basis ' +
         'that settles it, then act on it and proceed. EXCEPTION: if this decision concerns a ' +

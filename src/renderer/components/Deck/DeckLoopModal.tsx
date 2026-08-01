@@ -388,8 +388,8 @@ export function DeckLoopModal({
             the first prompt because the workspace was only Assist). */}
         {mode && (() => {
           const driving = tier === 'continue';
-          const drivePanes = driving && (mode === 'assist' || mode === 'auto');
-          const pressApprovals = driving && mode === 'auto';
+          const drivePanes = driving && (mode === 'assist' || mode === 'danger');
+          const pressApprovals = driving && mode === 'danger';
           const mark = (on: boolean) => (
             <span
               aria-hidden="true"
@@ -419,16 +419,16 @@ export function DeckLoopModal({
               {mode === 'off' ? (
                 <div className="text-[var(--accent)]" {...tokenAttrs('accent', 'text')}>
                   {t('deck.loopAuthModeOff') ||
-                    'Workspace mode is Off — raise it to Assist or Auto, or the loop stays idle.'}
+                    'Workspace mode is Off — raise it to Assist or Danger, or the loop stays idle.'}
                 </div>
               ) : !driving ? (
                 <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                   {t('deck.loopAuthReport') || 'Report only — it observes and summarizes; it won’t touch panes.'}
                 </div>
-              ) : mode !== 'auto' ? (
+              ) : mode !== 'danger' ? (
                 <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                   {t('deck.loopAuthRaiseAuto') ||
-                    'Raise the workspace to Auto to let it press approvals unattended.'}
+                    'Raise the workspace to Danger to let it press approvals unattended.'}
                 </div>
               ) : null}
             </div>

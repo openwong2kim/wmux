@@ -211,7 +211,12 @@ vi.mock('../../../deck/deckPolicy', () => ({
   getDeckPolicyPath: vi.fn(() => '/fake/deck-policy.md'),
 }));
 
-import { registerDeckHandler, buildFleetTailLine, renderAutonomyBlock } from '../deck.handler';
+import {
+  registerDeckHandler,
+  buildFleetTailLine,
+  renderAutonomyBlock,
+  modeToPermissionMode,
+} from '../deck.handler';
 import { buildCommanderSystemPrompt } from '../../../deck/ClaudeSdkAdapter';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
@@ -358,8 +363,8 @@ describe('deck:loop:start — the one click', () => {
 });
 
 describe('deck:loop:start × mode ceiling — caps compose as min(modeCeiling, tier)', () => {
-  it('FLAGSHIP: auto + continue loop UNLOCKS approval-press (the unattended supervisor)', async () => {
-    mockMode = 'auto';
+  it('FLAGSHIP: danger + continue loop UNLOCKS approval-press (the unattended supervisor)', async () => {
+    mockMode = 'danger';
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'ship it', tier: 'continue' });
     expect(capWrites).toContainEqual({
       ws: 'ws-1',
@@ -367,8 +372,8 @@ describe('deck:loop:start × mode ceiling — caps compose as min(modeCeiling, t
     });
   });
 
-  it('auto + report loop stays observe-only — the tier narrows the ceiling back down', async () => {
-    mockMode = 'auto';
+  it('danger + report loop stays observe-only — the tier narrows the ceiling back down', async () => {
+    mockMode = 'danger';
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'watch', tier: 'report' });
     expect(capWrites).toContainEqual({
       ws: 'ws-1',
@@ -387,24 +392,24 @@ describe('deck:loop:start × mode ceiling — caps compose as min(modeCeiling, t
 });
 
 describe('deck:mode:set × a running loop — the ceiling moves, the mission stays capped', () => {
-  it('raising assist→auto mid-continue-loop re-overlays the tier and grants press', async () => {
+  it('raising assist→danger mid-continue-loop re-overlays the tier and grants press', async () => {
     mockMode = 'assist';
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', tier: 'continue' });
     capWrites.length = 0;
-    const res = await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'auto' });
+    const res = await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'danger' });
     expect(res.ok).toBe(true);
-    // Last write is the tier re-overlay under the new auto ceiling: press ON.
+    // Last write is the tier re-overlay under the new danger ceiling: press ON.
     expect(capWrites.at(-1)).toEqual({
       ws: 'ws-1',
       patch: { summarize: true, continueInstruction: true, approvalPress: true },
     });
   });
 
-  it('raising assist→auto mid-REPORT-loop does NOT grant drive/press (report stays observe-only)', async () => {
+  it('raising assist→danger mid-REPORT-loop does NOT grant drive/press (report stays observe-only)', async () => {
     mockMode = 'assist';
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', tier: 'report' });
     capWrites.length = 0;
-    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'auto' });
+    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'danger' });
     expect(capWrites.at(-1)).toEqual({
       ws: 'ws-1',
       patch: { summarize: true, continueInstruction: false, approvalPress: false },
@@ -709,20 +714,46 @@ describe('loop-state block on the brain wire', () => {
   });
 });
 
+describe('mode `off` — the terminal brain does not run (owner decision 2026-08-01)', () => {
+  it('the AMBIENT turn path (Wake) is refused too, not just the composer', async () => {
+    // The renderer disables the composer, but every autonomous driver
+    // (heartbeat, loop, scheduler, decision resume) enters through
+    // runTurnForWorkspace — this is where the kill switch actually holds.
+    mockMode = 'off';
+    const res = await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-1' });
+    expect(res).toEqual({ ok: false, code: 'mode_off' });
+    expect(adapters).toHaveLength(0);
+  });
+
+  it('a workspace that is NOT off still runs its turn', async () => {
+    mockMode = 'assist';
+    const res = await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-1' });
+    expect(res.ok).toBe(true);
+    expect(adapters).toHaveLength(1);
+  });
+
+  it('modeToPermissionMode maps the mode onto the claude launch flags', () => {
+    expect(modeToPermissionMode('assist')).toBe('acceptEdits');
+    expect(modeToPermissionMode('danger')).toBe('bypassPermissions');
+    // `off` never launches a brain; the null is the defensive "no flag".
+    expect(modeToPermissionMode('off')).toBeNull();
+  });
+});
+
 describe('decision authority — [autonomy] + [policy] framing on the brain wire', () => {
-  it('renderAutonomyBlock: auto grants authority, assist recommends, off is silent', () => {
-    expect(renderAutonomyBlock('auto')).toContain('DECISION AUTHORITY');
+  it('renderAutonomyBlock: danger grants authority, assist recommends, off is silent', () => {
+    expect(renderAutonomyBlock('danger')).toContain('DECISION AUTHORITY');
     const assist = renderAutonomyBlock('assist')!;
     expect(assist).toContain('report and recommend');
     expect(assist).not.toContain('DECISION AUTHORITY');
     expect(renderAutonomyBlock('off')).toBeNull();
   });
 
-  it('an auto turn leads with the auto autonomy block; the typed text tails it', async () => {
-    mockMode = 'auto';
+  it('a danger turn leads with the danger autonomy block; the typed text tails it', async () => {
+    mockMode = 'danger';
     await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'go' });
     const sent = adapters[0].sentTexts[0];
-    expect(sent).toContain('[autonomy] mode: auto');
+    expect(sent).toContain('[autonomy] mode: danger');
     expect(sent).toContain('DECISION AUTHORITY');
     expect(sent.endsWith('go')).toBe(true);
   });
@@ -735,15 +766,19 @@ describe('decision authority — [autonomy] + [policy] framing on the brain wire
     expect(sent).not.toContain('DECISION AUTHORITY');
   });
 
-  it('an off workspace gets NO autonomy or policy block — no ambient instructions', async () => {
+  it('an off workspace REFUSES the send outright — the brain does not run', async () => {
+    // Was: an off workspace still took a typed turn, just with no ambient
+    // blocks. `off` now means the terminal brain does not launch at all, so the
+    // refusal happens before any adapter exists (owner decision 2026-08-01).
     mockMode = 'off';
     mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- rule';
-    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'plain' });
-    expect(adapters[0].sentTexts[0]).toBe('plain');
+    const res = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'plain' });
+    expect(res).toEqual({ ok: false, code: 'mode_off' });
+    expect(adapters).toHaveLength(0);
   });
 
-  it('policy is injected for auto AND ordered autonomy → policy → decision', async () => {
-    mockMode = 'auto';
+  it('policy is injected for danger AND ordered autonomy → policy → decision', async () => {
+    mockMode = 'danger';
     mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- worktree rule';
     decisions.set('ws-1', {
       id: 'd1',
@@ -771,11 +806,15 @@ describe('decision authority — [autonomy] + [policy] framing on the brain wire
     expect(adapters[0].sentTexts[0]).toContain('## Operator policy');
   });
 
-  it('off mode skips the policy block even when deck-policy.md exists', async () => {
+  it('off mode never reaches the policy block — no turn runs at all', async () => {
+    // Same rewrite as above: the policy block is unreachable because the send
+    // itself is refused, which is a strictly stronger guarantee than "the block
+    // is absent from the prompt".
     mockMode = 'off';
     mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- rule';
-    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
-    expect(adapters[0].sentTexts[0]).not.toContain('Operator policy');
+    const res = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
+    expect(res).toEqual({ ok: false, code: 'mode_off' });
+    expect(adapters).toHaveLength(0);
   });
 });
 
@@ -1005,8 +1044,8 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
     expect(sys).toContain('A choice that a standing rule already answers is NOT a genuine choice');
   });
 
-  it('an auto turn on the frozen fork carries authority + the binding worktree rule + the decision', async () => {
-    mockMode = 'auto';
+  it('a danger turn on the frozen fork carries authority + the binding worktree rule + the decision', async () => {
+    mockMode = 'danger';
     mockPolicyBlock = BINDING_POLICY;
     decisions.set('ws-1', FROZEN_DECISION);
 
@@ -1015,7 +1054,7 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
 
     // (a) explicit decision authority for auto — absent yesterday (mode never
     //     reached the prompt).
-    expect(sent).toContain('[autonomy] mode: auto');
+    expect(sent).toContain('[autonomy] mode: danger');
     expect(sent).toContain('DECISION AUTHORITY');
     // (b) the BINDING rule that answers "where?" is now IN the turn, framed as
     //     authoritative — yesterday it lived only in non-binding memory.
@@ -1028,13 +1067,14 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
     expect(sent.indexOf('BINDING standing rules')).toBeLessThan(sent.indexOf('[decision]'));
   });
 
-  it('the SAME fork under off mode gets none of it (no ambient instructions)', async () => {
+  it('the SAME fork under off mode gets none of it — the turn is refused', async () => {
+    // Was: the turn ran with the ambient blocks stripped. `off` now refuses the
+    // send, so the fork never reaches a brain in the first place.
     mockMode = 'off';
     mockPolicyBlock = BINDING_POLICY;
     decisions.set('ws-1', FROZEN_DECISION);
-    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
-    const sent = adapters[0].sentTexts[0];
-    expect(sent).not.toContain('[autonomy]');
-    expect(sent).not.toContain('BINDING standing rules');
+    const res = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
+    expect(res).toEqual({ ok: false, code: 'mode_off' });
+    expect(adapters).toHaveLength(0);
   });
 });

@@ -31,6 +31,23 @@ vi.mock('../../../deck/deckPolicy', () => ({
   getDeckPolicyPath: vi.fn(() => '/fake/deck-policy.md'),
 }));
 
+// This suite is about the MODEL/vendor axis, not the autonomy one, and it does
+// not seed deck-autonomy.json — so every workspace would resolve to the product
+// default (`off`), which now refuses the send before a brain is ever built. Pin
+// a mode that runs; everything else in the store stays real.
+vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
+  return {
+    ...actual,
+    loadWorkspaceMode: vi.fn(() => 'assist' as const),
+    loadWorkspaceAutonomy: vi.fn(() => ({
+      mode: 'assist' as const,
+      wakePolicy: 'value-filtered' as const,
+      ...actual.modeToCaps('assist'),
+    })),
+  };
+});
+
 import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';

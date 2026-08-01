@@ -514,6 +514,19 @@ export function buildBrainLaunchCommand(opts: {
   resumeSessionId?: string | null;
   /** Model override (`--model`), or empty/absent for the CLI default. */
   model?: string | null;
+  /**
+   * How the TUI is launched with respect to permission prompts — the workspace
+   * AGENT MODE, expressed in claude's own flags (owner decision 2026-08-01):
+   *   - `acceptEdits`        (mode `assist`) → `--permission-mode acceptEdits`:
+   *     edits land without a prompt, everything else still stops.
+   *   - `bypassPermissions`  (mode `danger`) → `--dangerously-skip-permissions`:
+   *     nothing prompts at all.
+   *   - absent/null → no flag, i.e. whatever the user's claude defaults to.
+   *     Kept as a real case: non-deck embeddings (and the tests written before
+   *     the mode existed) construct this command with no mode at all.
+   * `off` never reaches here — the handler refuses to spawn a brain for it.
+   */
+  permissionMode?: 'acceptEdits' | 'bypassPermissions' | null;
   /** Host platform the command will be wrapped for. Injected by tests. */
   platform?: NodeJS.Platform;
 }): string {
@@ -535,6 +548,15 @@ export function buildBrainLaunchCommand(opts: {
   // The orchestrator's model picker applies to this brain too: the TUI takes
   // the same `--model <alias|full-name>` flag the SDK adapter's option maps to.
   if (opts.model) parts.push('--model', q(opts.model));
+  // The workspace mode, as a launch flag. Before `--resume` so the permission
+  // posture is set for the whole session including the resumed transcript.
+  if (opts.permissionMode === 'acceptEdits') {
+    parts.push('--permission-mode', q('acceptEdits'));
+  } else if (opts.permissionMode === 'bypassPermissions') {
+    // Claude Code has no `--permission-mode bypassPermissions`; the bypass is
+    // its own (deliberately loud) flag.
+    parts.push('--dangerously-skip-permissions');
+  }
   if (opts.resumeSessionId) parts.push('--resume', q(opts.resumeSessionId));
   const line = parts.join(' ');
   return isWindows ? `& ${line}` : line;
@@ -558,6 +580,19 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Model override from the deck's model picker (`--model`). Empty/absent
    *  leaves the TUI on whatever model the user's claude defaults to. */
   model?: string;
+  /**
+   * This workspace's AGENT MODE, read fresh at every spawn.
+   *
+   * INJECTED, not imported: the adapter must not reach into deckAutonomyStore
+   * itself — the deck owns that lookup (same rule the Stop gate follows), and
+   * a function seam is what lets the whole spawn path unit-test with no store
+   * on disk. Called per spawn rather than captured at construction so a mode
+   * flip applies to the next TUI without a manager swap.
+   *
+   * Absent → no permission flag at all (the pre-mode behaviour, which is what
+   * non-deck embeddings get).
+   */
+  resolvePermissionMode?: () => 'acceptEdits' | 'bypassPermissions' | null;
   /** Absolute path to the user's claude binary. Defaults to the resolver. */
   claudeExecutable?: string | null;
   /** Absolute path to the wmux MCP stdio bundle. Defaults to the resolver. */
@@ -1016,11 +1051,22 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
 
     const ptyId = `${BRAIN_PTY_ID_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    // The mode is resolved HERE, per spawn: a workspace flipped between
+    // assist and danger gets the new posture on its next TUI. A resolver that
+    // throws costs the flag, never the spawn — the brain then launches with
+    // claude's default (prompting) posture, which is the safe direction.
+    let permissionMode: 'acceptEdits' | 'bypassPermissions' | null = null;
+    try {
+      permissionMode = this.deps.resolvePermissionMode?.() ?? null;
+    } catch (err) {
+      console.warn(`[deck] could not resolve the terminal brain's permission mode: ${String(err)}`);
+    }
     const command = buildBrainLaunchCommand({
       executable,
       settingsPath,
       mcpConfigPath,
       resumeSessionId,
+      permissionMode,
       ...(this.deps.model ? { model: this.deps.model } : {}),
     });
     // Held locally as well as on the instance: a dispose() racing this spawn

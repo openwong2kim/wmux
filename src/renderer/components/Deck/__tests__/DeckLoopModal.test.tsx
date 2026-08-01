@@ -42,7 +42,7 @@ function fakeApi(): DeckLoopApi & { started: unknown[] } {
   };
 }
 
-function fakeModeApi(mode: 'off' | 'assist' | 'auto') {
+function fakeModeApi(mode: 'off' | 'assist' | 'danger') {
   return { get: async () => ({ mode }), set: async () => ({ ok: true, mode }) };
 }
 
@@ -127,25 +127,25 @@ describe('DeckLoopModal', () => {
   describe('effective-authority preview (mode↔loop dependency made visible)', () => {
     const flush = async () => { await act(async () => { await Promise.resolve(); }); };
 
-    it('auto + default continue → drive ON, press ON (the unattended supervisor)', async () => {
+    it('danger + default continue → drive ON, press ON (the unattended supervisor)', async () => {
       const api = fakeApi();
-      await mount(api, { modeApi: fakeModeApi('auto') });
+      await mount(api, { modeApi: fakeModeApi('danger') });
       await flush();
       const box = container.querySelector('[data-deck-loop-authority]');
       expect(box).not.toBeNull();
-      expect(box!.getAttribute('data-mode')).toBe('auto');
+      expect(box!.getAttribute('data-mode')).toBe('danger');
       expect(container.querySelector('[data-deck-loop-auth-drive="on"]')).not.toBeNull();
       expect(container.querySelector('[data-deck-loop-auth-press="on"]')).not.toBeNull();
     });
 
-    it('assist + continue → drive ON, press OFF, with a raise-to-Auto hint', async () => {
+    it('assist + continue → drive ON, press OFF, with a raise-to-Danger hint', async () => {
       const api = fakeApi();
       await mount(api, { modeApi: fakeModeApi('assist') });
       await flush();
       expect(container.querySelector('[data-deck-loop-auth-drive="on"]')).not.toBeNull();
       expect(container.querySelector('[data-deck-loop-auth-press="off"]')).not.toBeNull();
       // The hint tells the user where the press capability actually lives.
-      expect(container.querySelector('[data-deck-loop-authority]')!.textContent).toContain('Auto');
+      expect(container.querySelector('[data-deck-loop-authority]')!.textContent).toContain('Danger');
     });
 
     it('off → both OFF, with the kill-switch warning', async () => {

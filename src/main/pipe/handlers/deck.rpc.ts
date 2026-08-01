@@ -289,8 +289,8 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (!hasReExamineLease(ws, id)) {
       return { ok: false, error: 'no_reexamine_lease' };
     }
-    // (i) mode gate — auto only.
-    if (loadWorkspaceMode(ws) !== 'auto') {
+    // (i) mode gate — `danger` only (the mode formerly called `auto`).
+    if (loadWorkspaceMode(ws) !== 'danger') {
       return { ok: false, error: 'mode_not_auto' };
     }
     // (ii) age gate — must be stale per the configured TTL. POLARITY GUARD

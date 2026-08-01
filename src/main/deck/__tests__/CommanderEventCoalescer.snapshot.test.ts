@@ -13,13 +13,13 @@ import { type WorkspaceAutonomy } from '../deckAutonomyStore';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../../shared/workspaceMirror';
 
 const AUTO_AUTONOMY: WorkspaceAutonomy = {
-  mode: 'auto', summarize: true, continueInstruction: true, approvalPress: true,
+  mode: 'danger', wakePolicy: 'all', summarize: true, continueInstruction: true, approvalPress: true,
 };
 const ASSIST: WorkspaceAutonomy = {
-  mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
+  mode: 'assist', wakePolicy: 'value-filtered', summarize: true, continueInstruction: true, approvalPress: false,
 };
 const OFF: WorkspaceAutonomy = {
-  mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
+  mode: 'off', wakePolicy: 'none', summarize: false, continueInstruction: false, approvalPress: false,
 };
 
 const settle = async () => {

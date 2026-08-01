@@ -68,7 +68,7 @@ vi.mock('../../../deck/deckLoopStateStore', () => ({
   setTaskPasses: vi.fn(async () => null),
 }));
 
-let mockMode: 'off' | 'assist' | 'auto' = 'assist';
+let mockMode: 'off' | 'assist' | 'danger' = 'assist';
 vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
   return {

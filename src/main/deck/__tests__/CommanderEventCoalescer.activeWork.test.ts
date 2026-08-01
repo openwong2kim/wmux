@@ -17,7 +17,7 @@ import {
 import type { WorkspaceAutonomy } from '../deckAutonomyStore';
 
 const OFF_AUTONOMY: WorkspaceAutonomy = {
-  mode: 'off',
+  mode: 'off', wakePolicy: 'none',
   summarize: false,
   continueInstruction: false,
   approvalPress: false,

@@ -307,9 +307,9 @@ export const ko = {
   // agent 패널에 칩으로 표시.
   'deck.mode.label': '모드',
   'deck.mode.off': 'Off',
-  'deck.mode.offDesc': '자율 동작 없음(기본값). 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
+  'deck.mode.offDesc': 'orchestrator를 아예 실행하지 않음(기본값). 실행 중인 루프·예약을 정지하고 composer도 비활성화.',
   'deck.mode.assist': 'Assist',
-  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 알림만, 승인은 안 누름.',
+  'deck.mode.assistDesc': 'Claude를 auto 모드(accept edits)로 실행. 편집은 묻지 않고 진행하지만 나머지 권한은 그대로 물어봄.',
   // `/clear` — 오케 컨텍스트 리셋(대화 기록은 유지).
   'deck.contextCleared': '오케스트레이터 컨텍스트를 지웠습니다 — 다음 턴은 새 대화로 시작합니다.',
   'deck.contextClearFailed': '오케스트레이터 컨텍스트를 지우지 못했습니다.',
@@ -323,8 +323,9 @@ export const ko = {
   'hooks.prompt.doneTitle': 'hook 설치 완료',
   'hooks.prompt.doneBody': 'pane에서 실행 중인 Claude 세션을 재시작하면 hook이 적용됩니다.',
   'hooks.prompt.close': '닫기',
-  'deck.mode.auto': 'Auto (위험)',
-  'deck.mode.autoDesc': '모든 agent 이벤트에 깨어나 스스로 판단해 승인까지 누르며 작업을 끝까지 진행.',
+  'deck.mode.danger': 'Danger',
+  'deck.mode.dangerDesc': 'Claude를 bypass 모드(--dangerously-skip-permissions)로 실행. 아무것도 묻지 않고 스스로 판단해 진행.',
+  'deck.composerModeOff': '이 워크스페이스의 orchestrator가 꺼져 있습니다. Mode를 Assist나 Danger로 바꾸면 대화할 수 있습니다.',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
   // 멈춘다. 실행 중인 루프는 계속 깨운다.
   'settings.autoWake': 'pane 이벤트 자동 깨우기',
@@ -906,8 +907,8 @@ export const ko = {
   'deck.loopAuthorityIntro': '이 루프의 실제 동작',
   'deck.loopAuthDrive': 'pane 주도',
   'deck.loopAuthPress': '승인 자동 press',
-  'deck.loopAuthModeOff': '워크스페이스 모드가 Off입니다 — Assist나 Auto로 올리지 않으면 루프가 멈춰 있습니다.',
-  'deck.loopAuthRaiseAuto': '워크스페이스를 Auto로 올리면 승인까지 무인으로 눌러줍니다.',
+  'deck.loopAuthModeOff': '워크스페이스 모드가 Off입니다 — Assist나 Danger로 올리지 않으면 루프가 멈춰 있습니다.',
+  'deck.loopAuthRaiseAuto': '워크스페이스를 Danger로 올리면 승인까지 무인으로 눌러줍니다.',
   'deck.loopAuthReport': '보고만 — 관찰·요약만 하고 pane은 건드리지 않습니다.',
   'deck.loopCadence': '주기',
   'deck.loopIterations': '루프가 멈추고 사람을 기다리기 전까지 자동으로 깨어나 일할 횟수 (1 wake ≈ 1 iteration). 무인 장시간 실행이면 높이세요.',

@@ -433,13 +433,14 @@ export const en = {
   'deck.limit.utilSuffix': ' ({util}% used)',
   'deck.limit.rejected': '⚠ Claude {window} limit reached{on}{reset}. New turns keep using this account until you switch.',
   'deck.limit.approaching': 'Approaching the {window} limit{on}{util}{reset}.',
-  // Per-workspace agent mode — the single autonomy knob (off/assist/auto).
+  // Per-workspace agent mode — how the orchestrator's Claude is launched
+  // (off = it does not run / assist = accept-edits / danger = bypass).
   // Shown as a chip in the agent panel.
   'deck.mode.label': 'Mode',
   'deck.mode.off': 'Off',
-  'deck.mode.offDesc': 'No autonomy (default). Stops any running loop and schedule. You can still type.',
+  'deck.mode.offDesc': 'The orchestrator does not run (default). Stops any running loop and schedule, and disables the composer.',
   'deck.mode.assist': 'Assist',
-  'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. Notifies, never approves.',
+  'deck.mode.assistDesc': 'Launches Claude in auto mode (accept edits). It edits without asking; every other permission still stops it.',
   // `/clear` — orchestrator context reset (transcript stays).
   'deck.contextCleared': 'Orchestrator context cleared — the next turn starts fresh.',
   'deck.contextClearFailed': 'Could not clear the orchestrator context.',
@@ -453,8 +454,11 @@ export const en = {
   'hooks.prompt.doneTitle': 'Hooks installed',
   'hooks.prompt.doneBody': 'Restart the Claude sessions in your panes to activate the hooks.',
   'hooks.prompt.close': 'Close',
-  'deck.mode.auto': 'Auto (danger)',
-  'deck.mode.autoDesc': 'Wakes on every agent event; drives panes and presses approvals on its own judgment, running work to completion.',
+  'deck.mode.danger': 'Danger',
+  'deck.mode.dangerDesc': 'Launches Claude in bypass mode (--dangerously-skip-permissions). Nothing prompts it — it acts on its own judgment.',
+  // Composer lock reason for mode `off` (main refuses the send too — this is
+  // the explanation, not the enforcement).
+  'deck.composerModeOff': 'The orchestrator is off for this workspace. Set Mode to Assist or Danger to talk to it.',
   // Global event-push kill switch: OFF stops the unrequested wake-turns
   // (each one is a real token-spending SDK turn); a running loop still wakes.
   'settings.autoWake': 'Auto-wake on pane events',
@@ -1113,8 +1117,8 @@ export const en = {
   'deck.loopAuthorityIntro': 'This loop will',
   'deck.loopAuthDrive': 'drive panes',
   'deck.loopAuthPress': 'press approvals',
-  'deck.loopAuthModeOff': 'Workspace mode is Off — raise it to Assist or Auto, or the loop stays idle.',
-  'deck.loopAuthRaiseAuto': 'Raise the workspace to Auto to let it press approvals unattended.',
+  'deck.loopAuthModeOff': 'Workspace mode is Off — raise it to Assist or Danger, or the loop stays idle.',
+  'deck.loopAuthRaiseAuto': 'Raise the workspace to Danger to let it press approvals unattended.',
   'deck.loopAuthReport': 'Report only — it observes and summarizes; it won’t touch panes.',
   'deck.loopCadence': 'Cadence',
   'deck.loopIterations': 'How many times the loop may auto-wake to work before it pauses for you (one wake ≈ one iteration). Raise it for long unattended runs.',
