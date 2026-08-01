@@ -424,7 +424,7 @@ export const en = {
   'deck.newSessionConfirm': 'Start a new session?',
   'deck.newSessionConfirmBusy': 'Interrupt & start new session?',
   'deck.newSessionTooltip':
-    'Replace this workspace’s orchestrator with a fresh session, so it starts from your project files with no stale assumptions. Panes, worktrees and the conversation history stay; loops and schedules keep running.',
+    'Replace this workspace’s orchestrator with a fresh session, so it starts from your project files with no stale assumptions. The brain forgets the conversation so far — the #commander transcript stays as the record. Panes, worktrees, loops and schedules are untouched.',
   'deck.reportRail': 'Reports {count}',
   'deck.reportRailDecision': '1 decision',
   'deck.limit.resetsSoon': 'resets soon',

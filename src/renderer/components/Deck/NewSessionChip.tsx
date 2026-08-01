@@ -146,7 +146,7 @@ export function NewSessionChip({
         armed
           ? confirmLabel
           : t?.('deck.newSessionTooltip') ||
-            'Replace this workspace’s orchestrator with a fresh session. Panes, worktrees and the conversation history stay; loops and schedules keep running.'
+            'Replace this workspace’s orchestrator with a fresh session. The brain forgets the conversation so far — the #commander transcript stays as the record. Panes, worktrees, loops and schedules are untouched.'
       }
       // Neutral at rest like the other AI-directed controls on this bar
       // (DESIGN.md: AI-directed actions stay neutral at rest) — nothing is
