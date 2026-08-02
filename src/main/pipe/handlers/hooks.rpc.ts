@@ -1217,6 +1217,8 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Session started`;
     case 'agent.awaiting_input':
       return `${display}: Awaiting input`;
+    case 'agent.input_answered':
+      return `${display}: Input received`;
     // Brain-pty only: claimed by the deck lane long before dispatch. Mapped so
     // the switch stays exhaustive.
     case 'agent.user_prompt_submit':
@@ -1240,6 +1242,7 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     case 'agent.stop':
     case 'agent.activity':
     case 'agent.session_start':
+    case 'agent.input_answered':
     case 'agent.user_prompt_submit':
       return 'agent-turn';
   }
@@ -1260,6 +1263,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Session initialized';
     case 'agent.awaiting_input':
       return 'Approval requested';
+    case 'agent.input_answered':
+      return 'Answer received locally';
     case 'agent.user_prompt_submit':
       return 'Prompt submitted';
   }
