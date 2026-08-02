@@ -22,8 +22,9 @@ import path from 'node:path';
 //      browser.rpc.ts; the handler ignores workspaceId). It carries NO workspace
 //      identity, matching browser_session_stop/status/list — so it can never
 //      reintroduce the active-workspace fallback bug.
-//   4. browser_tabs injects requireWorkspaceId() at its production registration
-//      site, so its isolated unit tests cannot mask accidental weak wiring.
+//   4. Every Playwright browser tool injects requireWorkspaceId() at its
+//      production registration site, so isolated unit tests cannot mask
+//      accidental weak wiring or an unscoped fallback/lease path.
 describe('MCP workspace routing (source-level invariants)', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
   const rawSrc = fs.readFileSync(indexPath, 'utf-8');
@@ -179,15 +180,27 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(src).toMatch(/setWorkspaceIdResolver\(\s*requireWorkspaceId\s*\)/);
   });
 
-  it('browser_tabs production wiring injects requireWorkspaceId (#565)', () => {
-    // navigation.tabs.test.ts injects a resolver so it can exercise the tool in
-    // isolation. This source lock covers the complementary production seam: a
-    // future rewire to the weak resolver must fail even if those unit tests pass.
-    const registrations = src.match(/registerNavigationTools\([\s\S]*?\);/g) ?? [];
-    expect(registrations).toHaveLength(1);
-    expect(registrations[0]).toMatch(
-      /registerNavigationTools\(\s*server\s*,\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*\}\s*\)/,
+  it('every Playwright browser tool receives the same strict workspace resolver (#695)', () => {
+    // Unit tests inject a resolver in isolation. This source lock covers the
+    // complementary production seam: every browser registration must share the
+    // strict requireWorkspaceId dependency, never the weak/UI-active resolver.
+    expect(src).toMatch(
+      /const browserToolDeps\s*=\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*\}/,
     );
+    for (const name of [
+      'Navigation',
+      'Interaction',
+      'Inspection',
+      'State',
+      'Wait',
+      'File',
+      'Utility',
+      'Extraction',
+    ]) {
+      expect(src, `${name} tools must receive browserToolDeps`).toMatch(
+        new RegExp(`register${name}Tools\\(\\s*server\\s*,\\s*browserToolDeps`),
+      );
+    }
   });
 
   it('browser_session_start is GLOBAL — carries no workspace identity (no resolver calls)', () => {
@@ -231,7 +244,7 @@ describe('MCP workspace routing (source-level invariants)', () => {
 
   it('browser_wait is wired through the same immutable catalog profile', () => {
     expect(src).toMatch(
-      /registerWaitTools\(\s*server\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
+      /registerWaitTools\(\s*server\s*,\s*browserToolDeps\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
     );
   });
 });

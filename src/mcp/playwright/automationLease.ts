@@ -1,4 +1,10 @@
 import { sendRpc } from '../wmux-client';
+import {
+  requireBrowserTargetScope,
+  sendScopedBrowserRpc,
+  type BrowserTargetScope,
+  type BrowserToolDeps,
+} from './browserScope';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -13,19 +19,23 @@ const RENEW_INTERVAL_MS = 10_000;
  * automated — the #353 silent-blank-screenshot failure. Every Playwright MCP
  * tool invocation wraps its body in withAutomationLease().
  *
- * Fail-open by design: if lease RPCs fail (older main without the handlers,
- * pipe hiccup), the operation proceeds unleased — behavior is then identical
- * to pre-#517 builds with lightweight mode unavailable.
+ * Workspace identity is resolved before the first lease RPC and reused for
+ * the operation's page selection and fallback RPCs (#695). Identity failure
+ * is fail-closed; lease transport failure remains fail-open for compatibility
+ * with older mains that do not implement leases.
  */
 export async function withAutomationLease<T>(
+  deps: BrowserToolDeps,
   surfaceId: string | undefined,
-  fn: () => Promise<T>,
+  fn: (scope: BrowserTargetScope) => Promise<T>,
 ): Promise<T> {
+  const scope = await requireBrowserTargetScope(deps, surfaceId);
   let token: string | null = null;
   try {
-    const res = (await sendRpc('browser.lease.acquire', {
-      ...(surfaceId && { surfaceId }),
-    })) as { token: string | null };
+    const res = await sendScopedBrowserRpc<{ token: string | null }>(
+      'browser.lease.acquire',
+      scope,
+    );
     token = res?.token ?? null;
   } catch {
     /* lease unavailable — proceed unleased */
@@ -41,9 +51,9 @@ export async function withAutomationLease<T>(
     let done = false;
     const lateTimer = setInterval(() => {
       if (done || lateToken) return;
-      sendRpc('browser.lease.acquire', { ...(surfaceId && { surfaceId }) })
+      sendScopedBrowserRpc<{ token: string | null }>('browser.lease.acquire', scope)
         .then((r) => {
-          const tok = (r as { token: string | null })?.token ?? null;
+          const tok = r?.token ?? null;
           if (!tok) return;
           if (done || lateToken) {
             // Op already ended, or a slower earlier acquire raced us and a
@@ -62,7 +72,7 @@ export async function withAutomationLease<T>(
     }, RENEW_INTERVAL_MS);
     (lateRenew as { unref?: () => void }).unref?.();
     try {
-      return await fn();
+      return await fn(scope);
     } finally {
       done = true;
       clearInterval(lateTimer);
@@ -83,7 +93,7 @@ export async function withAutomationLease<T>(
   (renewTimer as { unref?: () => void }).unref?.();
 
   try {
-    return await fn();
+    return await fn(scope);
   } finally {
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {

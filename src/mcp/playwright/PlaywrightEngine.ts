@@ -6,6 +6,9 @@ import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
 import { EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE } from '../../shared/browserBackend';
+import { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
+
+export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
 interface CdpTargetInfo {
   surfaceId: string;
@@ -52,9 +55,6 @@ const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 800;
 const PAGE_FIND_RETRIES = 3;
 const PAGE_FIND_DELAY_MS = 500;
-
-/** Stable error code — agents can match on this instead of the prose. */
-export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
 
 /**
  * The contract error for "page selection cannot be scoped to the caller".
@@ -199,12 +199,11 @@ export class PlaywrightEngine {
    */
   private workspaceBackend: BrowserBackend | undefined = undefined;
   /**
-   * Resolves the calling session's workspace id for auto-open. Wired by
-   * src/mcp/index.ts to requireWorkspaceId(). Auto-open issues browser.open
-   * outside any MCP tool handler, so it cannot use the per-tool
-   * requireWorkspaceId() guard and carries the resolved id explicitly instead.
-   * null means no resolver is wired, in which case auto-open is skipped (fail
-   * closed) rather than opening in an unspecified workspace.
+   * Resolves the calling session's workspace id when a caller has not already
+   * supplied one. Wired by src/mcp/index.ts to requireWorkspaceId(). Browser
+   * tool handlers resolve once before acquiring a lease and pass that id into
+   * getPage(); direct engine callers use this fallback. null means no resolver
+   * is wired, in which case selection/auto-open fails closed.
    */
   private workspaceIdResolver: (() => Promise<string>) | null = null;
 
@@ -353,13 +352,16 @@ export class PlaywrightEngine {
     }
   }
 
-  async ensureConnected(): Promise<void> {
+  async ensureConnected(workspaceId?: string): Promise<void> {
     if (this.browser?.isConnected()) return;
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
-        const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        const info = (await sendRpc(
+          'browser.cdp.info',
+          workspaceId ? { workspaceId } : {},
+        )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         await this.connect(info.cdpPort);
         return;
@@ -416,15 +418,19 @@ export class PlaywrightEngine {
    * 3. Fetch /json endpoint for target discovery
    * 4. Auto-open a browser surface via RPC if none exists (so callers don't
    *    need to know about browser_open ordering)
+   *
+   * `workspaceId`, when supplied by the tool layer, is the already-verified id
+   * reused by its lease and fallback RPCs (#695). This avoids a second identity
+   * lookup and also scopes explicit-surface discovery on the main side.
    */
-  async getPage(surfaceId?: string): Promise<Page | null> {
+  async getPage(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
     // Resolve the selection context (which workspace/surface this call targets)
     // BEFORE consulting any shared state, so the lock, fast-fail latch, and
     // auto-open latch are all scoped to THIS caller's workspace and can never
     // bleed into another's (#554). Context resolution needs only the control
     // RPC (browser.cdp.info); the CDP browser connection happens in
     // _getPageImpl as before.
-    const ctx = await this.resolveSelectionContext(surfaceId);
+    const ctx = await this.resolveSelectionContext(surfaceId, workspaceId);
 
     // External-backend contract (#517): the caller's workspace delegates opens
     // to the OS browser and owns no builtin webview target (callerHasNoSurface,
@@ -481,18 +487,20 @@ export class PlaywrightEngine {
    * cannot walk its own process tree — so this is not a spoofing question and
    * the #113 same-user ceiling does not cover it.
    */
-  private async resolveCallerSurface(): Promise<
+  private async resolveCallerSurface(resolvedWorkspaceId?: string): Promise<
     | { kind: 'surface'; surfaceId: string; workspaceId: string }
     | { kind: 'none'; workspaceId: string }
   > {
-    if (!this.workspaceIdResolver) throw workspaceScopeUnresolved('no workspace resolver wired');
-    let workspaceId: string;
-    try {
-      workspaceId = await this.workspaceIdResolver();
-    } catch (err) {
-      throw workspaceScopeUnresolved(
-        `workspace identity unresolved: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    let workspaceId = resolvedWorkspaceId;
+    if (workspaceId === undefined) {
+      if (!this.workspaceIdResolver) throw workspaceScopeUnresolved('no workspace resolver wired');
+      try {
+        workspaceId = await this.workspaceIdResolver();
+      } catch (err) {
+        throw workspaceScopeUnresolved(
+          `workspace identity unresolved: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
     if (!workspaceId) throw workspaceScopeUnresolved('workspace identity resolved to an empty id');
 
@@ -556,11 +564,17 @@ export class PlaywrightEngine {
    */
   private async resolveSelectionContext(
     explicitSurfaceId?: string,
+    workspaceId?: string,
   ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean; workspaceId?: string }> {
     if (explicitSurfaceId) {
-      return { key: `surf:${explicitSurfaceId}`, surfaceId: explicitSurfaceId, callerHasNoSurface: false };
+      return {
+        key: workspaceId ? `ws:${workspaceId}:surf:${explicitSurfaceId}` : `surf:${explicitSurfaceId}`,
+        surfaceId: explicitSurfaceId,
+        callerHasNoSurface: false,
+        ...(workspaceId && { workspaceId }),
+      };
     }
-    const owned = await this.resolveCallerSurface();
+    const owned = await this.resolveCallerSurface(workspaceId);
     if (owned.kind === 'surface') {
       return { key: `ws:${owned.workspaceId}`, surfaceId: owned.surfaceId, callerHasNoSurface: false, workspaceId: owned.workspaceId };
     }
@@ -571,7 +585,7 @@ export class PlaywrightEngine {
     ctx: { key: string; surfaceId?: string; callerHasNoSurface: boolean; workspaceId?: string },
   ): Promise<Page | null> {
 
-    await this.ensureConnected();
+    await this.ensureConnected(ctx.workspaceId);
 
     // Selection is scoped to the caller's workspace (#554), resolved by
     // getPage() -> resolveSelectionContext(). `surfaceId` set = pin to that
@@ -637,7 +651,7 @@ export class PlaywrightEngine {
         if (attempt === 1 && !this.autoOpenAttempted.has(ctx.key) && !surfaceId) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           try {
-            const opened = await this.attemptAutoOpen();
+            const opened = await this.attemptAutoOpen(ctx.workspaceId);
             if (opened) {
               // Latch (per context) only once the RPC actually went out, so a
               // fail-closed skip (no resolver / unresolved identity) leaves a
@@ -647,7 +661,7 @@ export class PlaywrightEngine {
               // Wait for the webview to register its CDP target
               await sleep(2000);
               await this.disconnect();
-              await this.ensureConnected();
+              await this.ensureConnected(ctx.workspaceId);
               // Pin the surface we just opened (#554) — otherwise
               // callerHasNoSurface keeps skipping Strategies 1-3 and the new
               // page is never found.
@@ -670,7 +684,7 @@ export class PlaywrightEngine {
                   // null, which is the same answer, but it arrives through the
                   // normal path instead of aborting the loop mid-way.
                   try {
-                    const owned = await this.resolveCallerSurface();
+                    const owned = await this.resolveCallerSurface(ctx.workspaceId);
                     if (owned.kind === 'surface') {
                       surfaceId = owned.surfaceId;
                       callerHasNoSurface = false;
@@ -694,7 +708,7 @@ export class PlaywrightEngine {
           console.error(`[PlaywrightEngine] No page found, reconnecting... (${attempt}/${PAGE_FIND_RETRIES})`);
           await sleep(PAGE_FIND_DELAY_MS);
           await this.disconnect();
-          await this.ensureConnected();
+          await this.ensureConnected(ctx.workspaceId);
         }
       } catch (err) {
         console.error(
@@ -704,7 +718,7 @@ export class PlaywrightEngine {
         if (attempt < PAGE_FIND_RETRIES) {
           await sleep(PAGE_FIND_DELAY_MS);
           await this.disconnect();
-          await this.ensureConnected();
+          await this.ensureConnected(ctx.workspaceId);
         }
       }
     }
@@ -734,20 +748,22 @@ export class PlaywrightEngine {
    * The surfaceId matters: it is the ONE selection this engine can make without
    * having to prove anything, because we are the ones who just asked for it.
    */
-  private async attemptAutoOpen(): Promise<{ surfaceId?: string } | null> {
-    if (!this.workspaceIdResolver) {
-      console.error('[PlaywrightEngine] Auto-open skipped: no workspace resolver wired');
-      return null;
-    }
-    let workspaceId: string;
-    try {
-      workspaceId = await this.workspaceIdResolver();
-    } catch (err) {
-      console.error(
-        '[PlaywrightEngine] Auto-open skipped: workspace identity unresolved:',
-        err instanceof Error ? err.message : String(err),
-      );
-      return null;
+  private async attemptAutoOpen(resolvedWorkspaceId?: string): Promise<{ surfaceId?: string } | null> {
+    let workspaceId = resolvedWorkspaceId;
+    if (workspaceId === undefined) {
+      if (!this.workspaceIdResolver) {
+        console.error('[PlaywrightEngine] Auto-open skipped: no workspace resolver wired');
+        return null;
+      }
+      try {
+        workspaceId = await this.workspaceIdResolver();
+      } catch (err) {
+        console.error(
+          '[PlaywrightEngine] Auto-open skipped: workspace identity unresolved:',
+          err instanceof Error ? err.message : String(err),
+        );
+        return null;
+      }
     }
     if (!workspaceId) {
       console.error('[PlaywrightEngine] Auto-open skipped: empty workspace id');

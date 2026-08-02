@@ -97,7 +97,7 @@ describe('extractStructuredData', () => {
 
   it('returns [] for empty fields without touching the page', async () => {
     const page = { evaluate: vi.fn() };
-    const out = await extractStructuredData(page as never, undefined, 'goal', {});
+    const out = await extractStructuredData(page as never, { workspaceId: 'ws-test' }, 'goal', {});
     expect(out).toEqual([]);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
@@ -105,7 +105,7 @@ describe('extractStructuredData', () => {
   it('returns table data (strategy 1) from the native page path', async () => {
     const rows = [{ name: 'a', price: '1' }];
     const page = { evaluate: vi.fn().mockResolvedValueOnce(rows) };
-    const out = await extractStructuredData(page as never, undefined, 'goal', {
+    const out = await extractStructuredData(page as never, { workspaceId: 'ws-test' }, 'goal', {
       name: 'string',
       price: 'number',
     });
@@ -122,17 +122,23 @@ describe('extractStructuredData', () => {
         .mockResolvedValueOnce([]) // lists
         .mockResolvedValueOnce(repeated), // repeated
     };
-    const out = await extractStructuredData(page as never, undefined, 'goal', { title: 'string' });
+    const out = await extractStructuredData(page as never, { workspaceId: 'ws-test' }, 'goal', { title: 'string' });
     expect(out).toEqual(repeated);
     expect(page.evaluate).toHaveBeenCalledTimes(3);
   });
 
   it('uses the RPC fallback when no page is available', async () => {
     mockSendRpc.mockResolvedValueOnce({ value: [{ name: 'rpc' }] });
-    const out = await extractStructuredData(null, 'surf', 'goal', { name: 'string' });
+    const out = await extractStructuredData(
+      null,
+      { workspaceId: 'ws-test', surfaceId: 'surf' },
+      'goal',
+      { name: 'string' },
+    );
     expect(out).toEqual([{ name: 'rpc' }]);
     const [method, params] = mockSendRpc.mock.calls[0];
     expect(method).toBe('browser.evaluate');
+    expect(params.workspaceId).toBe('ws-test');
     expect(params.surfaceId).toBe('surf');
     expect(params.expression).toContain('querySelectorAll'); // stringified table fn
   });

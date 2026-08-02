@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
 import {
+  requireBrowserTargetScope,
+  sendScopedBrowserRpc,
+  type BrowserToolDeps,
+} from '../browserScope';
+import {
   browserTabsError,
   isBrowserTabsResult,
   type BrowserTabDescriptor,
@@ -49,11 +54,6 @@ export const BROWSER_TABS_SHAPE = {
     .optional()
     .describe('Removed unsafe numeric index. Use surfaceId returned by "list" or "new".'),
 };
-
-export interface NavigationToolDeps {
-  /** Strict per-connection resolver. It throws rather than falling back to the UI-active workspace. */
-  resolveWorkspaceId: () => Promise<string>;
-}
 
 function tabsToolError(result: BrowserTabsErrorResult) {
   return {
@@ -111,7 +111,7 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult) {
  *  - browser_navigate_back — go back in history
  *  - browser_tabs          — list / new / select / close tabs
  */
-export function registerNavigationTools(server: McpServer, deps: NavigationToolDeps): void {
+export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps): void {
   // -----------------------------------------------------------------------
   // browser_navigate
   // -----------------------------------------------------------------------
@@ -129,8 +129,9 @@ export function registerNavigationTools(server: McpServer, deps: NavigationToolD
           };
         }
 
+        const scope = await requireBrowserTargetScope(deps, surfaceId);
         // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
-        await sendRpc('browser.navigate', { url, ...(surfaceId && { surfaceId }) });
+        await sendScopedBrowserRpc('browser.navigate', scope, { url });
         return {
           content: [{ type: 'text' as const, text: `Navigated to ${url}` }],
         };
@@ -153,17 +154,15 @@ export function registerNavigationTools(server: McpServer, deps: NavigationToolD
     BROWSER_NAVIGATE_BACK_SHAPE,
     async ({ surfaceId }) => {
       try {
-        await sendRpc('browser.goBack', {
-          ...(surfaceId && { surfaceId }),
-        });
+        const scope = await requireBrowserTargetScope(deps, surfaceId);
+        await sendScopedBrowserRpc('browser.goBack', scope);
 
         await new Promise((resolve) => setTimeout(resolve, 300));
 
         // Get current URL
-        const urlResult = await sendRpc('browser.evaluate', {
+        const urlResult = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
           expression: 'location.href',
-          ...(surfaceId && { surfaceId }),
-        }) as { value: string };
+        });
 
         return {
           content: [{ type: 'text' as const, text: `Navigated back to ${urlResult.value}` }],

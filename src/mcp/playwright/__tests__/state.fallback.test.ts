@@ -28,6 +28,8 @@ vi.mock('../PlaywrightEngine', () => ({
 
 import { registerStateTools } from '../tools/state';
 
+const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
+
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];
   isError?: boolean;
@@ -41,7 +43,7 @@ function collectTools(): Map<string, ToolHandler> {
       tools.set(name, handler);
     },
   };
-  registerStateTools(server as never);
+  registerStateTools(server as never, browserToolDeps);
   return tools;
 }
 
@@ -52,6 +54,8 @@ const emulate = tools.get('browser_emulate')!;
 const resize = tools.get('browser_resize')!;
 
 beforeEach(() => {
+  browserToolDeps.resolveWorkspaceId.mockClear();
+  browserToolDeps.resolveWorkspaceId.mockResolvedValue('ws-test');
   mockSendRpc.mockReset();
   getPage.mockReset();
   getPage.mockResolvedValue(null); // default: packaged (no Playwright Page)
@@ -66,8 +70,11 @@ describe('browser_cookies RPC fallback', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cookies', {
       action: 'get',
       urls: [],
+      workspaceId: 'ws-test',
       surfaceId: 's1',
     });
+    expect(getPage).toHaveBeenCalledWith('s1', 'ws-test');
+    expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('"value": "abc"');
   });
@@ -78,6 +85,7 @@ describe('browser_cookies RPC fallback', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cookies', {
       action: 'get',
       urls: ['https://example.com'],
+      workspaceId: 'ws-test',
     });
   });
 
@@ -107,7 +115,10 @@ describe('browser_cookies RPC fallback', () => {
   it('clear routes to browser.cookies', async () => {
     mockSendRpc.mockResolvedValue({ ok: true });
     const res = await cookies({ action: 'clear' });
-    expect(mockSendRpc).toHaveBeenCalledWith('browser.cookies', { action: 'clear' });
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cookies', {
+      action: 'clear',
+      workspaceId: 'ws-test',
+    });
     expect(res.content[0].text).toContain('Cookies cleared.');
   });
 
@@ -130,6 +141,7 @@ describe('browser_storage RPC fallback', () => {
     // First call resolves the URL, second runs the stringified reader.
     expect(mockSendRpc).toHaveBeenCalledWith('browser.evaluate', {
       expression: 'location.href',
+      workspaceId: 'ws-test',
       surfaceId: 's1',
     });
     expect(res.content[0].text).toContain('"token": "xyz"');
@@ -159,6 +171,7 @@ describe('browser_resize RPC fallback', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.resize', {
       width: 800,
       height: 600,
+      workspaceId: 'ws-test',
       surfaceId: 's1',
     });
     expect(res.content[0].text).toContain('800x600');
@@ -179,6 +192,7 @@ describe('browser_emulate RPC fallback', () => {
     expect(params.offline).toBe(true);
     expect(params.geo).toEqual({ latitude: 1, longitude: 2 });
     expect(params.credentialsRequested).toBe(true);
+    expect(params.workspaceId).toBe('ws-test');
     expect(params.surfaceId).toBe('s1');
     expect(res.content[0].text).toContain('offline=true');
   });

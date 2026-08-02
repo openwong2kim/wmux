@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import type { BrowserToolDeps } from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -101,7 +102,7 @@ async function ensureExportDir(filePath: string): Promise<void> {
  *  - browser_pdf   — export the current page as a PDF
  *  - browser_trace — start or stop Playwright tracing
  */
-export function registerUtilityTools(server: McpServer): void {
+export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): void {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -111,11 +112,11 @@ export function registerUtilityTools(server: McpServer): void {
     'browser_pdf',
     'Export the current page as a PDF file. Falls back to CDP Page.printToPDF when Playwright pdf() is unavailable (e.g. CDP-connected browsers).',
     BROWSER_PDF_SHAPE,
-    async ({ path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const resolvedPath = resolveBrowserExportPath(outputPath, 'output.pdf');
         await ensureExportDir(resolvedPath);
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -176,9 +177,9 @@ export function registerUtilityTools(server: McpServer): void {
     'browser_trace',
     'Start or stop Playwright tracing. Use "start" to begin recording and "stop" to save the trace file.',
     BROWSER_TRACE_SHAPE,
-    async ({ action, path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ action, path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

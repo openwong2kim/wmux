@@ -404,8 +404,17 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     const engine = PlaywrightEngine.getInstance();
     await engine.connect(9222);
 
-    const page = await engine.getPage('surface-pinned');
+    // The tool layer resolves identity before acquiring its lease and supplies
+    // the exact same id to getPage (#695). No engine resolver is wired here:
+    // this proves the pre-resolved identity is sufficient and is forwarded to
+    // every discovery request for the explicit surface.
+    const page = await engine.getPage('surface-pinned', 'ws-caller');
     expect(page).toBeNull();
+    const infoCalls = mockSendRpc.mock.calls.filter(([method]) => method === 'browser.cdp.info');
+    expect(infoCalls.length).toBeGreaterThan(0);
+    expect(infoCalls.every(([, params]) =>
+      (params as { workspaceId?: string } | undefined)?.workspaceId === 'ws-caller'
+    )).toBe(true);
   }, 20_000);
 });
 

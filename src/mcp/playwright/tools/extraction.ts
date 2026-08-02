@@ -5,6 +5,7 @@ import { withAutomationLease } from '../automationLease';
 import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
+import type { BrowserToolDeps } from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -56,7 +57,7 @@ const BROWSER_EXTRACT_DATA_SHAPE = {
  *  - browser_extract_text     -- extract page content as clean markdown
  *  - browser_extract_data     -- extract structured data as JSON
  */
-export function registerExtractionTools(server: McpServer): void {
+export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps): void {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -66,15 +67,15 @@ export function registerExtractionTools(server: McpServer): void {
     'browser_smart_snapshot',
     'Get a smart snapshot of the page with indexed interactive elements and clean text content. Use element ref numbers with browser_click to interact.',
     BROWSER_SMART_SNAPSHOT_SHAPE,
-    async ({ maxContentLength, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ maxContentLength, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
         // snapshot over the RPC channel.
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
         const snapshot = page
           ? await getSmartSnapshot(page, { maxContentLength: maxContentLength ?? 3000 })
-          : await getSmartSnapshotViaEval(rpcEvaluator(surfaceId), { maxContentLength: maxContentLength ?? 3000 });
+          : await getSmartSnapshotViaEval(rpcEvaluator(scope), { maxContentLength: maxContentLength ?? 3000 });
 
         // Format the snapshot output: indexed elements + content summary
         const lines: string[] = [];
@@ -115,12 +116,12 @@ export function registerExtractionTools(server: McpServer): void {
     'browser_extract_text',
     'Extract page content as clean markdown text, stripping navigation and noise.',
     BROWSER_EXTRACT_TEXT_SHAPE,
-    async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // resolveEvaluator picks the Playwright page when available, else the
         // RPC channel (packaged builds, issue #105). extract_text's in-page work
         // is a string script, so both transports produce identical output.
-        const evaluate = await resolveEvaluator(engine, surfaceId);
+        const evaluate = await resolveEvaluator(engine, scope);
 
         const markdown = await extractMarkdown(evaluate, {
           selector,
@@ -148,13 +149,13 @@ export function registerExtractionTools(server: McpServer): void {
     'browser_extract_data',
     'Extract structured data from the page (tables, lists, repeated items) as JSON.',
     BROWSER_EXTRACT_DATA_SHAPE,
-    async ({ goal, fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ goal, fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Native page.evaluate(fn, arg) when a Page exists (unchanged dev path);
         // RPC fallback when not (packaged builds, issue #105).
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
-        const records = await extractStructuredData(page, surfaceId, goal, fields);
+        const records = await extractStructuredData(page, scope, goal, fields);
 
         return {
           content: [

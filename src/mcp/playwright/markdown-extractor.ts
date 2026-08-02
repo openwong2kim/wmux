@@ -1,6 +1,7 @@
 import type { Page } from 'playwright-core';
 import type { JsonEvaluator } from './page-eval';
 import { evalFunctionOrRpc } from './page-eval';
+import type { BrowserTargetScope } from './browserScope';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -393,7 +394,7 @@ export function treeToMarkdown(
  * requested fields.
  *
  * @param page      Playwright Page, or null to use the RPC fallback (issue #105)
- * @param surfaceId Optional surface to target on the RPC path
+ * @param scope     Required workspace and optional surface for the RPC path
  * @param goal      Human-readable description of what to extract (reserved;
  *                  not yet used to narrow scope)
  * @param fields    Mapping of field names to human descriptions, e.g.
@@ -402,7 +403,7 @@ export function treeToMarkdown(
  */
 export async function extractStructuredData(
   page: Page | null,
-  surfaceId: string | undefined,
+  scope: BrowserTargetScope,
   goal: string,
   fields: Record<string, string>,
 ): Promise<Record<string, unknown>[]> {
@@ -411,15 +412,15 @@ export async function extractStructuredData(
   if (fieldNames.length === 0) return [];
 
   // Strategy 1: Try to extract from <table> elements
-  const tableData = await extractFromTables(page, surfaceId, fieldNames);
+  const tableData = await extractFromTables(page, scope, fieldNames);
   if (tableData.length > 0) return tableData;
 
   // Strategy 2: Try to extract from repeated list items
-  const listData = await extractFromLists(page, surfaceId, fieldNames);
+  const listData = await extractFromLists(page, scope, fieldNames);
   if (listData.length > 0) return listData;
 
   // Strategy 3: Try to find repeated element patterns (grids, cards, etc.)
-  const repeatedData = await extractFromRepeatedElements(page, surfaceId, fieldNames);
+  const repeatedData = await extractFromRepeatedElements(page, scope, fieldNames);
   if (repeatedData.length > 0) return repeatedData;
 
   return [];
@@ -431,7 +432,7 @@ export async function extractStructuredData(
 
 async function extractFromTables(
   page: Page | null,
-  surfaceId: string | undefined,
+  scope: BrowserTargetScope,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
   return await evalFunctionOrRpc(
@@ -515,7 +516,7 @@ async function extractFromTables(
       return [];
     },
     { fieldNames },
-    surfaceId,
+    scope,
   );
 }
 
@@ -525,7 +526,7 @@ async function extractFromTables(
 
 async function extractFromLists(
   page: Page | null,
-  surfaceId: string | undefined,
+  scope: BrowserTargetScope,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
   return await evalFunctionOrRpc(
@@ -589,7 +590,7 @@ async function extractFromLists(
       return results;
     },
     { fieldNames },
-    surfaceId,
+    scope,
   );
 }
 
@@ -599,7 +600,7 @@ async function extractFromLists(
 
 async function extractFromRepeatedElements(
   page: Page | null,
-  surfaceId: string | undefined,
+  scope: BrowserTargetScope,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
   return await evalFunctionOrRpc(
@@ -757,6 +758,6 @@ async function extractFromRepeatedElements(
       return [];
     },
     { fieldNames },
-    surfaceId,
+    scope,
   );
 }

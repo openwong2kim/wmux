@@ -8,7 +8,7 @@ import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
 import { sanitizeRef } from './interaction';
-import { sendRpc } from '../../wmux-client';
+import { sendScopedBrowserRpc, type BrowserToolDeps } from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -293,7 +293,7 @@ function formatNetwork(
  *  - browser_response_body  -- retrieve response body by URL pattern
  *  - browser_highlight      -- visually highlight an element
  */
-export function registerInspectionTools(server: McpServer): void {
+export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps): void {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -303,10 +303,10 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_snapshot',
     'Take an accessibility tree snapshot of the current page. Returns a text representation of the page structure with interactive elements annotated with ref numbers.',
     BROWSER_SNAPSHOT_SHAPE,
-    async ({ format, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ format, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Try Playwright for full snapshot
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
         if (page) {
           const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
           return {
@@ -318,10 +318,9 @@ export function registerInspectionTools(server: McpServer): void {
         // elements with data-wmux-ref so interaction tools can resolve them.
         // Same expression the page-mode root-only fallthrough runs (snapshot.ts),
         // via the shared buildDomSnapshotExpression() helper.
-        const result = await sendRpc('browser.evaluate', {
+        const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
           expression: buildDomSnapshotExpression(),
-          ...(surfaceId && { surfaceId }),
-        }) as { value: string };
+        });
 
         return {
           content: [{ type: 'text' as const, text: result.value }],
@@ -343,11 +342,11 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_screenshot',
     'Take a screenshot of the current page or a specific element. Returns the image as base64-encoded PNG. Requires browser_open to be called first to establish a connection, even if a browser panel is already visible.',
     BROWSER_SCREENSHOT_SHAPE,
-    async ({ fullPage, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ fullPage, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Try Playwright for element-level screenshots (ref)
         if (ref) {
-          const page = await engine.getPage(surfaceId);
+          const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
           if (page) {
             const el = await resolveRef(page, ref);
             if (!el) {
@@ -361,10 +360,9 @@ export function registerInspectionTools(server: McpServer): void {
         }
 
         // Use RPC for fast, reliable screenshots (bypasses Playwright CDP discovery)
-        const result = await sendRpc('browser.screenshot', {
-          ...(surfaceId && { surfaceId }),
+        const result = await sendScopedBrowserRpc<{ data: string }>('browser.screenshot', scope, {
           ...(fullPage && { fullPage }),
-        }) as { data: string };
+        });
 
         return {
           content: [
@@ -392,7 +390,7 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_evaluate',
     'Evaluate a JavaScript expression in the browser page context. Dangerous patterns (fetch, XHR, cookies, storage, eval, Function) are BLOCKED by default to mitigate prompt injection; pass allowDangerous:true to override when the caller has verified the expression is trusted.',
     BROWSER_EVALUATE_SHAPE,
-    async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const warnings = detectDangerousPatterns(expression);
         if (warnings.length > 0 && !allowDangerous) {
@@ -411,15 +409,14 @@ export function registerInspectionTools(server: McpServer): void {
         let result: unknown;
 
         // Try Playwright first for gesture-aware evaluation
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
         if (page) {
           result = await evaluateWithGesture(page, expression);
         } else {
           // Fallback: RPC evaluation via main process webContents
-          const rpcResult = await sendRpc('browser.evaluate', {
+          const rpcResult = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
             expression,
-            ...(surfaceId && { surfaceId }),
-          }) as { value: unknown };
+          });
           result = rpcResult.value;
         }
 
@@ -446,9 +443,9 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_console',
     'Retrieve console messages collected from the browser page. Messages are accumulated over time; use clear=true to reset.',
     BROWSER_CONSOLE_SHAPE,
-    async ({ level, clear, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ level, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         let entries: ConsoleEntry[];
         if (page) {
@@ -457,10 +454,9 @@ export function registerInspectionTools(server: McpServer): void {
           if (clear) consoleMessages.set(page, []);
         } else {
           // RPC fallback (packaged builds): drain the main-process CDP capture.
-          const result = await sendRpc('browser.console.get', {
-            ...(surfaceId && { surfaceId }),
+          const result = await sendScopedBrowserRpc<{ entries: ConsoleEntry[] }>('browser.console.get', scope, {
             ...(clear && { clear: true }),
-          }) as { entries: ConsoleEntry[] };
+          });
           entries = result.entries ?? [];
         }
 
@@ -486,9 +482,9 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_network',
     'Retrieve network requests collected from the browser page. Requests are accumulated over time; use clear=true to reset. Use a URL glob pattern to filter.',
     BROWSER_NETWORK_SHAPE,
-    async ({ filter, clear, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ filter, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         let entries: Array<{ url: string; method: string; status?: number }>;
         if (page) {
@@ -497,10 +493,11 @@ export function registerInspectionTools(server: McpServer): void {
           if (clear) networkRequests.set(page, []);
         } else {
           // RPC fallback (packaged builds): drain the main-process CDP capture.
-          const result = await sendRpc('browser.network.get', {
-            ...(surfaceId && { surfaceId }),
+          const result = await sendScopedBrowserRpc<{
+            entries: Array<{ url: string; method: string; status?: number }>;
+          }>('browser.network.get', scope, {
             ...(clear && { clear: true }),
-          }) as { entries: Array<{ url: string; method: string; status?: number }> };
+          });
           entries = result.entries ?? [];
         }
 
@@ -526,9 +523,9 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_response_body',
     'Retrieve the response body for a previously captured network request matching a URL pattern.',
     BROWSER_RESPONSE_BODY_SHAPE,
-    async ({ urlPattern, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ urlPattern, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         let body: string | null = null;
         if (page) {
@@ -545,10 +542,9 @@ export function registerInspectionTools(server: McpServer): void {
         } else {
           // RPC fallback (packaged builds): the main process matches and returns
           // the body from its CDP capture buffer.
-          const result = await sendRpc('browser.responseBody.get', {
+          const result = await sendScopedBrowserRpc<{ body: string | null }>('browser.responseBody.get', scope, {
             urlPattern,
-            ...(surfaceId && { surfaceId }),
-          }) as { body: string | null };
+          });
           body = result.body ?? null;
         }
 
@@ -588,9 +584,9 @@ export function registerInspectionTools(server: McpServer): void {
     'browser_highlight',
     'Visually highlight an element on the page by its ref number. Adds a red outline around the element.',
     BROWSER_HIGHLIGHT_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -608,7 +604,7 @@ export function registerInspectionTools(server: McpServer): void {
           // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
           // by browser_snapshot / browser_smart_snapshot and set the outline inline.
           const safeRef = sanitizeRef(ref);
-          const result = await sendRpc('browser.evaluate', {
+          const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
             expression: `(() => {
               const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
               if (!el) return 'not_found';
@@ -616,8 +612,7 @@ export function registerInspectionTools(server: McpServer): void {
               el.style.outlineOffset = '2px';
               return 'ok';
             })()`,
-            ...(surfaceId && { surfaceId }),
-          }) as { value: string };
+          });
           if (result.value === 'not_found') {
             throw new Error(`Could not resolve ref="${ref}" to an element.`);
           }

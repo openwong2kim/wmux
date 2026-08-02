@@ -42,6 +42,8 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
+
 function collectTools(profile: WmuxToolProfile = 'full'): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
@@ -49,7 +51,7 @@ function collectTools(profile: WmuxToolProfile = 'full'): Map<string, ToolHandle
       tools.set(name, handler);
     },
   };
-  registerWaitTools(server as never, {
+  registerWaitTools(server as never, browserToolDeps, {
     profile,
     context: { principal: { kind: 'unattributed' } },
   });
@@ -71,6 +73,7 @@ function evalRouter(map: Record<string, unknown>, fallback: unknown = false) {
 }
 
 beforeEach(() => {
+  browserToolDeps.resolveWorkspaceId.mockClear();
   mockSendRpc.mockReset();
   mockLeaseRpc.mockReset();
   mockLeaseRpc.mockResolvedValue({ token: null });
@@ -86,7 +89,7 @@ describe('browser_wait catalog registration', () => {
   });
 
   it('keeps the legacy schema order, profile membership, and frozen descriptors', () => {
-    const specs = createWaitToolCatalog();
+    const specs = createWaitToolCatalog(browserToolDeps);
     expect(specs.map((spec) => spec.name)).toEqual(['browser_wait']);
     expect(specs[0]?.profiles).toEqual(['full']);
     expect(Object.keys(specs[0]?.inputSchema ?? {})).toEqual([
@@ -107,8 +110,8 @@ describe('browser_wait catalog registration', () => {
   });
 
   it('reuses the exact module-scope raw shape across catalogs and SDK registration', () => {
-    const firstCatalog = createWaitToolCatalog();
-    const secondCatalog = createWaitToolCatalog();
+    const firstCatalog = createWaitToolCatalog(browserToolDeps);
+    const secondCatalog = createWaitToolCatalog(browserToolDeps);
     let registeredInputSchema: unknown;
     const server = {
       registerTool: (
@@ -119,7 +122,7 @@ describe('browser_wait catalog registration', () => {
       },
     };
 
-    registerWaitTools(server as never, {
+    registerWaitTools(server as never, browserToolDeps, {
       profile: 'full',
       context: { principal: { kind: 'unattributed' } },
     });
@@ -135,12 +138,13 @@ describe('browser_wait RPC fallback', () => {
     const res = await wait({ selector: '#app', surfaceId: 's1' });
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('selector "#app" found');
-    const [method, params] = mockSendRpc.mock.calls[0] as [string, { expression: string; surfaceId?: string }];
+    const [method, params] = mockSendRpc.mock.calls[0] as [string, { expression: string; workspaceId: string; surfaceId?: string }];
     expect(method).toBe('browser.evaluate');
     // Mirrors Playwright's default state:'visible' — attachment + visible box.
     expect(params.expression).toContain('querySelector("#app")');
     expect(params.expression).toContain('getBoundingClientRect');
     expect(params.expression).toContain('visibility');
+    expect(params.workspaceId).toBe('ws-test');
     expect(params.surfaceId).toBe('s1');
   });
 
@@ -256,6 +260,7 @@ describe('browser_wait RPC fallback', () => {
     getPage.mockResolvedValue({ waitForSelector });
     const res = await wait({ selector: '#app' });
     expect(waitForSelector).toHaveBeenCalledWith('#app', { timeout: 30000 });
+    expect(getPage).toHaveBeenCalledWith(undefined, 'ws-test');
     expect(mockSendRpc).not.toHaveBeenCalled();
     expect(res.content[0].text).toContain('selector "#app" found');
   });
@@ -273,7 +278,7 @@ describe('browser_wait RPC fallback', () => {
     await wait({ selector: '#app', surfaceId: 'surface-1' });
 
     expect(mockLeaseRpc.mock.calls).toEqual([
-      ['browser.lease.acquire', { surfaceId: 'surface-1' }],
+      ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
     ]);
   });

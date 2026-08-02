@@ -4,6 +4,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
+import type { BrowserToolDeps } from '../browserScope';
 import {
   defineWmuxTool,
   registerWmuxTools,
@@ -127,7 +128,7 @@ function sleep(ms: number): Promise<void> {
  * Tools:
  *  - browser_wait — wait for a URL, selector, text, JS predicate, or network idle
  */
-export function createWaitToolCatalog() {
+export function createWaitToolCatalog(deps: BrowserToolDeps) {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -139,16 +140,16 @@ export function createWaitToolCatalog() {
       'Wait for a condition: URL pattern, CSS selector, text content, custom JS predicate, or network idle. Priority: url > selector > text > fn > networkidle.',
     inputSchema: BROWSER_WAIT_SHAPE,
     profiles: ['full'],
-    invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         // Packaged RPC fallback (#114): no Playwright Page, so poll the condition
         // over the CDP channel until it holds or the timeout elapses.
         if (!page) {
-          const evaluate = rpcEvaluator(surfaceId);
+          const evaluate = rpcEvaluator(scope);
           let predicate: () => Promise<boolean>;
           let label: string;
           let warningPrefix = '';
@@ -316,7 +317,8 @@ export function createWaitToolCatalog() {
 /** Register the wait catalog through the wire-neutral current-SDK adapter. */
 export function registerWaitTools(
   server: McpServer,
+  deps: BrowserToolDeps,
   options: RegisterWmuxToolsOptions,
 ): void {
-  registerWmuxTools(server, createWaitToolCatalog(), options);
+  registerWmuxTools(server, createWaitToolCatalog(deps), options);
 }

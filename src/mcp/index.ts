@@ -844,14 +844,15 @@ server.tool(
 );
 
 // === Playwright browser tools ===
-registerNavigationTools(server, { resolveWorkspaceId: requireWorkspaceId });
-registerInteractionTools(server);
-registerInspectionTools(server);
-registerStateTools(server);
-registerWaitTools(server, MCP_CATALOG_OPTIONS);
-registerFileTools(server);
-registerUtilityTools(server);
-registerExtractionTools(server);
+const browserToolDeps = { resolveWorkspaceId: requireWorkspaceId };
+registerNavigationTools(server, browserToolDeps);
+registerInteractionTools(server, browserToolDeps);
+registerInspectionTools(server, browserToolDeps);
+registerStateTools(server, browserToolDeps);
+registerWaitTools(server, browserToolDeps, MCP_CATALOG_OPTIONS);
+registerFileTools(server, browserToolDeps);
+registerUtilityTools(server, browserToolDeps);
+registerExtractionTools(server, browserToolDeps);
 
 // The engine's auto-open (getPage Strategy 4) issues browser.open outside any
 // tool handler, so it cannot rely on the per-tool requireWorkspaceId() guard

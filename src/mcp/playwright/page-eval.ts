@@ -1,6 +1,6 @@
 import type { Page } from 'playwright-core';
 import type { PlaywrightEngine } from './PlaywrightEngine';
-import { sendRpc } from '../wmux-client';
+import { sendScopedBrowserRpc, type BrowserTargetScope } from './browserScope';
 
 // ---------------------------------------------------------------------------
 // Transport abstraction for DOM-extraction tools (issue #105)
@@ -29,12 +29,11 @@ export function pageEvaluator(page: Page): JsonEvaluator {
  * webContents via browser.evaluate (CDP Runtime.evaluate, returnByValue), so it
  * works in packaged builds where the Playwright Page route does not.
  */
-export function rpcEvaluator(surfaceId?: string): JsonEvaluator {
+export function rpcEvaluator(scope: BrowserTargetScope): JsonEvaluator {
   return async (expression) => {
-    const result = (await sendRpc('browser.evaluate', {
+    const result = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
       expression,
-      ...(surfaceId && { surfaceId }),
-    })) as { value: unknown };
+    });
     return result.value;
   };
 }
@@ -50,10 +49,10 @@ export function rpcEvaluator(surfaceId?: string): JsonEvaluator {
  */
 export async function resolveEvaluator(
   engine: PlaywrightEngine,
-  surfaceId?: string,
+  scope: BrowserTargetScope,
 ): Promise<JsonEvaluator> {
-  const page = await engine.getPage(surfaceId).catch(() => null);
-  return page ? pageEvaluator(page) : rpcEvaluator(surfaceId);
+  const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+  return page ? pageEvaluator(page) : rpcEvaluator(scope);
 }
 
 /**
@@ -77,7 +76,7 @@ export async function evalFunctionOrRpc<A, R>(
   page: Page | null,
   fn: (arg: A) => R,
   arg: A,
-  surfaceId?: string,
+  scope: BrowserTargetScope,
 ): Promise<R> {
   if (page) {
     // Playwright types page.evaluate's function param as PageFunction<Unboxed<A>, R>,
@@ -86,9 +85,8 @@ export async function evalFunctionOrRpc<A, R>(
     return (await page.evaluate(fn as (a: unknown) => R, arg)) as R;
   }
   const expression = `(${fn.toString()})(${JSON.stringify(arg)})`;
-  const result = (await sendRpc('browser.evaluate', {
+  const result = await sendScopedBrowserRpc<{ value: R }>('browser.evaluate', scope, {
     expression,
-    ...(surfaceId && { surfaceId }),
-  })) as { value: R };
+  });
   return result.value;
 }

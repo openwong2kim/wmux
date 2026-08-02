@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { getWmuxDir } from '../../../daemon/config';
 
@@ -107,7 +108,7 @@ function validateUploadPath(input: string): string {
  *  - browser_wait_for_download  — wait for a download event
  *  - browser_dialog             — pre-register a dialog accept/dismiss handler
  */
-export function registerFileTools(server: McpServer): void {
+export function registerFileTools(server: McpServer, deps: BrowserToolDeps): void {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -117,9 +118,9 @@ export function registerFileTools(server: McpServer): void {
     'browser_file_upload',
     'Upload files to a file input element. Paths MUST live under ~/.wmux/uploads/ — arbitrary filesystem paths are rejected to prevent exfiltration of credentials or SSH keys via malicious pages.',
     BROWSER_FILE_UPLOAD_SHAPE,
-    async ({ paths, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ paths, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -166,9 +167,9 @@ export function registerFileTools(server: McpServer): void {
     'browser_download',
     'Click an element (identified by ref) and capture the resulting download. Returns the downloaded file path.',
     BROWSER_DOWNLOAD_SHAPE,
-    async ({ ref, filename, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, filename, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -228,11 +229,11 @@ export function registerFileTools(server: McpServer): void {
     'browser_wait_for_download',
     'Wait for a download event on the page. Optionally filter by filename.',
     BROWSER_WAIT_FOR_DOWNLOAD_SHAPE,
-    async ({ filename, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ filename, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -301,9 +302,9 @@ export function registerFileTools(server: McpServer): void {
     'browser_dialog',
     'Pre-register a handler for the next browser dialog (alert, confirm, prompt, beforeunload). The handler will automatically accept or dismiss the dialog when it appears.',
     BROWSER_DIALOG_SHAPE,
-    async ({ accept, text, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

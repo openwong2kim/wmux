@@ -5,7 +5,11 @@ import { withAutomationLease } from '../automationLease';
 import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
-import { sendRpc } from '../../wmux-client';
+import {
+  sendScopedBrowserRpc,
+  type BrowserTargetScope,
+  type BrowserToolDeps,
+} from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -116,11 +120,10 @@ function refNotFound(ref: string): string {
 // These resolve elements via data-wmux-ref attributes set by browser_snapshot.
 // ---------------------------------------------------------------------------
 
-async function rpcEval(expression: string, surfaceId?: string): Promise<string> {
-  const result = await sendRpc('browser.evaluate', {
+async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<string> {
+  const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
     expression,
-    ...(surfaceId && { surfaceId }),
-  }) as { value: string };
+  });
   return result.value;
 }
 
@@ -134,36 +137,32 @@ export function sanitizeRef(ref: string): string {
   return ref;
 }
 
-async function rpcClick(ref: string, surfaceId?: string, _double?: boolean): Promise<void> {
+async function rpcClick(ref: string, scope: BrowserTargetScope, _double?: boolean): Promise<void> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events
   const safeRef = sanitizeRef(ref);
-  await sendRpc('browser.click.cdp', {
+  await sendScopedBrowserRpc('browser.click.cdp', scope, {
     selector: `[data-wmux-ref="${safeRef}"]`,
-    ...(surfaceId && { surfaceId }),
   });
 }
 
-async function rpcFill(ref: string, value: string, surfaceId?: string): Promise<void> {
+async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): Promise<void> {
   // Click on the element first to focus it
-  await rpcClick(ref, surfaceId);
+  await rpcClick(ref, scope);
   // Small delay for focus
   await new Promise(r => setTimeout(r, 100));
   // Select all existing text
-  await sendRpc('browser.evaluate', {
+  await sendScopedBrowserRpc('browser.evaluate', scope, {
     expression: `document.execCommand('selectAll')`,
-    ...(surfaceId && { surfaceId }),
   });
   // Type the new value via CDP Input.insertText (handles CJK, React controlled inputs)
-  await sendRpc('browser.type.cdp', {
+  await sendScopedBrowserRpc('browser.type.cdp', scope, {
     text: value,
-    ...(surfaceId && { surfaceId }),
   });
 }
 
-async function rpcPressKey(key: string, surfaceId?: string): Promise<void> {
-  await sendRpc('browser.press.cdp', {
+async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void> {
+  await sendScopedBrowserRpc('browser.press.cdp', scope, {
     key,
-    ...(surfaceId && { surfaceId }),
   });
 }
 
@@ -180,7 +179,7 @@ async function rpcPressKey(key: string, surfaceId?: string): Promise<void> {
  *  - browser_select           — select option(s) in a <select>
  *  - browser_scroll_into_view — scroll element into viewport
  */
-export function registerInteractionTools(server: McpServer): void {
+export function registerInteractionTools(server: McpServer, deps: BrowserToolDeps): void {
   const engine = PlaywrightEngine.getInstance();
 
   // -----------------------------------------------------------------------
@@ -190,10 +189,10 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_click',
     'Click an element identified by its ref number from the accessibility snapshot, or by a smartRef from browser_smart_snapshot.',
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Try Playwright first
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           if (smartRef !== undefined) {
@@ -225,7 +224,7 @@ export function registerInteractionTools(server: McpServer): void {
         // RPC fallback
         if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
         const resolvedRef = ref ?? String(smartRef);
-        await rpcClick(resolvedRef, surfaceId, double);
+        await rpcClick(resolvedRef, scope, double);
         return {
           content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
         };
@@ -246,9 +245,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_type',
     'Type text into an element identified by its ref number.',
     BROWSER_TYPE_SHAPE,
-    async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -262,8 +261,8 @@ export function registerInteractionTools(server: McpServer): void {
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
-          await rpcFill(ref, text, surfaceId);
-          if (submit) await rpcPressKey('Enter', surfaceId);
+          await rpcFill(ref, text, scope);
+          if (submit) await rpcPressKey('Enter', scope);
         }
 
         return {
@@ -291,9 +290,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_fill',
     'Fill multiple form fields at once. Each field is identified by a ref number.',
     BROWSER_FILL_SHAPE,
-    async ({ fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         let filled = 0;
         const errors: string[] = [];
@@ -305,7 +304,7 @@ export function registerInteractionTools(server: McpServer): void {
               if (!el) { errors.push(refNotFound(field.ref)); continue; }
               await el.fill(field.value);
             } else {
-              await rpcFill(field.ref, field.value, surfaceId);
+              await rpcFill(field.ref, field.value, scope);
             }
             filled++;
           } catch (err) {
@@ -339,14 +338,14 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_press_key',
     'Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown, Control+a).',
     BROWSER_PRESS_KEY_SHAPE,
-    async ({ key, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ key, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           await page.keyboard.press(key);
         } else {
-          await rpcPressKey(key, surfaceId);
+          await rpcPressKey(key, scope);
         }
 
         return {
@@ -369,9 +368,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_hover',
     'Hover over an element identified by its ref number.',
     BROWSER_HOVER_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -387,7 +386,7 @@ export function registerInteractionTools(server: McpServer): void {
             el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
             el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
             return 'ok';
-          })()`, surfaceId);
+          })()`, scope);
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
@@ -411,9 +410,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_drag',
     'Drag an element from sourceRef to targetRef.',
     BROWSER_DRAG_SHAPE,
-    async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const sourceEl = await resolveRef(page, sourceRef);
@@ -451,7 +450,7 @@ export function registerInteractionTools(server: McpServer): void {
             tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
             src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
             return 'ok';
-          })()`, surfaceId);
+          })()`, scope);
           if (val === 'source_not_found') throw new Error(refNotFound(sourceRef));
           if (val === 'target_not_found') throw new Error(refNotFound(targetRef));
         }
@@ -476,9 +475,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_select',
     'Select option(s) in a <select> element by value.',
     BROWSER_SELECT_SHAPE,
-    async ({ ref, values, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, values, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -494,7 +493,7 @@ export function registerInteractionTools(server: McpServer): void {
             [...el.options].forEach(o => { o.selected = vals.includes(o.value); });
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return 'ok';
-          })()`, surfaceId);
+          })()`, scope);
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
@@ -518,9 +517,9 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_scroll_into_view',
     'Scroll an element into the visible viewport.',
     BROWSER_SCROLL_INTO_VIEW_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -533,7 +532,7 @@ export function registerInteractionTools(server: McpServer): void {
             if (!el) return 'not_found';
             el.scrollIntoView({ block: 'center', behavior: 'smooth' });
             return 'ok';
-          })()`, surfaceId);
+          })()`, scope);
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
@@ -557,12 +556,12 @@ export function registerInteractionTools(server: McpServer): void {
     'browser_scroll',
     'Scroll the page or a scrollable element. Use direction and amount to control scrolling.',
     BROWSER_SCROLL_SHAPE,
-    async ({ direction, amount, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
+    async ({ direction, amount, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
       try {
-        const page = await engine.getPage(surfaceId).catch(() => null);
+        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
 
         if (page) {
           if (ref) {
@@ -587,12 +586,12 @@ export function registerInteractionTools(server: McpServer): void {
               if (!el) return 'not_found';
               el.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
-            })()`, surfaceId);
+            })()`, scope);
           } else {
             await rpcEval(`(() => {
               window.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
-            })()`, surfaceId);
+            })()`, scope);
           }
         }
 

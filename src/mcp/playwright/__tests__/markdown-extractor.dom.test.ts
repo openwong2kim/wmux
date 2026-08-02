@@ -54,7 +54,7 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
   it('HN-style layout table maps title->link text and url->href (not duplicated subtext)', async () => {
     document.body.innerHTML = hnLikeHtml();
 
-    const out = (await extractStructuredData(directPage, undefined, 'front page stories', {
+    const out = (await extractStructuredData(directPage, { workspaceId: 'ws-test' }, 'front page stories', {
       title: 'string',
       url: 'string',
     })) as Array<{ title: unknown; url: unknown }>;
@@ -84,7 +84,7 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
         <tr><td>Gadget</td><td>$20</td><td><a href="https://shop.test/gadget">buy</a></td></tr>
       </table>`;
 
-    const out = (await extractStructuredData(directPage, undefined, 'products', {
+    const out = (await extractStructuredData(directPage, { workspaceId: 'ws-test' }, 'products', {
       title: 'string',
       price: 'string',
       url: 'string',
@@ -107,7 +107,7 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
         <tr><td>2</td><td>Beta</td><td><a href="https://x.test/b">b</a></td></tr>
       </table>`;
 
-    const out = (await extractStructuredData(directPage, undefined, 'rows', {
+    const out = (await extractStructuredData(directPage, { workspaceId: 'ws-test' }, 'rows', {
       name: 'string',
       link: 'string',
     })) as Array<{ name: unknown; link: unknown }>;
@@ -128,7 +128,7 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
         <div class="card"><h3>Card Three</h3><span class="price">$7</span><a href="https://p.test/3">view</a></div>
       </div>`;
 
-    const out = (await extractStructuredData(directPage, undefined, 'cards', {
+    const out = (await extractStructuredData(directPage, { workspaceId: 'ws-test' }, 'cards', {
       title: 'string',
       price: 'string',
       url: 'string',
@@ -151,7 +151,7 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
         <div class="item"><span class="name">Gadget</span><a href="https://shop.test/g">Buy</a></div>
         <div class="item"><span class="name">Gizmo</span><a href="https://shop.test/z">Buy</a></div>
       </div>`;
-    const out = (await extractStructuredData(directPage, undefined, 'items', {
+    const out = (await extractStructuredData(directPage, { workspaceId: 'ws-test' }, 'items', {
       name: 'string',
       url: 'string',
     })) as Array<{ name: unknown; url: unknown }>;

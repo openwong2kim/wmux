@@ -9,8 +9,8 @@ vi.mock('../../wmux-client', () => ({
 import {
   BROWSER_TABS_SHAPE,
   registerNavigationTools,
-  type NavigationToolDeps,
 } from '../tools/navigation';
+import type { BrowserToolDeps } from '../browserScope';
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -18,7 +18,7 @@ type ToolResult = {
 };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
-function collectTools(deps: NavigationToolDeps): Map<string, ToolHandler> {
+function collectTools(deps: BrowserToolDeps): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
     tool: (name: string, _description: string, _schema: unknown, handler: ToolHandler) => {
@@ -29,16 +29,74 @@ function collectTools(deps: NavigationToolDeps): Map<string, ToolHandler> {
   return tools;
 }
 
-describe('browser_tabs MCP workspace contract', () => {
+describe('browser navigation MCP workspace contract', () => {
   const resolveWorkspaceId = vi.fn(async () => 'ws-caller');
   let browserTabs: ToolHandler;
+  let browserNavigate: ToolHandler;
+  let browserNavigateBack: ToolHandler;
 
   beforeEach(() => {
     vi.clearAllMocks();
     resolveWorkspaceId.mockResolvedValue('ws-caller');
-    const handler = collectTools({ resolveWorkspaceId }).get('browser_tabs');
-    if (!handler) throw new Error('browser_tabs was not registered');
-    browserTabs = handler;
+    const tools = collectTools({ resolveWorkspaceId });
+    const tabsHandler = tools.get('browser_tabs');
+    const navigateHandler = tools.get('browser_navigate');
+    const backHandler = tools.get('browser_navigate_back');
+    if (!tabsHandler || !navigateHandler || !backHandler) {
+      throw new Error('browser navigation tools were not registered');
+    }
+    browserTabs = tabsHandler;
+    browserNavigate = navigateHandler;
+    browserNavigateBack = backHandler;
+  });
+
+  it('routes navigate through the calling workspace', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+
+    const result = await browserNavigate({
+      url: 'https://example.com/',
+      surfaceId: 'surface-a',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.navigate', {
+      url: 'https://example.com/',
+      workspaceId: 'ws-caller',
+      surfaceId: 'surface-a',
+    });
+  });
+
+  it('reuses one workspace identity for goBack and its URL read', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      Promise.resolve(method === 'browser.evaluate' ? { value: 'https://example.com/previous' } : {}),
+    );
+
+    const result = await browserNavigateBack({ surfaceId: 'surface-a' });
+
+    expect(result.isError).toBeUndefined();
+    expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
+    expect(mockSendRpc.mock.calls).toEqual([
+      ['browser.goBack', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
+      [
+        'browser.evaluate',
+        {
+          expression: 'location.href',
+          workspaceId: 'ws-caller',
+          surfaceId: 'surface-a',
+        },
+      ],
+    ]);
+  });
+
+  it('does not issue a navigation RPC when workspace identity fails', async () => {
+    resolveWorkspaceId.mockRejectedValue(new Error('Workspace identity unknown.'));
+
+    const result = await browserNavigate({ url: 'https://example.com/' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Workspace identity unknown.');
+    expect(mockSendRpc).not.toHaveBeenCalled();
   });
 
   it('lists through the workspace-exact RPC and returns JSON without the internal ok flag', async () => {
