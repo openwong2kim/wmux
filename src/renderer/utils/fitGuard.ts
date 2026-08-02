@@ -9,9 +9,15 @@
  * is copied" because mousemove restarts the selection from the cursor's
  * current position.
  *
- * Skipping `fit()` while the user has an active selection prevents the
- * clear; the next ResizeObserver tick (after the user releases) handles the
- * deferred resize.
+ * Skipping `fit()` while the user has an active selection prevents the clear.
+ *
+ * A skipped fit is a DEFERRED fit, and the caller owns settling it. This
+ * docstring used to promise that "the next ResizeObserver tick (after the user
+ * releases)" would, but releasing a selection is not a size change and fires no
+ * tick — so a resize that landed mid-selection was simply lost, leaving xterm
+ * and the daemon PTY pinned to the old cols/rows (#747). useTerminal records the
+ * debt in `pendingFitRef` and re-runs the fit from its onSelectionChange
+ * handler; any new caller of this guard must do the same.
  */
 
 /**

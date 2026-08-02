@@ -552,6 +552,22 @@ interface UseTerminalOptions {
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  /**
+   * A fit() that the selection guard skipped, and nobody re-ran (#747).
+   *
+   * Every guarded site defers on the same reasoning: xterm clears the active
+   * selection on any rowsChanged, so skip now and let "the next ResizeObserver
+   * tick" handle it once the user releases. But releasing a selection is not a
+   * size change and fires no tick. If nothing else resized the container
+   * afterwards, xterm — and, through sendResize, the daemon PTY — stayed pinned
+   * to the pre-resize cols/rows: output wrapped at the wrong column and
+   * full-screen TUIs drew against stale dimensions until something unrelated
+   * happened to resize.
+   *
+   * Set by any site that skips; settled by the onSelectionChange handler in the
+   * create effect, which re-runs the real fit once the selection is gone.
+   */
+  const pendingFitRef = useRef(false);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   // WebGL addon ref — shared across effects so visibility toggling can
   // dispose/recreate the addon without exceeding the GPU context limit.
@@ -1181,7 +1197,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the contract here prevents future regressions if anything triggers
       // a font load mid-session.
       if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-        console.debug('[Terminal] fonts.ready fit skipped — active selection');
+        pendingFitRef.current = true;
+        console.debug('[Terminal] fonts.ready fit deferred — active selection');
         return;
       }
       fitAddon.fit();
@@ -1192,6 +1209,58 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let lastSentCols = 0;
     let lastSentRows = 0;
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // The container-resize fit, extracted so the selection-release retry below
+    // runs the SAME path — including scroll preservation and sendResize —
+    // rather than a thinner copy that drifts (#747).
+    //
+    // IMPORTANT: skip when the container has zero dimensions (display:none
+    // workspace). Fitting a hidden terminal produces 0 cols/rows, which
+    // corrupts the PTY buffer and manifests as "infinite content duplication"
+    // when switching back to it.
+    const runFit = () => {
+      try {
+        const term = terminalRef.current;
+        if (!term) return;
+
+        if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+
+        // Selection-preservation guard: xterm's SelectionService clears the
+        // active selection on any rowsChanged event from fit(). While the user
+        // is dragging out a selection (or while one is live waiting to be
+        // copied) skip this fit and record the debt — releasing the selection
+        // fires no ResizeObserver tick, so without this the fit is simply lost.
+        if (!shouldFitWhilePreservingSelection(term)) {
+          pendingFitRef.current = true;
+          console.debug('[Terminal] resize fit deferred — active selection');
+          return;
+        }
+        pendingFitRef.current = false;
+
+        const prevYBase = term.buffer.active.baseY;
+        const prevYDisp = term.buffer.active.viewportY;
+        const wasScrolledUp = prevYDisp < prevYBase;
+        const distFromBottom = prevYBase - prevYDisp;
+
+        fitAddon.fit();
+
+        if (wasScrolledUp) {
+          const newYBase = term.buffer.active.baseY;
+          const targetYDisp = Math.max(0, newYBase - distFromBottom);
+          term.scrollToLine(targetYDisp);
+        }
+
+        const { cols, rows } = term;
+        const currentPtyId = ptyIdRef.current;
+        if (currentPtyId && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
+          lastSentCols = cols;
+          lastSentRows = rows;
+          sendResize(currentPtyId, cols, rows);
+        }
+      } catch {
+        // ignore fit errors during unmount
+      }
+    };
 
     // Auto-copy on selection (debounced) — selection survives just long enough
     // for the user to release the mouse, then we push it to the clipboard.
@@ -1208,6 +1277,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       autoCopy.onSelection(terminal.getSelection());
+      // Settle a deferred fit (#747). This is the event the guards' "next
+      // ResizeObserver tick" assumed but never got: a selection release is not
+      // a size change. rAF so xterm has finished updating its selection state
+      // before fit() reflows the buffer, matching the observer's own timing.
+      if (pendingFitRef.current && !terminal.hasSelection()) {
+        requestAnimationFrame(runFit);
+      }
     });
 
     // Clipboard + shortcut handling
@@ -1993,48 +2069,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {
         resizeDebounceTimer = null;
-        requestAnimationFrame(() => {
-          try {
-            const term = terminalRef.current;
-            if (!term) return;
-
-            if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
-
-            // Selection-preservation guard: xterm's SelectionService clears
-            // the active selection on any rowsChanged event from fit().
-            // While the user is dragging out a selection (or while a
-            // selection is live waiting to be copied) skip this fit and let
-            // the next ResizeObserver tick handle the resize once the
-            // selection is released.
-            if (!shouldFitWhilePreservingSelection(term)) {
-              console.debug('[Terminal] resize fit skipped — active selection');
-              return;
-            }
-
-            const prevYBase = term.buffer.active.baseY;
-            const prevYDisp = term.buffer.active.viewportY;
-            const wasScrolledUp = prevYDisp < prevYBase;
-            const distFromBottom = prevYBase - prevYDisp;
-
-            fitAddon.fit();
-
-            if (wasScrolledUp) {
-              const newYBase = term.buffer.active.baseY;
-              const targetYDisp = Math.max(0, newYBase - distFromBottom);
-              term.scrollToLine(targetYDisp);
-            }
-
-            const { cols, rows } = term;
-            const currentPtyId = ptyIdRef.current;
-            if (currentPtyId && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
-              lastSentCols = cols;
-              lastSentRows = rows;
-              sendResize(currentPtyId, cols, rows);
-            }
-          } catch {
-            // ignore fit errors during unmount
-          }
-        });
+        requestAnimationFrame(runFit);
       }, 100);
     });
     resizeObserver.observe(container);
@@ -2194,7 +2229,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
     // Selection-preservation guard — see ResizeObserver above.
     if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-      console.debug('[Terminal] font/theme fit skipped — active selection');
+      pendingFitRef.current = true;
+      console.debug('[Terminal] font/theme fit deferred — active selection');
       return;
     }
     // Visibility guard — when the workspace tab containing this terminal is
@@ -2313,7 +2349,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // rebuilding it.
         glyphRepaintRef.current?.onVisible();
         if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-          console.debug('[Terminal] visibility fit skipped — active selection');
+          pendingFitRef.current = true;
+          console.debug('[Terminal] visibility fit deferred — active selection');
           return;
         }
         fit();
