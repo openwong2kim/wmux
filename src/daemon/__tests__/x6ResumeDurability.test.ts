@@ -170,12 +170,25 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 3400);
+    const body = src.slice(idx, idx + 5700);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
     // ...and the RPC must still route through it, or the wire path silently
     // stops persisting bindings for older (main-relaying) bridges.
     expect(src).toMatch(/onRpc\('daemon\.setResumeBinding'[\s\S]{0,220}applyResumeBinding\(/);
+  });
+
+  it('the applier VETS transcriptPath, so the RPC route cannot persist an unchecked one', () => {
+    // `daemon.setResumeBinding` is a wire method: main's hooks.signal fallback
+    // calls it with the RAW hook payload path, which the daemon-side ingest would
+    // have run through checkTranscriptPath first. Without the same check here,
+    // that route persists an arbitrary path the projector then opens and renders
+    // as a conversation. The field is dropped; the rest of the binding survives.
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('const applyResumeBinding =');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 5700);
+    expect(body).toMatch(/checkTranscriptPath\(/);
   });
 
   it('Rung 0: the daemon stamps WMUX_PTY_ID into each pane env (per-pane routing key)', () => {

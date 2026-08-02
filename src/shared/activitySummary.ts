@@ -96,6 +96,12 @@ export function summarizeActivity(toolName: unknown, toolInput: unknown): string
       const desc = getStringField(toolInput, 'description');
       return desc ? truncate(`⇲ ${desc}`) : truncate(fallback);
     }
+    case 'Skill': {
+      // A bare "Skill" chip says nothing — the skill NAME is the activity.
+      // Rendered as the slash form the operator would type themselves.
+      const skill = getStringField(toolInput, 'skill');
+      return skill ? truncate(`/${skill}`) : truncate(fallback);
+    }
     case 'WebFetch': {
       const url = getStringField(toolInput, 'url');
       const host = hostFromUrl(url);

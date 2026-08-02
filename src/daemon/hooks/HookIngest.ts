@@ -54,6 +54,7 @@ import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } fr
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink } from '../approvals/types';
 import { extractAskUserQuestion } from '../approvals/askUserQuestion';
+import { checkTranscriptPath } from './transcriptPathGuard';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -163,6 +164,25 @@ export interface HookIngestDeps {
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
   approvals?: ApprovalHookSink;
+  /**
+   * Transcript projection — tell the TranscriptProjector that this pane's
+   * transcript may have grown. Fired for EVERY resolved signal, including the
+   * non-emit kinds: `agent.activity` is the mid-turn liveness nudge,
+   * `agent.session_start` invalidates a reused pane's cached conversation, and
+   * the stop kinds are the first nudge that can carry a freshly-captured
+   * `transcriptPath`.
+   *
+   * Fired AFTER the resume-binding capture above, because that capture is what
+   * makes the path available at all. Cheap when nobody is subscribed.
+   *
+   * Optional: only the daemon supplies it, and no hook behaviour depends on it.
+   */
+  onTranscriptNudge?: (
+    sessionId: string,
+    kind: AgentSignalKind,
+    /** The signal's own agent session id, when it carried one. */
+    agentSessionId?: string,
+  ) => void;
 }
 
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
@@ -454,9 +474,28 @@ export class HookIngest {
       && signal.agentSessionId
     ) {
       const permissionMode = readPermissionMode(signal.payload);
-      const transcriptPath = typeof signal.payload?.transcript_path === 'string'
+      // The envelope is authenticated but NOT trusted (same rule as
+      // `workspaceId` above). This value is persisted, then opened and read by
+      // the daemon and projected as the pane's conversation, so an unvalidated
+      // path is an arbitrary-file-read with a UI attached. Refused ⇒ the binding
+      // is stored WITHOUT a transcript path, i.e. projection is unavailable for
+      // the pane; nothing else about the signal changes.
+      const claimedPath = typeof signal.payload?.transcript_path === 'string'
         ? signal.payload.transcript_path
         : undefined;
+      let transcriptPath: string | undefined;
+      if (claimedPath) {
+        const sessionEnv = sessions.find((s) => s.id === sessionId)?.env;
+        const check = checkTranscriptPath(claimedPath, signal.agentSessionId, sessionEnv);
+        if (check.ok) {
+          transcriptPath = claimedPath;
+        } else {
+          this.deps.log?.(
+            'warn',
+            `[hooks] refused transcript_path for ${sessionId}: ${check.reason}`,
+          );
+        }
+      }
       try {
         this.deps.applyResumeBinding(sessionId, {
           agent: signal.agent,
@@ -471,6 +510,15 @@ export class HookIngest {
         // reboot, never the signal itself.
         this.deps.log?.('warn', `[hooks] resume binding failed for ${sessionId}: ${String(err)}`);
       }
+    }
+
+    // Transcript tail nudge. Rides every resolved signal rather than a new
+    // hook, and is wrapped because a projector failure must not turn into a
+    // fatal hook — the bridge treats an RPC error as one.
+    try {
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
 
     // A2/A3 — metadata-only kinds ride the SAME agent.event family rather than

@@ -1,0 +1,3 @@
+{"type":"user","uuid":"ffff0000-0000-4000-8000-000000000001","timestamp":"2026-07-27T09:30:00.000Z","sessionId":"11111111-2222-4333-8444-555555555555","isSidechain":true,"message":{"role":"user","content":"synthetic subagent brief"}}
+{"type":"assistant","uuid":"ffff0000-0000-4000-8000-000000000002","timestamp":"2026-07-27T09:30:01.000Z","sessionId":"11111111-2222-4333-8444-555555555555","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"synthetic subagent answer"}]}}
+{"type":"assistant","uuid":"ffff0000-0000-4000-8000-000000000003","timestamp":"2026-07-27T09:30:02.000Z","sessionId":"11111111-2222-4333-8444-555555555555","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"main thread continues"}]}}
