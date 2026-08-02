@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import type { Terminal } from '@xterm/xterm';
 import type { WebglAddon } from '@xterm/addon-webgl';
-import { teardownWebglAddon } from '../webglTeardown';
+import { teardownWebglAddon, isRendererMissing } from '../webglTeardown';
 
 /**
  * teardownWebglAddon does what xterm's WebglAddon.dispose() alone does not:
@@ -58,6 +59,82 @@ describe('teardownWebglAddon', () => {
 });
 
 /**
+ * Renderer-restore guarantee (flicker-then-black RCA, 2026-08-02).
+ *
+ * WebglAddon.dispose() restores the DOM renderer via a disposable in its own
+ * DisposableStore; a throw from an EARLIER disposable aborts that loop, so the
+ * restore never runs and the pane is left with `_renderer.value === undefined`.
+ * xterm's RenderService.dimensions getter then throws on every render tick
+ * (`Cannot read properties of undefined (reading 'dimensions')`) — the pane
+ * flickers and settles black. teardownWebglAddon must detect that state and
+ * restore the DOM renderer itself.
+ */
+function makeTerminal(opts: {
+  rendererValue?: unknown;
+  disposed?: boolean;
+} = {}) {
+  const { rendererValue, disposed = false } = opts;
+  const domRenderer = { kind: 'dom' };
+  const setRenderer = vi.fn();
+  const handleResize = vi.fn();
+  const createRenderer = vi.fn(() => domRenderer);
+  const terminal = {
+    cols: 80,
+    rows: 24,
+    _core: {
+      _store: { _isDisposed: disposed },
+      _renderService: {
+        _renderer: { value: rendererValue },
+        setRenderer,
+        handleResize,
+      },
+      _createRenderer: createRenderer,
+    },
+  } as unknown as Terminal;
+  return { terminal, domRenderer, setRenderer, handleResize, createRenderer };
+}
+
+describe('teardownWebglAddon renderer-restore guarantee', () => {
+  it('restores the DOM renderer when dispose left the render service empty', () => {
+    const f = makeAddon({ disposeThrows: true });
+    const t = makeTerminal({ rendererValue: undefined });
+    teardownWebglAddon(f.addon, t.terminal);
+    expect(t.createRenderer).toHaveBeenCalledOnce();
+    expect(t.setRenderer).toHaveBeenCalledWith(t.domRenderer);
+    // Mirrors the addon's skipped restore step: re-derive dimensions so the
+    // next render tick paints instead of throwing.
+    expect(t.handleResize).toHaveBeenCalledWith(80, 24);
+  });
+
+  it('leaves a live renderer alone (the normal dispose path)', () => {
+    const f = makeAddon();
+    const t = makeTerminal({ rendererValue: { kind: 'dom' } });
+    teardownWebglAddon(f.addon, t.terminal);
+    expect(t.setRenderer).not.toHaveBeenCalled();
+    expect(t.createRenderer).not.toHaveBeenCalled();
+  });
+
+  it('does not restore into a disposed terminal', () => {
+    const f = makeAddon();
+    const t = makeTerminal({ rendererValue: undefined, disposed: true });
+    teardownWebglAddon(f.addon, t.terminal);
+    expect(t.setRenderer).not.toHaveBeenCalled();
+  });
+
+  it('degrades to a no-op when the private internals changed shape', () => {
+    const f = makeAddon();
+    const terminal = { cols: 80, rows: 24, _core: {} } as unknown as Terminal;
+    expect(() => teardownWebglAddon(f.addon, terminal)).not.toThrow();
+  });
+
+  it('isRendererMissing reports the rendererless-but-live state only', () => {
+    expect(isRendererMissing(makeTerminal({ rendererValue: undefined }).terminal)).toBe(true);
+    expect(isRendererMissing(makeTerminal({ rendererValue: { kind: 'dom' } }).terminal)).toBe(false);
+    expect(isRendererMissing(makeTerminal({ rendererValue: undefined, disposed: true }).terminal)).toBe(false);
+  });
+});
+
+/**
  * Dependency-shape lock. teardownWebglAddon force-releases the context by
  * walking the private path addon._renderer._gl (WebglAddon._renderer →
  * WebglRenderer._gl). The behavioural tests above all mock that shape, so an
@@ -81,5 +158,37 @@ describe('@xterm/addon-webgl private-path shape lock', () => {
 
   it('WebglRenderer still exposes the _gl field teardown reads', () => {
     expect(addonSrc).toMatch(/this\._gl\b/);
+  });
+});
+
+/**
+ * Shape lock for the renderer-restore path. ensureRendererRestored replays the
+ * exact sequence WebglAddon's own (skippable) restore disposable runs:
+ * `_core._renderService.setRenderer(_core._createRenderer())` + `handleResize`.
+ * And isRendererMissing keys off RenderService reading `_renderer.value` —
+ * the unguarded getter whose throw IS the flicker-then-black symptom. If an
+ * @xterm bump renames any of these, the restore silently degrades to a no-op
+ * (the black-pane bug returns) while the mock tests stay green — so pin the
+ * paths against the installed package sources here.
+ */
+describe('renderer-restore private-path shape lock', () => {
+  const addonSrc = readFileSync(require.resolve('@xterm/addon-webgl'), 'utf8');
+  const xtermSrc = readFileSync(require.resolve('@xterm/xterm'), 'utf8');
+
+  it('WebglAddon still restores via _core._renderService.setRenderer(_core._createRenderer())', () => {
+    expect(addonSrc).toMatch(/_core\._renderService/);
+    expect(addonSrc).toMatch(/setRenderer\([^)]*_createRenderer\(\)/);
+  });
+
+  it('the restore step still re-derives dimensions via handleResize', () => {
+    expect(addonSrc).toMatch(/\.handleResize\(/);
+  });
+
+  it('RenderService still reads the unguarded _renderer.value the restore repairs', () => {
+    expect(xtermSrc).toMatch(/this\._renderer\.value\.dimensions/);
+  });
+
+  it('Terminal core still tracks disposal via _store._isDisposed', () => {
+    expect(addonSrc).toMatch(/_core\._store\._isDisposed/);
   });
 });
