@@ -3926,7 +3926,10 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  sessionManager.on('session:critical', (payload: { sessionId: string; event: { action: string; riskLevel: string } }) => {
+  // Notify-only heads-up ("the pane printed something spicy"), never an
+  // approvable request — the payload is forwarded whole so `matchedLine` says
+  // WHICH spicy thing. Anything answerable rides the approval registry.
+  sessionManager.on('session:critical', (payload: { sessionId: string; event: { action: string; riskLevel: string; matchedLine?: string } }) => {
     const event: DaemonEvent = {
       type: 'agent.critical',
       sessionId: payload.sessionId,

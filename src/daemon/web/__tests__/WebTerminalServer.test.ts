@@ -695,7 +695,9 @@ describe('WebTerminalServer', () => {
     // Emit fleet-wide events; they must reach the stream even though it watches s1.
     (sessionManager as unknown as EventEmitter).emit('session:critical', {
       sessionId: 's2',
-      event: { action: 'delete files', riskLevel: 'critical' },
+      // The production shape carries the matched PTY line (#605) — `action` is
+      // only a pattern label, so without it the phone cannot say WHICH command.
+      event: { action: 'delete files', riskLevel: 'critical', matchedLine: '$ rm -rf /tmp/junk' },
     });
     // The PRODUCTION notify shape (DaemonPTYBridge): {source, title, body, ts},
     // with title null because OSC 9 carries no title. The fake used to emit a
@@ -720,6 +722,7 @@ describe('WebTerminalServer', () => {
     expect(text).toContain('event: critical');
     expect(text).toContain('"sessionId":"s2"');
     expect(text).toContain('"action":"delete files"');
+    expect(text).toContain('"matchedLine":"$ rm -rf /tmp/junk"');
     expect(text).toContain('event: notify');
     expect(text).toContain('"sessionId":"s3"');
     // ★ The whole parsed notification reaches the browser VERBATIM — all four

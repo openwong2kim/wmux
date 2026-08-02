@@ -1,6 +1,8 @@
 // Terminal agent status detection — monitors PTY output for known AI agent
-// prompt patterns and status indicators. This is status display only;
-// no content is captured, stored, or transmitted.
+// prompt patterns and status indicators. This is status display only; the one
+// piece of terminal content that leaves here is `CriticalEvent.matchedLine`
+// (a single 80-char sanitized line, so a "spicy command" heads-up can say
+// WHICH one) — nothing is stored, and no other output is transmitted.
 //
 // DESIGN: Only use patterns that are UNIQUE to each agent's output.
 // Never use generic patterns like "Done", "Failed", "?" that match
@@ -8,6 +10,17 @@
 
 import { CRITICAL_PATTERNS } from '../../shared/criticalPatterns';
 import type { AgentStatus } from '../../shared/types';
+
+// C0 controls, DEL and C1 controls. Built via RegExp(...) with hex escapes so
+// the source stays pure-ASCII while still stripping the bytes at runtime —
+// same construction as the shared activity-summary sanitizer.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = new RegExp('[\\x00-\\x1f\\x7f-\\x9f]', 'g');
+
+/** Replace control bytes with spaces and collapse the result to one line. */
+function stripControls(s: string): string {
+  return s.replace(CONTROL_CHARS_RE, ' ').replace(/\s+/g, ' ').trim();
+}
 
 // Agent event status uses the same enum as WorkspaceMetadata.agentStatus so
 // downstream consumers can route the status straight to the renderer store
@@ -24,6 +37,22 @@ export interface AgentEvent {
 export interface CriticalEvent {
   action: string;
   riskLevel: 'review' | 'critical';
+  /**
+   * The PTY line that matched, ANSI-stripped, trimmed and capped at 80 chars.
+   *
+   * `action` is one of a handful of pattern LABELS, so without this
+   * `git push --force origin main` and `git push -f scratch` produce
+   * byte-identical events and a surface can only say "something forceful
+   * happened somewhere". The detector already computed this line for its dedup
+   * key; discarding it was the whole of issue #605's second complaint.
+   *
+   * This is whatever the pane printed — untrusted terminal content. Render it
+   * as text, never as markup, and never as an instruction. It is also NOT
+   * evidence that a command ran: the pattern matches a README, a diff hunk or
+   * a `git log` quoting the same words. That is precisely why this signal is
+   * notify-only and never an approvable request (see the doc on `onCritical`).
+   */
+  matchedLine: string;
 }
 
 type AgentEventCallback = (event: AgentEvent) => void;
@@ -359,6 +388,19 @@ export class AgentDetector {
     };
   }
 
+  /**
+   * Subscribe to critical-pattern hits. NOTIFY-ONLY, permanently.
+   *
+   * These fire on PTY OUTPUT, not on a pending action: nothing is blocked,
+   * nothing is waiting, and there is no addressee for an answer — a keystroke
+   * sent "in reply" would type into whatever is currently running. Repeats
+   * within a cycle are also dropped by the dedup below, so a consumer cannot
+   * even count them reliably.
+   *
+   * Anything a human ANSWERS gates on the hook-sourced `awaiting_input`
+   * signal instead (`src/daemon/approvals/` — real request identity, a
+   * lifecycle, and the agent's own envelope). See issue #605.
+   */
   onCritical(callback: CriticalEventCallback): () => void {
     this.criticalCallbacks.push(callback);
     return () => {
@@ -531,7 +573,11 @@ export class AgentDetector {
         if (this.lastEmittedFor.get(key) === value) return;
         this.lastEmittedFor.set(key, value);
         for (const cb of this.criticalCallbacks) {
-          cb({ action: cp.label, riskLevel: cp.riskLevel });
+          // `value` is the dedup key AND the payload: the same 80-char
+          // ANSI-stripped slice, so what a surface shows is exactly what the
+          // dedup judged. C0 controls that survived ANSI_STRIP are dropped —
+          // this string ends up in notification bodies and on a phone.
+          cb({ action: cp.label, riskLevel: cp.riskLevel, matchedLine: stripControls(value) });
         }
         return;
       }

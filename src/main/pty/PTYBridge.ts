@@ -392,6 +392,7 @@ export class PTYBridge {
         win.webContents.send(IPC.APPROVAL_REQUEST, ptyId, {
           action: criticalEvent.action,
           riskLevel: criticalEvent.riskLevel,
+          matchedLine: criticalEvent.matchedLine,
         });
       } catch (err) {
         console.warn('[PTYBridge] onCritical callback error:', err);

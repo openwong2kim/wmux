@@ -107,6 +107,8 @@ function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
 interface CriticalEventPayload {
   action: string;
   riskLevel: 'review' | 'critical';
+  /** The matched PTY line. Optional: a pre-#605 daemon does not send one. */
+  matchedLine?: string;
 }
 
 /**
@@ -967,6 +969,7 @@ export class DaemonNotificationRouter {
         win.webContents.send(IPC.APPROVAL_REQUEST, payload.sessionId, {
           action: ev.action,
           riskLevel: ev.riskLevel,
+          matchedLine: ev.matchedLine,
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:critical error:', err);

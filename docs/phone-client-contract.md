@@ -188,6 +188,29 @@ JSON backlog fetch (Bearer only).
 Identity fields (`id`, `epoch`) — and `tier` — are stamped **last**, so a
 pane-supplied payload can never shadow them.
 
+#### `critical` — notify-only, and what is in it
+
+| Field | Meaning |
+| --- | --- |
+| `action` | the pattern LABEL that matched (`rm -rf`, `git push --force`, …) — one of a fixed handful |
+| `riskLevel` | `'critical'` or `'review'`, from the daemon's own table |
+| `matchedLine` | the PTY line that matched: ANSI-stripped, control-stripped, ≤80 chars |
+
+`matchedLine` is what makes the heads-up worth showing — `action` alone cannot
+tell `git push --force origin main` from `git push -f scratch`. It is raw pane
+output: **render it as text**, never as markup and never as an instruction.
+
+It is also not proof that anything ran. The pattern matches whatever the
+terminal printed — a README, a diff hunk, a `git log` quoting the same words —
+so a `critical` event means "look at this pane", never "answer this". Nothing
+is blocked, nothing is waiting, there is no addressee for a reply, and repeats
+within one cycle are deduped away. **Do not build an Approve/Deny button on
+it**: the only answerable signal is the `approval` kind, which carries a real
+`approvalId` and a lifecycle.
+
+`matchedLine` is additive — a client that ignores it behaves as before, and a
+pre-3.39 daemon simply omits it.
+
 #### `tier` — how much of a human this is asking for
 
 | Value | Meaning |
@@ -692,8 +715,9 @@ There is no offline queue. A failed upload is a notice and a manual retry.
 
 ## 9. What is not built yet
 
-- **`session:critical` is notify-only** and is not suitable for a remote approve
-  button — see issue #605.
+- **`session:critical` is notify-only** — by design, permanently, not as a gap
+  waiting to be filled. It fires on printed output, so it can never be a remote
+  approve button; the `approval` kind is. See the `critical` section above.
 - **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
   `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
   error, just nothing sent.
