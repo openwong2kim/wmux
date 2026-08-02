@@ -13,6 +13,7 @@ import {
   saveWebState,
   clearWebState,
   getWebStatePath,
+  coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
 import { scheduleTokenFileReHarden } from '../shared/security';
@@ -222,16 +223,11 @@ function persistWebState(
 function parseWebTlsConfig(value: unknown): WebTlsConfig | false | undefined {
   if (value === undefined) return undefined;
   if (value === false) return false;
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  const tls = coerceWebTlsConfig(value);
+  if (!tls) {
     throw new Error('native TLS requires absolute certPath and keyPath values');
   }
-  const o = value as Record<string, unknown>;
-  const certPath = typeof o['certPath'] === 'string' ? o['certPath'].trim() : '';
-  const keyPath = typeof o['keyPath'] === 'string' ? o['keyPath'].trim() : '';
-  if (!certPath || !keyPath || !path.isAbsolute(certPath) || !path.isAbsolute(keyPath)) {
-    throw new Error('native TLS requires absolute certPath and keyPath values');
-  }
-  return { certPath, keyPath };
+  return tls;
 }
 
 /**
@@ -2332,7 +2328,7 @@ function registerRpcHandlers(
         ? undefined
         : requestedTls ??
           webServer.currentTlsConfig ??
-          (previous.enabled ? previous.tls : undefined);
+          previous.tls;
     if (tls && tailscale) {
       throw new Error('native TLS cannot be combined with the Tailscale transport');
     }
@@ -2341,7 +2337,20 @@ function registerRpcHandlers(
     // already paired. The token comes from OUR 0600 state file, never from
     // these params — a pipe client must not get to choose it. `--new-token`
     // is the deliberate rotation escape hatch (revoke every paired device).
-    const token = p.newToken === true ? undefined : previous.token || undefined;
+    // A disabled state with no valid TLS record may be the fail-closed result
+    // of a malformed persisted TLS object. Also treat an explicit switch from
+    // native/Tailscale HTTPS to bare HTTP as a credential boundary: ordinary
+    // HTTP-to-HTTP reconfiguration keeps #596's stable token, but a downgrade
+    // never carries an HTTPS credential onto the plaintext listener.
+    const previousWasEncrypted = previous.tls !== undefined || previous.tailscale;
+    const nextIsEncrypted = tls !== undefined || tailscale;
+    const canReusePreviousToken =
+      (previous.enabled || tls !== undefined) &&
+      (!previousWasEncrypted || nextIsEncrypted);
+    const token =
+      p.newToken === true || !canReusePreviousToken
+        ? undefined
+        : previous.token || undefined;
     if (p.newToken === true) {
       // Rotation has to take the PAIRED DEVICES with it, not just the operator
       // token. Before per-device credentials that was automatic — every phone

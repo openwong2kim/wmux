@@ -349,6 +349,77 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
         expect((await rpc('daemon.web.status')).running).toBe(false);
         expect((await probe(port, '/api/config', token, true)).error).toBeTruthy();
         expect((await probe(port, '/api/config', token)).error).toBeTruthy();
+
+        // The failed restore does not erase the operator's TLS configuration.
+        // If the files are repaired, a later restart can recover it.
+        const failedState = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+          tls?: { certPath?: string; keyPath?: string };
+          [key: string]: unknown;
+        };
+        expect(failedState.tls).toEqual({
+          certPath: fixture.certPath,
+          keyPath: fixture.keyPath,
+        });
+
+        // A syntactically malformed TLS record is also fail-closed. If a GUI
+        // option-only start subsequently chooses its HTTP default, it must not
+        // reuse the old HTTPS bearer token on that plaintext listener.
+        fs.writeFileSync(
+          statePath,
+          JSON.stringify({
+            ...failedState,
+            tls: { certPath: fixture.certPath, keyPath: 'relative-key.pem' },
+          }),
+          'utf8',
+        );
+        const fallback = await rpc('daemon.web.start', {
+          port,
+          host: '127.0.0.1',
+          allowInput: false,
+        });
+        const fallbackToken = fallback.token as string;
+        expect(fallback.tls).toBe(false);
+        expect(fallbackToken).toBeTruthy();
+        expect(fallbackToken).not.toBe(token);
+        expect(await probe(port, '/api/config', fallbackToken)).toEqual({ status: 200 });
+        expect((await probe(port, '/api/config', token)).status).toBe(401);
+      } finally {
+        fixture.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!HAVE_OPENSSL)(
+    'rotates the bearer token when native HTTPS is explicitly downgraded to HTTP',
+    async () => {
+      const fixture = createTlsTestFixture();
+      try {
+        const port = await freePort();
+        await startDaemon();
+        const secure = await rpc('daemon.web.start', {
+          port,
+          host: '127.0.0.1',
+          allowInput: false,
+          tls: { certPath: fixture.certPath, keyPath: fixture.keyPath },
+        });
+        const secureToken = secure.token as string;
+        expect(secure.tls).toBe(true);
+        expect(await probe(port, '/api/config', secureToken, true)).toEqual({ status: 200 });
+
+        const plaintext = await rpc('daemon.web.start', {
+          port,
+          host: '127.0.0.1',
+          allowInput: false,
+          tls: false,
+        });
+        const plaintextToken = plaintext.token as string;
+        expect(plaintext.tls).toBe(false);
+        expect(plaintextToken).toBeTruthy();
+        expect(plaintextToken).not.toBe(secureToken);
+        expect(await probe(port, '/api/config', plaintextToken)).toEqual({ status: 200 });
+        expect((await probe(port, '/api/config', secureToken)).status).toBe(401);
+        expect((await probe(port, '/api/config', plaintextToken, true)).error).toBeTruthy();
       } finally {
         fixture.cleanup();
       }

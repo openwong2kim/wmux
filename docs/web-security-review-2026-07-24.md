@@ -315,12 +315,9 @@ already in the test file.
 
 ---
 
-## 6. Documentation follow-up
+## 6. Documentation follow-up (complete)
 
-`docs/SECURITY.md` §1 does not yet declare the **web server** as a trust boundary. After
-P1–P2 land, add a §1.5 "Browser/PWA terminal server" subsection mirroring the shape of
-§1.2 (Named Pipe auth): state the per-start UUID token model, the loopback/expose split,
-the read-only-by-default guarantee, and explicitly defer network confidentiality to the
-operator's TLS/Tailscale layer (consistent with §2's "Network confidentiality" row). This
-keeps the security model document complete and gives reviewers the boundary declaration
-they currently have to infer from code.
+`docs/SECURITY.md` §1.5 now declares the **Browser/PWA terminal server** as a trust
+boundary. It records the credential model, loopback/expose split, read-only default,
+separate input/upload grants, and the three confidentiality postures: native TLS,
+Tailscale HTTPS, and explicitly warned plaintext binding.

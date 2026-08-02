@@ -142,7 +142,7 @@ export function coerceWebState(parsed: unknown): WebPersistedState {
     ? o['allowedHosts'].filter((h): h is string => typeof h === 'string' && h.trim() !== '')
     : [];
   const tlsField = o['tls'];
-  const tls = coerceTlsConfig(tlsField);
+  const tls = coerceWebTlsConfig(tlsField);
   const tlsIsValidOrAbsent = tlsField === undefined || tls !== undefined;
   const tailscale = o['tailscale'] === true;
 
@@ -167,7 +167,8 @@ export function coerceWebState(parsed: unknown): WebPersistedState {
   };
 }
 
-function coerceTlsConfig(value: unknown): WebTlsConfig | undefined {
+/** Validate persisted/RPC native-TLS paths without reading the PEM files. */
+export function coerceWebTlsConfig(value: unknown): WebTlsConfig | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const o = value as Record<string, unknown>;
   const certPath = typeof o['certPath'] === 'string' ? o['certPath'].trim() : '';

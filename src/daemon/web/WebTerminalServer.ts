@@ -832,7 +832,19 @@ export class WebTerminalServer {
 
     await new Promise<void>((resolve, reject) => {
       const onError = (err: NodeJS.ErrnoException) => {
+        server.removeListener('error', onError);
         server.removeListener('listening', onListening);
+        try {
+          server.close();
+        } catch {
+          // A bind error normally means the server never reached listening.
+        }
+        this.opts = null;
+        this.token = '';
+        this.pairCode = '';
+        this.pairExpiresAt = 0;
+        this.pairAttempts = 0;
+        this.pendingDeviceName = undefined;
         reject(err);
       };
       const onListening = () => {
@@ -841,7 +853,11 @@ export class WebTerminalServer {
       };
       server.once('error', onError);
       server.once('listening', onListening);
-      server.listen(options.port, options.host);
+      try {
+        server.listen(options.port, options.host);
+      } catch (err) {
+        onError(err as NodeJS.ErrnoException);
+      }
     });
 
     this.server = server;

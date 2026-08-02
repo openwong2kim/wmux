@@ -66,7 +66,9 @@ HTTPS Tailscale front in front of a loopback HTTP listener, while
 non-loopback bind is still available for trusted networks, but it is plaintext
 and the CLI says so explicitly. Durable native-TLS state stores only absolute
 certificate/key paths, never PEM bytes; if either path becomes invalid, restart
-fails closed with no plaintext listener.
+fails closed with no plaintext listener. PEM files are read when the listener
+starts, not hot-reloaded, so certificate renewal requires re-running `wmux web`
+with both TLS paths or restarting the listener/daemon.
 
 ---
 
@@ -141,4 +143,4 @@ What we do not consider a wmux security issue:
 | 2026-05-16 | Initial draft (#41). Declared icacls + attrib + notice-file hardening signals + `mcp.claimWorkspace` enforcement. |
 | 2026-05-16 | Reverted icacls/attrib/notice-file claims (§1.2 and §1.3 of the original draft). Dogfood on a real `%USERPROFILE%\.wmux\` directory produced a broken ACL state (`/inheritance:r` removed the owner's WRITE_DAC, and the subsequent `/grant:r` failed silently). The dynamic test (`scripts/substrate-hardening-dynamic.mjs`) had passed on a fresh `mkdtempSync` directory whose ACL constitution is different from a long-lived profile-scoped folder; the test did not catch the production-only regression. Phase 3.2 hardening will be re-attempted only after a hardening helper that (a) grants the owner explicit `(OI)(CI)F` *before* removing inherited ACEs and (b) is dogfooded against a real user profile passes. |
 | 2026-07-30 | Documented the CDP same-user vector (§3) and added a config/env opt-out (`browser.cdp.enabled` / `WMUX_DISABLE_CDP`). CDP stays on by default for browser automation but is now closeable (#613). |
-| 2026-08-03 | Documented the Browser/PWA trust boundary and native TLS fail-closed behavior (#764). |
+| 2026-08-02 | Documented the Browser/PWA trust boundary and native TLS fail-closed behavior (#764). |
