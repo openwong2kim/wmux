@@ -442,8 +442,15 @@ describe('UISlice — multiview', () => {
       // @ts-expect-error — cross-slice field overlaid for the test
       activeWorkspaceId: id,
     }));
-    // @ts-expect-error — cross-slice fields injected for the test
-    store.setState({ multiviewIds: ids, activeWorkspaceId: active, setActiveWorkspace });
+    store.setState({
+      multiviewIds: ids,
+      // @ts-expect-error — cross-slice fields injected for the test
+      activeWorkspaceId: active,
+      // The handoff only considers members that still exist, so the test store
+      // needs real workspaces behind the ids.
+      workspaces: ids.map((id) => ({ id })),
+      setActiveWorkspace,
+    });
     return { store, setActiveWorkspace };
   }
 
@@ -482,6 +489,33 @@ describe('UISlice — multiview', () => {
     store.getState().toggleMultiviewWorkspace('A');
     expect(setActiveWorkspace).not.toHaveBeenCalled();
     expect(store.getState().multiviewIds).toEqual([]);
+  });
+
+  it('skips a dead neighbour instead of handing focus to a workspace that is gone', () => {
+    // setActiveWorkspace ignores unknown ids, so choosing a stale member would
+    // be a silent no-op and the grid would close anyway — the exact failure the
+    // handoff exists to prevent.
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'GHOST', 'B', 'C'], 'A');
+    store.setState({
+      // @ts-expect-error — cross-slice field overlaid for the test
+      workspaces: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+    });
+    store.getState().toggleMultiviewWorkspace('A');
+    expect(setActiveWorkspace).toHaveBeenCalledWith('B');
+    expect(setActiveWorkspace).not.toHaveBeenCalledWith('GHOST');
+  });
+
+  it('never hands focus back to the workspace being removed', () => {
+    // A duplicated id would otherwise make the neighbour of A be A itself, so
+    // the grid would close on the very next line.
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'A', 'B', 'C'], 'A');
+    store.setState({
+      // @ts-expect-error — cross-slice field overlaid for the test
+      workspaces: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+    });
+    store.getState().toggleMultiviewWorkspace('A');
+    expect(setActiveWorkspace).not.toHaveBeenCalledWith('A');
+    expect(setActiveWorkspace).toHaveBeenCalledWith('B');
   });
 
   it('removeMultiviewWorkspace removes only the targeted workspace from a 3+ group', () => {

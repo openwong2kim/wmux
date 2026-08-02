@@ -662,6 +662,38 @@ export function resetInspectState(state: InspectStateFields): void {
   state.inspectXtermTarget = null;
 }
 
+/**
+ * Move focus off `wsId` before it leaves the multiview grid (#752).
+ *
+ * The render gate gives up unless the active workspace is a member, so dropping
+ * the active one used to take every other tile with it — it read as "the window
+ * reset". The tile ✕ button compensated in the view; the sidebar's Ctrl+click
+ * called the toggle raw and did not. Both go through here now, so they cannot
+ * drift apart again.
+ *
+ * Candidates are filtered to members that still EXIST and are DISTINCT from the
+ * one leaving. `setActiveWorkspace` silently ignores an unknown id, so picking a
+ * stale one would be a no-op and the grid would close anyway; picking a
+ * duplicate of `wsId` would re-activate the very workspace being removed.
+ *
+ * No handoff when fewer than two members would remain — the group disbands on
+ * its own then, and yanking focus would land the user somewhere they never asked
+ * for.
+ */
+function handOffBeforeLeavingGrid(state: StoreState, wsId: string): void {
+  if (wsId !== state.activeWorkspaceId) return;
+  const workspaces = state.workspaces ?? [];
+  const live = state.multiviewIds.filter(
+    (id, i, arr) => arr.indexOf(id) === i && workspaces.some((w) => w.id === id),
+  );
+  if (live.length <= 2) return;
+  const i = live.indexOf(wsId);
+  if (i < 0) return;
+  const next = live[i + 1] ?? live[i - 1];
+  // Route through setActiveWorkspace so activation side-effects fire.
+  if (next && next !== wsId) state.setActiveWorkspace?.(next);
+}
+
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   paneGate: 'pending',
@@ -1205,23 +1237,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   toggleMultiviewWorkspace: (wsId) => {
-    // Removing the ACTIVE workspace from the group closes the whole grid: the
-    // render gate gives up unless the active workspace is a member, so every
-    // other tile vanishes at once and it reads as "the window reset" (#752).
-    // Hand focus to a neighbour first when the group survives the removal —
-    // this is the rule the tile ✕ button already followed on its own, now in
-    // the store so both entry points get it.
-    const pre = get();
-    if (
-      pre.multiviewIds.includes(wsId) &&
-      wsId === pre.activeWorkspaceId &&
-      pre.multiviewIds.length > 2
-    ) {
-      const i = pre.multiviewIds.indexOf(wsId);
-      const next = pre.multiviewIds[i + 1] ?? pre.multiviewIds[i - 1];
-      // Route through setActiveWorkspace so activation side-effects fire.
-      if (next) pre.setActiveWorkspace(next);
-    }
+    handOffBeforeLeavingGrid(get(), wsId);
     set((state) => {
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx >= 0) {
@@ -1256,19 +1272,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   },
 
   removeMultiviewWorkspace: (wsId) => {
-    // Same focus handoff as the toggle — see toggleMultiviewWorkspace (#752).
-    // Living here rather than in the view means the sidebar and the tile ✕
-    // cannot drift apart again.
-    const pre = get();
-    if (
-      pre.multiviewIds.includes(wsId) &&
-      wsId === pre.activeWorkspaceId &&
-      pre.multiviewIds.length > 2
-    ) {
-      const i = pre.multiviewIds.indexOf(wsId);
-      const next = pre.multiviewIds[i + 1] ?? pre.multiviewIds[i - 1];
-      if (next) pre.setActiveWorkspace(next);
-    }
+    handOffBeforeLeavingGrid(get(), wsId);
     set((state) => {
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx < 0) return; // no-op on non-members

@@ -12,7 +12,7 @@ import {
   MAX_INBOX_SIZE,
 } from '../../../shared/types';
 import type { QueuedMessage } from '../../company/MessageQueue';
-import { clearColdParkEntry } from './workspaceSlice';
+import { clearColdParkEntry, pruneMultiviewMembership } from './workspaceSlice';
 
 /** Maximum number of pending messages in the queue to prevent memory exhaustion. */
 const MAX_MESSAGE_QUEUE_SIZE = 500;
@@ -122,6 +122,7 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
   destroyCompany: () => set((state) => {
     // Remove all company-linked workspaces
     state.workspaces = state.workspaces.filter((ws) => !ws.companyRole);
+    pruneMultiviewMembership(state);
     // If active workspace was a company one, switch to first remaining
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
       state.activeWorkspaceId = state.workspaces[0]?.id || '';
@@ -166,6 +167,7 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     // Remove workspaces linked to this department's members
     const memberWsIds = new Set(dept.members.map((m) => m.workspaceId).filter(Boolean));
     state.workspaces = state.workspaces.filter((ws) => !memberWsIds.has(ws.id));
+    pruneMultiviewMembership(state);
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
       state.activeWorkspaceId = state.workspaces[0]?.id || '';
       clearColdParkEntry(state, state.activeWorkspaceId); // keep promoted ws visible

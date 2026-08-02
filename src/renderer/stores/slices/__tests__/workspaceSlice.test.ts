@@ -239,6 +239,31 @@ describe('removeWorkspace — multiview membership is pruned', () => {
     expect(store.getState().multiviewIds).toEqual([]);
   });
 
+  it('promotes a surviving GRID MEMBER when the active member is closed', () => {
+    // The third entry point into #752: promoting by array position can land on
+    // a workspace outside the group, and the gate needs the active workspace to
+    // be a member — so closing the active tile from the sidebar would take every
+    // remaining tile with it.
+    // workspaces [A,B,C,D], group [A,B,D], active B. Positional promotion would
+    // pick C, which is not a member.
+    const [a, b, c, d] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C'), createWorkspace('D')];
+    const store = createMvStore([a, b, c, d], b.id, [a.id, b.id, d.id]);
+    store.getState().removeWorkspace(b.id);
+    expect(store.getState().multiviewIds).toEqual([a.id, d.id]);
+    expect(store.getState().multiviewIds).toContain(store.getState().activeWorkspaceId);
+    expect(store.getState().activeWorkspaceId).toBe(d.id); // the grid neighbour
+  });
+
+  it('falls back to positional promotion when the group does not survive', () => {
+    // Group of two: removing one disbands it, so there is no member to promote
+    // and the ordinary neighbour-by-position rule applies.
+    const [a, b, c] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C')];
+    const store = createMvStore([a, b, c], a.id, [a.id, b.id]);
+    store.getState().removeWorkspace(a.id);
+    expect(store.getState().multiviewIds).toEqual([]);
+    expect(store.getState().activeWorkspaceId).toBe(b.id);
+  });
+
   it('leaves the group alone when a non-member is closed', () => {
     const [a, b, c] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C')];
     const store = createMvStore([a, b, c], a.id, [a.id, b.id]);
