@@ -38,6 +38,10 @@ export type AgentSignalKind =
   | 'agent.subagent_stop'
   | 'agent.session_start'
   | 'agent.awaiting_input'
+  // User answered a pending AskUserQuestion locally (on the same machine the
+  // agent is running on). Emitted on PostToolUse: AskUserQuestion to expire
+  // approval requests that are still pending on remote devices.
+  | 'agent.input_answered'
   // A prompt was submitted INSIDE the agent's own TUI. Only the deck's brain
   // pty configures this hook, and the brain-pty lane claims the signal before
   // it can reach the fleet ledger — it exists so the orchestrator's "one turn
@@ -187,6 +191,7 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.subagent_stop' &&
     v['kind'] !== 'agent.session_start' &&
     v['kind'] !== 'agent.awaiting_input' &&
+    v['kind'] !== 'agent.input_answered' &&
     v['kind'] !== 'agent.user_prompt_submit'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;

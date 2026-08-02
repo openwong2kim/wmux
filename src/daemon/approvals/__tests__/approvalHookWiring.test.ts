@@ -164,6 +164,14 @@ describe('hook → approval registry wiring', () => {
     expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'turn-ended' }]);
   });
 
+  it('agent.input_answered expires the pending request — user answered on the local machine', () => {
+    const { ingest, approvals } = makeIngest();
+
+    ingest.handle(makeSignal({ kind: 'agent.input_answered' }));
+
+    expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'answered-locally' }]);
+  });
+
   it('agent.session_start expires it — a new session never asked the old question', () => {
     const { ingest, approvals } = makeIngest();
 

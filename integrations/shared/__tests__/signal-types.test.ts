@@ -24,6 +24,7 @@ describe('isAgentSignal', () => {
     'agent.subagent_stop',
     'agent.session_start',
     'agent.awaiting_input',
+    'agent.input_answered',
   ])('accepts kind = %s', (kind) => {
     expect(isAgentSignal({ ...valid, kind })).toBe(true);
   });

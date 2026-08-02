@@ -198,7 +198,8 @@ export type ApprovalExpiryReason =
   | 'turn-ended'
   | 'session-start'
   | 'pane-gone'
-  | 'prompt-gone';
+  | 'prompt-gone'
+  | 'answered-locally';
 
 /**
  * The half of the registry HookIngest drives. Separate from the read/resolve

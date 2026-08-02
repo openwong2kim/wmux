@@ -442,6 +442,12 @@ export class HookIngest {
     // isGovernedFor before fanning out its own notifications.
     this.router.touchAuthority(sessionId, signal.agent, this.now());
 
+    // User answered a pending approval locally — no turn boundary, just expire the request.
+    if (signal.kind === 'agent.input_answered') {
+      this.deps.approvals?.expireForSession(sessionId, 'answered-locally');
+      return { ok: true };
+    }
+
     // X6 ③: capture the resume binding on session-LIFECYCLE kinds. Runs
     // BEFORE the emit-kind gate on purpose — SessionStart is dropped for the
     // notification path but is the EARLIEST point the origin session id is
