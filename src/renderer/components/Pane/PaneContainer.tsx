@@ -46,6 +46,18 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
 
   const paneSizes = pane.type === 'branch' ? pane.sizes : undefined;
   const paneChildren = pane.type === 'branch' ? pane.children : undefined;
+
+  // The library keys its layout by CHILD ID, so the set and order of children
+  // is as much an input to the sync below as `sizes` is. Issue #645 made this
+  // load-bearing: swapping two panes exchanges the ids without touching
+  // `sizes`, and a `[paneSizes]`-only dependency would skip the re-sync — the
+  // widths would then travel with the panes instead of staying with the slots.
+  const childIdKey = paneChildren?.map((c) => c.id).join('|');
+
+  // Latest children, readable from a stale timer callback (see below).
+  const childIdKeyRef = useRef(childIdKey);
+  childIdKeyRef.current = childIdKey;
+
   useEffect(() => {
     if (!paneSizes || !paneChildren || !groupRef.current) return;
 
@@ -65,7 +77,16 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
       programmaticRef.current = true;
       groupRef.current.setLayout(layout);
     }
-  }, [paneSizes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [paneSizes, childIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A resize that ends just before the tree is restructured would otherwise
+  // land AFTER it: the 200ms timer below fires, writes the pre-move sizes onto
+  // a branch whose children have changed, and the panes visibly snap to the
+  // wrong widths — looking, to the user, like the move failed. Drop any
+  // pending write when this branch unmounts.
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
 
   const handleLayoutChanged = useCallback(
     (layout: Layout) => {
@@ -76,8 +97,14 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
       if (!paneChildren) return;
       const sizes = paneChildren.map((child) => layout[child.id] ?? 100 / paneChildren.length);
 
+      // Which children these sizes describe. A branch that survives the
+      // restructure (same node, different children) would not unmount, so the
+      // cleanup above cannot catch that case — compare instead.
+      const scheduledFor = paneChildren.map((child) => child.id).join('|');
+
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
+        if (childIdKeyRef.current !== scheduledFor) return; // stale: the branch changed under us
         updatePaneSizes(pane.id, sizes);
       }, 200);
     },
