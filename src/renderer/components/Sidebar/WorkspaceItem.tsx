@@ -595,7 +595,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       <div
         draggable
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${
+        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'

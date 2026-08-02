@@ -104,57 +104,57 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
               .filter(Boolean)
               .join(', ');
             return (
-              <button
-                key={row.ptyId}
-                type="button"
-                draggable={false}
-                className={`grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_max-content] items-start gap-x-1.5 rounded px-1 py-1 text-left transition-colors ${
-                  row.isFocused
-                    ? 'bg-[var(--bg-overlay)]'
-                    : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
-                }`}
-                title={rowAriaLabel}
-                aria-label={rowAriaLabel}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  focusPaneByPtyId(() => useStore.getState(), row.ptyId);
-                }}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onDragStart={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              >
-                <span
-                  className={`sidebar-dot mt-1 h-1.5 w-1.5 rounded-full ${statusIcon.glowClass}`}
-                  style={{ backgroundColor: statusIcon.dotVar }}
-                />
-                <span className="min-w-0">
-                  <span className="block truncate text-[10px] font-semibold text-[var(--text-main)]">
-                    {row.agentName}
-                  </span>
-                  <span className="block truncate text-[8px] font-mono text-[var(--text-muted)]">
-                    {location}
-                  </span>
-                  {detail && (
-                    <span
-                      className={`block truncate text-[8px] ${
-                        row.pendingQuestion
-                          ? 'text-[var(--accent-red)]'
-                          : 'text-[var(--text-muted)]'
-                      }`}
-                      title={detail}
-                    >
-                      {row.pendingQuestion ? `? ${detail}` : detail}
-                    </span>
-                  )}
-                </span>
-                <span
-                  className={`whitespace-nowrap text-right text-[8px] ${statusIcon.className}`}
+              <div key={row.ptyId} className="min-w-0">
+                <button
+                  type="button"
+                  draggable={false}
+                  className={`flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${
+                    row.isFocused
+                      ? 'bg-[var(--bg-overlay)]'
+                      : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
+                  }`}
+                  title={rowAriaLabel}
+                  aria-label={rowAriaLabel}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    focusPaneByPtyId(() => useStore.getState(), row.ptyId);
+                  }}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onDragStart={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
                 >
-                  {statusLabel}
-                </span>
-              </button>
+                  <span
+                    className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${statusIcon.glowClass}`}
+                    style={{ backgroundColor: statusIcon.dotVar }}
+                  />
+                  {/* 이름·위치를 한 줄에. 이름은 고정, 위치(w85-1 등)만 말줄임. */}
+                  <span className="flex min-w-0 flex-1 items-baseline gap-1">
+                    <span className="flex-none text-[10px] font-semibold text-[var(--text-main)]">
+                      {row.agentName}
+                    </span>
+                    <span className="flex-none text-[8px] text-[var(--text-muted)]">·</span>
+                    <span className="min-w-0 truncate text-[8px] font-mono text-[var(--text-muted)]">
+                      {location}
+                    </span>
+                  </span>
+                  <span
+                    className={`flex-none whitespace-nowrap text-[8px] ${statusIcon.className}`}
+                  >
+                    {statusLabel}
+                  </span>
+                </button>
+                {/* 확인 필요일 때만 질문을 빨강 2번째 줄로 편다(실제로 봐야 하는 신호). */}
+                {row.pendingQuestion && (
+                  <div
+                    className="truncate pl-[18px] pr-1 text-[8px] text-[var(--accent-red)]"
+                    title={row.pendingQuestion}
+                  >
+                    ? {row.pendingQuestion}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
