@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -2404,6 +2404,40 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     }
   }, [isVisible, fit, startResync]);
+
+  // #766 — visibility-based size ownership. Report to the daemon whether this
+  // pane is actually on screen: `isVisible` (workspace shown + active tab) AND
+  // the window itself visible (`document.visibilityState` — minimized, fully
+  // occluded, or hidden windows report 'hidden'). While the report says
+  // hidden, the daemon lets a phone reshape the PTY; while it says visible,
+  // the phone gets `409 desk-owns-size` as before.
+  const [docVisible, setDocVisible] = useState(() => document.visibilityState === 'visible');
+  useEffect(() => {
+    const onChange = () => setDocVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
+  const effectiveVisible = isVisible && docVisible;
+  const prevDocVisibleRef = useRef(docVisible);
+  useEffect(() => {
+    // Optional-chain style guard, as at resync above: a stale preload
+    // (packaged app updated under a running renderer) may not expose it yet.
+    if (ptyId && typeof window.electronAPI.pty.setViewerVisibility === 'function') {
+      // Fire-and-forget: local mode ignores it, and a report lost to a race
+      // is corrected by the next flip or the detach-time reset to visible.
+      window.electronAPI.pty.setViewerVisibility(ptyId, effectiveVisible);
+    }
+    // Reclaim on window-level reveal. Workspace/tab reveals re-fit via the
+    // visibility effect above, but a restored window's container never
+    // changed size, so no ResizeObserver tick fires — if a phone reshaped
+    // the PTY while the window was hidden, nothing would take the size back.
+    // fit() resizes unconditionally (no last-sent dedup), and the daemon
+    // drops the SIGWINCH when the geometry is already ours, so this is free
+    // when nothing changed.
+    const docRevealed = docVisible && !prevDocVisibleRef.current;
+    prevDocVisibleRef.current = docVisible;
+    if (docRevealed && isVisible) fit();
+  }, [ptyId, effectiveVisible, docVisible, isVisible, fit]);
 
   const getSearchDecorations = useCallback(() => {
     const y = getComputedStyle(document.documentElement).getPropertyValue('--accent-yellow').trim();

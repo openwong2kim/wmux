@@ -736,6 +736,22 @@ export function registerPTYHandlers(
     }));
   }
 
+  // pty:setViewerVisibility (#766)
+  // Fire-and-forget relay of the renderer's "is this pane actually on screen"
+  // report. Daemon mode only — the flag exists solely so the phone resize
+  // route (`POST /api/sessions/:id/resize`) can distinguish an attached pane
+  // the desk is watching from one it merely holds; local mode has no phone.
+  // Errors are swallowed: a not-found session means the report raced a
+  // dispose, and a lost report self-heals on the next visibility flip (the
+  // daemon also resets the flag to visible on detach).
+  ipcMain.removeAllListeners(IPC.PTY_SET_VIEWER_VISIBILITY);
+  if (useDaemon && daemonClient) {
+    ipcMain.on(IPC.PTY_SET_VIEWER_VISIBILITY, (_event: Electron.IpcMainEvent, id: string, visible: boolean) => {
+      if (typeof id !== 'string' || typeof visible !== 'boolean') return;
+      daemonClient.rpc('daemon.setSessionViewerVisibility', { id, visible }).catch(() => undefined);
+    });
+  }
+
   // pty:dispose
   ipcMain.removeHandler(IPC.PTY_DISPOSE);
   if (useDaemon && daemonClient) {
@@ -1247,6 +1263,7 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_CREATE);
     ipcMain.removeAllListeners(IPC.PTY_WRITE);
     ipcMain.removeHandler(IPC.PTY_RESIZE);
+    ipcMain.removeAllListeners(IPC.PTY_SET_VIEWER_VISIBILITY);
     ipcMain.removeHandler(IPC.PTY_DISPOSE);
     ipcMain.removeHandler(IPC.PTY_LIST);
     ipcMain.removeHandler(IPC.PTY_PROMOTE);

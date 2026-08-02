@@ -389,6 +389,30 @@ describe('DaemonSessionManager', () => {
     expect(sessions[0].state).toBe('detached');
   });
 
+  // #766 — viewer visibility: renderer-reported "is this pane on screen",
+  // consumed by the phone resize route (attached && viewerVisible → 409).
+  it('records viewer visibility and resets it to visible on detach, not attach', () => {
+    manager.createSession({ id: 'vis', cmd: 'cmd.exe', cwd: '.' });
+    // Safe default: nobody has reported, so the desk owns the size.
+    expect(manager.getSession('vis')?.viewerVisible).toBe(true);
+
+    // The mount-time report can land BEFORE the attach RPC — attach must not
+    // overwrite it (that would mark every hidden retained pane visible).
+    manager.setSessionViewerVisibility('vis', false);
+    manager.attachSession('vis');
+    expect(manager.getSession('vis')?.viewerVisible).toBe(false);
+
+    // Detach resets to the safe default so the next attacher — possibly an
+    // older renderer that never reports — starts with the desk owning.
+    manager.detachSession('vis');
+    expect(manager.getSession('vis')?.viewerVisible).toBe(true);
+  });
+
+  it('ignores a visibility report for an unknown session', () => {
+    // Fire-and-forget path: the report can race a dispose.
+    expect(() => manager.setSessionViewerVisibility('nope', false)).not.toThrow();
+  });
+
   // 5. destroySession → session removed
   it('destroys a session and removes it from the list', () => {
     manager.createSession({ id: 'kill', cmd: 'cmd.exe', cwd: '.' });

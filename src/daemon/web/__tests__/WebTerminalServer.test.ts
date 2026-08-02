@@ -37,6 +37,9 @@ function makeDeps() {
     // A session recovered from a reboot that has not had its first resize yet.
     // The resize route refuses it — that first resize is the desk's unmute.
     deferred: false,
+    // #766 — the desk is showing the pane unless a test flips this; the
+    // resize route only honors 'attached' when this is also true.
+    viewerVisible: true,
     ringBuffer: { readAll: () => Buffer.from('screen-bytes') },
     bridge,
     ptyProcess: { write },
@@ -354,7 +357,7 @@ describe('WebTerminalServer', () => {
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
-  let managed: { meta: Record<string, unknown>; deferred: boolean };
+  let managed: { meta: Record<string, unknown>; deferred: boolean; viewerVisible: boolean };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
@@ -2689,6 +2692,18 @@ describe('WebTerminalServer', () => {
       owner: 'desk',
     });
     expect(resizeCalls).toEqual([]);
+  });
+
+  it('★ hands the size to the phone when the desk holds the pane but is not showing it (#766)', async () => {
+    const token = (await startRO()).token as string;
+    // s2 is attached, but the renderer reported the pane off screen
+    // (background workspace / inactive tab / minimized window). Nobody is
+    // looking at the layout the phone would break, so its numbers apply.
+    managed.viewerVisible = false;
+    const res = await postResize('s2', token, { cols: 60, rows: 30 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cols: 60, rows: 30, owner: 'caller' });
+    expect(resizeCalls).toEqual([{ id: 's2', cols: 60, rows: 30 }]);
   });
 
   it('★ reports the record, never the request', async () => {

@@ -2004,6 +2004,20 @@ function registerRpcHandlers(
     return { ok: true };
   });
 
+  // daemon.setSessionViewerVisibility (#766) — the renderer's "is this pane
+  // actually on screen" report. Not persisted and not a lifecycle event: the
+  // flag lives on the managed session and is read at request time by the
+  // phone resize route. Unknown ids are a no-op (the report can race a
+  // dispose), matching the fire-and-forget relay in pty.handler.
+  pipeServer.onRpc('daemon.setSessionViewerVisibility', async (params) => {
+    const p = params as unknown as { id: string; visible: boolean };
+    if (typeof p.id !== 'string' || typeof p.visible !== 'boolean') {
+      throw new Error('setSessionViewerVisibility: id (string) and visible (boolean) are required');
+    }
+    sessionManager.setSessionViewerVisibility(p.id, p.visible);
+    return { ok: true };
+  });
+
   // daemon.resyncSession (phase 3 PR-B) — re-run the flush sequence on the
   // live, already-connected session pipe: RESYNC_BEGIN marker → headless
   // snapshot (or raw-replay degrade) → FLUSH_DONE marker. The socket is never

@@ -77,6 +77,20 @@ export interface ManagedSession {
    * `false` for the rest of the session's lifetime.
    */
   deferred: boolean;
+  /**
+   * #766 — whether a desk renderer is actually SHOWING this pane (workspace +
+   * tab active and the window itself visible), as last reported by the
+   * renderer. Orthogonal to `meta.state`: an attached pane in a background
+   * workspace stays 'attached' but is not visible. Consumed only by the phone
+   * resize route — `attached && viewerVisible` keeps the desk's ownership of
+   * the PTY geometry; attached-but-hidden lets the phone reshape the pane.
+   *
+   * Defaults to true and is reset to true on detach (not attach — the
+   * renderer's mount-time report can land before its attach RPC): a renderer
+   * that never reports (older build) behaves exactly as before #766, and a
+   * renderer that does report sends the real value on mount and every flip.
+   */
+  viewerVisible: boolean;
 }
 
 /**
@@ -495,6 +509,7 @@ export class DaemonSessionManager extends EventEmitter {
       bridge,
       promptLog,
       deferred,
+      viewerVisible: true,
     };
     this.sessions.set(params.id, managed);
 
@@ -718,12 +733,34 @@ export class DaemonSessionManager extends EventEmitter {
     this.emit('session:stateChanged', { id, state: 'attached' as DaemonSessionState });
   }
 
+  /**
+   * #766 — record whether the desk renderer is actually showing this pane.
+   * Fire-and-forget from the renderer's point of view, so unknown ids are
+   * ignored rather than thrown: the report can race a dispose, and there is
+   * nothing the caller would do with the error. No state event — visibility
+   * is not part of the attach/detach lifecycle, and the only consumer
+   * (the phone resize route) reads it at request time.
+   */
+  setSessionViewerVisibility(id: string, visible: boolean): void {
+    const managed = this.sessions.get(id);
+    if (!managed) return;
+    managed.viewerVisible = visible;
+  }
+
   detachSession(id: string): void {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
     if (managed.meta.state === 'dead') throw new Error(`Session '${id}' is dead`);
 
     managed.meta.state = 'detached';
+    // #766 — conservative reset on DETACH, deliberately not on attach: the
+    // renderer's mount-time visibility report can land before its attach RPC,
+    // and an attach-time reset would overwrite a fresh "hidden" with the
+    // default. Resetting here instead means the next attacher starts at the
+    // safe default (desk owns the size) — an older renderer that never
+    // reports keeps pre-#766 behavior, a current one re-reports on mount and
+    // on every flip.
+    managed.viewerVisible = true;
     this.emit('session:stateChanged', { id, state: 'detached' as DaemonSessionState });
   }
 
