@@ -23,7 +23,7 @@ vi.mock('../../wmux-client', () => ({
 // Mock PlaywrightEngine so getPage() is controllable per test.
 const getPage = vi.fn();
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPage }) },
+  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
 }));
 
 import { registerStateTools } from '../tools/state';
@@ -73,7 +73,7 @@ describe('browser_cookies RPC fallback', () => {
       workspaceId: 'ws-test',
       surfaceId: 's1',
     });
-    expect(getPage).toHaveBeenCalledWith('s1', 'ws-test');
+    expect(getPage).toHaveBeenCalledWith({ workspaceId: 'ws-test', surfaceId: 's1' });
     expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('"value": "abc"');

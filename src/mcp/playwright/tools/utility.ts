@@ -116,7 +116,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
       try {
         const resolvedPath = resolveBrowserExportPath(outputPath, 'output.pdf');
         await ensureExportDir(resolvedPath);
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -179,7 +179,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
     BROWSER_TRACE_SHAPE,
     async ({ action, path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

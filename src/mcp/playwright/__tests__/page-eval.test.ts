@@ -61,18 +61,18 @@ describe('page-eval', () => {
   describe('resolveEvaluator', () => {
     it('returns a page-backed evaluator when getPage resolves a page', async () => {
       const page = { evaluate: vi.fn().mockResolvedValue('via-page') };
-      const engine = { getPage: vi.fn().mockResolvedValue(page) };
+      const engine = { getPageForScope: vi.fn().mockResolvedValue(page) };
       const evaluate = await resolveEvaluator(engine as never, surfaceScope);
       const out = await evaluate('x');
       expect(page.evaluate).toHaveBeenCalledWith('x');
-      expect(engine.getPage).toHaveBeenCalledWith('surface-1', 'ws-test');
+      expect(engine.getPageForScope).toHaveBeenCalledWith(surfaceScope);
       expect(out).toBe('via-page');
       expect(mockSendRpc).not.toHaveBeenCalled();
     });
 
     it('returns an RPC-backed evaluator when getPage resolves null', async () => {
       mockSendRpc.mockResolvedValue({ value: 'via-rpc' });
-      const engine = { getPage: vi.fn().mockResolvedValue(null) };
+      const engine = { getPageForScope: vi.fn().mockResolvedValue(null) };
       const evaluate = await resolveEvaluator(engine as never, surfaceScope);
       const out = await evaluate('x');
       expect(mockSendRpc).toHaveBeenCalledWith('browser.evaluate', {
@@ -80,16 +80,29 @@ describe('page-eval', () => {
         workspaceId: 'ws-test',
         surfaceId: 'surface-1',
       });
-      expect(engine.getPage).toHaveBeenCalledWith('surface-1', 'ws-test');
+      expect(engine.getPageForScope).toHaveBeenCalledWith(surfaceScope);
       expect(out).toBe('via-rpc');
     });
 
     it('falls back to RPC when getPage rejects', async () => {
       mockSendRpc.mockResolvedValue({ value: 'via-rpc' });
-      const engine = { getPage: vi.fn().mockRejectedValue(new Error('boom')) };
+      const engine = { getPageForScope: vi.fn().mockRejectedValue(new Error('boom')) };
       const evaluate = await resolveEvaluator(engine as never, workspaceScope);
       const out = await evaluate('x');
       expect(out).toBe('via-rpc');
+    });
+
+    it('does not fall back when page selection itself cannot be workspace-scoped', async () => {
+      const engine = {
+        getPageForScope: vi.fn().mockRejectedValue(
+          new Error('WORKSPACE_SCOPE_UNRESOLVED: legacy main cannot prove ownership'),
+        ),
+      };
+
+      await expect(resolveEvaluator(engine as never, workspaceScope)).rejects.toThrow(
+        'WORKSPACE_SCOPE_UNRESOLVED',
+      );
+      expect(mockSendRpc).not.toHaveBeenCalled();
     });
   });
 

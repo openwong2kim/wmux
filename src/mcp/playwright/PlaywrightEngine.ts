@@ -6,7 +6,11 @@ import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
 import { EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE } from '../../shared/browserBackend';
-import { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
+import {
+  isWorkspaceScopeUnresolvedError,
+  WORKSPACE_SCOPE_UNRESOLVED_CODE,
+  type BrowserTargetScope,
+} from './browserScope';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -72,8 +76,8 @@ const PAGE_FIND_DELAY_MS = 500;
  * permanent one. Mirrors EXTERNAL_BACKEND_UNSUPPORTED's `CODE: prose` shape.
  */
 function workspaceScopeUnresolved(reason: string): Error {
-  // Log as well as throw: several tools call getPage().catch(() => null) and
-  // fall back to an RPC path, which would otherwise swallow the reason whole.
+  // Log as well as throw so direct engine consumers retain a clear refusal
+  // reason even when a tool later renders the error into MCP result content.
   console.error(`[PlaywrightEngine] Page selection refused — ${reason}`);
   return new Error(
     `${WORKSPACE_SCOPE_UNRESOLVED_CODE}: cannot determine which workspace this session owns (${reason}), ` +
@@ -464,6 +468,15 @@ export class PlaywrightEngine {
   }
 
   /**
+   * Scope-required entry point for MCP browser tools (#695). Keeping the
+   * verified workspace and optional surface in one required object makes a
+   * dropped workspaceId a compile error at every tool call site.
+   */
+  async getPageForScope(scope: BrowserTargetScope): Promise<Page | null> {
+    return this.getPage(scope.surfaceId, scope.workspaceId);
+  }
+
+  /**
    * Resolve the surface owned by the CALLING session's workspace (#554).
    *
    * Read tools (browser_snapshot / browser_evaluate / browser_extract_*) take
@@ -593,6 +606,9 @@ export class PlaywrightEngine {
     // workspace-blind fallbacks must be skipped and we auto-open its own.
     let surfaceId = ctx.surfaceId;
     let callerHasNoSurface = ctx.callerHasNoSurface;
+    // A surfaceId returned by our own workspace-scoped browser.open is already
+    // proven even when a legacy main cannot tag its subsequent cdp.info entry.
+    let surfaceProvenByAutoOpen = false;
 
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       try {
@@ -606,7 +622,11 @@ export class PlaywrightEngine {
         // negative "any non-shell page" heuristic, to avoid ever returning the
         // shell when the shell happens to slip past URL classification.
         if (this.browser) {
-          const page = await this.findViaTargetDomain(surfaceId, ctx.workspaceId);
+          const page = await this.findViaTargetDomain(
+            surfaceId,
+            ctx.workspaceId,
+            surfaceProvenByAutoOpen,
+          );
           if (page) return page;
         }
 
@@ -638,7 +658,11 @@ export class PlaywrightEngine {
 
         // Strategy 3: Use /json endpoint + match registered targets
         if (this.cdpPort) {
-          const page = await this.findViaJsonEndpoint(surfaceId, ctx.workspaceId);
+          const page = await this.findViaJsonEndpoint(
+            surfaceId,
+            ctx.workspaceId,
+            surfaceProvenByAutoOpen,
+          );
           if (page) return page;
         }
         } // end !callerHasNoSurface
@@ -677,12 +701,11 @@ export class PlaywrightEngine {
                 if (opened.surfaceId) {
                   surfaceId = opened.surfaceId;
                   callerHasNoSurface = false;
+                  surfaceProvenByAutoOpen = true;
                 } else {
                   // A main that did not name the surface. Fall back to
-                  // re-deriving. A refusal here is caught rather than thrown
-                  // on: the retry then finds nothing and getPage() returns
-                  // null, which is the same answer, but it arrives through the
-                  // normal path instead of aborting the loop mid-way.
+                  // re-deriving. Scope refusals stay terminal; ordinary
+                  // discovery failures continue through the normal retry path.
                   try {
                     const owned = await this.resolveCallerSurface(ctx.workspaceId);
                     if (owned.kind === 'surface') {
@@ -690,6 +713,7 @@ export class PlaywrightEngine {
                       callerHasNoSurface = false;
                     }
                   } catch (resolveErr) {
+                    if (isWorkspaceScopeUnresolvedError(resolveErr)) throw resolveErr;
                     console.error(
                       '[PlaywrightEngine] Could not pin the auto-opened surface:',
                       resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
@@ -700,6 +724,7 @@ export class PlaywrightEngine {
               continue; // retry page discovery
             }
           } catch (openErr) {
+            if (isWorkspaceScopeUnresolvedError(openErr)) throw openErr;
             console.error('[PlaywrightEngine] Auto-open failed:', openErr instanceof Error ? openErr.message : String(openErr));
           }
         }
@@ -711,6 +736,7 @@ export class PlaywrightEngine {
           await this.ensureConnected(ctx.workspaceId);
         }
       } catch (err) {
+        if (isWorkspaceScopeUnresolvedError(err)) throw err;
         console.error(
           `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
           err instanceof Error ? err.message : String(err),
@@ -777,7 +803,11 @@ export class PlaywrightEngine {
   /**
    * Use CDP Target domain to discover webview targets and create a page for them.
    */
-  private async findViaTargetDomain(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
+  private async findViaTargetDomain(
+    surfaceId?: string,
+    workspaceId?: string,
+    surfaceProvenByAutoOpen = false,
+  ): Promise<Page | null> {
     if (!this.browser) return null;
 
     try {
@@ -822,9 +852,12 @@ export class PlaywrightEngine {
           workspaceId ? { workspaceId } : {},
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
-        const wmuxTarget = surfaceId
-          ? info.targets.find((t) => t.surfaceId === surfaceId)
-          : info.targets[0];
+        const wmuxTarget = this.selectRegisteredTarget(
+          info,
+          surfaceId,
+          workspaceId,
+          surfaceProvenByAutoOpen,
+        );
 
         // Find the webview target — match by targetId from WebviewCdpManager
         let webviewTarget = wmuxTarget
@@ -883,6 +916,7 @@ export class PlaywrightEngine {
         await cdpSession.detach().catch(() => { /* best-effort */ });
       }
     } catch (err) {
+      if (isWorkspaceScopeUnresolvedError(err)) throw err;
       console.error('[PlaywrightEngine] findViaTargetDomain error:', err instanceof Error ? err.message : String(err));
       return null;
     }
@@ -891,7 +925,11 @@ export class PlaywrightEngine {
   /**
    * Use the /json HTTP endpoint to find webview targets and attach via CDP.
    */
-  private async findViaJsonEndpoint(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
+  private async findViaJsonEndpoint(
+    surfaceId?: string,
+    workspaceId?: string,
+    surfaceProvenByAutoOpen = false,
+  ): Promise<Page | null> {
     if (!this.cdpPort || !this.browser) return null;
 
     try {
@@ -913,9 +951,12 @@ export class PlaywrightEngine {
         workspaceId ? { workspaceId } : {},
       )) as CdpInfoResponse;
       this.cacheShellUrl(info);
-      const wmuxTarget = surfaceId
-        ? info.targets.find((t) => t.surfaceId === surfaceId)
-        : info.targets[0];
+      const wmuxTarget = this.selectRegisteredTarget(
+        info,
+        surfaceId,
+        workspaceId,
+        surfaceProvenByAutoOpen,
+      );
 
       // Find the webview in /json
       let jsonTarget = wmuxTarget
@@ -974,9 +1015,57 @@ export class PlaywrightEngine {
 
       return null;
     } catch (err) {
+      if (isWorkspaceScopeUnresolvedError(err)) throw err;
       console.error('[PlaywrightEngine] findViaJsonEndpoint error:', err instanceof Error ? err.message : String(err));
       return null;
     }
+  }
+
+  /**
+   * Select a registered target without trusting an older main to have honored
+   * the workspace filter. Current mains mark scoped responses explicitly;
+   * legacy responses must carry target ownership tags or selection is refused.
+   */
+  private selectRegisteredTarget(
+    info: CdpInfoResponse,
+    surfaceId?: string,
+    workspaceId?: string,
+    surfaceProvenByAutoOpen = false,
+  ): CdpTargetInfo | undefined {
+    if (!workspaceId || info.targetsScoped) {
+      return surfaceId
+        ? info.targets.find((target) => target.surfaceId === surfaceId)
+        : info.targets[0];
+    }
+
+    if (surfaceId) {
+      const target = info.targets.find((candidate) => candidate.surfaceId === surfaceId);
+      if (!target) return undefined;
+      if (!target.workspaceId && surfaceProvenByAutoOpen) return target;
+      if (!target.workspaceId) {
+        throw workspaceScopeUnresolved(
+          'the connected wmux main does not tag the requested browser target with a workspace',
+        );
+      }
+      if (target.workspaceId !== workspaceId) {
+        throw workspaceScopeUnresolved(
+          'the requested browser surface is not owned by the calling workspace',
+        );
+      }
+      return target;
+    }
+
+    const own = info.targets.find((target) => target.workspaceId === workspaceId);
+    if (own || info.targets.length === 0) return own;
+    const anyTagged = info.targets.some(
+      (target) => typeof target.workspaceId === 'string' && target.workspaceId.length > 0,
+    );
+    if (!anyTagged) {
+      throw workspaceScopeUnresolved(
+        'the connected wmux main does not tag browser targets with a workspace',
+      );
+    }
+    return undefined;
   }
 
   async getBrowser(): Promise<Browser | null> {

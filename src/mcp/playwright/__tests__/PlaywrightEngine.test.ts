@@ -372,7 +372,7 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     expect(priv(engine).shellUrl).toBe(shellUrl);
   });
 
-  it('strict surface targeting (#517): explicit surfaceId never falls back to another guest', async () => {
+  it('strict surface targeting rejects a legacy main that returns a foreign or untagged explicit target', async () => {
     const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
     const otherGuest: FakePage = {
       url: vi.fn().mockReturnValue('https://other-guest.example/'),
@@ -390,13 +390,21 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
     mockConnectOverCDP.mockResolvedValue(browser);
-    // cdp.info knows about NO target for the requested surface — the pinned
-    // lookup fails, and the "first non-shell page" fallback must NOT hand
-    // back the other guest (that would drive surface B while the caller — and
-    // the automation lease — point at surface A).
+    // Simulate a legacy main that ignores the workspaceId filter and returns
+    // the explicitly requested target from another workspace. The engine must
+    // verify the ownership tag itself rather than trust the requested id.
+    let targetWorkspaceId: string | undefined = 'ws-other';
     mockSendRpc.mockImplementation((method: string) => {
       if (method === 'browser.cdp.info') {
-        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          targets: [{
+            surfaceId: 'surface-pinned',
+            targetId: 'wc-foreign',
+            ...(targetWorkspaceId && { workspaceId: targetWorkspaceId }),
+          }],
+        });
       }
       return Promise.resolve({});
     });
@@ -408,8 +416,17 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     // the exact same id to getPage (#695). No engine resolver is wired here:
     // this proves the pre-resolved identity is sufficient and is forwarded to
     // every discovery request for the explicit surface.
-    const page = await engine.getPage('surface-pinned', 'ws-caller');
-    expect(page).toBeNull();
+    const scope = { workspaceId: 'ws-caller', surfaceId: 'surface-pinned' };
+    await expect(engine.getPageForScope(scope)).rejects.toThrow(
+      /requested browser surface is not owned by the calling workspace/,
+    );
+
+    // An untagged legacy response is equally unprovable and must also refuse.
+    targetWorkspaceId = undefined;
+    await expect(engine.getPageForScope(scope)).rejects.toThrow(
+      /does not tag the requested browser target with a workspace/,
+    );
+
     const infoCalls = mockSendRpc.mock.calls.filter(([method]) => method === 'browser.cdp.info');
     expect(infoCalls.length).toBeGreaterThan(0);
     expect(infoCalls.every(([, params]) =>
@@ -644,6 +661,57 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 
     await expect(engine.getPage()).resolves.toBe(webviewPage);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
+  }, 15_000);
+
+  it('auto-open refuses a target that is explicitly tagged to another workspace', async () => {
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    let opened = false;
+
+    const session = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: opened
+                ? [{ targetId: 'wc-foreign', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+                : [],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      pages: vi.fn().mockReturnValue([]),
+      newCDPSession: vi.fn().mockResolvedValue(session),
+    };
+    mockConnectOverCDP.mockResolvedValue({
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockResolvedValue(session),
+      contexts: vi.fn().mockReturnValue([context]),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          targets: opened
+            ? [{ surfaceId: 'surf-new', targetId: 'wc-foreign', workspaceId: 'ws-other' }]
+            : [],
+        });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true, surfaceId: 'surf-new' });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+
+    await expect(engine.getPage()).rejects.toThrow(
+      /requested browser surface is not owned by the calling workspace/,
+    );
   }, 15_000);
 });
 

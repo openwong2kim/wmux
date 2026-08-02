@@ -4,7 +4,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
-import type { BrowserToolDeps } from '../browserScope';
+import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import {
   defineWmuxTool,
   registerWmuxTools,
@@ -144,7 +144,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         // Packaged RPC fallback (#114): no Playwright Page, so poll the condition
         // over the CDP channel until it holds or the timeout elapses.

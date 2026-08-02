@@ -7,6 +7,7 @@ import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
 import {
+  allowScopedRpcFallback,
   sendScopedBrowserRpc,
   type BrowserTargetScope,
   type BrowserToolDeps,
@@ -172,7 +173,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Playwright Page when available (dev), else CDP over RPC (packaged, #111).
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         switch (action) {
           case 'get': {
@@ -283,7 +284,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         // browser_storage is pure page.evaluate, so it unifies over the same
         // evaluate transport the extraction tools use: a Playwright Page when
         // available, else browser.evaluate over RPC (packaged builds, #111).
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
 
@@ -392,7 +393,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     BROWSER_EMULATE_SHAPE,
     async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         const applied: string[] = [];
 
         // Resolve a device preset (if any) up front: both transports need its
@@ -564,7 +565,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     BROWSER_RESIZE_SHAPE,
     async ({ width, height, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           await page.setViewportSize({ width, height });

@@ -5,7 +5,7 @@ import { withAutomationLease } from '../automationLease';
 import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
-import type { BrowserToolDeps } from '../browserScope';
+import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -72,7 +72,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
         // snapshot over the RPC channel.
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         const snapshot = page
           ? await getSmartSnapshot(page, { maxContentLength: maxContentLength ?? 3000 })
           : await getSmartSnapshotViaEval(rpcEvaluator(scope), { maxContentLength: maxContentLength ?? 3000 });
@@ -153,7 +153,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
       try {
         // Native page.evaluate(fn, arg) when a Page exists (unchanged dev path);
         // RPC fallback when not (packaged builds, issue #105).
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         const records = await extractStructuredData(page, scope, goal, fields);
 

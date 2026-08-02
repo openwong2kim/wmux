@@ -8,7 +8,11 @@ import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
 import { sanitizeRef } from './interaction';
-import { sendScopedBrowserRpc, type BrowserToolDeps } from '../browserScope';
+import {
+  allowScopedRpcFallback,
+  sendScopedBrowserRpc,
+  type BrowserToolDeps,
+} from '../browserScope';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -306,7 +310,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     async ({ format, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Try Playwright for full snapshot
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         if (page) {
           const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
           return {
@@ -346,7 +350,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
       try {
         // Try Playwright for element-level screenshots (ref)
         if (ref) {
-          const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+          const page = await engine.getPageForScope(scope);
           if (page) {
             const el = await resolveRef(page, ref);
             if (!el) {
@@ -409,7 +413,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         let result: unknown;
 
         // Try Playwright first for gesture-aware evaluation
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         if (page) {
           result = await evaluateWithGesture(page, expression);
         } else {
@@ -445,7 +449,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_CONSOLE_SHAPE,
     async ({ level, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         let entries: ConsoleEntry[];
         if (page) {
@@ -484,7 +488,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_NETWORK_SHAPE,
     async ({ filter, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         let entries: Array<{ url: string; method: string; status?: number }>;
         if (page) {
@@ -525,7 +529,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_RESPONSE_BODY_SHAPE,
     async ({ urlPattern, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         let body: string | null = null;
         if (page) {
@@ -586,7 +590,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_HIGHLIGHT_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);

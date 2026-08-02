@@ -1,6 +1,10 @@
 import type { Page } from 'playwright-core';
 import type { PlaywrightEngine } from './PlaywrightEngine';
-import { sendScopedBrowserRpc, type BrowserTargetScope } from './browserScope';
+import {
+  allowScopedRpcFallback,
+  sendScopedBrowserRpc,
+  type BrowserTargetScope,
+} from './browserScope';
 
 // ---------------------------------------------------------------------------
 // Transport abstraction for DOM-extraction tools (issue #105)
@@ -51,7 +55,7 @@ export async function resolveEvaluator(
   engine: PlaywrightEngine,
   scope: BrowserTargetScope,
 ): Promise<JsonEvaluator> {
-  const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+  const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
   return page ? pageEvaluator(page) : rpcEvaluator(scope);
 }
 

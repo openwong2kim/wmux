@@ -6,6 +6,7 @@ import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import {
+  allowScopedRpcFallback,
   sendScopedBrowserRpc,
   type BrowserTargetScope,
   type BrowserToolDeps,
@@ -192,7 +193,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Try Playwright first
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           if (smartRef !== undefined) {
@@ -247,7 +248,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_TYPE_SHAPE,
     async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -292,7 +293,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_FILL_SHAPE,
     async ({ fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         let filled = 0;
         const errors: string[] = [];
@@ -340,7 +341,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_PRESS_KEY_SHAPE,
     async ({ key, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           await page.keyboard.press(key);
@@ -370,7 +371,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_HOVER_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -412,7 +413,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_DRAG_SHAPE,
     async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const sourceEl = await resolveRef(page, sourceRef);
@@ -477,7 +478,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_SELECT_SHAPE,
     async ({ ref, values, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -519,7 +520,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_SCROLL_INTO_VIEW_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -561,7 +562,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId).catch(() => null);
+        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
           if (ref) {

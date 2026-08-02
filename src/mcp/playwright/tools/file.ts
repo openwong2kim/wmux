@@ -120,7 +120,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -169,7 +169,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_DOWNLOAD_SHAPE,
     async ({ ref, filename, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -233,7 +233,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
       const resolvedTimeout = timeout ?? 30000;
 
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -304,7 +304,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPage(scope.surfaceId, scope.workspaceId);
+        const page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

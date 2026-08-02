@@ -4,6 +4,20 @@ import { sendRpc } from '../wmux-client';
 /** Stable error code for browser operations whose caller cannot be scoped. */
 export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
 
+export function isWorkspaceScopeUnresolvedError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith(`${WORKSPACE_SCOPE_UNRESOLVED_CODE}:`);
+}
+
+/**
+ * Page discovery failures may fall back to a scoped main-process RPC. A scope
+ * refusal may not: on an older main that ignores workspaceId, doing so would
+ * recreate the cross-workspace path the refusal was meant to close.
+ */
+export function allowScopedRpcFallback(error: unknown): null {
+  if (isWorkspaceScopeUnresolvedError(error)) throw error;
+  return null;
+}
+
 /** Dependencies shared by every workspace-routed browser tool. */
 export interface BrowserToolDeps {
   /** Strict per-connection resolver; it must never fall back to the UI-active workspace. */

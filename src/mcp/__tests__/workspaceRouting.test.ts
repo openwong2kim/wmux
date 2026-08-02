@@ -197,9 +197,15 @@ describe('MCP workspace routing (source-level invariants)', () => {
       'Utility',
       'Extraction',
     ]) {
-      expect(src, `${name} tools must receive browserToolDeps`).toMatch(
-        new RegExp(`register${name}Tools\\(\\s*server\\s*,\\s*browserToolDeps`),
-      );
+      const allCalls = src.match(new RegExp(`register${name}Tools\\(`, 'g')) ?? [];
+      expect(allCalls, `${name} tools must be registered exactly once`).toHaveLength(1);
+      const strictCalls = src.match(
+        new RegExp(
+          `register${name}Tools\\(\\s*server\\s*,\\s*browserToolDeps\\s*(?:,|\\))`,
+          'g',
+        ),
+      ) ?? [];
+      expect(strictCalls, `${name} tools must receive exactly browserToolDeps`).toHaveLength(1);
     }
   });
 

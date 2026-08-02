@@ -13,7 +13,7 @@ const { mockSendRpc, mockLeaseRpc, getPage, getInstance } = vi.hoisted(() => {
     mockSendRpc: vi.fn(),
     mockLeaseRpc: vi.fn(),
     getPage,
-    getInstance: vi.fn(() => ({ getPage })),
+    getInstance: vi.fn(() => ({ getPageForScope: getPage })),
   };
 });
 vi.mock('../../wmux-client', () => ({
@@ -260,7 +260,7 @@ describe('browser_wait RPC fallback', () => {
     getPage.mockResolvedValue({ waitForSelector });
     const res = await wait({ selector: '#app' });
     expect(waitForSelector).toHaveBeenCalledWith('#app', { timeout: 30000 });
-    expect(getPage).toHaveBeenCalledWith(undefined, 'ws-test');
+    expect(getPage).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
     expect(mockSendRpc).not.toHaveBeenCalled();
     expect(res.content[0].text).toContain('selector "#app" found');
   });
