@@ -2,7 +2,6 @@ import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
-import { IPC } from '../../shared/constants';
 import { dispatchNotification } from './dispatchNotification';
 import { clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
@@ -104,13 +103,6 @@ function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
   return ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
 }
 
-interface CriticalEventPayload {
-  action: string;
-  riskLevel: 'review' | 'critical';
-  /** The matched PTY line. Optional: a pre-#605 daemon does not send one. */
-  matchedLine?: string;
-}
-
 /**
  * In daemon mode, PTY data flows through DaemonPTYBridge inside the daemon
  * process — main never sees raw bytes, so the local PTYBridge subscriptions
@@ -125,7 +117,6 @@ interface CriticalEventPayload {
  *   - session:active → METADATA_UPDATE (agentStatus = 'running')
  *   - session:idle → fallback NOTIFICATION, suppressed if a recent agent
  *     event already covered it
- *   - session:critical → APPROVAL_REQUEST IPC
  *   - session:died → METADATA_UPDATE (agentStatus = 'idle')
  *
  * The router does NOT reset AgentDetector emission state on 'active' the way
@@ -960,22 +951,6 @@ export class DaemonNotificationRouter {
       }
     };
 
-    const onCritical = (payload: { sessionId: string; event: unknown }) => {
-      try {
-        const win = this.getWindow();
-        if (!win || win.isDestroyed()) return;
-        const ev = payload.event as CriticalEventPayload;
-        if (!ev || typeof ev !== 'object') return;
-        win.webContents.send(IPC.APPROVAL_REQUEST, payload.sessionId, {
-          action: ev.action,
-          riskLevel: ev.riskLevel,
-          matchedLine: ev.matchedLine,
-        });
-      } catch (err) {
-        console.warn('[DaemonNotificationRouter] session:critical error:', err);
-      }
-    };
-
     // session:died (natural PTY exit) and session:destroyed (pty:dispose)
     // both clear agentStatus. Only listening to session:died left a stale
     // sidebar dot when the user closed a terminal intentionally (Codex P2).
@@ -1068,7 +1043,6 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:agent', onAgent);
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
-    this.daemonClient.on('session:critical', onCritical);
     this.daemonClient.on('session:prompt', onPrompt);
     this.daemonClient.on('session:notification', onNotification);
     this.daemonClient.on('session:died', onSessionEnd);
@@ -1101,7 +1075,6 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:agent', onAgent),
       () => this.daemonClient.off('session:active', onActive),
       () => this.daemonClient.off('session:idle', onIdle),
-      () => this.daemonClient.off('session:critical', onCritical),
       () => this.daemonClient.off('session:prompt', onPrompt),
       () => this.daemonClient.off('session:notification', onNotification),
       () => this.daemonClient.off('session:died', onSessionEnd),

@@ -317,8 +317,6 @@ export const IPC = {
   // no-renderer toast fallback in dispatchNotification can honor them.
   MUTED_NOTIFICATION_CATEGORIES: 'settings:muted-notification-categories',
   AUTO_UPDATE_ENABLED: 'settings:auto-update-enabled',
-  // Agent critical action approval
-  APPROVAL_REQUEST: 'approval:request',
   // Phase 2.2 — MCP plugin permission approval (main → renderer subscribe,
   // renderer → main response). Emitted when the enforcer rejects an
   // unconfirmed plugin in enforce mode and the ApprovalQueue mints a

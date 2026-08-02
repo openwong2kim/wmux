@@ -384,21 +384,6 @@ export class PTYBridge {
       }
     });
 
-    // Critical action detection (kept — this is precise and valuable)
-    const unsubCritical = agentDetector.onCritical((criticalEvent) => {
-      try {
-        const win = this.getWindow();
-        if (!win || win.isDestroyed()) return;
-        win.webContents.send(IPC.APPROVAL_REQUEST, ptyId, {
-          action: criticalEvent.action,
-          riskLevel: criticalEvent.riskLevel,
-          matchedLine: criticalEvent.matchedLine,
-        });
-      } catch (err) {
-        console.warn('[PTYBridge] onCritical callback error:', err);
-      }
-    });
-
     // Agent status events: emit METADATA_UPDATE (drives sidebar dot) and a
     // NOTIFICATION (drives unread badge + in-app toast + optional OS toast).
     // The 'waiting'/'complete' transition is the strong "task done" signal.
@@ -547,7 +532,6 @@ export class PTYBridge {
     });
 
     this.agentDetectorCleanups.set(ptyId, [
-      unsubCritical,
       unsubAgent,
       unsubActive,
       () => { if (resizeGuardTimer) clearTimeout(resizeGuardTimer); },
