@@ -70,7 +70,8 @@ fails closed with no plaintext listener. PEM files are read when the listener
 starts, not hot-reloaded, so certificate renewal requires re-running `wmux web`
 with both TLS paths or restarting the listener/daemon. Reconfiguring across the
 encrypted/plaintext boundary rotates the operator token and revokes every
-paired-device credential; same-transport reconfiguration preserves them.
+paired-device credential; same-transport reconfiguration preserves them. An
+explicit `wmux web --stop` also revokes both credential classes.
 
 ---
 

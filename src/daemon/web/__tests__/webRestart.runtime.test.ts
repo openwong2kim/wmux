@@ -491,13 +491,21 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
   );
 
   it(
-    'an explicit stop is remembered too — and revokes the token',
+    'an explicit stop is remembered too — and revokes every web credential',
     async () => {
       const port = await freePort();
 
       const d1 = await startDaemon();
       const started = await rpc('daemon.web.start', { port, host: '127.0.0.1', allowInput: false });
       const token = started.token as string;
+      const paired = await requestJson(
+        port,
+        `/api/pair?code=${encodeURIComponent(started.pairCode as string)}`,
+      );
+      const deviceToken = (paired.body as { token?: string }).token as string;
+      expect(paired.status).toBe(200);
+      expect(deviceToken).toBeTruthy();
+      expect(await probe(port, '/api/config', deviceToken)).toEqual({ status: 200 });
       await rpc('daemon.web.stop');
       await killDaemon(d1);
 
@@ -510,6 +518,7 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       const restarted = await rpc('daemon.web.start', { port, host: '127.0.0.1', allowInput: false });
       expect(restarted.token).not.toBe(token);
       expect((await probe(port, '/api/config', token)).status).toBe(401);
+      expect((await probe(port, '/api/config', deviceToken)).status).toBe(401);
     },
     120_000,
   );

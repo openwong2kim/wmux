@@ -459,6 +459,6 @@ function report(
   console.log('');
   console.log('  This stays on across daemon restarts (crash, reboot, update) and the');
   console.log('  token above keeps working, so a phone left open reconnects by itself.');
-  console.log('  Stop with `wmux web --stop` — that also revokes the token.');
+  console.log('  Stop with `wmux web --stop` — that also revokes every web credential.');
   console.log('');
 }

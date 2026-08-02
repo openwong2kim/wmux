@@ -780,9 +780,20 @@ export class WebTerminalServer {
     return this.server !== null;
   }
 
-  /** Daemon-internal transport state for safe option-only reconfiguration. */
-  get currentTlsConfig(): WebTlsConfig | undefined {
-    return this.opts?.tls ? { ...this.opts.tls } : undefined;
+  /** Daemon-internal live state for safe option-only reconfiguration. */
+  get currentStartState(): {
+    tls: WebTlsConfig | undefined;
+    tailscale: boolean;
+    host: string;
+    token: string;
+  } | undefined {
+    if (!this.server || !this.opts) return undefined;
+    return {
+      tls: this.opts.tls ? { ...this.opts.tls } : undefined,
+      tailscale: this.opts.tailscale === true,
+      host: this.opts.host,
+      token: this.token,
+    };
   }
 
   /**
@@ -826,10 +837,6 @@ export class WebTerminalServer {
         /* ignore */
       }
     });
-    server.on('error', (err) => {
-      this.deps.log('error', `[web] server error: ${errMsg(err)}`);
-    });
-
     await new Promise<void>((resolve, reject) => {
       const onError = (err: NodeJS.ErrnoException) => {
         server.removeListener('error', onError);
@@ -854,6 +861,13 @@ export class WebTerminalServer {
       } catch (err) {
         onError(err as NodeJS.ErrnoException);
       }
+    });
+
+    // Bind failures are returned to the caller by the temporary listener
+    // above. Log only errors from an established server here, so one failed
+    // start does not produce two indistinguishable daemon log entries.
+    server.on('error', (err) => {
+      this.deps.log('error', `[web] server error: ${errMsg(err)}`);
     });
 
     this.server = server;

@@ -82,7 +82,8 @@ WEB ACCESS (browser / PWA)
         [--new-token]               Mint a fresh access token, revoking every
                                     device already paired
         [--status]                  Show whether the web server is running
-        [--stop]                    Stop the web server and revoke its token
+        [--stop]                    Stop the web server and revoke all web
+                                    credentials
 
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux

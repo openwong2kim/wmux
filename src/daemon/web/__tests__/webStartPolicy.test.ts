@@ -26,7 +26,7 @@ function previous(overrides: Partial<WebPersistedState> = {}): WebPersistedState
 function decide(overrides: Partial<WebStartPolicyInput> = {}) {
   return decideWebStartPolicy({
     requestedTls: undefined,
-    liveTls: undefined,
+    live: undefined,
     previous: previous(),
     previousTransportInvalid: false,
     host: '127.0.0.1',
@@ -110,6 +110,46 @@ describe('web start transport and credential policy', () => {
         previousTransportInvalid: true,
       }),
     ).toEqual({ tls: undefined, token: undefined, rotateCredentials: true });
+  });
+
+  it('rotates credentials when explicit native TLS repairs an invalid record', () => {
+    expect(
+      decide({
+        requestedTls: TLS,
+        previous: previous({ enabled: false }),
+        previousTransportInvalid: true,
+      }),
+    ).toEqual({ tls: TLS, token: undefined, rotateCredentials: true });
+  });
+
+  it('uses the live transport and token when persisted state is stale', () => {
+    expect(
+      decide({
+        previous: previous(),
+        live: {
+          tls: TLS,
+          tailscale: false,
+          host: '127.0.0.1',
+          token: 'live-token',
+        },
+      }),
+    ).toEqual({ tls: TLS, token: 'live-token', rotateCredentials: false });
+
+    expect(
+      decide({
+        previous: previous({ tls: TLS }),
+        live: {
+          tls: undefined,
+          tailscale: false,
+          host: '127.0.0.1',
+          token: 'live-http-token',
+        },
+      }),
+    ).toEqual({
+      tls: undefined,
+      token: 'live-http-token',
+      rotateCredentials: false,
+    });
   });
 
   it('always rotates on --new-token without changing the transport', () => {

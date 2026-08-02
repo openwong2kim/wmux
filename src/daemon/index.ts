@@ -122,6 +122,13 @@ function getDeviceStore(): DeviceStore {
   return deviceStore;
 }
 
+/** Revoke the durable roster and cut every live capability for those devices. */
+function revokeAllWebDevices(server: WebTerminalServer): boolean {
+  const revocation = getDeviceStore().revokeAll();
+  for (const deviceId of revocation.revoked) server.disconnectDevice(deviceId);
+  return revocation.ok;
+}
+
 // M2 — approval registry. Module-scoped for the same reason as the two above:
 // the hook ingest creates requests, the daemon.approvals.* RPCs read and
 // resolve them, and the web server (started either by registerRpcHandlers or by
@@ -2328,7 +2335,7 @@ function registerRpcHandlers(
     const loadedPrevious = loadWebStateWithDiagnostics(wmuxDir);
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
-      liveTls: webServer.currentTlsConfig,
+      live: webServer.currentStartState,
       previous: loadedPrevious.state,
       previousTransportInvalid: loadedPrevious.transportInvalid,
       host,
@@ -2352,9 +2359,7 @@ function registerRpcHandlers(
       // event loop can serve a request or the RPC can expose its fresh token.
       // start() also closed every old stream; disconnectDevice clears any
       // remaining device-bound tickets defensively.
-      const revocation = getDeviceStore().revokeAll();
-      for (const deviceId of revocation.revoked) webServer.disconnectDevice(deviceId);
-      if (!revocation.ok) {
+      if (!revokeAllWebDevices(webServer)) {
         // Fail closed: in-memory revocation already blocks the devices, but a
         // restart could reload the old roster. Do not leave the new listener
         // running or claim that the boundary rotation succeeded.
@@ -2369,15 +2374,22 @@ function registerRpcHandlers(
     return info;
   });
   pipeServer.onRpc('daemon.web.stop', async () => {
-    // Operator-initiated stop = "do not bring this back", and it revokes the
-    // token with it. Distinct from the stop() inside shutdown(), which is a
-    // teardown of a server the operator still wants and therefore leaves the
-    // persisted state alone.
+    // Operator-initiated stop = "do not bring this back", and it revokes every
+    // web credential with it. Distinct from stop() inside shutdown(), which is
+    // a teardown of a server the operator still wants and therefore preserves
+    // both the persisted listener and its paired devices.
     await afterRestore();
-    return stopWebServerDurably(
+    const devicesRevoked = revokeAllWebDevices(webServer);
+    const result = await stopWebServerDurably(
       () => clearWebState(wmuxDir),
       () => webServer.stop(),
     );
+    if (!devicesRevoked) {
+      throw new Error(
+        'the web server was stopped, but paired devices could not be durably revoked',
+      );
+    }
+    return result;
   });
   pipeServer.onRpc('daemon.web.status', async () => {
     // Without this a status() called during boot would report `running:false`
