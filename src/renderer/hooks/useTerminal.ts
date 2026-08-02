@@ -1079,8 +1079,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // A real GPU driver reset (not our pool eviction): the context is
           // gone. Dispose, drop to xterm's DOM renderer, and free our pool slot
           // so the pool stops counting us and can re-grant on the next toggle.
+          // Route through teardownWebglAddon (not a bare addon.dispose()): a
+          // dispose against a genuinely lost context is the most likely one to
+          // throw mid-store and skip xterm's own DOM-renderer restore, which
+          // is exactly the rendererless flicker-then-black state
+          // ensureRendererRestored repairs.
           console.warn('[Terminal] WebGL context lost — falling back to DOM renderer');
-          addon.dispose();
+          teardownWebglAddon(addon, terminal);
           webglAddonRef.current = null;
           webglContextPool.notifyDisposed(webglTokenRef.current);
           try {

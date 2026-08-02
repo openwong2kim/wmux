@@ -28,8 +28,8 @@ describe('useTerminal WebGL teardown (source-level lock)', () => {
     );
   });
 
-  it('routes the pool-evict, fonts.ready and unmount paths through teardownWebglAddon', () => {
+  it('routes the pool-evict, fonts.ready, unmount and context-loss paths through teardownWebglAddon', () => {
     const calls = SRC.match(/teardownWebglAddon\(/g) ?? [];
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.length).toBeGreaterThanOrEqual(4);
   });
 });
