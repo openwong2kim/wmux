@@ -221,6 +221,20 @@ describe('chatSlice', () => {
       expect(store.getState().chatPending['pty-a']).toHaveLength(0);
     });
 
+    it('drops a slash-command echo when its slash_command meta row arrives', () => {
+      // "/model opus" typed into the composer comes back as machinery, not a
+      // user_text: parseEntry surfaces it as a slash_command meta whose label
+      // is the typed line. The echo must clear on that row, not sit on
+      // "sending…" until the TTL.
+      store.getState().pushChatPending('pty-a', '/model opus');
+      store.getState().applyChatAppend('pty-a', {
+        seq: 1,
+        events: [{ id: 'm1', kind: 'meta', subtype: 'slash_command', label: '/model opus' }],
+        cursor: cursor(0, 10),
+      });
+      expect(store.getState().chatPending['pty-a']).toHaveLength(0);
+    });
+
     it('keeps an unrelated echo pending', () => {
       store.getState().pushChatPending('pty-a', 'my message');
       store.getState().applyChatAppend('pty-a', {

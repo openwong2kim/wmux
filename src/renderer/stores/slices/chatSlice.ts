@@ -123,6 +123,14 @@ function reconcilePending(
   const arrived = new Set<string>();
   for (const ev of incoming) {
     if (ev.kind === 'user_text') arrived.add(echoKey(ev.text));
+    // A slash command typed into the composer does NOT come back as a
+    // `user_text` — the transcript records it as `<command-name>` machinery,
+    // which parseEntry surfaces as a `slash_command` meta row whose label is
+    // the typed line (`/model opus`). Without matching that, the echo sits on
+    // "sending…" until the TTL even though its answer is already on screen.
+    else if (ev.kind === 'meta' && ev.subtype === 'slash_command') {
+      arrived.add(echoKey(ev.label));
+    }
   }
   return pending.filter((p) => !arrived.has(echoKey(p.text)) && now - p.at < PENDING_ECHO_TTL_MS);
 }

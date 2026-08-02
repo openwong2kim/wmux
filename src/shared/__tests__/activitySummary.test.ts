@@ -36,6 +36,9 @@ describe('summarizeActivity — tool_name → activity string', () => {
     // Task → ⇲ {description}
     { name: 'Task desc', tool: 'Task', input: { description: 'investigate bug' }, expected: '⇲ investigate bug' },
 
+    // Skill → /{skill} (the slash form the operator would type)
+    { name: 'Skill name', tool: 'Skill', input: { skill: 'plan-eng-review' }, expected: '/plan-eng-review' },
+
     // WebFetch → host, WebSearch → query
     { name: 'WebFetch host', tool: 'WebFetch', input: { url: 'https://example.com/path?x=1' }, expected: '🌐 example.com' },
     { name: 'WebFetch host with port', tool: 'WebFetch', input: { url: 'http://localhost:3000/api' }, expected: '🌐 localhost:3000' },

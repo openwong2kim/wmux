@@ -94,7 +94,9 @@ describe('parseTranscriptLine — meta-user.jsonl (never a human turn)', () => {
   it('classifies the caveat and the slash-command name', () => {
     expect(events[0].kind === 'meta' && events[0].subtype).toBe('caveat');
     expect(events[1].kind === 'meta' && events[1].subtype).toBe('slash_command');
-    expect(events[1].kind === 'meta' && events[1].label).toBe('/model');
+    // Args ride the label so `/model opus` reads back as the line that was
+    // typed — a bare `/model` hid what the command was actually asked to do.
+    expect(events[1].kind === 'meta' && events[1].label).toBe('/model opus');
     // isMeta with no marker is still not a human turn.
     expect(events[2].kind === 'meta' && events[2].subtype).toBe('caveat');
     // A command echo without isMeta is classified off the marker alone.
@@ -134,7 +136,8 @@ describe('parseTranscriptLine — injected-user.jsonl (machinery is never "You")
 
   it('classifies command-message and local-command-stdout', () => {
     expect(events[1].kind === 'meta' && events[1].subtype).toBe('slash_command');
-    expect(events[1].kind === 'meta' && events[1].label).toBe('synthetic-command is running');
+    // Args ride the label (same rule as command-name entries).
+    expect(events[1].kind === 'meta' && events[1].label).toBe('synthetic-command is running --dry-run');
     expect(events[2].kind === 'meta' && events[2].subtype).toBe('command_output');
     expect(events[2].kind === 'meta' && events[2].label).toBe('Local command output');
     expect(JSON.stringify(events)).not.toContain('synthetic stdout line one');

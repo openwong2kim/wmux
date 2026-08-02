@@ -258,15 +258,27 @@ function classifyMetaUser(
   return null;
 }
 
+/** Meta labels cross the wire; cap them well under the row's own truncation. */
+const MAX_META_LABEL_CHARS = 120;
+
 /** A more specific label than the tag's default, when the payload carries one. */
 function injectedLabel(head: string, tag: string): string {
   if (tag === 'task-notification') {
     // `<summary>` reads as `Agent "X" finished`, which is exactly the row.
     return innerTag(head, 'summary');
   }
-  if (tag === 'command-name' || tag === 'command-message') {
-    return innerTag(head, tag);
+  if (tag === 'command-name' || tag === 'command-message' || tag === 'command-args') {
+    // The entry carries all three tags; whichever OPENED it got us here.
+    // Prefer `<command-name>` — it is the slash form the operator typed
+    // (`/review-team`), where `<command-message>` drops the slash — and append
+    // the args so `/model opus` reads back as one line, not a bare `/model`.
+    const name = innerTag(head, 'command-name') || innerTag(head, 'command-message');
+    const args = innerTag(head, 'command-args');
+    return (args ? `${name} ${args}` : name).slice(0, MAX_META_LABEL_CHARS);
   }
+  // `local-command-stdout` deliberately keeps its generic label: the body can
+  // carry anything the command printed, and the meta row must not become a
+  // second broadcast path for it (the injected-user test pins this).
   return '';
 }
 
