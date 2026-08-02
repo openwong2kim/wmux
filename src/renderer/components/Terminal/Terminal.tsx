@@ -3,7 +3,7 @@ import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyn
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
-import { resolveRespawnCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveRespawnCwd, shouldHealSurfaceCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
@@ -209,13 +209,16 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       // Skip the heal when main landed somewhere OTHER than what we requested
       // (validateCwd dropped it → homedir fallback): engraving the fallback
       // would hide a broken/missing startup dir behind a healthy-looking cwd.
-      // Compare loosely (case + trailing separators) — main path.resolve()s.
-      const normalize = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
       const spawned = result.data.cwd;
-      if (spawned && (!respawnCwd || normalize(spawned) === normalize(respawnCwd))) {
+      const shouldHeal = shouldHealSurfaceCwd({
+        spawnedCwd: spawned,
+        requestedCwd: respawnCwd,
+        recoveryCwds: deadPaneRecovery,
+      });
+      if (spawned && shouldHeal) {
         useStore.getState().updateSurfaceCwd(result.data.id, spawned);
-      } else if (spawned && respawnCwd) {
-        console.warn(`[Terminal] requested cwd ${respawnCwd} but spawned in ${spawned} (startup dir missing/invalid?) — keeping surface cwd untouched`);
+      } else if (spawned && (respawnCwd || deadPaneRecovery)) {
+        console.warn(`[Terminal] requested cwd ${requestedCwd ?? '(recovery home fallback)'} but spawned in ${spawned} (requested dirs missing/invalid?) — keeping surface cwd untouched`);
       }
     });
 

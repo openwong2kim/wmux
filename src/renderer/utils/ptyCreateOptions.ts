@@ -50,6 +50,12 @@ export interface PtyCreateOptions {
   };
 }
 
+export interface SurfaceCwdHealInput {
+  spawnedCwd?: string;
+  requestedCwd?: string;
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'>;
+}
+
 import type { WorkspaceProfile } from '../../shared/types';
 
 const LEGACY_DEFAULT_SHELL_VALUES = new Set(['powershell', 'cmd', 'gitbash', 'wsl']);
@@ -190,6 +196,31 @@ export function resolveRespawnCwd(args: {
   if (args.surfaceCwd && args.surfaceCwd.trim().length > 0) return args.surfaceCwd;
   if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
   return undefined;
+}
+
+/**
+ * Decide whether main's actual spawn cwd is safe to persist on the surface.
+ * Ordinary creates preserve the #515 policy: an explicit request must match,
+ * while an unspecified request may accept main's home/default. A known-dead
+ * replacement may persist only one of its two recovery candidates; if main
+ * rejected both and fell back to home, keeping the old surface cwd avoids
+ * turning that fallback into the next pane's apparent working directory.
+ */
+export function shouldHealSurfaceCwd({
+  spawnedCwd,
+  requestedCwd,
+  recoveryCwds,
+}: SurfaceCwdHealInput): boolean {
+  if (!spawnedCwd) return false;
+  const normalize = (value: string) => value.replace(/[\\/]+$/, '').toLowerCase();
+  const spawned = normalize(spawnedCwd);
+
+  if (recoveryCwds !== undefined) {
+    return [recoveryCwds.spawnCwd, recoveryCwds.cwd]
+      .some((candidate) => candidate !== undefined && normalize(candidate) === spawned);
+  }
+
+  return requestedCwd === undefined || normalize(requestedCwd) === spawned;
 }
 
 /**

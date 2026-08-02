@@ -794,6 +794,10 @@ export default function AppLayout() {
               continue;
             }
             if (a.kind === 'rebind') {
+              // This is an already-live daemon session, not the self-created
+              // replacement covered by #650. Its own live metadata remains
+              // authoritative; never attach a different dead session's cwd or
+              // resume binding merely because both claimed the same surface.
               console.warn(`[lifecycle] reconcile REBIND surface=${a.surfaceId} stale=${a.stalePtyId} → live=${a.newPtyId} (surfaceId match, dead ptyId recovered)`);
             } else {
               const deadSession = deadPtys.get(a.stalePtyId);

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
+import { resolveRespawnCwd, resolveStartupCwd, shouldHealSurfaceCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
 
 describe('withRoleBinding (D2)', () => {
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -233,5 +233,27 @@ describe('resolveRespawnCwd', () => {
   it('treats an empty/whitespace surface cwd and global as unset', () => {
     expect(resolveRespawnCwd({ surfaceCwd: '   ', startupDirectory: '  ' })).toBeUndefined();
     expect(resolveRespawnCwd({ surfaceCwd: '' })).toBeUndefined();
+  });
+});
+
+describe('shouldHealSurfaceCwd', () => {
+  it('keeps ordinary #515 behavior for explicit and implicit cwd requests', () => {
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'C:\\repo', requestedCwd: 'c:\\repo\\' })).toBe(true);
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'C:\\Users\\me', requestedCwd: 'C:\\missing' })).toBe(false);
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'C:\\Users\\me' })).toBe(true);
+  });
+
+  it('accepts either validated dead-session recovery candidate', () => {
+    const recoveryCwds = { spawnCwd: 'D:\\project', cwd: 'D:\\project\\subdir' };
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'd:\\project\\', recoveryCwds })).toBe(true);
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'D:\\project\\subdir', recoveryCwds })).toBe(true);
+  });
+
+  it('does not engrave a recovery home fallback onto the surface', () => {
+    expect(shouldHealSurfaceCwd({
+      spawnedCwd: 'C:\\Users\\me',
+      recoveryCwds: { spawnCwd: 'D:\\missing', cwd: 'D:\\also-missing' },
+    })).toBe(false);
+    expect(shouldHealSurfaceCwd({ spawnedCwd: 'C:\\Users\\me', recoveryCwds: {} })).toBe(false);
   });
 });
