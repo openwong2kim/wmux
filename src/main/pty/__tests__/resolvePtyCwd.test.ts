@@ -1,5 +1,35 @@
-import { describe, expect, it, vi } from 'vitest';
-import { resolvePtyCreateCwd } from '../resolvePtyCwd';
+import fs from 'node:fs';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolvePtyCreateCwd, validatePtyCwd } from '../resolvePtyCwd';
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('validatePtyCwd', () => {
+  it('returns a resolved path only when stat reports a directory', () => {
+    const stat = vi.spyOn(fs, 'statSync');
+    stat.mockReturnValueOnce({ isDirectory: () => true } as fs.Stats);
+    stat.mockReturnValueOnce({ isDirectory: () => false } as fs.Stats);
+
+    expect(validatePtyCwd('relative-directory')).toBe(path.resolve('relative-directory'));
+    expect(validatePtyCwd('relative-file')).toBeUndefined();
+  });
+
+  it('treats missing, inaccessible, or concurrently removed paths as invalid', () => {
+    vi.spyOn(fs, 'statSync').mockImplementation(() => {
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    });
+
+    expect(validatePtyCwd('removed-directory')).toBeUndefined();
+  });
+
+  it('rejects UNC paths before touching the filesystem on Windows', () => {
+    if (process.platform !== 'win32') return;
+    const stat = vi.spyOn(fs, 'statSync');
+    expect(validatePtyCwd('\\\\server\\share')).toBeUndefined();
+    expect(stat).not.toHaveBeenCalled();
+  });
+});
 
 describe('resolvePtyCreateCwd', () => {
   it('prefers a valid persisted spawnCwd for a dead-session replacement', () => {

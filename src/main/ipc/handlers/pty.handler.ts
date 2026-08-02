@@ -37,7 +37,6 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
-import type { AgentSlug } from '../../../shared/events';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 
@@ -783,7 +782,7 @@ export function registerPTYHandlers(
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
         // X6 ② — present only for an interactive agent pane recovered this boot.
-        resumeAgent?: AgentSlug;
+        resumeAgent?: string;
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
         // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
         resumeBinding?: ResumeBinding;
@@ -825,9 +824,10 @@ export function registerPTYHandlers(
           // immediate save covers that path instead). `suspended` sessions are
           // excluded from rebind targets: they hold NO live PTY (recovery
           // tombstones), and actively binding a surface INTO one yields a blank,
-          // inputless pane (adversarial review). They stay in the id list so the
-          // non-destructive clear guards still see them.
-          ...(s.env?.[ENV_KEYS.SURFACE_ID] && s.state !== 'suspended'
+          // inputless pane (adversarial review). Dead sessions are excluded for
+          // the same reason when includeDead exposes their recovery metadata.
+          // Both states stay in the id list so non-destructive guards see them.
+          ...(s.env?.[ENV_KEYS.SURFACE_ID] && s.state !== 'suspended' && s.state !== 'dead'
             ? { surfaceId: s.env[ENV_KEYS.SURFACE_ID] }
             : {}),
           // v2 RCA fix (axis B-lite): create time for newest-wins duplicate
@@ -886,7 +886,7 @@ export function registerPTYHandlers(
           pid?: number;
           cwd?: string;
           spawnCwd?: string;
-          resumeAgent?: AgentSlug;
+          resumeAgent?: string;
           resumeBinding?: ResumeBinding;
         }>;
         const session = sessions.find(s => s.id === id);

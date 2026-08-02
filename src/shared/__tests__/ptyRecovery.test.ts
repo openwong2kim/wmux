@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDeadPaneRecovery, mergeDeadPaneRecovery } from '../ptyRecovery';
+import { asRecoveryAgentSlug, createDeadPaneRecovery, mergeDeadPaneRecovery } from '../ptyRecovery';
 
 describe('createDeadPaneRecovery', () => {
   it('preserves both cwd candidates for main-side validation', () => {
@@ -29,6 +29,20 @@ describe('createDeadPaneRecovery', () => {
   it('keeps an explicit resume agent when no exact binding survives', () => {
     expect(createDeadPaneRecovery({ resumeAgent: 'codex' })).toEqual({ resumeAgent: 'codex' });
   });
+
+  it('rejects unknown daemon agent values and falls back to a valid binding', () => {
+    const resumeBinding = {
+      agent: 'claude' as const,
+      sessionId: 'conversation-1',
+      cwd: 'D:\\repo',
+      ts: 1,
+    };
+    expect(asRecoveryAgentSlug('bogus')).toBeUndefined();
+    expect(createDeadPaneRecovery({ resumeAgent: 'bogus', resumeBinding })).toEqual({
+      resumeAgent: 'claude',
+      resumeBinding,
+    });
+  });
 });
 
 describe('mergeDeadPaneRecovery', () => {
@@ -44,6 +58,23 @@ describe('mergeDeadPaneRecovery', () => {
       { spawnCwd: 'D:\\new', cwd: 'D:\\live' },
     )).toEqual({
       spawnCwd: 'D:\\new',
+      cwd: 'D:\\live',
+      resumeAgent: 'claude',
+      resumeBinding,
+    });
+  });
+
+  it('keeps an unconsumed offer when incoming optional fields are explicitly undefined', () => {
+    const resumeBinding = {
+      agent: 'claude',
+      sessionId: 'conversation-1',
+      cwd: 'D:\\repo',
+      ts: 1,
+    };
+    expect(mergeDeadPaneRecovery(
+      { resumeAgent: 'claude', resumeBinding },
+      { cwd: 'D:\\live', resumeAgent: undefined, resumeBinding: undefined },
+    )).toEqual({
       cwd: 'D:\\live',
       resumeAgent: 'claude',
       resumeBinding,

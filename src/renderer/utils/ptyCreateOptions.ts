@@ -212,7 +212,15 @@ export function shouldHealSurfaceCwd({
   recoveryCwds,
 }: SurfaceCwdHealInput): boolean {
   if (!spawnedCwd) return false;
-  const normalize = (value: string) => value.replace(/[\\/]+$/, '').toLowerCase();
+  const normalize = (value: string) => {
+    let normalized = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Match the renderer's existing cwd policy: Windows drive letters are
+    // case-insensitive, while POSIX path segments retain their case.
+    if (/^[A-Za-z]:\//.test(normalized)) {
+      normalized = normalized[0].toLowerCase() + normalized.slice(1);
+    }
+    return normalized;
+  };
   const spawned = normalize(spawnedCwd);
 
   if (recoveryCwds !== undefined) {

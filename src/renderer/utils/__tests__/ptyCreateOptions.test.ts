@@ -256,4 +256,15 @@ describe('shouldHealSurfaceCwd', () => {
     })).toBe(false);
     expect(shouldHealSurfaceCwd({ spawnedCwd: 'C:\\Users\\me', recoveryCwds: {} })).toBe(false);
   });
+
+  it('preserves POSIX case sensitivity while normalizing separators', () => {
+    expect(shouldHealSurfaceCwd({
+      spawnedCwd: '/Users/Foo/project/',
+      recoveryCwds: { spawnCwd: '/Users/Foo/project' },
+    })).toBe(true);
+    expect(shouldHealSurfaceCwd({
+      spawnedCwd: '/users/foo/project',
+      recoveryCwds: { spawnCwd: '/Users/Foo/project' },
+    })).toBe(false);
+  });
 });

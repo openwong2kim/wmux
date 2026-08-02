@@ -31,10 +31,10 @@ describe('pty.handler PTY_LIST — axis B-lite surfaceId exposure invariants', (
     expect(region).toMatch(/surfaceId:\s*s\.env\[ENV_KEYS\.SURFACE_ID\]/);
   });
 
-  it('excludes suspended sessions from rebind targets (no live PTY behind them)', () => {
+  it('excludes suspended and dead sessions from rebind targets (no live PTY behind them)', () => {
     const region = listRegion();
-    // The surfaceId attachment must be conditioned on NOT-suspended.
-    expect(region).toMatch(/s\.state\s*!==\s*'suspended'/);
+    // The surfaceId attachment must be conditioned on a live session state.
+    expect(region).toMatch(/s\.state\s*!==\s*'suspended'\s*&&\s*s\.state\s*!==\s*'dead'/);
   });
 
   it('keeps dead sessions opt-in AND exposes createdAt for newest-wins duplicate resolution', () => {

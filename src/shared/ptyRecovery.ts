@@ -16,7 +16,8 @@ export interface DeadPaneRecovery {
 export interface DeadPaneSessionSnapshot {
   spawnCwd?: string;
   cwd?: string;
-  resumeAgent?: AgentSlug;
+  /** Untrusted daemon/RPC value; normalized before entering renderer state. */
+  resumeAgent?: string;
   resumeBinding?: ResumeBinding;
 }
 
@@ -24,7 +25,7 @@ function nonBlank(value: string | undefined): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
 }
 
-const RECOVERY_AGENT_SLUGS: ReadonlySet<string> = new Set([
+const RECOVERY_AGENT_SLUG_VALUES = [
   'claude',
   'codex',
   'gemini',
@@ -33,7 +34,8 @@ const RECOVERY_AGENT_SLUGS: ReadonlySet<string> = new Set([
   'copilot',
   'openclaude',
   'kiro',
-]);
+] as const satisfies readonly AgentSlug[];
+const RECOVERY_AGENT_SLUGS: ReadonlySet<string> = new Set(RECOVERY_AGENT_SLUG_VALUES);
 
 export function asRecoveryAgentSlug(value: string | undefined): AgentSlug | undefined {
   return value && RECOVERY_AGENT_SLUGS.has(value) ? value as AgentSlug : undefined;
@@ -47,7 +49,8 @@ export function asRecoveryAgentSlug(value: string | undefined): AgentSlug | unde
  */
 export function createDeadPaneRecovery(session: DeadPaneSessionSnapshot): DeadPaneRecovery {
   const resumeBinding = session.resumeBinding;
-  const resumeAgent = session.resumeAgent ?? asRecoveryAgentSlug(resumeBinding?.agent);
+  const resumeAgent = asRecoveryAgentSlug(session.resumeAgent)
+    ?? asRecoveryAgentSlug(resumeBinding?.agent);
   return {
     ...(nonBlank(session.spawnCwd) ? { spawnCwd: session.spawnCwd } : {}),
     ...(nonBlank(session.cwd) ? { cwd: session.cwd } : {}),

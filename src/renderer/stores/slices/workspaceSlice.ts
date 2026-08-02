@@ -157,6 +157,7 @@ export interface WorkspaceSlice {
    * Clearing the surface ptyId triggers re-mount with externalPtyId='',
    * which falls into Terminal.tsx's self-create path. Without this, the
    * Terminal sits with a stale ptyId forever and reproduces input-mute.
+   * Optional recovery metadata is staged on the matched surface first.
    */
   clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => void;
 }

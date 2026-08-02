@@ -16,9 +16,13 @@ export function validatePtyCwd(cwd: string | undefined): string | undefined {
   const resolved = path.resolve(cwd);
   // Block UNC paths (e.g. \\server\share).
   if (resolved.startsWith('\\\\')) return undefined;
-  if (!fs.existsSync(resolved)) return undefined;
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) return undefined;
+  try {
+    if (!fs.statSync(resolved).isDirectory()) return undefined;
+  } catch {
+    // Missing, inaccessible, or removed between resolution and stat: let the
+    // caller continue to the next recovery candidate or home fallback.
+    return undefined;
+  }
   return resolved;
 }
 
