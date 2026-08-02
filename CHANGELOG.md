@@ -1,3 +1,41 @@
+## [3.38.5] — 2026-08-03
+
+### Added
+
+- **The daemon can project a pane's transcript as structured turn events.**
+  Each pane's scrollback can now be read as a sequence of turns (who spoke,
+  what was asked, what ran) instead of raw terminal bytes. This is the daemon
+  half of #655 — groundwork for clients that want to render a conversation
+  view rather than a terminal mirror. (#771)
+
+### Changed
+
+- **The workspace list fits more of your fleet on screen.** Rows are tighter,
+  and each running agent in a selected workspace now sits on a single line
+  (name, pane, and status together) instead of a stacked, boxed card. When an
+  agent is actually waiting on you, its question still opens on a second line
+  in red so you can see what it needs at a glance.
+
+### Fixed
+
+- **Long branch names in the sidebar are no longer cut short.** Each
+  workspace row shows its git branch under the name, and that label used to be
+  capped at a fixed width, so a branch like `feat/deck-new-session` was
+  truncated to `feat/deck-n…` even when the row had room to spare. The label
+  now uses the full width of its line and only elides when a genuinely long
+  name would overflow, keeping the git status and PR badge right beside it.
+  (#767)
+
+- **Answering an agent's question at the desk now clears it from your phone
+  right away.** When Claude Code asked a question and you answered it in the
+  terminal on the Mac, the phone's approval inbox kept showing it as pending —
+  badge and all — until the whole turn ended, because nothing told the daemon
+  the question had been answered locally. The Claude bridge now reports the
+  moment an `AskUserQuestion` completes (`agent.input_answered`), and the
+  daemon expires the request immediately with reason `answered-locally`. The
+  completion signal is also exempt from the PostToolUse activity throttle, so
+  a fast answer cannot slip through the 2.5 s window unreported. (#773)
+
 ## [3.38.4] — 2026-08-02
 
 ### Added
