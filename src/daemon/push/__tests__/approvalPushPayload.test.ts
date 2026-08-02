@@ -71,12 +71,98 @@ describe('buildApprovalPushPayload', () => {
     expect(buildApprovalPushPayload(request()).body).toBe(APPROVAL_PUSH_FALLBACK_BODY);
   });
 
-  it('flags structured choices, and omits the flag otherwise', () => {
-    const withChoices = buildApprovalPushPayload(
-      request({ choices: [{ key: '1', label: 'Yes' }] }),
+  it('prints the options when a button will act on one — the button says only "first option"', () => {
+    const payload = buildApprovalPushPayload(
+      request({
+        question: 'Deploy to prod?',
+        choices: [
+          { key: '1', label: 'Yes, deploy' },
+          { key: '2', label: 'No' },
+        ],
+      }),
     );
-    expect(withChoices.requiresInAppChoice).toBe(true);
-    expect(buildApprovalPushPayload(request()).requiresInAppChoice).toBeUndefined();
+    expect(payload.body).toBe('Deploy to prod?\nYes, deploy · No');
+  });
+
+  it('keeps the body bare when no affirmative is offered', () => {
+    // Three options means the person opens the app and reads the card there;
+    // pasting them onto a lock screen would be noise, not consent.
+    const payload = buildApprovalPushPayload(
+      request({
+        question: 'Which one?',
+        choices: [
+          { key: '1', label: 'A' },
+          { key: '2', label: 'B' },
+          { key: '3', label: 'C' },
+        ],
+      }),
+    );
+    expect(payload.body).toBe('Which one?');
+  });
+
+  it('★ a two-option question earns the affirmative, titled with the agent’s own label', () => {
+    // The regression this exists to prevent: the rule used to be "has choices
+    // at all", and since the only source of approvals is the AskUserQuestion
+    // hook — which always carries choices — the lock-screen button was dark
+    // for every approval that has ever existed.
+    const payload = buildApprovalPushPayload(
+      request({
+        choices: [
+          { key: '1', label: '승인' },
+          { key: '2', label: '거부' },
+        ],
+      }),
+    );
+    expect(payload.requiresInAppChoice).toBeUndefined();
+    expect(payload.firstOption).toBe('승인');
+  });
+
+  it('three or more options is a picker, and no single button can stand for it', () => {
+    const payload = buildApprovalPushPayload(
+      request({
+        choices: [
+          { key: '1', label: 'Yes' },
+          { key: '2', label: 'Yes, and don’t ask again' },
+          { key: '3', label: 'No' },
+        ],
+      }),
+    );
+    expect(payload.requiresInAppChoice).toBe(true);
+    expect(payload.firstOption).toBeUndefined();
+  });
+
+  it('an unlabelled option cannot title a button, so it falls back rather than borrowing a word', () => {
+    const payload = buildApprovalPushPayload(
+      request({
+        choices: [
+          { key: '1', label: '   ' },
+          { key: '2', label: 'No' },
+        ],
+      }),
+    );
+    expect(payload.requiresInAppChoice).toBe(true);
+    expect(payload.firstOption).toBeUndefined();
+  });
+
+  it('no structured choices at all keeps the pre-existing shape', () => {
+    const payload = buildApprovalPushPayload(request());
+    expect(payload.requiresInAppChoice).toBeUndefined();
+    expect(payload.firstOption).toBeUndefined();
+  });
+
+  it('a destructive label still loses the button, relaxed choice rule or not', () => {
+    // Two labels, both readable — the choice rule alone would hand out the
+    // affirmative. `risk` is the independent gate that must still refuse.
+    const payload = buildApprovalPushPayload(
+      request({
+        question: 'Run this?',
+        choices: [
+          { key: '1', label: 'Yes, run rm -rf /' },
+          { key: '2', label: 'No' },
+        ],
+      }),
+    );
+    expect(payload.risk).toBe('critical');
   });
 
   it('carries the ids the deep link is built from', () => {

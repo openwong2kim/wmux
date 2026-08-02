@@ -12,21 +12,30 @@
  */
 import { hasElevatedRisk } from '../../shared/criticalPatterns';
 import { PUSH_RISK_CRITICAL, PUSH_RISK_NORMAL, type PushPayload } from '../../shared/push/pushEnvelope';
-import type { ApprovalRequest } from '../approvals/types';
+import type { ApprovalChoice, ApprovalRequest } from '../approvals/types';
 
 /** Shown when the agent gave us no question text to quote. */
 export const APPROVAL_PUSH_FALLBACK_BODY = 'A pane is waiting on an answer.';
 
 export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload {
+  const choiceFields = lockScreenChoiceFields(request.choices);
   return {
     title: 'Approval needed',
-    body: request.question ?? APPROVAL_PUSH_FALLBACK_BODY,
+    // The options ride in the body whenever an affirmative is on offer.
+    //
+    // The extension titles that button from a STATIC category — it cannot name
+    // a dynamic one, because a category the notification daemon has not
+    // ingested yet renders with no buttons at all, which is worse than a
+    // generic word. So the button reads "Approve — first option", and this is
+    // what makes that phrase unambiguous: the first option is printed right
+    // above it. Without this line somebody would be tapping a pronoun.
+    //
+    // Same shape the in-app local notifier already uses (` · ` separated), so
+    // the two paths read alike.
+    body: bodyFor(request, choiceFields.firstOption !== undefined),
     approvalId: request.id,
     sessionId: request.sessionId,
-    // A structured-choice question cannot be answered by a single affirmative,
-    // so the extension must drop to a category that only deep-links into the
-    // app.
-    ...(request.choices?.length ? { requiresInAppChoice: true } : {}),
+    ...choiceFields,
     // ALWAYS stated, unlike the REST field. See `PushPayload.risk`: the
     // extension has nothing but this payload, so silence there means unknown
     // and costs the button.
@@ -42,6 +51,64 @@ export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload 
     // counts both tiers for exactly this decision.
     risk: elevatedRisk(request) ? PUSH_RISK_CRITICAL : PUSH_RISK_NORMAL,
   };
+}
+
+/**
+ * The question, plus the options when a button will act on one of them.
+ *
+ * Only when the affirmative is offered: everywhere else the person opens the
+ * app to answer and reads the options on the card, and pasting them onto a
+ * lock screen there would be noise rather than consent.
+ */
+function bodyFor(request: ApprovalRequest, offersAffirmative: boolean): string {
+  const question = request.question ?? APPROVAL_PUSH_FALLBACK_BODY;
+  if (!offersAffirmative) return question;
+  const labels = (request.choices ?? []).map((c) => c.label.trim()).filter((l) => l.length > 0);
+  return labels.length > 0 ? `${question}\n${labels.join(' · ')}` : question;
+}
+
+/**
+ * The largest choice set one affirmative button can stand for.
+ *
+ * Two is the consent shape: a tap means "the first one", and the other side is
+ * Deny, which every category already offers. Three is a picker — no single
+ * button can represent it without hiding an option — and that keeps the
+ * in-app-only category.
+ */
+const AFFIRMATIVE_MAX_CHOICES = 2;
+
+/**
+ * Can a lock-screen affirmative express this question, and what should it say?
+ *
+ * **Why this is not simply "has choices".** It used to be, and the cost was
+ * that the button never appeared at all: the only source of approvals is the
+ * `AskUserQuestion` hook, and those always carry structured choices, so every
+ * approval on earth took the in-app-only branch. The feature was dark.
+ *
+ * **Why relaxing it is still safe.** The rule this runs on is that *the
+ * button's title is the choice*: a button reading "Approve" asks somebody to
+ * commit to text they have not read, and a button reading the option's own
+ * label does not. So the affirmative is offered only when there is a label to
+ * title it with, and that label travels as `firstOption` for the extension to
+ * use. An empty or missing label cannot title a button, so it falls back
+ * rather than borrowing a generic word.
+ *
+ * `risk` is unaffected and still decides this independently — `elevatedRisk`
+ * already scans choice labels precisely so that this relaxation could not turn
+ * into a gap.
+ */
+function lockScreenChoiceFields(
+  choices?: ApprovalChoice[],
+): { requiresInAppChoice?: true; firstOption?: string } {
+  // No structured choices at all is the pre-existing shape: the extension's
+  // static category already handles it and nothing here should change.
+  if (!choices?.length) return {};
+
+  const labels = choices.map((c) => c.label?.trim() ?? '');
+  if (choices.length > AFFIRMATIVE_MAX_CHOICES || labels.some((l) => l.length === 0)) {
+    return { requiresInAppChoice: true };
+  }
+  return { firstOption: labels[0] };
 }
 
 /**

@@ -189,6 +189,23 @@ export interface PushPayload {
   /** True when a lock-screen affirmative cannot express the required choice. */
   requiresInAppChoice?: boolean;
   /**
+   * The label of the option an affirmative tap would select — the agent's own
+   * words, not ours.
+   *
+   * Present only when the affirmative is offered at all, which is the point:
+   * the safety rule this feature runs on is that *the button's title is the
+   * choice*. A button reading "Approve" asks somebody to commit to text they
+   * have not read; a button reading the option's own label does not. So the
+   * label travels with the payload and the extension titles the action from
+   * it, rather than the extension inventing a generic word.
+   *
+   * Absent when there is nothing safe to title it with, and the extension then
+   * falls back to its static category. Never a substitute for
+   * `requiresInAppChoice` or `risk` — those still decide *whether* the button
+   * appears; this only decides what it says.
+   */
+  firstOption?: string;
+  /**
    * The approval's risk, ALWAYS stated on an approval payload — `'critical'`
    * when a destructive-action pattern matched, `PUSH_RISK_NORMAL` when none
    * did.
