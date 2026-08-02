@@ -3,6 +3,11 @@ export const IPC = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
   PTY_RESIZE: 'pty:resize',
+  // #766 visibility-based size ownership. Renderer → main fire-and-forget:
+  // reports whether a pane is actually on screen (workspace + tab active AND
+  // the window itself visible). Forwarded to the daemon so the phone resize
+  // route can tell "attached and watched" from "attached but nobody looking".
+  PTY_SET_VIEWER_VISIBILITY: 'pty:setViewerVisibility',
   PTY_DISPOSE: 'pty:dispose',
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',

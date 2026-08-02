@@ -55,6 +55,12 @@ const electronAPI = {
     },
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
+    // #766 — fire-and-forget visibility report (send, not invoke: the renderer
+    // has nothing useful to do with an ack, and a lost report self-heals on
+    // the next visibility flip or the daemon's detach-time reset).
+    setViewerVisibility: (id: string, visible: boolean) => {
+      ipcRenderer.send(IPC.PTY_SET_VIEWER_VISIBILITY, id, visible);
+    },
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
     // `supervision` (X8) is additive and present only on supervised daemon-mode

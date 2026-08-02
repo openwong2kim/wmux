@@ -1557,11 +1557,18 @@ export class WebTerminalServer {
    * policy but a fight: the phone resizes, the desk's next frame resizes back,
    * and the PTY thrashes between two geometries while both views redraw.
    *
-   * So: `attached` (a desk renderer has this pane wired) → `409 desk-owns-size`,
-   * carrying the current geometry so the caller can render to it without a
-   * second request. `detached` → the phone's numbers are applied. A pane that
-   * the desk later attaches resizes itself on mount, so ownership returns
-   * without anything here having to take it back.
+   * So (#766, visibility-based ownership): `attached` AND VISIBLE — a desk
+   * renderer has this pane wired and is actually showing it (workspace + tab
+   * active, window not hidden; `ManagedSession.viewerVisible`, reported by the
+   * renderer) → `409 desk-owns-size`, carrying the current geometry so the
+   * caller can render to it without a second request. `detached`, or attached
+   * but not visible (background workspace, inactive tab, minimized window) →
+   * the phone's numbers are applied: nobody is looking at the layout the
+   * phone would break, so the fight the paragraph above describes cannot
+   * start — the hidden renderer's fit is silent (zero-size container guard)
+   * until the pane is revealed again. A pane the desk attaches or reveals
+   * re-fits itself and resizes unconditionally, so ownership returns without
+   * anything here having to take it back.
    *
    * NOT GATED ON `--allow-input`, on the same reasoning as
    * `GET /api/sessions/:id/diff` and `POST /api/approvals/:id`: this delivers a
@@ -1601,7 +1608,7 @@ export class WebTerminalServer {
       // by the desk in between.
       const current = this.deps.sessionManager.getSession(id);
       if (!current) return this.json(res, 404, { error: 'session not found' });
-      if (current.meta.state === 'attached') {
+      if (current.meta.state === 'attached' && current.viewerVisible) {
         return this.json(res, 409, {
           error: 'desk-owns-size',
           cols: current.meta.cols,

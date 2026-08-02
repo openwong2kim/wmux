@@ -291,7 +291,7 @@ app-owned conversation history. Without `--allow-input`, send neither; never
 forward generic taps or drags, guess a mouse protocol, or pretend the alternate
 buffer is locally scrollable.
 
-### Resizing a pane — the desk owns the size whenever it is attached
+### Resizing a pane — the desk owns the size while it is actually showing it
 
 ```
 POST /api/sessions/<id>/resize   body: {cols, rows}
@@ -309,13 +309,21 @@ only thing that can fix it.
 
 **Ownership.** There is one PTY behind both views and it can have one geometry.
 While a desk renderer has the pane wired (`state: 'attached'` in
-`/api/sessions`), that geometry is the desk's: the 409 carries the current
-`cols`/`rows` so you can render to them without a second request. A `detached`
-pane takes your numbers. You do not have to hand ownership back — a desk client
-re-derives its geometry from its own bounds and resizes on attach.
+`/api/sessions`) **and is actually showing it** — the pane's workspace and tab
+are active and the window itself is visible — that geometry is the desk's: the
+409 carries the current `cols`/`rows` so you can render to them without a
+second request. A `detached` pane takes your numbers, and so does an attached
+pane the desk is not looking at (background workspace, inactive tab, minimized
+window): nobody is watching the layout your numbers would break. You cannot see
+the desk's visibility in `/api/sessions` — the probe is the request itself. You
+do not have to hand ownership back — a desk client re-derives its geometry from
+its own bounds and resizes on attach and on every reveal, silently taking the
+size back the moment somebody looks.
 
-Do not treat the 409 as an error to retry. It is the answer: render at the size
-it names, and try again after the pane's `state` goes `detached`.
+Do not treat the 409 as an error to retry in a loop. It is the answer: render
+at the size it names. A fresh attempt is reasonable when something on YOUR side
+changed (the pane was reopened, your viewport rotated) — the desk may have
+stopped looking since.
 
 **Render at the geometry in the 200, not at the one you asked for.** The daemon
 answers with what it stored, which is not promised to equal the request.
