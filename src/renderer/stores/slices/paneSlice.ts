@@ -7,6 +7,12 @@ import {
   generateId,
 } from '../../../shared/types';
 import {
+  findPane,
+  findParent,
+  collectLeafIds,
+  getLeafPanes,
+} from '../../../shared/paneUtils';
+import {
   publishPaneCreated,
   publishPaneClosed,
   publishPaneFocused,
@@ -186,36 +192,50 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'awaiting_input',
 ]);
 
-function findPane(root: Pane, id: string): Pane | null {
-  if (root.id === id) return root;
-  if (root.type === 'branch') {
-    for (const child of root.children) {
-      const found = findPane(child, id);
-      if (found) return found;
+/**
+ * Detach a child from its parent branch and collapse the parent when only one
+ * child is left — the structural half of both `closePane` and (issue #645)
+ * `movePane`. Pure structure: it never touches surfaces, PTY maps, principals,
+ * or focus, so a caller that wants a pane GONE must do that teardown itself.
+ *
+ *   before                    detach(B)              collapse
+ *   ┌── branch ──┐            ┌── branch ──┐
+ *   │  A   B   C │    ──▶     │  A     C   │   (3 children → no collapse)
+ *   └────────────┘            └────────────┘
+ *
+ *   ┌── branch ──┐            ┌─ branch ─┐
+ *   │   A    B   │    ──▶     │    A     │    ──▶   A replaces the branch
+ *   └────────────┘            └──────────┘         (in the grandparent, or
+ *                                                   as ws.rootPane)
+ *
+ * Returns the detached subtree, or null when the id is unknown or is the root
+ * (the root has no parent, so there is nothing to detach it from).
+ */
+function detachPane(ws: Workspace, paneId: string): Pane | null {
+  const parent = findParent(ws.rootPane, paneId);
+  if (!parent) return null; // unknown id, or the root pane itself
+
+  const idx = parent.children.findIndex((c) => c.id === paneId);
+  if (idx === -1) return null;
+
+  const [detached] = parent.children.splice(idx, 1);
+
+  if (parent.children.length === 1) {
+    // Collapse: replace the parent with its remaining child.
+    const remaining = parent.children[0];
+    const grandParent = findParent(ws.rootPane, parent.id);
+    if (grandParent) {
+      const parentIdx = grandParent.children.findIndex((c) => c.id === parent.id);
+      if (parentIdx !== -1) {
+        grandParent.children[parentIdx] = remaining;
+      }
+    } else {
+      // Parent was root
+      ws.rootPane = remaining;
     }
   }
-  return null;
-}
 
-function findParent(root: Pane, id: string): PaneBranch | null {
-  if (root.type === 'branch') {
-    for (const child of root.children) {
-      if (child.id === id) return root;
-      const found = findParent(child, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function collectLeafIds(pane: Pane): string[] {
-  if (pane.type === 'leaf') return [pane.id];
-  return pane.children.flatMap(collectLeafIds);
-}
-
-function getLeafPanes(root: Pane): PaneLeaf[] {
-  if (root.type === 'leaf') return [root];
-  return root.children.flatMap(getLeafPanes);
+  return detached;
 }
 
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
@@ -569,22 +589,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       }
 
       const previousActiveId = ws.activePaneId;
-      parent.children.splice(idx, 1);
-
-      if (parent.children.length === 1) {
-        // Collapse: replace parent with the remaining child
-        const remaining = parent.children[0];
-        const grandParent = findParent(ws.rootPane, parent.id);
-        if (grandParent) {
-          const parentIdx = grandParent.children.findIndex((c) => c.id === parent.id);
-          if (parentIdx !== -1) {
-            grandParent.children[parentIdx] = remaining;
-          }
-        } else {
-          // Parent was root
-          ws.rootPane = remaining;
-        }
-      }
+      // Structural removal lives in detachPane (shared with movePane, #645);
+      // everything above and below this line is the destructive teardown that
+      // only closing does.
+      detachPane(ws, paneId);
 
       // Update active pane
       const leaves = getLeafPanes(ws.rootPane);
