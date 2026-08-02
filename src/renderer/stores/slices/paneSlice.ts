@@ -21,6 +21,7 @@ import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
+import { saveSessionNow } from '../../utils/sessionSaveBridge';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
@@ -50,6 +51,51 @@ export interface PaneSlice {
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
   closePane: (paneId: string, workspaceId?: string) => void;
+  /**
+   * Issue #645 — move a leaf next to another leaf, tmux `join-pane` style.
+   *
+   * `workspaceId` is EXPLICIT and never inferred: a multiview drag can start in
+   * a workspace that is not `activeWorkspaceId`, and the store cannot guess
+   * which tile the gesture came from.
+   *
+   * `edge` picks the branch direction and the child order — left/right build a
+   * horizontal branch, top/bottom a vertical one; left/top put the source
+   * first. The insert always wraps the target in a FRESH binary `[50,50]`
+   * branch, exactly like `splitPane`, so a moved tree is indistinguishable
+   * from a split tree and every existing invariant keeps applying.
+   *
+   * `focusSource` defaults to false — the active pane is left alone. A drag of
+   * an inactive pane passes true, because grabbing a pane means you meant it.
+   * When the active pane really changes, `pane.focused` is emitted (the "no new
+   * events" rule is about a `pane.moved` type, not about hiding a real focus
+   * change).
+   *
+   * Returns false — with no mutation, no emit, no save — for every guard:
+   * unknown workspace, unknown/non-leaf source or target, source === target,
+   * or a source that has no parent (the root, i.e. the only pane).
+   */
+  movePane: (
+    workspaceId: string,
+    sourceId: string,
+    targetId: string,
+    edge: 'left' | 'right' | 'top' | 'bottom',
+    opts?: { focusSource?: boolean },
+  ) => boolean;
+  /**
+   * Issue #645 — exchange two leaves in place (tmux `swap-pane`). The tree
+   * shape and every `sizes` array are untouched: only the two nodes trade
+   * slots, so each pane inherits the geometry of the slot it lands in.
+   * Returns false on the same guards as `movePane`.
+   */
+  swapPanes: (workspaceId: string, aId: string, bId: string) => boolean;
+  /**
+   * Issue #645 — move the active pane one step in a direction, reusing the
+   * spatial traversal that `focusPaneDirection` already uses so navigation and
+   * movement agree by construction. The pane lands on the FAR side of the
+   * neighbour it displaces, so repeating the command walks it across the
+   * layout instead of oscillating. No neighbour → false.
+   */
+  moveActivePaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => boolean;
   setActivePane: (paneId: string) => void;
   /**
    * Focus a leaf pane (and optionally one of its surfaces) in an EXPLICIT
@@ -191,6 +237,52 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'waiting',
   'awaiting_input',
 ]);
+
+/** First (leftmost/topmost) leaf of a subtree. */
+function firstLeaf(pane: Pane): PaneLeaf {
+  if (pane.type === 'leaf') return pane;
+  return firstLeaf(pane.children[0]);
+}
+
+/** Last (rightmost/bottommost) leaf of a subtree. */
+function lastLeaf(pane: Pane): PaneLeaf {
+  if (pane.type === 'leaf') return pane;
+  return lastLeaf(pane.children[pane.children.length - 1]);
+}
+
+/**
+ * Tree-based spatial navigation: the leaf you reach by moving `dir` out of
+ * `paneId`. Walks up until it finds an ancestor split along the requested axis
+ * with a sibling on that side, then descends to the nearest leaf.
+ *
+ * Shared by `focusPaneDirection` and (issue #645) `moveActivePaneDirection`, so
+ * "the pane to my right" means the same thing whether you are moving focus or
+ * moving the pane itself. It is tree-order-based, not geometric — in deeply
+ * nested asymmetric layouts the neighbour can differ from what is literally
+ * adjacent on screen, which has always been true of focus movement here.
+ */
+function navigateFrom(root: Pane, paneId: string, dir: 'up' | 'down' | 'left' | 'right'): string | null {
+  const parent = findParent(root, paneId);
+  if (!parent) return null; // at root
+
+  const idx = parent.children.findIndex((c) => c.id === paneId);
+  const isAligned =
+    (parent.direction === 'horizontal' && (dir === 'left' || dir === 'right')) ||
+    (parent.direction === 'vertical' && (dir === 'up' || dir === 'down'));
+
+  if (isAligned) {
+    const delta = dir === 'right' || dir === 'down' ? 1 : -1;
+    const nextIdx = idx + delta;
+    if (nextIdx >= 0 && nextIdx < parent.children.length) {
+      // Move to adjacent sibling — descend to nearest leaf
+      const sibling = parent.children[nextIdx];
+      return (delta > 0 ? firstLeaf(sibling) : lastLeaf(sibling)).id;
+    }
+  }
+
+  // Direction not aligned or no sibling in that direction — go up
+  return navigateFrom(root, parent.id, dir);
+}
 
 /**
  * Detach a child from its parent branch and collapse the parent when only one
@@ -653,6 +745,126 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   },
 
+  movePane: (workspaceId, sourceId, targetId, edge, opts) => {
+    let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
+    let moved = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === workspaceId);
+      if (!ws) return;
+      if (sourceId === targetId) return;
+
+      const source = findPane(ws.rootPane, sourceId);
+      const target = findPane(ws.rootPane, targetId);
+      if (!source || source.type !== 'leaf') return;
+      if (!target || target.type !== 'leaf') return;
+      // A leaf with no parent is the whole workspace — nothing to move it out of.
+      if (!findParent(ws.rootPane, sourceId)) return;
+
+      const detached = detachPane(ws, sourceId);
+      if (!detached) return;
+
+      // Re-resolve the target AFTER the detach: collapsing the source's former
+      // parent can replace the node that held it, so a reference captured
+      // before the splice may no longer be the one in the tree.
+      const targetParent = findParent(ws.rootPane, targetId);
+      const liveTarget = findPane(ws.rootPane, targetId);
+      if (!liveTarget) return; // unreachable: only the source was removed
+
+      const direction = edge === 'left' || edge === 'right' ? 'horizontal' : 'vertical';
+      const sourceFirst = edge === 'left' || edge === 'top';
+      const branch: PaneBranch = {
+        id: generateId('pane'),
+        type: 'branch',
+        direction,
+        children: sourceFirst ? [detached, liveTarget] : [liveTarget, detached],
+        sizes: [50, 50],
+      };
+
+      if (targetParent) {
+        const idx = targetParent.children.findIndex((c) => c.id === targetId);
+        if (idx !== -1) targetParent.children[idx] = branch;
+      } else {
+        ws.rootPane = branch;
+      }
+
+      // #182: a move re-flows the layout, so a pane hidden behind the zoom would
+      // reappear somewhere unexpected. Same reasoning as splitPane.
+      if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
+        state.zoomedPaneId = null;
+      }
+
+      if (opts?.focusSource) {
+        const previousActiveId = ws.activePaneId;
+        if (previousActiveId !== sourceId) {
+          ws.activePaneId = sourceId;
+          event = { wsId: ws.id, paneId: sourceId, previousActiveId };
+        }
+      }
+
+      moved = true;
+    });
+    if (event) {
+      const e = event as { wsId: string; paneId: string; previousActiveId: string };
+      publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
+    }
+    // Pane-tree mutations otherwise ride only the 5s autosave, so a move
+    // followed by an immediate quit would be lost. Flush outside the producer.
+    if (moved) saveSessionNow();
+    return moved;
+  },
+
+  swapPanes: (workspaceId, aId, bId) => {
+    let swapped = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === workspaceId);
+      if (!ws) return;
+      if (aId === bId) return;
+
+      const a = findPane(ws.rootPane, aId);
+      const b = findPane(ws.rootPane, bId);
+      if (!a || a.type !== 'leaf') return;
+      if (!b || b.type !== 'leaf') return;
+
+      const aParent = findParent(ws.rootPane, aId);
+      const bParent = findParent(ws.rootPane, bId);
+      // Neither can be the root: a root leaf is the only pane in the workspace.
+      if (!aParent || !bParent) return;
+
+      const aIdx = aParent.children.findIndex((c) => c.id === aId);
+      const bIdx = bParent.children.findIndex((c) => c.id === bId);
+      if (aIdx === -1 || bIdx === -1) return;
+
+      // Only the two nodes trade places. `sizes` belongs to the SLOT, not to
+      // the pane, so it is deliberately left alone — a pane swapped into a 70%
+      // slot becomes 70% wide, which is what "swap" means on screen.
+      aParent.children[aIdx] = b;
+      bParent.children[bIdx] = a;
+
+      swapped = true;
+    });
+    if (swapped) saveSessionNow();
+    return swapped;
+  },
+
+  moveActivePaneDirection: (direction) => {
+    const state = get();
+    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+    if (!ws) return false;
+
+    const neighbourId = navigateFrom(ws.rootPane, ws.activePaneId, direction);
+    if (!neighbourId || neighbourId === ws.activePaneId) return false;
+
+    // Land on the FAR side of the displaced neighbour: moving right past a
+    // right-hand neighbour puts the pane to that neighbour's right, so the next
+    // "move right" keeps walking instead of swapping back and forth.
+    const edge =
+      direction === 'left' ? 'left' : direction === 'right' ? 'right' : direction === 'up' ? 'top' : 'bottom';
+
+    // The pane the user is moving is the one they are looking at, so it keeps
+    // focus — otherwise focus would be left behind on whatever slot it vacated.
+    return get().movePane(ws.id, ws.activePaneId, neighbourId, edge, { focusSource: true });
+  },
+
   setActivePane: (paneId) => {
     let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
     set((state: StoreState) => {
@@ -778,44 +990,9 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     const leaves = getLeafPanes(ws.rootPane);
     if (leaves.length <= 1) return;
 
-    // Helper: get first leaf in a subtree (leftmost/topmost)
-    const firstLeaf = (pane: Pane): PaneLeaf => {
-      if (pane.type === 'leaf') return pane;
-      return firstLeaf(pane.children[0]);
-    };
-
-    // Helper: get last leaf in a subtree (rightmost/bottommost)
-    const lastLeaf = (pane: Pane): PaneLeaf => {
-      if (pane.type === 'leaf') return pane;
-      return lastLeaf(pane.children[pane.children.length - 1]);
-    };
-
-    // Tree-based spatial navigation
-    const navigate = (paneId: string, dir: 'up' | 'down' | 'left' | 'right'): string | null => {
-      const parent = findParent(ws.rootPane, paneId);
-      if (!parent) return null; // at root
-
-      const idx = parent.children.findIndex(c => c.id === paneId);
-      const isAligned =
-        (parent.direction === 'horizontal' && (dir === 'left' || dir === 'right')) ||
-        (parent.direction === 'vertical' && (dir === 'up' || dir === 'down'));
-
-      if (isAligned) {
-        const delta = (dir === 'right' || dir === 'down') ? 1 : -1;
-        const nextIdx = idx + delta;
-        if (nextIdx >= 0 && nextIdx < parent.children.length) {
-          // Move to adjacent sibling — descend to nearest leaf
-          const sibling = parent.children[nextIdx];
-          const leaf = delta > 0 ? firstLeaf(sibling) : lastLeaf(sibling);
-          return leaf.id;
-        }
-      }
-
-      // Direction not aligned or no sibling in that direction — go up
-      return navigate(parent.id, dir);
-    };
-
-    const targetId = navigate(ws.activePaneId, direction);
+    // Spatial navigation lives in navigateFrom (module scope) so that moving a
+    // pane and moving focus resolve "the pane to my right" identically (#645).
+    const targetId = navigateFrom(ws.rootPane, ws.activePaneId, direction);
     if (targetId && targetId !== ws.activePaneId) {
       event = { wsId: ws.id, paneId: targetId, previousActiveId: ws.activePaneId };
       ws.activePaneId = targetId;
