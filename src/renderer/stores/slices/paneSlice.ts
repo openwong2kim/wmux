@@ -220,6 +220,21 @@ function detachPane(ws: Workspace, paneId: string): Pane | null {
 
   const [detached] = parent.children.splice(idx, 1);
 
+  // Keep `sizes` aligned with `children`. Before this existed, closePane
+  // spliced the child and left `sizes` untouched, so a branch with three or
+  // more children rendered its survivors at the wrong widths after a close
+  // (sizes[] was longer than children[] and the extra entry shifted every
+  // panel one slot to the left). A two-child branch hid the bug because it
+  // collapses away below.
+  if (parent.sizes) {
+    parent.sizes.splice(idx, 1);
+    const total = parent.sizes.reduce((sum, s) => sum + s, 0);
+    parent.sizes =
+      total > 0
+        ? parent.sizes.map((s) => (s / total) * 100)
+        : parent.children.map(() => 100 / parent.children.length);
+  }
+
   if (parent.children.length === 1) {
     // Collapse: replace the parent with its remaining child.
     const remaining = parent.children[0];

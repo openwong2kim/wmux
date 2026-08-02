@@ -260,6 +260,43 @@ describe('PaneSlice', () => {
   });
 
   describe('closePane', () => {
+    it('keeps sizes[] aligned with children when a 3-child branch loses its middle pane', () => {
+      // A 3-child branch is the only shape where the misalignment is visible:
+      // 2 children collapse the branch away, so `sizes` is discarded with it.
+      const ws = getActiveWorkspace(store);
+      const a = ws.rootPane.id;
+      const b = store.getState().splitPane(a, 'horizontal') as string;
+      store.getState().splitPane(b, 'horizontal');
+
+      // Flatten to one branch with three leaves and uneven sizes, which is what
+      // a user produces by dragging the separators after two splits.
+      const rootBranchId = getActiveWorkspace(store).rootPane.id;
+      const leaves = getLeafPanes(getActiveWorkspace(store).rootPane).map((l) => l.id);
+      store.setState((s) => {
+        const w = s.workspaces.find((x) => x.id === s.activeWorkspaceId)!;
+        w.rootPane = {
+          id: rootBranchId,
+          type: 'branch',
+          direction: 'horizontal',
+          children: leaves.map((id) => findPane(w.rootPane, id)!),
+          sizes: [20, 50, 30],
+        };
+      });
+
+      store.getState().closePane(leaves[1]);
+
+      const root = getActiveWorkspace(store).rootPane;
+      expect(root.type).toBe('branch');
+      if (root.type === 'branch') {
+        expect(root.children.map((c) => c.id)).toEqual([leaves[0], leaves[2]]);
+        expect(root.sizes).toHaveLength(2);
+        expect(root.sizes!.reduce((sum, s) => sum + s, 0)).toBeCloseTo(100);
+        // The survivors keep their 20:30 ratio, renormalized to 40:60.
+        expect(root.sizes![0]).toBeCloseTo(40);
+        expect(root.sizes![1]).toBeCloseTo(60);
+      }
+    });
+
     it('closes a pane in a non-active workspace via the workspaceId parameter', () => {
       const ws1 = getActiveWorkspace(store);
       const ws2 = createWorkspace('Other');
