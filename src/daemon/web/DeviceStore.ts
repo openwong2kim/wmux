@@ -429,7 +429,8 @@ export class DeviceStore {
   /**
    * Revoke EVERY device still active. Backs `wmux web --new-token`, whose CLI
    * help promises exactly this ("Mint a fresh access token, revoking every
-   * device already paired").
+   * device already paired"), and encrypted/plaintext transport transitions,
+   * which must not carry credentials across the boundary.
    *
    * That promise used to hold for free: before per-device credentials every
    * phone authenticated with the operator's own token, so rotating it locked

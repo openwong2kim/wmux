@@ -13,9 +13,11 @@ vi.mock('../../../shared/security', () => ({
 
 import {
   loadWebState,
+  loadWebStateWithDiagnostics,
   saveWebState,
   clearWebState,
   coerceWebState,
+  coerceWebStateWithDiagnostics,
   getWebStatePath,
   WEB_STATE_DISABLED,
   type WebPersistedState,
@@ -239,9 +241,10 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
   });
 
   it('keeps a pre-TLS state enabled as plaintext for backward compatibility', () => {
-    const state = coerceWebState(enabled());
-    expect(state.enabled).toBe(true);
-    expect(state.tls).toBeUndefined();
+    const loaded = coerceWebStateWithDiagnostics(enabled());
+    expect(loaded.state.enabled).toBe(true);
+    expect(loaded.state.tls).toBeUndefined();
+    expect(loaded.transportInvalid).toBe(false);
   });
 
   it.each([
@@ -251,13 +254,14 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     { certPath: path.resolve('certificate.pem') },
     { keyPath: path.resolve('private-key.pem') },
   ])('disables restore for malformed TLS state instead of downgrading to HTTP (%j)', (tls) => {
-    const state = coerceWebState({ ...enabled(), tls });
-    expect(state.enabled).toBe(false);
-    expect(state.tls).toBeUndefined();
+    const loaded = coerceWebStateWithDiagnostics({ ...enabled(), tls });
+    expect(loaded.state.enabled).toBe(false);
+    expect(loaded.state.tls).toBeUndefined();
+    expect(loaded.transportInvalid).toBe(true);
   });
 
   it('disables the unsupported native-TLS plus Tailscale combination', () => {
-    const state = coerceWebState({
+    const loaded = coerceWebStateWithDiagnostics({
       ...enabled(),
       tailscale: true,
       tls: {
@@ -265,7 +269,19 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
         keyPath: path.join(dir, 'private-key.pem'),
       },
     });
-    expect(state.enabled).toBe(false);
+    expect(loaded.state.enabled).toBe(false);
+    expect(loaded.transportInvalid).toBe(true);
+  });
+
+  it('retains invalid-transport diagnostics when loading from disk', () => {
+    fs.writeFileSync(
+      getWebStatePath(dir),
+      JSON.stringify({ ...enabled(), tls: { certPath: 'relative.pem' } }),
+      'utf8',
+    );
+    const loaded = loadWebStateWithDiagnostics(dir);
+    expect(loaded.state.enabled).toBe(false);
+    expect(loaded.transportInvalid).toBe(true);
   });
 
   it('coerces per-field: one bad value never discards the rest', () => {

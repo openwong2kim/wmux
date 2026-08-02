@@ -174,9 +174,20 @@ export function webBindHost(expose: boolean | undefined): string {
   return expose ? WEB_EXPOSE_HOST : WEB_LOOPBACK_HOST;
 }
 
+/** Whether a bind host is confined to this machine. */
+export function webHostIsLoopback(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return (
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized === WEB_LOOPBACK_HOST ||
+    normalized.startsWith('127.')
+  );
+}
+
 /** Whether an info's bind host is a loopback address (not phone-reachable). */
 export function webIsLoopback(info: WebTerminalInfo): boolean {
-  return info.host === WEB_LOOPBACK_HOST || info.host === '::1';
+  return typeof info.host === 'string' && webHostIsLoopback(info.host);
 }
 
 /** Whether an info's bind host is exposed on all interfaces. */

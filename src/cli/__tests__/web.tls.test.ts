@@ -111,6 +111,8 @@ describe('wmux web native TLS flags (#764)', () => {
     });
     const output = lines.join('\n');
     expect(output).toContain('Native TLS enabled');
+    expect(output).toContain('--allow-host <certificate-dns-name>');
+    expect(output).toContain('IP URLs require matching IP SANs');
     expect(output).not.toContain('UNENCRYPTED');
     expect(output).toContain('https://box.example.test:8443/pair');
   });

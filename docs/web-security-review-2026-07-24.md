@@ -69,7 +69,7 @@ Boundary strengths already in place (no action needed):
 
 | ID | Severity | Finding | Location | Status |
 |---|---|---|---|---|
-| W1 | **Medium** | Bare `--expose` sends the token + full scrollback in cleartext over HTTP | `WebTerminalServer.ts`, `web.ts` | ✅ Resolved — explicit warning shipped via [#607](https://github.com/openwong2kim/wmux/issues/607); native `--tls-cert`/`--tls-key` added via [#764](https://github.com/openwong2kim/wmux/issues/764) |
+| W1 | **Medium** | Bare `--expose` sends the token + full scrollback in cleartext over HTTP | `WebTerminalServer.ts`, `web.ts` | 🟡 Mitigated — explicit warning shipped via [#607](https://github.com/openwong2kim/wmux/issues/607); native `--tls-cert`/`--tls-key` added via [#764](https://github.com/openwong2kim/wmux/issues/764); bare `--expose` remains plaintext by design |
 | W2 | **Medium** | No frame protection → authenticated localhost page is clickjackable (worse with `--allow-input`) | `WebTerminalServer.ts:517` (`serveStatic`) | ✅ Resolved — `securityHeaders()` on every response |
 | W3 | **Low-Med** | No `Host` header validation → DNS rebinding can reach unauthenticated `/api/pair` and burn it (pairing DoS) | `WebTerminalServer.ts:238` | ✅ Resolved — Host allowlist checked before routing |
 | W4 | **Low** | No `Content-Security-Policy`; an XSS (future regression) would exfiltrate the token freely | `index.html` / `serveStatic` | ✅ Resolved — [#608](https://github.com/openwong2kim/wmux/issues/608): full policy on `GET /` with per-build inline-script hashes, `connect-src 'self'` |
@@ -293,8 +293,9 @@ regen-on-demand option) rather than none; or, after N wrong attempts from one fa
 | **P3 — hardening** | W4 (full hashed CSP; hashes computed server-side from the served bytes, not in the build script) | ~0.5 day | Containment under future XSS | ✅ Shipped ([#608](https://github.com/openwong2kim/wmux/issues/608)) |
 | **P4 — optional** | W1 Tier C (native TLS or `tailscale serve` wrapper) | larger | Removes cleartext risk instead of warning | ✅ Native TLS implemented ([#764](https://github.com/openwong2kim/wmux/issues/764)) |
 
-P1–P4 are implemented. The default remains loopback-only and read-only; network
-exposure still requires an explicit operator choice.
+P1–P4 mitigation work is implemented. W1 remains an operator-selected risk on bare
+`--expose`; the default remains loopback-only and read-only, and network exposure
+still requires an explicit operator choice.
 
 ---
 

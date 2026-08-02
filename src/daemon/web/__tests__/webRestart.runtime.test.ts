@@ -145,6 +145,46 @@ function probe(
   });
 }
 
+/** JSON GET used for the live pairing exchange. */
+function requestJson(
+  port: number,
+  urlPath: string,
+  secure = false,
+): Promise<{ status?: number; body?: unknown; error?: string }> {
+  return new Promise((resolve) => {
+    const options = {
+      host: '127.0.0.1',
+      port,
+      path: urlPath,
+      method: 'GET',
+      timeout: 4000,
+    };
+    const onResponse = (res: http.IncomingMessage): void => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(body) as unknown });
+        } catch {
+          resolve({ status: res.statusCode, body });
+        }
+      });
+    };
+    const req = secure
+      ? https.request({ ...options, rejectUnauthorized: false }, onResponse)
+      : http.request(options, onResponse);
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ error: 'TIMEOUT' });
+    });
+    req.on('error', (e: NodeJS.ErrnoException) => resolve({ error: e.code ?? e.message }));
+    req.end();
+  });
+}
+
 /** An OS-assigned free port, so a parallel wmux on this box is never disturbed. */
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -361,9 +401,9 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
           keyPath: fixture.keyPath,
         });
 
-        // A syntactically malformed TLS record is also fail-closed. If a GUI
-        // option-only start subsequently chooses its HTTP default, it must not
-        // reuse the old HTTPS bearer token on that plaintext listener.
+        // A syntactically malformed TLS record is also fail-closed. A GUI
+        // option-only start did not choose a new transport, so it must surface
+        // the corruption rather than silently opening plaintext HTTP.
         fs.writeFileSync(
           statePath,
           JSON.stringify({
@@ -372,10 +412,22 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
           }),
           'utf8',
         );
+        await expect(
+          rpc('daemon.web.start', {
+            port,
+            host: '127.0.0.1',
+            allowInput: false,
+          }),
+        ).rejects.toThrow('persisted web TLS configuration is invalid');
+        expect((await rpc('daemon.web.status')).running).toBe(false);
+
+        // An explicit transport choice repairs the record. Crossing to HTTP
+        // rotates the HTTPS credential before the listener is exposed.
         const fallback = await rpc('daemon.web.start', {
           port,
           host: '127.0.0.1',
           allowInput: false,
+          tls: false,
         });
         const fallbackToken = fallback.token as string;
         expect(fallback.tls).toBe(false);
@@ -391,7 +443,7 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
   );
 
   it.skipIf(!HAVE_OPENSSL)(
-    'rotates the bearer token when native HTTPS is explicitly downgraded to HTTP',
+    'rotates operator and device credentials when native HTTPS is explicitly downgraded to HTTP',
     async () => {
       const fixture = createTlsTestFixture();
       try {
@@ -407,6 +459,16 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
         expect(secure.tls).toBe(true);
         expect(await probe(port, '/api/config', secureToken, true)).toEqual({ status: 200 });
 
+        const paired = await requestJson(
+          port,
+          `/api/pair?code=${encodeURIComponent(secure.pairCode as string)}`,
+          true,
+        );
+        expect(paired.status).toBe(200);
+        const deviceToken = (paired.body as { token?: string }).token as string;
+        expect(deviceToken).toBeTruthy();
+        expect(await probe(port, '/api/config', deviceToken, true)).toEqual({ status: 200 });
+
         const plaintext = await rpc('daemon.web.start', {
           port,
           host: '127.0.0.1',
@@ -419,6 +481,7 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
         expect(plaintextToken).not.toBe(secureToken);
         expect(await probe(port, '/api/config', plaintextToken)).toEqual({ status: 200 });
         expect((await probe(port, '/api/config', secureToken)).status).toBe(401);
+        expect((await probe(port, '/api/config', deviceToken)).status).toBe(401);
         expect((await probe(port, '/api/config', plaintextToken, true)).error).toBeTruthy();
       } finally {
         fixture.cleanup();
@@ -501,7 +564,7 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       });
       expect(readded.token).toBe(oldToken);
 
-      // `--new-token` is the deliberate revocation path.
+      // `--new-token` is the deliberate same-transport revocation path.
       const rotated = await rpc('daemon.web.start', {
         port,
         host: '127.0.0.1',

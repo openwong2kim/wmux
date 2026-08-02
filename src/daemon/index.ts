@@ -9,13 +9,14 @@ import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
 import {
-  loadWebState,
+  loadWebStateWithDiagnostics,
   saveWebState,
   clearWebState,
   getWebStatePath,
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
+import { decideWebStartPolicy } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
@@ -242,7 +243,14 @@ function parseWebTlsConfig(value: unknown): WebTlsConfig | false | undefined {
  * delay the daemon's primary job, and never throws for the same reason.
  */
 async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<void> {
-  const state = loadWebState(wmuxDir);
+  const loaded = loadWebStateWithDiagnostics(wmuxDir);
+  const state = loaded.state;
+  if (loaded.transportInvalid) {
+    log(
+      'warn',
+      '[web] persisted transport configuration is invalid; automatic restore remains disabled',
+    );
+  }
   if (!state.enabled) return;
 
   // This is an existing credential whose prior exposure window was already
@@ -2317,64 +2325,16 @@ function registerRpcHandlers(
       : [];
     const requestedTls = parseWebTlsConfig(p.tls);
     const tailscale = p.tailscale === true;
-    const previous = loadWebState(wmuxDir);
-    // Undefined means an option-only caller (notably the GUI) did not choose a
-    // transport. Preserve a live/persisted native listener so toggling input or
-    // exposure cannot silently downgrade it to HTTP. `false` is the explicit
-    // off value sent by the CLI; choosing Tailscale also selects its HTTP
-    // loopback backend explicitly.
-    const tls =
-      requestedTls === false || (requestedTls === undefined && tailscale)
-        ? undefined
-        : requestedTls ??
-          webServer.currentTlsConfig ??
-          previous.tls;
-    if (tls && tailscale) {
-      throw new Error('native TLS cannot be combined with the Tailscale transport');
-    }
-    // #596: carry the previous token forward so a re-start (adding
-    // --allow-host, flipping --allow-input) does not lock out a phone that
-    // already paired. The token comes from OUR 0600 state file, never from
-    // these params — a pipe client must not get to choose it. `--new-token`
-    // is the deliberate rotation escape hatch (revoke every paired device).
-    // A disabled state with no valid TLS record may be the fail-closed result
-    // of a malformed persisted TLS object. Also treat an explicit switch from
-    // native/Tailscale HTTPS to bare HTTP as a credential boundary: ordinary
-    // HTTP-to-HTTP reconfiguration keeps #596's stable token, but a downgrade
-    // never carries an HTTPS credential onto the plaintext listener.
-    const previousWasEncrypted = previous.tls !== undefined || previous.tailscale;
-    const nextIsEncrypted = tls !== undefined || tailscale;
-    const canReusePreviousToken =
-      (previous.enabled || tls !== undefined) &&
-      (!previousWasEncrypted || nextIsEncrypted);
-    const token =
-      p.newToken === true || !canReusePreviousToken
-        ? undefined
-        : previous.token || undefined;
-    if (p.newToken === true) {
-      // Rotation has to take the PAIRED DEVICES with it, not just the operator
-      // token. Before per-device credentials that was automatic — every phone
-      // held the operator token — but a device now authenticates on its own
-      // `deviceId.secret`, which a new operator token does not touch. Without
-      // this the CLI's own help ("revoking every device already paired") would
-      // be false and the operator would stop worrying about a phone that still
-      // works.
-      //
-      // Roster FIRST, then cut the streams: an established SSE never
-      // re-authenticates, so revoking alone would leave a revoked phone
-      // watching panes on the connection it already holds.
-      const revocation = getDeviceStore().revokeAll();
-      for (const deviceId of revocation.revoked) webServer.disconnectDevice(deviceId);
-      if (!revocation.ok) {
-        // Fail the rotation rather than report a half-done one. The devices are
-        // blocked in this process, but a restart would bring them back and the
-        // operator would never know.
-        throw new Error(
-          'the operator token was not rotated: the device roster could not be written, ' +
-            'so the paired devices could not be durably revoked',
-        );
-      }
-    }
+    const loadedPrevious = loadWebStateWithDiagnostics(wmuxDir);
+    const { tls, token, rotateCredentials } = decideWebStartPolicy({
+      requestedTls,
+      liveTls: webServer.currentTlsConfig,
+      previous: loadedPrevious.state,
+      previousTransportInvalid: loadedPrevious.transportInvalid,
+      host,
+      tailscale,
+      newToken: p.newToken === true,
+    });
     const info = await webServer.start({
       port,
       host,
@@ -2385,6 +2345,26 @@ function registerRpcHandlers(
       ...(tls ? { tls } : {}),
       token,
     });
+    if (rotateCredentials) {
+      // A device authenticates with its own durable `deviceId.secret`, so
+      // rotating only the operator token is not a credential rotation. Do
+      // this after start validated and bound the new transport but before the
+      // event loop can serve a request or the RPC can expose its fresh token.
+      // start() also closed every old stream; disconnectDevice clears any
+      // remaining device-bound tickets defensively.
+      const revocation = getDeviceStore().revokeAll();
+      for (const deviceId of revocation.revoked) webServer.disconnectDevice(deviceId);
+      if (!revocation.ok) {
+        // Fail closed: in-memory revocation already blocks the devices, but a
+        // restart could reload the old roster. Do not leave the new listener
+        // running or claim that the boundary rotation succeeded.
+        await webServer.stop();
+        throw new Error(
+          'web credentials were not rotated: the device roster could not be written, ' +
+            'so the paired devices could not be durably revoked',
+        );
+      }
+    }
     persistWebState(info, allowedHosts, tailscale, tls);
     return info;
   });

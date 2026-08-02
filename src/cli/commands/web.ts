@@ -151,9 +151,10 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     .split(',')
     .map((h) => h.trim())
     .filter(Boolean);
-  // #596: the token now survives a restart, so re-running `wmux web` to change
-  // options no longer locks out a paired phone. `--new-token` is the explicit
-  // way back to the old behaviour, i.e. revoke every device that has the token.
+  // #596: the token survives a restart, so same-transport option changes no
+  // longer lock out a paired phone. `--new-token` is the explicit manual
+  // revocation path; crossing the encrypted/plaintext boundary also rotates
+  // every credential automatically.
   const newToken = hasFlag(args, '--new-token');
 
   let tls: WebTlsConfig | undefined;
@@ -377,6 +378,9 @@ function report(
   } else if (nativeTls) {
     console.log('  Native TLS enabled — HTTPS terminates directly in wmux.');
     console.log('  Certificate trust depends on the certificate and chain you supplied.');
+    console.log(
+      '  DNS certificates use --allow-host <certificate-dns-name>; IP URLs require matching IP SANs.',
+    );
     if (loopbackOnly) {
       console.log('  This bind is LOCAL-ONLY — use --expose or --host for phone access.');
     }

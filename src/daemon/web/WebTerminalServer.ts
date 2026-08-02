@@ -11,7 +11,7 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
-import type { PairRefusal, WebTlsConfig } from '../../shared/web';
+import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
 import {
   collectSessionDiff,
@@ -834,11 +834,7 @@ export class WebTerminalServer {
       const onError = (err: NodeJS.ErrnoException) => {
         server.removeListener('error', onError);
         server.removeListener('listening', onListening);
-        try {
-          server.close();
-        } catch {
-          // A bind error normally means the server never reached listening.
-        }
+        if (server.listening) server.close();
         this.opts = null;
         this.token = '';
         this.pairCode = '';
@@ -1156,7 +1152,7 @@ export class WebTerminalServer {
     // plaintext on every interface — the case the CLI already warns about.
     // `--allow-host` keeps its other job: the Host allowlist that blocks DNS
     // rebinding.
-    if (isLoopbackHost(bind)) return null;
+    if (webHostIsLoopback(bind)) return null;
     return (
       `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
       'over plain HTTP, and a device secret never expires. Three ways forward: (1) add ' +
@@ -3179,12 +3175,6 @@ function timingSafeEquals(supplied: string, expected: string): boolean {
   const a = Buffer.from(supplied);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-/** Addresses/names that never leave the machine. */
-function isLoopbackHost(host: string): boolean {
-  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  return h === 'localhost' || h === '::1' || h === '127.0.0.1' || h.startsWith('127.');
 }
 
 function readIfExists(p: string): Buffer | null {

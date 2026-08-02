@@ -68,7 +68,9 @@ and the CLI says so explicitly. Durable native-TLS state stores only absolute
 certificate/key paths, never PEM bytes; if either path becomes invalid, restart
 fails closed with no plaintext listener. PEM files are read when the listener
 starts, not hot-reloaded, so certificate renewal requires re-running `wmux web`
-with both TLS paths or restarting the listener/daemon.
+with both TLS paths or restarting the listener/daemon. Reconfiguring across the
+encrypted/plaintext boundary rotates the operator token and revokes every
+paired-device credential; same-transport reconfiguration preserves them.
 
 ---
 
