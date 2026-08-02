@@ -68,12 +68,12 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
 }: {
   workspace: Workspace;
   isActive: boolean;
-  /** Count of multiview members — the close handler needs it to hand off focus. */
+  /** Count of multiview members — a change here can reflow this tile out of view. */
   multiviewCount: number;
   /** Current grid arrangement — a layout change can move this tile out of view. */
   arrangement: MultiviewArrangement;
   onActivate: (id: string) => void;
-  onRemove: (id: string, isActive: boolean, multiviewCount: number) => void;
+  onRemove: (id: string) => void;
 }) {
   // An explicit arrangement lets the grid scroll (see multiviewGrid.ts), so a
   // tile reached by Ctrl+Shift+Arrow can be off-screen. `nearest` scrolls the
@@ -109,7 +109,7 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onRemove(workspace.id, isActive, multiviewCount);
+            onRemove(workspace.id);
           }}
           className="ml-auto opacity-60 hover:opacity-100"
           style={{
@@ -153,18 +153,11 @@ export function WorkspaceViewport() {
   const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
   const t = useT();
 
-  // Close a multiview tile. If closing the ACTIVE tile with others remaining,
-  // hand focus to a neighbor first — otherwise the grid gate
-  // (multiviewIds.includes(activeId)) fails the next render and the view
-  // collapses to the just-closed workspace (reads as "the window reset").
-  const handleRemoveTile = (id: string, isActive: boolean, count: number) => {
-    if (isActive && count > 2) {
-      const removedIdx = multiviewIds.indexOf(id);
-      const nextActive = multiviewIds[removedIdx + 1] ?? multiviewIds[removedIdx - 1];
-      if (nextActive) setActiveWorkspace(nextActive);
-    }
-    removeMultiviewWorkspace(id);
-  };
+  // The focus handoff that used to live here — activate a neighbour before
+  // removing the active tile, so the grid gate doesn't collapse the whole view —
+  // moved into removeMultiviewWorkspace (#752). The sidebar's Ctrl+click path
+  // had no equivalent and lost the grid; keeping one copy in the store is what
+  // stops the two from drifting apart again.
 
   // Fix 0 — while startup reconcile is in flight, show a placeholder. Chrome
   // stays mounted (it's AppLayout, not here) so the user sees wmux is alive.
@@ -204,7 +197,7 @@ export function WorkspaceViewport() {
             multiviewCount={multiviewIds.length}
             arrangement={multiviewArrangement}
             onActivate={setActiveWorkspace}
-            onRemove={handleRemoveTile}
+            onRemove={removeMultiviewWorkspace}
           />
         ))}
       </div>

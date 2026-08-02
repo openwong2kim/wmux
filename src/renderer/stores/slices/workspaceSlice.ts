@@ -368,6 +368,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
       }
       state.workspaces.splice(idx, 1);
+      // Drop it from the multiview group too (#751). This does NOT contradict
+      // the "multiviewIds is intentionally preserved" note in setActiveWorkspace
+      // — that is about switching AWAY from a group, which the user can undo by
+      // clicking a member. A removed workspace can never come back, so its id is
+      // pure garbage: the grid gate counts multiviewIds while the tiles are
+      // filtered against live workspaces, so one live member plus one stale id
+      // rendered a one-tile "grid" with multiview chrome and no way out except
+      // Ctrl+Shift+G.
+      // Guarded for tests that mount workspaceSlice without uiSlice, matching
+      // the cold-park guard in toggleMultiviewWorkspace.
+      const mvIdx = state.multiviewIds?.indexOf(id) ?? -1;
+      if (mvIdx >= 0) {
+        state.multiviewIds.splice(mvIdx, 1);
+        // Same rule the toggle uses: a group of one is not a group.
+        if (state.multiviewIds.length <= 1) state.multiviewIds = [];
+      }
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
         // Cold-park: the newly-promoted workspace must not stay parked.

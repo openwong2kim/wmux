@@ -1204,7 +1204,25 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.multiviewArrangement = arrangement;
   }),
 
-  toggleMultiviewWorkspace: (wsId) => set((state) => {
+  toggleMultiviewWorkspace: (wsId) => {
+    // Removing the ACTIVE workspace from the group closes the whole grid: the
+    // render gate gives up unless the active workspace is a member, so every
+    // other tile vanishes at once and it reads as "the window reset" (#752).
+    // Hand focus to a neighbour first when the group survives the removal —
+    // this is the rule the tile ✕ button already followed on its own, now in
+    // the store so both entry points get it.
+    const pre = get();
+    if (
+      pre.multiviewIds.includes(wsId) &&
+      wsId === pre.activeWorkspaceId &&
+      pre.multiviewIds.length > 2
+    ) {
+      const i = pre.multiviewIds.indexOf(wsId);
+      const next = pre.multiviewIds[i + 1] ?? pre.multiviewIds[i - 1];
+      // Route through setActiveWorkspace so activation side-effects fire.
+      if (next) pre.setActiveWorkspace(next);
+    }
+    set((state) => {
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx >= 0) {
       state.multiviewIds.splice(idx, 1);
@@ -1234,9 +1252,24 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.multiviewIds.length <= 1) {
       state.multiviewIds = [];
     }
-  }),
+    });
+  },
 
-  removeMultiviewWorkspace: (wsId) => set((state) => {
+  removeMultiviewWorkspace: (wsId) => {
+    // Same focus handoff as the toggle — see toggleMultiviewWorkspace (#752).
+    // Living here rather than in the view means the sidebar and the tile ✕
+    // cannot drift apart again.
+    const pre = get();
+    if (
+      pre.multiviewIds.includes(wsId) &&
+      wsId === pre.activeWorkspaceId &&
+      pre.multiviewIds.length > 2
+    ) {
+      const i = pre.multiviewIds.indexOf(wsId);
+      const next = pre.multiviewIds[i + 1] ?? pre.multiviewIds[i - 1];
+      if (next) pre.setActiveWorkspace(next);
+    }
+    set((state) => {
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx < 0) return; // no-op on non-members
     state.multiviewIds.splice(idx, 1);
@@ -1244,7 +1277,8 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.multiviewIds.length <= 1) {
       state.multiviewIds = [];
     }
-  }),
+    });
+  },
 
   clearMultiview: () => set((state) => {
     state.multiviewIds = [];

@@ -205,3 +205,44 @@ describe('updateWorkspaceMetadata — referential stability (WorkspaceSlot memo 
     expect(store.getState().workspaces[0].rootPane).toBe(beforeRoot);
   });
 });
+
+// #751 — removeWorkspace spliced the workspace but left its id in multiviewIds.
+// The grid gate counts multiviewIds while the tiles are filtered against live
+// workspaces, so one live member plus one stale id rendered a one-tile "grid"
+// with multiview chrome, escapable only via Ctrl+Shift+G.
+describe('removeWorkspace — multiview membership is pruned', () => {
+  function createMvStore(workspaces: Workspace[], activeId: string, multiviewIds: string[]) {
+    return create<WorkspaceSlice & { multiviewIds: string[] }>()(
+      immer((...args) => ({
+        // @ts-expect-error — minimal test store doesn't match full StoreState
+        ...createWorkspaceSlice(...args),
+        workspaces,
+        activeWorkspaceId: activeId,
+        multiviewIds,
+      })),
+    );
+  }
+
+  it('drops the closed workspace from the group', () => {
+    const [a, b, c] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C')];
+    const store = createMvStore([a, b, c], a.id, [a.id, b.id, c.id]);
+    store.getState().removeWorkspace(b.id);
+    expect(store.getState().multiviewIds).toEqual([a.id, c.id]);
+  });
+
+  it('clears the group when closing would leave a single member', () => {
+    // Otherwise the gate (multiviewIds.length >= 2) still passes while only one
+    // tile can be rendered — the one-tile grid from #751.
+    const [a, b, c] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C')];
+    const store = createMvStore([a, b, c], a.id, [a.id, b.id]);
+    store.getState().removeWorkspace(b.id);
+    expect(store.getState().multiviewIds).toEqual([]);
+  });
+
+  it('leaves the group alone when a non-member is closed', () => {
+    const [a, b, c] = [createWorkspace('A'), createWorkspace('B'), createWorkspace('C')];
+    const store = createMvStore([a, b, c], a.id, [a.id, b.id]);
+    store.getState().removeWorkspace(c.id);
+    expect(store.getState().multiviewIds).toEqual([a.id, b.id]);
+  });
+});

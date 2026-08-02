@@ -431,6 +431,59 @@ describe('UISlice — multiview', () => {
   // The fix introduces a dedicated remove primitive so close intent cannot
   // accidentally re-add the workspace through toggle semantics.
 
+  // #752 — dropping the ACTIVE workspace used to take the whole grid with it,
+  // because the render gate needs the active workspace to be a member. The tile
+  // ✕ compensated in the view; the sidebar's Ctrl+click had no equivalent and
+  // silently closed the grid. The handoff now lives in the store, so both
+  // entry points get it and cannot drift apart again.
+  function withActiveSpy(ids: string[], active: string) {
+    const store = createTestStore();
+    const setActiveWorkspace = vi.fn((id: string) => store.setState({
+      // @ts-expect-error — cross-slice field overlaid for the test
+      activeWorkspaceId: id,
+    }));
+    // @ts-expect-error — cross-slice fields injected for the test
+    store.setState({ multiviewIds: ids, activeWorkspaceId: active, setActiveWorkspace });
+    return { store, setActiveWorkspace };
+  }
+
+  it('toggling off the active member hands focus to a neighbour instead of closing the grid', () => {
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'B', 'C'], 'A');
+    store.getState().toggleMultiviewWorkspace('A');
+    expect(setActiveWorkspace).toHaveBeenCalledWith('B');
+    expect(store.getState().multiviewIds).toEqual(['B', 'C']);
+    // The gate is `active ∈ multiviewIds`; without the handoff this is false
+    // and every remaining tile disappears at once.
+    // @ts-expect-error — cross-slice field overlaid for the test
+    expect(store.getState().multiviewIds).toContain(store.getState().activeWorkspaceId as string);
+  });
+
+  it('removing the active tile hands focus to a neighbour too (same rule, other entry point)', () => {
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'B', 'C'], 'B');
+    store.getState().removeMultiviewWorkspace('B');
+    expect(setActiveWorkspace).toHaveBeenCalledWith('C');
+    expect(store.getState().multiviewIds).toEqual(['A', 'C']);
+    // @ts-expect-error — cross-slice field overlaid for the test
+    expect(store.getState().multiviewIds).toContain(store.getState().activeWorkspaceId as string);
+  });
+
+  it('falls back to the previous member when the active tile is last', () => {
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'B', 'C'], 'C');
+    store.getState().toggleMultiviewWorkspace('C');
+    expect(setActiveWorkspace).toHaveBeenCalledWith('B');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B']);
+  });
+
+  it('does not hand off when the group collapses anyway', () => {
+    // Two members: removing one leaves a single member, which auto-clears to
+    // single view. Reassigning focus there would yank the user to a workspace
+    // they did not ask for.
+    const { store, setActiveWorkspace } = withActiveSpy(['A', 'B'], 'A');
+    store.getState().toggleMultiviewWorkspace('A');
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+    expect(store.getState().multiviewIds).toEqual([]);
+  });
+
   it('removeMultiviewWorkspace removes only the targeted workspace from a 3+ group', () => {
     // [A, B, C] active A. Click X on inactive B → grid stays as [A, C].
     // Pre-fix this collapsed to []; the active-tile case still collapses
