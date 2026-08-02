@@ -37,9 +37,17 @@ describe('pty.handler PTY_LIST — axis B-lite surfaceId exposure invariants', (
     expect(region).toMatch(/s\.state\s*!==\s*'suspended'/);
   });
 
-  it('keeps the dead filter AND exposes createdAt for newest-wins duplicate resolution', () => {
+  it('keeps dead sessions opt-in AND exposes createdAt for newest-wins duplicate resolution', () => {
     const region = listRegion();
-    expect(region).toMatch(/\.filter\(s => s\.state !== 'dead'\)/);
+    expect(region).toMatch(/\.filter\(s => includeDead \|\| s\.state !== 'dead'\)/);
     expect(region).toMatch(/createdAt:\s*s\.createdAt/);
+  });
+
+  it('surfaces only the recovery fields needed for an explicitly included dead session', () => {
+    const region = listRegion();
+    expect(region).toMatch(/state:\s*s\.state/);
+    expect(region).toMatch(/cwd:\s*s\.cwd/);
+    expect(region).toMatch(/includeDead\s*&&\s*s\.state === 'dead'\s*&&\s*s\.spawnCwd/);
+    expect(region).toMatch(/spawnCwd:\s*s\.spawnCwd/);
   });
 });

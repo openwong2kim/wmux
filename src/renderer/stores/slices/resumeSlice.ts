@@ -13,8 +13,29 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import {
+  asRecoveryAgentSlug,
+  mergeDeadPaneRecovery,
+  type DeadPaneRecovery,
+} from '../../../shared/ptyRecovery';
 
 export interface ResumeSlice {
+  /** One-shot recovery metadata keyed by the stable renderer surface id. */
+  pendingDeadPaneRecoveryBySurfaceId: Record<string, DeadPaneRecovery>;
+
+  /**
+   * Recovery offers rebound to a replacement pty. Kept separately so the
+   * daemon's normal 15-second hydration (which does not list dead tombstones)
+   * cannot erase the offer before the user accepts or dismisses it.
+   */
+  deadPaneRecoveryOfferByPtyId: Record<string, DeadPaneRecovery>;
+
+  /** Stage a known-dead session before clearing its surface ptyId. */
+  stageDeadPaneRecovery: (surfaceId: string, recovery: DeadPaneRecovery, previousPtyId?: string) => void;
+
+  /** Move staged metadata onto the freshly-created replacement pty. */
+  completeDeadPaneRecovery: (surfaceId: string, ptyId: string) => void;
+
   /** Per-ptyId resume hint (agent slug). Absent key = no pill for this pane. */
   resumeHintByPtyId: Record<string, AgentSlug>;
 
@@ -91,6 +112,35 @@ export const createResumeSlice: StateCreator<
   commandRunningByPtyId: {},
   agentAliveByPtyId: {},
   ptyReadyByPtyId: {},
+  pendingDeadPaneRecoveryBySurfaceId: {},
+  deadPaneRecoveryOfferByPtyId: {},
+
+  stageDeadPaneRecovery: (surfaceId, recovery, previousPtyId) => set((draft: StoreState) => {
+    if (!surfaceId) return;
+    const previous = draft.pendingDeadPaneRecoveryBySurfaceId[surfaceId]
+      ?? (previousPtyId ? draft.deadPaneRecoveryOfferByPtyId[previousPtyId] : undefined);
+    draft.pendingDeadPaneRecoveryBySurfaceId[surfaceId] = mergeDeadPaneRecovery(previous, recovery);
+    if (previousPtyId && draft.deadPaneRecoveryOfferByPtyId[previousPtyId]) {
+      delete draft.deadPaneRecoveryOfferByPtyId[previousPtyId];
+      delete draft.resumeHintByPtyId[previousPtyId];
+      delete draft.resumeBindingByPtyId[previousPtyId];
+    }
+  }),
+
+  completeDeadPaneRecovery: (surfaceId, ptyId) => set((draft: StoreState) => {
+    if (!surfaceId || !ptyId) return;
+    const recovery = draft.pendingDeadPaneRecoveryBySurfaceId[surfaceId];
+    if (!recovery) return;
+    delete draft.pendingDeadPaneRecoveryBySurfaceId[surfaceId];
+
+    const agent = recovery.resumeAgent ?? asRecoveryAgentSlug(recovery.resumeBinding?.agent);
+    if (!agent) return;
+    draft.deadPaneRecoveryOfferByPtyId[ptyId] = recovery;
+    draft.resumeHintByPtyId[ptyId] = agent;
+    if (recovery.resumeBinding) {
+      draft.resumeBindingByPtyId[ptyId] = recovery.resumeBinding;
+    }
+  }),
 
   markPtyReady: (ptyId) => set((draft: StoreState) => {
     if (!draft.ptyReadyByPtyId[ptyId]) draft.ptyReadyByPtyId[ptyId] = true;
@@ -105,14 +155,22 @@ export const createResumeSlice: StateCreator<
     // (clicked, dismissed, typed-into, or agent relaunched).
     if (draft.resumeHintByPtyId[ptyId]) delete draft.resumeHintByPtyId[ptyId];
     if (draft.resumeBindingByPtyId[ptyId]) delete draft.resumeBindingByPtyId[ptyId];
+    if (draft.deadPaneRecoveryOfferByPtyId[ptyId]) delete draft.deadPaneRecoveryOfferByPtyId[ptyId];
   }),
 
   hydrateResume: (snapshot) => set((draft: StoreState) => {
     draft.resumeHintByPtyId = { ...snapshot };
+    for (const [ptyId, recovery] of Object.entries(draft.deadPaneRecoveryOfferByPtyId)) {
+      const agent = recovery.resumeAgent ?? asRecoveryAgentSlug(recovery.resumeBinding?.agent);
+      if (agent) draft.resumeHintByPtyId[ptyId] = agent;
+    }
   }),
 
   hydrateResumeBindings: (snapshot) => set((draft: StoreState) => {
     draft.resumeBindingByPtyId = { ...snapshot };
+    for (const [ptyId, recovery] of Object.entries(draft.deadPaneRecoveryOfferByPtyId)) {
+      if (recovery.resumeBinding) draft.resumeBindingByPtyId[ptyId] = recovery.resumeBinding;
+    }
   }),
 
   hydrateCommandRunning: (snapshot) => set((draft: StoreState) => {

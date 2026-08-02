@@ -4,6 +4,10 @@ import { useStore } from '../../index';
 // X6 Feature ② — resume-hint slice. Mirrors supervisionSlice.test structure.
 describe('resumeSlice', () => {
   beforeEach(() => {
+    useStore.setState((state) => {
+      state.pendingDeadPaneRecoveryBySurfaceId = {};
+      state.deadPaneRecoveryOfferByPtyId = {};
+    });
     useStore.getState().hydrateResume({});
     useStore.getState().hydrateResumeBindings({});
     // clear readiness by re-hydrating is not enough (separate map) — mark fresh
@@ -91,6 +95,70 @@ describe('resumeSlice', () => {
       useStore.getState().setResumeHint('pty-z', 'claude');
       // readiness map is independent — pty-z not marked ready
       expect(useStore.getState().ptyReadyByPtyId['pty-z']).toBeUndefined();
+    });
+  });
+
+  describe('dead-pane replacement hand-off (#650)', () => {
+    it('moves a staged binding to the replacement pty', () => {
+      const resumeBinding = binding('dead-conversation');
+      useStore.getState().stageDeadPaneRecovery('surface-a', {
+        spawnCwd: 'D:\\wmux',
+        resumeAgent: 'claude',
+        resumeBinding,
+      });
+
+      useStore.getState().completeDeadPaneRecovery('surface-a', 'pty-new');
+
+      expect(useStore.getState().pendingDeadPaneRecoveryBySurfaceId['surface-a']).toBeUndefined();
+      expect(useStore.getState().resumeHintByPtyId['pty-new']).toBe('claude');
+      expect(useStore.getState().resumeBindingByPtyId['pty-new']).toEqual(resumeBinding);
+    });
+
+    it('survives normal daemon hydration until the offer is dismissed', () => {
+      useStore.getState().stageDeadPaneRecovery('surface-a', {
+        resumeBinding: binding('dead-conversation'),
+      });
+      useStore.getState().completeDeadPaneRecovery('surface-a', 'pty-new');
+
+      useStore.getState().hydrateResume({});
+      useStore.getState().hydrateResumeBindings({});
+      expect(useStore.getState().resumeHintByPtyId['pty-new']).toBe('claude');
+      expect(useStore.getState().resumeBindingByPtyId['pty-new']?.sessionId).toBe('dead-conversation');
+
+      useStore.getState().clearResumeHint('pty-new');
+      useStore.getState().hydrateResume({});
+      useStore.getState().hydrateResumeBindings({});
+      expect(useStore.getState().resumeHintByPtyId['pty-new']).toBeUndefined();
+      expect(useStore.getState().resumeBindingByPtyId['pty-new']).toBeUndefined();
+    });
+
+    it('consumes cwd-only recovery without inventing a resume offer', () => {
+      useStore.getState().stageDeadPaneRecovery('surface-a', { spawnCwd: 'D:\\wmux' });
+      useStore.getState().completeDeadPaneRecovery('surface-a', 'pty-new');
+      expect(useStore.getState().pendingDeadPaneRecoveryBySurfaceId['surface-a']).toBeUndefined();
+      expect(useStore.getState().deadPaneRecoveryOfferByPtyId['pty-new']).toBeUndefined();
+      expect(useStore.getState().resumeHintByPtyId['pty-new']).toBeUndefined();
+    });
+
+    it('carries an unconsumed offer across a second replacement', () => {
+      useStore.getState().stageDeadPaneRecovery('surface-a', {
+        spawnCwd: 'D:\\first',
+        resumeBinding: binding('dead-conversation'),
+      });
+      useStore.getState().completeDeadPaneRecovery('surface-a', 'pty-first');
+
+      useStore.getState().stageDeadPaneRecovery(
+        'surface-a',
+        { spawnCwd: 'D:\\second' },
+        'pty-first',
+      );
+      useStore.getState().completeDeadPaneRecovery('surface-a', 'pty-second');
+
+      expect(useStore.getState().deadPaneRecoveryOfferByPtyId['pty-first']).toBeUndefined();
+      expect(useStore.getState().resumeHintByPtyId['pty-first']).toBeUndefined();
+      expect(useStore.getState().resumeHintByPtyId['pty-second']).toBe('claude');
+      expect(useStore.getState().resumeBindingByPtyId['pty-second']?.sessionId).toBe('dead-conversation');
+      expect(useStore.getState().deadPaneRecoveryOfferByPtyId['pty-second']?.spawnCwd).toBe('D:\\second');
     });
   });
 });

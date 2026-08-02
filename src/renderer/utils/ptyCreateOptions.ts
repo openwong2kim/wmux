@@ -1,9 +1,13 @@
 import type { SpawnKind } from '../../shared/spawnKind';
+import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
 import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
 
 export interface PtyCreateOptions {
   shell?: string;
   cwd?: string;
+  /** Known-dead session cwd candidates. Main validates them in order and
+   * falls back to home; ordinary blank-surface creates leave this absent. */
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'>;
   cols?: number;
   rows?: number;
   workspaceId?: string;
@@ -163,9 +167,11 @@ export function resolveStartupCwd(args: {
 
 /**
  * Resolve the starting directory when a mounted Terminal SELF-CREATES a PTY
- * (issue #515). This is a fresh shell for a blank surface — recovery blank-slate,
- * rebind failure, or a dead-session respawn — so the workspace default is
- * authoritative and OUTRANKS the surface's tracked cwd.
+ * (issue #515). This is a fresh shell for an ordinary blank surface — recovery
+ * blank-slate or an unclassified rebind failure — so the workspace default is
+ * authoritative and OUTRANKS the surface's tracked cwd. A known daemon
+ * tombstone takes #650's separate recoveryCwds path and does not call this
+ * resolver.
  *
  * Priority differs from resolveStartupCwd on purpose: profile.startupCwd >
  * surface.cwd (prop) > global startupDirectory > undefined. A contaminated

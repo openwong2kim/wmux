@@ -854,7 +854,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         isWorkspaceVisible={isWorkspaceVisible}
         isZoomHidden={isZoomHidden}
         onCloseSurface={handleCloseSurface}
-        onPtyCreated={(surfaceId, ptyId) => updateSurfacePtyId(pane.id, surfaceId, ptyId)}
+        onPtyCreated={(surfaceId, ptyId) => {
+          // Bind first so Terminal immediately sees a non-empty externalPtyId;
+          // then move any staged dead-session resume offer onto the new id.
+          updateSurfacePtyId(pane.id, surfaceId, ptyId);
+          useStore.getState().completeDeadPaneRecovery(surfaceId, ptyId);
+        }}
         emptyMessage={t('pane.empty')}
       />
       </ErrorBoundary>

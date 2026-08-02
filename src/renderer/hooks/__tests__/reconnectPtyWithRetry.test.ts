@@ -23,7 +23,22 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     const reconnect = vi.fn(async () => ({ success: false, transient: false, error: 'Session not found or dead' }));
     await reconnectPtyWithRetry('pty-dead', alwaysCurrent, { reconnect, clearPtyId, sleep: noSleep, log: noLog });
     expect(reconnect).toHaveBeenCalledTimes(1); // no retry on permanent
-    expect(clearPtyId).toHaveBeenCalledWith('pty-dead');
+    expect(clearPtyId).toHaveBeenCalledWith('pty-dead', undefined);
+  });
+
+  it('passes dead-session recovery metadata into the clear path', async () => {
+    const clearPtyId = vi.fn();
+    const recovery = { spawnCwd: 'D:\\repo', cwd: 'D:\\live' };
+    const reconnect = vi.fn(async () => ({
+      success: false,
+      transient: false,
+      error: 'Session is dead',
+      recovery,
+    }));
+
+    await reconnectPtyWithRetry('pty-dead', alwaysCurrent, { reconnect, clearPtyId, sleep: noSleep, log: noLog });
+
+    expect(clearPtyId).toHaveBeenCalledWith('pty-dead', recovery);
   });
 
   it('transient failure then success → retries and PRESERVES the session (never clears)', async () => {

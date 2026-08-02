@@ -67,6 +67,17 @@ import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../ch
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
 import Titlebar from '../Titlebar/Titlebar';
+import {
+  createDeadPaneRecovery,
+  type DeadPaneSessionSnapshot,
+} from '../../../shared/ptyRecovery';
+
+interface ReconcilePtySession extends DeadPaneSessionSnapshot {
+  id: string;
+  state?: string;
+  surfaceId?: string;
+  createdAt?: string;
+}
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -577,8 +588,8 @@ export default function AppLayout() {
     }
     const run = (async () => {
       try {
-        const listResult = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() =>
-          window.electronAPI.pty.list()
+        const listResult = await ipcInvoke<ReconcilePtySession[]>(() =>
+          window.electronAPI.pty.list({ includeDead: true })
         );
         if (!listResult.ok) {
           // Throw — the startup catch depends on this to fire
@@ -588,7 +599,11 @@ export default function AppLayout() {
           throw new Error(`reconcilePtys aborted: ${listResult.error.code}`);
         }
         if (signal?.aborted) return;
-        const activePtys = listResult.data;
+        const listedPtys = listResult.data;
+        const activePtys = listedPtys.filter((p) => p.state !== 'dead');
+        const deadPtys = new Map(
+          listedPtys.filter((p) => p.state === 'dead').map((p) => [p.id, p]),
+        );
         const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
         // #582: include workspace count so "Reconciling workspace: X" logs that
         // follow are unambiguously a single cycle walking N workspaces, not N
@@ -602,13 +617,10 @@ export default function AppLayout() {
         // change). `pty.list` returning ZERO live sessions on a reconnect
         // almost always means the daemon/RPC isn't ready yet (main just
         // reconnected, daemon mid-rehydrate), NOT that every session died.
-        // The pre-fix code would then clear every surface's ptyId and let
-        // Terminal self-create empty sessions — exactly the reported
-        // "daemon reset, all sessions replaced" bug. Preserve everything this
-        // cycle; useTerminal mount re-validates each ptyId individually (with
-        // retry), and a subsequent reconcile / daemon:connected runs again
-        // once the list is populated. A genuine "all sessions dead" state is
-        // rare and self-heals on the next mount's reconnect.
+        // Preserve every saved id whose death is UNCONFIRMED. #650 is the
+        // deliberate exception: includeDead gives us authoritative tombstones,
+        // so a pane explicitly present in deadPtys may continue through the
+        // recovery path even when it is the only saved session.
         const hasSavedPtyIds = useStore.getState().workspaces.some(ws => {
           const walk = (p: Pane): boolean =>
             p.type === 'leaf'
@@ -616,9 +628,9 @@ export default function AppLayout() {
               : p.children.some(walk);
           return walk(ws.rootPane);
         });
-        if (activeIds.size === 0 && hasSavedPtyIds) {
-          console.warn('[lifecycle] reconcile: daemon returned 0 live sessions but saved ptyIds exist — preserving all (no destructive clear, likely daemon not ready yet)');
-          return;
+        const preserveUnconfirmedOnEmpty = activeIds.size === 0 && hasSavedPtyIds;
+        if (preserveUnconfirmedOnEmpty) {
+          console.warn(`[lifecycle] reconcile: daemon returned 0 live sessions with saved ptyIds — preserving unconfirmed ids; ${deadPtys.size} confirmed dead tombstone(s) may recover`);
         }
 
         // Fix 0 (round 3) — reconcile is now ONLY a liveness check.
@@ -659,6 +671,8 @@ export default function AppLayout() {
               if (activeIds.has(surface.ptyId)) {
                 console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
                 // Leave ptyId in place. useTerminal mount reconnects.
+              } else if (preserveUnconfirmedOnEmpty && !deadPtys.has(surface.ptyId)) {
+                console.warn(`[lifecycle] reconcile preserving unconfirmed ptyId=${surface.ptyId} surface=${surface.id} while live list is empty`);
               } else {
                 absentCandidates.push({ paneId: pane.id, surfaceId: surface.id, ptyId: surface.ptyId });
               }
@@ -782,6 +796,17 @@ export default function AppLayout() {
             if (a.kind === 'rebind') {
               console.warn(`[lifecycle] reconcile REBIND surface=${a.surfaceId} stale=${a.stalePtyId} → live=${a.newPtyId} (surfaceId match, dead ptyId recovered)`);
             } else {
+              const deadSession = deadPtys.get(a.stalePtyId);
+              if (deadSession) {
+                // #650: stage before the synchronous clear. Terminal receives
+                // both cwd candidates and main validates spawnCwd → cwd → home;
+                // any surviving binding moves to the replacement pty on create.
+                useStore.getState().stageDeadPaneRecovery(
+                  a.surfaceId,
+                  createDeadPaneRecovery(deadSession),
+                  a.stalePtyId,
+                );
+              }
               console.warn(`[lifecycle] reconcile clearing ptyId=${a.stalePtyId} surface=${a.surfaceId} (absent from TWO daemon snapshots, no surface match) → Terminal self-create`);
             }
             useStore.getState().updateSurfacePtyId(a.paneId, a.surfaceId, a.newPtyId);

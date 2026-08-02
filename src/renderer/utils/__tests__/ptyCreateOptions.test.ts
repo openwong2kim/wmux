@@ -201,9 +201,10 @@ describe('resolveStartupCwd', () => {
   });
 });
 
-// Issue #515: a self-create (dead-session respawn / blank-slate recovery) is a
-// NEW shell, so the workspace default OUTRANKS the surface's tracked cwd — the
-// inverse of resolveStartupCwd's split-seed-first semantics.
+// Issue #515: an ordinary blank-slate self-create is a NEW shell, so the
+// workspace default OUTRANKS the surface's tracked cwd — the inverse of
+// resolveStartupCwd's split-seed-first semantics. Known dead-session recovery
+// bypasses this helper through #650's main-validated recoveryCwds path.
 describe('resolveRespawnCwd', () => {
   it('prefers profile.startupCwd over a non-empty (contaminated) surface cwd', () => {
     // This is the core #515 heal: the surface tracks home, the profile is

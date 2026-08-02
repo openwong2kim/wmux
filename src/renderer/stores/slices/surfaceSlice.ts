@@ -223,6 +223,14 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // the OTHER real teardown site — clear it here too so a closed surface's
     // last activity string doesn't survive on a re-used ptyId.
     const closedPtyId = pane.surfaces[idx].ptyId;
+    if (state.pendingDeadPaneRecoveryBySurfaceId) {
+      delete state.pendingDeadPaneRecoveryBySurfaceId[surfaceId];
+    }
+    if (closedPtyId && state.deadPaneRecoveryOfferByPtyId?.[closedPtyId]) {
+      delete state.deadPaneRecoveryOfferByPtyId[closedPtyId];
+      delete state.resumeHintByPtyId[closedPtyId];
+      delete state.resumeBindingByPtyId[closedPtyId];
+    }
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
     if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
     // Drop the pending question too: a leaked entry would let a REUSED ptyId

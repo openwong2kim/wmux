@@ -1,5 +1,4 @@
 import { ipcMain, BrowserWindow } from 'electron';
-import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
@@ -38,6 +37,9 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import type { AgentSlug } from '../../../shared/events';
+import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
+import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -87,6 +89,9 @@ interface PtyCreateSupervisionInput {
 type PtyCreateOptions = {
   shell?: string;
   cwd?: string;
+  /** Dead-session replacement candidates. Main validates spawnCwd, then cwd;
+   * neither value is trusted merely because it came from the renderer. */
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'>;
   cols?: number;
   rows?: number;
   workspaceId?: string;
@@ -189,31 +194,21 @@ const RESIZE_RETRY_DELAY_MS = 20;
  */
 
 /**
- * Validate and resolve cwd. Returns undefined if invalid.
- * Shared by both daemon and local modes.
- */
-function validateCwd(cwd: string | undefined): string | undefined {
-  if (!cwd) return undefined;
-  const resolved = path.resolve(cwd);
-  // Block UNC paths (e.g. \\server\share)
-  if (resolved.startsWith('\\\\')) return undefined;
-  if (!fs.existsSync(resolved)) return undefined;
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) return undefined;
-  return resolved;
-}
-
-/**
  * Diagnostic one-liner for the cwd a create request resolved to (issue #515).
- * `why` is: valid (used as-is) | dropped (validateCwd rejected — missing/UNC/
+ * `why` is: valid (used as-is) | dropped (cwd validation rejected — missing/UNC/
  * not-a-dir) | absent (caller sent no cwd). When dropped/absent the spawn layer
  * falls back to homedir, which is exactly the "panes land in home" symptom, so
  * this makes future reports diagnosable straight from the log.
  */
-function logCwdResolution(sessionId: string, incoming: string | undefined, safe: string | undefined): void {
+function logCwdResolution(
+  sessionId: string,
+  incoming: string | undefined,
+  safe: string | undefined,
+  source: PtyCwdSource,
+): void {
   const why = incoming ? (safe ? 'valid' : 'dropped') : 'absent';
   const effective = safe ?? '(home-fallback)';
-  console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why})`);
+  console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why}, source=${source})`);
 }
 
 export function registerPTYHandlers(
@@ -358,7 +353,8 @@ export function registerPTYHandlers(
           ? resolveSupervisionPolicy(options.supervision)
           : undefined;
 
-      const safeCwd = validateCwd(options?.cwd);
+      const cwdResolution = resolvePtyCreateCwd(options?.cwd, options?.recoveryCwds);
+      const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? require('os').homedir();
       // Daemon-mode default shell. On Windows prefer PowerShell 7 over 5.1 via
       // ShellDetector (issue #176) — mirrors PTYManager.getDefaultShell() so
@@ -368,7 +364,7 @@ export function registerPTYHandlers(
       // Generate a unique session ID
       const crypto = require('crypto');
       const sessionId = `daemon-${crypto.randomUUID().slice(0, 8)}`;
-      logCwdResolution(sessionId, options?.cwd, safeCwd);
+      logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
 
       // Identity env vars for the spawned shell. The daemon's
       // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
@@ -557,7 +553,8 @@ export function registerPTYHandlers(
         }
       }
 
-      const safeCwd = validateCwd(options?.cwd);
+      const cwdResolution = resolvePtyCreateCwd(options?.cwd, options?.recoveryCwds);
+      const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
       // a spawn option. exec/supervision are daemon-only (handled above) and
@@ -565,7 +562,7 @@ export function registerPTYHandlers(
       // from only the local-relevant fields instead of spreading the payload.
       const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
       const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
-      logCwdResolution(instance.id, options?.cwd, safeCwd);
+      logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
@@ -765,12 +762,15 @@ export function registerPTYHandlers(
   // pty:list
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async (_event: Electron.IpcMainInvokeEvent, opts?: { includeSuspended?: boolean }) => {
+    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async (_event: Electron.IpcMainInvokeEvent, opts?: { includeSuspended?: boolean; includeDead?: boolean }) => {
       const includeSuspended = opts?.includeSuspended === true;
+      const includeDead = opts?.includeDead === true;
       const sessions = await daemonClient.rpc('daemon.listSessions', { includeSuspended }) as Array<{
         id: string;
         cmd: string;
         state: string;
+        cwd?: string;
+        spawnCwd?: string;
         // v2 RCA fix (reboot-reattach, axis B-lite): the daemon's listSessions
         // returns the full session incl. `env`, which carries WMUX_SURFACE_ID on
         // Terminal-self-create-originated sessions. Surface it to the renderer so
@@ -783,7 +783,7 @@ export function registerPTYHandlers(
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
         // X6 ② — present only for an interactive agent pane recovered this boot.
-        resumeAgent?: string;
+        resumeAgent?: AgentSlug;
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
         // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
         resumeBinding?: ResumeBinding;
@@ -802,8 +802,8 @@ export function registerPTYHandlers(
       // hydration (X8). Status comes from the runtime when present (live
       // armed/stopped after a guard trip) and falls back to the persisted meta
       // status; restartCount is volatile (0 until the supervisor restarts once).
-      const live = sessions
-        .filter(s => s.state !== 'dead')
+      const listed = sessions
+        .filter(s => includeDead || s.state !== 'dead')
         // Orchestrator brain ptys (the `claude-pty` vendor) are deck-embedded,
         // not fleet panes: the renderer must never adopt one into a surface and
         // the orchestrator must never see itself in pane_list. This is the ONE
@@ -814,6 +814,9 @@ export function registerPTYHandlers(
         .map(s => ({
           id: s.id,
           shell: s.cmd,
+          state: s.state,
+          ...(s.cwd ? { cwd: s.cwd } : {}),
+          ...(includeDead && s.state === 'dead' && s.spawnCwd ? { spawnCwd: s.spawnCwd } : {}),
           // v2 RCA fix (axis B-lite): expose WMUX_SURFACE_ID (env) so the
           // renderer's reconcile can rebind a stale ptyId to the live session on
           // the SAME surface instead of clearing → self-create. Present only on
@@ -853,8 +856,8 @@ export function registerPTYHandlers(
       // or short list here, correlated with a renderer ptyId-clear, is the
       // signature of the session-replacement bug. Without this line the
       // decision was invisible in the daemon/main logs.
-      console.log(`[lifecycle] pty.list -> ${live.length} live session(s) of ${sessions.length} total`);
-      return live;
+      console.log(`[lifecycle] pty.list -> ${listed.length} session(s) of ${sessions.length} total (includeDead=${includeDead})`);
+      return listed;
     }));
   } else {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, () => {
@@ -876,14 +879,29 @@ export function registerPTYHandlers(
 
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
-        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number; cwd?: string }>;
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+          id: string;
+          cmd: string;
+          state: string;
+          pid?: number;
+          cwd?: string;
+          spawnCwd?: string;
+          resumeAgent?: AgentSlug;
+          resumeBinding?: ResumeBinding;
+        }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           // RCA A1 — permanent failure: the daemon authoritatively reports the
           // session as absent or dead. Safe for the renderer to clear the
           // ptyId and self-create. transient:false signals "do not retry".
           console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=session-dead (transient=false)`);
-          return { success: false, error: 'Session not found or dead', code: 'session-dead', transient: false };
+          return {
+            success: false,
+            error: 'Session not found or dead',
+            code: 'session-dead',
+            transient: false,
+            ...(session ? { recovery: createDeadPaneRecovery(session) } : {}),
+          };
         }
 
         // 재접속 시 cwd를 즉시 복원한다(owner-reported: 앱 재시작 후 워크스페이스

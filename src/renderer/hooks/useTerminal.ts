@@ -428,7 +428,7 @@ export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 5_000;
 function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean): Promise<void> {
   return reconnectPtyWithRetryImpl(ptyId, isCurrent, {
     reconnect: (id) => window.electronAPI.pty.reconnect(id),
-    clearPtyId: (id) => useStore.getState().clearSurfacePtyIdByPty(id),
+    clearPtyId: (id, recovery) => useStore.getState().clearSurfacePtyIdByPty(id, recovery),
   });
 }
 

@@ -12,6 +12,7 @@ import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
+import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -157,7 +158,7 @@ export interface WorkspaceSlice {
    * which falls into Terminal.tsx's self-create path. Without this, the
    * Terminal sits with a stale ptyId forever and reproduces input-mute.
    */
-  clearSurfacePtyIdByPty: (ptyId: string) => void;
+  clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => void;
 }
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set, get) => {
@@ -385,6 +386,27 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         const collectPtyIds = (p: Pane): string[] =>
           p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
         for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
+      }
+      // #650 recovery metadata is transient but hydration-sticky. A removed
+      // workspace must evict both surface-keyed pending hand-offs and offers
+      // rebound to its ptys, otherwise the normal list poll intentionally keeps
+      // them alive forever.
+      {
+        const removedWs = state.workspaces[idx];
+        const collectSurfaces = (p: Pane): Array<{ id: string; ptyId: string }> =>
+          p.type === 'leaf'
+            ? p.surfaces.map((s) => ({ id: s.id, ptyId: s.ptyId }))
+            : p.children.flatMap(collectSurfaces);
+        for (const surface of collectSurfaces(removedWs.rootPane)) {
+          if (state.pendingDeadPaneRecoveryBySurfaceId) {
+            delete state.pendingDeadPaneRecoveryBySurfaceId[surface.id];
+          }
+          if (surface.ptyId && state.deadPaneRecoveryOfferByPtyId?.[surface.ptyId]) {
+            delete state.deadPaneRecoveryOfferByPtyId[surface.ptyId];
+            delete state.resumeHintByPtyId[surface.ptyId];
+            delete state.resumeBindingByPtyId[surface.ptyId];
+          }
+        }
       }
       // Order matters: capture the group BEFORE pruning so the promotion below
       // can still tell who this workspace's neighbours in the grid were.
@@ -971,13 +993,25 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     // covered (floating pane, bookmarks, token data, company members).
     // After this runs, Terminal.tsx self-create sees externalPtyId='' on
     // mount and creates fresh PTYs — the well-tested new-pane path.
-    clearSurfacePtyIdByPty: (ptyId: string) => set((state: StoreState) => {
+    clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => set((state: StoreState) => {
       if (!ptyId) return;
       const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
             // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
             if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
+              const previousOffer = state.deadPaneRecoveryOfferByPtyId?.[ptyId];
+              if ((recovery || previousOffer) && state.pendingDeadPaneRecoveryBySurfaceId) {
+                state.pendingDeadPaneRecoveryBySurfaceId[s.id] = mergeDeadPaneRecovery(
+                  state.pendingDeadPaneRecoveryBySurfaceId[s.id] ?? previousOffer,
+                  recovery ?? {},
+                );
+              }
+              if (previousOffer) {
+                delete state.deadPaneRecoveryOfferByPtyId[ptyId];
+                delete state.resumeHintByPtyId[ptyId];
+                delete state.resumeBindingByPtyId[ptyId];
+              }
               s.ptyId = '';
             }
           }
@@ -1009,6 +1043,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.terminalBookmarks = {};
       // X1 per-surface port map is ptyId-keyed — same wipe contract.
       if (state.surfacePorts) state.surfacePorts = {};
+      if (state.pendingDeadPaneRecoveryBySurfaceId) state.pendingDeadPaneRecoveryBySurfaceId = {};
+      if (state.deadPaneRecoveryOfferByPtyId) state.deadPaneRecoveryOfferByPtyId = {};
 
       // 3. companySlice — member.ptyId across all departments.
       if (state.company) {

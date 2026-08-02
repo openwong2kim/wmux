@@ -8,6 +8,8 @@ import type {
 import { isFileDrag } from '../shared/dragDrop';
 import type { NotificationCategory } from '../shared/types';
 import type { ResumeBinding } from '../shared/agentResume';
+import type { DeadPaneRecovery } from '../shared/ptyRecovery';
+import type { AgentSlug } from '../shared/events';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -46,7 +48,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean } }) =>
+    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean } }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -61,11 +63,11 @@ const electronAPI = {
     // `includeSuspended` (Fix B) additionally returns cap-skipped suspended
     // sessions from the persisted state so reconcile can promote one on demand
     // instead of destructively clearing its ptyId.
-    list: (opts?: { includeSuspended?: boolean }) =>
+    list: (opts?: { includeSuspended?: boolean; includeDead?: boolean }) =>
       // `surfaceId` (axis B, reboot-reattach): present only on sessions created
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
-      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: AgentSlug; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
     // walking each pane shell's descendant process tree from ONE CIM snapshot.
@@ -80,7 +82,7 @@ const electronAPI = {
       // writable yet, RPC threw during a handler-swap window) from a permanent
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
-      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean }>,
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recovery?: DeadPaneRecovery }>,
     // Fix B — on-demand promote of a cap-skipped suspended session.
     promote: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_PROMOTE, id) as Promise<{ success: boolean; error?: string }>,

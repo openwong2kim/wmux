@@ -55,6 +55,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const setViCopyModeActive = useStore((s) => s.setViCopyModeActive);
   const searchBarVisible = useStore((s) => s.searchBarVisible);
   const setSearchBarVisible = useStore((s) => s.setSearchBarVisible);
+  const deadPaneRecovery = useStore((s) =>
+    ownerSurfaceId ? s.pendingDeadPaneRecoveryBySurfaceId[ownerSurfaceId] : undefined,
+  );
   const bookmarks = useStore((s) => (ptyId ? s.terminalBookmarks[ptyId] : undefined)) ?? EMPTY_BOOKMARKS;
   const { invoke: ipcInvoke } = useIpc();
   // Keep the invoker stable across re-renders without re-triggering the PTY
@@ -151,17 +154,34 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     // contaminated) surface.cwd prop, so a dead-session respawn heals back to
     // profile.startupCwd instead of perpetuating home.
     const startupDirectory = useStore.getState().startupDirectory;
-    const respawnCwd = resolveRespawnCwd({ surfaceCwd: cwd, profile, startupDirectory });
+    // #650: a known-dead session carries BOTH persisted cwd candidates to
+    // main, which validates spawnCwd → live cwd → home. Ordinary blank surfaces
+    // stay on #515's profile-first resolver; recovery never changes that policy.
+    const respawnCwd = deadPaneRecovery
+      ? undefined
+      : resolveRespawnCwd({ surfaceCwd: cwd, profile, startupDirectory });
     // Derive the source tag from the RESOLVED value (not a parallel branch tree)
     // so the log can never disagree with what was actually requested.
     const cwdSource =
-      respawnCwd === undefined ? 'none'
+      deadPaneRecovery ? 'dead-session'
+      : respawnCwd === undefined ? 'none'
       : respawnCwd === profile?.startupCwd ? 'profile'
       : respawnCwd === cwd ? 'surface'
       : 'global';
-    console.log(`[Terminal] self-create PTY: shell=${shell}, cwd=${respawnCwd ?? '(home)'} source=${cwdSource} surfaceCwd=${cwd ?? '-'} cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
+    const requestedCwd = deadPaneRecovery?.spawnCwd ?? deadPaneRecovery?.cwd ?? respawnCwd;
+    console.log(`[Terminal] self-create PTY: shell=${shell}, cwd=${requestedCwd ?? '(home)'} source=${cwdSource} surfaceCwd=${cwd ?? '-'} cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
     void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd: respawnCwd, cols, rows, workspaceId, surfaceId, spawnKind: 'user-shell' }, defaultShell), profile))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({
+        shell,
+        ...(deadPaneRecovery
+          ? { recoveryCwds: { spawnCwd: deadPaneRecovery.spawnCwd, cwd: deadPaneRecovery.cwd } }
+          : { cwd: respawnCwd }),
+        cols,
+        rows,
+        workspaceId,
+        surfaceId,
+        spawnKind: 'user-shell',
+      }, defaultShell), profile))
     ).then((result) => {
       // v2 RCA fix (adversarial review): release the latch once this create
       // settles. It guards against DOUBLE-create within one attempt, but as a
@@ -200,7 +220,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     });
 
     return () => { cancelled = true; };
-  }, [externalPtyId, shell, cwd]); // onPtyCreated 제거 (stale closure 방지)
+  }, [externalPtyId, shell, cwd, deadPaneRecovery]); // onPtyCreated 제거 (stale closure 방지)
 
   // isVisible = workspace is shown AND this surface tab is the active one.
   // useTerminal uses this to skip fit() when the container is display:none.

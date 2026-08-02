@@ -34,11 +34,22 @@ describe('PTY_RECONNECT seeds cwd (source-level lock)', () => {
   });
 
   it('the listSessions response type includes cwd', () => {
-    expect(RECONNECT).toMatch(/id: string; cmd: string; state: string; pid\?: number; cwd\?: string/);
+    expect(RECONNECT).toMatch(/cwd\?: string/);
   });
 
   it('calls updateCwd with the session cwd on reconnect', () => {
     expect(RECONNECT).toMatch(/if \(session\.cwd\) updateCwd\(id, session\.cwd\)/);
+  });
+});
+
+describe('PTY_RECONNECT carries dead-session recovery metadata (#650)', () => {
+  it('reads spawnCwd and guarded resume metadata from listSessions', () => {
+    expect(RECONNECT).toMatch(/spawnCwd\?: string/);
+    expect(RECONNECT).toMatch(/resumeBinding\?: ResumeBinding/);
+  });
+
+  it('returns a recovery descriptor only when the dead record still exists', () => {
+    expect(RECONNECT).toMatch(/session \? \{ recovery: createDeadPaneRecovery\(session\) \} : \{\}/);
   });
 });
 

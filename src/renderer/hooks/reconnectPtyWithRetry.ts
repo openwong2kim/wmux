@@ -1,3 +1,5 @@
+import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
+
 /**
  * RCA A1 — reconnect a live daemon session with retry, distinguishing
  * transient from permanent failure.
@@ -25,13 +27,14 @@ export interface ReconnectResult {
   success: boolean;
   error?: string;
   transient?: boolean;
+  recovery?: DeadPaneRecovery;
 }
 
 export interface ReconnectDeps {
   /** Invoke the pty.reconnect RPC. */
   reconnect: (id: string) => Promise<ReconnectResult>;
   /** Clear the surface's ptyId so the next mount self-creates. */
-  clearPtyId: (id: string) => void;
+  clearPtyId: (id: string, recovery?: DeadPaneRecovery) => void;
   /** Sleep between retries. Injectable so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
   /** Optional structured logger. Defaults to console. */
@@ -68,7 +71,7 @@ export async function reconnectPtyWithRetry(
     // Permanent failure (daemon says the session is dead): clear now, no retry.
     if (result?.transient === false) {
       log('warn', `[useTerminal] pty.reconnect ${ptyId} permanent failure (${lastErr}) — clearing ptyId for self-create`);
-      if (isCurrent()) deps.clearPtyId(ptyId);
+      if (isCurrent()) deps.clearPtyId(ptyId, result.recovery);
       return;
     }
     // Transient (or unknown): back off and retry unless attempts are exhausted.
