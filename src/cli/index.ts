@@ -71,6 +71,8 @@ WEB ACCESS (browser / PWA)
                                     native HTTPS (requires --tls-key)
         [--tls-key <path>]          Matching PEM private key (requires
                                     --tls-cert; incompatible with --tailscale)
+                                    Re-supply both TLS paths when re-running
+                                    'wmux web' to change other CLI options
         [--allow-input]             Enable keyboard input (off by default)
         [--allow-upload]            Enable photo upload from a paired phone
                                     (JPEG/PNG, 10 MB cap, files kept 24h in
