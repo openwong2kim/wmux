@@ -570,7 +570,14 @@ function tsOf(ts: number | undefined): { ts?: number } {
 }
 
 function capText(text: string): string {
-  return text.length > MAX_TEXT_CHARS ? `${text.slice(0, MAX_TEXT_CHARS)}…` : text;
+  if (text.length <= MAX_TEXT_CHARS) return text;
+  // Back off one code unit when the cut would land between the halves of a
+  // surrogate pair — emoji are routine in both prose and code, and a split
+  // pair renders as a replacement character right at the ellipsis.
+  let end = MAX_TEXT_CHARS;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 
 /** Remove NUL from untrusted prose. See the note in `extractCodeBlocks`. */

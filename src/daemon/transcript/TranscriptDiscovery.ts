@@ -274,6 +274,15 @@ export class TranscriptDiscovery {
         // No watch backend for this path; the poll is the documented floor.
       }
     }
+    // Reviewed and kept as a full scan per tick (2026-08-03): a root-mtime
+    // short-circuit looks cheaper but is wrong — the event this poll exists to
+    // catch is `<id>.jsonl` appearing inside an EXISTING project directory,
+    // which bumps that directory's mtime, not the root's (and `fs.watch(root)`
+    // is non-recursive, so the poll is the only thing that sees it). A correct
+    // per-directory mtime probe costs one stat per project dir, which is the
+    // same syscall count as the scan's own candidate stats. The cost is
+    // bounded by design: one readdir + ≤MAX_PROJECT_DIRS stats per tick, only
+    // while a pane is searching, never past deadlineMs.
     const poller = setInterval(() => {
       this.tryAdopt(sessionId, state);
     }, this.pollMs);
