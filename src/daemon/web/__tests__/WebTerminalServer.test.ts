@@ -2198,8 +2198,9 @@ describe('WebTerminalServer', () => {
     const status = server.status();
     expect(status.pairRefusal?.reason).toBe('insecure-transport');
     // The detail is operator prose for logs and tooltips — it must still name
-    // both ways out, because it is what a support question gets answered with.
+    // the encrypted way out, because it is what a support question gets answered with.
     expect(status.pairRefusal?.detail).toContain('wmux web --tailscale');
+    expect(status.pairRefusal?.detail).toContain('--tls-cert');
     // No code, and no expiry for a code that does not exist.
     expect(status.pairCode).toBeUndefined();
     expect(status.pairExpiresAt).toBeUndefined();
@@ -2226,8 +2227,9 @@ describe('WebTerminalServer', () => {
     const refusedUpFront = server.startPairing({ name: 'Phone' });
     expect(refusedUpFront.ok).toBe(false);
     if (!refusedUpFront.ok) {
-      // Actionable: it names BOTH ways out, not just the refusal — HTTPS in
-      // one command, or pair before exposing.
+      // Actionable: it names the encrypted paths and the limited loopback
+      // workaround, not just the refusal.
+      expect(refusedUpFront.error).toContain('--tls-cert');
       expect(refusedUpFront.error).toContain('wmux web --tailscale');
       expect(refusedUpFront.error).toContain('pair over loopback');
       // …and does not oversell the second one: on a plaintext bind the

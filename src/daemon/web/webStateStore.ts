@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { secureWriteTokenFile } from '../../shared/security';
+import type { WebTlsConfig } from '../../shared/web';
 
 /**
  * Durable record of the operator's "yes, serve this" for `wmux web` (#596).
@@ -40,6 +41,8 @@ export interface WebPersistedState {
    * a restored server never gains a permission the operator did not ask for.
    */
   allowUpload: boolean;
+  /** Native HTTPS PEM paths. Key bytes are never persisted here. */
+  tls?: WebTlsConfig;
   allowedHosts: string[];
   /**
    * Whether the operator asked for a `tailscale serve` front.
@@ -138,18 +141,41 @@ export function coerceWebState(parsed: unknown): WebPersistedState {
   const allowedHosts = Array.isArray(o['allowedHosts'])
     ? o['allowedHosts'].filter((h): h is string => typeof h === 'string' && h.trim() !== '')
     : [];
+  const tlsField = o['tls'];
+  const tls = coerceTlsConfig(tlsField);
+  const tlsIsValidOrAbsent = tlsField === undefined || tls !== undefined;
+  const tailscale = o['tailscale'] === true;
 
   return {
     version: 1,
-    enabled: o['enabled'] === true && token !== '',
+    // A malformed TLS record must never restore as plaintext. Likewise, the
+    // current Tailscale front always proxies HTTP, so replaying both modes
+    // would produce an HTTPS backend the front cannot reach.
+    enabled:
+      o['enabled'] === true &&
+      token !== '' &&
+      tlsIsValidOrAbsent &&
+      !(tailscale && tls !== undefined),
     port,
     host,
     allowInput: o['allowInput'] === true,
     allowUpload: o['allowUpload'] === true,
+    ...(tls ? { tls } : {}),
     allowedHosts,
-    tailscale: o['tailscale'] === true,
+    tailscale,
     token,
   };
+}
+
+function coerceTlsConfig(value: unknown): WebTlsConfig | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const o = value as Record<string, unknown>;
+  const certPath = typeof o['certPath'] === 'string' ? o['certPath'].trim() : '';
+  const keyPath = typeof o['keyPath'] === 'string' ? o['keyPath'].trim() : '';
+  if (!certPath || !keyPath || !path.isAbsolute(certPath) || !path.isAbsolute(keyPath)) {
+    return undefined;
+  }
+  return { certPath, keyPath };
 }
 
 /**

@@ -217,7 +217,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). It is Developer ID signed, notarized and stapled, so Gatekeeper lets it through on first launch. Intel builds aren't produced right now; open an issue if you need one.
 
-**Can I reach my panes from my phone?** Yes — `wmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and `--expose` are explicit opt-ins, and even read-only shows a pane's full scrollback to whoever can reach the port, so keep it behind Tailscale rather than the open internet.
+**Can I reach my panes from my phone?** Yes — `wmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and network exposure are explicit opt-ins. For HTTPS, use the one-command `wmux web --tailscale` path, or terminate it directly with `wmux web --expose --tls-cert <fullchain.pem> --tls-key <privkey.pem>` (add `--allow-host <certificate-dns-name>` to advertise that name). Bare `--expose` remains HTTP and prints an explicit cleartext warning. Even read-only shows a pane's full scrollback to whoever can reach the port, so do not publish it to the open internet.
 
 **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
 

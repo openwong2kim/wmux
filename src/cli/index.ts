@@ -55,7 +55,7 @@ INPUT COMMANDS
 BROWSER PANE
   open <url> [--workspace <id>]     Open/reuse a browser pane at <url>
 
-WEB ACCESS (browser / PWA over Tailscale)
+WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
                                     LOCAL-ONLY by default). NOTE: even read-only
                                     exposes a pane's FULL scrollback to viewers.
@@ -67,13 +67,16 @@ WEB ACCESS (browser / PWA over Tailscale)
                                     serve' (HTTPS) in front of a loopback bind
                                     and accept the MagicDNS name. Removed again
                                     by --stop
+        [--tls-cert <path>]         PEM certificate or full-chain file for
+                                    native HTTPS (requires --tls-key)
+        [--tls-key <path>]          Matching PEM private key (requires
+                                    --tls-cert; incompatible with --tailscale)
         [--allow-input]             Enable keyboard input (off by default)
         [--allow-upload]            Enable photo upload from a paired phone
                                     (JPEG/PNG, 10 MB cap, files kept 24h in
                                     ~/.wmux/uploads/phone). Off by default
-        [--allow-host <h1,h2>]      Extra Host headers to accept, for a reverse
-                                    proxy in front (e.g. a 'tailscale serve'
-                                    MagicDNS name)
+        [--allow-host <h1,h2>]      Extra Host names to accept and advertise,
+                                    for a reverse proxy or native TLS DNS name
         [--new-token]               Mint a fresh access token, revoking every
                                     device already paired
         [--status]                  Show whether the web server is running

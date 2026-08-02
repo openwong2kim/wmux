@@ -227,6 +227,29 @@ describe('web.handler — forwarding', () => {
       expect(probes()).toBe(0);
     });
 
+    it('does not mistake a native TLS certificate name for a Tailscale front', async () => {
+      const { exec, probes } = absentFront();
+      const nativeTls = {
+        running: true,
+        port: 7681,
+        tls: true,
+        tailscale: false,
+        urls: ['https://box.example.test:7681/?token=t'],
+        allowedHosts: ['box.example.test'],
+        pairCode: 'ABCD2345',
+      };
+      installConnected(nativeTls, exec);
+
+      const res = (await getHandler(IPC.WEB_STATUS)(fakeEvent, {
+        verifyFront: true,
+      })) as WebTerminalInfo;
+
+      expect(probes()).toBe(0);
+      expect(res.urls).toEqual(nativeTls.urls);
+      expect(res.allowedHosts).toEqual(nativeTls.allowedHosts);
+      expect(res.pairRefusal).toBeUndefined();
+    });
+
     it('★ REGRESSION: a front from before the tailscale flag existed is still checked', async () => {
       // Found by dogfooding, not by this suite. A web-state.json written before
       // the `tailscale` field existed replays its allowedHosts and parses as

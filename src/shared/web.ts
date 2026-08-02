@@ -20,6 +20,17 @@ export const WEB_LOOPBACK_HOST = '127.0.0.1';
 export const WEB_EXPOSE_HOST = '0.0.0.0';
 
 /**
+ * Operator-supplied files for the daemon's native HTTPS listener.
+ *
+ * Only paths cross the control pipe and enter durable web state. Private-key
+ * bytes stay inside the daemon process and are never returned by status.
+ */
+export interface WebTlsConfig {
+  certPath: string;
+  keyPath: string;
+}
+
+/**
  * Status/start/stop result. Mirrors the daemon's WebInfo plus an optional
  * `error` the main-process handler synthesizes when the daemon control pipe is
  * unreachable (so the renderer can render a quiet failure instead of throwing).
@@ -29,6 +40,8 @@ export interface WebTerminalInfo {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  /** True when the daemon itself terminates HTTPS (not a Tailscale front). */
+  tls?: boolean;
   token?: string;
   urls?: string[];
   clients?: number;
@@ -42,9 +55,9 @@ export interface WebTerminalInfo {
    */
   deviceCredentials?: boolean;
   /**
-   * TLS fronts the server accepts in the `Host` header — in practice the
-   * `tailscale serve` MagicDNS name. The daemon has reported this since #616
-   * and the CLI's local copy already carried it; this mirror was missing it.
+   * Extra names the server accepts in the `Host` header. These are normally a
+   * `tailscale serve` MagicDNS front; with native TLS they may instead name the
+   * certificate's DNS host.
    */
   allowedHosts?: string[];
   /**

@@ -11,14 +11,16 @@ Server: `src/daemon/web/WebTerminalServer.ts`. Push envelope:
 
 ## 1. Transport, and the one rule that shapes everything else
 
-The daemon speaks plain HTTP. It is expected to sit behind a TLS front — the
-supported setup is `wmux web --tailscale`, which binds `127.0.0.1` and lets
-`tailscale serve` terminate HTTPS on the tailnet.
+The daemon can speak either HTTP or native HTTPS. The simplest encrypted remote
+setup is `wmux web --tailscale`, which binds `127.0.0.1` and lets `tailscale
+serve` terminate HTTPS on the tailnet. Operators with their own certificate can
+instead use `--tls-cert <fullchain.pem>` and `--tls-key <privkey.pem>`; the
+daemon then terminates HTTPS itself. Bare `--expose` remains plaintext HTTP.
 
 **A device credential never expires.** That single fact drives most of the rules
-below: the daemon refuses to mint one over a plaintext non-loopback bind, refuses
-to accept one from a query string, and issues short-lived tickets for the one
-transport that cannot send headers.
+below: the daemon refuses to mint one over a plaintext non-loopback bind, permits
+minting on its own HTTPS listener, refuses to accept one from a query string,
+and issues short-lived tickets for the one transport that cannot send headers.
 
 Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options:
 nosniff`, `Referrer-Policy: no-referrer`, and a CSP. Only the HTML response

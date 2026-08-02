@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { sendDaemonStringRequest } from '../client';
 import { printResult, ensureOk, parseFlag, hasFlag, getResultError } from '../utils';
 import {
@@ -7,6 +8,7 @@ import {
   type TailnetServe,
 } from '../tailscale';
 import type { RpcResponse } from '../../shared/rpc';
+import type { WebTlsConfig } from '../../shared/web';
 
 const DEFAULT_PORT = 7681;
 const LOOPBACK_HOST = '127.0.0.1';
@@ -19,6 +21,8 @@ interface WebInfo {
   allowInput?: boolean;
   /** Whether `POST /api/upload` accepts photos. Separate opt-in from input. */
   allowUpload?: boolean;
+  /** True when the daemon itself terminates HTTPS. */
+  tls?: boolean;
   token?: string;
   urls?: string[];
   clients?: number;
@@ -28,8 +32,38 @@ interface WebInfo {
   pairExpiresAt?: number;
   /** False when the device roster is unavailable — pairing falls back to the shared token. */
   deviceCredentials?: boolean;
-  /** TLS fronts named with `--allow-host`. The address a phone can actually use. */
+  /** Accepted Host names: reverse-proxy fronts or a native certificate name. */
   allowedHosts?: string[];
+}
+
+/**
+ * Parse native TLS as one atomic transport choice.
+ *
+ * Relative paths are resolved in the CLI process because the daemon has a
+ * different working directory. File contents stay out of the control-plane
+ * payload; the daemon reads and validates them immediately before listening.
+ */
+export function resolveWebTlsConfig(
+  args: string[],
+  cwd: string = process.cwd(),
+): WebTlsConfig | undefined {
+  const hasCert = hasFlag(args, '--tls-cert');
+  const hasKey = hasFlag(args, '--tls-key');
+  if (!hasCert && !hasKey) return undefined;
+  if (!hasCert || !hasKey) {
+    throw new Error('--tls-cert and --tls-key must be provided together');
+  }
+  const certPath = parseFlag(args, '--tls-cert');
+  const keyPath = parseFlag(args, '--tls-key');
+  if (!certPath) throw new Error('--tls-cert requires a path');
+  if (!keyPath) throw new Error('--tls-key requires a path');
+  if (hasFlag(args, '--tailscale')) {
+    throw new Error('native TLS cannot be combined with --tailscale');
+  }
+  return {
+    certPath: path.resolve(cwd, certPath),
+    keyPath: path.resolve(cwd, keyPath),
+  };
 }
 
 /**
@@ -122,6 +156,15 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // way back to the old behaviour, i.e. revoke every device that has the token.
   const newToken = hasFlag(args, '--new-token');
 
+  let tls: WebTlsConfig | undefined;
+  try {
+    tls = resolveWebTlsConfig(args);
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+    return;
+  }
+
   // `--tailscale`: the HTTPS front door is registered BEFORE the server starts
   // (so the Host allowlist carries the MagicDNS name from the first boot) and
   // rolled back if the start fails. Both live in startWebTransport.
@@ -140,6 +183,9 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         allowUpload,
         allowedHosts: hosts,
         newToken,
+        // Explicit false distinguishes "the operator chose HTTP" from an
+        // option-only GUI reconfiguration, which preserves a live TLS listener.
+        tls: tls ?? false,
         // Forwarded so the daemon persists which transport this is. Without it
         // a `--tailscale` server comes back from a restart reporting plain
         // transport, and the GUI checkbox reads unchecked over a tailnet server
@@ -236,9 +282,19 @@ function pickPairHost(urls: string[], info: WebInfo, loopbackOnly: boolean): str
  * phone.
  */
 function pickPairOrigin(urls: string[], info: WebInfo, loopbackOnly: boolean): string {
-  const front = (info.allowedHosts ?? []).find((h) => h.trim().length > 0);
-  if (front) return `https://${front.trim()}`;
-  return `http://${pickPairHost(urls, info, loopbackOnly)}`;
+  // Both a Tailscale front and native TLS put an HTTPS address first. Derive
+  // the origin from the daemon's advertised URL instead of reconstructing it:
+  // native TLS keeps the listener's non-default port, while a front normally
+  // terminates on 443.
+  const secure = urls.find((url) => url.startsWith('https://'));
+  if (secure) {
+    try {
+      return new URL(secure).origin;
+    } catch {
+      /* fall through to the bind */
+    }
+  }
+  return `${info.tls ? 'https' : 'http'}://${pickPairHost(urls, info, loopbackOnly)}`;
 }
 
 /**
@@ -293,6 +349,7 @@ function report(
   const urls = info.urls ?? [];
   const exposed = info.host === EXPOSE_HOST || info.host === '::';
   const loopbackOnly = info.host === LOOPBACK_HOST || info.host === '::1';
+  const nativeTls = info.tls === true;
 
   console.log('');
   console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}`);
@@ -317,18 +374,26 @@ function report(
     if (exposed) {
       console.log('  ⚠ The bind is ALSO reachable in plaintext on every interface (--expose).');
     }
+  } else if (nativeTls) {
+    console.log('  Native TLS enabled — HTTPS terminates directly in wmux.');
+    console.log('  Certificate trust depends on the certificate and chain you supplied.');
+    if (loopbackOnly) {
+      console.log('  This bind is LOCAL-ONLY — use --expose or --host for phone access.');
+    }
   } else if (loopbackOnly) {
     console.log('  This bind is LOCAL-ONLY (127.0.0.1) — not reachable from your phone.');
     console.log('  For remote access, either:');
     console.log('    • run `wmux web --tailscale` for one-command HTTPS over your tailnet,');
-    console.log('    • run `wmux web --expose` to bind all interfaces (tailnet + LAN), or');
+    console.log('    • run `wmux web --expose --tls-cert <cert> --tls-key <key>` for');
+    console.log('      native HTTPS on tailnet + LAN, or');
+    console.log('    • run `wmux web --expose` to bind plaintext on tailnet + LAN, or');
     console.log('    • keep loopback and front it with `tailscale serve` (adds HTTPS) —');
     console.log('      restart with `wmux web --allow-host <your-magicdns-name>` so the');
     console.log('      proxied Host header is accepted.');
   } else if (exposed) {
     console.log('  ⚠ UNENCRYPTED. Anyone on this network who can sniff traffic (open Wi-Fi,');
     console.log('    ARP spoofing, compromised switch) can read the access token and the');
-    console.log('    full scrollback. Use `tailscale serve` (HTTPS) or wait for native TLS.');
+    console.log('    full scrollback. Use `--tls-cert` + `--tls-key` or `tailscale serve`.');
   }
   if (tailnet) {
     console.log('');
@@ -337,7 +402,8 @@ function report(
   } else if (urls.length) {
     console.log('');
     // A front means the phone can reach this even though the bind is loopback.
-    const phoneReachable = !loopbackOnly || (info.allowedHosts ?? []).length > 0;
+    const phoneReachable =
+      !loopbackOnly || (info.tls !== true && (info.allowedHosts ?? []).length > 0);
     console.log(phoneReachable ? '  Open on your phone (same Tailscale tailnet or LAN):' : '  Open locally:');
     for (const u of urls) console.log(`    ${u}`);
   } else if (info.token) {
@@ -350,7 +416,11 @@ function report(
   if (info.pairCode) {
     const pairOrigin = tailnet ? tailnet.url : pickPairOrigin(urls, info, loopbackOnly);
     console.log('');
-    console.log('  Pair from phone (no token typing):');
+    console.log(
+      loopbackOnly && nativeTls
+        ? '  Pair locally (this bind is not reachable from your phone):'
+        : '  Pair from phone (no token typing):',
+    );
     console.log(`    open  ${pairOrigin}/pair`);
     console.log(`    enter code  ${info.pairCode}   (valid 10 min, single use)`);
   } else if (info.pairRefusal) {
@@ -375,7 +445,7 @@ function report(
     console.log('  Photo upload is off. Re-run with --allow-upload to let a paired');
     console.log('  phone send photos into ~/.wmux/uploads/phone.');
   }
-  if (tailnet) {
+  if (tailnet || nativeTls) {
     console.log('  PWA: served over HTTPS, so "Add to Home Screen", Android install and');
     console.log('  offline caching all work.');
   } else {

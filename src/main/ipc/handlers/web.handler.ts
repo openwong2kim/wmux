@@ -98,7 +98,7 @@ export function registerWebHandlers(
    * address that answers nothing, and the failure would land on the phone.
    */
   /**
-   * Does this reply advertise a fronted (https) address?
+   * Does this reply advertise a separately managed HTTPS front?
    *
    * Keyed on `allowedHosts`, NOT on the `tailscale` flag. Dogfooding caught the
    * difference: a `web-state.json` written before that flag existed replays its
@@ -106,10 +106,12 @@ export function registerWebHandlers(
    * never sets the flag either. Both still put `https://<name>/` first in
    * `urls`. Gating on the flag left exactly the dead address this is here to
    * catch — verified against a real tailnet, where the advertised URL answered
-   * nothing.
+   * nothing. Native TLS also advertises operator-supplied names, but its HTTPS
+   * listener is owned by the daemon itself and must never be sent through a
+   * Tailscale configuration probe.
    */
   const advertisesFront = (info: WebTerminalInfo): boolean =>
-    (info.allowedHosts ?? []).length > 0;
+    info.tls !== true && (info.allowedHosts ?? []).length > 0;
 
   const withFront = (info: WebTerminalInfo): WebTerminalInfo => {
     if (!info.running || !advertisesFront(info) || frontState !== 'gone') return info;

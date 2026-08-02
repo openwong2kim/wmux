@@ -52,6 +52,22 @@ The shipped Electron build sets these fuses (`forge.config.ts`), recorded here s
 
 The in-app updater downloads the `Setup.exe` itself and verifies a pinned SHA-256 (published in `update-manifest.json` by CI) before launching it — fail-closed, so a tampered or unverifiable artifact is never run. Authenticode code signing of the installer + update artifacts is **not yet in place** (pending a code-signing certificate); until it lands, direct downloads still trip the SmartScreen "unknown publisher" prompt — and on Windows 11 devices with Smart App Control enforcing, the unsigned installer may be blocked outright with no override (see [#200](https://github.com/openwong2kim/wmux/issues/200); winget/Chocolatey or build-from-source are the workarounds) — and the updater's trust floor is the SHA-256 pin, not a signature. See the release pipeline (`.github/workflows/release.yml`).
 
+### 1.5 Browser/PWA terminal server
+
+`wmux web` is loopback-only and read-only by default. Network binding
+(`--expose` or `--host`), terminal input, and photo upload are separate explicit
+operator grants. Anyone who reaches the listener and holds a valid web or device
+credential can read the full scrollback of every live pane; input and upload
+remain disabled unless separately enabled.
+
+Remote confidentiality has two supported paths: `wmux web --tailscale` puts an
+HTTPS Tailscale front in front of a loopback HTTP listener, while
+`--tls-cert`/`--tls-key` makes the daemon terminate HTTPS directly. A bare
+non-loopback bind is still available for trusted networks, but it is plaintext
+and the CLI says so explicitly. Durable native-TLS state stores only absolute
+certificate/key paths, never PEM bytes; if either path becomes invalid, restart
+fails closed with no plaintext listener.
+
 ---
 
 ## 2. What wmux delegates to the operating system
@@ -125,3 +141,4 @@ What we do not consider a wmux security issue:
 | 2026-05-16 | Initial draft (#41). Declared icacls + attrib + notice-file hardening signals + `mcp.claimWorkspace` enforcement. |
 | 2026-05-16 | Reverted icacls/attrib/notice-file claims (§1.2 and §1.3 of the original draft). Dogfood on a real `%USERPROFILE%\.wmux\` directory produced a broken ACL state (`/inheritance:r` removed the owner's WRITE_DAC, and the subsequent `/grant:r` failed silently). The dynamic test (`scripts/substrate-hardening-dynamic.mjs`) had passed on a fresh `mkdtempSync` directory whose ACL constitution is different from a long-lived profile-scoped folder; the test did not catch the production-only regression. Phase 3.2 hardening will be re-attempted only after a hardening helper that (a) grants the owner explicit `(OI)(CI)F` *before* removing inherited ACEs and (b) is dogfooded against a real user profile passes. |
 | 2026-07-30 | Documented the CDP same-user vector (§3) and added a config/env opt-out (`browser.cdp.enabled` / `WMUX_DISABLE_CDP`). CDP stays on by default for browser automation but is now closeable (#613). |
+| 2026-08-03 | Documented the Browser/PWA trust boundary and native TLS fail-closed behavior (#764). |

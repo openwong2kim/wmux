@@ -63,6 +63,23 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(loadWebState(dir)).toEqual(enabled());
   });
 
+  it('round-trips native TLS paths without persisting private-key bytes', () => {
+    const certPath = path.join(dir, 'certificate.pem');
+    const keyPath = path.join(dir, 'private-key.pem');
+    const privateKeyMarker = 'PRIVATE-KEY-MATERIAL-MUST-NOT-ENTER-STATE';
+    fs.writeFileSync(certPath, 'certificate material', 'utf8');
+    fs.writeFileSync(keyPath, privateKeyMarker, 'utf8');
+    const state = enabled({
+      tls: { certPath, keyPath },
+      allowedHosts: ['box.example.test'],
+    });
+
+    expect(saveWebState(dir, state)).toBe(true);
+    expect(loadWebState(dir)).toEqual(state);
+    const raw = fs.readFileSync(getWebStatePath(dir), 'utf8');
+    expect(raw).not.toContain(privateKeyMarker);
+  });
+
   it('hardens a disabled inode before either create or overwrite receives the token', () => {
     const first = enabled();
     const second = enabled({ token: 'tok-reconfigured', port: 8765 });
@@ -219,6 +236,36 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
   it('enabled must be literally true — fail-closed on a truthy impostor', () => {
     expect(coerceWebState({ ...enabled(), enabled: 'yes' }).enabled).toBe(false);
     expect(coerceWebState({ ...enabled(), enabled: 1 }).enabled).toBe(false);
+  });
+
+  it('keeps a pre-TLS state enabled as plaintext for backward compatibility', () => {
+    const state = coerceWebState(enabled());
+    expect(state.enabled).toBe(true);
+    expect(state.tls).toBeUndefined();
+  });
+
+  it.each([
+    null,
+    {},
+    { certPath: 'relative-cert.pem', keyPath: 'relative-key.pem' },
+    { certPath: path.resolve('certificate.pem') },
+    { keyPath: path.resolve('private-key.pem') },
+  ])('disables restore for malformed TLS state instead of downgrading to HTTP (%j)', (tls) => {
+    const state = coerceWebState({ ...enabled(), tls });
+    expect(state.enabled).toBe(false);
+    expect(state.tls).toBeUndefined();
+  });
+
+  it('disables the unsupported native-TLS plus Tailscale combination', () => {
+    const state = coerceWebState({
+      ...enabled(),
+      tailscale: true,
+      tls: {
+        certPath: path.join(dir, 'certificate.pem'),
+        keyPath: path.join(dir, 'private-key.pem'),
+      },
+    });
+    expect(state.enabled).toBe(false);
   });
 
   it('coerces per-field: one bad value never discards the rest', () => {

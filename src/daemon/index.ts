@@ -16,6 +16,7 @@ import {
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
 import { scheduleTokenFileReHarden } from '../shared/security';
+import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
@@ -187,7 +188,12 @@ let webRestore: Promise<void> | null = null;
  * neutralises best-effort, but an older locked record can remain when the
  * filesystem refuses every write and delete.
  */
-function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscale: boolean): void {
+function persistWebState(
+  info: WebTerminalInfo,
+  allowedHosts: string[],
+  tailscale: boolean,
+  tls?: WebTlsConfig,
+): void {
   if (!info.running || !info.token) return;
   saveWebState(
     wmuxDir,
@@ -198,6 +204,7 @@ function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscal
       host: info.host ?? '127.0.0.1',
       allowInput: info.allowInput === true,
       allowUpload: info.allowUpload === true,
+      ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
       token: info.token,
@@ -209,6 +216,22 @@ function persistWebState(info: WebTerminalInfo, allowedHosts: string[], tailscal
         error,
       ),
   );
+}
+
+/** Validate the same-user control-pipe payload without ever downgrading it. */
+function parseWebTlsConfig(value: unknown): WebTlsConfig | false | undefined {
+  if (value === undefined) return undefined;
+  if (value === false) return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('native TLS requires absolute certPath and keyPath values');
+  }
+  const o = value as Record<string, unknown>;
+  const certPath = typeof o['certPath'] === 'string' ? o['certPath'].trim() : '';
+  const keyPath = typeof o['keyPath'] === 'string' ? o['keyPath'].trim() : '';
+  if (!certPath || !keyPath || !path.isAbsolute(certPath) || !path.isAbsolute(keyPath)) {
+    throw new Error('native TLS requires absolute certPath and keyPath values');
+  }
+  return { certPath, keyPath };
 }
 
 /**
@@ -261,6 +284,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       host: state.host,
       allowInput: state.allowInput,
       allowUpload: state.allowUpload,
+      ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
       // main process and tailscaled keeps it across reboots on its own. All
@@ -279,9 +303,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       info.port !== state.port ||
       info.host !== state.host ||
       info.allowInput !== state.allowInput ||
+      info.tls !== (state.tls !== undefined) ||
       info.token !== state.token
     ) {
-      persistWebState(info, state.allowedHosts, state.tailscale);
+      persistWebState(info, state.allowedHosts, state.tailscale, state.tls);
     }
     // A restore that puts a WRITABLE terminal back on every network interface
     // happens with nobody at the desktop, so it is logged at warn: the operator
@@ -290,7 +315,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
     const exposed = info.host === '0.0.0.0' || info.host === '::';
     log(
       exposed && info.allowInput ? 'warn' : 'info',
-      `[web] restored on ${info.host}:${info.port} (input ${info.allowInput ? 'ENABLED' : 'read-only'}, ${exposed ? 'ALL interfaces' : 'loopback'}) — replaying the operator's earlier \`wmux web\`. Turn it off with \`wmux web --stop\`.`,
+      `[web] restored ${info.tls ? 'HTTPS' : 'HTTP'} on ${info.host}:${info.port} (input ${info.allowInput ? 'ENABLED' : 'read-only'}, ${exposed ? 'ALL interfaces' : 'loopback'}) — replaying the operator's earlier \`wmux web\`. Turn it off with \`wmux web --stop\`.`,
     );
   } catch (err) {
     // EADDRINUSE (a stale holder of the port), a missing assets dir, anything:
@@ -2278,6 +2303,7 @@ function registerRpcHandlers(
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
+      tls?: unknown;
     };
     const port =
       typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
@@ -2293,12 +2319,28 @@ function registerRpcHandlers(
     const allowedHosts = Array.isArray(p.allowedHosts)
       ? p.allowedHosts.filter((h): h is string => typeof h === 'string')
       : [];
+    const requestedTls = parseWebTlsConfig(p.tls);
+    const tailscale = p.tailscale === true;
+    const previous = loadWebState(wmuxDir);
+    // Undefined means an option-only caller (notably the GUI) did not choose a
+    // transport. Preserve a live/persisted native listener so toggling input or
+    // exposure cannot silently downgrade it to HTTP. `false` is the explicit
+    // off value sent by the CLI; choosing Tailscale also selects its HTTP
+    // loopback backend explicitly.
+    const tls =
+      requestedTls === false || (requestedTls === undefined && tailscale)
+        ? undefined
+        : requestedTls ??
+          webServer.currentTlsConfig ??
+          (previous.enabled ? previous.tls : undefined);
+    if (tls && tailscale) {
+      throw new Error('native TLS cannot be combined with the Tailscale transport');
+    }
     // #596: carry the previous token forward so a re-start (adding
     // --allow-host, flipping --allow-input) does not lock out a phone that
     // already paired. The token comes from OUR 0600 state file, never from
     // these params — a pipe client must not get to choose it. `--new-token`
     // is the deliberate rotation escape hatch (revoke every paired device).
-    const previous = loadWebState(wmuxDir);
     const token = p.newToken === true ? undefined : previous.token || undefined;
     if (p.newToken === true) {
       // Rotation has to take the PAIRED DEVICES with it, not just the operator
@@ -2324,7 +2366,6 @@ function registerRpcHandlers(
         );
       }
     }
-    const tailscale = p.tailscale === true;
     const info = await webServer.start({
       port,
       host,
@@ -2332,9 +2373,10 @@ function registerRpcHandlers(
       allowUpload,
       allowedHosts,
       tailscale,
+      ...(tls ? { tls } : {}),
       token,
     });
-    persistWebState(info, allowedHosts, tailscale);
+    persistWebState(info, allowedHosts, tailscale, tls);
     return info;
   });
   pipeServer.onRpc('daemon.web.stop', async () => {

@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
+import { createTlsTestFixture, findOpenSsl } from './tlsTestFixture';
 
 /**
  * #596 regression — `wmux web` must survive a daemon restart.
@@ -26,12 +28,17 @@ const BUNDLE = path.join(process.cwd(), 'dist', 'daemon-bundle', 'index.js');
 const HAVE_BUNDLE = fs.existsSync(BUNDLE);
 const IS_WIN = process.platform === 'win32';
 const CAN_RUN = HAVE_BUNDLE && IS_WIN;
+const HAVE_OPENSSL = findOpenSsl() !== undefined;
 
 if (!CAN_RUN) {
   // eslint-disable-next-line no-console
   console.warn(
     `[#596 restart test] SKIPPED — ${!IS_WIN ? 'not win32' : 'no dist/daemon-bundle/index.js (run `npm run build:daemon`)'}`,
   );
+}
+if (CAN_RUN && !HAVE_OPENSSL) {
+  // eslint-disable-next-line no-console
+  console.warn('[#764 restart test] SKIPPED native TLS case — OpenSSL is unavailable');
 }
 
 const SUFFIX = '-webrestart-test';
@@ -45,6 +52,7 @@ interface RpcResult {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  tls?: boolean;
   token?: string;
   [k: string]: unknown;
 }
@@ -106,22 +114,28 @@ function rpc(method: string, params: Record<string, unknown> = {}): Promise<RpcR
 }
 
 /** GET against the web server. Resolves an error code instead of throwing. */
-function probe(port: number, urlPath: string, token?: string): Promise<{ status?: number; error?: string }> {
+function probe(
+  port: number,
+  urlPath: string,
+  token?: string,
+  secure = false,
+): Promise<{ status?: number; error?: string }> {
   return new Promise((resolve) => {
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port,
-        path: urlPath,
-        method: 'GET',
-        timeout: 4000,
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      },
-      (res) => {
-        res.resume();
-        resolve({ status: res.statusCode });
-      },
-    );
+    const options = {
+      host: '127.0.0.1',
+      port,
+      path: urlPath,
+      method: 'GET',
+      timeout: 4000,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    };
+    const onResponse = (res: http.IncomingMessage): void => {
+      res.resume();
+      resolve({ status: res.statusCode });
+    };
+    const req = secure
+      ? https.request({ ...options, rejectUnauthorized: false }, onResponse)
+      : http.request(options, onResponse);
     req.on('timeout', () => {
       req.destroy();
       resolve({ error: 'TIMEOUT' });
@@ -168,16 +182,36 @@ async function startDaemon(): Promise<ChildProcess> {
 
 /** SIGKILL — no graceful shutdown, which is what a crash or a reboot looks like. */
 async function killDaemon(child: ChildProcess): Promise<void> {
+  let exited = child.exitCode !== null || child.signalCode !== null;
   await new Promise<void>((resolve) => {
-    const done = (): void => resolve();
-    child.once('exit', done);
+    if (exited) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const finish = (didExit: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', onExit);
+      if (didExit) exited = true;
+      resolve();
+    };
+    const onExit = (): void => finish(true);
+    const timer = setTimeout(() => finish(false), 5000);
+    child.once('exit', onExit);
     try {
       child.kill('SIGKILL');
     } catch {
-      done();
+      finish(false);
     }
-    setTimeout(done, 5000);
   });
+  // Explicitly killed daemons must not make the next beforeEach wait for them
+  // again. Unexpectedly live children stay registered for resetFixture.
+  if (exited) {
+    const index = spawned.indexOf(child);
+    if (index >= 0) spawned.splice(index, 1);
+  }
   await sleep(1500);
 }
 
@@ -247,6 +281,77 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       // no-op would synchronously shell out for ACL hardening and freeze the
       // daemon event loop for seconds. Async ACL re-hardening leaves mtime put.
       expect(fs.statSync(statePath).mtimeMs).toBe(persistedMtime);
+    },
+    120_000,
+  );
+
+  it.skipIf(!HAVE_OPENSSL)(
+    'restores native HTTPS without key material or plaintext downgrade',
+    async () => {
+      const fixture = createTlsTestFixture();
+      try {
+        const port = await freePort();
+
+        const d1 = await startDaemon();
+        const started = await rpc('daemon.web.start', {
+          port,
+          host: '127.0.0.1',
+          allowInput: false,
+          allowedHosts: ['localhost'],
+          tls: { certPath: fixture.certPath, keyPath: fixture.keyPath },
+        });
+        const token = started.token as string;
+        expect(started.tls).toBe(true);
+        expect(await probe(port, '/api/config', token, true)).toEqual({ status: 200 });
+
+        // An option-only caller such as the GUI does not have the private-key
+        // path. Omitting `tls` must preserve HTTPS rather than downgrade it.
+        const reconfigured = await rpc('daemon.web.start', {
+          port,
+          host: '127.0.0.1',
+          allowInput: true,
+          allowedHosts: ['localhost'],
+        });
+        expect(reconfigured.tls).toBe(true);
+        expect(reconfigured.allowInput).toBe(true);
+        expect(await probe(port, '/api/config', token, true)).toEqual({ status: 200 });
+
+        const statePath = path.join(WMUX_DIR, 'web-state.json');
+        const rawState = fs.readFileSync(statePath, 'utf8');
+        const persisted = JSON.parse(rawState) as {
+          tls?: { certPath?: string; keyPath?: string };
+        };
+        expect(persisted.tls).toEqual({
+          certPath: fixture.certPath,
+          keyPath: fixture.keyPath,
+        });
+        expect(rawState).not.toContain(fs.readFileSync(fixture.keyPath, 'utf8').trim());
+        const persistedMtime = fs.statSync(statePath).mtimeMs;
+
+        await killDaemon(d1);
+        expect((await probe(port, '/api/config', token, true)).error).toBeTruthy();
+
+        const d2 = await startDaemon();
+        const restored = await rpc('daemon.web.status');
+        expect(restored.running).toBe(true);
+        expect(restored.tls).toBe(true);
+        expect(restored.port).toBe(port);
+        expect(restored.token).toBe(token);
+        expect(await probe(port, '/api/config', token, true)).toEqual({ status: 200 });
+        expect((await probe(port, '/api/config', token)).error).toBeTruthy();
+        expect(fs.statSync(statePath).mtimeMs).toBe(persistedMtime);
+
+        // Losing a persisted key must leave no listener at all after restart;
+        // silently replaying the same port as HTTP would expose the bearer token.
+        await killDaemon(d2);
+        fs.unlinkSync(fixture.keyPath);
+        await startDaemon();
+        expect((await rpc('daemon.web.status')).running).toBe(false);
+        expect((await probe(port, '/api/config', token, true)).error).toBeTruthy();
+        expect((await probe(port, '/api/config', token)).error).toBeTruthy();
+      } finally {
+        fixture.cleanup();
+      }
     },
     120_000,
   );

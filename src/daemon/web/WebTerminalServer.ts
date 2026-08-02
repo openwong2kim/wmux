@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -10,7 +11,7 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
-import type { PairRefusal } from '../../shared/web';
+import type { PairRefusal, WebTlsConfig } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
 import {
   collectSessionDiff,
@@ -100,6 +101,14 @@ export interface WebTerminalStartOptions {
    */
   allowUpload: boolean;
   /**
+   * Terminate HTTPS in the daemon with operator-supplied PEM files.
+   *
+   * Paths are absolute because the CLI and daemon do not necessarily share a
+   * working directory. File contents are read only while constructing the
+   * listener and never appear in status or durable state.
+   */
+  tls?: WebTlsConfig;
+  /**
    * Extra hostnames to accept in the `Host` header, beyond loopback and the
    * bound addresses. Needed when a reverse proxy in front of the loopback bind
    * forwards the browser's Host verbatim — `tailscale serve` forwards the
@@ -133,8 +142,10 @@ export interface WebTerminalInfo {
   allowInput?: boolean;
   /** Whether `POST /api/upload` is armed. Its own opt-in, see start options. */
   allowUpload?: boolean;
+  /** True when this listener terminates HTTPS inside the daemon. */
+  tls?: boolean;
   token?: string;
-  /** Reachable URLs with the token embedded (`http://<ip>:<port>/?token=…`). */
+  /** Reachable URLs with the token embedded (`http[s]://<host>:<port>/?token=…`). */
   urls?: string[];
   /** Live SSE client count. */
   clients?: number;
@@ -664,7 +675,7 @@ interface AttentionCursor {
 }
 
 export class WebTerminalServer {
-  private server: http.Server | null = null;
+  private server: http.Server | https.Server | null = null;
   private token = '';
   private opts: WebTerminalStartOptions | null = null;
   private readonly clients = new Set<SseClient>();
@@ -769,6 +780,11 @@ export class WebTerminalServer {
     return this.server !== null;
   }
 
+  /** Daemon-internal transport state for safe option-only reconfiguration. */
+  get currentTlsConfig(): WebTlsConfig | undefined {
+    return this.opts?.tls ? { ...this.opts.tls } : undefined;
+  }
+
   /**
    * Start (or restart) the web server. A running server is stopped first so a
    * second `wmux web --allow-input` cleanly re-applies options.
@@ -780,6 +796,18 @@ export class WebTerminalServer {
    * hand the phone an already-burned code.
    */
   async start(options: WebTerminalStartOptions): Promise<WebTerminalInfo> {
+    // Build the transport before taking an existing listener down. Invalid,
+    // unreadable or mismatched PEM files are configuration errors, not a
+    // reason to interrupt a server that is already working.
+    const server = createTransportServer(options, (req, res) => {
+      // Never let a handler error escape into the daemon event loop.
+      try {
+        this.handle(req, res);
+      } catch (err) {
+        this.failRequest(res, err);
+      }
+    });
+
     if (this.server) {
       await this.stop();
     }
@@ -788,15 +816,6 @@ export class WebTerminalServer {
     this.opts = options;
     this.pendingDeviceName = undefined;
     this.generatePairCode();
-
-    const server = http.createServer((req, res) => {
-      // Never let a handler error escape into the daemon event loop.
-      try {
-        this.handle(req, res);
-      } catch (err) {
-        this.failRequest(res, err);
-      }
-    });
 
     // A malformed request or a client that drops mid-handshake must not crash
     // the daemon. Log and move on.
@@ -871,7 +890,7 @@ export class WebTerminalServer {
 
     this.deps.log(
       'info',
-      `[web] listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'})`,
+      `[web] ${options.tls ? 'HTTPS' : 'HTTP'} listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'})`,
     );
     return this.status();
   }
@@ -1087,8 +1106,9 @@ export class WebTerminalServer {
    * durable too, so `--expose` without a TLS front now means handing a
    * long-lived secret to anything on the LAN. Loopback is fine (nothing
    * off-machine reaches it). A host the operator listed with `--allow-host` is
-   * fine, because that flag exists precisely to name the TLS front (`tailscale
-   * serve`) that forwards to us.
+   * fine because `tailscale serve` fronts a loopback bind. A native TLS
+   * listener is also fine because the listener type — unlike a Host header —
+   * is server-controlled evidence that the handover was encrypted.
    *
    * The redeeming request's `Host` is deliberately irrelevant here: the caller
    * writes it. Only the server's bind can prove whether bytes stayed local.
@@ -1100,6 +1120,9 @@ export class WebTerminalServer {
    * untouched — this gate only guards NEW durable device credentials.
    */
   private mintRefusal(): string | null {
+    // Unlike a Host header, the listener type is server-controlled evidence:
+    // this connection reached an HTTPS socket before HTTP routing began.
+    if (this.opts?.tls) return null;
     const bind = this.opts?.host ?? '';
     // The BIND is the only honest judge, and for a while this also accepted a
     // request whose `Host` matched `--allow-host`. That was wrong: `Host` is
@@ -1120,11 +1143,12 @@ export class WebTerminalServer {
     if (isLoopbackHost(bind)) return null;
     return (
       `refusing to mint a device credential: this server is bound to ${bind || 'a non-loopback address'} ` +
-      'over plain HTTP, and a device secret never expires. Two ways forward: (1) run ' +
-      '`wmux web --tailscale` on its own, which binds loopback and lets `tailscale serve` ' +
-      'terminate HTTPS for your tailnet; or (2) pair over loopback BEFORE exposing, which ' +
+      'over plain HTTP, and a device secret never expires. Three ways forward: (1) add ' +
+      '`--tls-cert <certificate>` and `--tls-key <private-key>` so wmux terminates HTTPS; ' +
+      '(2) run `wmux web --tailscale` on its own, which binds loopback and lets ' +
+      '`tailscale serve` terminate HTTPS for your tailnet; or (3) pair over loopback BEFORE exposing, which ' +
       'keeps the handover off the wire — though a plaintext bind still carries the credential ' +
-      'on every later request, so (1) is the one that actually protects it.'
+      'on every later request, so (1) or (2) is what actually protects it.'
     );
   }
 
@@ -1143,11 +1167,12 @@ export class WebTerminalServer {
         host: this.opts.host,
         allowInput: this.opts.allowInput,
         allowUpload: this.opts.allowUpload,
+        tls: this.opts.tls !== undefined,
         token: this.token,
         urls: this.buildUrls(),
         clients: this.clients.size,
         deviceCredentials: !!this.deps.devices,
-        allowedHosts: this.frontedHosts(),
+        allowedHosts: this.advertisedHosts(),
         tailscale: this.opts.tailscale === true,
         pairRefusal: refusal,
       };
@@ -1159,13 +1184,14 @@ export class WebTerminalServer {
       host: this.opts.host,
       allowInput: this.opts.allowInput,
       allowUpload: this.opts.allowUpload,
+      tls: this.opts.tls !== undefined,
       token: this.token,
       urls: this.buildUrls(),
       clients: this.clients.size,
       pairCode: pair.code,
       pairExpiresAt: pair.expiresAt,
       deviceCredentials: !!this.deps.devices,
-      allowedHosts: this.frontedHosts(),
+      allowedHosts: this.advertisedHosts(),
       tailscale: this.opts.tailscale === true,
       // Only meaningful alongside a live code: `activePairCode` can regenerate
       // lazily, and a regenerated code has no name behind it even if the one it
@@ -2892,37 +2918,41 @@ export class WebTerminalServer {
     if (!this.opts) return [];
     const { host, port } = this.opts;
     const token = this.token;
+    const scheme = this.opts.tls ? 'https' : 'http';
     const suffix = `:${port}/?token=${token}`;
-    // A named TLS front comes FIRST, because it is the address that actually
-    // works from a phone. `wmux web --tailscale` binds loopback and lets
-    // `tailscale serve` terminate HTTPS, so without this the only thing
-    // `--status` could print for that setup was `http://127.0.0.1:<port>`,
-    // which is useless on the device the whole feature exists for.
+    // A named reachable host comes FIRST, because it is the address that
+    // actually works from a phone. For `--tailscale` this names the HTTPS front;
+    // for native TLS it can name the certificate's DNS host instead of an IP
+    // address that fails hostname verification.
     //
     // No port: a front is named because it terminates TLS on 443. An operator
     // who fronted on another port writes it into `--allow-host` themselves and
     // it rides through verbatim.
-    const fronted = this.frontedHosts().map((h) => `https://${h}/?token=${token}`);
+    const named = this.advertisedHosts().map((h) =>
+      this.opts?.tls
+        ? `https://${urlAuthority(h)}:${port}/?token=${token}`
+        : `https://${h}/?token=${token}`,
+    );
     // When bound to all interfaces, enumerate concrete reachable addresses so
     // the operator can pick their tailnet IP; otherwise report the bind host.
     if (host === '0.0.0.0' || host === '::') {
       const addrs = collectIpv4();
-      const urls = addrs.map((a) => `http://${a}${suffix}`);
-      urls.push(`http://127.0.0.1${suffix}`);
-      return [...fronted, ...urls];
+      const urls = addrs.map((a) => `${scheme}://${a}${suffix}`);
+      urls.push(`${scheme}://127.0.0.1${suffix}`);
+      return [...named, ...urls];
     }
-    return [...fronted, `http://${urlAuthority(host)}${suffix}`];
+    return [...named, `${scheme}://${urlAuthority(host)}${suffix}`];
   }
 
   /**
-   * The TLS fronts the operator named with `--allow-host`, normalized the same
-   * way the Host gate normalizes them so the two cannot disagree.
+   * Names the operator supplied with `--allow-host`, normalized the same way
+   * the Host gate normalizes them so the two cannot disagree.
    *
    * Only the operator-supplied extras — never the loopback names and local IPs
-   * the server adds to `allowedHosts` for the rebinding check, which are not
-   * fronts and would each produce an `https://` URL that answers nothing.
+   * the server adds for the rebinding check. With a proxy these are separately
+   * fronted HTTPS addresses; with native TLS they are certificate DNS names.
    */
-  private frontedHosts(): string[] {
+  private advertisedHosts(): string[] {
     return (this.opts?.allowedHosts ?? [])
       .map((h) => h.trim().toLowerCase())
       .filter(Boolean);
@@ -3078,6 +3108,49 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     // Which specific choice was selected, when resolved via choiceKey.
     ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
   };
+}
+
+/**
+ * Construct the HTTP(S) listener and validate native TLS before a live server
+ * is stopped. The returned server has not listened yet, so no request can race
+ * the caller installing its new options.
+ */
+function createTransportServer(
+  options: WebTerminalStartOptions,
+  listener: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+): http.Server | https.Server {
+  if (!options.tls) return http.createServer(listener);
+  if (options.tailscale) {
+    throw new Error('native TLS cannot be combined with the Tailscale transport');
+  }
+
+  const cert = readTlsPem('certificate', options.tls.certPath);
+  const key = readTlsPem('private key', options.tls.keyPath);
+  try {
+    // createServer builds its secure context immediately. A malformed cert,
+    // key, or mismatched pair therefore fails here, before start() stops an
+    // existing listener.
+    return https.createServer({ cert, key }, listener);
+  } catch (error) {
+    throw new Error(`TLS certificate/key could not be loaded: ${errMsg(error)}`);
+  }
+}
+
+function readTlsPem(kind: 'certificate' | 'private key', filePath: string): Buffer {
+  if (!path.isAbsolute(filePath)) {
+    throw new Error(`TLS ${kind} path must be absolute`);
+  }
+  try {
+    return fs.readFileSync(filePath);
+  } catch (error) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : 'READ_FAILED';
+    // Do not echo an absolute local path into RPC logs or bug reports. The
+    // flag name already tells the operator which file needs attention.
+    throw new Error(`TLS ${kind} file could not be read (${code})`);
+  }
 }
 
 /**
