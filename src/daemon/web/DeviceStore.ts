@@ -69,6 +69,11 @@ export type DeviceBatchRevocationCause =
   | 'transport-change'
   | 'operator-stop';
 
+interface PendingRevocationAudit {
+  name?: string;
+  reason?: DeviceBatchRevocationCause;
+}
+
 /**
  * The operator's roster view. Carries NO secret material — not the secret, not
  * its hash, not the salt — so it is safe for any surface that can already reach
@@ -292,20 +297,14 @@ export class DeviceStore {
   private readonly lastSeenPersistedAt = new Map<string, number>();
   private hardenTimer: NodeJS.Timeout | null = null;
   /**
-   * True when a revocation is blocked in memory but is NOT on disk yet.
+   * Revocations blocked in memory but not yet known to be durable. The map also
+   * retains their audit metadata across a failed write: `persist()` writes the
+   * whole roster, then flushes every entry only after all tombstones land.
    *
-   * `persist()` writes the WHOLE roster, so ONE successful write makes every
-   * outstanding tombstone durable — which is why a single flag is enough and a
-   * per-device set would be redundant bookkeeping.
-   *
-   * Without this, a retry after a failed write hit the "already revoked"
-   * shortcut and answered `{ok: true}` — reporting the exact opposite of the
-   * truth in the one situation the shortcut's own comment invoked ("so a retry
-   * after a transient failure reports the truth"). An operator who is told
-   * "revoked" stops worrying about that phone; the daemon must not say it about
-   * a credential that comes back on the next start.
+   * Without this, a retry after a transient failure could report success while
+   * losing the original batch cause from the audit trail.
    */
-  private dirtyRevocations = false;
+  private readonly pendingRevocationAudits = new Map<string, PendingRevocationAudit>();
 
   // Observability for the tests: proof that the cache elides derivations, and
   // that a wrong secret is never short-circuited before one.
@@ -409,7 +408,7 @@ export class DeviceStore {
       // Idempotent — but only report success once the tombstone is DURABLE. If
       // an earlier write failed, retry it here rather than answering `ok` for a
       // revocation that a restart would undo.
-      if (this.dirtyRevocations && !this.persist()) {
+      if (this.pendingRevocationAudits.size > 0 && !this.persist()) {
         return { ok: false, reason: 'persist-failed' };
       }
       return { ok: true };
@@ -419,14 +418,13 @@ export class DeviceStore {
     // Drop the cached verification FIRST: nothing may be able to authenticate
     // as this device between here and the notification, whatever the disk does.
     this.forgetVerified(deviceId);
+    this.pendingRevocationAudits.set(deviceId, { name: record.name });
     this.pruneRevoked();
 
     if (!this.persist()) {
-      this.dirtyRevocations = true;
       this.log('error', `[web] revoke of ${deviceId} could not be persisted; it is blocked in memory only`);
       return { ok: false, reason: 'persist-failed' };
     }
-    this.audit.append({ event: 'revoke', deviceId, name: record.name });
     this.log('info', `[web] revoked device "${record.name}" (${deviceId})`);
     return { ok: true };
   }
@@ -463,21 +461,20 @@ export class DeviceStore {
       record.revokedAt = at;
       this.forgetVerified(record.deviceId);
       revoked.push(record.deviceId);
+      this.pendingRevocationAudits.set(record.deviceId, { reason: cause });
     }
-    if (revoked.length === 0 && !this.dirtyRevocations) return { ok: true, revoked };
+    if (revoked.length === 0 && this.pendingRevocationAudits.size === 0) {
+      return { ok: true, revoked };
+    }
 
     this.pruneRevoked();
     if (!this.persist()) {
-      this.dirtyRevocations = true;
       this.log(
         'error',
         `[web] revoked ${revoked.length} device(s) in memory but could not persist the roster; ` +
           'they will come back on the next daemon start',
       );
       return { ok: false, revoked, reason: 'persist-failed' };
-    }
-    for (const deviceId of revoked) {
-      this.audit.append({ event: 'revoke', deviceId, reason: cause });
     }
     if (revoked.length > 0) {
       this.log('info', `[web] revoked ${revoked.length} paired device(s) on ${cause}`);
@@ -761,6 +758,13 @@ export class DeviceStore {
     this.hardenTimer.unref?.();
   }
 
+  private flushPendingRevocationAudits(): void {
+    for (const [deviceId, entry] of this.pendingRevocationAudits) {
+      this.audit.append({ event: 'revoke', deviceId, ...entry });
+    }
+    this.pendingRevocationAudits.clear();
+  }
+
   private persist(): boolean {
     const state: DevicePersistedState = { version: 1, devices: [...this.devices.values()] };
     const payload = JSON.stringify(state, null, 2);
@@ -769,14 +773,12 @@ export class DeviceStore {
       if (!fs.existsSync(this.filePath)) {
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         secureWriteTokenFile(this.filePath, payload);
-        // The whole roster just landed, so every outstanding tombstone is
-        // durable — see `dirtyRevocations`.
-        this.dirtyRevocations = false;
+        this.flushPendingRevocationAudits();
         return true;
       }
       fs.writeFileSync(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, this.filePath);
-      this.dirtyRevocations = false;
+      this.flushPendingRevocationAudits();
       this.scheduleHarden();
       return true;
     } catch (err) {

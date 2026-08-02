@@ -160,7 +160,7 @@ describe('web start transport and credential policy', () => {
     });
   });
 
-  it('mints a fresh token on a first start with no persisted record', () => {
+  it('leaves token generation to the server when disabled state has no token', () => {
     expect(
       decide({
         requestedTls: false,
