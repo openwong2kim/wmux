@@ -240,6 +240,27 @@ describe('TranscriptProjector.subscribe / unsubscribe — per (client, session)'
     expect(harness.projector.watchCount).toBe(0);
   });
 
+  it('seeds a client that joins an existing watch with a reset snapshot', async () => {
+    // The first subscriber's snapshot drains the shared cursor to EOF. Without
+    // the forceReset on join, the second subscriber's scheduled delta is empty
+    // and it starts with nothing but future appends — the "subscribe alone gets
+    // the conversation" promise would hold only for whoever came first.
+    harness.bindings.set('pty-1', binding({ transcriptPath: fixture('claude-basic.jsonl') }));
+    harness.projector.subscribe('c1', 'pty-1');
+    await delay(40);
+    const before = harness.appends.length;
+    expect(before).toBeGreaterThan(0);
+
+    harness.projector.subscribe('c2', 'pty-1');
+    await delay(40);
+    const joined = harness.appends.slice(before);
+    expect(joined.length).toBeGreaterThan(0);
+    const seed = joined[joined.length - 1];
+    expect(seed.clientIds).toContain('c2');
+    expect((seed.data as { reset?: boolean }).reset).toBe(true);
+    expect((seed.data as { events: unknown[] }).events.length).toBeGreaterThan(0);
+  });
+
   it('subscribes even with no transcript path yet, so the first stop can fill it in', () => {
     harness.bindings.set('pty-1', binding());
     const status = harness.projector.subscribe('c1', 'pty-1');

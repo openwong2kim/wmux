@@ -223,11 +223,25 @@ export class TranscriptProjector {
       };
       this.watches.set(sessionId, state);
     }
+    const joinedExistingWatch = !state.clients.has(clientId) && state.tailOffset >= 0;
     state.clients.add(clientId);
     this.arm(sessionId, state);
     // Push the current tail without waiting for a write. A client that only
     // subscribed (no separate snapshot call) still gets the conversation, and a
     // client that did call snapshot dedups on the stable event ids.
+    //
+    // A client joining an EXISTING watch needs more than that push: the shared
+    // cursor is already at EOF, so the scheduled delta is empty and the new
+    // client would start with nothing but future appends — the exact promise
+    // the comment above makes would hold only for the first subscriber. Rewind
+    // the cursor so the next emit is a reset SNAPSHOT (the forceReset +
+    // tailOffset=-1 pair every other reset site here uses); it reaches every
+    // client, and the established ones replace their rows with identical
+    // content (stable event ids), which is the reset contract they implement.
+    if (joinedExistingWatch) {
+      state.forceReset = true;
+      state.tailOffset = -1;
+    }
     this.schedule(sessionId, state);
     return status;
   }
