@@ -177,6 +177,28 @@ describe('atlasGuard', () => {
     expect(setCalls).toBe(2);
   });
 
+  it('recoverNow: unconditional clear + refresh-all, even with a healthy-looking pool', () => {
+    const atlas = new FakeAtlas(3, true); // far below every poll threshold
+    const guard = createAtlasGuard();
+    const a = makePane(atlas);
+    const b = makePane(atlas);
+    guard.register(a.entry);
+    guard.register(b.entry);
+    guard.recoverNow('system-resumed');
+    expect(atlas.clearCalls).toBe(1);
+    expect(a.refreshes()).toBe(1);
+    expect(b.refreshes()).toBe(1);
+    // Baseline reset: the rebuild must not read as a "merge" on the next poll
+    // and trigger a second, redundant CURE rebuild.
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.clearCalls).toBe(1);
+  });
+
+  it('recoverNow with no registered panes is a no-op', () => {
+    const guard = createAtlasGuard();
+    expect(() => guard.recoverNow('visibility')).not.toThrow();
+  });
+
   it('a refresh() that throws does not break the other panes in the group', () => {
     const atlas = new FakeAtlas(PREVENT_AT, true);
     const guard = createAtlasGuard();

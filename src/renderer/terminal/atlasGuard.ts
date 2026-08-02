@@ -89,6 +89,16 @@ export interface AtlasGuard {
   /** Register a pane; returns its unregister function. The poll timer runs
    *  only while at least one pane is registered. */
   register(entry: AtlasGuardEntry): () => void;
+  /**
+   * Unconditional coherent rebuild: clear every shared atlas and refresh all
+   * of its owner panes in the same tick. For recovery boundaries the poll
+   * cannot see — sleep→wake can trash atlas TEXTURE CONTENT while the page
+   * structures the poll reads stay perfectly consistent, so PREVENT/CURE
+   * never fire. (Boundary-driven rebuild pattern borrowed from Orca's
+   * wake-recovery design — idea only, no code:
+   * github.com/stablyai/orca pane-webgl-renderer.ts.)
+   */
+  recoverNow(reason: string): void;
 }
 
 export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
@@ -106,10 +116,10 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   const prevPageCount = new WeakMap<object, number>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  function tick(): void {
-    // Group live panes by shared atlas identity so clear+refresh covers every
-    // owner in the same tick (the whole point — no pane may keep sampling a
-    // rebuilt atlas with stale references).
+  // Group live panes by shared atlas identity so clear+refresh covers every
+  // owner in the same tick (the whole point — no pane may keep sampling a
+  // rebuilt atlas with stale references).
+  function groupByAtlas(): Map<AtlasLike, AtlasGuardEntry[]> {
     const groups = new Map<AtlasLike, AtlasGuardEntry[]>();
     for (const entry of entries) {
       const atlas = extractAtlas(entry.getAddon());
@@ -118,6 +128,28 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       if (group) group.push(entry);
       else groups.set(atlas, [entry]);
     }
+    return groups;
+  }
+
+  // The coherent rebuild both PREVENT/CURE and recoverNow perform: empty the
+  // shared atlas, then re-raster every owner pane in the same tick.
+  function rebuildGroup(atlas: AtlasLike, group: AtlasGuardEntry[]): void {
+    try {
+      atlas.clearTexture?.(); // shared — one call empties it for every owner
+    } catch {
+      // atlas mid-teardown; refresh below is still harmless
+    }
+    for (const entry of group) {
+      try {
+        entry.refresh();
+      } catch {
+        // pane may be disposing — the next tick simply won't see it
+      }
+    }
+  }
+
+  function tick(): void {
+    const groups = groupByAtlas();
 
     for (const [atlas, group] of groups) {
       const pages = atlas.pages;
@@ -145,18 +177,7 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       console.warn(
         `[wmux:atlas-guard] ${merged ? 'cure (merge detected)' : 'prevent'} — pages=${len}/${mergeTrigger}, panes=${group.length}`,
       );
-      try {
-        atlas.clearTexture?.(); // shared — one call empties it for every owner
-      } catch {
-        // atlas mid-teardown; refresh below is still harmless
-      }
-      for (const entry of group) {
-        try {
-          entry.refresh();
-        } catch {
-          // pane may be disposing — the next tick simply won't see it
-        }
-      }
+      rebuildGroup(atlas, group);
     }
   }
 
@@ -171,6 +192,18 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
           timer = null;
         }
       };
+    },
+    recoverNow(reason: string): void {
+      const groups = groupByAtlas();
+      if (groups.size === 0) return;
+      console.warn(`[wmux:atlas-guard] recover (${reason}) — atlases=${groups.size}`);
+      for (const [atlas, group] of groups) {
+        // Reset the poll's merge-detection baseline: the rebuild empties the
+        // page pool, and a stale prev count would read that as a "merge" and
+        // trigger a second, redundant rebuild on the next tick.
+        prevPageCount.delete(atlas as object);
+        rebuildGroup(atlas, group);
+      }
     },
   };
 }

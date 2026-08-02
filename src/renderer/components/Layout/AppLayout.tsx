@@ -24,6 +24,7 @@ import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
+import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -418,6 +419,20 @@ export default function AppLayout() {
       (window as any).electronAPI?.browser?.setLightweight?.(browserLightweightMode);
     } catch { /* older main without the handler — setting stays inert */ }
   }, [browserLightweightMode]);
+
+  // Wake-boundary glyph-atlas recovery — sleep can trash the shared WebGL
+  // atlas's texture content without any event or page-structure change, so
+  // atlasGuard's poll never fires. Rebuild at the wake boundaries instead.
+  // Rationale and trigger choice live in terminal/atlasWakeRecovery.ts.
+  useEffect(() => {
+    // optional-chain electronAPI — jsdom (tests) has no preload bridge; an
+    // older main without the push degrades to visibility-only recovery.
+    const onResumed = (window as any).electronAPI?.system?.onResumed;
+    return initAtlasWakeRecovery({
+      onSystemResumed:
+        typeof onResumed === 'function' ? onResumed : () => () => {},
+    });
+  }, []);
 
   // #517 slice C — discard mode mirrors the same way. Effective only while
   // lightweight mode is also on (belt-and-braces: main enforces this too).

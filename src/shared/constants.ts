@@ -304,6 +304,10 @@ export const IPC = {
   CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
   CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
   SYSTEM_BUILTIN_DISPLAY: 'system:builtin-display',
+  // Fired by main's powerMonitor 'resume' so the renderer can rebuild GPU
+  // state that sleep may have invalidated (shared glyph atlas — see
+  // terminal/atlasWakeRecovery.ts).
+  SYSTEM_RESUMED: 'system:resumed',
   // Phase 4: Auto updater
   UPDATE_CHECK: 'update:check',
   UPDATE_AVAILABLE: 'update:available',

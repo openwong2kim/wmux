@@ -1363,6 +1363,13 @@ app.on('ready', async () => {
   // exploded" because the OS hadn't finished waking up.
   powerMonitor.on('resume', async () => {
     console.log('[Main] System resumed from sleep — checking PTY health');
+    // Sleep can invalidate GPU texture memory without any context-loss event
+    // firing; tell the renderer so it can rebuild the shared glyph atlas
+    // (terminal/atlasWakeRecovery.ts). Sent before the PTY health check —
+    // the visual repair must not wait on tasklist round-trips.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC.SYSTEM_RESUMED);
+    }
     const active = ptyManager.getActiveInstances();
     if (active.length === 0) return;
 

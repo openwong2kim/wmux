@@ -197,6 +197,16 @@ const electronAPI = {
      * V8 JS heap (~10MB) and under-reported real usage by ~10x.
      */
     getMemoryUsage: () => ipcRenderer.invoke(IPC.APP_MEMORY) as Promise<number>,
+    /**
+     * System woke from sleep (main's powerMonitor 'resume'). Used to rebuild
+     * renderer GPU state that sleep can silently invalidate (shared glyph
+     * atlas — terminal/atlasWakeRecovery.ts). Returns the unsubscribe.
+     */
+    onResumed: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.SYSTEM_RESUMED, listener);
+      return () => { ipcRenderer.removeListener(IPC.SYSTEM_RESUMED, listener); };
+    },
   },
   settings: {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
