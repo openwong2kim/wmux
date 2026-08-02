@@ -64,6 +64,11 @@ export type DeviceAuthResult =
   | { ok: true; deviceId: string; name?: string }
   | { ok: false; reason: 'unknown' | 'revoked' };
 
+export type DeviceBatchRevocationCause =
+  | 'token-rotation'
+  | 'transport-change'
+  | 'operator-stop';
+
 /**
  * The operator's roster view. Carries NO secret material — not the secret, not
  * its hash, not the salt — so it is safe for any surface that can already reach
@@ -429,8 +434,9 @@ export class DeviceStore {
   /**
    * Revoke EVERY device still active. Backs `wmux web --new-token`, whose CLI
    * help promises exactly this ("Mint a fresh access token, revoking every
-   * device already paired"), and encrypted/plaintext transport transitions,
-   * which must not carry credentials across the boundary.
+   * device already paired"), encrypted/plaintext transport transitions, and
+   * explicit stop. The caller-supplied cause keeps those paths distinct in the
+   * audit trail.
    *
    * That promise used to hold for free: before per-device credentials every
    * phone authenticated with the operator's own token, so rotating it locked
@@ -447,7 +453,9 @@ export class DeviceStore {
    * disk. The devices are blocked in memory either way, so the caller can cut
    * their streams regardless of what the disk did.
    */
-  revokeAll(): { ok: boolean; revoked: string[]; reason?: 'persist-failed' } {
+  revokeAll(
+    cause: DeviceBatchRevocationCause = 'token-rotation',
+  ): { ok: boolean; revoked: string[]; reason?: 'persist-failed' } {
     const at = this.now();
     const revoked: string[] = [];
     for (const record of this.devices.values()) {
@@ -469,10 +477,10 @@ export class DeviceStore {
       return { ok: false, revoked, reason: 'persist-failed' };
     }
     for (const deviceId of revoked) {
-      this.audit.append({ event: 'revoke', deviceId, reason: 'token-rotation' });
+      this.audit.append({ event: 'revoke', deviceId, reason: cause });
     }
     if (revoked.length > 0) {
-      this.log('info', `[web] revoked ${revoked.length} paired device(s) on token rotation`);
+      this.log('info', `[web] revoked ${revoked.length} paired device(s) on ${cause}`);
     }
     return { ok: true, revoked };
   }

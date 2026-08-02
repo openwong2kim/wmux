@@ -186,7 +186,13 @@ export function coerceWebStateWithDiagnostics(parsed: unknown): WebStateLoadResu
 }
 
 function disabledLoadResult(): WebStateLoadResult {
-  return { state: { ...WEB_STATE_DISABLED }, transportInvalid: false };
+  return {
+    state: {
+      ...WEB_STATE_DISABLED,
+      allowedHosts: [...WEB_STATE_DISABLED.allowedHosts],
+    },
+    transportInvalid: false,
+  };
 }
 
 /** Validate persisted/RPC native-TLS paths without reading the PEM files. */

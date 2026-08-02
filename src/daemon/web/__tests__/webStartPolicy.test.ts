@@ -160,6 +160,15 @@ describe('web start transport and credential policy', () => {
     });
   });
 
+  it('mints a fresh token on a first start with no persisted record', () => {
+    expect(
+      decide({
+        requestedTls: false,
+        previous: previous({ enabled: false, token: '' }),
+      }),
+    ).toEqual({ tls: undefined, token: undefined, rotateCredentials: false });
+  });
+
   it('rejects native TLS combined with Tailscale', () => {
     expect(() => decide({ requestedTls: TLS, tailscale: true })).toThrow(
       'native TLS cannot be combined with the Tailscale transport',

@@ -498,7 +498,7 @@ describe('DeviceStore — revocation durability', () => {
   });
 });
 
-describe('DeviceStore — revokeAll (token rotation)', () => {
+describe('DeviceStore — revokeAll', () => {
   it('revokes every active device and survives a restart', async () => {
     const s = store();
     const a = await s.mint({ name: 'Phone' });
@@ -518,6 +518,20 @@ describe('DeviceStore — revokeAll (token rotation)', () => {
     const s = store();
     expect(s.revokeAll()).toEqual({ ok: true, revoked: [] });
   });
+
+  it.each(['token-rotation', 'transport-change', 'operator-stop'] as const)(
+    'records %s as the batch revocation cause',
+    async (cause) => {
+      const s = store();
+      const d = await s.mint({ name: 'Phone' });
+
+      expect(s.revokeAll(cause)).toMatchObject({ ok: true, revoked: [d.deviceId] });
+      const revocations = new DeviceAuditLog(dir)
+        .read()
+        .filter((entry) => entry.event === 'revoke');
+      expect(revocations).toMatchObject([{ deviceId: d.deviceId, reason: cause }]);
+    },
+  );
 
   it('fails closed when the roster cannot be written', async () => {
     const s = store();

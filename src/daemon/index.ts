@@ -73,7 +73,7 @@ import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/Transcript
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
-import { DeviceStore } from './web/DeviceStore';
+import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import type { ApprovalDecision } from './approvals/types';
@@ -123,8 +123,11 @@ function getDeviceStore(): DeviceStore {
 }
 
 /** Revoke the durable roster and cut every live capability for those devices. */
-function revokeAllWebDevices(server: WebTerminalServer): boolean {
-  const revocation = getDeviceStore().revokeAll();
+function revokeAllWebDevices(
+  server: WebTerminalServer,
+  cause: DeviceBatchRevocationCause,
+): boolean {
+  const revocation = getDeviceStore().revokeAll(cause);
   for (const deviceId of revocation.revoked) server.disconnectDevice(deviceId);
   return revocation.ok;
 }
@@ -2360,7 +2363,8 @@ function registerRpcHandlers(
       // event loop can serve a request or the RPC can expose its fresh token.
       // start() also closed every old stream; disconnectDevice clears any
       // remaining device-bound tickets defensively.
-      if (!revokeAllWebDevices(webServer)) {
+      const revocationCause = p.newToken === true ? 'token-rotation' : 'transport-change';
+      if (!revokeAllWebDevices(webServer, revocationCause)) {
         // Fail closed: in-memory revocation already blocks the devices, but a
         // restart could reload the old roster. Do not leave the new listener
         // running or claim that the boundary rotation succeeded.
@@ -2390,7 +2394,7 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
-    const devicesRevoked = revokeAllWebDevices(webServer);
+    const devicesRevoked = revokeAllWebDevices(webServer, 'operator-stop');
     const result = await stopWebServerDurably(
       () => clearWebState(wmuxDir),
       () => webServer.stop(),
