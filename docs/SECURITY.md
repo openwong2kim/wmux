@@ -71,7 +71,9 @@ starts, not hot-reloaded, so certificate renewal requires re-running `wmux web`
 with both TLS paths or restarting the listener/daemon. Reconfiguring across the
 encrypted/plaintext boundary rotates the operator token and revokes every
 paired-device credential; same-transport reconfiguration preserves them. An
-explicit `wmux web --stop` also revokes both credential classes.
+explicit `wmux web --stop` also revokes both credential classes. Rotation is
+acknowledged only after the device roster and new web state are durable;
+otherwise the new listener is stopped and the operation fails.
 
 ---
 

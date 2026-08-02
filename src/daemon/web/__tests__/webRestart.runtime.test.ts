@@ -586,4 +586,40 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
     },
     120_000,
   );
+
+  it(
+    'a rotated start fails closed when the new web state cannot be persisted',
+    async () => {
+      const port = await freePort();
+      await startDaemon();
+      const first = await rpc('daemon.web.start', {
+        port,
+        host: '127.0.0.1',
+        allowInput: false,
+      });
+      const oldToken = first.token as string;
+      const statePath = path.join(WMUX_DIR, 'web-state.json');
+
+      // A same-name directory defeats placeholder creation, deletion, and the
+      // emergency disabled overwrite. This is the store's strongest failure
+      // mode: an older record could otherwise survive a reported rotation.
+      fs.rmSync(statePath, { force: true });
+      fs.mkdirSync(statePath);
+      try {
+        await expect(
+          rpc('daemon.web.start', {
+            port,
+            host: '127.0.0.1',
+            allowInput: false,
+            newToken: true,
+          }),
+        ).rejects.toThrow('new web state could not be durably persisted');
+        expect((await rpc('daemon.web.status')).running).toBe(false);
+        expect((await probe(port, '/api/config', oldToken)).error).toBeTruthy();
+      } finally {
+        fs.rmSync(statePath, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });

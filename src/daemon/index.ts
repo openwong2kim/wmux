@@ -192,19 +192,20 @@ let webRestore: Promise<void> | null = null;
 
 /**
  * Record the running server's exact shape so the next daemon can reproduce it
- * (#596). Best-effort by design: the operator's start already succeeded, so a
- * write failure is logged rather than surfaced as a failed start. The store
- * neutralises best-effort, but an older locked record can remain when the
- * filesystem refuses every write and delete.
+ * (#596). Best-effort by default: an ordinary operator start already
+ * succeeded, so a write failure is logged rather than surfaced as a failed
+ * start. Callers that rotate credentials use the boolean result to require
+ * durability instead. The store neutralises best-effort, but an older locked
+ * record can remain when the filesystem refuses every write and delete.
  */
 function persistWebState(
   info: WebTerminalInfo,
   allowedHosts: string[],
   tailscale: boolean,
   tls?: WebTlsConfig,
-): void {
-  if (!info.running || !info.token) return;
-  saveWebState(
+): boolean {
+  if (!info.running || !info.token) return false;
+  return saveWebState(
     wmuxDir,
     {
       version: 1,
@@ -2370,7 +2371,17 @@ function registerRpcHandlers(
         );
       }
     }
-    persistWebState(info, allowedHosts, tailscale, tls);
+    const statePersisted = persistWebState(info, allowedHosts, tailscale, tls);
+    if (rotateCredentials && !statePersisted) {
+      // A successful-looking rotation with an older locked record still on
+      // disk could resurrect the old operator token after a restart. Match the
+      // roster's fail-closed contract: leave no new listener and report that
+      // durability, not transport setup, was the failed step.
+      await webServer.stop();
+      throw new Error(
+        'web credentials were rotated in memory, but the new web state could not be durably persisted',
+      );
+    }
     return info;
   });
   pipeServer.onRpc('daemon.web.stop', async () => {
