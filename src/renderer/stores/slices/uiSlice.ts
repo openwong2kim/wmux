@@ -1252,7 +1252,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   focusMultiviewDirection: (direction) => {
     const state = get();
-    const ids = state.multiviewIds;
+    // Walk the SAME list the grid renders. removeWorkspace splices the
+    // workspace without pruning multiviewIds, so a closed member lingers as an
+    // id with no workspace; WorkspaceViewport filters those out before laying
+    // out tracks. Walking the unfiltered list would count a tile that isn't on
+    // screen — every arrow past the ghost lands one tile off — and could hand
+    // activeWorkspaceId to a workspace that no longer exists.
+    const ids = state.multiviewIds.filter((id) => state.workspaces.some((w) => w.id === id));
     // Only meaningful when the grid is actually rendered (matches AppLayout's
     // gate: ≥2 members AND the active workspace is one of them).
     if (ids.length < 2) return;

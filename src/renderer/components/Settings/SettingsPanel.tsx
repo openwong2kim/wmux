@@ -3462,11 +3462,19 @@ function TabAppearance() {
           label={t('settings.multiviewArrangement')}
           description={t('settings.multiviewArrangementDesc')}
         >
-          <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
+          <div
+            role="group"
+            aria-label={t('settings.multiviewArrangement')}
+            className="flex rounded-lg overflow-hidden"
+            style={{ border: '1px solid var(--bg-overlay)' }}
+          >
             {MULTIVIEW_ARRANGEMENTS.map((mode) => (
               <button
                 key={mode}
                 onClick={() => setMultiviewArrangement(mode)}
+                // Selection is colour-only otherwise, so a screen reader hears
+                // three plain buttons with no way to tell which one is active.
+                aria-pressed={multiviewArrangement === mode}
                 className="px-3 py-1 text-xs font-mono transition-colors"
                 style={{
                   backgroundColor: multiviewArrangement === mode ? 'var(--accent-blue)' : 'var(--bg-surface)',

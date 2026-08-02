@@ -321,6 +321,10 @@ describe('UISlice — multiview', () => {
       multiviewIds: ids,
       // @ts-expect-error — cross-slice fields injected for the test
       activeWorkspaceId: active,
+      // focusMultiviewDirection filters multiviewIds against the live
+      // workspaces (a closed member lingers in multiviewIds), so every id here
+      // needs a workspace unless the test is deliberately staging a ghost.
+      workspaces: ids.map((id) => ({ id })),
       setActiveWorkspace,
     });
     return { store, setActiveWorkspace };
@@ -386,6 +390,23 @@ describe('UISlice — multiview', () => {
     store.getState().focusMultiviewDirection('left');
     store.getState().focusMultiviewDirection('right');
     expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('skips a multiview id whose workspace is gone', () => {
+    // removeWorkspace splices the workspace but leaves multiviewIds alone, so
+    // 'GHOST' can outlive its workspace. The grid filters it out before laying
+    // out tracks; nav must use the same list or it walks a tile that isn't on
+    // screen — and could activate a workspace that no longer exists.
+    const { store, setActiveWorkspace } = withMvNav(['A', 'GHOST', 'B'], 'A');
+    store.setState({
+      multiviewArrangement: 'columns',
+      // @ts-expect-error — cross-slice field overlaid for the test
+      workspaces: [{ id: 'A' }, { id: 'B' }],
+    });
+    // Rendered tiles are [A, B], so one step right is B, not the ghost.
+    store.getState().focusMultiviewDirection('right');
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    expect(setActiveWorkspace).not.toHaveBeenCalledWith('GHOST');
   });
 
   it('columns arrangement: left/right walk every tile, up/down no-op', () => {
