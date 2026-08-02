@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Source locks must not depend on line endings: `validate` runs on
+// windows-latest, where the checkout is CRLF, so any assertion carrying a
+// literal \n passes on macOS/Linux and fails only in CI. Normalise once here and
+// keep every pattern below whitespace-tolerant.
+const readSource = (p: string) => fs.readFileSync(p, 'utf-8').replace(/\r\n/g, '\n');
+
 // #747 regression lock (source-level).
 //
 // The selection guard skips fit() so a reflow can't wipe what the user is
@@ -17,7 +23,7 @@ import path from 'node:path';
 // #191 atlas lock and the Fix D / A6 invariants alongside it.
 describe('#747 — a deferred fit must be recorded and settled', () => {
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
-  const src = fs.readFileSync(hookPath, 'utf-8');
+  const src = readSource(hookPath);
 
   it('no site calls the raw guard — every one goes through claimFit', () => {
     // This is the load-bearing assertion. Calling shouldFitWhilePreservingSelection
@@ -47,7 +53,11 @@ describe('#747 — a deferred fit must be recorded and settled', () => {
     // desync this fixes.
     const start = src.indexOf('const runFit = () => {');
     expect(start).toBeGreaterThan(-1);
-    const block = src.slice(start, src.indexOf('\n    };', start));
+    // Bound the block by the next declaration rather than an indentation
+    // pattern — a formatter change must not silently shrink or widen the slice.
+    const end = src.indexOf('const autoCopy = createAutoSelectionCopy', start);
+    expect(end, 'runFit is no longer followed by autoCopy — re-anchor this slice').toBeGreaterThan(start);
+    const block = src.slice(start, end);
     expect(block).toMatch(/fitAddon\.fit\(\)/);
     expect(block).toMatch(/sendResize\(/);
     expect(block).toMatch(/scrollToLine\(/);
@@ -64,11 +74,12 @@ describe('#747 — a deferred fit must be recorded and settled', () => {
     // Without a handle, several selection changes in one debt window each queue
     // their own fit, and a frame can still land after the terminal is disposed.
     expect(src).toMatch(/pendingFitRaf/);
-    const cleanupStart = src.indexOf('if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);\n      if (pendingFitRaf');
     expect(
-      cleanupStart,
+      src,
       'the queued fit frame is not cancelled next to the debounce timer in cleanup',
-    ).toBeGreaterThan(-1);
+    ).toMatch(
+      /clearTimeout\(resizeDebounceTimer\);\s*if \(pendingFitRaf !== null\) cancelAnimationFrame\(pendingFitRaf\);/,
+    );
   });
 
   it('the ResizeObserver delegates to runFit instead of duplicating it', () => {
