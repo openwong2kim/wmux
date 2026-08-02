@@ -121,7 +121,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       {metadata.gitBranch && (
         <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-[var(--text-muted)] min-w-0" data-git-signal-line>
           <span
-            className="truncate max-w-[130px]"
+            className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
             ⎇ {metadata.gitBranch}
