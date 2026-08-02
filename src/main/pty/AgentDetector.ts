@@ -569,15 +569,19 @@ export class AgentDetector {
     for (const cp of CRITICAL_PATTERNS) {
       if (cp.regex.test(clean)) {
         const key = `critical:${cp.label}`;
-        const value = clean.slice(0, 80);
+        // Normalize ONCE, then cap: stripControls drops the C0 bytes that
+        // survived ANSI_STRIP and collapses whitespace, and only the result is
+        // sliced to 80. That single value is the dedup key AND the payload, so
+        // what a surface shows is exactly what the dedup judged — two lines
+        // that differ only by a tab or other control byte now collapse to one
+        // emission instead of both firing. Normalizing before the cap also
+        // means the 80-char limit counts visible characters, not control
+        // bytes. This string ends up in notification bodies and on a phone.
+        const value = stripControls(clean).slice(0, 80);
         if (this.lastEmittedFor.get(key) === value) return;
         this.lastEmittedFor.set(key, value);
         for (const cb of this.criticalCallbacks) {
-          // `value` is the dedup key AND the payload: the same 80-char
-          // ANSI-stripped slice, so what a surface shows is exactly what the
-          // dedup judged. C0 controls that survived ANSI_STRIP are dropped —
-          // this string ends up in notification bodies and on a phone.
-          cb({ action: cp.label, riskLevel: cp.riskLevel, matchedLine: stripControls(value) });
+          cb({ action: cp.label, riskLevel: cp.riskLevel, matchedLine: value });
         }
         return;
       }

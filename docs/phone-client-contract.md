@@ -215,8 +215,12 @@ pre-3.39 daemon simply omits it.
 
 | Value | Meaning |
 | --- | --- |
-| `act` | someone is **blocked on a person**: an approval was raised (`phase: create`), or a `critical`-risk signal fired |
+| `act` | **wants a person now** — urgency, not answerability. Two shapes reach `act`, and only one is answerable: an approval was raised (`phase: create`), which a person answers via its `approvalId`; or a `critical`-risk signal fired, which is **notify-only** — urgent to look at, but nothing is blocked and there is nothing to answer (see the `critical` section) |
 | `info` | FYI: a `notify`, a `review`-risk critical signal, or the lifecycle echo of an approval that is already over (`resolve` / `expire` / `supersede`) |
+
+`act` marks urgency, never a pending question. The **only** answerable event is
+the `approval` kind; a `critical` signal at `act` still has no reply and no
+addressee, exactly as the `critical` section states.
 
 The `critical` **kind** names the channel, not the severity: the daemon's
 pattern table carries two risk levels and puts both on it, so `DELETE FROM` and

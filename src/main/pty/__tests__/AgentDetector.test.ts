@@ -399,6 +399,19 @@ describe('AgentDetector', () => {
       det.feed(`$ rm -rf /tmp/${'x'.repeat(200)}\n`);
       expect(cb.mock.calls[0][0].matchedLine).toHaveLength(80);
     });
+
+    it('dedups lines that differ only by a control byte', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onCritical(cb);
+
+      // Same visible command, one with a stray tab: they normalize to the same
+      // matchedLine, so the dedup key must match and only one emission fires.
+      det.feed('$ rm -rf /tmp/junk\n');
+      det.feed('$ rm -rf\t/tmp/junk\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0].matchedLine).toBe('$ rm -rf /tmp/junk');
+    });
   });
 
   // ── Kiro CLI ──────────────────────────────────────────────────────────────
