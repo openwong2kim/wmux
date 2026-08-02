@@ -77,11 +77,18 @@ function mockController(enabled: boolean) {
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let tmpRoot: string;
-function mkPeers(): PeerStore {
+function mkPeers(onPersist?: () => void): PeerStore {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'peers-'));
   // Skip the slow win32 PowerShell owner-DACL shell-out so the handshake tests
   // stay well under the default test timeout even under full-suite parallelism.
-  return new PeerStore(dir, { reHarden: () => true, secureWrite: (p, d) => fs.writeFileSync(p, d) });
+  // The re-harden runs exactly once per persist, so it also counts store writes.
+  return new PeerStore(dir, {
+    reHarden: () => {
+      onPersist?.();
+      return true;
+    },
+    secureWrite: (p, d) => fs.writeFileSync(p, d),
+  });
 }
 
 interface Harness {
@@ -92,8 +99,8 @@ interface Harness {
   nudges: number[];
 }
 
-async function makeServer(): Promise<Harness> {
-  const serverPeers = mkPeers();
+async function makeServer(onPeerPersist?: () => void): Promise<Harness> {
+  const serverPeers = mkPeers(onPeerPersist);
   const appended: Omit<InboxRecord, 'seq'>[] = [];
   const nudges: number[] = [];
   let seq = 0;
@@ -219,6 +226,33 @@ describe('LanLinkServer — inbound responder state machine', () => {
     expect(rec.text).toBe('hi[31m there'); // ESC stripped, CSI body remains as text
     expect(rec.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(h.nudges.length).toBe(1);
+    h.server.dispose();
+  });
+
+  // #665: noteSeen used to persist the whole peer store per delivered record, so a
+  // peer streaming at the rate cap drove that many owner-DACL shell-outs a second
+  // through execFileSync — blocking the daemon event loop, not just lanlink.
+  it('costs at most one peer-store write per delivered record', async () => {
+    let writes = 0;
+    const h = await makeServer(() => {
+      writes += 1;
+    });
+    h.server.enterPairingMode('123456');
+    const clientPeers = mkPeers();
+    const result = await doPair(h, clientPeers, '123456');
+    const ch = await openAeadChannel(h, result.peerUuid, clientPeers.secretOf(result.peerUuid)!);
+    const before = writes;
+    const N = 5;
+    for (let i = 1; i <= N; i++) {
+      // ch.sealer keeps the intra-connection counter, so several records ride one channel.
+      ch.clientSock.write(
+        encodeFrame(0x10, ch.sealer.seal(Buffer.from(JSON.stringify({ kind: 'msg.text', peerName: 'B', text: 'm' + i, senderSeq: i })))),
+      );
+      await delay(10);
+    }
+    expect(h.appended.length).toBe(N);
+    // Exactly the durable high-water bump per record; lastSeenAt no longer doubles it.
+    expect(writes - before).toBe(N);
     h.server.dispose();
   });
 

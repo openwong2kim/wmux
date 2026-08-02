@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -215,5 +215,115 @@ describe('peers — per-peer store', () => {
     s.upsertPaired(mkResult('u1'));
     // atomicWrite renames a fresh tmp inode over the path, never writes through the link.
     expect(fs.readFileSync(target, 'utf8')).toBe('IMPORTANT');
+  });
+
+  // ── #665: lastSeenAt must not persist per received record ──────────────────
+  describe('noteSeen coalesces its writes', () => {
+    /** reHarden runs exactly once per persist, so it doubles as a write counter. */
+    function countingStore(over: PeerStoreOptions = {}): { s: PeerStore; writes: () => number } {
+      let writes = 0;
+      const s = new PeerStore(dir, {
+        ...seam,
+        reHarden: () => {
+          writes += 1;
+          return true;
+        },
+        ...over,
+      });
+      const base = writes; // discount the machine-key harden done in the constructor
+      return { s, writes: () => writes - base };
+    }
+
+    it('does not write to disk per call, but updates memory', () => {
+      const { s, writes } = countingStore();
+      s.upsertPaired(mkResult('u1'));
+      const afterPair = writes();
+      const before = s.get('u1')!.lastSeenAt;
+      for (let i = 0; i < 50; i++) s.noteSeen('u1');
+      expect(writes()).toBe(afterPair); // 50 records, zero extra persists
+      expect(s.get('u1')!.lastSeenAt).toBeGreaterThanOrEqual(before);
+    });
+
+    it('flushSeen writes the pending refresh exactly once', () => {
+      const { s, writes } = countingStore();
+      s.upsertPaired(mkResult('u1'));
+      const afterPair = writes();
+      s.noteSeen('u1');
+      s.flushSeen();
+      expect(writes()).toBe(afterPair + 1);
+      s.flushSeen(); // nothing pending — no second write
+      expect(writes()).toBe(afterPair + 1);
+    });
+
+    it('reaches disk only once flushed', () => {
+      vi.useFakeTimers();
+      try {
+        const s = store();
+        s.upsertPaired(mkResult('u1'));
+        const paired = store().get('u1')!.lastSeenAt;
+        vi.advanceTimersByTime(60_000);
+        s.noteSeen('u1');
+        expect(store().get('u1')!.lastSeenAt).toBe(paired); // still only in memory
+        s.flushSeen();
+        expect(store().get('u1')!.lastSeenAt).toBe(paired + 60_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a durable persist settles the pending refresh', () => {
+      const { s, writes } = countingStore();
+      s.upsertPaired(mkResult('u1'));
+      s.noteSeen('u1');
+      const afterPair = writes();
+      s.bumpHighWater('u1', 1); // writes the whole store, lastSeenAt included
+      expect(writes()).toBe(afterPair + 1);
+      s.flushSeen(); // already on disk — must not write again
+      expect(writes()).toBe(afterPair + 1);
+    });
+
+    // A throw here would reach the server's pump() catch and kill the connection
+    // over a lastSeenAt write — the #658 interaction called out in #665.
+    it('never throws when the write fails, and retries the refresh later', () => {
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        let hardenOk = true;
+        const s = new PeerStore(dir, {
+          reHarden: () => hardenOk,
+          secureWrite: (p, d) => fs.writeFileSync(p, d),
+        });
+        s.upsertPaired(mkResult('u1'));
+        hardenOk = false; // persist() now unlinks + throws (C12)
+        s.noteSeen('u1');
+        expect(() => s.flushSeen()).not.toThrow();
+        // Still pending: the next flush attempt retries it once persistence recovers.
+        hardenOk = true;
+        s.flushSeen();
+        expect(new PeerStore(dir, seam).get('u1')?.peerUuid).toBe('u1');
+      } finally {
+        if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      }
+    });
+
+    it('dispose flushes a pending refresh', () => {
+      const { s, writes } = countingStore();
+      s.upsertPaired(mkResult('u1'));
+      const afterPair = writes();
+      s.noteSeen('u1');
+      s.dispose();
+      expect(writes()).toBe(afterPair + 1);
+    });
+
+    it('the flush timer settles a refresh with no further traffic', async () => {
+      const { s, writes } = countingStore({ seenFlushMs: 5 });
+      s.upsertPaired(mkResult('u1'));
+      const afterPair = writes();
+      s.noteSeen('u1');
+      s.noteSeen('u1'); // a second refresh must not arm a second timer
+      await new Promise((r) => setTimeout(r, 30));
+      expect(writes()).toBe(afterPair + 1);
+      s.dispose();
+    });
   });
 });

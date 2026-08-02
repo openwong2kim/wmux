@@ -279,6 +279,7 @@ export class LanLinkServer {
 
   dispose(): void {
     this.disposed = true;
+    this.deps.peers.dispose();
     this.cancelPairing();
     void this.closeServer();
     this.queueFirewall(() => this.fw.remove());
@@ -717,6 +718,9 @@ export class LanLinkServer {
       if (n <= 0) this.connsByIp.delete(conn.ip);
       else this.connsByIp.set(conn.ip, n);
     }
+    // Settle the peer's coalesced lastSeenAt now that its stream is over (#665).
+    // No-op unless a refresh is actually pending, and flushSeen never throws.
+    if (conn.peerUuid) this.deps.peers.flushSeen();
   }
 
   /** True if a paired peer has a live AEAD connection (PeerStore eviction guard). */
