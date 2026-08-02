@@ -284,9 +284,10 @@ describe('peers — per-peer store', () => {
 
     // A throw here would reach the server's pump() catch and kill the connection
     // over a lastSeenAt write — the #658 interaction called out in #665.
-    it('never throws when the write fails, and retries the refresh later', () => {
+    it('never throws when the write fails, and the recovered write carries the refresh', () => {
       const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      vi.useFakeTimers();
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
@@ -294,16 +295,62 @@ describe('peers — per-peer store', () => {
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         s.upsertPaired(mkResult('u1'));
-        hardenOk = false; // persist() now unlinks + throws (C12)
+        const paired = s.get('u1')!.lastSeenAt;
+        vi.advanceTimersByTime(60_000);
+        hardenOk = false; // persist() now unlinks the file + throws (C12)
         s.noteSeen('u1');
         expect(() => s.flushSeen()).not.toThrow();
-        // Still pending: the next flush attempt retries it once persistence recovers.
+        // Still pending — and the recovered write must carry the actual value, not
+        // just leave a peer file that happens to exist.
         hardenOk = true;
         s.flushSeen();
-        expect(new PeerStore(dir, seam).get('u1')?.peerUuid).toBe('u1');
+        expect(new PeerStore(dir, seam).get('u1')!.lastSeenAt).toBe(paired + 60_000);
+        s.dispose();
+      } finally {
+        vi.useRealTimers();
+        if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      }
+    });
+
+    it('retries a failed flush on a backoff instead of waiting for the next record', async () => {
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        let hardenOk = true;
+        let writes = 0;
+        const s = new PeerStore(dir, {
+          reHarden: () => {
+            writes += 1;
+            return hardenOk;
+          },
+          secureWrite: (p, d) => fs.writeFileSync(p, d),
+          seenFlushMs: 5,
+        });
+        s.upsertPaired(mkResult('u1'));
+        hardenOk = false;
+        s.noteSeen('u1');
+        s.flushSeen(); // fails, arms a backoff retry
+        const afterFail = writes;
+        hardenOk = true;
+        // No further noteSeen and no dispose: the retry timer alone has to settle it.
+        await new Promise((r) => setTimeout(r, 80));
+        expect(writes).toBeGreaterThan(afterFail);
+        expect(new PeerStore(dir, seam).get('u1')!.lastSeenAt).toBe(s.get('u1')!.lastSeenAt);
+        s.dispose();
       } finally {
         if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       }
+    });
+
+    it('a late noteSeen after dispose cannot arm a timer nobody flushes', () => {
+      const { s, writes } = countingStore({ seenFlushMs: 5 });
+      s.upsertPaired(mkResult('u1'));
+      s.dispose();
+      const afterDispose = writes();
+      s.noteSeen('u1');
+      expect(writes()).toBe(afterDispose);
+      s.dispose(); // idempotent
+      expect(writes()).toBe(afterDispose);
     });
 
     it('dispose flushes a pending refresh', () => {

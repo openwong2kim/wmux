@@ -124,6 +124,8 @@ export interface PeerStoreOptions {
 
 /** Coalescing window for `lastSeenAt` writes — see PeerStore.noteSeen (#665). */
 export const SEEN_FLUSH_MS = 30_000;
+/** Backoff attempts after a failed flush, before it waits for the next record. */
+export const SEEN_FLUSH_MAX_RETRIES = 3;
 
 export class PeerStore {
   private readonly dir: string;
@@ -139,6 +141,8 @@ export class PeerStore {
   /** A `lastSeenAt` refresh is live in memory but not yet on disk (#665). */
   private seenDirty = false;
   private seenFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private seenRetries = 0;
+  private disposed = false;
 
   constructor(baseDir: string, opts: PeerStoreOptions = {}) {
     this.dir = path.join(baseDir, 'lanlink');
@@ -271,8 +275,14 @@ export class PeerStore {
    * eviction (pickEvictable) and lanlink.peers.list, both of which read the
    * in-memory map. The worst a crash before the flush costs is a stale eviction
    * hint, bounded by the flush delay.
+   *
+   * Call this BEFORE any durable mutator that runs on the same record (the
+   * receive path's bumpHighWater): that persist then carries the fresh timestamp
+   * out with it, so the record costs one write instead of two and leaves nothing
+   * pending for connection teardown to flush.
    */
   noteSeen(peerUuid: string): void {
+    if (this.disposed) return;
     const r = this.map.get(peerUuid);
     if (!r) return;
     r.lastSeenAt = nowMs();
@@ -286,29 +296,41 @@ export class PeerStore {
    *
    * NEVER throws: unlike the security-critical mutators, a failed lastSeenAt
    * write must not propagate. On the receive path a throw here would take down
-   * the connection through the server's pump() catch (#658), which is a far
-   * worse outcome than an out-of-date eviction hint.
+   * the connection through the server's pump() catch (#658).
+   *
+   * Swallowing is NOT harmless, though, and the log says so: on win32 a persist
+   * that cannot re-apply the owner-only DACL unlinks the peer file before it
+   * throws (C12), so the failure this catches can be "the pairings, burns and
+   * high-water marks are no longer on disk", not merely "the timestamp is
+   * stale". Hence the bounded retry below rather than a silent give-up.
    */
   flushSeen(): void {
     this.clearSeenFlush();
     if (!this.seenDirty) return;
     try {
-      this.persist();
+      this.persist(); // clears seenDirty + seenRetries on success
     } catch (err) {
-      // seenDirty stays set (persist() clears it only on success), so the next
-      // noteSeen re-arms the timer and dispose() gets a final attempt. Deliberately
-      // NOT re-armed here: a persistently failing win32 ACL would otherwise log on
-      // a 30s loop forever with no traffic to justify it.
-      console.error('[LanLinkPeerStore] failed to flush lastSeenAt:', err);
+      console.error(
+        '[LanLinkPeerStore] failed to flush lastSeenAt — on win32 the peer file may have been removed by the fail-closed ACL branch:',
+        err,
+      );
+      // seenDirty is still set (persist clears it only on success). Retry on a
+      // backoff so a quiet peer's refresh — and a store file that C12 deleted —
+      // is not left waiting for the next inbound record. Bounded: a permanently
+      // broken ACL must not log on a timer forever.
+      if (this.seenRetries < SEEN_FLUSH_MAX_RETRIES) {
+        this.seenRetries += 1;
+        this.armSeenFlush(this.seenFlushMs * 2 ** this.seenRetries);
+      }
     }
   }
 
-  private armSeenFlush(): void {
-    if (this.seenFlushTimer) return;
+  private armSeenFlush(delayMs = this.seenFlushMs): void {
+    if (this.seenFlushTimer || this.disposed) return;
     this.seenFlushTimer = setTimeout(() => {
       this.seenFlushTimer = null;
       this.flushSeen();
-    }, this.seenFlushMs);
+    }, delayMs);
     // Never hold the daemon open for a lastSeenAt write.
     this.seenFlushTimer.unref?.();
   }
@@ -319,9 +341,14 @@ export class PeerStore {
     this.seenFlushTimer = null;
   }
 
-  /** Flush a pending lastSeenAt and stop the timer. */
+  /**
+   * Flush a pending lastSeenAt and stop the timer. Idempotent, and final: a late
+   * noteSeen from a socket still draining must not arm a timer nobody will flush.
+   */
   dispose(): void {
+    if (this.disposed) return;
     this.flushSeen();
+    this.disposed = true;
     this.clearSeenFlush();
   }
 
@@ -408,6 +435,7 @@ export class PeerStore {
     // refresh — but only once the write actually succeeded, so a failed persist
     // still leaves the flush timer to retry (#665).
     this.seenDirty = false;
+    this.seenRetries = 0;
     this.clearSeenFlush();
   }
 

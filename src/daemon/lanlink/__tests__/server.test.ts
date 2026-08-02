@@ -253,7 +253,15 @@ describe('LanLinkServer — inbound responder state machine', () => {
     expect(h.appended.length).toBe(N);
     // Exactly the durable high-water bump per record; lastSeenAt no longer doubles it.
     expect(writes - before).toBe(N);
+    // And nothing is left pending for teardown to write: noteSeen runs BEFORE
+    // bumpHighWater, so that persist already carried the timestamp out. The other
+    // order cost an extra whole-store write on every connection close — which is
+    // every single message on the sendToPeer path.
+    ch.clientSock.destroy();
+    await delay(20);
+    expect(writes - before).toBe(N);
     h.server.dispose();
+    expect(writes - before).toBe(N);
   });
 
   it('REJECTS an execute-kind app message — never appended, peer burn-bounded (C1/router)', async () => {

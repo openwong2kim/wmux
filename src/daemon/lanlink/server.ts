@@ -279,9 +279,12 @@ export class LanLinkServer {
 
   dispose(): void {
     this.disposed = true;
-    this.deps.peers.dispose();
     this.cancelPairing();
     void this.closeServer();
+    // AFTER the listener teardown: closing connections runs destroy(), whose own
+    // flushSeen would otherwise re-dirty the store behind a dispose that already
+    // flushed — once per connection, each a synchronous win32 ACL shell-out.
+    this.deps.peers.dispose();
     this.queueFirewall(() => this.fw.remove());
   }
 
@@ -682,8 +685,13 @@ export class LanLinkServer {
     // Ack ordering (non-negotiable): durable append+fsync BEFORE high-water bump,
     // app-ACK, and nudge.
     const { seq } = this.deps.inbox.append(rec);
-    this.deps.peers.bumpHighWater(peerUuid, msg.senderSeq);
+    // noteSeen FIRST (#665): it only stages lastSeenAt in memory, so the durable
+    // bumpHighWater right after carries it out in the same whole-store write. The
+    // other order left a refresh pending after every record — one extra write per
+    // connection teardown, which for the message-per-connection send path meant
+    // the record still cost two.
     this.deps.peers.noteSeen(peerUuid);
+    this.deps.peers.bumpHighWater(peerUuid, msg.senderSeq);
     // App-level AEAD-sealed ACK (after the durable write).
     this.send(conn, AEAD_RECORD, conn.sealer!.seal(Buffer.from(JSON.stringify({ ack: id }), 'utf8')));
     this.deps.nudge(seq);
