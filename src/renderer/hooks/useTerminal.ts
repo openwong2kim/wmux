@@ -15,6 +15,11 @@ import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import {
+  createDeferredTerminalFit,
+  type DeferredTerminalFitHandle,
+  type DeferredTerminalFitOutcome,
+} from '../utils/deferredTerminalFit';
 import { decodeOsc52Write } from '../utils/osc52Clipboard';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
@@ -565,6 +570,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   if (!webglTokenRef.current) webglTokenRef.current = `wgl-${++webglTokenSeq}`;
   // Pending deferred-WebGL-release timer (see WEBGL_HIDDEN_DISPOSE_DELAY_MS).
   const webglDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resizeFitRef = useRef<DeferredTerminalFitHandle | null>(null);
   // Glyph-corruption repair scheduler (issue #166) — created by the main
   // effect, also poked by the visibility effect on regain.
   const glyphRepaintRef = useRef<GlyphRepaintScheduler | null>(null);
@@ -1159,6 +1165,59 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddon.fit();
     }
 
+    // Track last sent dimensions to avoid redundant resizes. The resize fit
+    // scheduler also remembers a fit blocked by an active selection; releasing
+    // a selection does not produce another ResizeObserver event by itself.
+    let lastSentCols = 0;
+    let lastSentRows = 0;
+    const resizeFit = createDeferredTerminalFit({
+      hasSelection: () => terminal.hasSelection(),
+      attemptFit: (): DeferredTerminalFitOutcome => {
+        try {
+          const term = terminalRef.current;
+          if (!term) return 'skipped';
+
+          if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+            return 'skipped';
+          }
+
+          // xterm's SelectionService clears the active selection on any
+          // rowsChanged event from fit(). Retry from onSelectionChange instead.
+          if (!shouldFitWhilePreservingSelection(term)) {
+            console.debug('[Terminal] resize fit skipped — active selection');
+            return 'deferred';
+          }
+
+          const prevYBase = term.buffer.active.baseY;
+          const prevYDisp = term.buffer.active.viewportY;
+          const wasScrolledUp = prevYDisp < prevYBase;
+          const distFromBottom = prevYBase - prevYDisp;
+
+          fitAddon.fit();
+
+          if (wasScrolledUp) {
+            const newYBase = term.buffer.active.baseY;
+            const targetYDisp = Math.max(0, newYBase - distFromBottom);
+            term.scrollToLine(targetYDisp);
+          }
+
+          const { cols, rows } = term;
+          const currentPtyId = ptyIdRef.current;
+          if (currentPtyId && cols > 0 && rows > 0
+            && (cols !== lastSentCols || rows !== lastSentRows)) {
+            lastSentCols = cols;
+            lastSentRows = rows;
+            sendResize(currentPtyId, cols, rows);
+          }
+          return 'fitted';
+        } catch {
+          // Ignore fit errors during unmount.
+          return 'skipped';
+        }
+      },
+    });
+    resizeFitRef.current = resizeFit;
+
     // Wait for fonts to fully load, then rebuild the WebGL glyph atlas.
     // font-display:swap causes the browser to render with a fallback font first,
     // so the WebGL atlas may contain glyphs measured with wrong metrics.
@@ -1181,17 +1240,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the contract here prevents future regressions if anything triggers
       // a font load mid-session.
       if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+        resizeFit.deferUntilSelectionClears();
+        // Repainting the rebuilt atlas does not disturb selection. The
+        // deferred fit will repaint again if it changes terminal dimensions.
+        terminal.refresh(0, terminal.rows - 1);
         console.debug('[Terminal] fonts.ready fit skipped — active selection');
         return;
       }
       fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
-
-    // Track last sent dimensions to avoid redundant resizes
-    let lastSentCols = 0;
-    let lastSentRows = 0;
-    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Auto-copy on selection (debounced) — selection survives just long enough
     // for the user to release the mouse, then we push it to the clipboard.
@@ -1208,6 +1266,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       autoCopy.onSelection(terminal.getSelection());
+      resizeFit.onSelectionChange();
     });
 
     // Clipboard + shortcut handling
@@ -1990,57 +2049,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
     // and manifests as "infinite content duplication" when switching back to it.
     const resizeObserver = new ResizeObserver(() => {
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = setTimeout(() => {
-        resizeDebounceTimer = null;
-        requestAnimationFrame(() => {
-          try {
-            const term = terminalRef.current;
-            if (!term) return;
-
-            if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
-
-            // Selection-preservation guard: xterm's SelectionService clears
-            // the active selection on any rowsChanged event from fit().
-            // While the user is dragging out a selection (or while a
-            // selection is live waiting to be copied) skip this fit and let
-            // the next ResizeObserver tick handle the resize once the
-            // selection is released.
-            if (!shouldFitWhilePreservingSelection(term)) {
-              console.debug('[Terminal] resize fit skipped — active selection');
-              return;
-            }
-
-            const prevYBase = term.buffer.active.baseY;
-            const prevYDisp = term.buffer.active.viewportY;
-            const wasScrolledUp = prevYDisp < prevYBase;
-            const distFromBottom = prevYBase - prevYDisp;
-
-            fitAddon.fit();
-
-            if (wasScrolledUp) {
-              const newYBase = term.buffer.active.baseY;
-              const targetYDisp = Math.max(0, newYBase - distFromBottom);
-              term.scrollToLine(targetYDisp);
-            }
-
-            const { cols, rows } = term;
-            const currentPtyId = ptyIdRef.current;
-            if (currentPtyId && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
-              lastSentCols = cols;
-              lastSentRows = rows;
-              sendResize(currentPtyId, cols, rows);
-            }
-          } catch {
-            // ignore fit errors during unmount
-          }
-        });
-      }, 100);
+      resizeFit.requestFit();
     });
     resizeObserver.observe(container);
 
     return () => {
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeFit.dispose();
+      if (resizeFitRef.current === resizeFit) resizeFitRef.current = null;
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
@@ -2194,6 +2209,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
     // Selection-preservation guard — see ResizeObserver above.
     if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+      resizeFitRef.current?.deferUntilSelectionClears();
       console.debug('[Terminal] font/theme fit skipped — active selection');
       return;
     }
@@ -2302,9 +2318,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Defer fit to allow CSS display change to take effect before measuring.
       // Selection-preservation guard — workspace/tab switch then immediate
       // selection + Ctrl+C used to wipe the selection because this fit had
-      // no guard (unlike ResizeObserver and font/theme paths). The next
-      // ResizeObserver tick (after selection is released) handles the
-      // deferred resize naturally.
+      // no guard (unlike ResizeObserver and font/theme paths). Record a
+      // deferred fit so selection release can retry it explicitly.
       const id = requestAnimationFrame(() => {
         // Issue #166 — repaint BEFORE the selection guard: refresh() does not
         // touch the selection, and a stale pane must repair on view-switch-back
@@ -2313,6 +2328,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // rebuilding it.
         glyphRepaintRef.current?.onVisible();
         if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+          resizeFitRef.current?.deferUntilSelectionClears();
           console.debug('[Terminal] visibility fit skipped — active selection');
           return;
         }

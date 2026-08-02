@@ -10,8 +10,8 @@
  * current position.
  *
  * Skipping `fit()` while the user has an active selection prevents the
- * clear; the next ResizeObserver tick (after the user releases) handles the
- * deferred resize.
+ * clear. Callers must explicitly retry the fit when the selection clears;
+ * selection release by itself does not trigger ResizeObserver.
  */
 
 /**
