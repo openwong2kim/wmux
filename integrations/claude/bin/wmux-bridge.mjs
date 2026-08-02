@@ -87,6 +87,15 @@ const HOOK_TO_KIND = {
   UserPromptSubmit: 'agent.user_prompt_submit',
 };
 
+// Determine signal kind for PostToolUse: if it's AskUserQuestion, treat as
+// input_answered (user answered locally); otherwise as activity.
+function getPostToolUseKind(payload) {
+  if (payload && payload.tool_name === 'AskUserQuestion') {
+    return 'agent.input_answered';
+  }
+  return 'agent.activity';
+}
+
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
 // Instance suffix ('' in production, '-dev' under a dev build). PTY spawn
@@ -819,8 +828,11 @@ async function main() {
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
+  const kind = hookName === 'PostToolUse'
+    ? getPostToolUseKind(payload)
+    : HOOK_TO_KIND[hookName];
   const envelope = {
-    kind: HOOK_TO_KIND[hookName],
+    kind,
     agent: 'claude',
     // #12235-safe: derive from the transcript filename, NOT payload.session_id.
     agentSessionId: sessionIdFromTranscript(
