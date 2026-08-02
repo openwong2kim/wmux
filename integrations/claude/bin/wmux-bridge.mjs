@@ -87,10 +87,11 @@ const HOOK_TO_KIND = {
   UserPromptSubmit: 'agent.user_prompt_submit',
 };
 
-// Determine signal kind for PostToolUse: if it's AskUserQuestion, treat as
-// input_answered (user answered locally); otherwise as activity.
+// Determine signal kind for PostToolUse: if it's AskUserQuestion that fired
+// (completed), treat as input_answered (user answered locally); otherwise as
+// activity. Fired is true only on PostToolUse — PreToolUse never sets it.
 function getPostToolUseKind(payload) {
-  if (payload && payload.tool_name === 'AskUserQuestion') {
+  if (payload && payload.tool_name === 'AskUserQuestion' && payload.fired) {
     return 'agent.input_answered';
   }
   return 'agent.activity';
@@ -743,13 +744,18 @@ async function main() {
   // session id, else by cwd — the same identity the server routes on, so
   // suppression maps 1:1 to what the server would have dropped. Skips are
   // deliberately NOT logged: at N sessions × M subagents the skip volume is
-  // exactly the churn this throttle exists to remove.
+  // exactly the churn this throttle exists to remove. Input-answered signals
+  // (AskUserQuestion completion) must never be throttled — a delayed/dropped
+  // signal leaves the phone with a pending approval the user already answered.
   if (hookName === 'PostToolUse') {
-    const throttleKey = process.env.WMUX_PTY_ID
-      || (payload && typeof payload.session_id === 'string' && payload.session_id)
-      || (payload && typeof payload.cwd === 'string' && payload.cwd)
-      || process.cwd();
-    if (shouldThrottleActivity(throttleKey)) return;
+    const kind = getPostToolUseKind(payload);
+    if (kind === 'agent.activity') {
+      const throttleKey = process.env.WMUX_PTY_ID
+        || (payload && typeof payload.session_id === 'string' && payload.session_id)
+        || (payload && typeof payload.cwd === 'string' && payload.cwd)
+        || process.cwd();
+      if (shouldThrottleActivity(throttleKey)) return;
+    }
   }
 
   // Endpoints to try, daemon first (see resolveTargets). No token for either
