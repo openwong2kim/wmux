@@ -3910,6 +3910,8 @@ const PREFIX_ACTION_IDS = [
   'hideWindow', 'toggleZoom', 'commandPalette',
   'renameWorkspace', 'killWorkspace', 'showCheatSheet',
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
+  'movePaneUp', 'movePaneDown', 'movePaneLeft', 'movePaneRight',
+  'swapPanePrev', 'swapPaneNext',
 ] as const;
 
 function prefixActionLabel(actionId: string, t: (key: string) => string): string {

@@ -85,6 +85,10 @@ export const ko = {
   'palette.cmd.newSurface': '새 서피스',
   'palette.cmd.splitRight': '오른쪽 분할',
   'palette.cmd.splitDown': '아래 분할',
+  'palette.cmd.movePane.left': '페인 왼쪽으로 이동',
+  'palette.cmd.movePane.right': '페인 오른쪽으로 이동',
+  'palette.cmd.movePane.up': '페인 위로 이동',
+  'palette.cmd.movePane.down': '페인 아래로 이동',
   'palette.cmd.showNotifications': '알림 보기',
   'palette.cmd.openSettings': '설정 열기',
   'palette.cmd.openBrowser': '브라우저 열기',
@@ -474,6 +478,12 @@ export const ko = {
   'settings.prefix.focusDown': '아래로 포커스',
   'settings.prefix.focusLeft': '왼쪽으로 포커스',
   'settings.prefix.focusRight': '오른쪽으로 포커스',
+  'settings.prefix.movePaneUp': '페인 위로 이동',
+  'settings.prefix.movePaneDown': '페인 아래로 이동',
+  'settings.prefix.movePaneLeft': '페인 왼쪽으로 이동',
+  'settings.prefix.movePaneRight': '페인 오른쪽으로 이동',
+  'settings.prefix.swapPanePrev': '이전 페인과 교환',
+  'settings.prefix.swapPaneNext': '다음 페인과 교환',
 
   // Custom keybindings
   'settings.customKeybindings': '커스텀 키바인딩',

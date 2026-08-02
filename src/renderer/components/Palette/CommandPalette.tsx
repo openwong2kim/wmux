@@ -223,6 +223,13 @@ export default function CommandPalette() {
           setVisible(false);
         },
       },
+      // #645 — move the active pane. Four entries rather than one "move pane"
+      // with a follow-up prompt: the palette is a single-stage list, and
+      // typing "move pane l" should just do it.
+      ...(['left', 'right', 'up', 'down'] as const).map((dir) => ({
+        label: t(`palette.cmd.movePane.${dir}` as Parameters<typeof t>[0]),
+        action: () => { useStore.getState().moveActivePaneDirection(dir); setVisible(false); },
+      })),
       {
         label: t('palette.cmd.newWorkspace'),
         action: () => { useStore.getState().addWorkspace(); setVisible(false); },

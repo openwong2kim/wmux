@@ -428,3 +428,28 @@
 - **Depends on:** P0-0 measurement fixes. **Effort:** M → S-M (CC). **Priority:** P2-P3.
 
 - [ ] Update the release procedure in CLAUDE.md: main is a protected branch, so the chore(release) commit must land through a release PR (squash), with the v* tag pushed onto the release commit — direct `git push` to main is rejected. (2026-07-30, found while shipping v3.38.1)
+
+## Browser guest discard/wake path has never actually run (P3, from #756 eng review 2026-08-02)
+- **What:** Determine whether the #517 lightweight discard/wake path is reachable in practice, and either exercise it or retire the 15s wake budget.
+- **Why:** `ensureAwake`/`WAKE_TIMEOUT_MS = 15_000` (`WebviewCdpManager.ts`) is live code that appears never to execute: lightweight mode is default-off and `waking discarded surface` / `wake timed out` occur **zero times** across every `%APPDATA%\wmux\logs\main-*.log`. Untested, unexercised code that sits in the path of every browser RPC is a standing hazard — it was mistaken for the cause of #756 precisely because it looks load-bearing.
+- **Context:** Found 2026-08-02 while diagnosing #756. Earlier notes here claimed a discarded guest "fails to remount"; that observation came from `browser_close`, which *unregisters* the surface rather than discarding it, so no wake was ever attempted. Start by enabling lightweight mode and confirming a guest is discarded after `DISCARD_AFTER_MS`, then that `ensureAwake` wakes it.
+- **Depends on:** — **Effort:** M. **Priority:** P3.
+
+## RPC timeout abandons live server work (P2, from #756 eng review outside voice 2026-08-02)
+- **What:** Give RPC a propagated deadline, cancellation, and a status/idempotency path so a timeout is recoverable instead of terminal.
+- **Why:** Restores the stated principle above ("timeout/예외 = unknown, 절대 dead 아님") instead of widening the window around the violation. Today slow work masquerades as failure and a retry can duplicate side effects (a navigation, a click).
+- **Context:** Surfaced by Codex outside voice reviewing the #756 plan, 2026-08-02. `wmux-client.ts:141` rejects and destroys the socket while the main-side handler keeps running uncancelled; `RpcRouter.ts:385` flattens errors to a bare string so no machine-readable cause survives the wire. #756 only bounds one handler wait (the DNS guard) and deliberately does NOT fix this. Touching the RPC envelope is a Substrate contract change (PROTOCOL.md, inventory.md, stability tier).
+- **Depends on:** Should follow #756 so the timeout path has a known-good case to test against. **Effort:** L. **Priority:** P2.
+
+
+## Expose pane.move over RPC/MCP (P3, from #645 eng review 2026-08-02)
+- **What:** Add a `pane.move` (and `pane.swap`) verb so an agent can re-lay-out panes it owns, mirroring the existing `pane.split` / `pane.close` / `pane.focus` family.
+- **Why:** Once humans can drag panes around, an orchestrator asking "put the worker pane next to mine" is the obvious next request. Deliberately NOT in the #645 PR — the human UX should settle first, and nobody has asked for the agent-facing version yet.
+- **Context:** #645 ships renderer-only (keyboard + drag). The RPC version is not a thin wrapper: it needs an entry in `src/main/mcp/methodCapabilityMap.ts`, first-party gating (`firstParty.ts`), a `#236`-style workspace-scope + fail-closed guard like `pane.split` has (`pane.rpc.ts:267-301`), `node scripts/gen-api-reference.mjs` regeneration, and a `docs/api` stability-tier decision. Start from `movePane` in `paneSlice.ts` once #645 lands.
+- **Depends on:** #645. **Effort:** M. **Priority:** P3.
+
+## Cross-workspace pane move / break-pane (P3, from #645 eng review 2026-08-02)
+- **What:** Move a pane into a different workspace, and break a pane out into a new one (tmux `break-pane`).
+- **Why:** The natural follow-up question after in-workspace move ships: "why can't I drag it to the other workspace?" Scoped out of #645 because it is an identity problem, not a layout one.
+- **Context:** Three constraints make this an epic rather than an extension. (1) `panePrincipalId(wsId, paneId)` is the channel-membership coordinate (`paneSlice.ts:518`, purged on close via `purgeMembershipDaemon`), so a moved pane changes principal and its channel rows must migrate rather than be dropped. (2) Workspace env profiles (`WorkspaceProfile.env` / `startupCwd`) differ, so the PTY arrives under the wrong environment. (3) The auto-name `w<wsOrdinal>-<ordinal>` embeds the workspace, so the pane must be reissued an ordinal from the destination's `nextPaneOrdinal` — which breaks the "a pane's name is stable for its lifetime" property that `paneSlice.ts:411` calls critical.
+- **Depends on:** #645. **Effort:** L. **Priority:** P3.

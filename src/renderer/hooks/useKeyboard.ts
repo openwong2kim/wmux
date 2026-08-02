@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
-import { findLeaf } from '../../shared/paneUtils';
+import { findLeaf, getLeafPanes } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
@@ -101,6 +101,34 @@ export interface PrefixActionDeps {
 }
 
 /**
+ * tmux `{` / `}` — swap the active pane with its neighbour in layout order.
+ *
+ * Layout order is the DFS leaf order the user sees on screen (same order
+ * `cyclePane` walks), and it wraps: swapping the last pane "next" trades it
+ * with the first. Two leaves or fewer with no wrap-around target is a no-op.
+ */
+function swapActiveWithAdjacentLeaf(
+  store: PrefixActionDeps['store'],
+  direction: 'prev' | 'next',
+): void {
+  const state = store.getState();
+  const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+  if (!ws) return;
+
+  const leaves = getLeafPanes(ws.rootPane);
+  if (leaves.length <= 1) return;
+
+  const idx = leaves.findIndex((l) => l.id === ws.activePaneId);
+  if (idx === -1) return;
+
+  const delta = direction === 'next' ? 1 : -1;
+  const neighbour = leaves[(idx + delta + leaves.length) % leaves.length];
+  if (neighbour.id === ws.activePaneId) return;
+
+  state.swapPanes(ws.id, ws.activePaneId, neighbour.id);
+}
+
+/**
  * Build the prefix-mode action registry.
  *
  * Exported as a pure factory so {@link useKeyboard} can wire it to live
@@ -166,6 +194,17 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
     focusDown: () => { store.getState().focusPaneDirection('down'); },
     focusLeft: () => { store.getState().focusPaneDirection('left'); },
     focusRight: () => { store.getState().focusPaneDirection('right'); },
+    // #645 — move the pane itself. Same four directions as focus, so the
+    // muscle memory carries over; the store resolves the neighbour with the
+    // same traversal focusPaneDirection uses.
+    movePaneUp: () => { store.getState().moveActivePaneDirection('up'); },
+    movePaneDown: () => { store.getState().moveActivePaneDirection('down'); },
+    movePaneLeft: () => { store.getState().moveActivePaneDirection('left'); },
+    movePaneRight: () => { store.getState().moveActivePaneDirection('right'); },
+    // tmux's `{` / `}` — swap the active pane with the previous / next leaf in
+    // layout order, wrapping at the ends like cyclePane does.
+    swapPanePrev: () => { swapActiveWithAdjacentLeaf(store, 'prev'); },
+    swapPaneNext: () => { swapActiveWithAdjacentLeaf(store, 'next'); },
     renameWorkspace: () => {
       doc.dispatchEvent(new CustomEvent('wmux:rename-workspace'));
     },

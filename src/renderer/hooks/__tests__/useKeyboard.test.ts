@@ -169,6 +169,34 @@ describe('createPrefixActions — registry shape', () => {
     }
   });
 
+  it('keeps all THREE prefix lists aligned (registry, defaults, settings UI)', () => {
+    // The registry doc comment warns that createPrefixActions,
+    // DEFAULT_PREFIX_CONFIG.bindings and SettingsPanel's PREFIX_ACTION_IDS must
+    // stay in sync. The first two are checked above; the third lives in a
+    // component that is expensive to mount, so read it out of the source. An
+    // action missing from PREFIX_ACTION_IDS silently vanishes from Settings —
+    // it still works, but the user can never see or rebind it.
+    const settingsSrc = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'components', 'Settings', 'SettingsPanel.tsx'),
+      'utf-8',
+    );
+    const arrayLiteral = /const PREFIX_ACTION_IDS = \[([\s\S]*?)\] as const;/.exec(settingsSrc);
+    expect(arrayLiteral, 'PREFIX_ACTION_IDS array not found in SettingsPanel').not.toBeNull();
+    const settingsIds = new Set(
+      Array.from(arrayLiteral![1].matchAll(/'([^']+)'/g), (m) => m[1]),
+    );
+
+    const { deps } = makeMockDeps();
+    const registryIds = Object.keys(createPrefixActions(deps));
+
+    expect([...registryIds].sort()).toEqual([...settingsIds].sort());
+
+    // And every default binding points at something all three lists know.
+    for (const id of Object.values(DEFAULT_PREFIX_CONFIG.bindings)) {
+      expect(settingsIds.has(id), `${id} is bound by default but missing from Settings`).toBe(true);
+    }
+  });
+
   it('includes the three tmux-compat actions added in the prefix expansion', () => {
     const { deps } = makeMockDeps();
     const actions = createPrefixActions(deps);

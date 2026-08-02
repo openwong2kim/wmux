@@ -589,6 +589,14 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     'ArrowDown': 'focusDown',
     'ArrowLeft': 'focusLeft',
     'ArrowRight': 'focusRight',
+    // #645 — pane movement. `{`/`}` are tmux's swap-pane keys; the uppercase
+    // arrows pair with the lowercase ones above (focus vs move the pane).
+    '{': 'swapPanePrev',
+    '}': 'swapPaneNext',
+    'K': 'movePaneUp',
+    'J': 'movePaneDown',
+    'H': 'movePaneLeft',
+    'L': 'movePaneRight',
   },
 };
 

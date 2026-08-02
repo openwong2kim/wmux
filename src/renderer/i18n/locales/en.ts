@@ -144,6 +144,10 @@ export const en = {
   'palette.cmd.newSurface': 'New Surface',
   'palette.cmd.splitRight': 'Split Right',
   'palette.cmd.splitDown': 'Split Down',
+  'palette.cmd.movePane.left': 'Move Pane Left',
+  'palette.cmd.movePane.right': 'Move Pane Right',
+  'palette.cmd.movePane.up': 'Move Pane Up',
+  'palette.cmd.movePane.down': 'Move Pane Down',
   'palette.cmd.showNotifications': 'Show Notifications',
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.openBrowser': 'Open Browser',
@@ -641,6 +645,12 @@ export const en = {
   'settings.prefix.focusDown': 'Focus down',
   'settings.prefix.focusLeft': 'Focus left',
   'settings.prefix.focusRight': 'Focus right',
+  'settings.prefix.movePaneUp': 'Move pane up',
+  'settings.prefix.movePaneDown': 'Move pane down',
+  'settings.prefix.movePaneLeft': 'Move pane left',
+  'settings.prefix.movePaneRight': 'Move pane right',
+  'settings.prefix.swapPanePrev': 'Swap with previous pane',
+  'settings.prefix.swapPaneNext': 'Swap with next pane',
 
   // Custom keybindings
   'settings.customKeybindings': 'Custom Keybindings',
