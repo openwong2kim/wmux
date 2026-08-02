@@ -30,3 +30,23 @@ export function shouldFitWhilePreservingSelection(
   if (!term) return true; // nothing to preserve, defer to caller's other guards
   return !term.hasSelection();
 }
+
+/**
+ * Ask for permission to fit, recording the debt if the answer is no.
+ *
+ * Prefer this over calling the guard directly. Deferring and remembering are one
+ * decision — a site that checks the guard but forgets to set the flag silently
+ * drops the resize, which is exactly the shape of #747. Bundling them means a
+ * new call site cannot get it half-right.
+ *
+ * @returns true when the caller should fit now; false when it must skip, in
+ * which case `pending.current` is set and the retry path owns settling it.
+ */
+export function claimFit(
+  term: { hasSelection(): boolean } | null | undefined,
+  pending: { current: boolean },
+): boolean {
+  if (shouldFitWhilePreservingSelection(term)) return true;
+  pending.current = true;
+  return false;
+}

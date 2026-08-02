@@ -13,7 +13,7 @@ import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
-import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
+import { claimFit } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { decodeOsc52Write } from '../utils/osc52Clipboard';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
@@ -833,6 +833,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
     try {
       fitAddonRef.current.fit();
+      // This path fits and resizes too, so it settles any deferred debt (#747) —
+      // otherwise the flag sticks and every later selection change re-runs a fit
+      // that is already done.
+      pendingFitRef.current = false;
       const currentPtyId = ptyIdRef.current;
       if (currentPtyId) {
         const { cols, rows } = terminalRef.current;
@@ -1196,14 +1200,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // resolves on mount before the user can select anything), but pinning
       // the contract here prevents future regressions if anything triggers
       // a font load mid-session.
-      if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-        pendingFitRef.current = true;
+      if (!claimFit(terminalRef.current, pendingFitRef)) {
         console.debug('[Terminal] fonts.ready fit deferred — active selection');
         return;
       }
       fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
+
+    // pendingFitRef lives at hook scope so every guarded site can reach it, so a
+    // debt left by the PREVIOUS terminal (ptyId change re-runs this effect) would
+    // otherwise make the new one fit on its first selection change.
+    pendingFitRef.current = false;
 
     // Track last sent dimensions to avoid redundant resizes
     let lastSentCols = 0;
@@ -1218,10 +1226,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // workspace). Fitting a hidden terminal produces 0 cols/rows, which
     // corrupts the PTY buffer and manifests as "infinite content duplication"
     // when switching back to it.
+    // One outstanding retry at a time. Without a handle we could neither cancel
+    // a queued fit at teardown nor stop several selection events in the same
+    // debt window from each scheduling their own.
+    let pendingFitRaf: number | null = null;
     const runFit = () => {
       try {
         const term = terminalRef.current;
         if (!term) return;
+        // Identity guard, as at every other async site in this hook (fonts.ready,
+        // hydrateForRead, …). A ptyId change re-runs this effect; a frame queued
+        // by the previous one would otherwise fit against the OLD container and
+        // fitAddon and then send those dimensions to ptyIdRef.current — which by
+        // then points at the NEW pty.
+        if (term !== terminal) return;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
@@ -1230,8 +1248,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // is dragging out a selection (or while one is live waiting to be
         // copied) skip this fit and record the debt — releasing the selection
         // fires no ResizeObserver tick, so without this the fit is simply lost.
-        if (!shouldFitWhilePreservingSelection(term)) {
-          pendingFitRef.current = true;
+        if (!claimFit(term, pendingFitRef)) {
           console.debug('[Terminal] resize fit deferred — active selection');
           return;
         }
@@ -1282,7 +1299,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // a size change. rAF so xterm has finished updating its selection state
       // before fit() reflows the buffer, matching the observer's own timing.
       if (pendingFitRef.current && !terminal.hasSelection()) {
-        requestAnimationFrame(runFit);
+        if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
+        pendingFitRaf = requestAnimationFrame(() => {
+          pendingFitRaf = null;
+          runFit();
+        });
       }
     });
 
@@ -2069,13 +2090,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {
         resizeDebounceTimer = null;
-        requestAnimationFrame(runFit);
+        if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
+        pendingFitRaf = requestAnimationFrame(() => {
+          pendingFitRaf = null;
+          runFit();
+        });
       }, 100);
     });
     resizeObserver.observe(container);
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
@@ -2228,8 +2254,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       containerRef.current.style.backgroundColor = xtermTheme.background ?? '';
     }
     // Selection-preservation guard — see ResizeObserver above.
-    if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-      pendingFitRef.current = true;
+    if (!claimFit(terminalRef.current, pendingFitRef)) {
       console.debug('[Terminal] font/theme fit deferred — active selection');
       return;
     }
@@ -2348,8 +2373,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // where the pool kept the old (possibly stale) context alive instead of
         // rebuilding it.
         glyphRepaintRef.current?.onVisible();
-        if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
-          pendingFitRef.current = true;
+        if (!claimFit(terminalRef.current, pendingFitRef)) {
           console.debug('[Terminal] visibility fit deferred — active selection');
           return;
         }
