@@ -7,7 +7,9 @@ import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
 import { EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE } from '../../shared/browserBackend';
 import {
+  assertBrowserTargetScope,
   isWorkspaceScopeUnresolvedError,
+  WorkspaceScopeUnresolvedError,
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
   type BrowserTargetScope,
 } from './browserScope';
@@ -79,8 +81,8 @@ function workspaceScopeUnresolved(reason: string): Error {
   // Log as well as throw so direct engine consumers retain a clear refusal
   // reason even when a tool later renders the error into MCP result content.
   console.error(`[PlaywrightEngine] Page selection refused — ${reason}`);
-  return new Error(
-    `${WORKSPACE_SCOPE_UNRESOLVED_CODE}: cannot determine which workspace this session owns (${reason}), ` +
+  return new WorkspaceScopeUnresolvedError(
+    `cannot determine which workspace this session owns (${reason}), ` +
       `so browser page selection cannot be scoped to it. Refusing rather than driving another workspace's browser. ` +
       `Make sure you are running inside a wmux terminal workspace.`,
   );
@@ -277,16 +279,15 @@ export class PlaywrightEngine {
    * new-browser URL), so URL equality alone can hand back the WRONG guest
    * while the lease is held for the requested one.
    *
-   * Client-side Page objects expose no targetId, so an unambiguous URL match
-   * resolves directly, and only ambiguous candidates pay for a real
-   * Target.getTargetInfo round-trip over a throwaway CDP session (codex round
-   * 4 — the earlier `_delegate._targetId` probe never matched). Ambiguity
-   * that cannot be resolved → null (fail rather than drive the wrong pane).
+   * Client-side Page objects expose no targetId, so every candidate pays for
+   * one Target.getTargetInfo round-trip over a throwaway CDP session. URL
+   * equality alone is insufficient even when unique: our own newly attached
+   * page may not have materialized yet while a foreign workspace already has
+   * the same URL. A target that cannot be proven → null.
    */
   private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
     const byUrl = pages.filter((p) => p.url() === url);
-    if (byUrl.length === 1) return byUrl[0];
-    const candidates = byUrl.length > 1 ? byUrl : pages;
+    const candidates = byUrl.length > 0 ? byUrl : pages;
     for (const p of candidates) {
       try {
         const session = await p.context().newCDPSession(p);
@@ -427,7 +428,7 @@ export class PlaywrightEngine {
    * reused by its lease and fallback RPCs (#695). This avoids a second identity
    * lookup and also scopes explicit-surface discovery on the main side.
    */
-  async getPage(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
+  private async getPage(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
     // Resolve the selection context (which workspace/surface this call targets)
     // BEFORE consulting any shared state, so the lock, fast-fail latch, and
     // auto-open latch are all scoped to THIS caller's workspace and can never
@@ -473,6 +474,7 @@ export class PlaywrightEngine {
    * dropped workspaceId a compile error at every tool call site.
    */
   async getPageForScope(scope: BrowserTargetScope): Promise<Page | null> {
+    assertBrowserTargetScope(scope);
     return this.getPage(scope.surfaceId, scope.workspaceId);
   }
 

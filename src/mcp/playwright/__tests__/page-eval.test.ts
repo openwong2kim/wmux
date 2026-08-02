@@ -5,6 +5,7 @@ import {
   resolveEvaluator,
   evalFunctionOrRpc,
 } from '../page-eval';
+import { WorkspaceScopeUnresolvedError } from '../browserScope';
 
 // Mock the RPC transport. Path is relative to THIS test file:
 // __tests__/ -> playwright/ -> mcp/, so ../../wmux-client === src/mcp/wmux-client.
@@ -95,7 +96,7 @@ describe('page-eval', () => {
     it('does not fall back when page selection itself cannot be workspace-scoped', async () => {
       const engine = {
         getPageForScope: vi.fn().mockRejectedValue(
-          new Error('WORKSPACE_SCOPE_UNRESOLVED: legacy main cannot prove ownership'),
+          new WorkspaceScopeUnresolvedError('legacy main cannot prove ownership'),
         ),
       };
 

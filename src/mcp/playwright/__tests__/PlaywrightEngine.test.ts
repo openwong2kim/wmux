@@ -233,6 +233,8 @@ interface ShellUrlInternals {
   shellUrl: string | null;
   cacheShellUrl(info: { cdpPort: number; shellUrl?: string; targets: unknown[] }): void;
   isShellPage(url: string): boolean;
+  matchPinnedPage(pages: FakePage[], targetId: string, url: string): Promise<FakePage | null>;
+  getPage(surfaceId?: string, workspaceId?: string): Promise<FakePage | null>;
 }
 function priv(engine: PlaywrightEngine): ShellUrlInternals {
   return engine as unknown as ShellUrlInternals;
@@ -290,6 +292,50 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     expect(priv(engine).isShellPage('https://example.com/')).toBe(false);
   });
 
+  it('requires targetId proof even when only one page has the pinned URL', async () => {
+    let reportedTargetId = 'wc-foreign';
+    const session = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargetInfo'
+          ? Promise.resolve({ targetInfo: { targetId: reportedTargetId } })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      newCDPSession: vi.fn().mockResolvedValue(session),
+    };
+    const onlySameUrlPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://same.example/'),
+      context: vi.fn().mockReturnValue(context),
+    };
+    const engine = PlaywrightEngine.getInstance();
+
+    await expect(priv(engine).matchPinnedPage(
+      [onlySameUrlPage],
+      'wc-owned',
+      'https://same.example/',
+    )).resolves.toBeNull();
+
+    reportedTargetId = 'wc-owned';
+    await expect(priv(engine).matchPinnedPage(
+      [onlySameUrlPage],
+      'wc-owned',
+      'https://same.example/',
+    )).resolves.toBe(onlySameUrlPage);
+    expect(session.detach).toHaveBeenCalledTimes(2);
+  });
+
+  it('getPageForScope refuses a hand-built empty workspace before discovery', async () => {
+    const engine = PlaywrightEngine.getInstance();
+
+    await expect(engine.getPageForScope({
+      workspaceId: '',
+      surfaceId: 'surface-pinned',
+    })).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
+    expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
   it('clears the cached shellUrl on disconnect', async () => {
     const sessions: FakeSession[] = [];
     mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
@@ -318,15 +364,19 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
 
     // The caller's own registered guest, as Target.getTargets sees it.
     const session = {
-      send: vi.fn().mockImplementation((method: string) =>
-        method === 'Target.getTargets'
-          ? Promise.resolve({
-              targetInfos: [
-                { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
-              ],
-            })
-          : Promise.resolve({}),
-      ),
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [
+              { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
+            ],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId: 'wc-1' } });
+        }
+        return Promise.resolve({});
+      }),
       detach: vi.fn().mockResolvedValue(undefined),
     };
     // A context whose pages() exposes both the shell and the webview.
@@ -366,7 +416,7 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
       .setWorkspaceIdResolver(async () => 'ws-A');
     await engine.connect(9222);
 
-    const page = await engine.getPage();
+    const page = await priv(engine).getPage();
     expect(page).toBe(webviewPage);
     // The shell URL was learned from cdp.info during discovery.
     expect(priv(engine).shellUrl).toBe(shellUrl);
@@ -522,7 +572,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 
     const engine = PlaywrightEngine.getInstance();
 
-    await expect(engine.getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
+    await expect(priv(engine).getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
     const browserOpenCalls = mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open');
     expect(browserOpenCalls).toHaveLength(0);
   }, 15_000);
@@ -544,15 +594,19 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     // what lets the post-open re-resolve pin it (mirrors a real main — the
     // engine can no longer fall back to an unscoped "any page" selection).
     const openedSession = {
-      send: vi.fn().mockImplementation((method: string) =>
-        method === 'Target.getTargets'
-          ? Promise.resolve({
-              targetInfos: opened
-                ? [{ targetId: 'wc-new', type: 'page', title: '', url: 'https://example.com/', attached: true }]
-                : [],
-            })
-          : Promise.resolve({}),
-      ),
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: opened
+              ? [{ targetId: 'wc-new', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+              : [],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId: 'wc-new' } });
+        }
+        return Promise.resolve({});
+      }),
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const ctx = {
@@ -590,7 +644,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
 
-    const page = await engine.getPage();
+    const page = await priv(engine).getPage();
 
     expect(page).toBe(webviewPage);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
@@ -616,15 +670,19 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       context: vi.fn(),
     };
     const openedSession = {
-      send: vi.fn().mockImplementation((method: string) =>
-        method === 'Target.getTargets'
-          ? Promise.resolve({
-              targetInfos: opened
-                ? [{ targetId: 'wc-legacy', type: 'page', title: '', url: 'https://example.com/', attached: true }]
-                : [],
-            })
-          : Promise.resolve({}),
-      ),
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: opened
+              ? [{ targetId: 'wc-legacy', type: 'page', title: '', url: 'https://example.com/', attached: true }]
+              : [],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId: 'wc-legacy' } });
+        }
+        return Promise.resolve({});
+      }),
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const ctx = {
@@ -659,7 +717,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
 
-    await expect(engine.getPage()).resolves.toBe(webviewPage);
+    await expect(priv(engine).getPage()).resolves.toBe(webviewPage);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
 
@@ -709,7 +767,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
 
-    await expect(engine.getPage()).rejects.toThrow(
+    await expect(priv(engine).getPage()).rejects.toThrow(
       /requested browser surface is not owned by the calling workspace/,
     );
   }, 15_000);
@@ -896,7 +954,7 @@ describe('PlaywrightEngine fail-closed page selection (unresolvable caller)', ()
       throw new Error('Workspace identity unknown.');
     });
 
-    await expect(engine.getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
+    await expect(priv(engine).getPage()).rejects.toThrow(WORKSPACE_SCOPE_UNRESOLVED_CODE);
     // The refusal happens before any page selection: no CDP connection is made,
     // so the foreign page is never even a candidate.
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
@@ -1088,7 +1146,7 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-B');
 
-    await engine.getPage();
+    await priv(engine).getPage();
 
     // Opened in the caller's OWN workspace — the isolation guarantee.
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-B' });
@@ -1133,9 +1191,9 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
     const engine = PlaywrightEngine.getInstance();
     scope(engine).setWorkspaceIdResolver(async () => 'ws-external');
 
-    await expect(engine.getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_CODE);
+    await expect(priv(engine).getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_CODE);
     // Same prose as the shared constant — no forked message.
-    await expect(engine.getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+    await expect(priv(engine).getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
 
     // No retry/auto-open/connect loop was entered: the throw happens before
     // _getPageImpl, so the CDP browser is never connected and no browser.open
@@ -1177,7 +1235,7 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
     scope(engine).setWorkspaceIdResolver(async () => 'ws-builtin');
 
     // Resolves to null (no page ever appears) — never throws the contract error.
-    await expect(engine.getPage()).resolves.toBeNull();
+    await expect(priv(engine).getPage()).resolves.toBeNull();
     // The builtin generic path still auto-opened in the caller's own workspace.
     expect(opened).toBe(true);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-builtin' });
@@ -1193,15 +1251,19 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
       context: vi.fn(),
     };
     const targetSession = {
-      send: vi.fn().mockImplementation((method: string) =>
-        method === 'Target.getTargets'
-          ? Promise.resolve({
-              targetInfos: [
-                { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
-              ],
-            })
-          : Promise.resolve({}),
-      ),
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [
+              { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
+            ],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId: 'wc-1' } });
+        }
+        return Promise.resolve({});
+      }),
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const ctx = {
@@ -1231,7 +1293,7 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
     const engine = PlaywrightEngine.getInstance();
     scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
 
-    const page = await engine.getPage();
+    const page = await priv(engine).getPage();
     expect(page).toBe(webviewPage);
     // No auto-open — the live builtin target was used.
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);

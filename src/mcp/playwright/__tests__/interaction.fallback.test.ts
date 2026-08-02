@@ -1,0 +1,82 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mockSendRpc, getPage } = vi.hoisted(() => ({
+  mockSendRpc: vi.fn(),
+  getPage: vi.fn(),
+}));
+
+vi.mock('../../wmux-client', () => ({
+  sendRpc: (method: string, ...args: unknown[]) =>
+    method.startsWith('browser.lease.')
+      ? Promise.resolve({ token: null })
+      : mockSendRpc(method, ...args),
+}));
+
+vi.mock('../PlaywrightEngine', () => ({
+  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+}));
+
+import { registerInteractionTools } from '../tools/interaction';
+
+type ToolHandler = (args: Record<string, unknown>) => Promise<{
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+}>;
+
+const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
+
+function collectTools(): Map<string, ToolHandler> {
+  const tools = new Map<string, ToolHandler>();
+  const server = {
+    tool: (name: string, _desc: string, _schema: unknown, handler: ToolHandler) => {
+      tools.set(name, handler);
+    },
+  };
+  registerInteractionTools(server as never, browserToolDeps);
+  return tools;
+}
+
+const fill = collectTools().get('browser_fill');
+if (!fill) throw new Error('browser_fill failed to register');
+
+beforeEach(() => {
+  browserToolDeps.resolveWorkspaceId.mockClear();
+  mockSendRpc.mockReset();
+  mockSendRpc.mockResolvedValue({});
+  getPage.mockReset();
+  getPage.mockResolvedValue(null);
+});
+
+describe('browser_fill RPC fallback workspace scope', () => {
+  it('scopes click, select-all evaluation, and typing to the same target', async () => {
+    const result = await fill({
+      fields: [{ ref: 'field-1', value: 'new value' }],
+      surfaceId: 'surface-1',
+    });
+
+    expect(getPage).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      surfaceId: 'surface-1',
+    });
+    expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
+    expect(mockSendRpc.mock.calls).toEqual([
+      ['browser.click.cdp', {
+        selector: '[data-wmux-ref="field-1"]',
+        workspaceId: 'ws-test',
+        surfaceId: 'surface-1',
+      }],
+      ['browser.evaluate', {
+        expression: "document.execCommand('selectAll')",
+        workspaceId: 'ws-test',
+        surfaceId: 'surface-1',
+      }],
+      ['browser.type.cdp', {
+        text: 'new value',
+        workspaceId: 'ws-test',
+        surfaceId: 'surface-1',
+      }],
+    ]);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe('Filled 1/1 field(s).');
+  });
+});
