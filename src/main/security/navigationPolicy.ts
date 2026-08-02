@@ -2,9 +2,66 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { validateNavigationUrl } from '../../shared/types';
 
+/**
+ * Ceiling on the SSRF guard's DNS lookup (#756).
+ *
+ * `dns.lookup` inherits the OS resolver's own retry schedule, which on Windows
+ * can exceed ten seconds before it gives up — longer than any RPC deadline in
+ * front of it. An unbounded lookup here meant a slow or dead hostname surfaced
+ * to the caller as `RPC timeout: browser.navigate`, naming the transport
+ * instead of the actual failure, while the resolver was still grinding.
+ *
+ * Must stay comfortably below the tightest client deadline that can sit in
+ * front of a navigate (the CLI's, see src/cli/client.ts) so the guard always
+ * loses the race to its own error rather than to the socket's.
+ */
+export const DNS_LOOKUP_TIMEOUT_MS = 3_000;
+
 interface ValidationResult {
   valid: boolean;
   reason?: string;
+}
+
+/**
+ * A rejected lookup and a lookup that never answers are the same answer here:
+ * we could not prove the destination is safe, so navigation must not proceed.
+ * They are reported differently because only one of them is worth retrying.
+ */
+async function lookupWithTimeout(
+  hostname: string,
+  timeoutMs: number,
+): Promise<{ ok: true; addresses: Array<{ address: string }> } | { ok: false; reason: string }> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<{ ok: false; reason: string }>((resolve) => {
+    timer = setTimeout(
+      () => resolve({
+        ok: false,
+        reason:
+          `DNS lookup for "${hostname}" did not answer within ${timeoutMs}ms. ` +
+          `The address could not be verified as safe, so navigation was refused.`,
+      }),
+      timeoutMs,
+    );
+    // Never hold the event loop open on this guard alone.
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }).then(
+        (addresses) => ({ ok: true as const, addresses }),
+        (error: unknown) => ({
+          ok: false as const,
+          reason: `Failed to resolve hostname "${hostname}": ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        }),
+      ),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function validateIpv4Address(address: string): ValidationResult {
@@ -135,13 +192,13 @@ export async function validateResolvedNavigationUrl(url: string): Promise<Valida
     return validateResolvedAddress(hostname);
   }
 
-  let addresses: Array<{ address: string }>;
-  try {
-    addresses = await lookup(hostname, { all: true, verbatim: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { valid: false, reason: `Failed to resolve hostname "${hostname}": ${message}` };
+  // Bounded: see DNS_LOOKUP_TIMEOUT_MS. The guard must fail with its own
+  // reason before the caller's socket deadline fires with a misleading one.
+  const resolution = await lookupWithTimeout(hostname, DNS_LOOKUP_TIMEOUT_MS);
+  if (!resolution.ok) {
+    return { valid: false, reason: resolution.reason };
   }
+  const addresses = resolution.addresses;
 
   if (addresses.length === 0) {
     return { valid: false, reason: `Hostname "${hostname}" did not resolve to an IP address` };

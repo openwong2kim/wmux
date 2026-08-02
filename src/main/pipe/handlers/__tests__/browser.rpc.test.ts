@@ -9,12 +9,26 @@ const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
 }));
+// Navigation resolves on the guest's commit event (#756), so the fake guest
+// has to be a real (if tiny) emitter. Without `on`/`off` here the handler's
+// try/catch would swallow a TypeError and silently divert every navigate onto
+// the renderer-bridge path — the CDP branch would then be untested while
+// still looking green.
+const wcListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 const mockWebContents = {
   isDestroyed: vi.fn(() => false),
   canGoBack: vi.fn(() => true),
   goBack: vi.fn(),
   loadURL: vi.fn(),
   once: vi.fn(),
+  on: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+    const set = wcListeners.get(event) ?? new Set<(...args: unknown[]) => void>();
+    set.add(fn);
+    wcListeners.set(event, set);
+  }),
+  off: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+    wcListeners.get(event)?.delete(fn);
+  }),
   debugger: {
     sendCommand: vi.fn(async () => ({})),
     // EventEmitter-ish surface used by BrowserCaptureManager (#106).
@@ -606,7 +620,10 @@ describe('registerBrowserRpc', () => {
     const response = await router.dispatch({ id: '11', method: 'browser.console.get', params: {} });
     expect(response.ok).toBe(false);
     if (!response.ok) {
-      expect(response.error).toContain('no webview target registered');
+      // #756 replaced the one-size message with a matchable cause. Unscoped
+      // caller + nothing registered = "there is no browser", not a refusal.
+      expect(response.error).toContain('BROWSER_NO_TARGET');
+      expect(response.error).toContain('browser_open');
     }
   });
 

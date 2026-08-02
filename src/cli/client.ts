@@ -20,7 +20,13 @@ import {
 // 떴고, Windows에서도 username 없는 '\\.\pipe\wmux'로 빗나갔다. getPipeName()이
 // win32/unix·username을 모두 처리한다. WMUX_SOCKET_PATH로 오버라이드 가능하되,
 // PTY env는 세션 생성 시점에 동결되므로 env 경로 실패 시 파생 경로로 재시도한다.
-const TIMEOUT_MS = 5000;
+// Must exceed the slowest bounded wait a handler can legitimately perform, or
+// this deadline fires first and reports a transport timeout for what is really
+// a handler-level failure (#756). The binding one today is the navigation
+// guard's DNS lookup (DNS_LOOKUP_TIMEOUT_MS, 3s) plus commit; 5s left almost no
+// margin over it. Exported so the invariant "client deadline outlives the
+// handler waits it fronts" is asserted by a test rather than by comment.
+export const TIMEOUT_MS = 15000;
 
 // 인증 토큰: 서버는 토큰을 ~/.wmux-auth-token 파일에 쓴다. CLI가 이 파일을
 // 자동으로 읽지 않아 매번 WMUX_AUTH_TOKEN을 수동 주입해야 했다(인증 실패).

@@ -127,6 +127,34 @@ export function registerBrowserRpc(
   // Single choke point for the external-backend contract error: a miss while the
   // backend is 'external' means the caller is asking for deep automation that
   // external mode cannot provide — say so explicitly instead of "no target".
+  /**
+   * "No target" has two causes with opposite right answers, and they used to
+   * share one sentence (#756): a caller could not tell a permanent refusal
+   * (the surface belongs to another workspace — #695) from a transient,
+   * actionable absence (this workspace has no browser open yet).
+   *
+   * The scoped lookup returns null for both, so re-run it unscoped: if that
+   * finds a target, ownership is what failed. Neither message names the other
+   * workspace or its URL — only that the caller does not own it, which is the
+   * minimum needed to stop the caller from retrying forever.
+   */
+  const noTargetError = (
+    method: string,
+    surfaceId: string | undefined,
+    workspaceId: string | undefined,
+  ): Error => {
+    if (workspaceId && webviewCdpManager.getTarget(surfaceId, undefined)) {
+      return new Error(
+        `${method}: BROWSER_NOT_OWNED: the requested browser surface is not owned by ` +
+          `the calling workspace. Do not retry — address a surface from this workspace instead.`,
+      );
+    }
+    return new Error(
+      `${method}: BROWSER_NO_TARGET: no browser surface is open in this workspace. ` +
+        `Open one with browser_open first.`,
+    );
+  };
+
   const resolveWc = (
     surfaceId: string | undefined,
     method: string,
@@ -139,7 +167,7 @@ export function registerBrowserRpc(
       : webviewCdpManager.getTarget(surfaceId, workspaceId);
     if (!target) {
       if (backend() === 'external') throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
-      throw new Error(`${method}: no webview target registered`);
+      throw noTargetError(method, surfaceId, workspaceId);
     }
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error(`${method}: WebContents unavailable`);
@@ -374,6 +402,70 @@ export function registerBrowserRpc(
    * Tries CDP direct navigation first, falls back to renderer bridge.
    * params: { url: string, surfaceId?: string }
    */
+  /**
+   * Navigate and resolve once the guest has COMMITTED to the destination,
+   * rather than once every subresource has finished loading (#756).
+   *
+   * `webContents.loadURL()` settles on full load, which has no upper bound: a
+   * slow page kept the RPC open past the caller's deadline and the tool
+   * reported a transport timeout for a navigation that was in fact fine. Commit
+   * is the point at which the answer ("we went there") is actually known, and
+   * it also releases the automation lease while the page finishes on its own.
+   *
+   *   loadURL() ─────────────────────────────────► full load  (unbounded)
+   *        │
+   *        ├── did-navigate (main frame committed) ──► resolve   ← we return here
+   *        └── did-fail-load (main frame)          ──► reject
+   */
+  /**
+   * The page itself refused to load, as opposed to the CDP plumbing failing.
+   * The distinction decides whether the renderer-bridge fallback is allowed to
+   * run: it is a second way to reach the SAME guest, so retrying a doomed
+   * navigation there just fails again — and, because the bridge answers
+   * `{ok:true}` once it has handed the URL over, it would report success for a
+   * navigation that demonstrably failed.
+   */
+  class NavigationFailedError extends Error {}
+
+  const navigateAwaitingCommit = (wc: Electron.WebContents, url: string): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        wc.off('did-navigate', onCommit);
+        wc.off('did-fail-load', onFail);
+      };
+      const finish = (err?: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (err) reject(err); else resolve();
+      };
+      function onCommit(): void { finish(); }
+      function onFail(
+        _event: unknown,
+        errorCode: number,
+        errorDescription: string,
+        _validatedURL: string,
+        isMainFrame: boolean,
+      ): void {
+        // Subframe failures are not this navigation's verdict.
+        if (!isMainFrame) return;
+        // ERR_ABORTED (-3) is what a superseding navigation looks like; the
+        // caller's request was still issued, so do not call it a failure.
+        if (errorCode === -3) return;
+        finish(new NavigationFailedError(
+          `browser.navigate: ${errorDescription} (${errorCode})`,
+        ));
+      }
+      wc.on('did-navigate', onCommit);
+      wc.on('did-fail-load', onFail);
+      // Full load still resolves us if it beats the commit event (about:blank,
+      // cached documents); a rejection here is a real navigation error.
+      wc.loadURL(url).then(() => finish(), (err: unknown) => finish(
+        err instanceof Error ? err : new Error(String(err)),
+      ));
+    });
+
   const requireNavigateUrl = (params: Record<string, unknown>): string => {
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
@@ -391,10 +483,13 @@ export function registerBrowserRpc(
       try {
         const wc = webContents.fromId(target.webContentsId);
         if (wc && !wc.isDestroyed()) {
-          await wc.loadURL(navUrl);
+          await navigateAwaitingCommit(wc, navUrl);
           return { ok: true, url: navUrl };
         }
       } catch (err) {
+        // A page that would not load is the answer, not a reason to try the
+        // other transport to the same guest — see NavigationFailedError.
+        if (err instanceof NavigationFailedError) throw err;
         console.warn('[browser.navigate] CDP fallback to renderer:', err);
       }
     }
@@ -407,7 +502,7 @@ export function registerBrowserRpc(
       // No target means the scoped lookup refused one, or there is none to
       // own. Routing that to the bridge would reinstate exactly the
       // workspace-blind selection this change removes, so refuse instead.
-      if (!target) throw new Error('browser.navigate: no webview target registered');
+      if (!target) throw noTargetError('browser.navigate', surfaceId, scopeOf(params));
       // A target did resolve and CDP merely failed on it. Ownership is already
       // established, so the bridge is fine — but pin it to that exact surface.
       // Leaving the id absent would let the bridge choose its own default,
@@ -436,7 +531,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.goBack: no webview target registered');
+    if (!target) throw noTargetError('browser.goBack', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.goBack: WebContents unavailable');
@@ -673,7 +768,7 @@ export function registerBrowserRpc(
     const fullPage = params['fullPage'] === true;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.screenshot: no webview target registered');
+    if (!target) throw noTargetError('browser.screenshot', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
@@ -741,7 +836,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.evaluate: no webview target registered');
+    if (!target) throw noTargetError('browser.evaluate', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
@@ -785,7 +880,7 @@ export function registerBrowserRpc(
     const clear = params['clear'] === true;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.console.get: no webview target registered');
+    if (!target) throw noTargetError('browser.console.get', surfaceId, scopeOf(params));
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.console.get: capture unavailable (webContents gone)');
@@ -806,7 +901,7 @@ export function registerBrowserRpc(
     const clear = params['clear'] === true;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.network.get: no webview target registered');
+    if (!target) throw noTargetError('browser.network.get', surfaceId, scopeOf(params));
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.network.get: capture unavailable (webContents gone)');
@@ -827,7 +922,7 @@ export function registerBrowserRpc(
     if (!urlPattern) throw new Error('browser.responseBody.get: missing "urlPattern"');
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.responseBody.get: no webview target registered');
+    if (!target) throw noTargetError('browser.responseBody.get', surfaceId, scopeOf(params));
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.responseBody.get: capture unavailable (webContents gone)');
@@ -848,7 +943,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.type.cdp: no webview target registered');
+    if (!target) throw noTargetError('browser.type.cdp', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.type.cdp: WebContents unavailable');
@@ -868,7 +963,7 @@ export function registerBrowserRpc(
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.click.cdp: no webview target registered');
+    if (!target) throw noTargetError('browser.click.cdp', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.click.cdp: WebContents unavailable');
@@ -924,7 +1019,7 @@ export function registerBrowserRpc(
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw new Error('browser.press.cdp: no webview target registered');
+    if (!target) throw noTargetError('browser.press.cdp', surfaceId, scopeOf(params));
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.press.cdp: WebContents unavailable');

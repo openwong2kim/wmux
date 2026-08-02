@@ -26,9 +26,17 @@ const { openExternalMock } = vi.hoisted(() => ({
   openExternalMock: vi.fn(),
 }));
 
+// browser.navigate resolves on the guest's commit event (#756), so the fake
+// guest must accept listeners. Auto-fire `did-navigate` on subscribe: these
+// tests care about WHICH transport ran, not about commit timing (that is
+// covered in browser.rpc.navigate756.test.ts).
 const mockWebContents = {
   isDestroyed: vi.fn(() => false),
   loadURL: vi.fn(),
+  on: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+    if (event === 'did-navigate') setTimeout(() => fn(), 0);
+  }),
+  off: vi.fn(),
   debugger: {
     sendCommand: vi.fn(async () => ({})),
     isAttached: vi.fn(() => true),
@@ -249,7 +257,10 @@ describe('browser backend fork (#517)', () => {
     it('builtin backend keeps the generic error path (regression)', async () => {
       const { router } = register({ backend: 'builtin', hasTarget: false });
       const res = await dispatch(router, 'browser.goBack', {});
-      expect((res as { error?: { message?: string } }).error?.message).toContain('no webview target registered');
+      // The point of this regression test is that builtin does NOT get the
+      // external-backend contract error; the no-target wording became a
+      // matchable cause in #756.
+      expect((res as { error?: { message?: string } }).error?.message).toContain('BROWSER_NO_TARGET');
       expect((res as { error?: { message?: string } }).error?.message).not.toContain(EXTERNAL_BACKEND_UNSUPPORTED_CODE);
     });
   });
