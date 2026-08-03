@@ -21,6 +21,8 @@ interface WebInfo {
   allowInput?: boolean;
   /** Whether `POST /api/upload` accepts photos. Separate opt-in from input. */
   allowUpload?: boolean;
+  /** Whether `GET /api/sessions/:id/turns` serves the transcript turn view. */
+  allowTranscript?: boolean;
   /** True when the daemon itself terminates HTTPS. */
   tls?: boolean;
   token?: string;
@@ -143,6 +145,10 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // Its own flag, not a rider on --allow-input: writing files into the
   // operator's home directory is a heavier grant than typing into a pane.
   const allowUpload = hasFlag(args, '--allow-upload');
+  // Its own flag too: the transcript carries the WHOLE session (thinking
+  // blocks, full tool inputs, file contents the agent read), far wider reading
+  // than a mirror, and the device credential never expires — off until asked.
+  const allowTranscript = hasFlag(args, '--allow-transcript');
   // Extra Host-header names the server should accept (comma-separated). A
   // reverse proxy in front of the loopback bind forwards the browser's Host
   // verbatim — `tailscale serve` sends the MagicDNS name, which the default
@@ -182,6 +188,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         host,
         allowInput,
         allowUpload,
+        allowTranscript,
         allowedHosts: hosts,
         newToken,
         // Explicit false distinguishes "the operator chose HTTP" from an

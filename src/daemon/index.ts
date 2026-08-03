@@ -217,6 +217,7 @@ function persistWebState(
       host: info.host ?? '127.0.0.1',
       allowInput: info.allowInput === true,
       allowUpload: info.allowUpload === true,
+      allowTranscript: info.allowTranscript === true,
       ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
@@ -292,6 +293,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // the Playwright sandbox already allowlists, so an uploaded photo is
         // reachable by browser_file_upload without a second policy.
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        // #782 — the phone turn view. Lazy: the projector is built after the
+        // first resume binding, so a getter resolves the live instance per
+        // request rather than capturing a null at construction.
+        projector: () => transcriptProjector,
       });
     }
     const info = await webTerminalServer.start({
@@ -299,6 +304,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       host: state.host,
       allowInput: state.allowInput,
       allowUpload: state.allowUpload,
+      allowTranscript: state.allowTranscript,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the

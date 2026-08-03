@@ -191,6 +191,56 @@ export class TranscriptProjector {
   }
 
   /**
+   * Forward delta the phone reads after its snapshot. STATELESS by contract
+   * (#782): unlike `subscribe()`, this never touches the shared `WatchState`,
+   * because a late subscriber's force-reset would scramble every desktop Chat
+   * View row that shares the session. The phone passes back the cursor it
+   * received so a replaced/truncated transcript is answered with a reset
+   * snapshot instead of bytes stitched from a different conversation.
+   *
+   * Reset checks mirror `readAndEmit` but use mtimeMs+fileSize instead of inode
+   * — the wire cursor cannot carry inode without depending on FS-specific ino
+   * stability (NFS etc.), and mtime changes on every rewrite/rotation the inode
+   * check was added for (plan D1: an accepted, narrow detection regression).
+   * `budgetDropped` is surfaced so the phone can render an "omitted" seam
+   * instead of the silent hole `fit` left the push path with. */
+  delta(
+    sessionId: string,
+    fromOffset: number,
+    opts?: { cursorMtimeMs?: number; cursorFileSize?: number },
+  ): { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset: boolean; budgetDropped?: boolean } | null {
+    const resolved = this.resolvePath(sessionId);
+    if (!resolved.ok) return null;
+    const stat = statTranscript(resolved.transcriptPath);
+    if (!stat) return null;
+
+    let reset = false;
+    if (opts?.cursorFileSize !== undefined && stat.size !== opts.cursorFileSize) reset = true;
+    if (opts?.cursorMtimeMs !== undefined && stat.mtimeMs !== opts.cursorMtimeMs) reset = true;
+    if (fromOffset > 0 && !isLineBoundary(resolved.transcriptPath, fromOffset)) reset = true;
+    // A shrunk file (stat.size < from) is readTranscriptDelta's own reset path.
+
+    if (reset) {
+      const page = this.snapshot(sessionId);
+      if (!page) return null;
+      return { events: page.events, cursor: page.cursor, reset: true };
+    }
+
+    const { result, budgetDropped } = this.fitWithReceipt((maxBytes) => {
+      const d = readTranscriptDelta(resolved.transcriptPath, fromOffset, maxBytes);
+      return d && { events: d.events, cursor: d.cursor, ...(d.reset ? { reset: true } : {}) };
+    });
+    if (!result) return null;
+    const r = result as { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset?: boolean };
+    return {
+      events: r.events,
+      cursor: r.cursor,
+      reset: r.reset === true,
+      ...(budgetDropped ? { budgetDropped: true } : {}),
+    };
+  }
+
+  /**
    * Subscribe `clientId` to this pane's appends. Refcounted per client, so an
    * unopened Chat surface costs nothing and two windows watching the same pane
    * arm one watcher.
@@ -670,8 +720,15 @@ export class TranscriptProjector {
    * A3 in one place: halve the read window until the serialized events fit the
    * budget. Reading less is always safe — the cursor reflects exactly what was
    * consumed, so the remainder arrives on the next nudge or watch event.
+   *
+   * `fitWithReceipt` also reports `budgetDropped` when a single entry exceeds
+   * the budget (cursor advances with no rows). The stateless delta path (#782)
+   * surfaces that to the phone so it can render an "omitted" seam instead of a
+   * silent hole; the push-path `fit` wrapper keeps its old null-or-T contract.
    */
-  private fit<T extends { events: TurnEvent[] }>(read: (maxBytes: number) => T | null): T | null {
+  private fitWithReceipt<T extends { events: TurnEvent[] }>(
+    read: (maxBytes: number) => T | null,
+  ): { result: T | null; budgetDropped: boolean } {
     let maxBytes = TAIL_BYTES;
     let result = read(maxBytes);
     while (result && maxBytes > MIN_READ_BYTES && !withinBudget(result.events)) {
@@ -682,9 +739,13 @@ export class TranscriptProjector {
       // A single entry over the budget. Advance the cursor with no rows rather
       // than risk main's control buffer; the row is lost, the stream is not.
       this.deps.log?.('warn', '[transcript] one entry exceeded the byte budget and was skipped');
-      return { ...result, events: [] };
+      return { result: { ...result, events: [] }, budgetDropped: true };
     }
-    return result;
+    return { result, budgetDropped: false };
+  }
+
+  private fit<T extends { events: TurnEvent[] }>(read: (maxBytes: number) => T | null): T | null {
+    return this.fitWithReceipt(read).result;
   }
 
   private disarmWatch(state: WatchState): void {

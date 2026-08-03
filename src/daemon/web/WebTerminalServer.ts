@@ -10,6 +10,10 @@ import type { DaemonSessionManager } from '../DaemonSessionManager';
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
+// Type only — the projector's implementation (transcript parsing, watch state,
+// fs watching) stays out of this module. The web server is a STATELESS consumer
+// of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
+import type { TranscriptProjector } from '../transcript/TranscriptProjector';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
@@ -26,6 +30,44 @@ import {
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
 import { buildWebCsp } from './webCsp';
+
+/**
+ * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
+ * plus the mtimeMs/fileSize the delta path checks for a replaced transcript, so
+ * the phone holds an opaque string and never has to understand the byte model.
+ * base64url keeps it URL-safe without percent-encoding the JSON braces.
+ */
+function encodeTurnCursor(c: {
+  headOffset: number;
+  tailOffset: number;
+  fileSize: number;
+  mtimeMs: number;
+}): string {
+  return Buffer.from(
+    JSON.stringify({ head: c.headOffset, tail: c.tailOffset, mtimeMs: c.mtimeMs, fileSize: c.fileSize }),
+  ).toString('base64url');
+}
+
+function decodeTurnCursor(
+  s: string | null,
+): { head: number; tail: number; mtimeMs?: number; fileSize?: number } | null {
+  if (!s) return null;
+  try {
+    const o = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (!o || typeof o !== 'object') return null;
+    const tail = Number(o.tail);
+    const head = Number(o.head ?? o.tail);
+    if (!Number.isFinite(tail) || !Number.isFinite(head)) return null;
+    return {
+      head,
+      tail,
+      mtimeMs: typeof o.mtimeMs === 'number' ? o.mtimeMs : undefined,
+      fileSize: typeof o.fileSize === 'number' ? o.fileSize : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * wmux web — a read-only-by-default browser terminal served BY THE DAEMON.
@@ -101,6 +143,16 @@ export interface WebTerminalStartOptions {
    */
   allowUpload: boolean;
   /**
+   * Whether `GET /api/sessions/:id/turns` serves the transcript turn view
+   * (`--allow-transcript`). Its own flag, NOT folded into `allowInput`: the
+   * transcript carries far wider reading than a mirror (thinking blocks, full
+   * tool inputs, file contents the agent read — the whole session), and the
+   * device credential never expires, so a leak is a category change, not an
+   * increment. Absent → false (a pre-flag daemon reads as off, the same way a
+   * missing `allowUpload` does). (#782)
+   */
+  allowTranscript?: boolean;
+  /**
    * Terminate HTTPS in the daemon with operator-supplied PEM files.
    *
    * Paths are absolute because the CLI and daemon do not necessarily share a
@@ -142,6 +194,8 @@ export interface WebTerminalInfo {
   allowInput?: boolean;
   /** Whether `POST /api/upload` is armed. Its own opt-in, see start options. */
   allowUpload?: boolean;
+  /** Whether `GET /api/sessions/:id/turns` is armed. Its own opt-in (#782). */
+  allowTranscript?: boolean;
   /** True when this listener terminates HTTPS inside the daemon. */
   tls?: boolean;
   token?: string;
@@ -349,6 +403,18 @@ interface WebTerminalServerDeps {
    * sleeping half an hour. Defaults to the wall clock.
    */
   now?: () => number;
+  /**
+   * The daemon's transcript projector — the phone turn-view contract (#782).
+   * Optional like `approvals`: a daemon/test that has not wired one still serves
+   * every other route, and `/api/sessions/:id/turns` answers 503 rather than
+   * pretending the surface exists. The phone path is STATELESS (`delta()` +
+   * nudge only) and must NEVER call `subscribe()` — a late subscriber's
+   * force-reset would scramble every desktop Chat View row sharing the session.
+   * A GETTER, not a direct ref: the daemon builds the projector lazily (after
+   * the first resume binding), so the server captures it at construction and
+   * resolves the live instance per request.
+   */
+  projector?: () => TranscriptProjector | null;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1392,6 +1458,7 @@ export class WebTerminalServer {
       return this.json(res, 200, {
         allowInput: this.opts?.allowInput === true,
         allowUpload: this.opts?.allowUpload === true,
+        allowTranscript: this.opts?.allowTranscript === true,
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1407,6 +1474,9 @@ export class WebTerminalServer {
       const rest = p.slice('/api/sessions/'.length);
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
+      }
+      if (req.method === 'GET' && rest.endsWith('/turns')) {
+        return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length));
       }
       if (req.method === 'POST' && rest.endsWith('/resize')) {
         return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
@@ -1624,6 +1694,80 @@ export class WebTerminalServer {
    * paired device achieves is an awkward geometry on a pane nobody is attached
    * to, which the next desk attach corrects.
    */
+  /**
+   * `GET /api/sessions/:id/turns` — the phone turn-view contract (#782).
+   * STATELESS: reads `delta()`/`snapshot()`, NEVER `subscribe()`. A phone that
+   * opened the pane cannot scramble the desktop Chat View sharing the session.
+   *
+   * Gating mirrors the other grants: `--allow-transcript` off → 403 with the
+   * restart command on the same line (a pre-flag daemon returns no
+   * `allowTranscript` field, which the phone reads as false → mirror fallback).
+   * A projector the daemon did not wire → 503. `no-binding` and friends are a
+   * 200 body, never a 500 — the phone must distinguish "off" from "broken". */
+  private handleSessionTurns(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): void {
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript reading is off — server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) {
+      this.json(res, 503, { error: 'transcript projector unavailable' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const dir = (url.searchParams.get('dir') ?? 'forward') === 'back' ? 'back' : 'forward';
+    const decoded = decodeTurnCursor(url.searchParams.get('cursor'));
+
+    const status = projector.status(sessionId);
+    if (!status.available) {
+      this.json(res, 200, { available: false, reason: status.reason });
+      return;
+    }
+
+    if (dir === 'back' || !decoded) {
+      // First read (no cursor) or backward paging: a snapshot. The phone pages
+      // BACK from a cursor's head; forward deltas ride the tail.
+      const before = decoded && dir === 'back' ? decoded.head : undefined;
+      const page = projector.snapshot(sessionId, before !== undefined ? { before } : undefined);
+      if (!page) {
+        this.json(res, 200, { available: false, reason: 'unreadable' });
+        return;
+      }
+      this.json(res, 200, {
+        available: true,
+        events: page.events,
+        cursor: encodeTurnCursor(page.cursor),
+        hasMore: page.hasMore,
+        ...(page.truncatedHead ? { truncatedHead: true } : {}),
+      });
+      return;
+    }
+
+    const result = projector.delta(sessionId, decoded.tail, {
+      cursorMtimeMs: decoded.mtimeMs,
+      cursorFileSize: decoded.fileSize,
+    });
+    if (!result) {
+      this.json(res, 200, { available: false, reason: 'unreadable' });
+      return;
+    }
+    this.json(res, 200, {
+      available: true,
+      events: result.events,
+      cursor: encodeTurnCursor(result.cursor),
+      reset: result.reset,
+      ...(result.budgetDropped ? { budgetDropped: true } : {}),
+    });
+  }
+
   private handleSessionResize(
     req: http.IncomingMessage,
     res: http.ServerResponse,

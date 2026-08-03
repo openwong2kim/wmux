@@ -41,6 +41,15 @@ export interface WebPersistedState {
    * a restored server never gains a permission the operator did not ask for.
    */
   allowUpload: boolean;
+  /**
+   * Whether `GET /api/sessions/:id/turns` was opted into (`--allow-transcript`).
+   * Its own grant for the same reason as `allowUpload` but sharper: the
+   * transcript reads the WHOLE session (thinking blocks, tool inputs, file
+   * contents the agent read), and the device credential never expires. Absent
+   * in files written before this field existed, so it reads as false — a
+   * restored server never gains a permission the operator did not ask for.
+   */
+  allowTranscript?: boolean;
   /** Native HTTPS PEM paths. Key bytes are never persisted here. */
   tls?: WebTlsConfig;
   allowedHosts: string[];
@@ -176,6 +185,9 @@ export function coerceWebStateWithDiagnostics(parsed: unknown): WebStateLoadResu
       host,
       allowInput: o['allowInput'] === true,
       allowUpload: o['allowUpload'] === true,
+      // Optional on purpose: absent (pre-flag file) and false both read as
+      // false at /api/config, so the field is omitted entirely unless true.
+      ...(o['allowTranscript'] === true ? { allowTranscript: true } : {}),
       ...(tls ? { tls } : {}),
       allowedHosts,
       tailscale,
