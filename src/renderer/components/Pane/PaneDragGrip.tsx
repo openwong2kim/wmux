@@ -39,8 +39,18 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
   const targetRef = useRef<DropTarget | null>(null);
   /** Did the gesture that just ended actually drag? Read by the click handler. */
   const wasDragRef = useRef(false);
+  const gripRef = useRef<HTMLDivElement>(null);
+  const capturedPointerRef = useRef<number | null>(null);
 
   const endDrag = useCallback(() => {
+    // Escape ends the drag while the button is still held, so the capture
+    // would otherwise stay on this grip and swallow every other pane's
+    // pointer events until the user lets go.
+    const el = gripRef.current;
+    if (el && capturedPointerRef.current !== null) {
+      try { el.releasePointerCapture(capturedPointerRef.current); } catch { /* already gone */ }
+      capturedPointerRef.current = null;
+    }
     draggingRef.current = false;
     originRef.current = null;
     rectsRef.current = [];
@@ -64,6 +74,17 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
     return () => window.removeEventListener('keydown', onKey, true);
   }, [armed, endDrag]);
 
+  // A pane can vanish under the user: an agent or the daemon may close it
+  // mid-drag, and then this grip unmounts without ever seeing pointerup,
+  // pointercancel, or Escape. Without this, paneDropTarget stays set and the
+  // drop indicator is painted on some pane forever. endDrag is read through a
+  // ref so the cleanup runs ONLY on unmount, not whenever its identity changes.
+  const endDragRef = useRef(endDrag);
+  endDragRef.current = endDrag;
+  useEffect(() => () => {
+    if (draggingRef.current || originRef.current) endDragRef.current();
+  }, []);
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
@@ -72,6 +93,7 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
       // focus, and the cancel would not be a true no-op.
       e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
+      capturedPointerRef.current = e.pointerId;
       originRef.current = { x: e.clientX, y: e.clientY };
       // Fresh gesture: only a real drag may set this, and only the trailing
       // click clears it.
@@ -147,6 +169,7 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
       tabIndex={-1}
       aria-label={t('pane.dragGrip')}
       title={t('pane.dragGrip')}
+      ref={gripRef}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}

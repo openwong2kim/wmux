@@ -94,6 +94,37 @@ describe('PaneDragGrip', () => {
     expect(setPaneDropTarget).toHaveBeenLastCalledWith(null);
   });
 
+  it('clears the drag when the grip unmounts mid-drag', () => {
+    // An agent or the daemon can close a pane while the user is dragging it.
+    // The grip then unmounts having seen neither pointerup nor pointercancel
+    // nor Escape, and without a cleanup the store keeps paneDropTarget set —
+    // painting a drop indicator on some pane forever. (Found by GLM review.)
+    pointer('pointerdown', 10, 10);
+    pointer('pointermove', 90, 90); // a real drag is in flight
+    expect(setPaneDragSource).toHaveBeenCalledWith('pane-a');
+    setPaneDropTarget.mockClear();
+    setPaneDragSource.mockClear();
+
+    act(() => { root.unmount(); });
+
+    expect(setPaneDragSource).toHaveBeenCalledWith(null);
+    expect(setPaneDropTarget).toHaveBeenCalledWith(null);
+    root = createRoot(container); // keep the shared teardown valid
+  });
+
+  it('does not touch drag state when it unmounts with no gesture in flight', () => {
+    setPaneDropTarget.mockClear();
+    setPaneDragSource.mockClear();
+
+    act(() => { root.unmount(); });
+
+    // Every pane has a grip; a pane closing while ANOTHER pane is being
+    // dragged must not clear that drag.
+    expect(setPaneDragSource).not.toHaveBeenCalled();
+    expect(setPaneDropTarget).not.toHaveBeenCalled();
+    root = createRoot(container);
+  });
+
   it('does not let its click reach the pane root', () => {
     // Mirror the real structure: the pane root is a React element WRAPPING the
     // grip, with its own onClick (click-to-focus). A native listener on the
