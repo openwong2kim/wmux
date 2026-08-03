@@ -18,6 +18,7 @@ describe.skipIf(isWin)('sendRpc transport', () => {
   let tmpHome: string;
   let prevHome: string | undefined;
   let prevSocketPath: string | undefined;
+  let prevDataSuffix: string | undefined;
   let server: net.Server | undefined;
   let sendRpc: typeof import('../wmux-client').sendRpc;
 
@@ -25,10 +26,12 @@ describe.skipIf(isWin)('sendRpc transport', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rpc-'));
     prevHome = process.env.HOME;
     prevSocketPath = process.env.WMUX_SOCKET_PATH;
+    prevDataSuffix = process.env.WMUX_DATA_SUFFIX;
     process.env.HOME = tmpHome;
-    // No WMUX_SOCKET_PATH means the client tries exactly one endpoint, so a
-    // connection count maps one-to-one onto attempts.
+    // Use the main data paths and exactly one socket endpoint, so a connection
+    // count maps one-to-one onto attempts.
     delete process.env.WMUX_SOCKET_PATH;
+    delete process.env.WMUX_DATA_SUFFIX;
     fs.writeFileSync(path.join(tmpHome, '.wmux-auth-token'), 'test-token', 'utf8');
     ({ sendRpc } = await import('../wmux-client'));
   });
@@ -38,6 +41,8 @@ describe.skipIf(isWin)('sendRpc transport', () => {
     else process.env.HOME = prevHome;
     if (prevSocketPath === undefined) delete process.env.WMUX_SOCKET_PATH;
     else process.env.WMUX_SOCKET_PATH = prevSocketPath;
+    if (prevDataSuffix === undefined) delete process.env.WMUX_DATA_SUFFIX;
+    else process.env.WMUX_DATA_SUFFIX = prevDataSuffix;
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -53,9 +58,17 @@ describe.skipIf(isWin)('sendRpc transport', () => {
     let connections = 0;
     const activeServer = net.createServer((socket) => {
       connections += 1;
+      let buffer = '';
       socket.on('data', (chunk) => {
-        const request = JSON.parse(chunk.toString('utf8').trim()) as { id: string };
-        socket.write(onRequest(request.id) + '\n');
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const request = JSON.parse(trimmed) as { id: string };
+          socket.write(onRequest(request.id) + '\n');
+        }
       });
       socket.on('error', () => { /* client destroys the socket after the response */ });
     });
