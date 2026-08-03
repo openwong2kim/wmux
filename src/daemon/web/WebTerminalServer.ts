@@ -413,6 +413,20 @@ interface WebTerminalServerDeps {
    * resolves the live instance per request.
    */
   projector?: () => TranscriptProjector | null;
+  /**
+   * #783 — the gated-tools list from daemon config, so `/api/config` can expose
+   * it and the phone can explain "why is this call waiting?". A getter (not a
+   * static ref) because the list is editable at runtime via `wmux gate --add`.
+   * Optional: a server that did not wire it serves every other route, and
+   * `/api/config` reports an empty list.
+   */
+  gateConfig?: () => { gatedTools: string[] };
+  /**
+   * #783 — runtime escape hatch. `POST /api/gate/off` calls this so the next
+   * tool call passes through ungated. Optional: a server that did not wire it
+   * answers 503 on the route, and the `WMUX_GATE=0` env escape still works.
+   */
+  onGateOff?: () => void;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1481,6 +1495,10 @@ export class WebTerminalServer {
         allowInput: this.opts?.allowInput === true,
         allowUpload: this.opts?.allowUpload === true,
         allowTranscript: this.opts?.allowTranscript === true,
+        // #783 — the gated-tools list so the phone can say "this Bash call is
+        // waiting because Bash is in the gate list". Absent gateConfig → empty
+        // array (a daemon that predates the gate or did not wire it).
+        gatedTools: this.deps.gateConfig?.().gatedTools ?? [],
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1541,6 +1559,15 @@ export class WebTerminalServer {
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
+    }
+    // #783 — runtime escape hatch: turn the permission gate off from the next
+    // tool call. Works on a read-only server (it NARROWS what the daemon does,
+    // never widens). The WMUX_GATE=0 env is the per-process escape; this is the
+    // remote one for "the phone is the thing being interrupted".
+    if (req.method === 'POST' && p === '/api/gate/off') {
+      if (!this.deps.onGateOff) return this.json(res, 503, { error: 'gate control unavailable' });
+      this.deps.onGateOff();
+      return this.json(res, 200, { ok: true, detail: 'gate off — the next tool call proceeds without prompting' });
     }
     return this.json(res, 404, { error: 'not found' });
   }
@@ -2632,6 +2659,10 @@ export class WebTerminalServer {
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
       ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+      // #783 — gate-card fields so the phone can render what tool and what input.
+      ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
+      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
     });
   }
 

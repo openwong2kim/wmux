@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { BrowserCdpConfig, ChannelRetentionConfig, DaemonConfig } from './types';
+import { coerceGate, createDefaultGateConfig } from './approvals/gateConfig';
+import type { GateConfig } from './approvals/gateConfig';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
@@ -132,6 +134,8 @@ export function createDefaultConfig(): DaemonConfig {
     // feature. The slice exists so the port can be closed by config without an
     // environment variable (see SECURITY.md §3 for the same-user threat model).
     browser: { cdp: { enabled: true } },
+    // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
+    gate: createDefaultGateConfig(),
   };
 }
 
@@ -327,6 +331,11 @@ export function loadConfig(): DaemonConfig {
     // install's behaviour. A malformed slice degrades to enabled too, never
     // silently disabling browser automation. validateConfig ignores the field.
     config.browser = coerceBrowserCdp(config.browser, defaults.browser ?? { cdp: { enabled: true } });
+
+    // ── Gate control (#783): per-field backfill ──
+    // Absent slice (old config.json) → DEFAULT_GATED_TOOLS. A malformed slice
+    // degrades to the defaults too, never silently disabling the gate.
+    config.gate = coerceGate(config.gate);
 
     return config;
   } catch (err) {

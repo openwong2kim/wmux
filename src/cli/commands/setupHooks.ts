@@ -66,13 +66,29 @@ const ASK_QUESTION_HOOKS = [
 
 type HookEvent =
   | (typeof HOOK_EVENTS)[number]
-  | (typeof ASK_QUESTION_HOOKS)[number]['event'];
+  | (typeof ASK_QUESTION_HOOKS)[number]['event']
+  | 'PreToolUse'; // #783 — permission gate adds a wide PreToolUse
+
+/**
+ * #783 — the permission-gate hook. A WIDE PreToolUse matcher (every tool) that
+ * invokes the bridge with `--permission-gate`. The daemon decides gate vs
+ * pass-through based on the `gatedTools` config slice, so this matcher never
+ * needs editing — only the config does (`wmux gate --add/--remove`). Separate
+ * from the AskUserQuestion PreToolUse above (different argv mode, different
+ * signal kind, different resolution path — see CRITICAL 1 in the plan).
+ */
+const PERMISSION_GATE_SPEC = {
+  event: 'PreToolUse' as const,
+  matcher: '',
+  extraArgs: '--permission-gate',
+};
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly { event: HookEvent; matcher: string }[] = [
+const HOOK_SPECS: readonly { event: HookEvent; matcher: string; extraArgs?: string }[] = [
   ...HOOK_EVENTS.map((event) => ({ event, matcher: '' })),
   ...ASK_QUESTION_HOOKS,
+  PERMISSION_GATE_SPEC,
 ];
 
 /** Substring that identifies a wmux-owned hook command in settings.json. */
@@ -166,10 +182,11 @@ function writeJsonAtomic(filePath: string, data: unknown): void {
 }
 
 /** Build the command string for a hook event, referencing the stable bridge path. */
-function bridgeCommand(bridgeDest: string, event: HookEvent): string {
+function bridgeCommand(bridgeDest: string, event: HookEvent, extraArgs?: string): string {
   // Mirror hooks.json shape: `node "<abs path>" <HookName>`. Quote the path so
-  // spaces in the home directory don't break the command.
-  return `node "${bridgeDest}" ${event}`;
+  // spaces in the home directory don't break the command. #783: --permission-gate
+  // appends an argv token that switches the bridge to the gate JSON mode.
+  return `node "${bridgeDest}" ${event}${extraArgs ? ` ${extraArgs}` : ''}`;
 }
 
 /** A single hook command leaf, e.g. { type: 'command', command: '…' }. */
@@ -445,7 +462,7 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
   for (const spec of HOOK_SPECS) {
     const group: HookGroup = {
       matcher: spec.matcher,
-      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event) }],
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
     };
     const existing = hooks[spec.event];
     hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];

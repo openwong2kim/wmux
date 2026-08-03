@@ -66,13 +66,14 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
 
     const s = readSettings();
     const hooks = s.hooks as Record<string, unknown[]>;
+    // Event KEYS (PreToolUse carries two groups: the gate + AskUserQuestion).
     expect(Object.keys(hooks).sort()).toEqual(
       ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );
@@ -119,8 +120,9 @@ describe('installHooks', () => {
     const hooks = s.hooks as Record<string, unknown[]>;
     // Foreign PreToolUse (matcher '') is preserved AND the wmux PreToolUse
     // (matcher AskUserQuestion) is appended — both coexist on the same event.
+    // Foreign + the two wmux groups (AskUserQuestion card + the wide gate).
     const pre = hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[];
-    expect(pre).toHaveLength(2);
+    expect(pre).toHaveLength(3);
     expect(pre.some((g) => g.matcher === '' && g.hooks[0].command === 'echo foreign-pre')).toBe(true);
     expect(
       pre.some((g) => g.matcher === 'AskUserQuestion' && g.hooks[0].command.includes('wmux-bridge.mjs')),
@@ -143,7 +145,9 @@ describe('installHooks', () => {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
         g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
       );
-      expect(wmuxGroups).toHaveLength(1);
+      // PreToolUse owns two wmux groups (the AskUserQuestion approval card and
+      // the wide permission gate); every other event owns exactly one.
+      expect(wmuxGroups).toHaveLength(event === 'PreToolUse' ? 2 : 1);
     }
   });
 
@@ -202,7 +206,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(true);
-    expect(outcome.removedForPlugin).toBe(5);
+    expect(outcome.removedForPlugin).toBe(6);
     expect(outcome.events).toEqual([]);
 
     // No wmux command remains; both foreign hooks are preserved.
@@ -222,9 +226,11 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     const hooks = readSettings().hooks as Record<string, unknown[]>;
-    expect(Object.keys(hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(Object.keys(hooks).sort()).toEqual(
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+    );
   });
 
   it('treats a malformed installed_plugins.json as plugin-absent (normal install)', () => {
@@ -232,7 +238,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
   });
 
@@ -261,7 +267,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
@@ -305,7 +311,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(5);
+    expect(outcome.removed).toBe(6);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -366,6 +372,8 @@ describe('statusHooks', () => {
     installHooks(paths());
     const s = statusHooks(paths());
     expect(s.settingsExists).toBe(true);
+    // installedEvents is a deduped event list, so PreToolUse appears once even
+    // though it carries two wmux groups.
     expect(s.installedEvents.sort()).toEqual(
       ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );

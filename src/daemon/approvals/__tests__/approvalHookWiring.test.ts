@@ -20,13 +20,16 @@ type Created = {
 };
 type Expired = { sessionId: string; reason: ApprovalExpiryReason };
 
-function makeSink(): ApprovalHookSink & { created: Created[]; expired: Expired[] } {
+function makeSink(): ApprovalHookSink & { created: Created[]; expired: Expired[]; gateCreated: Array<{ sessionId: string; toolName: string }> } {
   const created: Created[] = [];
   const expired: Expired[] = [];
+  const gateCreated: Array<{ sessionId: string; toolName: string }> = [];
   return {
     created,
     expired,
+    gateCreated,
     noteHookAwaitingInput: (input) => { created.push(input); },
+    noteGateAwaiting: (input) => { gateCreated.push({ sessionId: input.sessionId, toolName: input.toolName }); return `gate-${gateCreated.length}`; },
     expireForSession: (sessionId, reason) => { expired.push({ sessionId, reason }); },
   };
 }

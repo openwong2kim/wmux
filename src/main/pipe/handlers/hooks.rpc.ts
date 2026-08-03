@@ -1223,6 +1223,12 @@ function titleFor(signal: AgentSignal): string {
     // the switch stays exhaustive.
     case 'agent.user_prompt_submit':
       return `${display}: Prompt submitted`;
+    case 'agent.awaiting_permission':
+      return `${display}: Permission needed`;
+    case 'agent.permission_answered':
+      return `${display}: Permission answered`;
+    case 'agent.tool_started':
+      return `${display}: Running a tool`;
   }
 }
 
@@ -1238,12 +1244,17 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     case 'agent.subagent_stop':
       return 'subagent';
     case 'agent.awaiting_input':
+    // A gated tool call blocks the agent exactly like a question does, so it
+    // rides the same mute category as an approval.
+    case 'agent.awaiting_permission':
       return 'approval';
     case 'agent.stop':
     case 'agent.activity':
     case 'agent.session_start':
     case 'agent.input_answered':
     case 'agent.user_prompt_submit':
+    case 'agent.permission_answered':
+    case 'agent.tool_started':
       return 'agent-turn';
   }
 }
@@ -1267,6 +1278,12 @@ function bodyFor(signal: AgentSignal): string {
       return 'Answer received locally';
     case 'agent.user_prompt_submit':
       return 'Prompt submitted';
+    case 'agent.awaiting_permission':
+      return 'A tool call is waiting for your answer';
+    case 'agent.permission_answered':
+      return 'Tool permission resolved';
+    case 'agent.tool_started':
+      return 'Tool call started';
   }
 }
 
