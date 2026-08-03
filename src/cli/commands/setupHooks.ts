@@ -41,12 +41,39 @@ GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 `.trimStart();
 
-/** The Claude Code hook events wmux subscribes to (mirrors hooks.json).
- *  PostToolUse was removed 2026-07-13: it fired a ~110ms node bridge on EVERY
- *  tool call only to feed the fleet "running" dot, which the daemon's
- *  byte-based ActivityMonitor now drives for free (see markSurfaceRunning). */
+/** Claude Code hook events wmux owns at matcher:'' (mirrors hooks.json). These
+ *  fire at turn boundaries, never per tool call. */
 const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart'] as const;
-type HookEvent = (typeof HOOK_EVENTS)[number];
+
+/**
+ * AskUserQuestion-scoped hook pair that drives the in-app approval card:
+ *   PreToolUse  → card created  (agent.awaiting_input)
+ *   PostToolUse → card expired   (agent.input_answered, fired:true)
+ * Both are scoped to the AskUserQuestion matcher so they fire ONCE per
+ * question, not on every tool call. The 2026-07-13 PostToolUse removal was
+ * about a matcher:'' cost — a ~110ms node bridge per tool call feeding the
+ * fleet "running" dot, which the daemon's byte-based ActivityMonitor now
+ * drives for free. The approval card has no such replacement, so it gets its
+ * own scoped pair. This closes #781: the plugin path (hooks.json) installed
+ * these but the CLI (plugin-less) path did not, so the approval inbox silently
+ * died for plugin-less users — `setup-hooks` even wiped a hand-registered
+ * PreToolUse that pointed at our own bridge (isWmuxGroup match). */
+const ASK_QUESTION_MATCHER = 'AskUserQuestion';
+const ASK_QUESTION_HOOKS = [
+  { event: 'PreToolUse', matcher: ASK_QUESTION_MATCHER },
+  { event: 'PostToolUse', matcher: ASK_QUESTION_MATCHER },
+] as const;
+
+type HookEvent =
+  | (typeof HOOK_EVENTS)[number]
+  | (typeof ASK_QUESTION_HOOKS)[number]['event'];
+
+/** Every wmux-owned hook in settings.json as (event, matcher) specs — the
+ *  single source `installHooks` writes and `statusHooks` checks against. */
+const HOOK_SPECS: readonly { event: HookEvent; matcher: string }[] = [
+  ...HOOK_EVENTS.map((event) => ({ event, matcher: '' })),
+  ...ASK_QUESTION_HOOKS,
+];
 
 /** Substring that identifies a wmux-owned hook command in settings.json. */
 const WMUX_BRIDGE_MARKER = 'wmux-bridge.mjs';
@@ -218,6 +245,14 @@ function loadSettings(settingsPath: string): LoadResult {
  * Strip all wmux-owned hook groups from a settings.hooks map, dropping any event
  * arrays (and the `hooks` key itself) left empty. Returns the count removed.
  * Mutates `settings` in place. Used by both install (clear-then-add) and remove.
+ *
+ * PRESERVES every foreign (non-wmux) hook group: a group is removed only when
+ * `isWmuxGroup` confirms it carries a wmux-bridge.mjs command leaf. A user's
+ * hand-registered foreign PreToolUse pointing at a DIFFERENT script is never
+ * touched — `installHooks` then re-adds only wmux's own specs. (#781: the
+ * report of "setup-hooks wiped my PreToolUse" was a group whose command
+ * pointed at wmux-bridge.mjs itself, which is correctly wmux-owned and thus
+ * refreshed, not a foreign hook destroyed.)
  */
 function stripWmuxHooks(settings: Record<string, unknown>): number {
   const hooks = settings.hooks;
@@ -407,13 +442,13 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
       ? (settings.hooks as Record<string, unknown>)
       : {};
 
-  for (const event of HOOK_EVENTS) {
+  for (const spec of HOOK_SPECS) {
     const group: HookGroup = {
-      matcher: '',
-      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, event) }],
+      matcher: spec.matcher,
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event) }],
     };
-    const existing = hooks[event];
-    hooks[event] = Array.isArray(existing) ? [...existing, group] : [group];
+    const existing = hooks[spec.event];
+    hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];
   }
   settings.hooks = hooks;
 
@@ -424,7 +459,7 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
     ...base,
     ok: true,
     bridgeCopied: true,
-    events: [...HOOK_EVENTS],
+    events: HOOK_SPECS.map((s) => s.event),
   };
 }
 
@@ -540,6 +575,15 @@ export function removeHooks(paths: SetupHooksPaths): RemoveOutcome {
 
 // ----- Status -------------------------------------------------------------
 
+/** Feature-oriented status entry: what the user cares about ("does the approval
+ *  card work?"), not which hook event name is registered. */
+export interface HookFeatureStatus {
+  /** 'ok' when the hook(s) backing this feature are installed, 'off' otherwise. */
+  state: 'ok' | 'off';
+  /** Human-readable explanation; includes the fix command when state is 'off'. */
+  detail: string;
+}
+
 export interface StatusOutcome {
   settingsPath: string;
   settingsExists: boolean;
@@ -556,6 +600,18 @@ export interface StatusOutcome {
    * active — each turn would then fire double signals. Best-effort detection.
    */
   pluginAlsoInstalled: boolean;
+  /**
+   * Feature-oriented status — the primary surface for users, who ask "does the
+   * approval card work?" not "is PreToolUse registered?". `installedEvents`
+   * remains for scripts; `features` answers what works and how to fix it.
+   * `permissionGate` is 'off' until the phone permission gate ships (#783).
+   */
+  features: {
+    conversationRead: HookFeatureStatus;
+    approvalCard: HookFeatureStatus;
+    turnEnd: HookFeatureStatus;
+    permissionGate: HookFeatureStatus;
+  };
 }
 
 /**
@@ -600,10 +656,11 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     const hooks = load.settings.hooks;
     if (hooks && typeof hooks === 'object' && !Array.isArray(hooks)) {
       const hooksMap = hooks as Record<string, unknown>;
-      for (const event of HOOK_EVENTS) {
-        const groups = hooksMap[event];
+      for (const spec of HOOK_SPECS) {
+        const groups = hooksMap[spec.event];
         if (Array.isArray(groups) && groups.some((g) => isWmuxGroup(g))) {
-          installedEvents.push(event);
+          // HOOK_SPECS carries each event once, but dedup defensively.
+          if (!installedEvents.includes(spec.event)) installedEvents.push(spec.event);
         }
       }
     }
@@ -621,6 +678,28 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     }
   }
 
+  // Feature-oriented view derived from installedEvents. Each 'off' detail
+  // names the fix command, so the user can act without re-reading — the core
+  // ask of #781 (status must report what's broken, not just list hook names).
+  const has = (e: HookEvent): boolean => installedEvents.includes(e);
+  const FIX = 'wmux setup-hooks';
+  const features = {
+    conversationRead: has('SessionStart')
+      ? { state: 'ok' as const, detail: 'SessionStart → transcript binding on session start' }
+      : { state: 'off' as const, detail: `SessionStart missing → run \`${FIX}\`` },
+    approvalCard:
+      has('PreToolUse') && has('PostToolUse')
+        ? { state: 'ok' as const, detail: 'PreToolUse + PostToolUse (AskUserQuestion) → card create + expire' }
+        : { state: 'off' as const, detail: `PreToolUse/PostToolUse:AskUserQuestion missing → run \`${FIX}\`` },
+    turnEnd:
+      has('Stop') && has('SubagentStop')
+        ? { state: 'ok' as const, detail: 'Stop + SubagentStop → turn-end nudge' }
+        : { state: 'off' as const, detail: `Stop/SubagentStop missing → run \`${FIX}\`` },
+    // The phone permission gate (#783) is not yet a hook this install owns —
+    // report 'off' honestly rather than implying it can be fixed here.
+    permissionGate: { state: 'off' as const, detail: 'phone permission gate — not yet available' },
+  };
+
   return {
     settingsPath: paths.settingsPath,
     settingsExists: load.exists,
@@ -631,6 +710,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     bridgeSource: paths.bridgeSource,
     bridgeStale,
     pluginAlsoInstalled: detectPluginInstalled(paths.settingsPath),
+    features,
   };
 }
 
@@ -691,12 +771,28 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     console.log(JSON.stringify(outcome, null, 2));
     return;
   }
+
+  // Feature table first — users ask "does the approval card work?", not "which
+  // hook event names are registered?". Each row shows state + how to fix it on
+  // one line (#781).
+  const featureRows: Array<[string, HookFeatureStatus]> = [
+    ['conversation read', outcome.features.conversationRead],
+    ['approval card', outcome.features.approvalCard],
+    ['turn-end signal', outcome.features.turnEnd],
+    ['permission gate', outcome.features.permissionGate],
+  ];
+  for (const [label, f] of featureRows) {
+    const tag = f.state === 'ok' ? 'OK ' : 'OFF';
+    console.log(`${label.padEnd(18)} ${tag}  ${f.detail}`);
+  }
+
+  console.log('');
   if (outcome.settingsCorrupted) {
     console.log(`settings: ${outcome.settingsPath} (UNPARSEABLE — fix before installing)`);
   } else if (outcome.installedEvents.length > 0) {
-    console.log(`settings: wmux hooks installed for ${outcome.installedEvents.join(', ')}`);
+    console.log(`settings: ${outcome.settingsPath} (hooks: ${outcome.installedEvents.join(', ')})`);
   } else {
-    console.log('settings: wmux hooks NOT installed — run `wmux setup-hooks` to add them.');
+    console.log(`settings: ${outcome.settingsPath} (wmux hooks NOT installed)`);
   }
 
   if (!outcome.bridgeExists) {
