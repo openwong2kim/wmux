@@ -176,6 +176,11 @@ export function CommanderViewContent({
   const modeOffReason =
     t('deck.composerModeOff') ||
     'The orchestrator is off for this workspace. Set Mode to Assist or Danger to talk to it.';
+  // The composer is two rows tall — the full reason wraps past it and the tail
+  // of the sentence is clipped. Placeholder gets the one-line form; the full
+  // sentence stays on the hover title, where there is room for it.
+  const modeOffPlaceholder =
+    t('deck.composerModeOffShort') || 'Orchestrator off — set Mode to Assist or Danger';
   // Collapsed state of the pty layout's report rail. Local by design: it is a
   // view preference, resets on remount, and needs no persistence. Default COLLAPSED: the TUI
   // is the conversation, the rail is the durable receipt you open when you want
@@ -579,7 +584,7 @@ export function CommanderViewContent({
           disabled={brainBusy || modeOff}
           placeholder={
             modeOff
-              ? modeOffReason
+              ? modeOffPlaceholder
               : t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'
           }
           t={t}

@@ -91,6 +91,38 @@ describe('AgentModeChip', () => {
     expect(container.querySelector('[data-agent-mode-dot]')!.className).toContain('--text-muted');
   });
 
+  // The chip lives at the bottom of the deck rail, so the menu opens UPWARD by
+  // default. In a short window three options with descriptions are taller than
+  // the room above the chip, and the menu ran off the top of the window — the
+  // first option (`off`) was rendered but unreachable, so the operator could
+  // raise autonomy and never lower it. Reported live 2026-08-03.
+  async function openMenuWithChipAt(top: number, bottom: number): Promise<HTMLElement> {
+    const { api } = fakeApi('danger');
+    const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
+    cleanups.push(cleanup);
+    await flush();
+    const root = container.querySelector('[data-agent-mode-chip]') as HTMLElement;
+    root.getBoundingClientRect = () => ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    act(() => (container.querySelector('[data-agent-mode-chip] > button') as HTMLButtonElement).click());
+    return container.querySelector('[role="listbox"]') as HTMLElement;
+  }
+
+  it('caps the upward menu at the room above the chip', async () => {
+    window.innerHeight = 768;
+    const menu = await openMenuWithChipAt(700, 720);
+    expect(menu.className).toContain('bottom-full'); // more room above → opens up
+    expect(menu.style.maxHeight).toBe('692px');      // 700 - 8 gap
+    expect(menu.className).toContain('overflow-y-auto');
+  });
+
+  it('flips the menu downward when the chip is pinned near the top', async () => {
+    window.innerHeight = 768;
+    const menu = await openMenuWithChipAt(10, 30);
+    expect(menu.className).toContain('top-full');
+    expect(menu.className).not.toContain('bottom-full');
+    expect(menu.style.maxHeight).toBe('730px'); // 768 - 30 - 8 gap
+  });
+
   it('renders nothing until the first read resolves (no label flash)', () => {
     const api: AgentModeApi = { get: () => new Promise(() => {}), set: async () => ({ ok: true }) };
     const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);

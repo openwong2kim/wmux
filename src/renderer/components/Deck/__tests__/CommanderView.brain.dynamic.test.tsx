@@ -119,9 +119,11 @@ describe('CommanderViewContent — brain surface', () => {
     expect(input.disabled).toBe(true);
     const shell = container.querySelector('[data-commander-composer]') as HTMLElement;
     expect(shell.getAttribute('data-mode-off')).toBe('true');
-    // The reason is reachable both as a tooltip and as the placeholder.
+    // The reason is reachable both as a tooltip and as the placeholder — the
+    // placeholder in its one-line form, because the composer box is two rows
+    // tall and the full sentence gets clipped there.
     expect(shell.getAttribute('title')).toBe('deck.composerModeOff');
-    expect(input.placeholder).toBe('deck.composerModeOff');
+    expect(input.placeholder).toBe('deck.composerModeOffShort');
   });
 
   it('leaves the composer live in any other mode', () => {

@@ -18,7 +18,7 @@
 // the container. Renders nothing when the preload is absent, so pure jsdom tests
 // of the parent view are unaffected.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
@@ -91,6 +91,15 @@ export function AgentModeChip({
   const [mode, setMode] = useState<AgentMode | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Where the dropdown fits, measured on every open. The chip lives in a bar at
+  // the BOTTOM of the deck, so the menu opens upward by default — but the deck
+  // rail is also the shortest column on screen, and three items with
+  // descriptions are taller than the space above a chip in a short window. The
+  // menu then overflowed past the top of the window and the first option (`off`)
+  // became unclickable: the operator could raise autonomy but never lower it.
+  // Clamp to whichever side has more room and cap the height there, so every
+  // option is always reachable (scrolling when it has to be).
+  const [menuFit, setMenuFit] = useState<{ below: boolean; maxHeight: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +109,26 @@ export function AgentModeChip({
       .catch(() => { if (!cancelled) setMode('off'); });
     return () => { cancelled = true; };
   }, [api, workspaceId]);
+
+  // Measure the room around the chip whenever the menu opens (and on resize,
+  // since the deck rail grows/shrinks with the window).
+  useLayoutEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const GAP = 8; // breathing room against the window edge
+      const above = rect.top - GAP;
+      const below = window.innerHeight - rect.bottom - GAP;
+      const dropDown = below > above;
+      // Floor at 120px: a window too short for even that is already unusable,
+      // and a 0-height menu would look like the click did nothing.
+      setMenuFit({ below: dropDown, maxHeight: Math.max(120, Math.floor(dropDown ? below : above)) });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open]);
 
   // Close the dropdown on outside click / Escape.
   useEffect(() => {
@@ -164,7 +193,10 @@ export function AgentModeChip({
       {open && (
         <div
           role="listbox"
-          className="absolute bottom-full left-0 mb-1 z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs"
+          className={`absolute left-0 z-50 w-64 overflow-y-auto bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs ${
+            menuFit?.below ? 'top-full mt-1' : 'bottom-full mb-1'
+          }`}
+          style={menuFit ? { maxHeight: menuFit.maxHeight } : undefined}
         >
           {MODE_ORDER.map((m) => (
             <button

@@ -459,6 +459,10 @@ export const en = {
   // Composer lock reason for mode `off` (main refuses the send too — this is
   // the explanation, not the enforcement).
   'deck.composerModeOff': 'The orchestrator is off for this workspace. Set Mode to Assist or Danger to talk to it.',
+  // Same reason, one line: the composer is a two-row box, so the full sentence
+  // above wraps to three lines and gets clipped. The long form stays as the
+  // hover title; this short form is what the placeholder shows.
+  'deck.composerModeOffShort': 'Orchestrator off — set Mode to Assist or Danger',
   // Global event-push kill switch: OFF stops the unrequested wake-turns
   // (each one is a real token-spending SDK turn); a running loop still wakes.
   'settings.autoWake': 'Auto-wake on pane events',
