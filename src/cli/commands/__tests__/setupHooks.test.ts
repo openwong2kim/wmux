@@ -36,6 +36,17 @@ function writePluginManifest(raw: string): void {
   fs.writeFileSync(manifestPath, raw, 'utf8');
 }
 
+/** Build a wmux-owned hook group without invoking the installer. */
+function wmuxHookGroup(event: string, matcher?: string): {
+  matcher?: string;
+  hooks: { type: string; command: string }[];
+} {
+  return {
+    ...(matcher === undefined ? {} : { matcher }),
+    hooks: [{ type: 'command', command: `node "${bridgeDest}" ${event}` }],
+  };
+}
+
 /** Flatten every hook command string across all events in settings.json. */
 function allHookCommands(): string[] {
   const hooks = (readSettings().hooks ?? {}) as Record<string, unknown[]>;
@@ -399,6 +410,100 @@ describe('statusHooks', () => {
     fs.mkdirSync(pluginDir, { recursive: true });
     const s = statusHooks(paths());
     expect(s.pluginAlsoInstalled).toBe(true);
+  });
+
+  it('does not count unscoped approval hooks as AskUserQuestion-scoped', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [wmuxHookGroup('PreToolUse', '')],
+          PostToolUse: [wmuxHookGroup('PostToolUse', '')],
+        },
+      }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.installedEvents).toEqual([]);
+    expect(s.features.approvalCard.state).toBe('off');
+    expect(s.features.permissionGate.state).toBe('off');
+  });
+
+  it('reports correctly scoped manual approval hooks as healthy', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [wmuxHookGroup('PreToolUse', 'AskUserQuestion')],
+          PostToolUse: [wmuxHookGroup('PostToolUse', 'AskUserQuestion')],
+        },
+      }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.installedEvents.sort()).toEqual(['PostToolUse', 'PreToolUse']);
+    expect(s.features.approvalCard.state).toBe('ok');
+    expect(s.features.permissionGate.state).toBe('off');
+  });
+
+  it('uses effective match-all semantics for turn-boundary hooks', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [wmuxHookGroup('SessionStart')],
+          Stop: [wmuxHookGroup('Stop', 'ignored-by-Claude-Code')],
+          SubagentStop: [wmuxHookGroup('SubagentStop', '*')],
+        },
+      }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.features.conversationRead.state).toBe('ok');
+    expect(s.features.turnEnd.state).toBe('ok');
+    expect(s.features.approvalCard.state).toBe('off');
+    expect(s.features.permissionGate.state).toBe('off');
+  });
+
+  it('reports an active plugin-only installation as plugin-managed', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+
+    const s = statusHooks(paths());
+    expect(s.installedEvents).toEqual([]);
+    expect(s.features.conversationRead.state).toBe('ok');
+    expect(s.features.conversationRead.detail).toContain('plugin-managed');
+    expect(s.features.approvalCard.state).toBe('ok');
+    expect(s.features.approvalCard.detail).toContain('plugin-managed');
+    expect(s.features.turnEnd.state).toBe('ok');
+    expect(s.features.turnEnd.detail).toContain('plugin-managed');
+    expect(s.features.permissionGate.state).toBe('off');
+  });
+
+  it('does not count an explicitly disabled plugin without manual hooks', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': false } }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.installedEvents).toEqual([]);
+    expect(s.features.conversationRead.state).toBe('off');
+    expect(s.features.approvalCard.state).toBe('off');
+    expect(s.features.turnEnd.state).toBe('off');
+    expect(s.features.permissionGate.state).toBe('off');
   });
 
   it('reports approvalCard OFF before install and OK after (#781)', () => {

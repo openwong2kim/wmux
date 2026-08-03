@@ -198,6 +198,27 @@ function isWmuxGroup(group: unknown): boolean {
   );
 }
 
+/**
+ * True when a wmux-owned group has the effective scope required by a spec.
+ * Claude Code treats an omitted matcher, `""`, and `"*"` as match-all.
+ * `Stop` does not support matchers at all, so any string value is ignored.
+ * Tool hooks stay stricter: the approval-card pair must name
+ * `AskUserQuestion` exactly, rather than merely including it in a broader
+ * scope that would reintroduce per-tool hook execution.
+ */
+function isEffectiveWmuxGroupForSpec(
+  group: unknown,
+  spec: { event: HookEvent; matcher: string },
+): boolean {
+  if (!isWmuxGroup(group)) return false;
+  const matcher = (group as HookGroup).matcher;
+  if (matcher !== undefined && typeof matcher !== 'string') return false;
+
+  if (spec.matcher !== '') return matcher === spec.matcher;
+  if (spec.event === 'Stop') return true;
+  return matcher === undefined || matcher === '' || matcher === '*';
+}
+
 // ----- Settings load (corruption-aware) -----------------------------------
 
 interface LoadResult {
@@ -603,7 +624,8 @@ export interface StatusOutcome {
   /**
    * Feature-oriented status — the primary surface for users, who ask "does the
    * approval card work?" not "is PreToolUse registered?". `installedEvents`
-   * remains for scripts; `features` answers what works and how to fix it.
+   * remains the effective settings.json view for scripts; `features` also
+   * accounts for hooks supplied by an active marketplace plugin.
    * `permissionGate` is 'off' until the phone permission gate ships (#783).
    */
   features: {
@@ -650,6 +672,10 @@ function detectPluginInstalled(settingsPath: string): boolean {
 
 export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
   const load = loadSettings(paths.settingsPath);
+  const pluginActive =
+    !load.corrupted &&
+    detectPluginViaManifest(paths.settingsPath) &&
+    !isPluginExplicitlyDisabled(load.settings);
 
   const installedEvents: HookEvent[] = [];
   if (!load.corrupted) {
@@ -658,7 +684,10 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
       const hooksMap = hooks as Record<string, unknown>;
       for (const spec of HOOK_SPECS) {
         const groups = hooksMap[spec.event];
-        if (Array.isArray(groups) && groups.some((g) => isWmuxGroup(g))) {
+        if (
+          Array.isArray(groups) &&
+          groups.some((group) => isEffectiveWmuxGroupForSpec(group, spec))
+        ) {
           // HOOK_SPECS carries each event once, but dedup defensively.
           if (!installedEvents.includes(spec.event)) installedEvents.push(spec.event);
         }
@@ -678,23 +707,54 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     }
   }
 
-  // Feature-oriented view derived from installedEvents. Each 'off' detail
-  // names the fix command, so the user can act without re-reading — the core
-  // ask of #781 (status must report what's broken, not just list hook names).
+  // Feature-oriented view derived from effective settings hooks plus the
+  // authoritative active-plugin signal. The bundled plugin supplies
+  // SessionStart, Stop/SubagentStop, and the approval-card lifecycle: its
+  // PreToolUse is AskUserQuestion-scoped, while its broad PostToolUse bridge
+  // promotes only AskUserQuestion completion to agent.input_answered.
+  // Permission gating remains deliberately separate until #783 ships.
   const has = (e: HookEvent): boolean => installedEvents.includes(e);
   const FIX = 'wmux setup-hooks';
+  const featureStatus = (
+    pluginSupplies: boolean,
+    manualHooksSupply: boolean,
+    okDetail: string,
+    offDetail: string,
+  ): HookFeatureStatus => {
+    if (pluginSupplies) {
+      return {
+        state: 'ok',
+        detail: `plugin-managed by ${WMUX_PLUGIN_MARKER}: ${okDetail}`,
+      };
+    }
+    return manualHooksSupply
+      ? { state: 'ok', detail: okDetail }
+      : { state: 'off', detail: offDetail };
+  };
+  const pluginFeatures = {
+    conversationRead: pluginActive,
+    approvalCard: pluginActive,
+    turnEnd: pluginActive,
+  };
   const features = {
-    conversationRead: has('SessionStart')
-      ? { state: 'ok' as const, detail: 'SessionStart → transcript binding on session start' }
-      : { state: 'off' as const, detail: `SessionStart missing → run \`${FIX}\`` },
-    approvalCard:
-      has('PreToolUse') && has('PostToolUse')
-        ? { state: 'ok' as const, detail: 'PreToolUse + PostToolUse (AskUserQuestion) → card create + expire' }
-        : { state: 'off' as const, detail: `PreToolUse/PostToolUse:AskUserQuestion missing → run \`${FIX}\`` },
-    turnEnd:
-      has('Stop') && has('SubagentStop')
-        ? { state: 'ok' as const, detail: 'Stop + SubagentStop → turn-end nudge' }
-        : { state: 'off' as const, detail: `Stop/SubagentStop missing → run \`${FIX}\`` },
+    conversationRead: featureStatus(
+      pluginFeatures.conversationRead,
+      has('SessionStart'),
+      'SessionStart → transcript binding on session start',
+      `SessionStart missing → run \`${FIX}\``,
+    ),
+    approvalCard: featureStatus(
+      pluginFeatures.approvalCard,
+      has('PreToolUse') && has('PostToolUse'),
+      'PreToolUse + PostToolUse (AskUserQuestion) → card create + expire',
+      `PreToolUse/PostToolUse:AskUserQuestion missing → run \`${FIX}\``,
+    ),
+    turnEnd: featureStatus(
+      pluginFeatures.turnEnd,
+      has('Stop') && has('SubagentStop'),
+      'Stop + SubagentStop → turn-end nudge',
+      `Stop/SubagentStop missing → run \`${FIX}\``,
+    ),
     // The phone permission gate (#783) is not yet a hook this install owns —
     // report 'off' honestly rather than implying it can be fixed here.
     permissionGate: { state: 'off' as const, detail: 'phone permission gate — not yet available' },
