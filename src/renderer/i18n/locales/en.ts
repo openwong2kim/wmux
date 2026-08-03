@@ -98,6 +98,7 @@ export const en = {
   'workspaceProfile.cancel': 'Cancel',
 
   // Pane
+  'pane.dragGrip': 'Drag to move this pane',
   'pane.empty': 'Empty pane',
   'pane.splitRight': 'Split right',
   'pane.splitDown': 'Split down',

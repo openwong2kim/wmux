@@ -577,6 +577,15 @@ export interface UISlice {
   zoomedPaneId: string | null;
   togglePaneZoom: (paneId: string) => void;
 
+  // ─── Pane drag (#645) ─────────────────────────────────────────────
+  // Transient drag feedback, never persisted. The GRIP publishes both; the
+  // pane being hovered reads paneDropTarget to draw its own indicator, which
+  // is why this lives in the store rather than in the dragging component.
+  paneDragSourceId: string | null;
+  paneDropTarget: { paneId: string; edge: 'left' | 'right' | 'top' | 'bottom' | null } | null;
+  setPaneDragSource: (paneId: string | null) => void;
+  setPaneDropTarget: (target: { paneId: string; edge: 'left' | 'right' | 'top' | 'bottom' | null } | null) => void;
+
   // ─── Plugin pane decorations (B-1 ui.pane-decoration) ─────────────
   // paneId → plugin → decoration. Written by the ui.decoratePane RPC push
   // (usePaneDecorationChannel); badge=null payloads delete the entry.
@@ -1526,6 +1535,18 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   togglePaneZoom: (paneId) => set((state) => {
     state.zoomedPaneId = state.zoomedPaneId === paneId ? null : paneId;
+  }),
+
+  // ─── Pane drag (#645) ─────────────────────────────────────────────
+  paneDragSourceId: null,
+  paneDropTarget: null,
+
+  setPaneDragSource: (paneId) => set((state) => {
+    state.paneDragSourceId = paneId;
+  }),
+
+  setPaneDropTarget: (target) => set((state) => {
+    state.paneDropTarget = target;
   }),
 
   // ─── Plugin pane decorations (B-1 ui.pane-decoration) ─────────────

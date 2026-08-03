@@ -9,6 +9,7 @@ import {
 import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
+import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 import { displayPath } from '../../utils/displayPath';
@@ -232,6 +233,11 @@ export default function SurfaceTabs({
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >
+      {/* #645 — pane move grip. First in the strip, OUTSIDE the scroll region,
+          so it stays reachable however many tabs there are. Never on a tab
+          itself: tabs own an HTML5 drag that exports terminal text. */}
+      <PaneDragGrip paneId={paneId} workspaceId={workspace.id} />
+
       {/* Scroll region: pane label + tabs share the horizontal overflow so the
           action cluster below stays pinned to the right on narrow panes. */}
       <div className="flex items-center flex-1 min-w-0 overflow-x-auto h-full">

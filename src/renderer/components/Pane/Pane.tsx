@@ -319,6 +319,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     return () => document.removeEventListener('wmux:flash-pane', handler);
   }, [isActive]);
 
+  // #645 — is a pane drag currently hovering THIS pane, and where?
+  //
+  // Returns a STRING, not an object. A selector that builds `{ kind }` returns
+  // a fresh reference on every store read, so zustand's Object.is comparison
+  // always reports a change and the pane re-renders forever ("Maximum update
+  // depth exceeded"). A primitive compares by value and settles.
+  const dropIndicator = useStore((s) =>
+    s.paneDropTarget?.paneId === pane.id ? (s.paneDropTarget.edge ?? 'swap') : null,
+  );
+
   const handleClick = useCallback(() => {
     setActivePane(pane.id);
     // 최신 state에서 직접 읽어 stale closure 방지
@@ -470,6 +480,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         borderRightWidth: 1,
         borderBottomWidth: 1,
         borderLeftWidth: 1,
+      }}
+      {...{
+        // #645 — hit-test anchors for the pane drag. collectDropRects reads
+        // both: the id to address the pane, the workspace to keep a drag
+        // inside the tile it started in under multiview.
+        'data-pane-root': pane.id,
+        'data-pane-workspace': workspace.id,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
@@ -834,6 +851,31 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           {paneRoleBinding.model}
         </span>
       )}
+      {/* #645 — drop indicator. Drawn by the pane being hovered, not by the
+          one being dragged, so it lands in the right coordinate space with no
+          overlay layer. Steel accent (navigation), a thin edge line, no wash —
+          DESIGN.md's two-accent grammar reserves amber for alive/attention. */}
+      {dropIndicator && (
+        <div
+          data-pane-drop-indicator={dropIndicator}
+          style={{
+            position: 'absolute',
+            zIndex: 30,
+            pointerEvents: 'none',
+            transition: 'all 120ms ease-out',
+            ...(dropIndicator === 'swap'
+              ? {
+                  // A swap has no edge, so outline the whole pane instead.
+                  inset: 0,
+                  border: '2px solid var(--accent-blue)',
+                }
+              : dropIndicator === 'left' || dropIndicator === 'right'
+                ? { backgroundColor: 'var(--accent-blue)', top: 0, bottom: 0, width: 2, [dropIndicator]: 0 }
+                : { backgroundColor: 'var(--accent-blue)', left: 0, right: 0, height: 2, [dropIndicator]: 0 }),
+          }}
+        />
+      )}
+
       <SurfaceTabs
         surfaces={pane.surfaces}
         activeSurfaceId={pane.activeSurfaceId}

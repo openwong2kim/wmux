@@ -41,6 +41,7 @@ export const ko = {
   'workspace.idleTooltip': '{time} 동안 에이전트 활동 없음',
 
   // Pane
+  'pane.dragGrip': '드래그해서 페인 이동',
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',
   'pane.splitDown': '아래 분할',
