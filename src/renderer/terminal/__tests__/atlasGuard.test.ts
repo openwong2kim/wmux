@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   createAtlasGuard,
+  detectMerge,
   extractAtlas,
   GUARD_POLL_MS,
   GUARD_MARGIN_PAGES,
@@ -27,6 +28,15 @@ class FakeAtlas {
     this.clearCalls++;
     // Mirrors the real clearTexture: pages are emptied IN PLACE, count unchanged.
     for (const p of this.pages) p.currentRow = { x: 0, y: 0 };
+  }
+  /** How the real pool grows: APPEND, every existing page object preserved. */
+  growBy(n: number): void {
+    for (let i = 0; i < n; i++) this.pages.push({ currentRow: { x: 0, y: 1 } });
+  }
+  /** Models addon-webgl's _createNewPage merge: `count` pages are deleted and
+   *  ONE freshly created page takes their place (net -(count - 1)). */
+  mergeFirst(count = 4): void {
+    this.pages.splice(0, count, { currentRow: { x: 0, y: 1 } });
   }
 }
 
@@ -117,6 +127,53 @@ describe('atlasGuard', () => {
     vi.advanceTimersByTime(GUARD_POLL_MS);
     expect(atlas.clearCalls).toBe(1);
     expect(pane.refreshes()).toBe(1);
+  });
+
+  it('CURE: catches a merge whose page count has already regrown before the next poll', () => {
+    // The blind spot a count-only signal has. A merge is a net -3 (delete 4,
+    // add 1); under the CJK burst that causes it, 3+ pages are re-allocated
+    // well inside one 2s poll, so the count at both observed boundaries is
+    // identical and a drop is never seen. Stay far under PREVENT_AT so the
+    // only thing that can fire here is CURE.
+    const atlas = new FakeAtlas(6, /* lastPageInUse */ false);
+    const guard = createAtlasGuard();
+    const pane = makePane(atlas);
+    guard.register(pane.entry);
+    vi.advanceTimersByTime(GUARD_POLL_MS); // baseline: 6 pages
+    expect(atlas.clearCalls).toBe(0);
+
+    atlas.mergeFirst(4); // 6 → 3, four pages destroyed
+    atlas.growBy(3); // burst refills → 6 again, count unchanged across polls
+    expect(atlas.pages.length).toBe(6); // the count says nothing happened…
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.clearCalls).toBe(1); // …but identity does
+    expect(pane.refreshes()).toBe(1);
+  });
+
+  it('does not fire CURE on pure growth (pages appended, none destroyed)', () => {
+    const atlas = new FakeAtlas(3, /* lastPageInUse */ false);
+    const guard = createAtlasGuard();
+    const pane = makePane(atlas);
+    guard.register(pane.entry);
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    atlas.growBy(2); // 3 → 5, still well under PREVENT_AT
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    atlas.growBy(2); // 5 → 7
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.clearCalls).toBe(0);
+    expect(pane.refreshes()).toBe(0);
+  });
+
+  it('detectMerge: identity beats counting, and growth is not a merge', () => {
+    expect(detectMerge(undefined, [1, 2, 3])).toBeNull(); // no baseline yet
+    expect(detectMerge([1, 2, 3], [1, 2, 3, 4])).toBeNull(); // appended
+    expect(detectMerge([1, 2, 3], [1, 2])).toBe('count-drop'); // still shrunk
+    // Merge + regrowth: same length, different pages at seen indices.
+    expect(detectMerge([1, 2, 3, 4, 5, 6], [7, 5, 6, 8, 9, 10])).toBe('page-identity');
+    // Untaggable pool (every tag 0) degrades to length-only, never a false CURE.
+    expect(detectMerge([0, 0, 0], [0, 0, 0, 0])).toBeNull();
+    expect(detectMerge([0, 0, 0], [0, 0])).toBe('count-drop');
   });
 
   it('groups panes by atlas identity — an unrelated atlas is untouched', () => {

@@ -31,10 +31,21 @@
 //            changes — the #191 hazard was clearing from ONE pane while its
 //            siblings kept stale references, which this never does.
 //
-//   CURE     If a merge slips through anyway (page count DROPPED between two
-//            polls — merges delete 4 pages and add 1, growth only ever adds
-//            1), do the same clear+refresh-all. Corruption is visible for at
-//            most one poll interval instead of indefinitely.
+//   CURE     If a merge slips through anyway, do the same clear+refresh-all.
+//            Corruption is visible for at most one poll interval instead of
+//            indefinitely.
+//
+//            Detection is by page IDENTITY, not page count. Counting alone has
+//            a blind spot that the trigger workload walks straight into: a
+//            merge is a net −3 (delete 4, add 1), so it is only visible as a
+//            drop while the pool stays shrunk. Under the very output burst that
+//            causes the merge, 3+ pages are re-allocated well inside one 2s
+//            poll, the count is back where it started, and CURE never fires —
+//            the corruption then lasts indefinitely. Since growth only ever
+//            APPENDS, every previously seen index must still hold the SAME page
+//            object; any changed slot means pages were deleted and re-created.
+//            That signal survives regrowth, and it also catches the shape of
+//            merge where the count never drops at an observed boundary at all.
 //
 // The "last page in use" condition doubles as the anti-thrash gate: right
 // after a clear every page is empty, so PREVENT cannot refire until the pool
@@ -77,6 +88,50 @@ interface AtlasLike {
   constructor?: { maxAtlasPages?: number };
 }
 
+/** Monotonic tag that recognises a page ACROSS polls WITHOUT holding a
+ *  reference to it. Remembering the page objects themselves would keep every
+ *  merged-away atlas canvas alive until the next poll — exactly the memory the
+ *  merge just reclaimed. The property is non-enumerable and symbol-keyed, so it
+ *  is invisible to anything that does not already hold the symbol. */
+const PAGE_TAG = Symbol('wmux.atlasGuard.page');
+let nextPageTag = 1;
+
+/** Stable per-page id, minted on first sight. Returns 0 for anything that
+ *  cannot carry the tag (frozen page, non-object after an upstream reshape);
+ *  0 === 0 compares equal, so an untaggable pool simply degrades to the
+ *  length comparison rather than reporting a merge on every poll. */
+function pageTag(page: unknown): number {
+  if (page === null || (typeof page !== 'object' && typeof page !== 'function')) return 0;
+  const existing = (page as Record<symbol, unknown>)[PAGE_TAG];
+  if (typeof existing === 'number') return existing;
+  const tag = nextPageTag++;
+  try {
+    Object.defineProperty(page, PAGE_TAG, { value: tag, enumerable: false, configurable: true });
+  } catch {
+    return 0; // sealed/frozen — degrade to length-only detection
+  }
+  return tag;
+}
+
+/** Why CURE fired, or null when the pool only grew. Exported for direct unit
+ *  testing of the blind spot this replaced. */
+export type MergeSignal = 'count-drop' | 'page-identity';
+
+/**
+ * Compare two page-tag snapshots. `count-drop` is the classic signal (pool
+ * still shrunk when we looked); `page-identity` is the one that survives
+ * regrowth — growth appends, so a changed slot at a previously seen index can
+ * only mean pages were deleted and re-created.
+ */
+export function detectMerge(prev: number[] | undefined, next: number[]): MergeSignal | null {
+  if (!prev) return null;
+  if (next.length < prev.length) return 'count-drop';
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i] !== next[i]) return 'page-identity';
+  }
+  return null;
+}
+
 /** Duck-typed walk to the shared TextureAtlas behind a WebglAddon. Returns
  *  null whenever any internal is missing (DOM renderer, upstream reshape). */
 export function extractAtlas(addon: unknown): AtlasLike | null {
@@ -110,10 +165,10 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   } = options;
 
   const entries = new Set<AtlasGuardEntry>();
-  // Page count per atlas at the previous poll — a drop between polls means a
-  // merge ran (growth is strictly one page at a time). WeakMap so a released
-  // atlas (all owner panes disposed) never leaks an entry.
-  const prevPageCount = new WeakMap<object, number>();
+  // Page-tag snapshot per atlas at the previous poll. Tags (not page objects)
+  // so a merged-away page is free to be collected immediately. WeakMap so a
+  // released atlas (all owner panes disposed) never leaks an entry.
+  const prevPageTags = new WeakMap<object, number[]>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
   // Group live panes by shared atlas identity so clear+refresh covers every
@@ -155,8 +210,10 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const pages = atlas.pages;
       if (!pages || typeof pages.length !== 'number') continue;
       const len = pages.length;
-      const prev = prevPageCount.get(atlas as object);
-      prevPageCount.set(atlas as object, len);
+      const tags: number[] = new Array(len);
+      for (let i = 0; i < len; i++) tags[i] = pageTag(pages[i]);
+      const prev = prevPageTags.get(atlas as object);
+      prevPageTags.set(atlas as object, tags);
 
       const maxPages =
         typeof atlas.constructor?.maxAtlasPages === 'number'
@@ -170,14 +227,19 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const lastPageInUse =
         (lastPage?.currentRow?.x ?? 0) > 0 || (lastPage?.currentRow?.y ?? 0) > 0;
 
-      const merged = prev !== undefined && len < prev;
+      const mergeSignal = detectMerge(prev, tags);
       const nearTrigger = len >= preventAt && lastPageInUse;
-      if (!merged && !nearTrigger) continue;
+      if (!mergeSignal && !nearTrigger) continue;
 
       console.warn(
-        `[wmux:atlas-guard] ${merged ? 'cure (merge detected)' : 'prevent'} — pages=${len}/${mergeTrigger}, panes=${group.length}`,
+        `[wmux:atlas-guard] ${mergeSignal ? `cure (merge detected: ${mergeSignal})` : 'prevent'}` +
+          ` — pages=${len}/${mergeTrigger}, panes=${group.length}`,
       );
       rebuildGroup(atlas, group);
+      // Re-baseline: the rebuild is itself a structural change, and a snapshot
+      // taken before it would read as a merge on the next poll and fire a
+      // second, redundant rebuild. Same reason recoverNow drops its baseline.
+      prevPageTags.delete(atlas as object);
     }
   }
 
@@ -199,9 +261,9 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       console.warn(`[wmux:atlas-guard] recover (${reason}) — atlases=${groups.size}`);
       for (const [atlas, group] of groups) {
         // Reset the poll's merge-detection baseline: the rebuild empties the
-        // page pool, and a stale prev count would read that as a "merge" and
+        // page pool, and a stale snapshot would read that as a "merge" and
         // trigger a second, redundant rebuild on the next tick.
-        prevPageCount.delete(atlas as object);
+        prevPageTags.delete(atlas as object);
         rebuildGroup(atlas, group);
       }
     },
