@@ -33,24 +33,23 @@ import { buildWebCsp } from './webCsp';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
- * plus the mtimeMs/fileSize the delta path checks for a replaced transcript, so
- * the phone holds an opaque string and never has to understand the byte model.
+ * plus the fileSize `delta()` shrink-checks for a replaced transcript, so the
+ * phone holds an opaque string and never has to understand the byte model.
  * base64url keeps it URL-safe without percent-encoding the JSON braces.
+ *
+ * mtimeMs is deliberately NOT carried: it moves on every append, so no reset
+ * check can use it (see `TranscriptProjector.delta`). An older cursor that
+ * still holds the field decodes fine — the extra key is ignored.
  */
-function encodeTurnCursor(c: {
-  headOffset: number;
-  tailOffset: number;
-  fileSize: number;
-  mtimeMs: number;
-}): string {
+function encodeTurnCursor(c: { headOffset: number; tailOffset: number; fileSize: number }): string {
   return Buffer.from(
-    JSON.stringify({ head: c.headOffset, tail: c.tailOffset, mtimeMs: c.mtimeMs, fileSize: c.fileSize }),
+    JSON.stringify({ head: c.headOffset, tail: c.tailOffset, fileSize: c.fileSize }),
   ).toString('base64url');
 }
 
 function decodeTurnCursor(
   s: string | null,
-): { head: number; tail: number; mtimeMs?: number; fileSize?: number } | null {
+): { head: number; tail: number; fileSize?: number } | null {
   if (!s) return null;
   try {
     const o = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as Record<string, unknown>;
@@ -61,7 +60,6 @@ function decodeTurnCursor(
     return {
       head,
       tail,
-      mtimeMs: typeof o.mtimeMs === 'number' ? o.mtimeMs : undefined,
       fileSize: typeof o.fileSize === 'number' ? o.fileSize : undefined,
     };
   } catch {
@@ -1723,9 +1721,12 @@ export class WebTerminalServer {
    * STATELESS: reads `delta()`/`snapshot()`, NEVER `subscribe()`. A phone that
    * opened the pane cannot scramble the desktop Chat View sharing the session.
    *
-   * Gating mirrors the other grants: `--allow-transcript` off → 403 with the
-   * restart command on the same line (a pre-flag daemon returns no
-   * `allowTranscript` field, which the phone reads as false → mirror fallback).
+   * Gating mirrors the other grants: `--allow-transcript` off → 403 tagged
+   * `transcript-disabled:`, the same machine-readable prefix convention
+   * `/api/upload` set with `uploads-disabled:` — the prose after the colon may
+   * be reworded, the tag may not, so a client matches on the tag. (A pre-flag
+   * daemon returns no `allowTranscript` field at all, which the phone reads as
+   * false → mirror fallback, without ever seeing this 403.)
    * A projector the daemon did not wire → 503. `no-binding` and friends are a
    * 200 body, never a 500 — the phone must distinguish "off" from "broken". */
   private handleSessionTurns(
@@ -1736,7 +1737,7 @@ export class WebTerminalServer {
   ): void {
     if (this.opts?.allowTranscript !== true) {
       this.json(res, 403, {
-        error: 'transcript reading is off — server started without --allow-transcript',
+        error: 'transcript-disabled: server started without --allow-transcript',
         detail: 'restart with: wmux web --allow-transcript <your other flags>',
       });
       return;
@@ -1789,7 +1790,6 @@ export class WebTerminalServer {
     }
 
     const result = projector.delta(sessionId, decoded.tail, {
-      cursorMtimeMs: decoded.mtimeMs,
       cursorFileSize: decoded.fileSize,
     });
     if (!result) {
@@ -2715,7 +2715,7 @@ export class WebTerminalServer {
    * collapsing the burst into one fetch is pure win. Delivered ONLY to devices
    * that opened this pane's turn view — a device that never queried the pane
    * never asked to hear about it. The nudge carries no payload on purpose: the
-   * phone calls `delta()` and lets the cursor checks (mtime/fileSize/boundary)
+   * phone calls `delta()` and lets the cursor checks (fileSize/boundary)
    * decide whether to append or re-snapshot, instead of the server guessing.
    */
   emitTranscriptNudge(sessionId: string): void {

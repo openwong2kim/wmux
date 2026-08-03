@@ -3481,7 +3481,9 @@ describe('WebTerminalServer', () => {
       const turns = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
       expect(turns.status).toBe(403);
       const body = await turns.json();
-      expect(body.error).toMatch(/transcript reading is off/);
+      // Matched by the machine-readable TAG, the way a client must: the prose
+      // after the colon may be reworded, `transcript-disabled:` may not.
+      expect(body.error.startsWith('transcript-disabled:')).toBe(true);
       // The two grants are independent: approvals still served on read-only.
       const approvals = await fetch(`${base()}/api/approvals`, { headers: h });
       expect(approvals.status).toBe(200);

@@ -184,8 +184,25 @@ JSON backlog fetch (Bearer only).
 | `critical` | `{...payload, tier, id, epoch}` |
 | `notify` | `{...payload, tier, id, epoch}` |
 | `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
+| `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
+
+**`transcript.nudge` is the one event that is NOT in the backlog.** Every other
+kind is recorded, carries `id`/`epoch`, and replays on `?since=<cursor>`. The
+nudge is live-only and deliberately so: a busy pane raises one roughly every
+second, and recording those would push a pending `approval` out of the bounded
+log, so a client that replayed the backlog after a reconnect would re-derive its
+badge and find nothing pending — clearing the badge while a human is still being
+waited on. It carries no payload beyond the pane id on purpose; `GET
+/api/sessions/<id>/turns` and its cursor decide what actually changed.
+
+Two consequences for a client. **Do not count on receiving one** — the nudge is
+coalesced server-side (at most one per pane per second, on the trailing edge)
+and is dropped outright while your SSE is down. Re-fetch the turn view once on
+every reconnect rather than waiting to be told. And **you only get nudges for
+panes whose turn view you have actually read** — the server starts sending them
+after your first successful `/turns` call for that pane.
 
 Identity fields (`id`, `epoch`) — and `tier` — are stamped **last**, so a
 pane-supplied payload can never shadow them.
@@ -268,7 +285,8 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, protocolVersion, minProtocolVersion, serverVersion}
+GET /api/config    → {allowInput, allowUpload, allowTranscript, protocolVersion,
+                      minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
@@ -428,6 +446,79 @@ machine.
 Concurrent requests for the same pane are coalesced into one git run and all
 receive the same answer, so a client that retries on reconnect costs nothing
 extra.
+
+### What did this agent say? — the turn view
+
+```
+GET /api/sessions/<id>/turns[?cursor=<opaque>][&dir=forward|back]
+  → 200 {available: true, events: [...], cursor, hasMore, truncatedHead?}   (snapshot)
+  → 200 {available: true, events: [...], cursor, reset, budgetDropped?}     (forward delta)
+  → 200 {available: false, reason}
+  → 403 {error: 'transcript-disabled: …', detail: 'restart with: …'}
+  → 404 {error: 'session not found'}
+  → 503 {error: 'transcript projector unavailable'}
+```
+
+The pane's Claude Code conversation — the same session the desktop Chat View
+reads, reflowed to phone width. It is the alternative to squinting at an
+80-column mirror.
+
+**The grant is its own flag.** `--allow-transcript`, not `--allow-input` and not
+`--allow-upload`. The transcript is the whole session: thinking blocks, full tool
+inputs, the contents of files the agent read. That is far wider reading than a
+mirror of the visible screen, and a device credential never expires, so a leak
+here is a category change rather than an increment. Gate the tab on
+`allowTranscript` from `/api/config`, and match the 403 by **prefix** — the prose
+after the colon may be reworded, the `transcript-disabled:` tag may not. A daemon
+predating this route has no `allowTranscript` key at all; read a missing key as
+`false` and fall back to the mirror without probing the route.
+
+**Paging.** No `cursor` means "give me the latest": a snapshot of the tail.
+`dir=back` with a cursor pages further into the past from that cursor's head —
+that is your infinite scroll upward. `dir=forward` (the default) with a cursor
+asks only for what was appended after it, which is what you call on a nudge.
+`hasMore` on a snapshot says there is older content behind it. `truncatedHead`
+says the response itself starts mid-history.
+
+**The cursor is opaque. Do not parse it, do not synthesize one.** It encodes byte
+offsets into a file you cannot see, and the server uses them to decide whether
+your next read is a clean append. Store the string, send it back verbatim.
+
+**`reset: true` means replace, not append.** The transcript was truncated or
+rewritten under your cursor, so the server answered with a fresh snapshot instead
+of bytes stitched onto a conversation that no longer exists. Throw away what you
+had and render the response as the new whole. Detection is best-effort by design
+— an in-place rewrite that happens to leave your exact offset intact is not
+caught — so treat a conversation that suddenly reads wrong as a reason to re-fetch
+without a cursor, not as a bug to work around.
+
+**`budgetDropped: true` means a row is missing on purpose.** One entry was larger
+than the server's serialization budget, so the cursor advanced past it with no
+row emitted. Render a visible "content omitted" seam. The stream is intact; that
+one entry is not, and silently closing the gap makes the conversation read as
+though it never happened.
+
+**`available: false` is a normal answer, not an error** — that is why it is a
+200. The `reason` set is open (treat anything you do not recognise as simply
+unavailable), and today it is:
+
+| `reason` | Meaning |
+| --- | --- |
+| `no-hook` | No agent detected on this pane, so the wmux hooks never fired here. The fix is the operator running `wmux setup-hooks` — say that |
+| `stale-session` | An agent IS running but no binding was captured yet: the pane started before the hooks were armed, or its first turn has not ended. Retry later; do not send the operator to `setup-hooks` |
+| `no-transcript-path` | The session is bound but the first turn has not ended, so the file does not exist yet. Transient — this becomes available on its own |
+| `not-claude` | The agent publishes no transcript. A permanent no for this pane; hide the tab rather than showing an empty one |
+| `unsafe-transcript-path` | The recorded path fell outside the directories the daemon will read. Not retryable, and not something a client can fix |
+| `unreadable` | The file is bound and in bounds but could not be read right now |
+
+`503` is different from all of these: the daemon has no projector wired at all
+(nothing to read from, on any pane). `404` is the same contract as the other
+`/api/sessions/<id>/*` routes — the pane is gone, which is not the same as its
+conversation being unavailable.
+
+**Reading is stateless.** Nothing you do here touches the desktop Chat View
+watching the same pane — no subscription, no shared cursor. Two devices and a
+desk can read one session at once and none of them can move the others.
 
 ---
 

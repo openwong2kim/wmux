@@ -201,16 +201,22 @@ export class TranscriptProjector {
    * received so a replaced/truncated transcript is answered with a reset
    * snapshot instead of bytes stitched from a different conversation.
    *
-   * Reset checks mirror `readAndEmit` but use mtimeMs+fileSize instead of inode
-   * — the wire cursor cannot carry inode without depending on FS-specific ino
-   * stability (NFS etc.), and mtime changes on every rewrite/rotation the inode
-   * check was added for (plan D1: an accepted, narrow detection regression).
+   * Reset detection is WEAKER than `readAndEmit`'s, which compares the inode: a
+   * wire cursor cannot carry inode without depending on FS-specific ino
+   * stability (NFS etc.), so this path has exactly two signals — a fileSize
+   * SHRINK, and `fromOffset` no longer landing on a line boundary. mtime is
+   * deliberately NOT one of them: it moves on every append, so any mtime test
+   * would reset on every turn and make the forward delta dead code. A rewrite
+   * that grows past the cursor AND happens to leave a `\n` at exactly
+   * `fromOffset` is therefore undetected (plan D1: an accepted, narrow
+   * detection regression).
+   *
    * `budgetDropped` is surfaced so the phone can render an "omitted" seam
    * instead of the silent hole `fit` left the push path with. */
   delta(
     sessionId: string,
     fromOffset: number,
-    opts?: { cursorMtimeMs?: number; cursorFileSize?: number },
+    opts?: { cursorFileSize?: number },
   ): { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset: boolean; budgetDropped?: boolean } | null {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return null;
@@ -219,9 +225,8 @@ export class TranscriptProjector {
 
     let reset = false;
     // A SHRINK (size < cursor) means the file was truncated/rewritten. A grow
-    // or mtime change is a normal append — testing !== would reset on every
-    // turn and make the forward delta dead code. Rotation past the cursor is
-    // caught by isLineBoundary below (review: Claude+Codex 2-MODEL).
+    // is a normal append. Rotation past the cursor is caught by isLineBoundary
+    // below (review: Claude+Codex 2-MODEL).
     if (opts?.cursorFileSize !== undefined && stat.size < opts.cursorFileSize) reset = true;
     if (fromOffset > 0 && !isLineBoundary(resolved.transcriptPath, fromOffset)) reset = true;
     // A shrunk file (stat.size < from) is readTranscriptDelta's own reset path.

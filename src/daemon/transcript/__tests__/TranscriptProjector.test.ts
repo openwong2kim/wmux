@@ -651,7 +651,6 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     // tailOffset — the #782 CRITICAL 6 guarantee that a phone opening a pane
     // never scrambles the desktop Chat View sharing the session.
     const phone = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
-      cursorMtimeMs: snap.cursor.mtimeMs,
       cursorFileSize: snap.cursor.fileSize,
     });
     expect(phone).not.toBeNull();
@@ -665,10 +664,9 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     const snap = harness.projector.snapshot('pty-1')!;
     // Cursor believes a LARGER file than what is on disk → truncated/rewritten.
-    // A grow or mtime change is a normal append and must NOT reset — otherwise
-    // every turn resets the delta and the forward path becomes dead code.
+    // A grow is a normal append and must NOT reset — otherwise every turn
+    // resets the delta and the forward path becomes dead code.
     const result = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
-      cursorMtimeMs: snap.cursor.mtimeMs + 5000, // mtime moved: alone this is an append, not a reset
       cursorFileSize: snap.cursor.fileSize + 1000,
     })!;
     expect(result.reset).toBe(true);
@@ -681,10 +679,9 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     const st = fs.statSync(file);
     // Offset 5 is inside the first line — a cursor that an in-place rewrite
-    // left pointing mid-entry. mtime/fileSize match so the boundary check alone
-    // is the trigger (the in-place-rewrite case a size check cannot catch).
+    // left pointing mid-entry. fileSize matches so the boundary check alone is
+    // the trigger (the in-place-rewrite case a size check cannot catch).
     const result = harness.projector.delta('pty-1', 5, {
-      cursorMtimeMs: st.mtimeMs,
       cursorFileSize: st.size,
     })!;
     expect(result.reset).toBe(true);
