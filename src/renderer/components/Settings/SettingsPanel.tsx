@@ -31,6 +31,7 @@ import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
+import { IntegrationSetupSectionContainer } from './IntegrationSetupSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
@@ -4713,7 +4714,7 @@ export default function SettingsPanel() {
               {activeTab === 'appearance'         && <TabAppearance />}
               {activeTab === 'notifications'      && <TabNotifications />}
               {activeTab === 'shortcuts'          && <TabShortcuts />}
-              {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /></>}
+              {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /></>}
               {activeTab === 'agents'             && <TabAgents />}
               {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
               {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}

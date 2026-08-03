@@ -54,8 +54,8 @@ function firstRunBridge(): FirstRunBridge {
   return api.firstRun;
 }
 
-// Statusline bridge (preload `statuslineBridge`). Optional: older preloads may
-// not expose it, so the accessor returns null instead of throwing and the
+// Statusline bridge (preload `deck.statuslineBridge`). Optional: older preloads
+// may not expose it, so the accessor returns null instead of throwing and the
 // wizard simply hides the statusline offer.
 interface StatuslineBridge {
   status: () => Promise<{
@@ -75,11 +75,36 @@ interface StatuslineBridge {
 
 export type StatuslineTargetState = 'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing';
 
-function statuslineBridge(): StatuslineBridge | null {
+// Hook bridge (preload `deck.hooksBridge`). Same shape of contract as the
+// statusline: an opt-in install the user clicks, never an edit behind their
+// back. Unlike the statusline this one is not cosmetic — without it every
+// lifecycle signal degrades to the regex detector, so the wizard is the one
+// place a new install is guaranteed to see the offer.
+interface HooksBridge {
+  status: () => Promise<{ installed: boolean }>;
+  install: () => Promise<{ ok: boolean; error: string | null }>;
+}
+
+/** Exported for the same contract test as {@link statuslineBridge}. */
+export function hooksBridge(): HooksBridge | null {
   const api = (window as unknown as {
-    electronAPI?: { statuslineBridge?: StatuslineBridge };
+    electronAPI?: { deck?: { hooksBridge?: HooksBridge } };
   }).electronAPI;
-  return api?.statuslineBridge ?? null;
+  return api?.deck?.hooksBridge ?? null;
+}
+
+// Exported for the contract test: the accessor and the preload must agree on
+// where the bridge lives, and reading the wrong path fails silently by design.
+export function statuslineBridge(): StatuslineBridge | null {
+  // The bridge lives under `deck` (preload.ts) — reading it off the root of
+  // electronAPI returned undefined in every real build, and the "older preload"
+  // fallback below turned that into silence: the statusline offer has never
+  // rendered outside tests. Read the real path, keep the null fallback for
+  // preloads that genuinely predate the bridge.
+  const api = (window as unknown as {
+    electronAPI?: { deck?: { statuslineBridge?: StatuslineBridge } };
+  }).electronAPI;
+  return api?.deck?.statuslineBridge ?? null;
 }
 
 function shellOpenExternal(url: string): Promise<void> {
@@ -205,6 +230,9 @@ export type StatuslineSubState =
   | 'installed'
   | 'error';
 
+/** Same lifecycle as the statusline block; `unknown` keeps it hidden. */
+export type HooksSubState = StatuslineSubState;
+
 const PTYID_WAIT_TIMEOUT_MS = 10_000;
 
 export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
@@ -220,6 +248,8 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const [sampleState, setSampleState] = useState<SampleSubState>('idle');
   const [statuslineState, setStatuslineState] = useState<StatuslineSubState>('unknown');
   const [statuslineError, setStatuslineError] = useState<string | null>(null);
+  const [hooksState, setHooksState] = useState<HooksSubState>('unknown');
+  const [hooksError, setHooksError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstFocusRef = useRef<HTMLButtonElement>(null);
@@ -276,6 +306,45 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
       .catch(() => {
         // Status probe failing is not worth surfacing — just keep the block hidden.
       });
+  }, []);
+
+  // ─── Hook bridge offer ─────────────────────────────────────────────────────
+  // Already-installed shows as a ✓ line rather than hiding: this one is a
+  // REQUIREMENT, and a first-run checklist that silently omits its most
+  // important item teaches the operator it does not exist.
+  useEffect(() => {
+    const bridge = hooksBridge();
+    if (!bridge) return;
+    bridge
+      .status()
+      .then((s) => {
+        if (!isMountedRef.current) return;
+        setHooksState(s.installed ? 'installed' : 'offer');
+      })
+      .catch(() => {
+        // Probe failure is not worth surfacing — keep the block hidden.
+      });
+  }, []);
+
+  const handleInstallHooks = useCallback(async () => {
+    const bridge = hooksBridge();
+    if (!bridge) return;
+    setHooksState('installing');
+    setHooksError(null);
+    try {
+      const outcome = await bridge.install();
+      if (!isMountedRef.current) return;
+      if (outcome.ok) {
+        setHooksState('installed');
+      } else {
+        setHooksError(outcome.error);
+        setHooksState('error');
+      }
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      setHooksError(err instanceof Error ? err.message : null);
+      setHooksState('error');
+    }
   }, []);
 
   const handleInstallStatusline = useCallback(async () => {
@@ -612,6 +681,16 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
               </div>
             )}
 
+            {/* Hook bridge — the required half of the integration. Shown even
+                when already installed, as a ✓, so the checklist is complete. */}
+            {result.status.claudeFound && hooksState !== 'unknown' && (
+              <HooksBlock
+                state={hooksState}
+                errorDetail={hooksError}
+                onInstall={() => void handleInstallHooks()}
+              />
+            )}
+
             {/* Statusline opt-in (only when Claude detected & installable) */}
             {result.status.claudeFound && statuslineState !== 'unknown' && (
               <StatuslineBlock
@@ -738,6 +817,80 @@ export function ClaudeStatusBlock({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+export function HooksBlock({
+  state,
+  errorDetail,
+  onInstall,
+}: {
+  state: HooksSubState;
+  errorDetail?: string | null;
+  onInstall: () => void;
+}) {
+  const t = useT();
+
+  if (state === 'installed') {
+    return (
+      <div
+        className="flex flex-col gap-1 p-3 rounded-lg"
+        style={{
+          backgroundColor: 'var(--bg-surface)',
+          border: '1px solid var(--accent-green, #a6e3a1)',
+        }}
+        data-testid="first-run-wizard-hooks-installed"
+      >
+        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
+          ✓ {t('firstRunWizard.hooksInstalled')}
+        </p>
+        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
+          {t('firstRunWizard.hooksInstalledHint')}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2 p-3 rounded-lg"
+      style={{ backgroundColor: 'var(--bg-surface)' }}
+      data-testid="first-run-wizard-hooks-offer"
+    >
+      <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
+        {t('firstRunWizard.hooksHeading')}
+      </p>
+      <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
+        {t('firstRunWizard.hooksDescription')}
+      </p>
+      {state === 'error' && (
+        <p
+          className="text-xs"
+          style={{ color: 'var(--accent-red, #f38ba8)', margin: 0 }}
+          data-testid="first-run-wizard-hooks-error"
+        >
+          {t('firstRunWizard.hooksError')}
+          {errorDetail ? ` (${errorDetail})` : ''}
+        </p>
+      )}
+      <button
+        onClick={onInstall}
+        disabled={state === 'installing'}
+        data-testid="first-run-wizard-hooks-install"
+        className="self-start px-3 py-1 rounded text-xs font-medium"
+        style={{
+          backgroundColor: 'var(--accent)',
+          color: 'var(--bg-base)',
+          border: 'none',
+          cursor: state === 'installing' ? 'wait' : 'pointer',
+          opacity: state === 'installing' ? 0.7 : 1,
+        }}
+      >
+        {state === 'installing'
+          ? t('firstRunWizard.hooksInstalling')
+          : t('firstRunWizard.hooksEnableButton')}
+      </button>
     </div>
   );
 }

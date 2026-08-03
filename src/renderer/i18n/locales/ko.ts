@@ -596,6 +596,36 @@ export const ko = {
   'firstRunWizard.statuslineInstalling': '설치 중…',
   'firstRunWizard.statuslineInstalled': '상태줄 켜짐',
   'firstRunWizard.statuslineInstalledHint': '새 Claude Code 세션부터 자동으로 표시됩니다.',
+  'firstRunWizard.hooksHeading': 'Claude Code 훅 (필수)',
+  'firstRunWizard.hooksDescription':
+    '에이전트가 턴을 마쳤는지, 승인을 기다리는지, 서브에이전트를 띄웠는지 wmux가 알 수 있게 합니다. 없으면 화면을 읽어 추정하므로 리드로우에 가려진 턴을 놓칩니다.',
+  'firstRunWizard.hooksEnableButton': '훅 설치',
+  'firstRunWizard.hooksInstalling': '설치 중…',
+  'firstRunWizard.hooksInstalled': '훅 설치됨',
+  'firstRunWizard.hooksInstalledHint': '새 Claude Code 세션부터 생명주기를 wmux에 보고합니다.',
+  'firstRunWizard.hooksError': '설치에 실패했습니다. 다시 시도하거나 터미널에서 `wmux setup-hooks`를 실행하세요.',
+  'integrationSetup.title': '설치',
+  'integrationSetup.description':
+    'wmux가 Claude Code에 설치하는 항목입니다. 직접 누르지 않으면 아무것도 기록하지 않습니다.',
+  'integrationSetup.required': '· 필수',
+  'integrationSetup.recommended': '· 권장',
+  'integrationSetup.installButton': '설치',
+  'integrationSetup.registerButton': '등록',
+  'integrationSetup.working': '처리 중…',
+  'integrationSetup.installFailed': '실패',
+  'integrationSetup.state.installed': '설치됨',
+  'integrationSetup.state.missing': '미설치',
+  'integrationSetup.state.working': '처리 중',
+  'integrationSetup.state.unknown': '확인 안 됨',
+  'integrationSetup.hooks.title': '훅 브리지',
+  'integrationSetup.hooks.description':
+    '턴 종료·승인 요청·서브에이전트 활동을 감지합니다. 없으면 화면을 읽어 추정합니다.',
+  'integrationSetup.mcp.title': 'MCP 도구',
+  'integrationSetup.mcp.description':
+    '에이전트가 wmux를 조작할 수 있게 합니다 — 터미널·페인·채널·브라우저.',
+  'integrationSetup.statusline.title': '사용량 statusline',
+  'integrationSetup.statusline.description':
+    'Claude Code 입력창 밑에 모델·컨텍스트·레이트리밋을 표시합니다. 로컬 읽기만 하므로 토큰 비용이 없습니다.',
   'firstRunWizard.statuslineError': '설치에 실패했습니다. 다시 시도하거나 터미널에서 `wmux setup-statusline`을 실행하세요.',
 
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)

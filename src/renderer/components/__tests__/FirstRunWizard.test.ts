@@ -24,6 +24,7 @@ import {
   ClaudeStatusBlock,
   SampleTaskBlock,
   StatuslineBlock,
+  HooksBlock,
   decideStatuslineOffer,
 } from '../FirstRunWizard';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
@@ -424,5 +425,37 @@ describe('StatuslineBlock', () => {
       createElement(StatuslineBlock, { state: 'error', onInstall: () => undefined }),
     );
     expect(error).toContain('first-run-wizard-statusline-error');
+  });
+});
+
+describe('HooksBlock', () => {
+  it('renders the install button in offer state and disables it while installing', () => {
+    const offer = renderToStaticMarkup(
+      createElement(HooksBlock, { state: 'offer', onInstall: () => undefined }),
+    );
+    expect(offer).toContain('first-run-wizard-hooks-offer');
+    expect(offer).toContain('first-run-wizard-hooks-install');
+    expect(offer).not.toContain('disabled');
+
+    const installing = renderToStaticMarkup(
+      createElement(HooksBlock, { state: 'installing', onInstall: () => undefined }),
+    );
+    expect(installing).toContain('disabled');
+  });
+
+  // Unlike the statusline offer, the installed state RENDERS rather than
+  // hides: hooks are a requirement, and a checklist that silently omits its
+  // most important item teaches the operator it does not exist.
+  it('renders the installed state as a receipt, not as nothing', () => {
+    const installed = renderToStaticMarkup(
+      createElement(HooksBlock, { state: 'installed', onInstall: () => undefined }),
+    );
+    expect(installed).toContain('first-run-wizard-hooks-installed');
+
+    const error = renderToStaticMarkup(
+      createElement(HooksBlock, { state: 'error', errorDetail: 'EACCES', onInstall: () => undefined }),
+    );
+    expect(error).toContain('first-run-wizard-hooks-error');
+    expect(error).toContain('EACCES');
   });
 });

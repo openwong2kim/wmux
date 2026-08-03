@@ -795,6 +795,40 @@ export const en = {
   'firstRunWizard.statuslineInstalling': 'Installing…',
   'firstRunWizard.statuslineInstalled': 'Statusline enabled',
   'firstRunWizard.statuslineInstalledHint': 'New Claude Code sessions will show it automatically.',
+  // Hook bridge — the required half of the integration. Unlike the statusline
+  // offer, the installed state is shown too, so the checklist reads complete.
+  'firstRunWizard.hooksHeading': 'Claude Code hooks (required)',
+  'firstRunWizard.hooksDescription':
+    'Lets wmux see when an agent finishes a turn, needs approval, or spawns a subagent. Without it those signals fall back to reading the screen, which misses turns behind a redraw.',
+  'firstRunWizard.hooksEnableButton': 'Install hooks',
+  'firstRunWizard.hooksInstalling': 'Installing…',
+  'firstRunWizard.hooksInstalled': 'Hooks installed',
+  'firstRunWizard.hooksInstalledHint': 'New Claude Code sessions report their lifecycle to wmux.',
+  'firstRunWizard.hooksError': 'Install failed. You can retry, or run `wmux setup-hooks` from a terminal.',
+  // Settings → Claude integration → setup card. The re-entry path for every
+  // integration the first-run wizard offers once.
+  'integrationSetup.title': 'Setup',
+  'integrationSetup.description':
+    'What wmux installs into Claude Code. Nothing here is written without your click.',
+  'integrationSetup.required': '· required',
+  'integrationSetup.recommended': '· recommended',
+  'integrationSetup.installButton': 'Install',
+  'integrationSetup.registerButton': 'Register',
+  'integrationSetup.working': 'Working…',
+  'integrationSetup.installFailed': 'Failed',
+  'integrationSetup.state.installed': 'installed',
+  'integrationSetup.state.missing': 'not installed',
+  'integrationSetup.state.working': 'working',
+  'integrationSetup.state.unknown': 'unknown',
+  'integrationSetup.hooks.title': 'Hook bridge',
+  'integrationSetup.hooks.description':
+    'Turn completion, approval prompts, and subagent activity. Without it these are read off the screen instead.',
+  'integrationSetup.mcp.title': 'MCP tools',
+  'integrationSetup.mcp.description':
+    'Lets agents drive wmux — terminals, panes, channels, the browser.',
+  'integrationSetup.statusline.title': 'Usage statusline',
+  'integrationSetup.statusline.description':
+    'Model, context, and rate limits under Claude Code\'s input box. Local reads only — no token cost.',
   'firstRunWizard.statuslineError': 'Install failed. You can retry, or run `wmux setup-statusline` from a terminal.',
 
   // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
