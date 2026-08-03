@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
+import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
+import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 
@@ -182,11 +184,22 @@ function makeDeps() {
   // the 0600 mode and the TTL sweep are only observable on disk.
   const uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-uploads-'));
 
+  // #782 — a stand-in for the daemon's TranscriptProjector. The turns route
+  // calls status()/snapshot()/delta() in-process; tests steer each via
+  // mockReturnValue on the same object.
+  const projectorMock = {
+    status: vi.fn<(id: string) => TranscriptStatus>(() => ({ available: false, reason: 'no-hook' })),
+    snapshot: vi.fn((): unknown => null),
+    delta: vi.fn((): unknown => null),
+    codeBlock: vi.fn((): unknown => null),
+  };
+
   return {
     sessionManager, bridge, write, live, managed,
     resizeCalls, resizeBox,
     lifecycle, lifecycleCalls, lifecycleBox,
     git, gitCalls, gitScript, gitGate, uploadsDir,
+    projectorMock,
     ...makeApprovals(), ...makeDevices(),
   };
 }
@@ -344,6 +357,7 @@ describe('WebTerminalServer', () => {
   let managed: { meta: Record<string, unknown>; deferred: boolean };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
+  let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
 
   beforeEach(() => {
     const deps = makeDeps();
@@ -370,6 +384,7 @@ describe('WebTerminalServer', () => {
     managed = deps.managed;
     live = deps.live;
     uploadsDir = deps.uploadsDir;
+    projectorMock = deps.projectorMock;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
@@ -377,6 +392,7 @@ describe('WebTerminalServer', () => {
       lifecycle: deps.lifecycle,
       git: deps.git,
       uploadsDir: deps.uploadsDir,
+      projector: () => projectorMock as unknown as TranscriptProjector,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -393,6 +409,9 @@ describe('WebTerminalServer', () => {
   /** Uploads on, input OFF — the combination that proves the two grants are separate. */
   const startUpload = () =>
     server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true });
+  /** #782 — transcript turn view armed (`--allow-transcript`); its own grant. */
+  const startWithTranscript = () =>
+    server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, allowTranscript: true });
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
   const pairCodePattern = /^[A-HJ-NP-Z2-9]{8}$/;
@@ -3453,5 +3472,87 @@ describe('WebTerminalServer', () => {
     } finally {
       await swept.stop();
     }
+  });
+
+  describe('#782 — phone turn-view contract (GET /api/sessions/:id/turns)', () => {
+    it('403 without --allow-transcript, while /api/approvals stays 200 on the same server', async () => {
+      const info = await startRO(); // allowTranscript not set
+      const h = bearer(info.token as string);
+      const turns = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
+      expect(turns.status).toBe(403);
+      const body = await turns.json();
+      expect(body.error).toMatch(/transcript reading is off/);
+      // The two grants are independent: approvals still served on read-only.
+      const approvals = await fetch(`${base()}/api/approvals`, { headers: h });
+      expect(approvals.status).toBe(200);
+    });
+
+    it('401 without a Bearer header', async () => {
+      await startWithTranscript();
+      const res = await fetch(`${base()}/api/sessions/s1/turns`);
+      expect(res.status).toBe(401);
+    });
+
+    it('404 for an unknown pane', async () => {
+      const info = await startWithTranscript();
+      const res = await fetch(`${base()}/api/sessions/no-such-pane/turns`, {
+        headers: bearer(info.token as string),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('unavailable reasons arrive as 200 {available:false, reason}, never 500', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      for (const reason of ['no-hook', 'stale-session', 'not-claude', 'unsafe-transcript-path']) {
+        projectorMock.status.mockReturnValue({ available: false, reason });
+        const res = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ available: false, reason });
+      }
+    });
+
+    it('a forward delta is served from projector.delta with an opaque cursor', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.delta.mockReturnValue({
+        events: [{ id: 'x', kind: 'user_text', text: 'hi' }],
+        cursor: { headOffset: 0, tailOffset: 10, fileSize: 100, mtimeMs: 1234 },
+        reset: false,
+      });
+      const cursor = Buffer.from(JSON.stringify({ head: 0, tail: 0, mtimeMs: 1234, fileSize: 100 })).toString('base64url');
+      const res = await fetch(`${base()}/api/sessions/s1/turns?cursor=${cursor}&dir=forward`, { headers: h });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.available).toBe(true);
+      expect(body.events).toHaveLength(1);
+      // The cursor is opaque base64url.
+      expect(typeof body.cursor).toBe('string');
+    });
+
+    it('transcript nudge is non-recording: it never enters the attention log', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      // A successful turns read registers the device as a watcher, so a nudge
+      // has a recipient to reach (otherwise it short-circuits on an empty set).
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [],
+        cursor: { headOffset: 0, tailOffset: 0, fileSize: 0, mtimeMs: 0 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+      const read = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
+      expect(read.status).toBe(200);
+
+      const before = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+      // Fire a burst of nudges. Recorded, these would evict attention events;
+      // non-recording, they leave the backlog byte-identical.
+      for (let i = 0; i < 60; i++) server.emitTranscriptNudge('s1');
+      const after = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+      expect(after.headId).toBe(before.headId);
+      expect(after.events).toEqual(before.events);
+    });
   });
 });

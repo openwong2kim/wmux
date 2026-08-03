@@ -101,6 +101,7 @@ describe('wmux web native TLS flags (#764)', () => {
       host: '0.0.0.0',
       allowInput: false,
       allowUpload: false,
+      allowTranscript: false,
       allowedHosts: ['box.example.test'],
       newToken: false,
       tls: {

@@ -2613,6 +2613,9 @@ function registerRpcHandlers(
       // cwd→slug derivation (agentResume.ts rejects that mapping as
       // version-drift-prone, which is why the path is persisted at all).
       getResumeBinding: (id) => sessionManager.getSession(id)?.meta.resumeBinding,
+      // #782 — splits an absent binding into `stale-session` (agent running, no
+      // binding yet) vs `no-hook` (no agent detected → hooks not installed).
+      getDetectedAgent: (id) => sessionManager.getSession(id)?.meta.lastDetectedAgent,
       // Only the transcript-path containment check reads this — a workspace
       // profile may relocate CLAUDE_CONFIG_DIR per pane.
       getSessionEnv: (id) => sessionManager.getSession(id)?.meta.env,
@@ -2758,7 +2761,14 @@ function registerRpcHandlers(
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
-      onTranscriptNudge: (sessionId, kind, agentSessionId) => projector.nudge(sessionId, kind, agentSessionId),
+      onTranscriptNudge: (sessionId, kind, agentSessionId) => {
+        projector.nudge(sessionId, kind, agentSessionId);
+        // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
+        // a busy pane cannot evict a pending approval and blank the badge on
+        // replay (CRITICAL 3). Delivered only to devices watching this pane; a
+        // no-op until one opens it, and harmless when the web server is off.
+        webTerminalServer?.emitTranscriptNudge(sessionId);
+      },
     });
   }
   const ingest = hookIngest;

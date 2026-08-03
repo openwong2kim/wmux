@@ -11,6 +11,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 interface Harness {
   projector: TranscriptProjector;
   bindings: Map<string, ResumeBinding>;
+  detectedAgents: Map<string, string>;
   appends: { sessionId: string; data: TranscriptAppendData; clientIds: readonly string[] }[];
   dir: string;
   /**
@@ -51,15 +52,17 @@ beforeEach(() => {
   const projects = path.join(dir, 'projects', '-synthetic-repo');
   fs.mkdirSync(projects, { recursive: true });
   const bindings = new Map<string, ResumeBinding>();
+  const detectedAgents = new Map<string, string>();
   const appends: Harness['appends'] = [];
   const projector = new TranscriptProjector({
     getResumeBinding: (id) => bindings.get(id),
+    getDetectedAgent: (id) => detectedAgents.get(id),
     getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: dir }),
     emitAppend: (sessionId, data, clientIds) => appends.push({ sessionId, data, clientIds }),
     debounceMs: 1,
     pollMs: 50,
   });
-  harness = { projector, bindings, appends, dir, projects };
+  harness = { projector, bindings, detectedAgents, appends, dir, projects };
 });
 
 afterEach(() => {
@@ -67,9 +70,18 @@ afterEach(() => {
   fs.rmSync(harness.dir, { recursive: true, force: true });
 });
 
-describe('TranscriptProjector.status — the four unavailable reasons', () => {
-  it('no-binding when the pane has no resume binding at all', () => {
-    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'no-binding' });
+describe('TranscriptProjector.status — unavailable reasons', () => {
+  it('no-hook when the pane has no binding and no agent was detected', () => {
+    // No binding AND no detected agent → the hooks never fired here.
+    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'no-hook' });
+  });
+
+  it('stale-session when an agent is running but no binding was captured', () => {
+    // An agent IS detected (the pane is running claude) but the binding is
+    // absent — the session started before the hooks were armed, or its first
+    // Stop has not landed yet. The UI says "wait", not "install the hooks".
+    harness.detectedAgents.set('pty-1', 'claude');
+    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'stale-session' });
   });
 
   it('not-claude for an agent that publishes no structured transcript', () => {
@@ -112,7 +124,8 @@ describe('TranscriptProjector.status — the four unavailable reasons', () => {
       },
       emitAppend: () => undefined,
     });
-    expect(projector.status('pty-1')).toEqual({ available: false, reason: 'no-binding' });
+    // No getDetectedAgent wired → the split degrades to `no-hook`.
+    expect(projector.status('pty-1')).toEqual({ available: false, reason: 'no-hook' });
     projector.dispose();
   });
 });
@@ -622,5 +635,81 @@ describe('TranscriptProjector.codeBlock — tool bodies', () => {
         eventId: 'not-this-event',
       }),
     ).toBeNull();
+  });
+});
+
+describe('TranscriptProjector — #782 phone turn-view contract (stateless delta)', () => {
+  it('delta is stateless: a phone read arms no watch and resets no subscriber', () => {
+    const file = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    // The desktop subscribes, arming one watch.
+    harness.projector.subscribe('desk-1', 'pty-1');
+    expect(harness.projector.watchCount).toBe(1);
+
+    const snap = harness.projector.snapshot('pty-1')!;
+    // A phone delta call must NOT subscribe, force-reset, or move the shared
+    // tailOffset — the #782 CRITICAL 6 guarantee that a phone opening a pane
+    // never scrambles the desktop Chat View sharing the session.
+    const phone = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
+      cursorMtimeMs: snap.cursor.mtimeMs,
+      cursorFileSize: snap.cursor.fileSize,
+    });
+    expect(phone).not.toBeNull();
+    expect(phone!.reset).toBe(false);
+    // No phone watch was armed.
+    expect(harness.projector.watchCount).toBe(1);
+  });
+
+  it('delta reports reset when the mtime moved under the cursor', () => {
+    const file = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const snap = harness.projector.snapshot('pty-1')!;
+    // Cursor believes the file was newer than it is now → replaced/rewritten.
+    const result = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
+      cursorMtimeMs: snap.cursor.mtimeMs + 5000,
+      cursorFileSize: snap.cursor.fileSize,
+    })!;
+    expect(result.reset).toBe(true);
+    // A reset carries a fresh snapshot, not an empty delta.
+    expect(result.events.length).toBe(snap.events.length);
+  });
+
+  it('delta resets when the cursor offset is no longer a line boundary', () => {
+    const file = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const st = fs.statSync(file);
+    // Offset 5 is inside the first line — a cursor that an in-place rewrite
+    // left pointing mid-entry. mtime/fileSize match so the boundary check alone
+    // is the trigger (the in-place-rewrite case a size check cannot catch).
+    const result = harness.projector.delta('pty-1', 5, {
+      cursorMtimeMs: st.mtimeMs,
+      cursorFileSize: st.size,
+    })!;
+    expect(result.reset).toBe(true);
+  });
+
+  it('codeBlock refuses a mid-line offset (#782 boundary check)', () => {
+    const file = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    // Offset 5 is inside the first line; readTranscriptLineAt would slice from
+    // there with no boundary check, so the projector must refuse before reading.
+    expect(harness.projector.codeBlock('pty-1', { srcOffset: 5, n: 1 })).toBeNull();
+  });
+
+  it('a huge tool result ships an inline head + truncated, under the page budget', () => {
+    const file = fixture('huge-tool-result.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const snap = harness.projector.snapshot('pty-1')!;
+    // The single entry is ~120 KB — under the 128 KB page budget, so the page
+    // carries it whole rather than dropping it.
+    expect(snap.events).toHaveLength(1);
+    const ev = snap.events[0];
+    expect(ev.kind).toBe('tool_result');
+    if (ev.kind !== 'tool_result') return;
+    expect(ev.output?.truncated).toBe(true);
+    // The inline body is a ~4 KB head, not the whole 120 KB payload.
+    expect(Buffer.byteLength(ev.output?.inline ?? '', 'utf8')).toBeLessThan(9000);
+    // The full size is still reported so the UI can say how much was cut.
+    expect(ev.bytes).toBeGreaterThan(100000);
   });
 });

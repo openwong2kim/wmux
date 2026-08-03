@@ -229,3 +229,60 @@ describe('readTranscriptPage — UTF-8 offsets', () => {
     expect(page.cursor.tailOffset).toBe(raw.length);
   });
 });
+
+describe('#782 — multibyte paging and non-boundary offsets', () => {
+  const file = path.join(FIXTURES, 'korean.jsonl');
+
+  it('parses Hangul multibyte prose without skewing byte offsets or boundaries', () => {
+    // The whole fixture is multibyte Hangul prose; a char-length math would
+    // mis-slice every offset after the first. Byte-indexed scanning must keep
+    // every event offset on its line brace.
+    const page = readTranscriptPage(file)!;
+    expect(page.events.length).toBeGreaterThan(0);
+    expect(page.cursor.tailOffset).toBe(fs.statSync(file).size);
+    const raw = fs.readFileSync(file);
+    for (const ev of page.events) {
+      if (ev.kind !== 'assistant_text' || !ev.codeBlocks) continue;
+      for (const block of ev.codeBlocks) {
+        expect(typeof block.srcOffset).toBe('number');
+        expect(raw[block.srcOffset!]).toBe('{'.charCodeAt(0));
+        expect(isLineBoundary(file, block.srcOffset!)).toBe(true);
+      }
+    }
+  });
+
+  it('a windowed read that splits a Hangul sequence still ends on a boundary', () => {
+    const size = fs.statSync(file).size;
+    // Force a windowed read whose byte cap lands inside the multibyte prose —
+    // the case the phone hits on every backward page. The head is dropped and
+    // every returned cursor offset stays a true line boundary.
+    const page = readTranscriptPage(file, { maxBytes: Math.floor(size * 0.6) })!;
+    if (page.truncatedHead) {
+      expect(isLineBoundary(file, page.cursor.headOffset)).toBe(true);
+    }
+    expect(isLineBoundary(file, page.cursor.tailOffset)).toBe(true);
+  });
+
+  it('readTranscriptDelta from a non-boundary offset does NOT reset (caller must gate)', () => {
+    // The projector's delta() checks isLineBoundary BEFORE calling this; the
+    // raw primitive does not. A mid-line fromOffset reads into the middle of an
+    // entry and returns reset:false (the file did not shrink). Documenting this
+    // is the point — it is why every caller pre-checks the boundary, and why
+    // #782 added the check to codeBlock() and delta().
+    expect(isLineBoundary(file, 5)).toBe(false);
+    const delta = readTranscriptDelta(file, 5);
+    expect(delta).not.toBeNull();
+    expect(delta!.reset).toBe(false);
+  });
+
+  it('readTranscriptLineAt at a non-boundary offset returns the mid-line fragment', () => {
+    // The on-expand fetch primitive reads at an arbitrary offset with no
+    // boundary guard; codeBlock() verifies the boundary before calling it.
+    // The raw return starts mid-entry (not at '{'), which is exactly what the
+    // caller-side gate exists to refuse.
+    expect(isLineBoundary(file, 5)).toBe(false);
+    const line = readTranscriptLineAt(file, 5);
+    expect(line).not.toBeNull();
+    expect(line!.charAt(0)).not.toBe('{');
+  });
+});

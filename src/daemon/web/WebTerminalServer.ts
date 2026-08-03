@@ -478,6 +478,13 @@ const PAIR_CODE_LEN = 8;
 const ATTENTION_CAP = 100;
 /** Attention entries older than this are dropped even if the cap allows them. */
 const ATTENTION_TTL_MS = 30 * 60 * 1000;
+/**
+ * #782 — coalescing window for the non-recording transcript nudge. A single
+ * turn raises several hook signals in quick succession (activity then stop),
+ * and the phone refetches on every nudge, so one-per-second is the floor that
+ * keeps a write burst from fanning into one fetch per write.
+ */
+const TRANSCRIPT_NUDGE_COALESCE_MS = 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
@@ -747,6 +754,16 @@ export class WebTerminalServer {
   private readonly clients = new Set<SseClient>();
   /** Live `/api/events` subscribers — fleet attention, no pane stream attached. */
   private readonly eventClients = new Set<EventClient>();
+  /**
+   * #782 — devices that opened a pane's turn view, keyed by pane. The
+   * non-recording transcript nudge is delivered ONLY to these, so a busy pane's
+   * 1Hz nudges never fill another device's SSE channel. `operator` is a watcher
+   * too (a browser on the operator token can read turns). Values are watcher
+   * keys, not principal objects, so the set stays cheap to consult per nudge.
+   */
+  private readonly transcriptWatchers = new Map<string, Set<string>>();
+  /** Per-pane coalescing timers for the non-recording transcript nudge. */
+  private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Attention replay state.
@@ -1023,6 +1040,12 @@ export class WebTerminalServer {
       }
     }
     this.eventClients.clear();
+    // #782 — clear pending non-recording nudge timers and the watcher set; the
+    // SSE clients they would reach are gone, and a fresh start() re-arms nothing
+    // stale (a device re-opens its panes and re-registers as it reads them).
+    for (const timer of this.transcriptNudgeTimers.values()) clearTimeout(timer);
+    this.transcriptNudgeTimers.clear();
+    this.transcriptWatchers.clear();
 
     const server = this.server;
     this.server = null;
@@ -1476,7 +1499,7 @@ export class WebTerminalServer {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns')) {
-        return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length));
+        return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length), principal);
       }
       if (req.method === 'POST' && rest.endsWith('/resize')) {
         return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
@@ -1708,6 +1731,7 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     sessionId: string,
+    principal: WebPrincipal,
   ): void {
     if (this.opts?.allowTranscript !== true) {
       this.json(res, 403, {
@@ -1716,11 +1740,23 @@ export class WebTerminalServer {
       });
       return;
     }
+    // Unknown pane → 404, the same contract as the other `/api/sessions/:id/*`
+    // routes: a phone that fetched a pane id the daemon no longer owns learns the
+    // pane is gone, not that its conversation is unavailable.
+    if (!this.deps.sessionManager.getSession(sessionId)) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
     const projector = this.deps.projector?.() ?? null;
     if (!projector) {
       this.json(res, 503, { error: 'transcript projector unavailable' });
       return;
     }
+    // #782 — past the gates, this device is reading the pane's turn view, so
+    // the non-recording nudge knows to reach it. Idempotent and never undone: a
+    // device that closes its SSE simply is not in `eventClients` next time, and
+    // a dangling watcher is a cheap no-op rather than a leak.
+    this.noteTranscriptWatcher(sessionId, principal);
 
     const url = new URL(req.url ?? '/', 'http://localhost');
     const dir = (url.searchParams.get('dir') ?? 'forward') === 'back' ? 'back' : 'forward';
@@ -2653,6 +2689,74 @@ export class WebTerminalServer {
       }
     }
     return entry;
+  }
+
+  /**
+   * #782 — push a transcript nudge to the device(s) watching this pane, WITHOUT
+   * recording it. Recording the nudge would land it in `attentionLog`, where a
+   * busy pane's ~1Hz nudges would evict a pending approval; the phone then
+   * replays the trimmed log on reconnect, re-derives the badge, and finds no
+   * pending event — the badge clears while a human is still being waited on
+   * (CRITICAL 3). Same `/api/events` SSE connection, auth and replay; this just
+   * bypasses the log and `attentionSeq`, so a nudge is a live signal only and
+   * never part of the replayed backlog.
+   *
+   * Coalesced per pane (`TRANSCRIPT_NUDGE_COALESCE_MS`): a turn fires several
+   * hook signals in quick succession and the phone refetches on each nudge, so
+   * collapsing the burst into one fetch is pure win. Delivered ONLY to devices
+   * that opened this pane's turn view — a device that never queried the pane
+   * never asked to hear about it. The nudge carries no payload on purpose: the
+   * phone calls `delta()` and lets the cursor checks (mtime/fileSize/boundary)
+   * decide whether to append or re-snapshot, instead of the server guessing.
+   */
+  emitTranscriptNudge(sessionId: string): void {
+    if (this.eventClients.size === 0) return;
+    // 1s coalescing per pane. The FIRST nudge of a burst arms the timer; later
+    // ones in the same window are dropped on purpose (a refetch is already
+    // pending, and the cursor checks on that refetch subsume later writes).
+    if (this.transcriptNudgeTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.transcriptNudgeTimers.delete(sessionId);
+      this.deliverTranscriptNudge(sessionId);
+    }, TRANSCRIPT_NUDGE_COALESCE_MS);
+    timer.unref?.();
+    this.transcriptNudgeTimers.set(sessionId, timer);
+  }
+
+  private deliverTranscriptNudge(sessionId: string): void {
+    const watchers = this.transcriptWatchers.get(sessionId);
+    if (!watchers || watchers.size === 0) return;
+    const body = JSON.stringify({ sessionId });
+    for (const client of this.eventClients) {
+      if (!watchers.has(this.watcherKey(client.principal))) continue;
+      try {
+        writeSse(client.res, 'transcript.nudge', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  /** Stable key for a principal in `transcriptWatchers`. */
+  private watcherKey(principal: WebPrincipal): string {
+    return principal.kind === 'operator' ? 'operator' : principal.deviceId;
+  }
+
+  /**
+   * Record that this principal opened the pane's turn view, so the non-recording
+   * nudge reaches it. Called from `handleSessionTurns` on every successful read;
+   * idempotent, and intentionally never undone — a device that stops reading the
+   * pane simply has no SSE open, and a dangling entry is a cheap no-op on the
+   * next nudge (the `eventClients` loop finds no matching client).
+   */
+  private noteTranscriptWatcher(sessionId: string, principal: WebPrincipal): void {
+    const key = this.watcherKey(principal);
+    let set = this.transcriptWatchers.get(sessionId);
+    if (!set) {
+      set = new Set();
+      this.transcriptWatchers.set(sessionId, set);
+    }
+    set.add(key);
   }
 
   /** Drop entries past the cap (oldest first) and anything past the TTL. */

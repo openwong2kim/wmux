@@ -16,6 +16,15 @@ export interface TranscriptProjectorDeps {
    */
   getResumeBinding: (sessionId: string) => ResumeBinding | undefined;
   /**
+   * The agent currently detected on this pane, if any. Used ONLY to split an
+   * ABSENT resume binding into `stale-session` (an agent is running but the
+   * binding was not captured — the session started before the hooks were armed,
+   * or its first Stop has not landed yet) vs `no-hook` (no agent at all → the
+   * wmux hooks never fired here and never will without `wmux setup-hooks`).
+   * Absent ⇒ the split degrades to `no-hook`, the pre-split behaviour.
+   */
+  getDetectedAgent?: (sessionId: string) => string | undefined;
+  /**
    * The pane's environment, consulted ONLY by the transcript-path containment
    * check: a workspace profile may set `CLAUDE_CONFIG_DIR`, which relocates the
    * projects root a legitimate transcript lives under. Absent ⇒ the process

@@ -194,7 +194,16 @@ export interface TranscriptPage {
 
 export interface TranscriptStatus {
   available: boolean;
-  /** 'no-binding' | 'no-transcript-path' | 'not-claude' | 'unreadable' | 'local-mode' | 'ok' */
+  /**
+   * Closed set matching what the projector's `resolvePath` actually returns:
+   * `no-hook` | `stale-session` | `no-transcript-path` | `not-claude` |
+   * `unsafe-transcript-path` | `unreadable` | `ok`.
+   *
+   * `no-binding` was split into `no-hook` / `stale-session`; `unsafe-transcript-path`
+   * was missing from an earlier draft of this comment, and `local-mode` never had
+   * a producer. Kept as a free `string` (not a union) so additive reasons do not
+   * churn the wire type — a client must treat an unknown reason as "unavailable".
+   */
   reason: string;
   transcriptBasename?: string;
   agentSessionId?: string;
