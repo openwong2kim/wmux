@@ -36,8 +36,8 @@ let grip: HTMLElement;
 
 /** jsdom has no pointer capture; the component calls it unconditionally. */
 function stubCapture(el: HTMLElement) {
-  el.setPointerCapture = () => {};
-  el.releasePointerCapture = () => {};
+  el.setPointerCapture = vi.fn();
+  el.releasePointerCapture = vi.fn();
   el.hasPointerCapture = () => false;
 }
 

@@ -437,7 +437,7 @@
 
 ## RPC timeout abandons live server work (P2, from #756 eng review outside voice 2026-08-02)
 - **What:** Give RPC a propagated deadline, cancellation, and a status/idempotency path so a timeout is recoverable instead of terminal.
-- **Why:** Restores the stated principle above ("timeout/예외 = unknown, 절대 dead 아님") instead of widening the window around the violation. Today slow work masquerades as failure and a retry can duplicate side effects (a navigation, a click).
+- **Why:** Restores the principle already stated further up this file — a timeout or an exception means `unknown`, never `dead` — instead of widening the window around the violation. Today slow work masquerades as failure and a retry can duplicate side effects (a navigation, a click).
 - **Context:** Surfaced by Codex outside voice reviewing the #756 plan, 2026-08-02. `wmux-client.ts:141` rejects and destroys the socket while the main-side handler keeps running uncancelled; `RpcRouter.ts:385` flattens errors to a bare string so no machine-readable cause survives the wire. #756 only bounds one handler wait (the DNS guard) and deliberately does NOT fix this. Touching the RPC envelope is a Substrate contract change (PROTOCOL.md, inventory.md, stability tier).
 - **Depends on:** Should follow #756 so the timeout path has a known-good case to test against. **Effort:** L. **Priority:** P2.
 

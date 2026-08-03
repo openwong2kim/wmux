@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { Panel, Group, Separator, useGroupRef } from 'react-resizable-panels';
 import type { Layout } from 'react-resizable-panels';
 import type { Pane as PaneType, Workspace } from '../../../shared/types';
@@ -54,9 +54,14 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
   // widths would then travel with the panes instead of staying with the slots.
   const childIdKey = paneChildren?.map((c) => c.id).join('|');
 
-  // Latest children, readable from a stale timer callback (see below).
+  // Latest children, readable from a stale timer callback (see below). Written
+  // in a layout effect rather than during render: a render can be thrown away
+  // (StrictMode, a concurrent re-render), and a ref written during one would
+  // then describe children that were never committed.
   const childIdKeyRef = useRef(childIdKey);
-  childIdKeyRef.current = childIdKey;
+  useLayoutEffect(() => {
+    childIdKeyRef.current = childIdKey;
+  }, [childIdKey]);
 
   useEffect(() => {
     if (!paneSizes || !paneChildren || !groupRef.current) return;
@@ -77,7 +82,10 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
       programmaticRef.current = true;
       groupRef.current.setLayout(layout);
     }
-  }, [paneSizes, childIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    // paneChildren is intentionally not a dependency: childIdKey already
+    // encodes the child set, and the array identity changes on unrelated
+    // store writes.
+  }, [paneSizes, childIdKey]);
 
   // A resize that ends just before the tree is restructured would otherwise
   // land AFTER it: the 200ms timer below fires, writes the pre-move sizes onto
