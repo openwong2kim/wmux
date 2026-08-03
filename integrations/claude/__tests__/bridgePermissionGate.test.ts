@@ -73,11 +73,12 @@ describe('permission gate — headless guard', () => {
   });
 
   it('does NOT short-circuit an interactive pane — it reaches the daemon path', () => {
-    // The guard must let this through; with an unreachable socket the daemon
-    // path then fails OPEN, which is a different reason string. If the guard
-    // ever regresses to a tty check this becomes 'headless…' and fails here.
+    // The guard must let this through. What happens AFTER it (reaching a
+    // daemon, or failing open when none is listening) depends on the machine,
+    // so this asserts only on the guard's own signature: an interactive pane
+    // is never refused with the headless reason. If the guard ever regresses
+    // to a tty check — false in an interactive pane too — this fails.
     const out = runGate({ WMUX_PTY_ID: 'pty-1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1' });
-    expect(out.permissionDecision).toBe('ask');
     expect(out.permissionDecisionReason ?? '').not.toContain('headless');
   });
 });
