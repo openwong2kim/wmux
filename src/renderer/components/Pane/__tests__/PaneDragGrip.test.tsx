@@ -14,15 +14,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-const setActivePane = vi.hoisted(() => vi.fn());
-const movePane = vi.hoisted(() => vi.fn());
-const swapPanes = vi.hoisted(() => vi.fn());
+const focusPaneSurface = vi.hoisted(() => vi.fn(() => true));
+const movePane = vi.hoisted(() => vi.fn(() => true));
+const swapPanes = vi.hoisted(() => vi.fn(() => true));
 const setPaneDropTarget = vi.hoisted(() => vi.fn());
 const setPaneDragSource = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../stores', () => ({
   useStore: (sel: (s: unknown) => unknown) =>
-    sel({ setActivePane, movePane, swapPanes, setPaneDropTarget, setPaneDragSource }),
+    sel({ focusPaneSurface, movePane, swapPanes, setPaneDropTarget, setPaneDragSource }),
 }));
 vi.mock('../../../i18n', () => ({ t: (k: string) => k }));
 
@@ -60,12 +60,14 @@ beforeEach(() => {
 });
 
 describe('PaneDragGrip', () => {
-  it('a click with no movement focuses the pane and moves nothing', () => {
+  it('a plain click moves nothing and is left to bubble', () => {
+    // The grip does NOT focus the pane itself: it lets the click through so
+    // the pane root focuses as usual and, in multiview, the tile activates
+    // its workspace. See the click-through test below.
     pointer('pointerdown', 10, 10);
     pointer('pointerup', 10, 10);
     act(() => { grip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 
-    expect(setActivePane).toHaveBeenCalledWith('pane-a');
     expect(movePane).not.toHaveBeenCalled();
     expect(swapPanes).not.toHaveBeenCalled();
   });
@@ -90,7 +92,7 @@ describe('PaneDragGrip', () => {
     // The whole point: a cancelled drag changes NOTHING.
     expect(movePane).not.toHaveBeenCalled();
     expect(swapPanes).not.toHaveBeenCalled();
-    expect(setActivePane).not.toHaveBeenCalled();
+    expect(focusPaneSurface).not.toHaveBeenCalled();
     expect(setPaneDropTarget).toHaveBeenLastCalledWith(null);
   });
 
@@ -125,11 +127,12 @@ describe('PaneDragGrip', () => {
     root = createRoot(container);
   });
 
-  it('does not let its click reach the pane root', () => {
-    // Mirror the real structure: the pane root is a React element WRAPPING the
-    // grip, with its own onClick (click-to-focus). A native listener on the
-    // React root container would fire regardless — React delegates there, so
-    // the event has already bubbled past it before synthetic dispatch.
+  it('lets a plain click through, but swallows the one that ends a drag', () => {
+    // The pane root (and, in multiview, the workspace tile) has its own click
+    // handler. A plain grip click must reach it — swallowing every click made
+    // the grip the one spot in a background tile that did nothing at all.
+    // The click that TERMINATES a drag must still be swallowed, or a
+    // cancelled drag would move focus.
     const onPaneRootClick = vi.fn();
     act(() => {
       root.render(
@@ -143,11 +146,59 @@ describe('PaneDragGrip', () => {
     grip = container.querySelector('[data-pane-drag-grip]')!;
     stubCapture(grip);
 
+    // Plain click → reaches the pane root.
     pointer('pointerdown', 10, 10);
     pointer('pointerup', 10, 10);
     act(() => { grip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onPaneRootClick).toHaveBeenCalledTimes(1);
 
-    expect(setActivePane).toHaveBeenCalledWith('pane-a'); // the grip focuses it
-    expect(onPaneRootClick).not.toHaveBeenCalled(); // exactly once, not twice
+    // Drag, then its trailing click → swallowed.
+    onPaneRootClick.mockClear();
+    pointer('pointerdown', 10, 10);
+    pointer('pointermove', 90, 90);
+    pointer('pointerup', 90, 90);
+    act(() => { grip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onPaneRootClick).not.toHaveBeenCalled();
+  });
+
+  it('focuses the dragged pane after a centre-drop swap', () => {
+    // swapPanes deliberately does not touch focus, so without this the pane
+    // the user just dragged stays inactive after a centre drop — unlike an
+    // edge drop, which focuses via movePane's focusSource. The focus call must
+    // be the explicit-workspace one: setActivePane resolves paneIds against
+    // activeWorkspaceId only and would silently refuse a background tile.
+    // (Found by the Codex reviewer.)
+    const other = document.createElement('div');
+    other.setAttribute('data-pane-root', 'pane-b');
+    other.setAttribute('data-pane-workspace', 'ws-1');
+    other.getBoundingClientRect = () =>
+      ({ left: 200, top: 200, width: 200, height: 200 }) as DOMRect;
+    document.body.appendChild(other);
+
+    pointer('pointerdown', 10, 10);
+    pointer('pointermove', 300, 300); // dead centre of pane-b → a swap
+    pointer('pointerup', 300, 300);
+
+    expect(swapPanes).toHaveBeenCalledWith('ws-1', 'pane-a', 'pane-b');
+    expect(focusPaneSurface).toHaveBeenCalledWith('ws-1', 'pane-a');
+    expect(movePane).not.toHaveBeenCalled();
+    other.remove();
+  });
+
+  it('focuses via movePane, not a second call, on an edge drop', () => {
+    const other = document.createElement('div');
+    other.setAttribute('data-pane-root', 'pane-b');
+    other.setAttribute('data-pane-workspace', 'ws-1');
+    other.getBoundingClientRect = () =>
+      ({ left: 200, top: 200, width: 200, height: 200 }) as DOMRect;
+    document.body.appendChild(other);
+
+    pointer('pointerdown', 10, 10);
+    pointer('pointermove', 210, 300); // left band of pane-b
+    pointer('pointerup', 210, 300);
+
+    expect(movePane).toHaveBeenCalledWith('ws-1', 'pane-a', 'pane-b', 'left', { focusSource: true });
+    expect(swapPanes).not.toHaveBeenCalled();
+    other.remove();
   });
 });

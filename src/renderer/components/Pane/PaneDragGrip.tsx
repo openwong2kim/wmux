@@ -30,7 +30,7 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
   const swapPanes = useStore((s) => s.swapPanes);
   const setPaneDropTarget = useStore((s) => s.setPaneDropTarget);
   const setPaneDragSource = useStore((s) => s.setPaneDragSource);
-  const setActivePane = useStore((s) => s.setActivePane);
+  const focusPaneSurface = useStore((s) => s.focusPaneSurface);
 
   const [armed, setArmed] = useState(false);
   const originRef = useRef<{ x: number; y: number } | null>(null);
@@ -134,19 +134,21 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
   );
 
   // A `click` still fires after the gesture, and pointer capture sends it to
-  // the GRIP — so it bubbles into the pane root's click-to-focus. Stopping
-  // pointerdown does not prevent that (click is a separate event). Left alone,
-  // a cancelled drag would still move focus and "Escape changes nothing" would
-  // be a lie. Swallow the click here and do the focusing ourselves, only when
-  // the gesture really was a click.
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      e.stopPropagation();
-      if (!wasDragRef.current) setActivePane(paneId);
-      wasDragRef.current = false;
-    },
-    [paneId, setActivePane],
-  );
+  // the GRIP, so it bubbles on into the pane root's click-to-focus. Stopping
+  // pointerdown does not prevent that (click is a separate event), and left
+  // alone a cancelled drag would still move focus — "Escape changes nothing"
+  // would be a lie.
+  //
+  // So swallow ONLY the click that ends a drag. A plain click is left to
+  // bubble exactly like a click anywhere else in the pane: the pane root
+  // focuses itself, and in multiview the tile's own handler makes its
+  // workspace active. Swallowing every click broke that second path — the
+  // grip became the one spot in a background tile you could click with no
+  // effect at all.
+  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (wasDragRef.current) e.stopPropagation();
+    wasDragRef.current = false;
+  }, []);
 
   const handlePointerUp = useCallback(() => {
     const wasDragging = draggingRef.current;
@@ -154,13 +156,22 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
     endDrag();
     if (!wasDragging || !target) return;
 
+    // Either way the user grabbed this pane, so it ends up focused. movePane
+    // takes focus as an input; swapPanes deliberately does not touch focus, so
+    // do it here — otherwise a centre-drop (swap) would leave the pane the
+    // user just dragged inactive while an edge-drop focuses it.
+    //
+    // focusPaneSurface, not setActivePane: setActivePane resolves paneIds
+    // against activeWorkspaceId only, so it silently refuses a pane in a
+    // background multiview tile.
     if (target.edge === null) {
-      swapPanes(workspaceId, paneId, target.paneId);
+      if (swapPanes(workspaceId, paneId, target.paneId)) {
+        focusPaneSurface(workspaceId, paneId);
+      }
     } else {
-      // The user grabbed this pane, so it keeps focus after landing.
       movePane(workspaceId, paneId, target.paneId, target.edge, { focusSource: true });
     }
-  }, [endDrag, movePane, swapPanes, paneId, workspaceId]);
+  }, [endDrag, movePane, swapPanes, focusPaneSurface, paneId, workspaceId]);
 
   return (
     <div
