@@ -373,6 +373,23 @@ describe('swapPanes (#645)', () => {
     }
   });
 
+  it('swaps two SIBLING leaves — the path prefix {/} takes most often', () => {
+    // Both nodes live in the SAME children array, so the swap assigns two
+    // immer drafts across one another. Every other swap test here crosses
+    // parents, which never exercises that.
+    const store2 = createTestStore();
+    const ws = () => activeWs(store2);
+    const a = ws().rootPane.id;
+    const b = store2.getState().splitPane(a, 'horizontal') as string;
+    expect(leafIds(store2)).toEqual([a, b]);
+
+    expect(store2.getState().swapPanes(ws().id, a, b)).toBe(true);
+
+    const after = leafIds(store2);
+    expect(after).toEqual([b, a]);
+    expect(new Set(after).size).toBe(2); // neither pane duplicated
+  });
+
   it('keeps ordinals with their panes', () => {
     const { a, c } = threePaneTree(store);
     const ordinalOf = (id: string) =>
