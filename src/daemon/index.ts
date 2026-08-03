@@ -2306,6 +2306,8 @@ function registerRpcHandlers(
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
       // See the restore path for why this directory and not another.
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+      // See the restore path: lazy projector for the phone turn view (#782).
+      projector: () => transcriptProjector,
     });
   }
   const webServer = webTerminalServer;
@@ -2321,6 +2323,7 @@ function registerRpcHandlers(
       host?: string;
       allowInput?: boolean;
       allowUpload?: boolean;
+      allowTranscript?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2335,6 +2338,8 @@ function registerRpcHandlers(
     // Separate opt-in from `allowInput`, and fail-closed the same way: a caller
     // that says nothing gets a server that cannot write files.
     const allowUpload = p.allowUpload === true;
+    // Its own opt-in like upload, fail-closed when the caller says nothing.
+    const allowTranscript = p.allowTranscript === true;
     // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
     // forwards the MagicDNS name). Strings only; anything else is dropped.
     const allowedHosts = Array.isArray(p.allowedHosts)
@@ -2357,6 +2362,7 @@ function registerRpcHandlers(
       host,
       allowInput,
       allowUpload,
+      allowTranscript,
       allowedHosts,
       tailscale,
       ...(tls ? { tls } : {}),

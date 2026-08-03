@@ -660,14 +660,16 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     expect(harness.projector.watchCount).toBe(1);
   });
 
-  it('delta reports reset when the mtime moved under the cursor', () => {
+  it('delta reports reset when the file shrank under the cursor', () => {
     const file = fixture('claude-basic.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
     const snap = harness.projector.snapshot('pty-1')!;
-    // Cursor believes the file was newer than it is now → replaced/rewritten.
+    // Cursor believes a LARGER file than what is on disk → truncated/rewritten.
+    // A grow or mtime change is a normal append and must NOT reset — otherwise
+    // every turn resets the delta and the forward path becomes dead code.
     const result = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
-      cursorMtimeMs: snap.cursor.mtimeMs + 5000,
-      cursorFileSize: snap.cursor.fileSize,
+      cursorMtimeMs: snap.cursor.mtimeMs + 5000, // mtime moved: alone this is an append, not a reset
+      cursorFileSize: snap.cursor.fileSize + 1000,
     })!;
     expect(result.reset).toBe(true);
     // A reset carries a fresh snapshot, not an empty delta.

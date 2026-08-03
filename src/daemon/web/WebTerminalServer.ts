@@ -1282,6 +1282,7 @@ export class WebTerminalServer {
         host: this.opts.host,
         allowInput: this.opts.allowInput,
         allowUpload: this.opts.allowUpload,
+        allowTranscript: this.opts?.allowTranscript === true,
         tls: this.opts.tls !== undefined,
         token: this.token,
         urls: this.buildUrls(),
@@ -2057,6 +2058,14 @@ export class WebTerminalServer {
     lifecycle
       .destroy(id)
       .then(() => {
+        // Drop any phone turn-view watcher + pending nudge for this pane so a
+        // closed session does not linger for the daemon's life (3-MODEL review).
+        this.transcriptWatchers.delete(id);
+        const timer = this.transcriptNudgeTimers.get(id);
+        if (timer) {
+          clearTimeout(timer);
+          this.transcriptNudgeTimers.delete(id);
+        }
         res.writeHead(204, this.securityHeaders());
         res.end();
       })

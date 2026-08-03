@@ -218,8 +218,11 @@ export class TranscriptProjector {
     if (!stat) return null;
 
     let reset = false;
-    if (opts?.cursorFileSize !== undefined && stat.size !== opts.cursorFileSize) reset = true;
-    if (opts?.cursorMtimeMs !== undefined && stat.mtimeMs !== opts.cursorMtimeMs) reset = true;
+    // A SHRINK (size < cursor) means the file was truncated/rewritten. A grow
+    // or mtime change is a normal append — testing !== would reset on every
+    // turn and make the forward delta dead code. Rotation past the cursor is
+    // caught by isLineBoundary below (review: Claude+Codex 2-MODEL).
+    if (opts?.cursorFileSize !== undefined && stat.size < opts.cursorFileSize) reset = true;
     if (fromOffset > 0 && !isLineBoundary(resolved.transcriptPath, fromOffset)) reset = true;
     // A shrunk file (stat.size < from) is readTranscriptDelta's own reset path.
 
