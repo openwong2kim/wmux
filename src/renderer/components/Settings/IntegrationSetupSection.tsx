@@ -24,17 +24,21 @@
 // existing nudge (HooksInstallPrompt, at launch and on a mode raise) stays as
 // it is — this card is the place you go, not a thing that comes to you.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 
 // ─── Injected API (jsdom-testable; the container binds the preload bridges) ───
 
 export interface IntegrationSetupApi {
-  hooks: {
-    status: () => Promise<{ installed: boolean }>;
+  hooks?: {
+    /** `installed` counts settings.json entries only. The marketplace plugin
+     *  owns the same four hook events when it is present, and then an install
+     *  deliberately writes nothing — so a row that read `installed` alone would
+     *  sit at "not installed" forever while the signals actually flow. */
+    status: () => Promise<{ installed: boolean; outcome?: { pluginAlsoInstalled?: boolean } }>;
     install: () => Promise<{ ok: boolean; error: string | null }>;
   };
-  statusline: {
+  statusline?: {
     status: () => Promise<{ installed: boolean }>;
     /** `ok` only means nothing broke: every target can be skipped when another
      *  tool owns its settings.json. A row is installed when a target took it. */
@@ -44,16 +48,43 @@ export interface IntegrationSetupApi {
       targets: Array<{ outcome: string }>;
     }>;
   };
-  mcp: {
-    /** `verified` is the per-target truth; the row is installed when any target has it. */
-    check: () => Promise<{ targets: Array<{ displayName: string; verified: boolean }> }>;
-    reregister: () => Promise<{ targets: Array<{ displayName: string; verified: boolean }> }>;
+  mcp?: {
+    /** Registration state is `wmux.registered`. `verified` is a static property
+     *  of the TARGET (we have verified that client's MCP wiring), true for
+     *  Claude Code whether or not wmux is registered — reading it as install
+     *  state made the row claim "installed" on an untouched config. */
+    check: () => Promise<{ targets: McpTarget[] }>;
+    reregister: () => Promise<{ targets: McpTarget[] }>;
   };
+}
+
+export interface McpTarget {
+  displayName: string;
+  wmux?: { registered: boolean };
+}
+
+/** True when any client actually has wmux registered. */
+export function mcpRegistered(targets: McpTarget[]): boolean {
+  return targets.some((x) => x.wmux?.registered === true);
+}
+
+/** Why an install that "succeeded" wrote nothing: the per-target outcomes.
+ *  Returns null when there is nothing to say. */
+export function skippedReason(targets?: Array<{ outcome: string }>): string | null {
+  if (!targets || targets.length === 0) return null;
+  const skipped = [...new Set(targets.map((x) => x.outcome))].filter((o) => o !== 'installed');
+  return skipped.length > 0 ? skipped.join(', ') : null;
 }
 
 /** One row's lifecycle. `unknown` is the pre-probe state and reads as its own
  *  thing — never as "not installed", which would be a lie the user acts on. */
-export type RowState = 'unknown' | 'installed' | 'missing' | 'working' | 'error';
+export type RowState =
+  | 'unknown'      // pre-probe; never rendered as "not installed"
+  | 'installed'
+  | 'missing'
+  | 'working'
+  | 'error'
+  | 'unavailable'; // this preload does not expose the bridge at all
 
 interface RowModel {
   state: RowState;
@@ -61,6 +92,7 @@ interface RowModel {
 }
 
 const INITIAL: RowModel = { state: 'unknown', error: null };
+const UNAVAILABLE: RowModel = { state: 'unavailable', error: null };
 
 /** Probe → row state. Kept separate so the mapping is testable without a DOM. */
 export function rowStateFromProbe(installed: boolean): RowState {
@@ -79,25 +111,58 @@ export function IntegrationSetupSection({
   const [mcp, setMcp] = useState<RowModel>(INITIAL);
   const [statusline, setStatusline] = useState<RowModel>(INITIAL);
 
+  // Every write below lands after an await, and the settings panel is a tab the
+  // user closes mid-probe. Without this the card sets state on an unmounted
+  // component — and an install that resolves after a close would try to paint a
+  // row that no longer exists.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  // Probes are fire-and-forget and the card re-probes after every install, so
+  // two answers for the same row can be in flight at once. Each write carries
+  // the generation it was issued under; a stale one is dropped rather than
+  // repainting "not installed" over a finished install — which would put the
+  // Install button back and invite a second write to the same config.
+  const genRef = useRef(0);
+  const commit = useCallback(
+    (set: (m: RowModel) => void, model: RowModel, gen: number) => {
+      if (!mountedRef.current || gen !== genRef.current) return;
+      set(model);
+    },
+    [],
+  );
+
   // A probe that throws leaves the row `unknown` rather than claiming "missing":
   // an install button offered because IPC hiccuped would write to a config the
   // user never asked to touch.
   const probeAll = useCallback(() => {
-    api.hooks
+    const gen = ++genRef.current;
+    if (!api.hooks) commit(setHooks, UNAVAILABLE, gen);
+    else api.hooks
       .status()
-      .then((s) => setHooks({ state: rowStateFromProbe(s.installed), error: null }))
-      .catch(() => setHooks(INITIAL));
-    api.statusline
-      .status()
-      .then((s) => setStatusline({ state: rowStateFromProbe(s.installed), error: null }))
-      .catch(() => setStatusline(INITIAL));
-    api.mcp
-      .check()
       .then((s) =>
-        setMcp({ state: rowStateFromProbe(s.targets.some((x) => x.verified)), error: null }),
+        commit(setHooks, {
+          // Plugin-owned hooks fire the same signals, and an install against
+          // them writes nothing — without this the row sits at "not installed"
+          // forever while an Install click reports success and changes nothing.
+          state: rowStateFromProbe(s.installed || s.outcome?.pluginAlsoInstalled === true),
+          error: null,
+        }, gen),
       )
-      .catch(() => setMcp(INITIAL));
-  }, [api]);
+      .catch(() => commit(setHooks, INITIAL, gen));
+    if (!api.statusline) commit(setStatusline, UNAVAILABLE, gen);
+    else api.statusline
+      .status()
+      .then((s) => commit(setStatusline, { state: rowStateFromProbe(s.installed), error: null }, gen))
+      .catch(() => commit(setStatusline, INITIAL, gen));
+    if (!api.mcp) commit(setMcp, UNAVAILABLE, gen);
+    else api.mcp
+      .check()
+      .then((s) => commit(setMcp, { state: rowStateFromProbe(mcpRegistered(s.targets)), error: null }, gen))
+      .catch(() => commit(setMcp, INITIAL, gen));
+  }, [api, commit]);
 
   useEffect(() => { probeAll(); }, [probeAll]);
 
@@ -110,42 +175,50 @@ export function IntegrationSetupSection({
         targets?: Array<{ outcome: string }>;
       }>,
     ) => {
-      set({ state: 'working', error: null });
+      const gen = ++genRef.current;
+      commit(set, { state: 'working', error: null }, gen);
       try {
         const outcome = await install();
         // When the install reports per-target outcomes, `ok` alone is not
         // success: every target can be skipped because another tool owns its
         // settings.json, and claiming "Installed" there is a receipt for
-        // something that did not happen.
+        // something that did not happen. The skipped outcomes ARE the reason,
+        // so they go into the error text — otherwise the user retries blindly.
         const took = outcome.targets ? outcome.targets.some((x) => x.outcome === 'installed') : true;
-        set(
-          outcome.ok && took
-            ? { state: 'installed', error: null }
-            : { state: 'error', error: outcome.error },
-        );
+        if (outcome.ok && took) {
+          // Re-probe rather than trusting the install's own word: the file is
+          // the truth, and it can have been rewritten by another tool between
+          // the write and this line.
+          probeAll();
+          return;
+        }
+        commit(set, { state: 'error', error: outcome.error ?? skippedReason(outcome.targets) }, gen);
       } catch (err) {
-        set({ state: 'error', error: err instanceof Error ? err.message : null });
+        commit(set, { state: 'error', error: err instanceof Error ? err.message : null }, gen);
       }
     },
-    [],
+    [commit, probeAll],
   );
 
   // MCP's register path answers with a status payload, not an ok/error pair, so
   // it reads its own result rather than sharing runInstall.
   const registerMcp = useCallback(async () => {
-    setMcp({ state: 'working', error: null });
+    if (!api.mcp) return;
+    const gen = ++genRef.current;
+    commit(setMcp, { state: 'working', error: null }, gen);
     try {
       const status = await api.mcp.reregister();
-      const verified = status.targets.some((x) => x.verified);
-      setMcp(
-        verified
-          ? { state: 'installed', error: null }
-          : { state: 'error', error: null },
-      );
+      if (mcpRegistered(status.targets)) {
+        probeAll();
+        return;
+      }
+      // Nothing took. Name the configs that did not, so the failure is
+      // actionable instead of a bare "Failed".
+      commit(setMcp, { state: 'error', error: status.targets.map((x) => x.displayName).join(', ') || null }, gen);
     } catch (err) {
-      setMcp({ state: 'error', error: err instanceof Error ? err.message : null });
+      commit(setMcp, { state: 'error', error: err instanceof Error ? err.message : null }, gen);
     }
-  }, [api]);
+  }, [api, commit, probeAll]);
 
   return (
     <div
@@ -169,7 +242,7 @@ export function IntegrationSetupSection({
         description={t('integrationSetup.hooks.description')}
         model={hooks}
         actionLabel={t('integrationSetup.installButton')}
-        onAction={() => void runInstall(setHooks, api.hooks.install)}
+        onAction={() => { if (api.hooks) void runInstall(setHooks, api.hooks.install); }}
       />
       <SetupRow
         id="mcp"
@@ -187,7 +260,7 @@ export function IntegrationSetupSection({
         description={t('integrationSetup.statusline.description')}
         model={statusline}
         actionLabel={t('integrationSetup.installButton')}
-        onAction={() => void runInstall(setStatusline, api.statusline.install)}
+        onAction={() => { if (api.statusline) void runInstall(setStatusline, api.statusline.install); }}
       />
     </div>
   );
@@ -247,7 +320,9 @@ function SetupRow({
       </div>
       <div className="shrink-0 flex items-center gap-2">
         <StateChip state={model.state} />
-        {!installed && model.state !== 'unknown' && (
+        {/* Nothing to click for a row we cannot act on: `unknown` has not been
+            probed, and `unavailable` has no bridge to install through. */}
+        {!installed && model.state !== 'unknown' && model.state !== 'unavailable' && (
           <button
             type="button"
             onClick={onAction}
@@ -278,6 +353,10 @@ function StateChip({ state }: { state: RowState }): React.ReactElement {
     state === 'installed' ? t('integrationSetup.state.installed')
     : state === 'working' ? t('integrationSetup.state.working')
     : state === 'unknown' ? t('integrationSetup.state.unknown')
+    // Without its own label an error row read "not installed" right next to the
+    // failure text it had just printed — two answers to the same question.
+    : state === 'error' ? t('integrationSetup.state.error')
+    : state === 'unavailable' ? t('integrationSetup.state.unavailable')
     : t('integrationSetup.state.missing');
   return (
     <span
@@ -293,11 +372,13 @@ function StateChip({ state }: { state: RowState }): React.ReactElement {
   );
 }
 
-/** Container: binds the preload bridges. Renders nothing when any of them is
- *  absent (older preload / pure jsdom parent tests) — a card whose rows cannot
- *  report state is worse than no card. */
+/** Container: binds whichever preload bridges exist. A missing one costs its own
+ *  row (rendered `unavailable`), never the card — hiding the two REQUIRED
+ *  integrations because the optional statusline bridge was absent is exactly
+ *  the disappearing-surface bug this card was built to end. Renders nothing only
+ *  when no bridge is exposed at all (pure jsdom parent tests / no preload). */
 export function IntegrationSetupSectionContainer(): React.ReactElement | null {
-  const api = (window as unknown as {
+  const electronAPI = (window as unknown as {
     electronAPI?: {
       deck?: {
         hooksBridge?: IntegrationSetupApi['hooks'];
@@ -306,9 +387,13 @@ export function IntegrationSetupSectionContainer(): React.ReactElement | null {
       mcp?: IntegrationSetupApi['mcp'];
     };
   }).electronAPI;
-  const hooks = api?.deck?.hooksBridge;
-  const statusline = api?.deck?.statuslineBridge;
-  const mcp = api?.mcp;
-  if (!hooks || !statusline || !mcp) return null;
-  return <IntegrationSetupSection api={{ hooks, statusline, mcp }} />;
+  const hooks = electronAPI?.deck?.hooksBridge;
+  const statusline = electronAPI?.deck?.statuslineBridge;
+  const mcp = electronAPI?.mcp;
+  // Stable identity: the card's probe effect keys off this object, and a fresh
+  // literal every render re-probed all three bridges on every parent render —
+  // and could land a stale answer on top of a finished install.
+  const api = useMemo(() => ({ hooks, statusline, mcp }), [hooks, statusline, mcp]);
+  if (!hooks && !statusline && !mcp) return null;
+  return <IntegrationSetupSection api={api} />;
 }

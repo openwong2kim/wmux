@@ -617,6 +617,8 @@ export const ko = {
   'integrationSetup.state.missing': '미설치',
   'integrationSetup.state.working': '처리 중',
   'integrationSetup.state.unknown': '확인 안 됨',
+  'integrationSetup.state.error': '실패',
+  'integrationSetup.state.unavailable': '사용 불가',
   'integrationSetup.hooks.title': '훅 브리지',
   'integrationSetup.hooks.description':
     '턴 종료·승인 요청·서브에이전트 활동을 감지합니다. 없으면 화면을 읽어 추정합니다.',

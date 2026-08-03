@@ -11,6 +11,8 @@ import {
   IntegrationSetupSection,
   IntegrationSetupSectionContainer,
   rowStateFromProbe,
+  mcpRegistered,
+  skippedReason,
   type IntegrationSetupApi,
 } from '../IntegrationSetupSection';
 
@@ -32,31 +34,44 @@ afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
 function fakeApi(over: Partial<{
   hooksInstalled: boolean;
+  hooksPluginOwned: boolean;
   statuslineInstalled: boolean;
-  mcpVerified: boolean;
+  mcpRegistered: boolean;
   hooksInstall: () => Promise<{ ok: boolean; error: string | null }>;
   statuslineInstall: () => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
   hooksStatusThrows: boolean;
+  omit: 'hooks' | 'statusline' | 'mcp';
 }> = {}): IntegrationSetupApi {
-  return {
+  // Probes re-run after a successful install, so the fakes read live flags.
+  const flags = {
+    hooks: over.hooksInstalled ?? false,
+    statusline: over.statuslineInstalled ?? false,
+    mcp: over.mcpRegistered ?? false,
+  };
+  const api: IntegrationSetupApi = {
     hooks: {
       status: async () => {
         if (over.hooksStatusThrows) throw new Error('ipc down');
-        return { installed: over.hooksInstalled ?? false };
+        return {
+          installed: flags.hooks,
+          outcome: { pluginAlsoInstalled: over.hooksPluginOwned ?? false },
+        };
       },
-      install: over.hooksInstall ?? (async () => ({ ok: true, error: null })),
+      install: over.hooksInstall ?? (async () => { flags.hooks = true; return { ok: true, error: null }; }),
     },
     statusline: {
-      status: async () => ({ installed: over.statuslineInstalled ?? false }),
+      status: async () => ({ installed: flags.statusline }),
       install:
         over.statuslineInstall ??
-        (async () => ({ ok: true, error: null, targets: [{ outcome: 'installed' }] })),
+        (async () => { flags.statusline = true; return { ok: true, error: null, targets: [{ outcome: 'installed' }] }; }),
     },
     mcp: {
-      check: async () => ({ targets: [{ displayName: 'Claude Code', verified: over.mcpVerified ?? false }] }),
-      reregister: async () => ({ targets: [{ displayName: 'Claude Code', verified: true }] }),
+      check: async () => ({ targets: [{ displayName: 'Claude Code', wmux: { registered: flags.mcp } }] }),
+      reregister: async () => { flags.mcp = true; return { targets: [{ displayName: 'Claude Code', wmux: { registered: true } }] }; },
     },
   };
+  if (over.omit) delete api[over.omit];
+  return api;
 }
 
 const row = (c: HTMLElement, id: string) => c.querySelector(`[data-setup-row="${id}"]`) as HTMLElement;
@@ -67,7 +82,7 @@ const action = (c: HTMLElement, id: string) =>
 describe('IntegrationSetupSection', () => {
   it('reports each integration from its own probe', async () => {
     const { container, cleanup } = render(
-      <IntegrationSetupSection api={fakeApi({ hooksInstalled: true, mcpVerified: true })} />,
+      <IntegrationSetupSection api={fakeApi({ hooksInstalled: true, mcpRegistered: true })} />,
     );
     cleanups.push(cleanup);
     await flush();
@@ -138,7 +153,55 @@ describe('IntegrationSetupSection', () => {
     expect(rowStateFromProbe(false)).toBe('missing');
   });
 
-  it('renders nothing when a preload bridge is missing', () => {
+  // `verified` is a property of the TARGET (we have verified that client's MCP
+  // wiring), true for Claude Code whether or not wmux is registered. Reading it
+  // as install state made the row claim "installed" on an untouched config and
+  // hid the Register button that would have fixed it.
+  it('reads MCP registration from wmux.registered, not from verified', async () => {
+    expect(mcpRegistered([{ displayName: 'Claude Code' }])).toBe(false);
+    expect(mcpRegistered([{ displayName: 'Claude Code', wmux: { registered: false } }])).toBe(false);
+    expect(mcpRegistered([{ displayName: 'Claude Code', wmux: { registered: true } }])).toBe(true);
+
+    const { container, cleanup } = render(<IntegrationSetupSection api={fakeApi()} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(state(container, 'mcp')).toBe('missing');
+    expect(action(container, 'mcp')).not.toBeNull();
+  });
+
+  // The marketplace plugin owns the same four hook events, and an install
+  // against it deliberately writes nothing. Reading settings.json alone left the
+  // row at "not installed" forever while the signals actually flowed.
+  it('counts plugin-owned hooks as installed', async () => {
+    const { container, cleanup } = render(
+      <IntegrationSetupSection api={fakeApi({ hooksPluginOwned: true })} />,
+    );
+    cleanups.push(cleanup);
+    await flush();
+    expect(state(container, 'hooks')).toBe('installed');
+  });
+
+  it('names the reason when an install succeeds but writes nothing', () => {
+    expect(skippedReason([{ outcome: 'installed' }])).toBeNull();
+    expect(skippedReason([{ outcome: 'skipped-foreign' }])).toBe('skipped-foreign');
+    expect(skippedReason(undefined)).toBeNull();
+  });
+
+  // One absent bridge must not take the two REQUIRED rows down with it — the
+  // disappearing surface is the bug this card exists to end.
+  it('keeps the card when only some bridges are exposed', async () => {
+    const { container, cleanup } = render(
+      <IntegrationSetupSection api={fakeApi({ omit: 'statusline' })} />,
+    );
+    cleanups.push(cleanup);
+    await flush();
+    expect(container.querySelector('[data-integration-setup]')).not.toBeNull();
+    expect(state(container, 'statusline')).toBe('unavailable');
+    expect(action(container, 'statusline')).toBeNull();
+    expect(state(container, 'hooks')).toBe('missing');
+  });
+
+  it('renders nothing only when no bridge is exposed at all', () => {
     (window as unknown as { electronAPI?: unknown }).electronAPI = { deck: {} };
     const { container, cleanup } = render(<IntegrationSetupSectionContainer />);
     cleanups.push(cleanup);

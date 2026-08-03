@@ -820,6 +820,8 @@ export const en = {
   'integrationSetup.state.missing': 'not installed',
   'integrationSetup.state.working': 'working',
   'integrationSetup.state.unknown': 'unknown',
+  'integrationSetup.state.error': 'failed',
+  'integrationSetup.state.unavailable': 'unavailable',
   'integrationSetup.hooks.title': 'Hook bridge',
   'integrationSetup.hooks.description':
     'Turn completion, approval prompts, and subagent activity. Without it these are read off the screen instead.',
