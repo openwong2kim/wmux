@@ -114,6 +114,23 @@ describe('PaneDragGrip', () => {
     root = createRoot(container); // keep the shared teardown valid
   });
 
+  it('ends the drag when the browser revokes the pointer capture', () => {
+    // lostpointercapture arrives without a pointercancel when the element is
+    // removed or the OS takes the pointer. Without handling it the drag would
+    // sit waiting for moves that never come. (Found by the Codex reviewer.)
+    pointer('pointerdown', 10, 10);
+    pointer('pointermove', 90, 90);
+    setPaneDropTarget.mockClear();
+    setPaneDragSource.mockClear();
+
+    act(() => {
+      grip.dispatchEvent(new MouseEvent('lostpointercapture', { bubbles: true }));
+    });
+
+    expect(setPaneDragSource).toHaveBeenCalledWith(null);
+    expect(setPaneDropTarget).toHaveBeenCalledWith(null);
+  });
+
   it('does not touch drag state when it unmounts with no gesture in flight', () => {
     setPaneDropTarget.mockClear();
     setPaneDragSource.mockClear();

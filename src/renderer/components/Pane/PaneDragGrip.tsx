@@ -176,9 +176,13 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
   return (
     <div
       data-pane-drag-grip
-      role="button"
-      tabIndex={-1}
-      aria-label={t('pane.dragGrip')}
+      // Deliberately NOT role="button": this is a pointer-only affordance and
+      // it cannot be operated from the keyboard, so announcing it as a button
+      // would promise an interaction that does not exist. The keyboard has
+      // full equivalents elsewhere (prefix H/J/K/L and {/}, plus the "Move
+      // pane …" palette commands), so nothing is lost by leaving the grip out
+      // of the tab order and the accessibility tree.
+      aria-hidden="true"
       title={t('pane.dragGrip')}
       ref={gripRef}
       onPointerDown={handlePointerDown}
@@ -186,6 +190,10 @@ export default function PaneDragGrip({ paneId, workspaceId }: PaneDragGripProps)
       onPointerUp={handlePointerUp}
       onClick={handleClick}
       onPointerCancel={endDrag}
+      // The browser can revoke the capture without a pointercancel — the
+      // element being removed, or the OS taking the pointer. Without this the
+      // drag would keep listening for moves that will never arrive.
+      onLostPointerCapture={endDrag}
       style={{
         width: 14,
         height: 18,
