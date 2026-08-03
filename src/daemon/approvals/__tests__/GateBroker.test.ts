@@ -86,4 +86,59 @@ describe('GateBroker', () => {
       expect(broker.isWaiting('gate-11')).toBe(false);
     });
   });
+
+  // Review findings (3-MODEL panel): each of these was a way the gate lied
+  // about its own state or took the daemon down with it.
+  describe('review regressions', () => {
+    it('expires the approval record whenever it defers a gate', async () => {
+      const expired: { id: string; reason: string }[] = [];
+      const b = new GateBroker({
+        log: () => { /* silent */ },
+        deadlineMs: 30_000,
+        expireRecord: (id, reason) => expired.push({ id, reason }),
+      });
+      const verdict = b.awaitVerdict('gate-x', 'pty-a');
+      b.cancel('gate-x', 'gate-timed-out');
+      await verdict;
+      // Without this the card stays pending after the tool already fell through
+      // to the local prompt, and a late tap gets a receipt for nothing.
+      expect(expired).toEqual([{ id: 'gate-x', reason: 'gate-timed-out' }]);
+    });
+
+    it('does NOT expire the record when the phone answered', async () => {
+      const expired: string[] = [];
+      const b = new GateBroker({
+        log: () => { /* silent */ },
+        deadlineMs: 30_000,
+        expireRecord: (id) => expired.push(id),
+      });
+      const verdict = b.awaitVerdict('gate-y', 'pty-a');
+      b.notifyResolved('gate-y', 'approve');
+      expect(await verdict).toEqual({ decision: 'allow', reason: 'answered' });
+      expect(expired).toEqual([]);
+    });
+
+    it('defers immediately past the pending cap instead of holding a socket', async () => {
+      const b = new GateBroker({ log: () => { /* silent */ }, deadlineMs: 30_000, maxPending: 2 });
+      b.awaitVerdict('g1', 'pty-a');
+      b.awaitVerdict('g2', 'pty-a');
+      // Each blocked gate pins a control-plane connection; past the cap the
+      // tool goes to the local prompt rather than starving the daemon.
+      expect(await b.awaitVerdict('g3', 'pty-a')).toEqual({
+        decision: 'defer',
+        reason: 'too-many-pending-gates',
+      });
+      expect(b.pendingCount()).toBe(2);
+    });
+
+    it('settles the previous waiter when the same gate id arrives twice', async () => {
+      const first = broker.awaitVerdict('dup', 'pty-a');
+      const second = broker.awaitVerdict('dup', 'pty-a');
+      // The first promise must not be orphaned — it would hang until the bridge
+      // gave up on its own.
+      expect(await first).toEqual({ decision: 'defer', reason: 'superseded-by-duplicate-gate' });
+      broker.notifyResolved('dup', 'approve');
+      expect(await second).toEqual({ decision: 'allow', reason: 'answered' });
+    });
+  });
 });

@@ -422,11 +422,13 @@ interface WebTerminalServerDeps {
    */
   gateConfig?: () => { gatedTools: string[] };
   /**
-   * #783 — runtime escape hatch. `POST /api/gate/off` calls this so the next
-   * tool call passes through ungated. Optional: a server that did not wire it
-   * answers 503 on the route, and the `WMUX_GATE=0` env escape still works.
+   * #783 — runtime escape hatch. `POST /api/gate/off` / `/api/gate/on` call
+   * this to disarm or re-arm the permission gate. Turning it off also defers
+   * whatever is already blocked, so the agent that is waiting right now moves
+   * immediately instead of sitting out its deadline (review: Codex). Optional:
+   * a server that did not wire it answers 503, and `WMUX_GATE=0` still works.
    */
-  onGateOff?: () => void;
+  setGateEnabled?: (enabled: boolean) => void;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1560,14 +1562,29 @@ export class WebTerminalServer {
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
     }
-    // #783 — runtime escape hatch: turn the permission gate off from the next
-    // tool call. Works on a read-only server (it NARROWS what the daemon does,
-    // never widens). The WMUX_GATE=0 env is the per-process escape; this is the
-    // remote one for "the phone is the thing being interrupted".
-    if (req.method === 'POST' && p === '/api/gate/off') {
-      if (!this.deps.onGateOff) return this.json(res, 503, { error: 'gate control unavailable' });
-      this.deps.onGateOff();
-      return this.json(res, 200, { ok: true, detail: 'gate off — the next tool call proceeds without prompting' });
+    // #783 — runtime escape hatch: stop holding tool calls for a remote answer,
+    // from the next call on. This WIDENS what proceeds without remote review
+    // (high-risk tools stop waiting for the phone), so it takes the same grant
+    // as typing — a view-only device must not be able to disarm the gate
+    // (review: Claude). `/api/gate/on` re-arms it, so the hatch is symmetric
+    // and a phone that turned it off can put it back.
+    if (req.method === 'POST' && (p === '/api/gate/off' || p === '/api/gate/on')) {
+      if (this.opts?.allowInput !== true) {
+        return this.json(res, 403, {
+          error: 'read-only: server started without --allow-input',
+          detail: 'disarming the permission gate lets tools run without remote review — it needs the same grant as typing',
+        });
+      }
+      if (!this.deps.setGateEnabled) return this.json(res, 503, { error: 'gate control unavailable' });
+      const enable = p === '/api/gate/on';
+      this.deps.setGateEnabled(enable);
+      return this.json(res, 200, {
+        ok: true,
+        gateEnabled: enable,
+        detail: enable
+          ? 'gate on — gated tools wait for a remote answer again'
+          : 'gate off — the next tool call proceeds without prompting',
+      });
     }
     return this.json(res, 404, { error: 'not found' });
   }
@@ -2488,6 +2505,19 @@ export class WebTerminalServer {
       return this.json(res, 404, { error: 'not-found' });
     }
     if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+
+    // A screen-backed prompt is answerable on a read-only server: the daemon
+    // already put that question on the pane, and the caller can only pick one
+    // of ITS options. A permission gate is a different grant — approving it
+    // runs the tool (arbitrary Bash, a write, a subagent), which is exactly
+    // what --allow-input governs. Gate it accordingly (review: Claude).
+    const record = approvals.list().pending.find((r) => r.id === id);
+    if (record?.kind === 'awaiting_permission' && this.opts?.allowInput !== true) {
+      return this.json(res, 403, {
+        error: 'read-only: server started without --allow-input',
+        detail: 'approving a tool permission runs the tool — it needs the same grant as typing',
+      });
+    }
 
     this.readJsonBody(req, res, (body) => {
       const decision = (body as { decision?: unknown } | null)?.decision;

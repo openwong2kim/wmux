@@ -757,20 +757,25 @@ async function main() {
   //      session. Read every call, so toggling takes effect on the next tool.
   //   2. Headless     — `claude -p`, CI, and subagents all read the same
   //      hooks.json. `WMUX_PTY_ID` is inherited by `claude -p` inside a pane
-  //      (src/mcp/index.ts:355), so the env check alone can't tell headless from
-  //      interactive. The tty check (process.stderr.isTTY) is the load-bearing
-  //      distinguisher: interactive Claude Code's stderr is the terminal;
-  //      headless stderr is a pipe. WMUX_PTY_ID is same-user spoofable (env is
-  //      writable from inside the pane) — this is a UX guard, not a security
-  //      control. DO NOT remove the tty check without a replacement
-  //      distinguisher, or `claude -p` inside a pane will hang forever.
+  //      (src/mcp/index.ts:355), so the env check alone cannot tell headless
+  //      from interactive. `CLAUDE_CODE_ENTRYPOINT` is the distinguisher, and
+  //      it is MEASURED, not assumed: an interactive pane reports `cli`, while
+  //      `claude -p` reports `sdk-cli`. A tty check does NOT work here — Claude
+  //      Code pipes the hook's stdio, so `process.stderr.isTTY` is false in BOTH
+  //      modes and gating on it would keep the gate permanently dark. Anything
+  //      that is not a known interactive entrypoint defers, so an unrecognised
+  //      or future headless mode fails open rather than hanging.
+  //      WMUX_PTY_ID is same-user spoofable (env is writable from inside the
+  //      pane) — this is a UX guard, not a security control.
   //   3. No WMUX_PTY_ID — the agent is running outside any wmux pane.
+  const INTERACTIVE_ENTRYPOINTS = new Set(['cli', 'vscode', 'jetbrains']);
   if (permissionGateMode) {
     if (process.env.WMUX_GATE === '0') {
       outputPermissionDecision('ask', 'gate disabled (WMUX_GATE=0)');
       return;
     }
-    if (!process.env.WMUX_PTY_ID || process.stderr.isTTY !== true) {
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    if (!process.env.WMUX_PTY_ID || !entrypoint || !INTERACTIVE_ENTRYPOINTS.has(entrypoint)) {
       outputPermissionDecision('ask', 'headless or outside wmux');
       return;
     }
@@ -1043,9 +1048,16 @@ async function main() {
     const verdict = innerOk && rpcResult.result.permissionDecision
       ? rpcResult.result.permissionDecision
       : 'ask';
-    outputPermissionDecision(verdict, verdict === 'ask' && !innerOk
-      ? 'gate unreachable — falling back to local prompt'
-      : undefined);
+    outputPermissionDecision(
+      verdict,
+      verdict === 'deny'
+        // Without a reason the model reads a bare refusal and retries the same
+        // call. Say who refused (review: Claude).
+        ? 'denied from the wmux remote approval'
+        : verdict === 'ask' && !innerOk
+          ? 'gate unreachable — falling back to local prompt'
+          : undefined,
+    );
     logEvent('permission-gate', { hook: hookName, target: targetName, verdict });
     // Always exit 0 — the decision is in stdout, not the exit code.
     return 0;
@@ -1063,5 +1075,9 @@ main()
     return 0;
   })
   .then((code) => {
-    process.exit(typeof code === 'number' ? code : 0);
+    // `process.exitCode`, NOT `process.exit()`: the permission decision is a
+    // stdout write, and exiting outright can drop it before the pipe flushes —
+    // a remote deny would silently become "no decision" (review: Codex). Let
+    // the loop drain and exit on its own.
+    process.exitCode = typeof code === 'number' ? code : 0;
   });

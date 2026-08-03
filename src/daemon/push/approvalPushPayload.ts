@@ -61,6 +61,12 @@ export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload 
  * lock screen there would be noise rather than consent.
  */
 function bodyFor(request: ApprovalRequest, offersAffirmative: boolean): string {
+  // A permission gate has no question — name the tool and quote its input, or
+  // the banner says "a pane is waiting" for a command that rewrites the disk.
+  if (request.kind === 'awaiting_permission') {
+    const summary = request.toolInputSummary?.trim();
+    return summary ? `${request.toolName}: ${summary}` : `${request.toolName} wants to run`;
+  }
   const question = request.question ?? APPROVAL_PUSH_FALLBACK_BODY;
   if (!offersAffirmative) return question;
   const labels = (request.choices ?? []).map((c) => c.label.trim()).filter((l) => l.length > 0);
@@ -121,6 +127,14 @@ function lockScreenChoiceFields(
  */
 function elevatedRisk(request: ApprovalRequest): boolean {
   if (request.risk === 'critical') return true;
+  // A permission gate (#783) carries no question and no choices — the thing
+  // being approved is the tool call itself. Scanning only the question would
+  // score every gate as `normal` and light up the one-tap lock-screen button
+  // for `rm -rf` with nothing on screen to read (review: Claude). The tool name
+  // and its input summary ARE the text to judge here.
+  if (request.kind === 'awaiting_permission') {
+    return hasElevatedRisk(request.toolName, request.toolInputSummary);
+  }
   return hasElevatedRisk(
     request.question,
     ...(request.options ?? []),

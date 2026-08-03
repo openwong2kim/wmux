@@ -44,6 +44,20 @@ export interface GateBrokerDeps {
   now?: () => number;
   /** Deadline override for the self-defer timer, for tests. */
   deadlineMs?: number;
+  /**
+   * Expire the approval record behind a gate the broker just deferred (review:
+   * 3-MODEL). Without this the card stays `pending` after the tool has already
+   * fallen through to the local prompt, and a late phone tap gets a success
+   * receipt for a decision that changed nothing — "I tapped deny but it ran".
+   */
+  expireRecord?: (gateId: string, reason: string) => void;
+  /**
+   * Cap on gates blocking at once. Each one holds a control-plane socket for
+   * its whole deadline, and the pipe server accepts a bounded number of
+   * connections — without a cap, enough simultaneous gates starve the CLI, MCP
+   * and the desktop app out of the daemon (review: Claude+Codex).
+   */
+  maxPending?: number;
 }
 
 /**
@@ -55,16 +69,26 @@ export interface GateBrokerDeps {
  */
 const DEFAULT_GATE_DEADLINE_MS = 120_000;
 
+/**
+ * Leave room in the pipe server's connection budget for the control plane. A
+ * blocked gate holds its socket for the full deadline, so this is deliberately
+ * a small fraction of MAX_CONNECTIONS (20) — past it, gates defer immediately
+ * rather than locking every other client out of the daemon.
+ */
+const DEFAULT_MAX_PENDING_GATES = 8;
+
 export class GateBroker {
   private readonly waiters = new Map<string, GateWaiter>();
   private readonly deps: GateBrokerDeps;
   private readonly now: () => number;
   private readonly deadlineMs: number;
+  private readonly maxPending: number;
 
   constructor(deps: GateBrokerDeps = {}) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.deadlineMs = deps.deadlineMs ?? DEFAULT_GATE_DEADLINE_MS;
+    this.maxPending = deps.maxPending ?? DEFAULT_MAX_PENDING_GATES;
   }
 
   /**
@@ -76,6 +100,17 @@ export class GateBroker {
    * shorter — the bridge knows its own remaining budget.
    */
   awaitVerdict(gateId: string, sessionId: string, deadlineMs?: number): Promise<GateVerdict> {
+    // Over the cap: defer immediately rather than hold another control-plane
+    // socket. The tool still runs — it just uses the local prompt.
+    if (this.waiters.size >= this.maxPending) {
+      this.deps.log?.('warn', `[gate] ${gateId} deferred — ${this.waiters.size} gates already pending`);
+      this.deps.expireRecord?.(gateId, 'gate-timed-out');
+      return Promise.resolve({ decision: 'defer', reason: 'too-many-pending-gates' });
+    }
+    // A repeat id would orphan the previous promise (its timer stays armed and
+    // nothing ever resolves it), so settle the old one first.
+    const existing = this.waiters.get(gateId);
+    if (existing) this.cancel(gateId, 'superseded-by-duplicate-gate');
     const ms = Math.max(1_000, Math.min(deadlineMs ?? this.deadlineMs, this.deadlineMs));
     return new Promise<GateVerdict>((resolve) => {
       const timer = setTimeout(() => {
@@ -115,6 +150,11 @@ export class GateBroker {
     this.waiters.delete(gateId);
     clearTimeout(w.timer);
     this.deps.log?.('info', `[gate] deferred ${gateId} (${reason})`);
+    // Expire the record in the SAME step as the waiter. The tool has moved on
+    // to the local prompt, so a card left `pending` would let a late tap claim
+    // it decided something (review: 3-MODEL). The registry's CAS makes this
+    // idempotent — a phone answer that already won leaves nothing to expire.
+    this.deps.expireRecord?.(gateId, reason);
     w.resolve({ decision: 'defer', reason });
   }
 

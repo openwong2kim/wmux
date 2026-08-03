@@ -301,16 +301,22 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       toolInputSummary: input.toolInputSummary,
     };
     this.mutate(() => {
+      // One-pending-per-session holds for SCREEN-backed prompts: a pane shows
+      // one question at a time, so a newer one replaced the older. Gates are
+      // different — the agent can call several gated tools in one turn, and
+      // each blocks its own bridge process. Superseding one would silently drop
+      // that tool to the local prompt while the phone operator, watching only
+      // the phone, sees nothing (review: Claude). So a gate never supersedes
+      // another gate; it only replaces a screen-backed prompt.
       const superseded = this.requests.find(
-        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId,
+        (r) => r.state === 'pending'
+          && r.sessionId === snapshot.sessionId
+          && r.kind !== 'awaiting_permission',
       );
       const events: ApprovalEvent[] = [];
       if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
-        if (superseded.kind === 'awaiting_permission') {
-          this.deps.notifyGateDropped?.(superseded.id);
-        }
         events.push({ type: 'supersede', request: copyRequest(superseded) });
       }
       const created: ApprovalRequest = {
@@ -344,6 +350,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   expireForSession(sessionId: string, reason: ApprovalExpiryReason): Promise<void> {
     return this.mutate(() => this.expirePendingWhere((r) => r.sessionId === sessionId, reason));
+  }
+
+  /**
+   * Expire ONE record by id. The gate broker calls this when it defers a gate
+   * (#783): the tool has already fallen through to the local prompt, so the
+   * card must stop being answerable — otherwise a late tap gets a success
+   * receipt for a decision that changed nothing. Runs through the same
+   * serialized CAS, so a phone answer that already won finds nothing pending.
+   */
+  expireById(id: string, reason: ApprovalExpiryReason): Promise<void> {
+    return this.mutate(() => this.expirePendingWhere((r) => r.id === id, reason));
   }
 
   // ── Resolution ───────────────────────────────────────────────────────────

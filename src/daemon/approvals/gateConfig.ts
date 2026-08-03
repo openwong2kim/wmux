@@ -25,7 +25,14 @@ export const DEFAULT_GATED_TOOLS: readonly string[] = [
   'Bash',
   'Write',
   'Edit',
+  // Matching is exact, so every tool that writes or executes has to be listed
+  // by name — an agent (or a prompt injection) that reaches for MultiEdit
+  // instead of Edit would otherwise walk straight past the gate, and Task runs
+  // arbitrary tools inside a subagent (review: Claude).
+  'MultiEdit',
   'NotebookEdit',
+  'Task',
+  'KillShell',
 ] as const;
 
 export interface GateConfig {

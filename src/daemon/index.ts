@@ -319,7 +319,14 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
-        onGateOff: () => { gateRuntimeOff = true; log('info', '[gate] runtime escape: gate off from next tool call'); },
+        setGateEnabled: (enabled) => {
+          gateRuntimeOff = !enabled;
+          log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
+          // Turning it off must also free whatever is blocked right now —
+          // otherwise the agent the operator is trying to unstick keeps
+          // waiting out its deadline (review: Codex).
+          if (!enabled) gateBroker?.cancelAll('gate-disabled');
+        },
       });
     }
     const info = await webTerminalServer.start({
@@ -2333,7 +2340,11 @@ function registerRpcHandlers(
       projector: () => transcriptProjector,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
-      onGateOff: () => { gateRuntimeOff = true; log('info', '[gate] runtime escape: gate off from next tool call'); },
+      setGateEnabled: (enabled) => {
+        gateRuntimeOff = !enabled;
+        log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
+        if (!enabled) gateBroker?.cancelAll('gate-disabled');
+      },
     });
   }
   const webServer = webTerminalServer;
@@ -2820,17 +2831,23 @@ function registerRpcHandlers(
       const signal: AgentSignal = params;
       // #783 — runtime escape hatch (POST /api/gate/off). The tool passes
       // through ungated; we still emit agent.tool_started for phone liveness.
+      // `ask`, never `allow`. The wide PreToolUse matcher sees EVERY tool, so
+      // answering `allow` would hand a blanket auto-approval to every tool wmux
+      // does not gate — silently overriding Claude Code's own permission
+      // prompts and the user's settings.json deny rules. `ask` means "wmux has
+      // no opinion here", which is the whole point of an escape hatch: it falls
+      // back to the normal local flow. Only a real phone approval says `allow`.
       if (gateRuntimeOff) {
         ingest.handle({ ...signal, kind: 'agent.tool_started' });
-        return { ok: true, permissionDecision: 'allow' as const };
+        return { ok: true, permissionDecision: 'ask' as const };
       }
       const gate = ingest.handlePermissionGate(signal);
       if (!gate.ok || !gate.gateId) {
-        // Unroutable or non-gated tool — allow immediately.
+        // Unroutable or non-gated tool — hand it back to the local flow.
         return {
           ok: gate.ok,
           ...(gate.reason ? { reason: gate.reason } : {}),
-          permissionDecision: 'allow' as const,
+          permissionDecision: 'ask' as const,
         };
       }
       // Gated: await the broker. The bridge holds its stdout open until this
@@ -4792,7 +4809,15 @@ async function main(): Promise<void> {
 
   // #783 — construct the gate broker BEFORE the registry's first mutation, so
   // the notifyGateResolved/notifyGateDropped callbacks resolve to a live broker.
-  gateBroker = new GateBroker({ log: (level, msg) => log(level, msg) });
+  gateBroker = new GateBroker({
+    log: (level, msg) => log(level, msg),
+    // A deferred gate must also stop being answerable: the tool has already
+    // fallen through to the local prompt, so a card left pending would hand a
+    // late tap a receipt for nothing (review: 3-MODEL).
+    expireRecord: (gateId) => {
+      void approvalRegistry?.expireById(gateId, 'gate-timed-out');
+    },
+  });
 
   // Push. Inert unless a relay is configured, which is the normal state until
   // the relay is deployed — an unconfigured install must not log a failure per
