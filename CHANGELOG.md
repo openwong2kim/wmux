@@ -1,3 +1,60 @@
+## [3.38.6] — 2026-08-03
+
+### Added
+
+- **Native TLS for `wmux web`.** Use `--tls-cert <path>` with `--tls-key <path>` to terminate HTTPS directly when exposing panes without Tailscale. (#775)
+
+- **Move panes around your layout.** Panes could only be created and closed, so
+  getting the arrangement you wanted meant splitting in exactly the right order
+  from the start. Now you can rearrange one you already have: drag the grip in a
+  pane's tab strip and drop it on another pane's edge to move it there, or on
+  its centre to swap the two. From the keyboard, `Ctrl+B` then `H`/`J`/`K`/`L`
+  walks the active pane left/down/up/right, and `{` / `}` swap it with its
+  neighbour, mirroring tmux. The command palette carries the four directional
+  moves as well. Panes keep their names and their scrollback wherever they land.
+  (#776)
+
+- Settings → Claude integration now opens with a **Setup** card listing the
+  hook bridge, the MCP registration, and the usage statusline — each with its
+  real install state and a one-click install for whatever is missing.
+  Previously the first-run wizard was the only place these were ever offered,
+  and skipping it left the CLI as the only way back.
+
+- The first-run wizard now offers the Claude Code hook bridge alongside the
+  statusline, and shows it as installed when it already is.
+
+- **Fan-out can launch in bypass mode without retyping the flag.** The Multi Task dialog now offers `--dangerously-skip-permissions` as a checkbox, shows the launch command it will fire, and prefills the command the last fan-out actually used. The checkbox appears only for Claude Code, the launcher wmux knows that flag for; users of another CLI type their own bypass flag once and it is remembered. A Claude-only flag left behind after switching launchers is called out with a one-click removal.
+
+### Removed
+
+- **Removed the unused MCP long-poll transport option.** `sendRpc` no longer
+  carries a separate timeout-and-retry mode for a server-side wait RPC that
+  does not exist; its production callers continue to use the established
+  10-second timeout and three-attempt retry path. (#778)
+
+### Fixed
+
+- **Closing a pane no longer misaligns its neighbours.** In a row or column of
+  three or more panes, closing one left the remaining panes rendering at the
+  wrong widths — the sizes list still had an entry for the pane that was gone,
+  so every panel after it was drawn one slot off. Two-pane splits were never
+  affected, which is why this hid for so long. (#776)
+
+- The workspace mode dropdown no longer runs off the top of the window. It
+  opens toward whichever side has room and caps its height there, so `Off`
+  stays reachable in a short window — autonomy can always be lowered again.
+
+- The orchestrator's "mode is off" note in the deck composer is no longer cut
+  off. The placeholder shows a one-line form; the full explanation stays on
+  hover.
+
+- The wizard's statusline offer never appeared: it looked for the preload
+  bridge at the wrong path and silently hid itself when it came back empty.
+
+### Security
+
+- **Fail-closed HTTPS restore.** Native TLS stores certificate/key paths rather than PEM bytes, validates material before replacing a live listener, and leaves no plaintext listener if persisted TLS material becomes unavailable. Crossing the encrypted/plaintext boundary rotates the operator token and revokes paired-device credentials. (#775)
+
 ## [3.38.5] — 2026-08-03
 
 ### Added
