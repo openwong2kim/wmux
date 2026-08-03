@@ -1040,6 +1040,13 @@ export const ko = {
   'fanout.taskPromptPlaceholder': '태스크 {k} 개별 지시… (공통 프롬프트와 결합, 비우면 공통만)',
   'fanout.repoLabel': 'repo 경로',
   'fanout.agentLabel': 'agent 명령',
+  'fanout.skipPermissionsUnsupported':
+    'wmux가 아는 우회 플래그는 `claude` 것뿐입니다. 위 명령에 사용하는 CLI의 플래그를 직접 입력하세요 — 다음 실행에도 그대로 남습니다.',
+  'fanout.skipPermissionsWarning': '모든 도구가 확인 없이 실행됩니다. 태스크는 격리 worktree에서 돌지만 에이전트는 셸 전체를 씁니다.',
+  'fanout.skipPermissionsStale': '`{agent}`는 claude 전용 플래그를 받지 않는데 명령에 아직 남아 있습니다.',
+  'fanout.skipPermissionsStrip': '플래그 제거',
+  'fanout.commandPreviewLabel': '실행 명령 (다음에도 유지)',
+  'fanout.commandPreviewPromptArg': '"$(cat <프롬프트 파일>)"',
   'fanout.cancel': '취소',
   'fanout.spawning': '스폰 중…',
   'fanout.spawn': '{n}개 스폰',

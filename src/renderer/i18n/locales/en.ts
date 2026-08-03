@@ -1264,6 +1264,13 @@ export const en = {
   'fanout.taskPromptPlaceholder': 'Task {k} instructions… (combined with the shared prompt; empty = shared only)',
   'fanout.repoLabel': 'repo path',
   'fanout.agentLabel': 'agent command',
+  'fanout.skipPermissionsUnsupported':
+    'wmux only knows this bypass flag for `claude`. Type your agent\'s own flag into the command above — it is remembered for next time.',
+  'fanout.skipPermissionsWarning': 'Every tool runs without asking. Tasks run in isolated worktrees, but the agent still has full shell access.',
+  'fanout.skipPermissionsStale': '`{agent}` does not take this Claude-only flag, but the command still carries it.',
+  'fanout.skipPermissionsStrip': 'Remove flag',
+  'fanout.commandPreviewLabel': 'launch command (remembered for next time)',
+  'fanout.commandPreviewPromptArg': '"$(cat <prompt file>)"',
   'fanout.cancel': 'Cancel',
   'fanout.spawning': 'Spawning…',
   'fanout.spawn': 'Spawn {n}',

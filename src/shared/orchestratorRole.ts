@@ -143,7 +143,7 @@ export function bindingEnforcesModel(binding: RoleBinding | undefined): boolean 
  *  launching a DIFFERENT known agent than the role names is a policy deviation
  *  the operator should hear about. Mirrors the AgentSlug vocabulary
  *  (shared/events.ts). */
-const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
+export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
   'claude',
   'codex',
   'gemini',

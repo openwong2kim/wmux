@@ -19,6 +19,16 @@ import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
+import {
+  SKIP_PERMISSIONS_FLAG,
+  applySkipPermissions,
+  hasSkipPermissions,
+  fanoutAgentStem,
+  hasStaleSkipPermissions,
+  loadLastAgentCmd,
+  saveLastAgentCmd,
+  supportsSkipPermissions,
+} from './fanoutAgentCmd';
 
 // 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
 // taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다
@@ -65,7 +75,10 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   const [titlesEdited, setTitlesEdited] = useState<boolean[]>([]);
   const [taskPrompts, setTaskPrompts] = useState<string[]>([]);
   const [repoPath, setRepoPath] = useState(defaultRepo);
-  const [agentCmd, setAgentCmd] = useState('claude');
+  // Prefilled with the command the last fan-out actually launched. wmux only
+  // knows Claude Code's bypass flag, so a Codex (or other CLI) user types their
+  // own flag once and it survives into the next fan-out.
+  const [agentCmd, setAgentCmd] = useState(() => loadLastAgentCmd() || 'claude');
   const [submitting, setSubmitting] = useState(false);
 
   // repo 기본값이 늦게 로드되면 반영.
@@ -113,6 +126,17 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   // 정보성 힌트일 뿐 제출을 막지 않는다(§7 — 환경만 조성도 정당한 사용).
   const promptAllEmpty = effectiveBytes.every((b) => b === 0);
 
+  // The checkbox is a projection of the agentCmd string, not a second state:
+  // typing the flag by hand ticks it, unchecking strips it. That is what keeps
+  // the preview below identical to what the task pane will launch.
+  const effectiveAgentCmd = agentCmd.trim() || 'claude';
+  const canSkipPermissions = supportsSkipPermissions(effectiveAgentCmd);
+  const skipPermissions = hasSkipPermissions(effectiveAgentCmd);
+  // Switching `claude --dangerously-skip-permissions` over to another launcher
+  // would otherwise hide the checkbox with the Claude-only flag still on the
+  // line — and fire it at a CLI that rejects it (panel review, GLM).
+  const staleSkipPermissions = hasStaleSkipPermissions(effectiveAgentCmd);
+
   const setTitleAt = useCallback((k: number, v: string) => {
     setTitles((prev) => {
       const next = [...prev];
@@ -156,12 +180,16 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
         titles: titles.slice(0, n),
         taskPrompts: Array.from({ length: n }, (_, k) => effectiveTaskPrompts[k] ?? ''),
         repoPath: repoPath.trim(),
-        agentCmd: agentCmd.trim() || 'claude',
+        agentCmd: effectiveAgentCmd,
         // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
         // (스펙 §5.1 born-owned=createdBy)라 활성 워크스페이스로 고정한다. CEO 자동
         // 승격은 하지 않는다(생성자 소유권을 CEO로 뭉개면 born-owned 계약 위반).
         verifiedWorkspaceId: activeWorkspace?.id ?? '',
       });
+      // Remember the command that actually launched (next dialog prefills it).
+      // Only when a task really started: a preflight rejection launches nothing,
+      // and overwriting the memory with it would lose a working command.
+      if (didLaunch(res)) saveLastAgentCmd(effectiveAgentCmd);
       // owner(부모) ws id = fan-out을 실행한 활성 워크스페이스(§5.1 born-owned).
       reportResult(res, pushToast, activeWorkspace?.id ?? '');
       // fan-out 완료 직후 미션 캐시 즉시 refetch(순수 pull이라 push가 없다 —
@@ -174,7 +202,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, n, agentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
@@ -290,7 +318,58 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
       <Input className="mb-2 font-mono text-[12px]" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} data-testid="fanout-repo" />
 
       <label className={label}>{t('fanout.agentLabel')}</label>
-      <Input className="mb-3 font-mono text-[12px]" value={agentCmd} onChange={(e) => setAgentCmd(e.target.value)} data-testid="fanout-agent" />
+      <Input className="mb-2 font-mono text-[12px]" value={agentCmd} onChange={(e) => setAgentCmd(e.target.value)} data-testid="fanout-agent" />
+
+      {canSkipPermissions ? (
+        <label className="mb-1 flex items-center gap-2 cursor-pointer select-none text-[11px] text-[var(--text-sub)]">
+          <input
+            type="checkbox"
+            checked={skipPermissions}
+            // Toggle the EFFECTIVE command, not the raw field: with the field
+            // empty the preview already reads `claude`, so toggling the raw ''
+            // silently did nothing (panel review, Codex).
+            onChange={(e) => setAgentCmd(applySkipPermissions(effectiveAgentCmd, e.target.checked))}
+            style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
+            data-testid="fanout-skip-permissions"
+          />
+          <span className="font-mono">{SKIP_PERMISSIONS_FLAG}</span>
+        </label>
+      ) : staleSkipPermissions ? (
+        <div className="mb-1 flex items-center gap-2 text-[10px] text-[var(--accent-red)]" data-testid="fanout-skip-permissions-stale">
+          <span>{t('fanout.skipPermissionsStale', { agent: fanoutAgentStem(effectiveAgentCmd) })}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded-[4px] border border-[var(--bg-overlay)] px-1.5 py-0.5 text-[10px] text-[var(--text-sub)] hover:border-[var(--text-muted)]"
+            onClick={() => setAgentCmd(applySkipPermissions(effectiveAgentCmd, false))}
+            data-testid="fanout-skip-permissions-strip"
+          >
+            {t('fanout.skipPermissionsStrip')}
+          </button>
+        </div>
+      ) : (
+        <div className="mb-1 text-[10px] text-[var(--text-muted)]" data-testid="fanout-skip-permissions-unsupported">
+          {t('fanout.skipPermissionsUnsupported')}
+        </div>
+      )}
+      {skipPermissions && canSkipPermissions && (
+        <div className="mb-1 text-[10px] text-[var(--accent-red)]">{t('fanout.skipPermissionsWarning')}</div>
+      )}
+
+      {/* Launch command — the line the task pane fires, and the value remembered
+          for the next fan-out. main appends the prompt file as one argument
+          (FanOutService.buildInitialCommand), so show that too rather than
+          claiming a bare agent command is the whole line (panel review, 2/2). */}
+      <label className={label}>{t('fanout.commandPreviewLabel')}</label>
+      <code
+        className="mb-3 block rounded-[4px] border border-[var(--bg-overlay)] bg-[var(--bg-base)] px-1.5 py-1 font-mono text-[11px] text-[var(--text-sub)] select-text"
+        style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}
+        data-testid="fanout-command-preview"
+      >
+        {effectiveAgentCmd}
+        {!promptAllEmpty && (
+          <span className="text-[var(--text-muted)]"> {t('fanout.commandPreviewPromptArg')}</span>
+        )}
+      </code>
 
       <div className="flex items-center justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
@@ -307,6 +386,14 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
       </div>
     </div>
   );
+}
+
+/** Whether the call actually started a task — a rejected or all-failed fan-out
+ *  must not overwrite the remembered command. */
+function didLaunch(res: unknown): boolean {
+  const r = (res ?? {}) as FanOutResultLike;
+  if (r.error) return false;
+  return (r.tasks ?? []).some((task) => task.ok);
 }
 
 /** 결과 리포트 → 토스트(미물질화·채널 미연결·프롬프트 미발사 구분 — §7). */
