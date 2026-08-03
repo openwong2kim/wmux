@@ -96,6 +96,15 @@ describe('AgentModeChip', () => {
   // the room above the chip, and the menu ran off the top of the window — the
   // first option (`off`) was rendered but unreachable, so the operator could
   // raise autonomy and never lower it. Reported live 2026-08-03.
+  //
+  // Viewport height is global state — restore it so a later test never inherits
+  // the short window these cases set up.
+  const realInnerHeight = window.innerHeight;
+  afterEach(() => { Object.defineProperty(window, 'innerHeight', { value: realInnerHeight, writable: true, configurable: true }); });
+  function setViewportHeight(px: number): void {
+    Object.defineProperty(window, 'innerHeight', { value: px, writable: true, configurable: true });
+  }
+
   async function openMenuWithChipAt(top: number, bottom: number): Promise<HTMLElement> {
     const { api } = fakeApi('danger');
     const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
@@ -108,7 +117,7 @@ describe('AgentModeChip', () => {
   }
 
   it('caps the upward menu at the room above the chip', async () => {
-    window.innerHeight = 768;
+    setViewportHeight(768);
     const menu = await openMenuWithChipAt(700, 720);
     expect(menu.className).toContain('bottom-full'); // more room above → opens up
     expect(menu.style.maxHeight).toBe('692px');      // 700 - 8 gap
@@ -116,11 +125,21 @@ describe('AgentModeChip', () => {
   });
 
   it('flips the menu downward when the chip is pinned near the top', async () => {
-    window.innerHeight = 768;
+    setViewportHeight(768);
     const menu = await openMenuWithChipAt(10, 30);
     expect(menu.className).toContain('top-full');
     expect(menu.className).not.toContain('bottom-full');
     expect(menu.style.maxHeight).toBe('730px'); // 768 - 30 - 8 gap
+  });
+
+  // A minimum height that outgrows the measured room is the same overflow bug
+  // in miniature: the menu would extend past the window edge again and clip the
+  // option nearest it. In a window this short the menu is small and scrolls.
+  it('never claims more height than the room it measured', async () => {
+    setViewportHeight(200);
+    const menu = await openMenuWithChipAt(60, 80);
+    expect(menu.style.maxHeight).toBe('112px'); // 200 - 80 - 8, the larger side
+    expect(parseInt(menu.style.maxHeight, 10)).toBeLessThan(200);
   });
 
   it('renders nothing until the first read resolves (no label flash)', () => {

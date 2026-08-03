@@ -326,7 +326,7 @@ export const ko = {
   'deck.mode.danger': 'Danger',
   'deck.mode.dangerDesc': 'Claude를 bypass 모드(--dangerously-skip-permissions)로 실행. 아무것도 묻지 않고 스스로 판단해 진행.',
   'deck.composerModeOff': '이 워크스페이스의 orchestrator가 꺼져 있습니다. Mode를 Assist나 Danger로 바꾸면 대화할 수 있습니다.',
-  'deck.composerModeOffShort': 'Orchestrator 꺼짐 — Mode를 Assist나 Danger로',
+  'deck.composerModeOffShort': 'Orchestrator 꺼짐 — Mode를 Assist나 Danger로 바꾸세요',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
   // 멈춘다. 실행 중인 루프는 계속 깨운다.
   'settings.autoWake': 'pane 이벤트 자동 깨우기',

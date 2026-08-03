@@ -121,9 +121,10 @@ export function AgentModeChip({
       const above = rect.top - GAP;
       const below = window.innerHeight - rect.bottom - GAP;
       const dropDown = below > above;
-      // Floor at 120px: a window too short for even that is already unusable,
-      // and a 0-height menu would look like the click did nothing.
-      setMenuFit({ below: dropDown, maxHeight: Math.max(120, Math.floor(dropDown ? below : above)) });
+      // No floor under the measured room: a minimum that outgrows the room is
+      // the original bug again, just smaller. A window too short to show an
+      // option is already unusable, and the menu scrolls either way.
+      setMenuFit({ below: dropDown, maxHeight: Math.max(0, Math.floor(dropDown ? below : above)) });
     };
     measure();
     window.addEventListener('resize', measure);
