@@ -74,6 +74,19 @@ export function getPinnedRoute(): PinnedRoute | null {
 }
 
 /**
+ * Drop the route claimed by the current process/connection.
+ *
+ * A claim is normally process-lived, but the user can delete its workspace
+ * while the MCP server stays alive. Once an RPC proves that route is stale,
+ * clearing the pin lets the next terminal call claim a fresh workspace rather
+ * than retrying the dead PTY forever. `slots()` keeps broker callers isolated:
+ * invalidating one connection never disturbs another connection's route.
+ */
+export function clearPinnedRoute(): void {
+  slots().set(null);
+}
+
+/**
  * Claim a dedicated workspace + PTY for an external caller and pin both ids
  * for the rest of this process's lifetime.
  *

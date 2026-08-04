@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
-import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
+import { claimPinnedRoute, clearPinnedRoute, getPinnedRoute } from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
 import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
@@ -443,15 +443,27 @@ async function callRpc(
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
   try {
     const result = await sendRpc(method, params);
-    if (isStaleIdentityResult(result)) invalidateWorkspaceId();
+    if (isStaleIdentityResult(result)) invalidateStaleRoute();
     const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     return { content: [{ type: 'text', text }] };
   } catch (err) {
     if (isStaleIdentityResult(err instanceof Error ? err.message : String(err))) {
-      invalidateWorkspaceId();
+      invalidateStaleRoute();
     }
     throw err;
   }
+}
+
+/**
+ * Drop every cached coordinate that can keep an RPC on a re-minted route.
+ *
+ * First-party callers use the verified workspace cache. External callers use
+ * paneResolver's process/connection-local claim instead, so clearing only the
+ * former leaves them pinned to a deleted PTY until the MCP server restarts.
+ */
+function invalidateStaleRoute(): void {
+  invalidateWorkspaceId();
+  clearPinnedRoute();
 }
 
 /**

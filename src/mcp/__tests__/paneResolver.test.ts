@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   claimPinnedRoute,
+  clearPinnedRoute,
   getPinnedRoute,
   __resetPaneResolverForTesting,
 } from '../paneResolver';
@@ -52,6 +53,28 @@ describe('claimPinnedRoute / getPinnedRoute', () => {
     // All three calls share a single claim RPC — re-claiming on every tool call
     // would spawn a new workspace each time.
     expect(sendRpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a stale pin so the next call can claim a fresh route', async () => {
+    const sendRpc = vi
+      .fn()
+      .mockResolvedValueOnce({ ptyId: 'pty-dead', workspaceId: 'ws-dead' })
+      .mockResolvedValueOnce({ ptyId: 'pty-fresh', workspaceId: 'ws-fresh' });
+    const deps = makeDeps({ sendRpc });
+
+    await expect(claimPinnedRoute(deps)).resolves.toEqual({
+      ptyId: 'pty-dead',
+      workspaceId: 'ws-dead',
+    });
+
+    clearPinnedRoute();
+
+    expect(getPinnedRoute()).toBeNull();
+    await expect(claimPinnedRoute(deps)).resolves.toEqual({
+      ptyId: 'pty-fresh',
+      workspaceId: 'ws-fresh',
+    });
+    expect(sendRpc).toHaveBeenCalledTimes(2);
   });
 
   it('de-duplicates concurrent first calls so only one claim RPC fires', async () => {
