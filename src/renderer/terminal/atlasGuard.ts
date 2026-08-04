@@ -190,6 +190,16 @@ function snapshotTags(atlas: AtlasLike): number[] {
 /** What clearAtlasTexture actually managed to do. */
 export type ClearOutcome = 'cleared' | 'already-clean' | 'unavailable' | 'failed';
 
+/** Just the surface clearAtlasTexture needs. Deliberately NOT `AtlasLike`:
+ *  that one carries an optional `constructor` field for the page cap, which
+ *  every real object already has as `Function`, so a class instance can never
+ *  satisfy it structurally. `AtlasLike` is only ever reached through a cast
+ *  inside this module, but a caller — a test, or any future one — cannot. */
+export interface ClearableAtlas {
+  pages?: ArrayLike<{ currentRow?: { x?: number; y?: number } }>;
+  clearTexture?: () => void;
+}
+
 /** True when a page holds glyphs (its packing cursor has moved off the origin). */
 function pageInUse(page: { currentRow?: { x?: number; y?: number } } | undefined): boolean {
   return (page?.currentRow?.x ?? 0) > 0 || (page?.currentRow?.y ?? 0) > 0;
@@ -223,7 +233,7 @@ function pageInUse(page: { currentRow?: { x?: number; y?: number } } | undefined
  * back idle. If it does not, the nudge is rolled back and the caller is told,
  * instead of the guard quietly looping forever like it has been.
  */
-export function clearAtlasTexture(atlas: AtlasLike): ClearOutcome {
+export function clearAtlasTexture(atlas: ClearableAtlas): ClearOutcome {
   const pages = atlas.pages;
   if (!pages || typeof pages.length !== 'number' || pages.length === 0) return 'unavailable';
   if (typeof atlas.clearTexture !== 'function') return 'unavailable';
