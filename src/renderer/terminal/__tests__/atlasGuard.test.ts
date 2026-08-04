@@ -38,10 +38,29 @@ class FakeAtlas {
   growBy(n: number): void {
     for (let i = 0; i < n; i++) this.pages.push({ currentRow: { x: 0, y: 1 } });
   }
+  /** Upstream's public page-removal event, fired from _deletePage. */
+  private removalListeners: Array<(canvas: unknown) => void> = [];
+  onRemoveTextureAtlasCanvas(listener: (canvas: unknown) => void): { dispose(): void } {
+    this.removalListeners.push(listener);
+    return { dispose: () => { this.removalListeners = []; } };
+  }
+  private fireRemoval(times: number): void {
+    for (let i = 0; i < times; i++) for (const l of this.removalListeners) l({});
+  }
+  /** A merge that consumes only pages appended since the last poll: the tail
+   *  grows, those new pages are merged away, and the pool regrows. Every index
+   *  the previous poll saw is untouched, so no polled signal can see it. */
+  mergeTailOnly(added: number, merged = 4): void {
+    this.growBy(added);
+    this.pages.splice(this.pages.length - merged, merged);
+    this.fireRemoval(merged);
+    this.pages.push({ currentRow: { x: 0, y: 1 } });
+    this.pages.push({ currentRow: { x: 0, y: 1 } });
+  }
   /** Models addon-webgl's `_createNewPage` merge path exactly: the 4 selected
-   *  pages are deleted, the merged page is pushed, and the call then falls
-   *  through to push the fresh page it was invoked for — delete 4, add 2, a
-   *  net -2 (NOT -3: the trailing `new AtlasPage` push is unconditional). */
+   *  pages are DELETED and TWO are appended — the merged page, then the fresh
+   *  page the call was invoked for (that trailing push is unconditional). Net
+   *  -2, so only 2 reallocations are needed to hide the merge from a counter. */
   mergePages(count = 4): void {
     this.pages.splice(0, count);
     this.pages.push({ currentRow: { x: 0, y: 1 } }); // merged page
@@ -139,11 +158,12 @@ describe('atlasGuard', () => {
   });
 
   it('CURE: catches a merge whose page count has already regrown before the next poll', () => {
-    // The blind spot a count-only signal has. A merge is a net -3 (delete 4,
-    // add 1); under the CJK burst that causes it, 3+ pages are re-allocated
-    // well inside one 2s poll, so the count at both observed boundaries is
-    // identical and a drop is never seen. Stay far under PREVENT_AT so the
-    // only thing that can fire here is CURE.
+    // The blind spot a count-only signal has. A merge deletes 4 pages and
+    // appends 2 (the merged page and the fresh one the call wanted), a net -2;
+    // under the CJK burst that causes it those 2 are re-allocated well inside
+    // one 2s poll, so the count at both observed boundaries is identical and a
+    // drop is never seen. Stay far under PREVENT_AT so the only thing that can
+    // fire here is CURE.
     const atlas = new FakeAtlas(6, /* lastPageInUse */ false);
     const guard = createAtlasGuard();
     const pane = makePane(atlas);
@@ -161,8 +181,8 @@ describe('atlasGuard', () => {
   });
 
   it('CURE still detects a merge while PREVENT is firing on every tick', () => {
-    // The live failure mode (v3.38.6, 2026-08-04): upstream clearTexture
-    // early-returns unless _pages[0] is idle, so the pool pressure never drops
+    // The live failure mode on v3.38.6: upstream clearTexture returns early
+    // when _pages[0] is ALREADY idle, so the pool pressure never drops
     // and PREVENT re-fires every poll — 305 consecutive `prevent — pages=14/16`
     // with zero cure. A baseline DROPPED on each fire leaves `prev` undefined
     // on every following tick, so the identity comparison never runs at all,
@@ -194,6 +214,52 @@ describe('atlasGuard', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('CURE: catches a merge confined to pages appended since the last poll', () => {
+    // Raised in review on #790. Baseline [1..6]; the burst appends 4 pages, the
+    // merge selects exactly those 4, and the pool regrows. Every index the
+    // previous poll saw is untouched and the count only went UP, so neither
+    // polled signal can see it — the page-removal event is the only witness.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const atlas = new FakeAtlas(6, /* lastPageInUse */ false);
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS); // baseline
+      expect(atlas.clearCalls).toBe(0);
+      const before = atlas.pages.length;
+
+      atlas.mergeTailOnly(4);
+      expect(atlas.pages.length).toBeGreaterThan(before); // count only grew
+      // The polled signals are genuinely blind here — that is the point.
+      expect(detectMerge([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])).toBeNull();
+
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      expect(atlas.clearCalls).toBe(1);
+      expect(pane.refreshes()).toBe(1);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain('cure (merge detected: page-removed)');
+
+      // The latch is consumed: one merge yields one cure, not a stuck signal.
+      vi.advanceTimersByTime(GUARD_POLL_MS * 3);
+      expect(atlas.clearCalls).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('falls back to the polled signals when upstream exposes no removal event', () => {
+    const atlas = new FakeAtlas(6, /* lastPageInUse */ false);
+    (atlas as { onRemoveTextureAtlasCanvas?: unknown }).onRemoveTextureAtlasCanvas = undefined;
+    const guard = createAtlasGuard();
+    const pane = makePane(atlas);
+    guard.register(pane.entry);
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    atlas.mergePages(4);
+    atlas.growBy(2); // count restored — only identity can see this
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.clearCalls).toBe(1);
   });
 
   it('does not fire CURE on pure growth (pages appended, none destroyed)', () => {

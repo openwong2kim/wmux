@@ -35,29 +35,38 @@
 //            Corruption is visible for at most one poll interval instead of
 //            indefinitely.
 //
-//            Detection is by page IDENTITY, not page count. Counting alone has
-//            a blind spot that the trigger workload walks straight into. Read
-//            the real arity off `_createNewPage`: on the merge path it deletes
-//            the 4 selected pages, pushes the merged one, and then falls
-//            through to push the fresh page it was called for — delete 4, add
-//            2, a net −2. So the drop is only visible while the pool stays
-//            shrunk, and under the very output burst that causes the merge just
-//            2 pages are re-allocated well inside one 2s poll, the count is
-//            back where it started, and CURE never fires —
-//            the corruption then lasts indefinitely. Since growth only ever
-//            APPENDS, every previously seen index must still hold the SAME page
-//            object; any changed slot means pages were deleted and re-created.
-//            That signal survives regrowth, and it also catches the shape of
-//            merge where the count never drops at an observed boundary at all.
+//            Three signals feed it, strongest first — a page-removal EVENT, a
+//            page-count drop, and a page-identity change. Count alone is not
+//            enough, and the trigger workload walks straight into its blind
+//            spot. Read the real arity off `_createNewPage`: on the merge path
+//            it deletes the 4 selected pages, pushes the merged one, and then
+//            falls through to push the fresh page it was called for — delete 4,
+//            add 2, a net −2. So a count drop is only visible while the pool
+//            stays shrunk, and the very output burst that causes the merge
+//            re-allocates those 2 pages well inside one 2s poll: the count is
+//            back where it started and CURE never fires.
+//
+//            Page identity closes that gap without replacing the count check —
+//            growth only ever APPENDS, so every previously seen index must
+//            still hold the SAME page object, and a changed slot means pages
+//            were deleted and re-created. Count-drop remains supported, and is
+//            the fallback whenever pages cannot carry an identity tag.
+//
+//            Neither polled signal can see a merge confined to pages BORN AND
+//            DESTROYED between two samples (raised in review on #790), so the
+//            guard also subscribes to upstream's page-removal event and
+//            prefers it: `_deletePage` is only ever reached from the merge
+//            path, making it an exact, real-time signal with no sampling gap.
 //
 // The "last page in use" condition is MEANT to double as the anti-thrash gate:
 // right after a clear every page is empty, so PREVENT cannot refire until the
 // pool genuinely fills end-to-end again.
 //
-// That gate does not hold in the field (v3.38.6, observed 2026-08-04): upstream
-// `clearTexture()` early-returns unless `_pages[0]` is idle, so the clear can be
-// a no-op while the pool stays full and PREVENT re-fires every poll — 305
-// consecutive `prevent — pages=14/16`, zero cure. Left as-is here deliberately:
+// That gate does not hold in the field on v3.38.6: upstream `clearTexture()`
+// returns early when `_pages[0]` is ALREADY idle, and page 0 is exactly the page
+// that stays idle once refill resumes from the tail — so the clear becomes a
+// no-op while the pool stays full and PREVENT re-fires every poll (measured: 305
+// consecutive `prevent — pages=14/16`, zero cure). Left as-is here deliberately:
 // fixing the thrash is its own change. What matters for THIS module is that the
 // merge detector must keep working THROUGH such a storm, which is why the poll
 // re-snapshots its baseline after a rebuild instead of dropping it (see tick).
@@ -97,6 +106,9 @@ interface AtlasLike {
   pages?: ArrayLike<{ currentRow?: { x?: number; y?: number } }>;
   clearTexture?: () => void;
   constructor?: { maxAtlasPages?: number };
+  /** Upstream public event, fired from `_deletePage` — which is only ever
+   *  reached from the merge path. An exact, real-time merge signal. */
+  onRemoveTextureAtlasCanvas?: (listener: (canvas: unknown) => void) => unknown;
 }
 
 /** Monotonic tag that recognises a page ACROSS polls WITHOUT holding a
@@ -124,15 +136,26 @@ function pageTag(page: unknown): number {
   return tag;
 }
 
-/** Why CURE fired, or null when the pool only grew. Exported for direct unit
- *  testing of the blind spot this replaced. */
-export type MergeSignal = 'count-drop' | 'page-identity';
+/** Why CURE fired, or null when the pool only grew. `page-removed` is the exact
+ *  push signal; the other two are the polled fallbacks. Exported for direct
+ *  unit testing. */
+export type MergeSignal = 'page-removed' | 'count-drop' | 'page-identity';
 
 /**
- * Compare two page-tag snapshots. `count-drop` is the classic signal (pool
- * still shrunk when we looked); `page-identity` is the one that survives
- * regrowth — growth appends, so a changed slot at a previously seen index can
- * only mean pages were deleted and re-created.
+ * Compare two page-tag snapshots.
+ *
+ * `count-drop` is the classic signal (the pool was still shrunk when we
+ * looked). `page-identity` closes its blind spot for the common case: growth
+ * only ever appends, so a changed slot at a previously seen index can only mean
+ * pages were deleted and re-created, which stays true after the count regrows.
+ * Both remain supported — count-drop is also the fallback when pages cannot
+ * carry a tag.
+ *
+ * Neither can see a merge confined to pages that were BORN AND DESTROYED
+ * between two samples: baseline [1..12] can grow with 13-16, merge exactly
+ * those four, and regrow, leaving every observed index untouched. That case is
+ * unobservable by polling at all, which is why the guard also subscribes to
+ * upstream's page-removal event (`page-removed`) and prefers it.
  */
 export function detectMerge(prev: number[] | undefined, next: number[]): MergeSignal | null {
   if (!prev) return null;
@@ -190,7 +213,28 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   // so a merged-away page is free to be collected immediately. WeakMap so a
   // released atlas (all owner panes disposed) never leaks an entry.
   const prevPageTags = new WeakMap<object, number[]>();
+  // Per-atlas latch fed by upstream's page-removal event. Subscribed once, on
+  // first sight; never unsubscribed, because the listener cannot outlive the
+  // emitter it lives on (both die with the atlas).
+  const removalLatch = new WeakMap<object, { fired: boolean }>();
   let timer: ReturnType<typeof setInterval> | null = null;
+
+  /** Latch for this atlas, subscribing on first sight. null when upstream does
+   *  not expose the event — the polled signals then carry detection alone. */
+  function watchRemovals(atlas: AtlasLike): { fired: boolean } | null {
+    const key = atlas as object;
+    const existing = removalLatch.get(key);
+    if (existing) return existing;
+    if (typeof atlas.onRemoveTextureAtlasCanvas !== 'function') return null;
+    const latch = { fired: false };
+    try {
+      atlas.onRemoveTextureAtlasCanvas(() => { latch.fired = true; });
+    } catch {
+      return null; // reshaped upstream — degrade to polling
+    }
+    removalLatch.set(key, latch);
+    return latch;
+  }
 
   // Group live panes by shared atlas identity so clear+refresh covers every
   // owner in the same tick (the whole point — no pane may keep sampling a
@@ -247,7 +291,13 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const lastPageInUse =
         (lastPage?.currentRow?.x ?? 0) > 0 || (lastPage?.currentRow?.y ?? 0) > 0;
 
-      const mergeSignal = detectMerge(prev, tags);
+      // Exact push signal first: a page removal can only come from the merge
+      // path, and it sees merges that happened entirely between two samples.
+      // Consume the latch either way so one merge fires one cure.
+      const latch = watchRemovals(atlas);
+      const removed = latch?.fired ?? false;
+      if (latch) latch.fired = false;
+      const mergeSignal: MergeSignal | null = removed ? 'page-removed' : detectMerge(prev, tags);
       const nearTrigger = len >= preventAt && lastPageInUse;
       if (!mergeSignal && !nearTrigger) continue;
 
