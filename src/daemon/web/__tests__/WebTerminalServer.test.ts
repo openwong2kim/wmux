@@ -110,6 +110,10 @@ function makeDeps() {
               rows: row.rows,
               cwd: '/tmp/osc7-said-so',
               spawnCwd: row.cwd,
+              // The real manager carries the child env on `meta`. Without it here
+              // an env-marker check reads as absent and a test can only ever
+              // exercise the id-prefix half of it (review: CodeRabbit).
+              env: row.env,
             },
           }
         : undefined;
@@ -3773,7 +3777,13 @@ describe('WebTerminalServer', () => {
 
       // Garbage refs never reach the projector.
       projectorMock.codeBlock.mockClear();
-      for (const q of ['srcOffset=-1&n=1', 'srcOffset=0&n=0', 'srcOffset=abc&n=1', 'n=1']) {
+      // `Number('')` and `Number(null)` are both 0, so an empty param and a
+      // missing one would each read as "offset 0" and serve a block from the
+      // first line of the file.
+      for (const q of [
+        'srcOffset=-1&n=1', 'srcOffset=0&n=0', 'srcOffset=abc&n=1',
+        'n=1', 'srcOffset=&n=1', 'srcOffset=0&n=', 'srcOffset=%20&n=1',
+      ]) {
         const bad = await fetch(`${base()}/api/sessions/s1/turns/block?${q}`, { headers: h });
         expect(bad.status).toBe(400);
       }
@@ -3801,8 +3811,16 @@ describe('WebTerminalServer', () => {
       // excluded from the pane list, so a phone should never see one — but ids
       // are guessable by prefix and can ride an approval payload, and existence
       // alone used to be the whole check on these two routes.
+      // Both marks, on separate panes: `isBrainPty` checks the env marker first
+      // and falls back to the id prefix, and a daemon build that omits env from a
+      // session must still refuse. One pane per mark keeps them independent.
       live.push({
         id: 'brain-ws-1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: {}, cmd: '/usr/bin/claude',
+      });
+      live.push({
+        id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
         agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
         env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
       });
@@ -3815,16 +3833,22 @@ describe('WebTerminalServer', () => {
       });
       projectorMock.codeBlock.mockReturnValue({ body: 'orchestrator secrets' });
 
-      const turns = await fetch(`${base()}/api/sessions/brain-ws-1/turns`, { headers: h });
-      expect(turns.status).toBe(404);
-      const block = await fetch(
-        `${base()}/api/sessions/brain-ws-1/turns/block?srcOffset=0&n=1`,
-        { headers: h },
-      );
-      expect(block.status).toBe(404);
+      for (const id of ['brain-ws-1', 'pty-orchestrator']) {
+        const turns = await fetch(`${base()}/api/sessions/${id}/turns`, { headers: h });
+        expect(turns.status).toBe(404);
+        const block = await fetch(
+          `${base()}/api/sessions/${id}/turns/block?srcOffset=0&n=1`,
+          { headers: h },
+        );
+        expect(block.status).toBe(404);
+      }
       // Refused before the projector was consulted at all.
       expect(projectorMock.snapshot).not.toHaveBeenCalled();
       expect(projectorMock.codeBlock).not.toHaveBeenCalled();
+
+      // The guard is not "refuse everything" — an ordinary pane still reads.
+      const ok = await fetch(`${base()}/api/sessions/s2/turns`, { headers: h });
+      expect(ok.status).toBe(200);
     });
 
     it('the block route refuses without --allow-transcript, by tag', async () => {

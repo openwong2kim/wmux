@@ -1997,13 +1997,14 @@ export class WebTerminalServer {
     }
 
     const url = new URL(req.url ?? '/', 'http://localhost');
-    // Read the raw params first: `Number(null)` is 0, so a MISSING srcOffset
-    // would otherwise read as "offset 0" and quietly answer with a block from
-    // the first line of the transcript instead of refusing.
-    const rawOffset = url.searchParams.get('srcOffset');
-    const rawN = url.searchParams.get('n');
-    const srcOffset = rawOffset === null ? NaN : Number(rawOffset);
-    const n = rawN === null ? NaN : Number(rawN);
+    // Read the raw params first. `Number()` maps BOTH a missing param (null) and
+    // an empty one ('') to 0, so `?n=1` and `?srcOffset=&n=1` would each read as
+    // "offset 0" and quietly answer with a block from the first line of the
+    // transcript instead of refusing (review: CodeRabbit).
+    const num = (raw: string | null): number =>
+      raw === null || raw.trim() === '' ? NaN : Number(raw);
+    const srcOffset = num(url.searchParams.get('srcOffset'));
+    const n = num(url.searchParams.get('n'));
     if (!Number.isFinite(srcOffset) || srcOffset < 0 || !Number.isFinite(n) || n < 1) {
       this.json(res, 400, {
         error: 'bad-block-ref',
