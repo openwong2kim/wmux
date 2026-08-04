@@ -43,6 +43,9 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
   const emitted: Array<{ sessionId: string; data: HookAgentEventData }> = [];
   const bindings: Array<{ ptyId: string; binding: ResumeBinding }> = [];
   const nudges: Array<{ sessionId: string; kind: AgentSignalKind }> = [];
+  // #770 — track every approval-sink call so the locally-answered expiry path
+  // can be asserted (expireForSession reason + that nothing broadcasts).
+  const approvalsCalls: Array<{ sessionId: string; reason: string }> = [];
   let clock = 10_000;
   const deps = {
     listLiveSessions: () => sessions,
@@ -55,6 +58,13 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
     onTranscriptNudge: (sessionId: string, kind: AgentSignalKind) => {
       nudges.push({ sessionId, kind });
     },
+    approvals: {
+      noteHookAwaitingInput: () => { /* tracked at the registry level */ },
+      noteGateAwaiting: () => 'gate-id',
+      expireForSession: (sessionId: string, reason: string) => {
+        approvalsCalls.push({ sessionId, reason });
+      },
+    },
     log: () => { /* silent in tests */ },
     now: () => clock,
   };
@@ -63,6 +73,7 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
     emitted,
     bindings,
     nudges,
+    approvalsCalls,
     advance: (ms: number) => { clock += ms; },
   };
 }
@@ -179,6 +190,47 @@ describe('HookIngest', () => {
       }));
       expect(fixture.bindings).toHaveLength(1);
       expect(fixture.bindings[0].binding.sessionId).toBe('origin-1');
+    });
+  });
+
+  describe('input_answered (#770 — locally-answered AskUserQuestion expires the phone card)', () => {
+    it('expires the pending request with reason answered-locally and never broadcasts', () => {
+      // PC answers an AskUserQuestion directly: the bridge promotes the
+      // AskUserQuestion PostToolUse to agent.input_answered, and the daemon
+      // expires the still-pending phone card mid-turn — before agent.stop.
+      const res = ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
+      expect(res).toEqual({ ok: true });
+      expect(fixture.approvalsCalls).toEqual([
+        { sessionId: 'pty-a', reason: 'answered-locally' },
+      ]);
+      // Not a turn boundary or even a metadata ping: nothing fans out.
+      expect(fixture.emitted).toHaveLength(0);
+    });
+
+    it('does not capture a resume binding or nudge the transcript (early return)', () => {
+      ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.input_answered',
+        agentSessionId: 'origin-1',
+      }));
+      expect(fixture.bindings).toHaveLength(0);
+      expect(fixture.nudges).toHaveLength(0);
+    });
+
+    it('keeps the agent.stop backstop — a later stop still expires + broadcasts', () => {
+      // If PostToolUse never arrives (turn interrupted), agent.stop is the
+      // backstop. A second expireForSession on an already-expired record is a
+      // registry-level no-op; here we confirm the signal path still routes it.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
+      fixture.advance(100);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      expect(fixture.approvalsCalls).toEqual([
+        { sessionId: 'pty-a', reason: 'answered-locally' },
+        { sessionId: 'pty-a', reason: 'turn-ended' },
+      ]);
+      // Only the stop broadcasts — input_answered stayed silent.
+      expect(fixture.emitted).toHaveLength(1);
+      expect(fixture.emitted[0].data.hookKind).toBe('agent.stop');
     });
   });
 
