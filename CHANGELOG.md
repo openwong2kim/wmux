@@ -1,3 +1,76 @@
+## [3.38.7] — 2026-08-04
+
+### Added
+
+- Phone turn (conversation) view contract: `GET /api/sessions/:id/turns` serves the same Claude Code session reflowed to phone width, stateless so it never disturbs the desktop Chat View sharing the pane. Gated behind `wmux web --allow-transcript` (default off — the transcript reads the whole session, far wider than a mirror, and the device credential never expires). A non-recording `transcript.nudge` SSE frame tells the phone to re-fetch without pushing approval events out of the bounded attention log. (#786)
+
+- Tool permission prompts can now be answered from the phone. A `PreToolUse` hook holds the gated tool call while the daemon waits for a remote answer, so the prompt that most often stops an agent is no longer a dead end away from the desk. Which tools are gated lives in the daemon config (`wmux gate --list/--add/--remove`) rather than in the hook, so changing it needs no Claude Code restart. The gate arms only inside an interactive wmux pane, and only while a phone can actually answer it — that is, while `wmux web --allow-input` is running. With no such server up, and for `claude -p`, CI and subagents, a gated tool falls straight through to the normal local prompt instead of waiting on a card nobody can reach. It also fails open on a deadline, a dead session, a stopped web server or a daemon restart, so nothing hangs waiting for a phone that never answers. Escape hatches: `POST /api/gate/off`, `WMUX_GATE=0`, or simply waiting for the deferral. Claude Code only for now. (#789)
+
+### Fixed
+
+- `wmux setup-hooks` now installs the `PreToolUse`/`PostToolUse` hooks scoped to `AskUserQuestion` on the plugin-less CLI path (previously only the marketplace plugin installed them), so the in-app approval inbox works no matter how wmux was installed. `wmux setup-hooks --status` now reports each feature — conversation read, approval card, turn-end signal, permission gate — as `OK`/`OFF` with the fix command on the same line, instead of silently reporting all-clear when the approval-card hook is missing. (#785)
+
+- **Hook feature status now reflects the active integration.** The
+  `wmux setup-hooks --status` command requires the precise `AskUserQuestion`
+  scope for manual approval hooks and recognizes features supplied by an enabled
+  `wmux-claude-integration` plugin, instead of treating stale broad hooks as
+  healthy or a plugin-managed installation as off. (#787)
+
+- Phone turn-view responses now use `Cache-Control: no-store`, preventing browsers and intermediaries from retaining cached transcript pages after transcript access is revoked. (#788)
+
+- `wmux setup-hooks --status` now reports the permission gate alongside the other hook-backed features, so a partial install is visible instead of reading as healthy. (#789)
+
+- **Scattered wrong glyphs no longer survive a Korean-heavy output burst.** The
+  guard that protects the shared WebGL glyph atlas was failing in three ways at
+  once, and a day of logs from a real session showed the result plainly: 4657
+  guard events, 6 of which were actual repairs.
+
+  It could not reliably *see* the corruption. A page merge was detected only by
+  the pool *shrinking*, but a merge is a net -2 and the very burst that causes
+  it re-allocates those pages well within the guard's 2s poll — so the count
+  looked unchanged, the repair never ran, and the glyphs stayed wrong until a
+  new pane was opened. The guard now recognises a merge by page identity, which
+  survives the regrowth, keeps that comparison alive even while its preventive
+  path is firing, and additionally listens for the terminal library's own
+  page-removal event, which catches merges that begin and end between two polls
+  and so are invisible to any amount of sampling.
+
+  It could not *repair* when it tried. The library skips clearing the atlas if
+  its first page looks empty — but the first page is exactly the one that stays
+  empty once glyph packing resumes from the end of the pool, so the clear had
+  become a permanent no-op. The guard now makes sure the clear actually runs,
+  and verifies afterwards that the atlas really is empty rather than assuming
+  it.
+
+  It was firing when nothing was wrong. The preventive path asked whether the
+  *last* page held glyphs, which one glyph after a clear puts back — so it
+  re-armed every two seconds against a pool that was 15 pages long with 1 page
+  in use. It now measures how many pages are actually occupied, which is what
+  brings a merge closer, so the repair runs when the atlas is genuinely full and
+  stays quiet otherwise.
+
+  The repair log now records which signal fired and whether the clear took
+  effect, so a guard that is running and achieving nothing can no longer look
+  identical to a healthy one. (#790)
+
+- **Transcript reset pages retain omission receipts.** Phone clients now receive
+  `budgetDropped` when a reset snapshot skips an oversized transcript entry, so
+  they can render an omission seam instead of silently closing the gap. (#791)
+
+- **A broken stdio pipe no longer floods the log file.** When the reader of an
+  inherited pipe went away while wmux kept running, the write failure was
+  reported to the console, and that report went straight back onto the same
+  broken pipe. The loop ran at roughly 190,000 lines per second and stopped
+  only when the process died — one session left an 84.9 GiB log file behind.
+  The failure is now consumed where it arrives and the affected stream is
+  retired, with one line in the log naming the stream and the error code so the
+  quiet console is explainable. Logging continues to the file throughout.
+
+- **Daily log files are bounded.** They are capped at 16 MiB with three
+  archives, where previously the only limit was a 14-day prune. Rotation is
+  safe when several wmux processes share one daily file, which an installed
+  build and a development build routinely do.
+
 ## [3.38.6] — 2026-08-03
 
 ### Added
