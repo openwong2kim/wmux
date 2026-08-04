@@ -1328,6 +1328,7 @@ export class WebTerminalServer {
       host: this.opts.host,
       allowInput: this.opts.allowInput,
       allowUpload: this.opts.allowUpload,
+      allowTranscript: this.opts.allowTranscript === true,
       tls: this.opts.tls !== undefined,
       token: this.token,
       urls: this.buildUrls(),

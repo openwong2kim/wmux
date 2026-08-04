@@ -639,6 +639,16 @@ describe('WebTerminalServer', () => {
     expect((info.pairExpiresAt as number)).toBeGreaterThan(Date.now());
   });
 
+  it('reports transcript access in normal pairing-capable status responses', async () => {
+    const disabled = await startRO();
+    expect(disabled).toHaveProperty('allowTranscript', false);
+
+    await server.stop();
+    const enabled = await startWithTranscript();
+    expect(enabled).toHaveProperty('allowTranscript', true);
+    expect(server.status()).toHaveProperty('allowTranscript', true);
+  });
+
   it('/api/pair with the right code returns a credential once, then 403 (single use)', async () => {
     const info = await startRO();
     const code = info.pairCode as string;
