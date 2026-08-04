@@ -92,6 +92,21 @@ function mirrorToFile(chunk: unknown): void {
 }
 
 /**
+ * True once the tee is installed and consumes stdio `error` events itself.
+ *
+ * The global exception handlers suppress broken-pipe errors only while this is
+ * false. Before init nothing is listening, so an EPIPE from stdout/stderr
+ * escapes as an uncaughtException and reporting it would write back to the pipe
+ * that just failed. After init that error never reaches the handlers at all, so
+ * anything still arriving with EPIPE/EBADF came from somewhere else — an
+ * application socket, a file stream — and must be reported normally rather than
+ * classified as a dead console by its error code alone.
+ */
+export function stdioErrorsConsumed(): boolean {
+  return initialised;
+}
+
+/**
  * Append a structured log line. Writes to stderr only — the file write is
  * handled automatically by the stderr tee installed in `initLogSink()`,
  * which calls `appendFileSync` for immediate disk durability.

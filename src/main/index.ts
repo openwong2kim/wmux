@@ -11,15 +11,19 @@ if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 }
 
+// Never report a broken inherited stdio pipe back into that same pipe. Only
+// during early boot: once initLogSink() runs, the tee consumes stdio errors
+// itself, so a broken-pipe code arriving here after that came from some other
+// stream and deserves a normal report.
+const isUnreportableStdioError = (error: unknown): boolean =>
+  !stdioErrorsConsumed() && isBrokenPipeError(error);
+
 process.on('unhandledRejection', (reason) => {
-  // Never report a broken inherited stdio pipe back into that same pipe. The
-  // log sink also consumes stream error events after init, but this guard is
-  // required during early boot before initLogSink() installs its listeners.
-  if (isBrokenPipeError(reason)) return;
+  if (isUnreportableStdioError(reason)) return;
   console.error('[Main] Unhandled rejection:', reason);
 });
 process.on('uncaughtException', (err) => {
-  if (isBrokenPipeError(err)) return;
+  if (isUnreportableStdioError(err)) return;
   console.error('[Main] Uncaught exception:', err);
 });
 
@@ -127,7 +131,7 @@ import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.
 import { eventBus } from './events/EventBus';
 import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
 import { readOrchRole } from '../shared/orchestratorRole';
-import { initLogSink, isBrokenPipeError, logLine } from './util/logSink';
+import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 
 markBoot('imports-done');
 

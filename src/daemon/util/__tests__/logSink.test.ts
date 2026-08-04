@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { initDaemonLogSink, isBrokenPipeError } from '../logSink';
+import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from '../logSink';
 
 const tempDirs: string[] = [];
 
@@ -48,7 +48,12 @@ describe('daemon log sink', () => {
     Object.defineProperty(process, 'stderr', { value: stderr, configurable: true });
 
     try {
+      // Before init nothing listens for stdio errors, so the global handlers
+      // must stay silent about them; afterwards the tee owns them and a
+      // broken-pipe code arriving at a handler belongs to some other stream.
+      expect(stdioErrorsConsumed()).toBe(false);
       initDaemonLogSink(dir);
+      expect(stdioErrorsConsumed()).toBe(true);
       // The sink's own startup line goes through stderr and provokes the EPIPE.
       await new Promise<void>((resolve) => queueMicrotask(resolve));
 

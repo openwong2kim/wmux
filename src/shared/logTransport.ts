@@ -25,24 +25,39 @@ export const MAX_LOG_ARCHIVES = 3;
 const ROTATION_LOCK_STALE_MS = 10_000;
 
 /**
+ * A file this far past the cap did not get there by a concurrent append — it
+ * predates the cap entirely (the storm this module exists to stop left an
+ * 84.9 GiB one behind). Only those are truncated; see `boundOversizedFile`.
+ */
+const LEGACY_OVERSIZE_FACTOR = 4;
+
+/**
  * Synchronous bounded writer used by the tee. Small writes rotate as a unit so
  * normal log lines are never split. A single oversized write is chunked across
- * generations, keeping every individual file within the configured cap.
+ * generations.
  *
- * Multi-process safe by construction. Several wmux processes legitimately share
- * one daily file — the log path is derived from the log directory alone, so an
- * installed build and a dev build interleave in it. Two consequences drive the
- * design:
+ * Several wmux processes legitimately share one daily file — the log path is
+ * derived from the log directory alone, so an installed build and a dev build
+ * interleave in it. Two rules follow:
  *
- *   - The current size is never cached. An in-process byte counter drifts as
- *     soon as another process appends, and a drifted counter either rotates
- *     early (shredding the file into archives) or never rotates at all.
- *     `fs.appendFileSync` opens with O_APPEND, which is atomic per write, so
- *     stat-after-write is the only size that is true for every writer.
+ *   - The size is never cached, and is re-read before every append. An
+ *     in-process byte counter drifts as soon as another process appends, and a
+ *     drifted counter either rotates early (shredding the file into archives)
+ *     or never rotates at all.
  *   - Rotation runs under an exclusive lock file and re-checks the size once it
  *     holds the lock. Without it, two processes crossing the threshold together
  *     both run the rename chain and the second one shifts a generation that the
  *     first already shifted, discarding a whole archive.
+ *
+ * That bounds the file without serialising the appends themselves. It does not
+ * make the cap exact: `appendFileSync` opens with O_APPEND so no write is ever
+ * torn or lost, but two processes can still read the same under-cap size and
+ * both append, and an append can land in an inode another process is renaming.
+ * The overshoot is one write per racing process, and it is deliberately
+ * preferred over the alternatives — taking the lock per line would let one
+ * process stall another's logging, and treating an over-cap file as junk to
+ * truncate would discard log data to defend a number. Overshoot is carried into
+ * the archive intact instead.
  */
 export class BoundedLogWriter {
   constructor(
@@ -60,32 +75,33 @@ export class BoundedLogWriter {
   append(filePath: string, chunk: string | Uint8Array): void {
     const data = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
     if (data.length === 0) return;
-    let size = this.boundLegacyFile(filePath);
-
-    // Preserve ordinary log lines as one unit. Only a pathological single
-    // write larger than the whole file cap is split across generations.
-    if (data.length <= this.maxBytes && size > 0 && size + data.length > this.maxBytes) {
-      size = this.rotate(filePath, size);
-    }
+    this.boundOversizedFile(filePath);
 
     let offset = 0;
     while (offset < data.length) {
+      // Re-read rather than carrying a running total: another process may have
+      // appended or rotated since the previous iteration, and a local total
+      // would silently describe a file that no longer looks like that.
+      let size = this.sizeOf(filePath);
+      const remaining = data.length - offset;
+      // Preserve ordinary log lines as one unit. Only a pathological single
+      // write larger than the whole file cap is split across generations.
+      const wanted = Math.min(remaining, this.maxBytes);
+
+      if (size > 0 && size + wanted > this.maxBytes) {
+        size = this.rotate(filePath, size);
+      }
+
       const room = this.maxBytes - size;
       if (room <= 0) {
-        const rotated = this.rotate(filePath, size);
-        if (rotated >= this.maxBytes) {
-          // Another process holds the rotation lock. Spinning here would block
-          // a log write indefinitely, so append the remainder in one piece and
-          // let the next append (or the lock holder) restore the cap.
-          fs.appendFileSync(filePath, data.subarray(offset));
-          return;
-        }
-        size = rotated;
-        continue;
+        // Another process holds the rotation lock. Spinning here would block a
+        // log write indefinitely, so append the remainder in one piece and let
+        // the next append (or the lock holder) restore the cap.
+        fs.appendFileSync(filePath, data.subarray(offset));
+        return;
       }
-      const length = Math.min(room, data.length - offset);
+      const length = Math.min(room, remaining);
       fs.appendFileSync(filePath, data.subarray(offset, offset + length));
-      size += length;
       offset += length;
     }
   }
@@ -99,17 +115,22 @@ export class BoundedLogWriter {
   }
 
   /**
-   * Upgrade safety: do not rotate a legacy multi-gigabyte file into an equally
+   * Upgrade safety: do not rotate a pre-cap multi-gigabyte file into an equally
    * oversized archive. Retain its newest bytes, then let the caller rotate that
-   * bounded tail normally. Returns the resulting size.
+   * bounded tail normally.
+   *
+   * Only files far past the cap are treated this way. A file a little over the
+   * cap is the ordinary outcome of two processes appending at once, and
+   * truncating it would discard log data that belongs in the next archive — so
+   * that case is left alone and rotated intact by the caller.
    */
-  private boundLegacyFile(filePath: string): number {
-    const size = this.sizeOf(filePath);
-    if (size <= this.maxBytes) return size;
+  private boundOversizedFile(filePath: string): void {
+    const threshold = this.maxBytes * LEGACY_OVERSIZE_FACTOR;
+    if (this.sizeOf(filePath) < threshold) return;
 
     this.withRotationLock(filePath, () => {
       const current = this.sizeOf(filePath);
-      if (current <= this.maxBytes) return; // another process already bounded it
+      if (current < threshold) return; // another process already bounded it
       const tail = Buffer.allocUnsafe(this.maxBytes);
       const fd = fs.openSync(filePath, 'r');
       let bytesRead: number;
@@ -122,8 +143,6 @@ export class BoundedLogWriter {
       // guarantee that a second open can truncate a file with a live handle.
       fs.writeFileSync(filePath, tail.subarray(0, bytesRead));
     });
-
-    return this.sizeOf(filePath);
   }
 
   /**

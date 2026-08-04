@@ -172,12 +172,11 @@ describe('main log sink', () => {
     fs.unlinkSync(`${file}.lock`); // the other process finished
     writer.append(file, 'ccccc');
 
-    // The over-cap live file is tail-bounded before it becomes an archive, so
-    // the cap holds for every generation even after a deferred rotation.
-    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('aaaaabbbbb');
+    // The overshoot is archived intact. Truncating it back to the cap would
+    // defend the number by discarding log data, which is the wrong trade.
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('aaaaaaaaaabbbbb');
     expect(fs.readFileSync(file, 'utf8')).toBe('ccccc');
     expect(fs.existsSync(`${file}.lock`)).toBe(false);
-    for (const name of fs.readdirSync(dir)) expect(fs.statSync(path.join(dir, name)).size).toBeLessThanOrEqual(10);
   });
 
   it('breaks a rotation lock abandoned by a crashed process', () => {
@@ -199,11 +198,13 @@ describe('main log sink', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it('bounds a legacy oversized daily file before rotating it', () => {
+  it('bounds a pre-cap oversized daily file before rotating it', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-legacy-'));
     tempDirs.push(dir);
     const file = path.join(dir, 'main-2026-08-04.log');
-    fs.writeFileSync(file, 'abcdefghijklmnopqrst');
+    // 5x the cap — far past anything a concurrent append could produce, so this
+    // is a file written before the cap existed.
+    fs.writeFileSync(file, 'x'.repeat(32) + 'mnopqrst');
     const writer = new BoundedLogWriter(8, 1);
 
     writer.append(file, 'Z');
@@ -212,5 +213,20 @@ describe('main log sink', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('Z');
     expect(fs.statSync(`${file}.1`).size).toBeLessThanOrEqual(8);
     expect(fs.statSync(file).size).toBeLessThanOrEqual(8);
+  });
+
+  it('archives a mildly over-cap file intact rather than truncating a concurrent append away', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-overshoot-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'main-2026-08-04.log');
+    // What two processes appending at once leaves behind: over the cap, but
+    // nowhere near the pre-cap threshold.
+    fs.writeFileSync(file, 'abcdefghijkl');
+    const writer = new BoundedLogWriter(8, 1);
+
+    writer.append(file, 'Z');
+
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('abcdefghijkl');
+    expect(fs.readFileSync(file, 'utf8')).toBe('Z');
   });
 });

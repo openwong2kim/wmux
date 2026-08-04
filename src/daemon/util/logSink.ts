@@ -71,6 +71,20 @@ function resolveLogPath(): string | null {
   return currentLogPath;
 }
 
+/**
+ * True once the tee is installed and consumes stdio `error` events itself.
+ *
+ * The daemon's exception handlers suppress broken-pipe errors only while this
+ * is false — before init nothing is listening, so reporting one would write
+ * back to the pipe that just failed. Afterwards that error never reaches the
+ * handlers, so anything still arriving with EPIPE/EBADF came from another
+ * stream and must go through the normal path, including the repeated-exception
+ * shutdown that a blanket code check would bypass.
+ */
+export function stdioErrorsConsumed(): boolean {
+  return initialised;
+}
+
 const boundedLogWriter = new BoundedLogWriter();
 
 function mirrorToFile(chunk: unknown): void {
