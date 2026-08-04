@@ -71,6 +71,15 @@
 // merge detector must keep working THROUGH such a storm, which is why the poll
 // re-snapshots its baseline after a rebuild instead of dropping it (see tick).
 //
+// That gate silently stopped working, because the clear behind it silently
+// stopped working: upstream `clearTexture()` short-circuits on a page-0-only
+// "already clean" probe, and page 0 is exactly the page that stays empty once
+// refill resumes from the tail. So the clear became a permanent no-op, the pool
+// never emptied, and PREVENT re-fired every single poll — 4657 guard events in
+// one day against 6 cures, with nothing to show for them. `clearAtlasTexture`
+// below defeats that probe and, crucially, VERIFIES the postcondition instead
+// of assuming it, so this class of silent failure cannot come back unseen.
+//
 // Internal-field dependency: reaching the atlas needs `addon._renderer
 // ._charAtlas` (same accepted trade-off as webglTeardown.ts's `_renderer._gl`)
 // — every access is optional-chained, so if upstream reshapes its internals
@@ -176,6 +185,82 @@ function snapshotTags(atlas: AtlasLike): number[] {
   return tags;
 }
 
+/** What clearAtlasTexture actually managed to do. */
+export type ClearOutcome = 'cleared' | 'already-clean' | 'unavailable' | 'failed';
+
+/** True when a page holds glyphs (its packing cursor has moved off the origin). */
+function pageInUse(page: { currentRow?: { x?: number; y?: number } } | undefined): boolean {
+  return (page?.currentRow?.x ?? 0) > 0 || (page?.currentRow?.y ?? 0) > 0;
+}
+
+/**
+ * Empty the shared atlas — and make sure it actually happened.
+ *
+ * Upstream `clearTexture()` decides "already clean, nothing to do" by probing
+ * ONE page:
+ *
+ *   clearTexture() { if (this._pages[0].currentRow.x === 0 &&
+ *                        this._pages[0].currentRow.y === 0) return; ... }
+ *
+ * That probe is only sound if page 0 fills first. It does not: after a clear,
+ * glyph packing resumes from `_activePages[_activePages.length - 1]` — the
+ * TAIL. So page 0 stays empty while the later pages refill, the probe reads
+ * "already clean" forever, and clearTexture becomes a PERMANENT no-op for that
+ * atlas. Measured on v3.38.6 (2026-08-04): page 0 idle at every 2s sample over
+ * 12s, only 1 of 15 pages in use, count pinned at 15, and the guard's PREVENT
+ * path firing on every poll with no effect — 4657 guard events in one day
+ * against 6 cures.
+ *
+ * The fix has to live here: @xterm/addon-webgl is a dependency we do not patch.
+ * When some page is in use but page 0 is not, move page 0's cursor off the
+ * origin so the probe cannot short-circuit, then let upstream do the real work
+ * (it also clears the two glyph cache maps, which we must not do by hand — a
+ * cleared page with a live cache entry pointing into it is the #191 hazard).
+ *
+ * The postcondition is then VERIFIED rather than assumed: every page must come
+ * back idle. If it does not, the nudge is rolled back and the caller is told,
+ * instead of the guard quietly looping forever like it has been.
+ */
+export function clearAtlasTexture(atlas: AtlasLike): ClearOutcome {
+  const pages = atlas.pages;
+  if (!pages || typeof pages.length !== 'number' || pages.length === 0) return 'unavailable';
+  if (typeof atlas.clearTexture !== 'function') return 'unavailable';
+
+  let anyInUse = false;
+  for (let i = 0; i < pages.length; i++) {
+    if (pageInUse(pages[i])) { anyInUse = true; break; }
+  }
+  if (!anyInUse) return 'already-clean';
+
+  const first = pages[0];
+  let nudged = false;
+  if (!pageInUse(first) && first?.currentRow) {
+    try {
+      first.currentRow.x = 1;
+      nudged = true;
+    } catch {
+      // frozen row — fall through and let upstream decide; worst case is the
+      // no-op we already have today.
+    }
+  }
+  const rollback = (): void => {
+    if (nudged && first?.currentRow?.x === 1) {
+      try { first.currentRow.x = 0; } catch { /* nothing else we can do */ }
+    }
+  };
+
+  try {
+    atlas.clearTexture();
+  } catch {
+    rollback();
+    return 'failed';
+  }
+  for (let i = 0; i < pages.length; i++) {
+    if (pageInUse(pages[i])) { rollback(); return 'failed'; }
+  }
+  return 'cleared';
+}
+
 /** Duck-typed walk to the shared TextureAtlas behind a WebglAddon. Returns
  *  null whenever any internal is missing (DOM renderer, upstream reshape). */
 export function extractAtlas(addon: unknown): AtlasLike | null {
@@ -253,11 +338,13 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
 
   // The coherent rebuild both PREVENT/CURE and recoverNow perform: empty the
   // shared atlas, then re-raster every owner pane in the same tick.
-  function rebuildGroup(atlas: AtlasLike, group: AtlasGuardEntry[]): void {
-    try {
-      atlas.clearTexture?.(); // shared — one call empties it for every owner
-    } catch {
-      // atlas mid-teardown; refresh below is still harmless
+  function rebuildGroup(atlas: AtlasLike, group: AtlasGuardEntry[]): string {
+    // shared — one call empties it for every owner. Goes through
+    // clearAtlasTexture so upstream's page-0-only "already clean" probe cannot
+    // silently turn the clear into a no-op (see that function).
+    const outcome = clearAtlasTexture(atlas);
+    if (outcome === 'failed') {
+      console.warn('[wmux:atlas-guard] clear did not take effect — pool pressure will not drop');
     }
     for (const entry of group) {
       try {
@@ -266,6 +353,7 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
         // pane may be disposing — the next tick simply won't see it
       }
     }
+    return outcome;
   }
 
   function tick(): void {
@@ -301,11 +389,11 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const nearTrigger = len >= preventAt && lastPageInUse;
       if (!mergeSignal && !nearTrigger) continue;
 
+      const outcome = rebuildGroup(atlas, group);
       console.warn(
         `[wmux:atlas-guard] ${mergeSignal ? `cure (merge detected: ${mergeSignal})` : 'prevent'}` +
-          ` — pages=${len}/${mergeTrigger}, panes=${group.length}`,
+          ` — pages=${len}/${mergeTrigger}, panes=${group.length}, clear=${outcome}`,
       );
-      rebuildGroup(atlas, group);
       // Re-baseline from the POST-rebuild pool. The rebuild is itself a
       // structural change, so a snapshot taken before it could read as a merge
       // on the next poll and fire a second, redundant rebuild.
