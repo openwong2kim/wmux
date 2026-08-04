@@ -3480,6 +3480,7 @@ describe('WebTerminalServer', () => {
       const h = bearer(info.token as string);
       const turns = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
       expect(turns.status).toBe(403);
+      expect(turns.headers.get('cache-control')).toBe('no-store');
       const body = await turns.json();
       // Matched by the machine-readable TAG, the way a client must: the prose
       // after the colon may be reworded, `transcript-disabled:` may not.
@@ -3512,6 +3513,36 @@ describe('WebTerminalServer', () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toMatchObject({ available: false, reason });
       }
+    });
+
+    it('★ turn-view responses are never cacheable', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+
+      const unavailable = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
+      expect(unavailable.status).toBe(200);
+      expect(unavailable.headers.get('cache-control')).toBe('no-store');
+
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [{ id: 'snapshot', kind: 'user_text', text: 'private snapshot' }],
+        cursor: { headOffset: 0, tailOffset: 10, fileSize: 10, mtimeMs: 1234 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+      const snapshot = await fetch(`${base()}/api/sessions/s1/turns`, { headers: h });
+      expect(snapshot.status).toBe(200);
+      expect(snapshot.headers.get('cache-control')).toBe('no-store');
+
+      projectorMock.delta.mockReturnValue({
+        events: [{ id: 'delta', kind: 'assistant_text', text: 'private delta' }],
+        cursor: { headOffset: 0, tailOffset: 20, fileSize: 20, mtimeMs: 1234 },
+        reset: false,
+      });
+      const cursor = Buffer.from(JSON.stringify({ head: 0, tail: 10 })).toString('base64url');
+      const delta = await fetch(`${base()}/api/sessions/s1/turns?cursor=${cursor}`, { headers: h });
+      expect(delta.status).toBe(200);
+      expect(delta.headers.get('cache-control')).toBe('no-store');
     });
 
     it('a forward delta is served from projector.delta with an opaque cursor', async () => {
