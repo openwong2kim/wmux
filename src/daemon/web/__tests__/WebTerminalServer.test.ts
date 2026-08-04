@@ -3723,14 +3723,20 @@ describe('WebTerminalServer', () => {
       }
     });
 
-    it('a read-only server neither flips the gate nor lies about it', async () => {
+    it('★ a read-only server reports the gate as OFF — it cannot hold anything', async () => {
       const info = await startRO();
       const h = bearer(info.token as string);
       // Disarming widens what runs without review, so it takes the same grant as
-      // typing — but the STATE is still reported, or the toggle cannot render.
+      // typing.
       const res = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
       expect(res.status).toBe(403);
-      expect((await (await fetch(`${base()}/api/config`, { headers: h })).json()).gateEnabled).toBe(true);
+      // ...but the reported state must be the EFFECTIVE one. The daemon only
+      // holds a tool call when the runtime flag is clear AND this server can
+      // resolve gates; a read-only server raises cards nobody can answer, so it
+      // lets everything through. `gateArmed` is still true here — reporting that
+      // would tell the phone calls are being held while none are.
+      expect(gateArmed).toBe(true);
+      expect((await (await fetch(`${base()}/api/config`, { headers: h })).json()).gateEnabled).toBe(false);
     });
 
     it('serves a code-block body behind the same grant as the turn page', async () => {
@@ -3773,9 +3779,11 @@ describe('WebTerminalServer', () => {
       }
       expect(projectorMock.codeBlock).not.toHaveBeenCalled();
 
-      // A multi-megabyte tool body is cut at the cap, and SAYS it was cut —
-      // the seam lands mid-character here, which must not surface as U+FFFD.
-      const huge = `${'a'.repeat(1024 * 1024 - 1)}가나다`;
+      // A large tool body is cut at the cap, and SAYS it was cut — the seam
+      // lands mid-character here, which must not surface as U+FFFD. The cap is
+      // 256 KB and must stay under the projector's 512 KB line-read ceiling: at
+      // or above it, no body could ever reach the branch (2-MODEL review).
+      const huge = `${'a'.repeat(256 * 1024 - 1)}가나다`;
       projectorMock.codeBlock.mockReturnValue({ body: huge });
       const capped = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=0&n=1`, { headers: h });
       const body = await capped.json();
@@ -3783,7 +3791,40 @@ describe('WebTerminalServer', () => {
       expect(body.truncated).toBe(true);
       expect(body.bytes).toBe(Buffer.byteLength(huge, 'utf8'));
       expect(body.body).not.toContain('�');
-      expect(Buffer.byteLength(body.body, 'utf8')).toBeLessThanOrEqual(1024 * 1024);
+      expect(Buffer.byteLength(body.body, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+    });
+
+    it('★ the orchestrator brain pane is unreadable, even with its id in hand', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      // A brain pty IS a live daemon session, and `getSession` says so. It is
+      // excluded from the pane list, so a phone should never see one — but ids
+      // are guessable by prefix and can ride an approval payload, and existence
+      // alone used to be the whole check on these two routes.
+      live.push({
+        id: 'brain-ws-1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+      });
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [{ id: 'e', kind: 'assistant_text', text: 'orchestrator secrets' }],
+        cursor: { headOffset: 0, tailOffset: 1, fileSize: 1, mtimeMs: 0 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+      projectorMock.codeBlock.mockReturnValue({ body: 'orchestrator secrets' });
+
+      const turns = await fetch(`${base()}/api/sessions/brain-ws-1/turns`, { headers: h });
+      expect(turns.status).toBe(404);
+      const block = await fetch(
+        `${base()}/api/sessions/brain-ws-1/turns/block?srcOffset=0&n=1`,
+        { headers: h },
+      );
+      expect(block.status).toBe(404);
+      // Refused before the projector was consulted at all.
+      expect(projectorMock.snapshot).not.toHaveBeenCalled();
+      expect(projectorMock.codeBlock).not.toHaveBeenCalled();
     });
 
     it('the block route refuses without --allow-transcript, by tag', async () => {

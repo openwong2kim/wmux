@@ -526,12 +526,18 @@ const AGENT_LIVENESS_COALESCE_MS = 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
- * Ceiling on ONE expanded code block / tool body served to a phone. A single
- * transcript line can legitimately hold megabytes (a `cat` of a large file), and
- * the desktop reads those over a local pipe while a phone may be on cellular.
- * Over the cap the response is a head plus `truncated`, never a silent cut.
+ * Ceiling on ONE expanded code block / tool body served to a phone. The desktop
+ * reads these over a local pipe; a phone may be on cellular, and a `cat` of a
+ * large file is one legitimate transcript entry. Over the cap the response is a
+ * head plus `truncated`, never a silent cut.
+ *
+ * Must stay UNDER the projector's own line-read ceiling (`LINE_READ_BYTES`,
+ * 512 KB in readTail.ts) or the branch is unreachable: a body can never exceed
+ * the line it was parsed out of, so a cap at or above that limit is a promise
+ * the route cannot keep. It was 1 MB and was exactly that dead branch
+ * (2-MODEL review).
  */
-const MAX_BLOCK_BODY_BYTES = 1024 * 1024;
+const MAX_BLOCK_BODY_BYTES = 256 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -1559,7 +1565,15 @@ export class WebTerminalServer {
         // write. Omitted (not defaulted) when the daemon did not wire the getter:
         // a client reading a missing key as "off" would be wrong on every daemon
         // that predates this, and the gate defaults to ON.
-        ...(this.deps.gateEnabled ? { gateEnabled: this.deps.gateEnabled() } : {}),
+        //
+        // EFFECTIVE, not the runtime flag alone. The daemon arms the gate only
+        // when `gateRuntimeOff` is clear AND this server can actually resolve a
+        // gate — a read-only server (the default) raises cards nobody can
+        // answer, so it lets every tool through. Reporting the flag by itself
+        // would tell a phone the gate is on while nothing is being held.
+        ...(this.deps.gateEnabled
+          ? { gateEnabled: this.deps.gateEnabled() && this.canResolveGates }
+          : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1866,8 +1880,9 @@ export class WebTerminalServer {
     }
     // Unknown pane → 404, the same contract as the other `/api/sessions/:id/*`
     // routes: a phone that fetched a pane id the daemon no longer owns learns the
-    // pane is gone, not that its conversation is unavailable.
-    if (!this.deps.sessionManager.getSession(sessionId)) {
+    // pane is gone, not that its conversation is unavailable. A brain pty answers
+    // the same way — see readableSession.
+    if (!this.readableSession(sessionId)) {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
@@ -1928,6 +1943,24 @@ export class WebTerminalServer {
   }
 
   /**
+   * The pane a phone is allowed to READ, or null.
+   *
+   * `getSession` alone is not that question. The orchestrator brain's own TUI is
+   * a live daemon session, and `listSessions` already excludes it from the phone
+   * — it is not a worker pane, and it must not be attachable or approvable from
+   * a phone. The transcript routes checked existence only, so a device that
+   * learned a brain id (the prefix is guessable, and an approval or notify event
+   * can carry one) could read the orchestrator's whole conversation. Same 404 as
+   * a missing pane on purpose: "not yours to read" and "gone" are one answer
+   * here, and a distinct error would confirm the id.
+   */
+  private readableSession(sessionId: string): ReturnType<DaemonSessionManager['getSession']> {
+    const managed = this.deps.sessionManager.getSession(sessionId);
+    if (!managed) return undefined;
+    return isBrainPty({ id: sessionId, env: managed.meta.env }) ? undefined : managed;
+  }
+
+  /**
    * `GET /api/sessions/:id/turns/block?srcOffset=&n=&eventId=` — the body behind
    * a code-block or tool-body chip, the phone's half of what the desktop does
    * over `daemon.transcript.codeBlock`.
@@ -1953,7 +1986,7 @@ export class WebTerminalServer {
       });
       return;
     }
-    if (!this.deps.sessionManager.getSession(sessionId)) {
+    if (!this.readableSession(sessionId)) {
       this.json(res, 404, { error: 'session not found' });
       return;
     }

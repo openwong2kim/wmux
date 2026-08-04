@@ -592,11 +592,18 @@ per request and caches nothing, so expanding the same block twice is two reads
 rather than a stale copy.
 
 `bytes` is the body's true size. `truncated: true` means what you got is only
-its head (the server caps one body at 1 MB) — say so in the UI rather than
-letting someone copy a shortened body out believing it is whole. **`404 block
-not found` means the ref is stale**, not that the block was empty: the file
-rotated, or the offset no longer starts a line. Re-fetch the turn page rather
-than rendering an empty expansion.
+its head (the server caps one body at 256 KB) — say so in the UI rather than
+letting someone copy a shortened body out believing it is whole.
+
+**`404 block not found` never means "the block was empty".** It means the ref
+did not resolve, and there are two reasons it might not. Usually the ref is
+stale — the file rotated, or the offset no longer starts a line — and re-fetching
+the turn page fixes it. But the daemon also reads one transcript line up to a
+fixed ceiling, so a block inside an unusually large entry (roughly half a
+megabyte of JSON) cannot be parsed at all and answers 404 permanently. Re-fetch
+once; if the fresh chip 404s again, show the block as unavailable rather than
+retrying, and keep the chip's `lines`/`lang` visible so the user still sees what
+is there.
 
 ---
 

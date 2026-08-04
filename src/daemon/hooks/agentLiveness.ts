@@ -57,23 +57,50 @@ export function isTerminalLiveness(state: AgentLivenessState): boolean {
   return state === 'idle' || state === 'awaiting_input' || state === 'awaiting_permission';
 }
 
+/** A tool name is an identifier; anything longer than this is not one. */
+const MAX_TOOL_NAME_CHARS = 64;
+
+/**
+ * The tool name as it may be shown in a header, or nothing.
+ *
+ * The value comes off a hook envelope, and `daemon.hooks.signal` is reachable by
+ * anything on the local pipe rather than first-party callers only — so this is
+ * an untrusted string that ends up rendered on every watching device. Control
+ * characters go (they have no place in an identifier and are how a payload
+ * smuggles line structure into a display), and the length is bounded.
+ */
+function sanitizeToolName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!cleaned) return undefined;
+  return cleaned.length > MAX_TOOL_NAME_CHARS
+    ? cleaned.slice(0, MAX_TOOL_NAME_CHARS)
+    : cleaned;
+}
+
 /**
  * Project one `agent.event` payload onto the header state.
  *
- * `status` wins over `hookKind`: the stop kinds settle the pane regardless of
- * which hook produced them, and the metadata kinds all carry `status:'running'`
- * so they only ever refine the busy case.
+ * `status` mostly wins over `hookKind` — the stop kinds settle the pane, and the
+ * metadata kinds all carry `status:'running'` so they only ever refine the busy
+ * case. The ONE exception is `agent.subagent_stop`, which also arrives as
+ * `status:'complete'` ("Subagent finished") while the pane's own turn keeps
+ * going: taking that at face value would flip the header to idle every time a
+ * subagent finishes, on a pane that is still working. HookIngest already treats
+ * it as not-a-turn-boundary; the header has to agree.
  */
 export function deriveAgentLiveness(
   sessionId: string,
   data: HookAgentEventData,
   at: number,
 ): AgentLivenessBody {
-  const tool = typeof data.signal?.payload?.['tool_name'] === 'string'
-    ? (data.signal.payload['tool_name'] as string)
-    : undefined;
+  const tool = sanitizeToolName(data.signal?.payload?.['tool_name']);
   let state: AgentLivenessState = 'busy';
-  if (data.status === 'complete') state = 'idle';
+  const subagentStop = data.hookKind === 'agent.subagent_stop'
+    || data.signal?.kind === 'agent.subagent_stop';
+  if (subagentStop) state = 'busy';
+  else if (data.status === 'complete') state = 'idle';
   else if (data.status === 'awaiting_input') state = 'awaiting_input';
   else if (data.hookKind === 'agent.awaiting_permission') state = 'awaiting_permission';
   else if (data.hookKind === 'agent.tool_started') state = 'tool';

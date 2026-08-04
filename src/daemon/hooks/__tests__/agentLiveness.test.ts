@@ -68,6 +68,41 @@ describe('deriveAgentLiveness', () => {
     expect(isTerminalLiveness(body.state)).toBe(true);
   });
 
+  it('★ a finished SUBAGENT does not settle the pane', () => {
+    // agent.subagent_stop arrives as status:'complete' ("Subagent finished")
+    // while the pane's own turn keeps going. Read at face value it flips the
+    // header to idle — and being terminal it skips coalescing, so a pane running
+    // a fan-out of subagents would report idle over and over while working.
+    const body = deriveAgentLiveness(
+      's1',
+      data({
+        status: 'complete',
+        hookKind: 'agent.subagent_stop',
+        signal: signal('agent.subagent_stop'),
+      }),
+      1,
+    );
+    expect(body.state).toBe('busy');
+    expect(isTerminalLiveness(body.state)).toBe(false);
+  });
+
+  it('a hostile tool name cannot inject control characters or unbounded text', () => {
+    // `daemon.hooks.signal` is reachable by anything on the local pipe, and this
+    // string is rendered on every watching device.
+    const body = deriveAgentLiveness(
+      's1',
+      data({
+        hookKind: 'agent.tool_started',
+        signal: signal('agent.tool_started', { tool_name: `Ba\u0007sh\ndrop\r${'x'.repeat(500)}` }),
+      }),
+      1,
+    );
+    expect(body.tool).toBeDefined();
+    // eslint-disable-next-line no-control-regex
+    expect(body.tool).not.toMatch(/[\u0000-\u001F\u007F]/);
+    expect((body.tool ?? '').length).toBeLessThanOrEqual(64);
+  });
+
   it('busy states are the only ones that may wait out a coalescing window', () => {
     expect(isTerminalLiveness('busy')).toBe(false);
     expect(isTerminalLiveness('tool')).toBe(false);

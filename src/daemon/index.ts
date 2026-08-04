@@ -68,7 +68,7 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
-import { isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
+import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
@@ -2900,6 +2900,24 @@ function registerRpcHandlers(
         : verdict.decision === 'deny'
           ? 'deny' as const
           : 'ask' as const;
+      // Release the phone's liveness header. `agent.awaiting_permission` put it
+      // in "waiting on you, elapsed N s", and nothing else would take it back
+      // out: the wide PostToolUse hook this used to ride was removed, so the
+      // next signal may be a whole tool call away — and after a 120 s self-defer
+      // there may not be one at all. Without this the header keeps counting up
+      // on a pane that is running again. Allowed → the tool is executing now;
+      // denied or deferred → the pane is working but not on this call.
+      if (gate.sessionId) {
+        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(gate.sessionId, {
+          agent: agentSlugToDisplay(signal.agent),
+          status: 'running',
+          message: '',
+          source: 'hook',
+          hookKind: permissionDecision === 'allow' ? 'agent.tool_started' : 'agent.activity',
+          decision: 'activity',
+          signal,
+        }, Date.now()));
+      }
       return { ok: true, permissionDecision };
     }
     return ingest.handle(params);
