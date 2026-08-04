@@ -3,6 +3,7 @@ import {
   clearAtlasTexture,
   createAtlasGuard,
   detectMerge,
+  clearRenderModel,
   extractAtlas,
   GUARD_POLL_MS,
   GUARD_MARGIN_PAGES,
@@ -29,8 +30,20 @@ class FakeAtlas {
    *  effect (upstream early-returns unless _pages[0] is idle), so PREVENT
    *  re-fires on every tick instead of being gated by the anti-thrash rule. */
   clearIsNoop = false;
+  /** clearTexture calls made by the guard's own pool wipe. Kept separate from
+   *  `paneClears` so a test can still say "the guard rebuilt N times" — the
+   *  per-pane model clear reaches the same upstream method. */
   clearTexture(): void {
     this.clearCalls++;
+    this.applyClear();
+  }
+  /** clearTexture reached through a pane's `addon.clearTextureAtlas()`. */
+  paneClears = 0;
+  clearTextureFromPane(): void {
+    this.paneClears++;
+    this.applyClear();
+  }
+  private applyClear(): void {
     if (this.clearIsNoop) return;
     // Faithful to upstream: it decides "already clean, nothing to do" by
     // probing ONLY page 0, then empties every page IN PLACE (count unchanged).
@@ -106,15 +119,42 @@ class FakeAtlas {
   }
 }
 
-function addonFor(atlas: FakeAtlas | null): unknown {
-  return { _renderer: { _charAtlas: atlas } };
+/** The addon surface the guard walks. `clearTextureAtlas` is upstream's public
+ *  wrapper and does what WebglRenderer.clearTextureAtlas does: clear the shared
+ *  texture, then clear THIS pane's render model + glyph renderer. Omit it
+ *  (`withModelClear: false`) to model a reshaped/DOM-renderer addon. */
+function addonFor(
+  atlas: FakeAtlas | null,
+  onModelClear?: () => void,
+  withModelClear = true,
+): unknown {
+  const base: Record<string, unknown> = { _renderer: { _charAtlas: atlas } };
+  if (withModelClear) {
+    base.clearTextureAtlas = (): void => {
+      atlas?.clearTextureFromPane();
+      onModelClear?.();
+    };
+  }
+  return base;
 }
 
-function makePane(atlas: FakeAtlas | null): { entry: { getAddon(): unknown; refresh(): void }; refreshes: () => number } {
+function makePane(
+  atlas: FakeAtlas | null,
+  withModelClear = true,
+): {
+  entry: { getAddon(): unknown; refresh(): void };
+  refreshes: () => number;
+  modelClears: () => number;
+} {
   let count = 0;
+  let modelClears = 0;
   return {
-    entry: { getAddon: () => addonFor(atlas), refresh: () => { count++; } },
+    entry: {
+      getAddon: () => addonFor(atlas, () => { modelClears++; }, withModelClear),
+      refresh: () => { count++; },
+    },
     refreshes: () => count,
+    modelClears: () => modelClears,
   };
 }
 
@@ -236,7 +276,9 @@ describe('atlasGuard', () => {
     try {
       const atlas = new FakeAtlas(PREVENT_AT, true);
       atlas.clearIsNoop = true; // pressure never drops → PREVENT every tick
-      const guard = createAtlasGuard();
+      // Cooldown off: this test is specifically about surviving a PREVENT
+      // storm, so it needs the storm the rate limit exists to damp.
+      const guard = createAtlasGuard({ preventCooldownMs: 0 });
       const pane = makePane(atlas);
       guard.register(pane.entry);
 
@@ -414,9 +456,11 @@ describe('atlasGuard', () => {
     guard.register(pane.entry);
 
     vi.advanceTimersByTime(GUARD_POLL_MS);
-    expect(atlas.skippedClears).toBe(0); // the short-circuit was defeated…
-    expect(atlas.effectiveClears).toBe(1); // …so the clear took effect…
+    expect(atlas.effectiveClears).toBe(1); // the short-circuit was defeated…
     expect(atlas.anyPageInUse()).toBe(false); // …and the pressure dropped
+    // The only short-circuited call is the pane's own pairing clear, which runs
+    // after the wipe and is meant to be a no-op on the (now empty) pool.
+    expect(atlas.skippedClears).toBe(atlas.paneClears);
 
     // …so the anti-thrash gate engages: no further firing while occupancy is low.
     vi.advanceTimersByTime(GUARD_POLL_MS * 5);
@@ -513,5 +557,132 @@ describe('atlasGuard', () => {
     guard.register(healthy.entry);
     vi.advanceTimersByTime(GUARD_POLL_MS);
     expect(healthy.refreshes()).toBe(1);
+  });
+
+  // --- The corruption the rebuild itself was causing (2026-08-05, v3.38.7) ---
+
+  it('every rebuild drops each pane render model, not just the shared texture', () => {
+    // Without this, refresh() re-renders rows but skips every cell whose text
+    // is unchanged, so each pane keeps vertex UVs pointing into the pool we
+    // just emptied — the "scattered wrong Hangul" report.
+    const atlas = new FakeAtlas(PREVENT_AT, true);
+    const guard = createAtlasGuard();
+    const a = makePane(atlas);
+    const b = makePane(atlas);
+    guard.register(a.entry);
+    guard.register(b.entry);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.effectiveClears).toBe(1); // pool wiped once, for everyone
+    expect(a.modelClears()).toBe(1); // …and every owner re-derives its glyphs
+    expect(b.modelClears()).toBe(1);
+  });
+
+  it('drops the model on CURE and on recoverNow too, not only on PREVENT', () => {
+    const atlas = new FakeAtlas(6, true);
+    const guard = createAtlasGuard();
+    const pane = makePane(atlas);
+    guard.register(pane.entry);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS); // baseline poll, well under PREVENT
+    expect(pane.modelClears()).toBe(0);
+
+    atlas.mergePages(4); // a real merge → CURE
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(pane.modelClears()).toBe(1);
+
+    guard.recoverNow('system-resumed');
+    expect(pane.modelClears()).toBe(2);
+  });
+
+  it('wipes the shared pool BEFORE dropping any model', () => {
+    // Reverse that order and a pane repopulates from the doomed atlas, then the
+    // wipe invalidates it again — stale on arrival.
+    const atlas = new FakeAtlas(PREVENT_AT, true);
+    const order: string[] = [];
+    const guard = createAtlasGuard();
+    const pane = {
+      getAddon: () => addonFor(atlas, () => { order.push(`model:${atlas.anyPageInUse()}`); }),
+      refresh: () => { order.push('refresh'); },
+    };
+    guard.register(pane);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    // `false` = the pool was already empty when the model was dropped.
+    expect(order).toEqual(['model:false', 'refresh']);
+  });
+
+  it('warns, rather than silently half-repairing, when a pane cannot drop its model', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const atlas = new FakeAtlas(PREVENT_AT, true);
+      const guard = createAtlasGuard();
+      const reachable = makePane(atlas);
+      const reshaped = makePane(atlas, false); // no clearTextureAtlas on the addon
+      guard.register(reachable.entry);
+      guard.register(reshaped.entry);
+
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      expect(reachable.modelClears()).toBe(1);
+      expect(reshaped.modelClears()).toBe(0);
+      expect(
+        warn.mock.calls.map((c) => String(c[0])).some((l) => /render model NOT cleared for 1\/2/.test(l)),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('clearRenderModel: reports failure instead of throwing on a reshaped or dead addon', () => {
+    expect(clearRenderModel(null)).toBe(false);
+    expect(clearRenderModel({})).toBe(false);
+    expect(clearRenderModel({ clearTextureAtlas: 'not a function' })).toBe(false);
+    expect(clearRenderModel({ clearTextureAtlas: () => { throw new Error('disposed'); } })).toBe(false);
+    let called = 0;
+    expect(clearRenderModel({ clearTextureAtlas: () => { called++; } })).toBe(true);
+    expect(called).toBe(1);
+  });
+
+  // --- Anti-thrash: the rebuild is no longer cheap ---
+
+  it('PREVENT is rate-limited while the pool stays saturated', () => {
+    // The v3.38.7 field state: `pages=16/16 used` sustained, so the gate re-arms
+    // on the very next poll. Nine wipes in 90s, each one now a full re-raster of
+    // every pane.
+    const atlas = new FakeAtlas(PREVENT_AT, true);
+    const guard = createAtlasGuard({ preventCooldownMs: GUARD_POLL_MS * 5 });
+    const pane = {
+      getAddon: () => addonFor(atlas),
+      // Faithful: the re-raster immediately refills the pool to saturation.
+      refresh: () => { for (const p of atlas.pages) p.currentRow = { x: 9, y: 9 }; },
+    };
+    guard.register(pane);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.effectiveClears).toBe(1);
+
+    // Saturated again on every following poll, but the cooldown holds it to one.
+    vi.advanceTimersByTime(GUARD_POLL_MS * 4);
+    expect(atlas.effectiveClears).toBe(1);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.effectiveClears).toBe(2);
+  });
+
+  it('the cooldown never delays CURE — a real merge is repaired immediately', () => {
+    const atlas = new FakeAtlas(PREVENT_AT, true);
+    const guard = createAtlasGuard({ preventCooldownMs: GUARD_POLL_MS * 100 });
+    const pane = {
+      getAddon: () => addonFor(atlas),
+      refresh: () => { for (const p of atlas.pages) p.currentRow = { x: 9, y: 9 }; },
+    };
+    guard.register(pane);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS); // PREVENT fires, cooldown now armed
+    expect(atlas.effectiveClears).toBe(1);
+
+    atlas.mergePages(4); // corruption is real now, not speculative
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.effectiveClears).toBe(2);
   });
 });

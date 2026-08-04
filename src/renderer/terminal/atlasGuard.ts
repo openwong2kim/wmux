@@ -27,14 +27,17 @@
 //            OCCUPIED (a long pool of empty pages is nowhere near a merge —
 //            see defect 2 below), clear the atlas
 //            (clearTexture empties every page in place and clears both cache
-//            maps) and refresh every pane sharing it in the same tick. That is
-//            the coherent all-owners rebuild upstream itself performs on font
-//            changes — the #191 hazard was clearing from ONE pane while its
-//            siblings kept stale references, which this never does.
+//            maps) and then drop the render model of every pane sharing it, in
+//            the same tick. That is the coherent all-owners rebuild upstream
+//            itself performs on font changes — the #191 hazard was clearing
+//            from ONE pane while its siblings kept stale references, which
+//            this never does. Speculative firings are rate-limited
+//            (GUARD_PREVENT_COOLDOWN_MS); a saturated pool re-arms the gate
+//            every poll and the rebuild is not free.
 //
-//   CURE     If a merge slips through anyway, do the same clear+refresh-all.
-//            Corruption is visible for at most one poll interval instead of
-//            indefinitely.
+//   CURE     If a merge slips through anyway, do the same clear+rebuild-all,
+//            with no rate limit. Corruption is visible for at most one poll
+//            interval instead of indefinitely.
 //
 //            Three signals feed it, strongest first — a page-removal EVENT, a
 //            page-count drop, and a page-identity change. Count alone is not
@@ -64,8 +67,9 @@
 //            before the deletes, making it an exact real-time signal with no
 //            sampling gap.
 //
-// Two independent defects made that repair fire 4657 times in one day and
-// achieve nothing. Both are fixed here.
+// Three independent defects made that repair fire 4657 times in one day and
+// achieve nothing — then, once (1) and (2) were fixed, made it start causing
+// the very corruption it was written to repair. All three are fixed here.
 //
 //   1. The clear did not clear. Upstream `clearTexture()` short-circuits on a
 //      page-0-only "already clean" probe, and page 0 is exactly the page that
@@ -83,9 +87,19 @@
 //      the field at the moment of a PREVENT storm: 15 pages, 1 in use — every
 //      one of those firings was spurious.
 //
-// Fixing only (1) would have been worse than shipping neither: the no-op loop
-// would have become a real full-atlas wipe plus an all-pane re-raster, every
-// two seconds, forever.
+//   3. The rebuild wiped the atlas but left every pane's render model intact,
+//      so `refresh()` skipped every unchanged cell and kept its old glyph
+//      coordinates into a pool that had just been emptied and re-packed. That
+//      IS the corruption. It was invisible while (1) made the clear a no-op;
+//      fixing (1) armed it. Field log, v3.38.7 on 2026-08-05: nine
+//      `prevent … clear=cleared` events in the 90s before a corrupted-Hangul
+//      screenshot, zero merge cures — the merge path never ran. See
+//      `clearRenderModel` for the upstream pairing this now reproduces.
+//
+// Fixing (1) alone was worse than shipping neither, in both directions: the
+// no-op loop became a real full-atlas wipe plus an all-pane re-raster every
+// two seconds, and each of those wipes desynced the panes it was meant to
+// repair.
 //
 // Internal-field dependency: reaching the atlas needs `addon._renderer
 // ._charAtlas` (same accepted trade-off as webglTeardown.ts's `_renderer._gl`)
@@ -102,6 +116,11 @@ export const GUARD_POLL_MS = 2_000;
 /** Fallback merge trigger when maxAtlasPages is unreadable: matches the
  *  smallest real-world cap (min(32, 16 texture units) on Apple Silicon). */
 export const FALLBACK_MAX_PAGES = 16;
+/** Minimum gap between two speculative (PREVENT) rebuilds of the same atlas.
+ *  A rebuild now re-rasters every pane, and a saturated pool re-arms the gate
+ *  on the next poll, so without this the guard wipes the atlas every `pollMs`
+ *  for the whole duration of a CJK-heavy stream. CURE is exempt. */
+export const GUARD_PREVENT_COOLDOWN_MS = 30_000;
 
 /** One registered pane: how to reach its WebGL addon and repaint it. */
 export interface AtlasGuardEntry {
@@ -114,8 +133,11 @@ export interface AtlasGuardEntry {
 export interface AtlasGuardOptions {
   pollMs?: number;
   marginPages?: number;
+  preventCooldownMs?: number;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
+  /** Injectable clock for tests. */
+  now?: () => number;
 }
 
 interface AtlasLike {
@@ -279,6 +301,54 @@ export function clearAtlasTexture(atlas: ClearableAtlas): ClearOutcome {
   return 'cleared';
 }
 
+/** The one public addon method that performs upstream's own atlas-clear
+ *  sequence: clear the texture, clear the render model AND the glyph
+ *  renderer, request a viewport redraw. */
+export interface ModelClearableAddon {
+  clearTextureAtlas?: () => void;
+}
+
+/**
+ * Drop one pane's render model so it re-derives every glyph from the atlas.
+ *
+ * This is the half of the repair the guard used to be missing, and without it
+ * the clear above does not fix corruption — it CAUSES it.
+ *
+ * `terminal.refresh()` re-runs `WebglRenderer._updateModel` over every row, but
+ * that loop skips any cell whose CONTENT is unchanged
+ * (WebglRenderer.ts:507 — "Nothing has changed, no updates needed" → continue).
+ * The skip is keyed on code/bg/fg/ext only; it knows nothing about the atlas.
+ * So a cell that still holds the same character keeps the vertex UVs written
+ * when it was last rendered — coordinates into an atlas we have since emptied
+ * and started re-packing from scratch. The pane then samples the new atlas at
+ * old positions: scattered wrong glyphs, worst on CJK (11,172 Hangul syllables
+ * churn the pool while ASCII sits undisturbed in the first page).
+ *
+ * Upstream never clears the atlas without clearing the model in the same
+ * breath — `WebglRenderer.clearTextureAtlas()` (WebglRenderer.ts:307) is
+ * exactly `_charAtlas.clearTexture(); _clearModel(true); _requestRedrawViewport()`.
+ * Calling the addon's public wrapper per owner reproduces that pairing without
+ * reaching for another internal. Its own `clearTexture()` is a no-op by then
+ * (we already emptied the pool, so upstream's page-0 probe short-circuits),
+ * which is why the pool wipe stays a single shared operation.
+ *
+ * Field evidence for the ordering, 2026-08-05: v3.38.7 logged nine
+ * `prevent … clear=cleared` events in the 90s before a corruption screenshot,
+ * and zero merge cures. Under v3.38.6 the same clear was a silent no-op and
+ * the same workload did not corrupt — the repair, not the merge, was the
+ * trigger.
+ */
+export function clearRenderModel(addon: unknown): boolean {
+  const clear = (addon as ModelClearableAddon | null | undefined)?.clearTextureAtlas;
+  if (typeof clear !== 'function') return false;
+  try {
+    clear.call(addon);
+    return true;
+  } catch {
+    return false; // pane disposing, or upstream reshaped — the next tick retries
+  }
+}
+
 /** Duck-typed walk to the shared TextureAtlas behind a WebglAddon. Returns
  *  null whenever any internal is missing (DOM renderer, upstream reshape). */
 export function extractAtlas(addon: unknown): AtlasLike | null {
@@ -307,8 +377,10 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   const {
     pollMs = GUARD_POLL_MS,
     marginPages = GUARD_MARGIN_PAGES,
+    preventCooldownMs = GUARD_PREVENT_COOLDOWN_MS,
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
+    now: nowMs = Date.now,
   } = options;
 
   const entries = new Set<AtlasGuardEntry>();
@@ -320,6 +392,8 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   // first sight; never unsubscribed, because the listener cannot outlive the
   // emitter it lives on (both die with the atlas).
   const removalLatch = new WeakMap<object, { fired: boolean }>();
+  // Last speculative (PREVENT) rebuild per atlas, for the cooldown in tick().
+  const lastPreventAt = new WeakMap<object, number>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
   /** Latch for this atlas, subscribing on first sight. null when upstream does
@@ -355,7 +429,12 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   }
 
   // The coherent rebuild both PREVENT/CURE and recoverNow perform: empty the
-  // shared atlas, then re-raster every owner pane in the same tick.
+  // shared atlas, then make every owner pane re-derive its glyphs from it in
+  // the same tick.
+  //
+  // Both halves are load-bearing, and the ORDER is too. Wipe the shared pool
+  // once, then drop each owner's render model: a model dropped before the wipe
+  // would repopulate from the doomed atlas and be stale again immediately.
   function rebuildGroup(atlas: AtlasLike, group: AtlasGuardEntry[]): string {
     // shared — one call empties it for every owner. Goes through
     // clearAtlasTexture so upstream's page-0-only "already clean" probe cannot
@@ -364,12 +443,25 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
     if (outcome === 'failed') {
       console.warn('[wmux:atlas-guard] clear did not take effect — pool pressure will not drop');
     }
+    let modelsCleared = 0;
     for (const entry of group) {
+      // Drop the render model FIRST: refresh() alone re-renders rows but skips
+      // every unchanged cell, so on its own it preserves exactly the stale
+      // glyph coordinates the wipe just invalidated (see clearRenderModel).
+      if (clearRenderModel(entry.getAddon())) modelsCleared++;
       try {
         entry.refresh();
       } catch {
         // pane may be disposing — the next tick simply won't see it
       }
+    }
+    if (modelsCleared < group.length) {
+      // Any pane we could not reach keeps stale glyph references against a
+      // pool we just emptied. Surface it: a silent partial repair is how this
+      // class of corruption stayed unexplained for three releases.
+      console.warn(
+        `[wmux:atlas-guard] render model NOT cleared for ${group.length - modelsCleared}/${group.length} pane(s) — they may render stale glyphs`,
+      );
     }
     return outcome;
   }
@@ -416,6 +508,22 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const mergeSignal: MergeSignal | null = removed ? 'page-removed' : detectMerge(prev, tags);
       const nearTrigger = len >= preventAt && used >= preventAt;
       if (!mergeSignal && !nearTrigger) continue;
+
+      // PREVENT-only cooldown. A rebuild is no longer cheap: it now drops every
+      // owner pane's render model and forces a full viewport redraw, which is
+      // what makes the repair actually work. A saturated pool re-arms the gate
+      // on the very next poll — the field log for v3.38.7 shows sustained
+      // `pages=16/16 used`, i.e. a wipe every 2s for as long as CJK output
+      // flows. At that point there is nothing left to prevent: the pool is
+      // already full, and letting the merge land is fine because CURE repairs
+      // it coherently. Rate-limit the speculative path so it cannot become a
+      // permanent re-raster treadmill. CURE is never rate-limited — it is the
+      // repair, and it only fires on a real merge.
+      if (!mergeSignal) {
+        const lastPrevent = lastPreventAt.get(atlas as object) ?? -Infinity;
+        if (nowMs() - lastPrevent < preventCooldownMs) continue;
+        lastPreventAt.set(atlas as object, nowMs());
+      }
 
       const outcome = rebuildGroup(atlas, group);
       console.warn(
