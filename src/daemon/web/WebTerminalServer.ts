@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { DaemonSessionManager } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
 // headless-terminal dependency chain stay out of this module. The web server is
@@ -14,6 +15,9 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
 import type { TranscriptProjector } from '../transcript/TranscriptProjector';
+// Type only — the projection from hook envelope to header state lives in the
+// hooks layer (see agentLiveness.ts). This module only fans the result out.
+import { isTerminalLiveness, type AgentLivenessBody } from '../hooks/agentLiveness';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
@@ -429,6 +433,16 @@ interface WebTerminalServerDeps {
    * a server that did not wire it answers 503, and `WMUX_GATE=0` still works.
    */
   setGateEnabled?: (enabled: boolean) => void;
+  /**
+   * Whether the runtime escape hatch above is currently ARMED. The daemon owns
+   * the flag; without a way to read it back, `/api/config` could report which
+   * tools are gated but not whether the gate itself was on, so a client's toggle
+   * had to guess its own initial state and only learned the truth from the
+   * response to its first write. Optional, and absent means the field is omitted
+   * from `/api/config` rather than defaulted — "this daemon does not say" is not
+   * the same answer as "off".
+   */
+  gateEnabled?: () => boolean;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -499,8 +513,31 @@ const ATTENTION_TTL_MS = 30 * 60 * 1000;
  * keeps a write burst from fanning into one fetch per write.
  */
 const TRANSCRIPT_NUDGE_COALESCE_MS = 1000;
+/**
+ * Coalescing window for the non-recording liveness event. Same 1Hz floor as the
+ * nudge and for the same reason: a tool-heavy turn raises one PreToolUse per
+ * call, and the header only has to be RIGHT, not instantaneous. Unlike the
+ * nudge this window keeps the LATEST state rather than the first — a header is
+ * a state, not a "something changed" ping, so collapsing a burst to its head
+ * would leave the phone showing the tool that started the burst. Terminal
+ * states skip the window entirely (`isTerminalLiveness`).
+ */
+const AGENT_LIVENESS_COALESCE_MS = 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
+/**
+ * Ceiling on ONE expanded code block / tool body served to a phone. The desktop
+ * reads these over a local pipe; a phone may be on cellular, and a `cat` of a
+ * large file is one legitimate transcript entry. Over the cap the response is a
+ * head plus `truncated`, never a silent cut.
+ *
+ * Must stay UNDER the projector's own line-read ceiling (`LINE_READ_BYTES`,
+ * 512 KB in readTail.ts) or the branch is unreachable: a body can never exceed
+ * the line it was parsed out of, so a cap at or above that limit is a promise
+ * the route cannot keep. It was 1 MB and was exactly that dead branch
+ * (2-MODEL review).
+ */
+const MAX_BLOCK_BODY_BYTES = 256 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -778,6 +815,10 @@ export class WebTerminalServer {
   private readonly transcriptWatchers = new Map<string, Set<string>>();
   /** Per-pane coalescing timers for the non-recording transcript nudge. */
   private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-pane coalescing timers for the non-recording liveness event. */
+  private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Latest liveness state per pane, held for the open coalescing window. */
+  private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
 
   /**
    * Attention replay state.
@@ -1073,6 +1114,9 @@ export class WebTerminalServer {
     // stale (a device re-opens its panes and re-registers as it reads them).
     for (const timer of this.transcriptNudgeTimers.values()) clearTimeout(timer);
     this.transcriptNudgeTimers.clear();
+    for (const timer of this.livenessTimers.values()) clearTimeout(timer);
+    this.livenessTimers.clear();
+    this.pendingLiveness.clear();
     this.transcriptWatchers.clear();
 
     const server = this.server;
@@ -1516,6 +1560,20 @@ export class WebTerminalServer {
         // waiting because Bash is in the gate list". Absent gateConfig → empty
         // array (a daemon that predates the gate or did not wire it).
         gatedTools: this.deps.gateConfig?.().gatedTools ?? [],
+        // #783 — whether the gate is armed right now, so a client's toggle opens
+        // showing the truth instead of a default it has to correct on first
+        // write. Omitted (not defaulted) when the daemon did not wire the getter:
+        // a client reading a missing key as "off" would be wrong on every daemon
+        // that predates this, and the gate defaults to ON.
+        //
+        // EFFECTIVE, not the runtime flag alone. The daemon arms the gate only
+        // when `gateRuntimeOff` is clear AND this server can actually resolve a
+        // gate — a read-only server (the default) raises cards nobody can
+        // answer, so it lets every tool through. Reporting the flag by itself
+        // would tell a phone the gate is on while nothing is being held.
+        ...(this.deps.gateEnabled
+          ? { gateEnabled: this.deps.gateEnabled() && this.canResolveGates }
+          : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1531,6 +1589,9 @@ export class WebTerminalServer {
       const rest = p.slice('/api/sessions/'.length);
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
+      }
+      if (req.method === 'GET' && rest.endsWith('/turns/block')) {
+        return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns')) {
         return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length), principal);
@@ -1593,6 +1654,11 @@ export class WebTerminalServer {
       if (!this.deps.setGateEnabled) return this.json(res, 503, { error: 'gate control unavailable' });
       const enable = p === '/api/gate/on';
       this.deps.setGateEnabled(enable);
+      // The gate is DAEMON-wide, so a phone that disarms it changes what every
+      // other paired device is looking at. Without this push the other devices
+      // keep showing the old toggle until something else makes them re-read
+      // `/api/config`, which for a screen nobody navigated away from is never.
+      this.broadcastGateState(enable);
       return this.json(res, 200, {
         ok: true,
         gateEnabled: enable,
@@ -1814,8 +1880,9 @@ export class WebTerminalServer {
     }
     // Unknown pane → 404, the same contract as the other `/api/sessions/:id/*`
     // routes: a phone that fetched a pane id the daemon no longer owns learns the
-    // pane is gone, not that its conversation is unavailable.
-    if (!this.deps.sessionManager.getSession(sessionId)) {
+    // pane is gone, not that its conversation is unavailable. A brain pty answers
+    // the same way — see readableSession.
+    if (!this.readableSession(sessionId)) {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
@@ -1873,6 +1940,114 @@ export class WebTerminalServer {
       reset: result.reset,
       ...(result.budgetDropped ? { budgetDropped: true } : {}),
     });
+  }
+
+  /**
+   * The pane a phone is allowed to READ, or null.
+   *
+   * `getSession` alone is not that question. The orchestrator brain's own TUI is
+   * a live daemon session, and `listSessions` already excludes it from the phone
+   * — it is not a worker pane, and it must not be attachable or approvable from
+   * a phone. The transcript routes checked existence only, so a device that
+   * learned a brain id (the prefix is guessable, and an approval or notify event
+   * can carry one) could read the orchestrator's whole conversation. Same 404 as
+   * a missing pane on purpose: "not yours to read" and "gone" are one answer
+   * here, and a distinct error would confirm the id.
+   */
+  private readableSession(sessionId: string): ReturnType<DaemonSessionManager['getSession']> {
+    const managed = this.deps.sessionManager.getSession(sessionId);
+    if (!managed) return undefined;
+    return isBrainPty({ id: sessionId, env: managed.meta.env }) ? undefined : managed;
+  }
+
+  /**
+   * `GET /api/sessions/:id/turns/block?srcOffset=&n=&eventId=` — the body behind
+   * a code-block or tool-body chip, the phone's half of what the desktop does
+   * over `daemon.transcript.codeBlock`.
+   *
+   * Bodies never ride the turn page itself (A3): the page carries a chip with
+   * `{n, lines, lang, srcOffset}` and the body is fetched here, on expand, as a
+   * single bounded line read. Without this route the phone could render the chip
+   * and nothing else — there was no way to open one.
+   *
+   * Same gate, same tag, same 404/503 split as `/turns`: this serves transcript
+   * content, so `--allow-transcript` governs it and nothing else may.
+   */
+  private handleSessionTurnBlock(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript-disabled: server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    if (!this.readableSession(sessionId)) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) {
+      this.json(res, 503, { error: 'transcript projector unavailable' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    // Read the raw params first. `Number()` maps BOTH a missing param (null) and
+    // an empty one ('') to 0, so `?n=1` and `?srcOffset=&n=1` would each read as
+    // "offset 0" and quietly answer with a block from the first line of the
+    // transcript instead of refusing (review: CodeRabbit).
+    const num = (raw: string | null): number =>
+      raw === null || raw.trim() === '' ? NaN : Number(raw);
+    const srcOffset = num(url.searchParams.get('srcOffset'));
+    const n = num(url.searchParams.get('n'));
+    if (!Number.isFinite(srcOffset) || srcOffset < 0 || !Number.isFinite(n) || n < 1) {
+      this.json(res, 400, {
+        error: 'bad-block-ref',
+        detail: 'srcOffset must be a non-negative integer and n a positive one',
+      });
+      return;
+    }
+    // The event id is what stops a rotated file from answering with a DIFFERENT
+    // conversation's code at the same offset. Optional on the wire because a
+    // producer may not have attributed one, and the projector then falls back to
+    // matching `n` alone — exactly the desktop RPC's contract.
+    const eventId = url.searchParams.get('eventId') ?? undefined;
+
+    const found = projector.codeBlock(sessionId, {
+      srcOffset: Math.floor(srcOffset),
+      n: Math.floor(n),
+      ...(eventId ? { eventId } : {}),
+    });
+    // A ref that no longer resolves is a 404 rather than an empty 200: the chip
+    // is stale (file rotated, offset mid-line, block gone), and a phone that got
+    // `{body: ''}` would render an empty expansion as if the block were empty.
+    if (!found) {
+      this.json(res, 404, { error: 'block not found' });
+      return;
+    }
+    // The desktop reads this over a local pipe; the phone may be on a hotel
+    // network, and one transcript line can legitimately hold megabytes of tool
+    // output. Cut at the cap and SAY so, rather than shipping the whole thing or
+    // pretending the block ends here — `truncated` is what stops a user copying
+    // a shortened body out with nothing saying it was shortened.
+    const bytes = Buffer.byteLength(found.body, 'utf8');
+    if (bytes > MAX_BLOCK_BODY_BYTES) {
+      // StringDecoder rather than `.toString()`: a byte cut lands mid-sequence
+      // as often as not, and toString would hand the phone a U+FFFD at the seam.
+      // The decoder holds the incomplete tail back instead, and never calling
+      // `end()` is what discards it.
+      const head = new StringDecoder('utf8').write(
+        Buffer.from(found.body, 'utf8').subarray(0, MAX_BLOCK_BODY_BYTES),
+      );
+      this.json(res, 200, { body: head, bytes, truncated: true });
+      return;
+    }
+    this.json(res, 200, { body: found.body, bytes });
   }
 
   private handleSessionResize(
@@ -2136,6 +2311,12 @@ export class WebTerminalServer {
           clearTimeout(timer);
           this.transcriptNudgeTimers.delete(id);
         }
+        const liveness = this.livenessTimers.get(id);
+        if (liveness) {
+          clearTimeout(liveness);
+          this.livenessTimers.delete(id);
+        }
+        this.pendingLiveness.delete(id);
         res.writeHead(204, this.securityHeaders());
         res.end();
       })
@@ -2827,6 +3008,92 @@ export class WebTerminalServer {
       if (!watchers.has(this.watcherKey(client.principal))) continue;
       try {
         writeSse(client.res, 'transcript.nudge', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  /**
+   * Push one liveness state to the device(s) watching this pane, WITHOUT
+   * recording it — the same three rules the transcript nudge established, for
+   * the same reasons:
+   *
+   *   - NON-RECORDING. A busy pane raises one of these per tool call; through
+   *     `attentionLog` they would evict a pending approval from the replay
+   *     window, and a phone reconnecting would re-derive its badge from a log
+   *     that no longer holds the approval it is waiting on (#782 CRITICAL 3).
+   *     Liveness is a live signal by nature: a header state from before the
+   *     reconnect is worthless, so there is nothing to replay anyway.
+   *   - COALESCED per pane, keeping the newest state (see the constant).
+   *   - WATCHERS ONLY. A device that never opened this pane's turn view has no
+   *     header to feed, and its SSE channel should not carry another pane's
+   *     per-tool-call traffic.
+   *
+   * Terminal states (`isTerminalLiveness`) flush immediately and cancel any
+   * open window, so "waiting for you" never queues behind a stale tool name.
+   */
+  emitAgentLiveness(body: AgentLivenessBody): void {
+    if (this.eventClients.size === 0) return;
+    const { sessionId } = body;
+    if (isTerminalLiveness(body.state)) {
+      const timer = this.livenessTimers.get(sessionId);
+      if (timer) {
+        clearTimeout(timer);
+        this.livenessTimers.delete(sessionId);
+      }
+      this.pendingLiveness.delete(sessionId);
+      this.deliverLiveness(body);
+      return;
+    }
+    // Busy states: keep the newest and let the open window deliver it. Assigning
+    // before the timer check is what makes this last-write-wins rather than
+    // first-write-wins.
+    this.pendingLiveness.set(sessionId, body);
+    if (this.livenessTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.livenessTimers.delete(sessionId);
+      const pending = this.pendingLiveness.get(sessionId);
+      if (!pending) return;
+      this.pendingLiveness.delete(sessionId);
+      this.deliverLiveness(pending);
+    }, AGENT_LIVENESS_COALESCE_MS);
+    timer.unref?.();
+    this.livenessTimers.set(sessionId, timer);
+  }
+
+  /**
+   * Tell every connected device the gate was armed or disarmed.
+   *
+   * NOT recorded, for the opposite reason to the liveness event: this is rare
+   * (a human presses it) but it is also pure STATE, and the authoritative copy
+   * is one `/api/config` call away. A replayed transition would be a second
+   * source of truth that can disagree with that call after a reconnect, so the
+   * push is live-only and a reconnecting client re-reads config as it already
+   * does on every start.
+   *
+   * Unlike liveness this reaches every client, not just watchers: the gate is
+   * daemon-wide, not per-pane.
+   */
+  private broadcastGateState(gateEnabled: boolean): void {
+    const body = JSON.stringify({ gateEnabled });
+    for (const client of this.eventClients) {
+      try {
+        writeSse(client.res, 'gate.state', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  private deliverLiveness(body: AgentLivenessBody): void {
+    const watchers = this.transcriptWatchers.get(body.sessionId);
+    if (!watchers || watchers.size === 0) return;
+    const wire = JSON.stringify(body);
+    for (const client of this.eventClients) {
+      if (!watchers.has(this.watcherKey(client.principal))) continue;
+      try {
+        writeSse(client.res, 'agent.liveness', wire);
       } catch {
         /* client stream broken — its own 'close' handler cleans up */
       }

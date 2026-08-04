@@ -67,7 +67,8 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
-import { isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
+import { deriveAgentLiveness } from './hooks/agentLiveness';
+import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
@@ -319,6 +320,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
+        // Read side of the same flag, so `/api/config` can answer "is the gate
+        // armed?" instead of leaving a client's toggle to guess.
+        gateEnabled: () => !gateRuntimeOff,
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -2354,6 +2358,8 @@ function registerRpcHandlers(
       projector: () => transcriptProjector,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
+      // See the restore path — the read side of the runtime escape hatch.
+      gateEnabled: () => !gateRuntimeOff,
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -2812,6 +2818,12 @@ function registerRpcHandlers(
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
+        // Phone liveness header. The desktop reads pane state off this same
+        // broadcast; the phone has no pipe, so the web server gets the projected
+        // state (non-recording, coalesced, watchers only — see
+        // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
+        // off or nobody opened the pane's turn view.
+        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),
@@ -2888,6 +2900,24 @@ function registerRpcHandlers(
         : verdict.decision === 'deny'
           ? 'deny' as const
           : 'ask' as const;
+      // Release the phone's liveness header. `agent.awaiting_permission` put it
+      // in "waiting on you, elapsed N s", and nothing else would take it back
+      // out: the wide PostToolUse hook this used to ride was removed, so the
+      // next signal may be a whole tool call away — and after a 120 s self-defer
+      // there may not be one at all. Without this the header keeps counting up
+      // on a pane that is running again. Allowed → the tool is executing now;
+      // denied or deferred → the pane is working but not on this call.
+      if (gate.sessionId) {
+        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(gate.sessionId, {
+          agent: agentSlugToDisplay(signal.agent),
+          status: 'running',
+          message: '',
+          source: 'hook',
+          hookKind: permissionDecision === 'allow' ? 'agent.tool_started' : 'agent.activity',
+          decision: 'activity',
+          signal,
+        }, Date.now()));
+      }
       return { ok: true, permissionDecision };
     }
     return ingest.handle(params);

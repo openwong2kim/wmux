@@ -1,0 +1,114 @@
+/**
+ * Phone liveness — the pane-state projection of an `agent.event`.
+ *
+ * The phone turn view carries a persistent activity header ("thinking", "Bash
+ * running · 12s", "waiting for you"). That header is deliberately NOT derived
+ * from the turn snapshot: an agent that stalls mid-turn writes nothing, so a
+ * snapshot-derived header would look identical to a healthy pause and the phone
+ * would show a frozen turn as a working one. So it rides its own channel, and
+ * this module is the projection that channel carries.
+ *
+ * Kept out of `WebTerminalServer` on purpose: the web server is a consumer of
+ * already-shaped payloads and must not learn hook envelope shapes (the same
+ * reasoning as the approval registry and the transcript projector, which it
+ * also takes as types only).
+ */
+import type { HookAgentEventData } from './HookIngest';
+
+/**
+ * What the header says the pane is doing.
+ *
+ * ADDITIVE union, same rule as `TurnEventKind`: a client that meets an unknown
+ * state must fall back to a neutral "working" rendering rather than dropping
+ * the event, so a later daemon can add a state without a phone update.
+ *
+ * `awaiting_permission` overlaps the approval event the phone already gets, and
+ * is carried anyway: approvals ride the recorded attention log for the badge,
+ * while this is the header's own view of the same moment. A phone that has not
+ * opened the pane never sees this one.
+ */
+export type AgentLivenessState =
+  | 'busy'
+  | 'tool'
+  | 'awaiting_permission'
+  | 'awaiting_input'
+  | 'idle';
+
+/** The `agent.liveness` SSE payload. */
+export interface AgentLivenessBody {
+  sessionId: string;
+  state: AgentLivenessState;
+  /** Tool name, for `tool` / `awaiting_permission`. Absent when unknown. */
+  tool?: string;
+  /** Agent DISPLAY name ("Claude Code"), matching `agent.event`. */
+  agent: string;
+  /** ms epoch the state was entered. The phone renders elapsed from this. */
+  at: number;
+}
+
+/**
+ * States that must reach the phone NOW rather than at the end of a coalescing
+ * window. All three mean "the pane stopped on its own" — a header that says
+ * "Bash running" for another second after the agent started waiting for a human
+ * is a worse lie than a tool name that lags, because it is the exact state the
+ * user is watching the header to catch.
+ */
+export function isTerminalLiveness(state: AgentLivenessState): boolean {
+  return state === 'idle' || state === 'awaiting_input' || state === 'awaiting_permission';
+}
+
+/** A tool name is an identifier; anything longer than this is not one. */
+const MAX_TOOL_NAME_CHARS = 64;
+
+/**
+ * The tool name as it may be shown in a header, or nothing.
+ *
+ * The value comes off a hook envelope, and `daemon.hooks.signal` is reachable by
+ * anything on the local pipe rather than first-party callers only — so this is
+ * an untrusted string that ends up rendered on every watching device. Control
+ * characters go (they have no place in an identifier and are how a payload
+ * smuggles line structure into a display), and the length is bounded.
+ */
+function sanitizeToolName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!cleaned) return undefined;
+  return cleaned.length > MAX_TOOL_NAME_CHARS
+    ? cleaned.slice(0, MAX_TOOL_NAME_CHARS)
+    : cleaned;
+}
+
+/**
+ * Project one `agent.event` payload onto the header state.
+ *
+ * `status` mostly wins over `hookKind` — the stop kinds settle the pane, and the
+ * metadata kinds all carry `status:'running'` so they only ever refine the busy
+ * case. The ONE exception is `agent.subagent_stop`, which also arrives as
+ * `status:'complete'` ("Subagent finished") while the pane's own turn keeps
+ * going: taking that at face value would flip the header to idle every time a
+ * subagent finishes, on a pane that is still working. HookIngest already treats
+ * it as not-a-turn-boundary; the header has to agree.
+ */
+export function deriveAgentLiveness(
+  sessionId: string,
+  data: HookAgentEventData,
+  at: number,
+): AgentLivenessBody {
+  const tool = sanitizeToolName(data.signal?.payload?.['tool_name']);
+  let state: AgentLivenessState = 'busy';
+  const subagentStop = data.hookKind === 'agent.subagent_stop'
+    || data.signal?.kind === 'agent.subagent_stop';
+  if (subagentStop) state = 'busy';
+  else if (data.status === 'complete') state = 'idle';
+  else if (data.status === 'awaiting_input') state = 'awaiting_input';
+  else if (data.hookKind === 'agent.awaiting_permission') state = 'awaiting_permission';
+  else if (data.hookKind === 'agent.tool_started') state = 'tool';
+  return {
+    sessionId,
+    state,
+    ...(tool && (state === 'tool' || state === 'awaiting_permission') ? { tool } : {}),
+    agent: data.agent,
+    at,
+  };
+}

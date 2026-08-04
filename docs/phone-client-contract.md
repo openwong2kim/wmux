@@ -185,10 +185,31 @@ JSON backlog fetch (Bearer only).
 | `notify` | `{...payload, tier, id, epoch}` |
 | `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
 | `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
+| `agent.liveness` | `{sessionId, state, tool?, agent, at}` — what the pane is doing right now |
+| `gate.state` | `{gateEnabled}` — the permission gate was armed or disarmed |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
-**`transcript.nudge` is the one event that is NOT in the backlog.** Every other
+`state` is `busy` / `tool` / `awaiting_permission` / `awaiting_input` / `idle`,
+and the union is **additive** — render an unknown state as a neutral "working"
+rather than dropping the event, the same rule `TurnEventKind` follows. `tool`
+carries the tool name when the daemon knows it, and only for the two tool
+states. `at` is the ms epoch the state was entered: render elapsed time from it
+rather than from when the event arrived, because the event may have waited out a
+coalescing window.
+
+Use this for a persistent activity header, and **do not derive that header from
+the turn snapshot instead**. An agent that stalls mid-turn writes nothing, so a
+snapshot-derived header cannot tell a stalled pane from a thinking one; this
+channel can, because it is fed by the agent's own hooks.
+
+`gate.state` fires when any device (or the operator) flips the permission gate,
+which is daemon-wide state: without it, the other phones' toggles keep showing
+what was true before. It is live-only like the two above — `GET /api/config`
+holds the authoritative value, so read that on reconnect rather than trying to
+replay transitions.
+
+**These three events are the ones that are NOT in the backlog.** Every other
 kind is recorded, carries `id`/`epoch`, and replays on `?since=<cursor>`. The
 nudge is live-only and deliberately so: a busy pane raises one roughly every
 second, and recording those would push a pending `approval` out of the bounded
@@ -203,6 +224,15 @@ and is dropped outright while your SSE is down. Re-fetch the turn view once on
 every reconnect rather than waiting to be told. And **you only get nudges for
 panes whose turn view you have actually read** — the server starts sending them
 after your first successful `/turns` call for that pane.
+
+`agent.liveness` is live-only for the same reason and follows the same two
+rules, with one difference: its coalescing window keeps the **newest** state
+rather than the first, since a header is a state and not a "something changed"
+ping. The three settled states (`idle`, `awaiting_input`, `awaiting_permission`)
+skip the window entirely and are sent immediately — those are the transitions a
+user is watching the header to catch. A client that reconnects gets no liveness
+replay and should show a neutral header until the next event; a pane that went
+idle while the SSE was down is caught by the turn view, not by this channel.
 
 Identity fields (`id`, `epoch`) — and `tier` — are stamped **last**, so a
 pane-supplied payload can never shadow them.
@@ -285,14 +315,24 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, protocolVersion,
-                      minProtocolVersion, serverVersion}
+GET /api/config    → {allowInput, allowUpload, allowTranscript, gatedTools,
+                      gateEnabled?, protocolVersion, minProtocolVersion,
+                      serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
 `agent` is null when the pane is not running one; `shell` then says what to call
 it.
+
+`gatedTools` lists the tools whose calls wait for a remote answer, so a client
+can say *why* something is pending. `gateEnabled` says whether that gate is
+armed at all — it is what a settings toggle should open showing. **Absent is not
+`false`**: a daemon that predates the field simply does not report it, and the
+gate defaults to on, so treat a missing key as "unknown" and not as "off". The
+gate is daemon-wide rather than per-device, so a change made from one phone
+applies to every device; see `gate.state` above for the push that keeps them in
+step, and re-read this route on reconnect for the authoritative value.
 
 `POST /api/input` is **403 unless the server was started with `--allow-input`**.
 Check `/api/config` and hide the keyboard rather than letting a user type into a
@@ -527,6 +567,43 @@ conversation being unavailable.
 **Reading is stateless.** Nothing you do here touches the desktop Chat View
 watching the same pane — no subscription, no shared cursor. Two devices and a
 desk can read one session at once and none of them can move the others.
+
+#### Opening a code block or a tool body
+
+```
+GET /api/sessions/<id>/turns/block?srcOffset=<n>&n=<n>[&eventId=<id>]
+  → 200 {body, bytes, truncated?}
+  → 400 {error: 'bad-block-ref', detail}
+  → 403 {error: 'transcript-disabled: …'}
+  → 404 {error: 'session not found'} | {error: 'block not found'}
+  → 503 {error: 'transcript projector unavailable'}
+```
+
+Turn pages never carry large bodies. A fenced code block arrives as a chip
+(`codeBlocks: [{n, lines, lang, path?, srcOffset}]`, with the prose carrying an
+inline ` code:<n> ` marker where it belongs), and a tool body over the
+inline cap arrives as `{n, bytes, inline?, truncated, srcOffset}`. Both are
+handles: pass the ref's `srcOffset` and `n` here when the user expands one.
+
+Send `eventId` — the id of the event the ref came from — whenever you have it.
+Transcripts rotate, and without it an offset from an older file can resolve
+inside a different conversation. The server re-reads that one transcript line
+per request and caches nothing, so expanding the same block twice is two reads
+rather than a stale copy.
+
+`bytes` is the body's true size. `truncated: true` means what you got is only
+its head (the server caps one body at 256 KB) — say so in the UI rather than
+letting someone copy a shortened body out believing it is whole.
+
+**`404 block not found` never means "the block was empty".** It means the ref
+did not resolve, and there are two reasons it might not. Usually the ref is
+stale — the file rotated, or the offset no longer starts a line — and re-fetching
+the turn page fixes it. But the daemon also reads one transcript line up to a
+fixed ceiling, so a block inside an unusually large entry (roughly half a
+megabyte of JSON) cannot be parsed at all and answers 404 permanently. Re-fetch
+once; if the fresh chip 404s again, show the block as unavailable rather than
+retrying, and keep the chip's `lines`/`lang` visible so the user still sees what
+is there.
 
 ---
 

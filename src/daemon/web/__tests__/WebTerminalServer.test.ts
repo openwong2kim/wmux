@@ -110,6 +110,10 @@ function makeDeps() {
               rows: row.rows,
               cwd: '/tmp/osc7-said-so',
               spawnCwd: row.cwd,
+              // The real manager carries the child env on `meta`. Without it here
+              // an env-marker check reads as absent and a test can only ever
+              // exercise the id-prefix half of it (review: CodeRabbit).
+              env: row.env,
             },
           }
         : undefined;
@@ -361,8 +365,11 @@ describe('WebTerminalServer', () => {
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
+  /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
+  let gateArmed: boolean;
 
   beforeEach(() => {
+    gateArmed = true;
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -396,6 +403,9 @@ describe('WebTerminalServer', () => {
       git: deps.git,
       uploadsDir: deps.uploadsDir,
       projector: () => projectorMock as unknown as TranscriptProjector,
+      gateConfig: () => ({ gatedTools: ['Bash'] }),
+      gateEnabled: () => gateArmed,
+      setGateEnabled: (enabled) => { gateArmed = enabled; },
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -3665,6 +3675,259 @@ describe('WebTerminalServer', () => {
       const after = await (await fetch(`${base()}/api/events`, { headers: h })).json();
       expect(after.headId).toBe(before.headId);
       expect(after.events).toEqual(before.events);
+    });
+
+    it('★ /api/config reports whether the gate is armed, and a flip reaches other devices', async () => {
+      const info = await server.start({
+        port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false,
+      });
+      const h = bearer(info.token as string);
+
+      const armed = await (await fetch(`${base()}/api/config`, { headers: h })).json();
+      expect(armed.gateEnabled).toBe(true);
+      expect(armed.gatedTools).toEqual(['Bash']);
+
+      // A second device is watching the attention channel. The gate is daemon-
+      // wide, so the flip below is a change to what IT is looking at.
+      const ac = new AbortController();
+      const stream = await fetch(`${base()}/api/events`, {
+        signal: ac.signal,
+        headers: { ...h, Accept: 'text/event-stream' },
+      });
+      const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+      let wire = '';
+      const pump = (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            if (chunk.value) wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch {
+          /* aborted at the end of the test */
+        }
+      })();
+
+      try {
+        const off = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
+        expect(off.status).toBe(200);
+        expect((await off.json()).gateEnabled).toBe(false);
+
+        await new Promise((r) => setTimeout(r, 150));
+        expect(wire).toContain('event: gate.state');
+        expect(wire).toContain('"gateEnabled":false');
+
+        // ...and the next client to ask reads the new state rather than the
+        // default it would have had to guess.
+        const disarmed = await (await fetch(`${base()}/api/config`, { headers: h })).json();
+        expect(disarmed.gateEnabled).toBe(false);
+      } finally {
+        ac.abort();
+        await pump;
+      }
+    });
+
+    it('★ a read-only server reports the gate as OFF — it cannot hold anything', async () => {
+      const info = await startRO();
+      const h = bearer(info.token as string);
+      // Disarming widens what runs without review, so it takes the same grant as
+      // typing.
+      const res = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
+      expect(res.status).toBe(403);
+      // ...but the reported state must be the EFFECTIVE one. The daemon only
+      // holds a tool call when the runtime flag is clear AND this server can
+      // resolve gates; a read-only server raises cards nobody can answer, so it
+      // lets everything through. `gateArmed` is still true here — reporting that
+      // would tell the phone calls are being held while none are.
+      expect(gateArmed).toBe(true);
+      expect((await (await fetch(`${base()}/api/config`, { headers: h })).json()).gateEnabled).toBe(false);
+    });
+
+    it('serves a code-block body behind the same grant as the turn page', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      projectorMock.codeBlock.mockReturnValue({ body: 'console.log(1)\n' });
+
+      const res = await fetch(
+        `${base()}/api/sessions/s1/turns/block?srcOffset=64&n=2&eventId=ev-1`,
+        { headers: h },
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ body: 'console.log(1)\n', bytes: 15 });
+      // The eventId rides through: without it a rotated file answers at the same
+      // offset with another conversation's code.
+      expect(projectorMock.codeBlock).toHaveBeenCalledWith('s1', {
+        srcOffset: 64,
+        n: 2,
+        eventId: 'ev-1',
+      });
+    });
+
+    it('★ a stale ref is a 404, and an over-cap body says it was cut', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+
+      // Rotated file / mid-line offset — the projector refuses. An empty 200
+      // here would render as "this block is empty" instead of "re-fetch".
+      projectorMock.codeBlock.mockReturnValue(null);
+      const stale = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=9&n=1`, { headers: h });
+      expect(stale.status).toBe(404);
+      expect((await stale.json()).error).toBe('block not found');
+
+      // Garbage refs never reach the projector.
+      projectorMock.codeBlock.mockClear();
+      // `Number('')` and `Number(null)` are both 0, so an empty param and a
+      // missing one would each read as "offset 0" and serve a block from the
+      // first line of the file.
+      for (const q of [
+        'srcOffset=-1&n=1', 'srcOffset=0&n=0', 'srcOffset=abc&n=1',
+        'n=1', 'srcOffset=&n=1', 'srcOffset=0&n=', 'srcOffset=%20&n=1',
+      ]) {
+        const bad = await fetch(`${base()}/api/sessions/s1/turns/block?${q}`, { headers: h });
+        expect(bad.status).toBe(400);
+      }
+      expect(projectorMock.codeBlock).not.toHaveBeenCalled();
+
+      // A large tool body is cut at the cap, and SAYS it was cut — the seam
+      // lands mid-character here, which must not surface as U+FFFD. The cap is
+      // 256 KB and must stay under the projector's 512 KB line-read ceiling: at
+      // or above it, no body could ever reach the branch (2-MODEL review).
+      const huge = `${'a'.repeat(256 * 1024 - 1)}가나다`;
+      projectorMock.codeBlock.mockReturnValue({ body: huge });
+      const capped = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=0&n=1`, { headers: h });
+      const body = await capped.json();
+      expect(capped.status).toBe(200);
+      expect(body.truncated).toBe(true);
+      expect(body.bytes).toBe(Buffer.byteLength(huge, 'utf8'));
+      expect(body.body).not.toContain('�');
+      expect(Buffer.byteLength(body.body, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+    });
+
+    it('★ the orchestrator brain pane is unreadable, even with its id in hand', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      // A brain pty IS a live daemon session, and `getSession` says so. It is
+      // excluded from the pane list, so a phone should never see one — but ids
+      // are guessable by prefix and can ride an approval payload, and existence
+      // alone used to be the whole check on these two routes.
+      // Both marks, on separate panes: `isBrainPty` checks the env marker first
+      // and falls back to the id prefix, and a daemon build that omits env from a
+      // session must still refuse. One pane per mark keeps them independent.
+      live.push({
+        id: 'brain-ws-1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: {}, cmd: '/usr/bin/claude',
+      });
+      live.push({
+        id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+      });
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [{ id: 'e', kind: 'assistant_text', text: 'orchestrator secrets' }],
+        cursor: { headOffset: 0, tailOffset: 1, fileSize: 1, mtimeMs: 0 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+      projectorMock.codeBlock.mockReturnValue({ body: 'orchestrator secrets' });
+
+      for (const id of ['brain-ws-1', 'pty-orchestrator']) {
+        const turns = await fetch(`${base()}/api/sessions/${id}/turns`, { headers: h });
+        expect(turns.status).toBe(404);
+        const block = await fetch(
+          `${base()}/api/sessions/${id}/turns/block?srcOffset=0&n=1`,
+          { headers: h },
+        );
+        expect(block.status).toBe(404);
+      }
+      // Refused before the projector was consulted at all.
+      expect(projectorMock.snapshot).not.toHaveBeenCalled();
+      expect(projectorMock.codeBlock).not.toHaveBeenCalled();
+
+      // The guard is not "refuse everything" — an ordinary pane still reads.
+      const ok = await fetch(`${base()}/api/sessions/s2/turns`, { headers: h });
+      expect(ok.status).toBe(200);
+    });
+
+    it('the block route refuses without --allow-transcript, by tag', async () => {
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=0&n=1`, {
+        headers: bearer(info.token as string),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error.startsWith('transcript-disabled:')).toBe(true);
+    });
+
+    it('★ liveness is non-recording and reaches only panes the device has read', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [],
+        cursor: { headOffset: 0, tailOffset: 0, fileSize: 0, mtimeMs: 0 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+
+      const ac = new AbortController();
+      const stream = await fetch(`${base()}/api/events`, {
+        signal: ac.signal,
+        headers: { ...h, Accept: 'text/event-stream' },
+      });
+      const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+      // One continuous pump into a buffer. A read-with-timeout loop would leave
+      // a pending read() behind on every timeout, and that orphan consumes the
+      // next chunk into a promise nobody awaits — the event vanishes.
+      let wire = '';
+      const pump = (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            if (chunk.value) wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch {
+          /* aborted at the end of the test */
+        }
+      })();
+      const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      try {
+        // Not a watcher yet — the device never opened s1's turn view, so its SSE
+        // must not carry s1's per-tool-call traffic.
+        server.emitAgentLiveness({ sessionId: 's1', state: 'idle', agent: 'Claude Code', at: 1 });
+        await settle(150);
+        expect(wire).not.toContain('agent.liveness');
+
+        expect((await fetch(`${base()}/api/sessions/s1/turns`, { headers: h })).status).toBe(200);
+
+        // A settled state skips the coalescing window: it is the transition the
+        // header exists to catch, so it must not wait out a second.
+        const before = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+        server.emitAgentLiveness({
+          sessionId: 's1',
+          state: 'awaiting_input',
+          agent: 'Claude Code',
+          at: 2,
+        });
+        await settle(200);
+        expect(wire).toContain('event: agent.liveness');
+        expect(wire).toContain('"state":"awaiting_input"');
+
+        // ...and none of it is recorded: a busy pane's liveness must never evict
+        // a pending approval from the replay window (#782 CRITICAL 3).
+        for (let i = 0; i < 60; i++) {
+          server.emitAgentLiveness({ sessionId: 's1', state: 'tool', tool: 'Bash', agent: 'Claude Code', at: i });
+        }
+        const after = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+        expect(after.headId).toBe(before.headId);
+        expect(after.events).toEqual(before.events);
+      } finally {
+        ac.abort();
+        await pump;
+      }
     });
   });
 });
