@@ -179,6 +179,31 @@ describe('main log sink', () => {
     expect(fs.existsSync(`${file}.lock`)).toBe(false);
   });
 
+  it('does not delete a lock that another process took over while it was working', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-lock-owner-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'main-2026-08-04.log');
+    const lockPath = `${file}.lock`;
+    // Reaching into the private lock helper: the scenario is a live holder that
+    // ran long enough to be declared stale, which no public call can stage.
+    const writer = new BoundedLogWriter(8, 1) as unknown as {
+      withRotationLock(target: string, fn: () => void): boolean;
+    };
+
+    let ranInside = false;
+    const acquired = writer.withRotationLock(file, () => {
+      ranInside = true;
+      // Another process decides our lock is stale, takes it, and is now the
+      // legitimate holder. Our release must leave its lock alone.
+      fs.unlinkSync(lockPath);
+      fs.writeFileSync(lockPath, 'held-by-another-process');
+    });
+
+    expect(acquired).toBe(true);
+    expect(ranInside).toBe(true);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe('held-by-another-process');
+  });
+
   it('breaks a rotation lock abandoned by a crashed process', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-stale-lock-'));
     tempDirs.push(dir);

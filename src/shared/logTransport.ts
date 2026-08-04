@@ -179,6 +179,13 @@ export class BoundedLogWriter {
    * atomic syscall on every platform we ship. A lock left behind by a crashed
    * process is broken once it goes stale. Returns false when the lock could not
    * be taken, in which case `fn` never ran.
+   *
+   * Releasing checks that the file at the path is still the one we created.
+   * Staleness is a guess: a live holder that ran long can be declared stale and
+   * have its lock taken, and it must not then delete the new owner's lock on
+   * the way out — that would put two processes inside the rotation at once,
+   * which is the race the lock exists to prevent. (Windows may report `ino` as
+   * 0 for both, in which case the check passes and behaviour is unchanged.)
    */
   private withRotationLock(filePath: string, fn: () => void): boolean {
     const lockPath = `${filePath}.lock`;
@@ -195,12 +202,23 @@ export class BoundedLogWriter {
         return false;
       }
     }
+    let owned: fs.Stats | null;
+    try {
+      owned = fs.fstatSync(fd);
+    } catch {
+      owned = null; // cannot identify it; fall back to unconditional release
+    }
     try {
       fn();
       return true;
     } finally {
       try { fs.closeSync(fd); } catch { /* already closed */ }
-      try { fs.unlinkSync(lockPath); } catch { /* already reaped */ }
+      try {
+        const current = fs.statSync(lockPath);
+        if (!owned || (current.ino === owned.ino && current.dev === owned.dev)) {
+          fs.unlinkSync(lockPath);
+        }
+      } catch { /* already reaped */ }
     }
   }
 }
