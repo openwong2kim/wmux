@@ -23,8 +23,9 @@
 // coherently if it does:
 //
 //   PREVENT  When a shared atlas's page count approaches the merge trigger
-//            (trigger − GUARD_MARGIN_PAGES) AND the last page is actually in
-//            use (pool genuinely refilled, not just long), clear the atlas
+//            (trigger − GUARD_MARGIN_PAGES) AND that many pages are actually
+//            OCCUPIED (a long pool of empty pages is nowhere near a merge —
+//            see defect 2 below), clear the atlas
 //            (clearTexture empties every page in place and clears both cache
 //            maps) and refresh every pane sharing it in the same tick. That is
 //            the coherent all-owners rebuild upstream itself performs on font
@@ -58,27 +59,28 @@
 //            prefers it: `_deletePage` is only ever reached from the merge
 //            path, making it an exact, real-time signal with no sampling gap.
 //
-// The "last page in use" condition is MEANT to double as the anti-thrash gate:
-// right after a clear every page is empty, so PREVENT cannot refire until the
-// pool genuinely fills end-to-end again.
+// Two independent defects made that repair fire 4657 times in one day and
+// achieve nothing. Both are fixed here.
 //
-// That gate does not hold in the field on v3.38.6: upstream `clearTexture()`
-// returns early when `_pages[0]` is ALREADY idle, and page 0 is exactly the page
-// that stays idle once refill resumes from the tail — so the clear becomes a
-// no-op while the pool stays full and PREVENT re-fires every poll (measured: 305
-// consecutive `prevent — pages=14/16`, zero cure). Left as-is here deliberately:
-// fixing the thrash is its own change. What matters for THIS module is that the
-// merge detector must keep working THROUGH such a storm, which is why the poll
-// re-snapshots its baseline after a rebuild instead of dropping it (see tick).
+//   1. The clear did not clear. Upstream `clearTexture()` short-circuits on a
+//      page-0-only "already clean" probe, and page 0 is exactly the page that
+//      stays empty once refill resumes from the tail — so it became a permanent
+//      no-op. `clearAtlasTexture` below defeats that probe and VERIFIES the
+//      postcondition instead of assuming it.
 //
-// That gate silently stopped working, because the clear behind it silently
-// stopped working: upstream `clearTexture()` short-circuits on a page-0-only
-// "already clean" probe, and page 0 is exactly the page that stays empty once
-// refill resumes from the tail. So the clear became a permanent no-op, the pool
-// never emptied, and PREVENT re-fired every single poll — 4657 guard events in
-// one day against 6 cures, with nothing to show for them. `clearAtlasTexture`
-// below defeats that probe and, crucially, VERIFIES the postcondition instead
-// of assuming it, so this class of silent failure cannot come back unseen.
+//   2. The gate measured the wrong thing. PREVENT asked "is the LAST page in
+//      use", but allocation resumes from `_activePages[length - 1]`, so one
+//      glyph after a clear re-arms it immediately — there is no anti-thrash
+//      property in that condition at all, whether or not the clear works. It
+//      now measures OCCUPANCY (`used >= preventAt`), which is what actually
+//      predicts a merge: upstream only merges from `_createNewPage`, and a new
+//      page is only created when a glyph fits in no existing page. Measured in
+//      the field at the moment of a PREVENT storm: 15 pages, 1 in use — every
+//      one of those firings was spurious.
+//
+// Fixing only (1) would have been worse than shipping neither: the no-op loop
+// would have become a real full-atlas wipe plus an all-pane re-raster, every
+// two seconds, forever.
 //
 // Internal-field dependency: reaching the atlas needs `addon._renderer
 // ._charAtlas` (same accepted trade-off as webglTeardown.ts's `_renderer._gl`)
@@ -375,9 +377,19 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const mergeTrigger = Math.max(4, maxPages);
       const preventAt = Math.max(2, mergeTrigger - marginPages);
 
-      const lastPage = len > 0 ? pages[len - 1] : undefined;
-      const lastPageInUse =
-        (lastPage?.currentRow?.x ?? 0) > 0 || (lastPage?.currentRow?.y ?? 0) > 0;
+      // Occupancy, not "has the last page been touched". Upstream only merges
+      // from `_createNewPage`, and a new page is only created when a glyph fits
+      // in NO existing page — i.e. when the pages in use are full. A long pool
+      // of mostly-empty pages is not close to a merge at all.
+      //
+      // The old proxy read the last page alone, which is exactly the page that
+      // refills first: allocation resumes from `_activePages[length - 1]`, so a
+      // single glyph after a clear put it back "in use" and PREVENT re-armed on
+      // the very next poll. In the field that fired 4657 times in one day at an
+      // occupancy of 1 page out of 15 — every one of them spurious, and every
+      // one now paying for a full atlas wipe and an all-pane re-raster.
+      let used = 0;
+      for (let i = 0; i < len; i++) if (pageInUse(pages[i])) used++;
 
       // Exact push signal first: a page removal can only come from the merge
       // path, and it sees merges that happened entirely between two samples.
@@ -386,13 +398,13 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const removed = latch?.fired ?? false;
       if (latch) latch.fired = false;
       const mergeSignal: MergeSignal | null = removed ? 'page-removed' : detectMerge(prev, tags);
-      const nearTrigger = len >= preventAt && lastPageInUse;
+      const nearTrigger = len >= preventAt && used >= preventAt;
       if (!mergeSignal && !nearTrigger) continue;
 
       const outcome = rebuildGroup(atlas, group);
       console.warn(
         `[wmux:atlas-guard] ${mergeSignal ? `cure (merge detected: ${mergeSignal})` : 'prevent'}` +
-          ` — pages=${len}/${mergeTrigger}, panes=${group.length}, clear=${outcome}`,
+          ` — pages=${used}/${len} used, cap=${mergeTrigger}, panes=${group.length}, clear=${outcome}`,
       );
       // Re-baseline from the POST-rebuild pool. The rebuild is itself a
       // structural change, so a snapshot taken before it could read as a merge

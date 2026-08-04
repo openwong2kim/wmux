@@ -87,6 +87,23 @@ class FakeAtlas {
   anyPageInUse(): boolean {
     return this.pages.some((p) => p.currentRow.x > 0 || p.currentRow.y > 0);
   }
+  pagesInUse(): number {
+    return this.pages.filter((p) => p.currentRow.x > 0 || p.currentRow.y > 0).length;
+  }
+  /** What a pane's refresh() actually does to the pool: the re-raster allocates
+   *  from `_activePages[length - 1]`, so the LAST page is back in use before the
+   *  next poll — however thoroughly the clear emptied things. */
+  refillTail(): void {
+    if (this.pages.length > 0) this.pages[this.pages.length - 1].currentRow = { x: 17, y: 64 };
+  }
+  /** Genuinely near a merge — every page occupied EXCEPT page 0, which is the
+   *  one upstream's "already clean" probe reads. This is the state where both
+   *  defects bite at once: the gate should fire, and the clear must not
+   *  short-circuit. */
+  occupyAllButFirst(): void {
+    for (const p of this.pages) p.currentRow = { x: 12, y: 340 };
+    this.pages[0].currentRow = { x: 0, y: 0 };
+  }
 }
 
 function addonFor(atlas: FakeAtlas | null): unknown {
@@ -139,13 +156,19 @@ describe('atlasGuard', () => {
     expect(pane.refreshes()).toBe(0);
   });
 
-  it('does not fire when the last page is empty (pool long but not refilled)', () => {
-    const atlas = new FakeAtlas(PREVENT_AT + 2, /* lastPageInUse */ false);
+  it('does not fire when the pool is long but mostly empty (the observed field state)', () => {
+    // 15 pages exist, 1 holds glyphs — measured live while the old gate was
+    // firing every poll. Nothing here is close to needing a new page, so a
+    // merge is not close either.
+    const atlas = new FakeAtlas(15, true);
+    atlas.lockOutClear(); // all idle except the tail
+    expect(atlas.pagesInUse()).toBe(1);
     const guard = createAtlasGuard();
     const pane = makePane(atlas);
     guard.register(pane.entry);
-    vi.advanceTimersByTime(GUARD_POLL_MS * 3);
+    vi.advanceTimersByTime(GUARD_POLL_MS * 5);
     expect(atlas.clearCalls).toBe(0);
+    expect(pane.refreshes()).toBe(0);
   });
 
   it('anti-thrash: after a PREVENT clear, does not refire until the pool refills end-to-end', () => {
@@ -349,20 +372,53 @@ describe('atlasGuard', () => {
     expect(atlas.pages[0].currentRow).toEqual({ x: 0, y: 0 }); // no residue
   });
 
-  it('PREVENT stops thrashing once the clear actually empties the pool', () => {
-    // The 4657-events-a-day loop: PREVENT fires, the clear no-ops, the pool
-    // stays full, PREVENT fires again on the very next poll — forever.
+  it('PREVENT does not re-arm when refresh() puts the tail page straight back in use', () => {
+    // Raised in review: making the clear effective is not enough on its own.
+    // Every pane's refresh() re-rasters immediately, and allocation resumes
+    // from `_activePages[length - 1]`, so the LAST page is in use again before
+    // the next poll. A gate that reads the last page therefore re-arms every
+    // 2s no matter how well the clear worked — and now each iteration pays for
+    // a real atlas wipe plus an all-pane re-raster, which is worse than the
+    // no-op loop it replaced. Occupancy is what has to fall, and it does.
     const atlas = new FakeAtlas(PREVENT_AT, true);
-    atlas.lockOutClear();
+    const guard = createAtlasGuard();
+    // Model the real feedback loop: refreshing a pane refills the tail page.
+    const pane = {
+      getAddon: () => addonFor(atlas),
+      refresh: () => { refreshes++; atlas.refillTail(); },
+    };
+    let refreshes = 0;
+    guard.register(pane);
+
+    vi.advanceTimersByTime(GUARD_POLL_MS);
+    expect(atlas.effectiveClears).toBe(1);
+    expect(atlas.pagesInUse()).toBe(1); // cleared, then the tail came straight back
+
+    // The tail IS in use again — the old gate's condition is satisfied — but
+    // occupancy is 1 of 12, so nothing fires.
+    vi.advanceTimersByTime(GUARD_POLL_MS * 10);
+    expect(atlas.effectiveClears).toBe(1);
+    expect(refreshes).toBe(1);
+  });
+
+  it('PREVENT stops thrashing once the clear actually empties the pool', () => {
+    // Both defects in one state: the pool IS genuinely near a merge (occupancy
+    // 14 of 15) so PREVENT must fire, and page 0 is the idle one so upstream's
+    // probe would short-circuit the clear. Before, that produced the
+    // 4657-events-a-day loop — fire, no-op, pool still full, fire again.
+    const atlas = new FakeAtlas(15, true);
+    atlas.occupyAllButFirst();
+    expect(atlas.pagesInUse()).toBe(14); // occupancy over the threshold
     const guard = createAtlasGuard();
     const pane = makePane(atlas);
     guard.register(pane.entry);
 
     vi.advanceTimersByTime(GUARD_POLL_MS);
-    expect(atlas.effectiveClears).toBe(1); // the clear took effect…
+    expect(atlas.skippedClears).toBe(0); // the short-circuit was defeated…
+    expect(atlas.effectiveClears).toBe(1); // …so the clear took effect…
     expect(atlas.anyPageInUse()).toBe(false); // …and the pressure dropped
 
-    // …so the anti-thrash gate engages: no further firing while the pool is idle.
+    // …so the anti-thrash gate engages: no further firing while occupancy is low.
     vi.advanceTimersByTime(GUARD_POLL_MS * 5);
     expect(atlas.effectiveClears).toBe(1);
     expect(pane.refreshes()).toBe(1);
