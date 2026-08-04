@@ -56,8 +56,13 @@
 //            Neither polled signal can see a merge confined to pages BORN AND
 //            DESTROYED between two samples (raised in review on #790), so the
 //            guard also subscribes to upstream's page-removal event and
-//            prefers it: `_deletePage` is only ever reached from the merge
-//            path, making it an exact, real-time signal with no sampling gap.
+//            prefers it. Verified against the installed @xterm/addon-webgl
+//            0.19.0: `_onRemoveTextureAtlasCanvas.fire` has exactly ONE call
+//            site, inside `_mergePages` (TextureAtlas.ts:224) — which only
+//            `_createNewPage`'s merge branch calls — so the event cannot mean
+//            anything but a merge. It fires once per consumed page, just
+//            before the deletes, making it an exact real-time signal with no
+//            sampling gap.
 //
 // Two independent defects made that repair fire 4657 times in one day and
 // achieve nothing. Both are fixed here.
@@ -117,8 +122,9 @@ interface AtlasLike {
   pages?: ArrayLike<{ currentRow?: { x?: number; y?: number } }>;
   clearTexture?: () => void;
   constructor?: { maxAtlasPages?: number };
-  /** Upstream public event, fired from `_deletePage` — which is only ever
-   *  reached from the merge path. An exact, real-time merge signal. */
+  /** Upstream public event. Its only emitter is `_mergePages`, reached solely
+   *  from `_createNewPage`'s merge branch — so it is an exact, real-time merge
+   *  signal (verified against @xterm/addon-webgl 0.19.0). */
   onRemoveTextureAtlasCanvas?: (listener: (canvas: unknown) => void) => unknown;
 }
 
