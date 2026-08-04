@@ -10,6 +10,7 @@
  * This sink:
  *   - tees process.stderr.write to a daily-rotated log file in
  *     `app.getPath('logs')` (Windows: %APPDATA%\wmux\logs\main-YYYY-MM-DD.log)
+ *   - caps each file at 16 MiB and keeps three numbered archives
  *   - exposes `logLine(level, source, message)` for explicit instrumentation
  *
  * Best-effort: every write is wrapped in try/catch. The sink must never
@@ -26,6 +27,10 @@ let currentLogPath: string | null = null;
 let currentDate = '';
 let initialised = false;
 let logDirCreated = false;
+
+/** Each daily file is capped at 16 MiB with three archives (64 MiB/day max). */
+export const MAX_LOG_FILE_BYTES = 16 * 1024 * 1024;
+export const MAX_LOG_ARCHIVES = 3;
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -71,6 +76,181 @@ function resolveLogPath(): string | null {
 }
 
 /**
+ * Synchronous bounded writer used by the tee. Small writes rotate as a unit so
+ * normal log lines are never split. A single oversized write is chunked across
+ * generations, keeping every individual file within the configured cap.
+ */
+export class BoundedLogWriter {
+  private activePath: string | null = null;
+  private activeBytes = 0;
+
+  constructor(
+    private readonly maxBytes = MAX_LOG_FILE_BYTES,
+    private readonly maxArchives = MAX_LOG_ARCHIVES,
+  ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error('maxBytes must be a positive safe integer');
+    }
+    if (!Number.isSafeInteger(maxArchives) || maxArchives < 0) {
+      throw new Error('maxArchives must be a non-negative safe integer');
+    }
+  }
+
+  append(filePath: string, chunk: string | Uint8Array): void {
+    const data = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
+    if (data.length === 0) return;
+    this.activate(filePath);
+
+    // Preserve ordinary log lines as one unit. Only a pathological single
+    // write larger than the whole file cap is split across generations.
+    if (data.length <= this.maxBytes && this.activeBytes > 0 && this.activeBytes + data.length > this.maxBytes) {
+      this.rotate(filePath);
+    }
+
+    let offset = 0;
+    while (offset < data.length) {
+      if (this.activeBytes >= this.maxBytes) this.rotate(filePath);
+      const length = Math.min(this.maxBytes - this.activeBytes, data.length - offset);
+      fs.appendFileSync(filePath, data.subarray(offset, offset + length));
+      this.activeBytes += length;
+      offset += length;
+    }
+  }
+
+  private activate(filePath: string): void {
+    if (this.activePath === filePath) return;
+    let size: number;
+    try {
+      size = fs.statSync(filePath).size;
+    } catch {
+      this.activePath = filePath;
+      this.activeBytes = 0;
+      return;
+    }
+
+    // Upgrade safety: do not rotate a legacy multi-gigabyte file into an
+    // equally oversized archive. Retain its newest bytes, then let the next
+    // append rotate that bounded tail normally.
+    if (size > this.maxBytes) {
+      const tail = Buffer.allocUnsafe(this.maxBytes);
+      const fd = fs.openSync(filePath, 'r');
+      let bytesRead: number;
+      try {
+        bytesRead = fs.readSync(fd, tail, 0, tail.length, size - this.maxBytes);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // Close the read handle before replacing the file; Windows does not
+      // guarantee that a second open can truncate a file with a live handle.
+      fs.writeFileSync(filePath, tail.subarray(0, bytesRead));
+      size = bytesRead;
+    }
+    this.activePath = filePath;
+    this.activeBytes = size;
+  }
+
+  private rotate(filePath: string): void {
+    if (this.maxArchives === 0) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      this.activeBytes = 0;
+      return;
+    }
+
+    const oldest = `${filePath}.${this.maxArchives}`;
+    if (fs.existsSync(oldest)) fs.unlinkSync(oldest);
+    for (let generation = this.maxArchives - 1; generation >= 1; generation--) {
+      const from = `${filePath}.${generation}`;
+      if (fs.existsSync(from)) fs.renameSync(from, `${filePath}.${generation + 1}`);
+    }
+    if (fs.existsSync(filePath)) fs.renameSync(filePath, `${filePath}.1`);
+    this.activeBytes = 0;
+  }
+}
+
+interface TeeStream {
+  write(chunk: unknown, ...rest: unknown[]): boolean;
+  on(event: 'error', listener: (error: NodeJS.ErrnoException) => void): unknown;
+}
+
+/** True for host-pipe failures that must never be logged back to stdio. */
+export function isBrokenPipeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+}
+
+/**
+ * Mirror a stream to the file sink while forwarding to the original target.
+ *
+ * Writable pipe failures are normally delivered through an asynchronous
+ * `error` event, after `write()` has returned. A synchronous try/catch and a
+ * synchronous reentrancy flag cannot catch that event. Disable this one
+ * pass-through target as soon as it errors; file mirroring remains available
+ * and the global uncaughtException handler never receives an EPIPE to log back
+ * into the same broken pipe.
+ */
+export function createResilientTee(
+  stream: TeeStream,
+  mirror: (chunk: unknown) => void,
+): (chunk: unknown, ...rest: unknown[]) => boolean {
+  const orig = stream.write.bind(stream);
+  let forwarding = true;
+  let writing = false;
+
+  // Do not log from this handler: doing so would write to the failing stream.
+  // Any stream error makes the inherited host target unsafe to reuse. The file
+  // sink is independent and continues accepting subsequent writes.
+  stream.on('error', () => { forwarding = false; });
+
+  const completeWithoutForwarding = (rest: unknown[]): true => {
+    const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
+    if (typeof callback === 'function') queueMicrotask(() => { callback(); });
+    return true;
+  };
+
+  return (chunk: unknown, ...rest: unknown[]): boolean => {
+    if (writing) return completeWithoutForwarding(rest);
+    writing = true;
+    try {
+      try { mirror(chunk); } catch { /* file logging is best-effort */ }
+      if (!forwarding) return completeWithoutForwarding(rest);
+      try {
+        // A write callback receives async failures before some stream
+        // implementations emit `error`. Disable forwarding before invoking the
+        // caller so a callback that logs the failure cannot start the loop.
+        const forwardedRest = [...rest];
+        const callbackIndex = forwardedRest.length - 1;
+        const callback = callbackIndex >= 0 ? forwardedRest[callbackIndex] : undefined;
+        if (typeof callback === 'function') {
+          forwardedRest[callbackIndex] = (error?: NodeJS.ErrnoException): void => {
+            if (error) forwarding = false;
+            callback(error);
+          };
+        }
+        return orig(chunk, ...forwardedRest);
+      } catch {
+        // Some hosts throw synchronously instead of emitting `error`.
+        forwarding = false;
+        return completeWithoutForwarding(rest);
+      }
+    } finally {
+      writing = false;
+    }
+  };
+}
+
+const boundedLogWriter = new BoundedLogWriter();
+
+function mirrorToFile(chunk: unknown): void {
+  const filePath = resolveLogPath();
+  if (!filePath) return;
+  const data = typeof chunk === 'string'
+    ? chunk
+    : (chunk instanceof Uint8Array ? chunk : String(chunk));
+  boundedLogWriter.append(filePath, data);
+}
+
+/**
  * Append a structured log line. Writes to stderr only — the file write is
  * handled automatically by the stderr tee installed in `initLogSink()`,
  * which calls `appendFileSync` for immediate disk durability.
@@ -96,60 +276,8 @@ export function initLogSink(): void {
   if (initialised) return;
   initialised = true;
 
-  // Reentrancy guard. Without this, an EPIPE thrown by `orig()` below
-  // becomes an `uncaughtException`, the registered handler logs via
-  // `console.error`, which routes back through *this* override — and
-  // EPIPE re-throws on the same broken pipe. Within ~17 minutes that
-  // grew the log file to 692 MB on a packaged Windows GUI build where
-  // process.stderr is connected to a parent that no longer exists.
-  //
-  // The flag is checked synchronously inside the override; we never
-  // await between set and clear, so single-threadedness of the JS event
-  // loop is sufficient to prevent the recursion.
-  let writing = false;
-
   function makeTee(stream: NodeJS.WriteStream): typeof stream.write {
-    const orig = stream.write.bind(stream);
-    return ((chunk: unknown, ...rest: unknown[]) => {
-      if (writing) {
-        // Recursive entry — drop silently. The outer call already wrote
-        // the original chunk to the file and is in the middle of the
-        // orig() pass-through.
-        return true;
-      }
-      writing = true;
-      try {
-        try {
-          const filePath = resolveLogPath();
-          if (filePath) {
-            const str = typeof chunk === 'string'
-              ? chunk
-              : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
-            // appendFileSync writes through to the OS immediately and fsyncs
-            // before returning. createWriteStream would buffer until 16KB
-            // high-water-mark — for a long-lived main with small log lines
-            // that means the file sits at 0 bytes on disk for the whole
-            // session, defeating the postmortem use case entirely.
-            fs.appendFileSync(filePath, str);
-          }
-        } catch { /* swallow — never break stderr */ }
-
-        // Pass through to the original stream. Wrapped in its own
-        // try/catch because in packaged Windows GUI builds the inherited
-        // pipe handle can be a closed pipe — orig() then throws EPIPE,
-        // which propagates to the caller and becomes uncaughtException.
-        // Catching keeps the log-tee one-way and isolates the "useful"
-        // file write from a busted host stream.
-        try {
-          // @ts-expect-error - spread re-applies original signature
-          return orig(chunk, ...rest);
-        } catch {
-          return true;
-        }
-      } finally {
-        writing = false;
-      }
-    }) as typeof stream.write;
+    return createResilientTee(stream as unknown as TeeStream, mirrorToFile) as typeof stream.write;
   }
 
   // Tee BOTH stdout and stderr to the log file. Pre-this-change only
@@ -178,7 +306,7 @@ function pruneOldLogs(retentionDays: number): void {
     if (!fs.existsSync(dir)) return;
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     for (const file of fs.readdirSync(dir)) {
-      if (!/^main-\d{4}-\d{2}-\d{2}\.log$/.test(file)) continue;
+      if (!/^main-\d{4}-\d{2}-\d{2}\.log(?:\.\d+)?$/.test(file)) continue;
       const full = path.join(dir, file);
       try {
         const st = fs.statSync(full);
