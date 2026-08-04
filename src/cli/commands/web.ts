@@ -360,7 +360,7 @@ function report(
   const nativeTls = info.tls === true;
 
   console.log('');
-  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}`);
+  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}${info.allowTranscript ? '  ·  transcript ENABLED' : ''}`);
   console.log(`  bind ${info.host}:${info.port}${typeof info.clients === 'number' ? `  ·  ${info.clients} viewer(s)` : ''}`);
   console.log('');
 
@@ -455,6 +455,14 @@ function report(
   } else {
     console.log('  Photo upload is off. Re-run with --allow-upload to let a paired');
     console.log('  phone send photos into ~/.wmux/uploads/phone.');
+  }
+  if (info.allowTranscript) {
+    console.log('  Transcript access is ENABLED: a paired phone can read the full Claude');
+    console.log('  session transcript, including thinking, tool inputs, and file contents');
+    console.log('  the agent read.');
+  } else {
+    console.log('  Transcript access is off. Re-run with --allow-transcript to let a');
+    console.log('  paired phone read the full Claude session transcript.');
   }
   if (tailnet || nativeTls) {
     console.log('  PWA: served over HTTPS, so "Add to Home Screen", Android install and');
