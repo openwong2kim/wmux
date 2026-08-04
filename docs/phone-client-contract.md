@@ -186,6 +186,7 @@ JSON backlog fetch (Bearer only).
 | `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
 | `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
 | `agent.liveness` | `{sessionId, state, tool?, agent, at}` — what the pane is doing right now |
+| `gate.state` | `{gateEnabled}` — the permission gate was armed or disarmed |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
@@ -202,8 +203,13 @@ the turn snapshot instead**. An agent that stalls mid-turn writes nothing, so a
 snapshot-derived header cannot tell a stalled pane from a thinking one; this
 channel can, because it is fed by the agent's own hooks.
 
-**`transcript.nudge` and `agent.liveness` are the two events that are NOT in the
-backlog.** Every other
+`gate.state` fires when any device (or the operator) flips the permission gate,
+which is daemon-wide state: without it, the other phones' toggles keep showing
+what was true before. It is live-only like the two above — `GET /api/config`
+holds the authoritative value, so read that on reconnect rather than trying to
+replay transitions.
+
+**These three events are the ones that are NOT in the backlog.** Every other
 kind is recorded, carries `id`/`epoch`, and replays on `?since=<cursor>`. The
 nudge is live-only and deliberately so: a busy pane raises one roughly every
 second, and recording those would push a pending `approval` out of the bounded
@@ -309,14 +315,24 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, protocolVersion,
-                      minProtocolVersion, serverVersion}
+GET /api/config    → {allowInput, allowUpload, allowTranscript, gatedTools,
+                      gateEnabled?, protocolVersion, minProtocolVersion,
+                      serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity, workspace?, shell?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
 `agent` is null when the pane is not running one; `shell` then says what to call
 it.
+
+`gatedTools` lists the tools whose calls wait for a remote answer, so a client
+can say *why* something is pending. `gateEnabled` says whether that gate is
+armed at all — it is what a settings toggle should open showing. **Absent is not
+`false`**: a daemon that predates the field simply does not report it, and the
+gate defaults to on, so treat a missing key as "unknown" and not as "off". The
+gate is daemon-wide rather than per-device, so a change made from one phone
+applies to every device; see `gate.state` above for the push that keeps them in
+step, and re-read this route on reconnect for the authoritative value.
 
 `POST /api/input` is **403 unless the server was started with `--allow-input`**.
 Check `/api/config` and hide the keyboard rather than letting a user type into a

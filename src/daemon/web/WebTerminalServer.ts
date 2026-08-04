@@ -433,6 +433,16 @@ interface WebTerminalServerDeps {
    * a server that did not wire it answers 503, and `WMUX_GATE=0` still works.
    */
   setGateEnabled?: (enabled: boolean) => void;
+  /**
+   * Whether the runtime escape hatch above is currently ARMED. The daemon owns
+   * the flag; without a way to read it back, `/api/config` could report which
+   * tools are gated but not whether the gate itself was on, so a client's toggle
+   * had to guess its own initial state and only learned the truth from the
+   * response to its first write. Optional, and absent means the field is omitted
+   * from `/api/config` rather than defaulted — "this daemon does not say" is not
+   * the same answer as "off".
+   */
+  gateEnabled?: () => boolean;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1544,6 +1554,12 @@ export class WebTerminalServer {
         // waiting because Bash is in the gate list". Absent gateConfig → empty
         // array (a daemon that predates the gate or did not wire it).
         gatedTools: this.deps.gateConfig?.().gatedTools ?? [],
+        // #783 — whether the gate is armed right now, so a client's toggle opens
+        // showing the truth instead of a default it has to correct on first
+        // write. Omitted (not defaulted) when the daemon did not wire the getter:
+        // a client reading a missing key as "off" would be wrong on every daemon
+        // that predates this, and the gate defaults to ON.
+        ...(this.deps.gateEnabled ? { gateEnabled: this.deps.gateEnabled() } : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1624,6 +1640,11 @@ export class WebTerminalServer {
       if (!this.deps.setGateEnabled) return this.json(res, 503, { error: 'gate control unavailable' });
       const enable = p === '/api/gate/on';
       this.deps.setGateEnabled(enable);
+      // The gate is DAEMON-wide, so a phone that disarms it changes what every
+      // other paired device is looking at. Without this push the other devices
+      // keep showing the old toggle until something else makes them re-read
+      // `/api/config`, which for a screen nobody navigated away from is never.
+      this.broadcastGateState(enable);
       return this.json(res, 200, {
         ok: true,
         gateEnabled: enable,
@@ -3005,6 +3026,30 @@ export class WebTerminalServer {
     }, AGENT_LIVENESS_COALESCE_MS);
     timer.unref?.();
     this.livenessTimers.set(sessionId, timer);
+  }
+
+  /**
+   * Tell every connected device the gate was armed or disarmed.
+   *
+   * NOT recorded, for the opposite reason to the liveness event: this is rare
+   * (a human presses it) but it is also pure STATE, and the authoritative copy
+   * is one `/api/config` call away. A replayed transition would be a second
+   * source of truth that can disagree with that call after a reconnect, so the
+   * push is live-only and a reconnecting client re-reads config as it already
+   * does on every start.
+   *
+   * Unlike liveness this reaches every client, not just watchers: the gate is
+   * daemon-wide, not per-pane.
+   */
+  private broadcastGateState(gateEnabled: boolean): void {
+    const body = JSON.stringify({ gateEnabled });
+    for (const client of this.eventClients) {
+      try {
+        writeSse(client.res, 'gate.state', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
   }
 
   private deliverLiveness(body: AgentLivenessBody): void {

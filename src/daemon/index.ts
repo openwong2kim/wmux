@@ -320,6 +320,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
+        // Read side of the same flag, so `/api/config` can answer "is the gate
+        // armed?" instead of leaving a client's toggle to guess.
+        gateEnabled: () => !gateRuntimeOff,
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -2355,6 +2358,8 @@ function registerRpcHandlers(
       projector: () => transcriptProjector,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
+      // See the restore path — the read side of the runtime escape hatch.
+      gateEnabled: () => !gateRuntimeOff,
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);

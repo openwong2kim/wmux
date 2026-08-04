@@ -361,8 +361,11 @@ describe('WebTerminalServer', () => {
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
+  /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
+  let gateArmed: boolean;
 
   beforeEach(() => {
+    gateArmed = true;
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -396,6 +399,9 @@ describe('WebTerminalServer', () => {
       git: deps.git,
       uploadsDir: deps.uploadsDir,
       projector: () => projectorMock as unknown as TranscriptProjector,
+      gateConfig: () => ({ gatedTools: ['Bash'] }),
+      gateEnabled: () => gateArmed,
+      setGateEnabled: (enabled) => { gateArmed = enabled; },
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -3665,6 +3671,66 @@ describe('WebTerminalServer', () => {
       const after = await (await fetch(`${base()}/api/events`, { headers: h })).json();
       expect(after.headId).toBe(before.headId);
       expect(after.events).toEqual(before.events);
+    });
+
+    it('★ /api/config reports whether the gate is armed, and a flip reaches other devices', async () => {
+      const info = await server.start({
+        port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false,
+      });
+      const h = bearer(info.token as string);
+
+      const armed = await (await fetch(`${base()}/api/config`, { headers: h })).json();
+      expect(armed.gateEnabled).toBe(true);
+      expect(armed.gatedTools).toEqual(['Bash']);
+
+      // A second device is watching the attention channel. The gate is daemon-
+      // wide, so the flip below is a change to what IT is looking at.
+      const ac = new AbortController();
+      const stream = await fetch(`${base()}/api/events`, {
+        signal: ac.signal,
+        headers: { ...h, Accept: 'text/event-stream' },
+      });
+      const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+      let wire = '';
+      const pump = (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            if (chunk.value) wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch {
+          /* aborted at the end of the test */
+        }
+      })();
+
+      try {
+        const off = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
+        expect(off.status).toBe(200);
+        expect((await off.json()).gateEnabled).toBe(false);
+
+        await new Promise((r) => setTimeout(r, 150));
+        expect(wire).toContain('event: gate.state');
+        expect(wire).toContain('"gateEnabled":false');
+
+        // ...and the next client to ask reads the new state rather than the
+        // default it would have had to guess.
+        const disarmed = await (await fetch(`${base()}/api/config`, { headers: h })).json();
+        expect(disarmed.gateEnabled).toBe(false);
+      } finally {
+        ac.abort();
+        await pump;
+      }
+    });
+
+    it('a read-only server neither flips the gate nor lies about it', async () => {
+      const info = await startRO();
+      const h = bearer(info.token as string);
+      // Disarming widens what runs without review, so it takes the same grant as
+      // typing — but the STATE is still reported, or the toggle cannot render.
+      const res = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
+      expect(res.status).toBe(403);
+      expect((await (await fetch(`${base()}/api/config`, { headers: h })).json()).gateEnabled).toBe(true);
     });
 
     it('serves a code-block body behind the same grant as the turn page', async () => {
