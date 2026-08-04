@@ -232,9 +232,16 @@ export class TranscriptProjector {
     // A shrunk file (stat.size < from) is readTranscriptDelta's own reset path.
 
     if (reset) {
-      const page = this.snapshot(sessionId);
+      const { result: page, budgetDropped } = this.fitWithReceipt((maxBytes) =>
+        readTranscriptPage(resolved.transcriptPath, { maxBytes }),
+      );
       if (!page) return null;
-      return { events: page.events, cursor: page.cursor, reset: true };
+      return {
+        events: page.events,
+        cursor: page.cursor,
+        reset: true,
+        ...(budgetDropped ? { budgetDropped: true } : {}),
+      };
     }
 
     const { result, budgetDropped } = this.fitWithReceipt((maxBytes) => {

@@ -639,6 +639,23 @@ describe('TranscriptProjector.codeBlock — tool bodies', () => {
 });
 
 describe('TranscriptProjector — #782 phone turn-view contract (stateless delta)', () => {
+  /**
+   * A valid entry whose normalized events exceed BUDGET_BYTES while the raw
+   * JSONL record still fits inside the projector's smallest read window. The
+   * long entry id is repeated across every projected tool event, forcing the
+   * budget fitter (rather than readTail's raw-record skip) to omit the row.
+   */
+  function budgetDroppingEntry(): string {
+    return JSON.stringify({
+      type: 'assistant',
+      uuid: `oversized-${'u'.repeat(500)}`,
+      message: {
+        role: 'assistant',
+        content: Array.from({ length: 300 }, () => ({ type: 'tool_use' })),
+      },
+    });
+  }
+
   it('delta is stateless: a phone read arms no watch and resets no subscriber', () => {
     const file = fixture('claude-basic.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));
@@ -672,6 +689,56 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     expect(result.reset).toBe(true);
     // A reset carries a fresh snapshot, not an empty delta.
     expect(result.events.length).toBe(snap.events.length);
+  });
+
+  it('reports a budget drop on the normal forward path', () => {
+    const file = path.join(harness.projects, 'forward-budget-drop.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      type: 'user',
+      uuid: 'seed',
+      message: { role: 'user', content: 'before the oversized entry' },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const snap = harness.projector.snapshot('pty-1');
+    if (!snap) throw new Error('expected an initial snapshot');
+
+    const oversized = `${budgetDroppingEntry()}\n`;
+    expect(Buffer.byteLength(oversized, 'utf8')).toBeLessThan(8 * 1024);
+    fs.appendFileSync(file, oversized, 'utf8');
+
+    const result = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
+      cursorFileSize: snap.cursor.fileSize,
+    });
+    if (!result) throw new Error('expected a forward delta');
+    expect(result.reset).toBe(false);
+    expect(result.budgetDropped).toBe(true);
+    expect(result.events).toEqual([]);
+    expect(result.cursor.tailOffset).toBe(fs.statSync(file).size);
+  });
+
+  it('preserves the budget-drop receipt when reset returns a fresh snapshot', () => {
+    const file = path.join(harness.projects, 'reset-budget-drop.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      type: 'user',
+      uuid: 'old-session',
+      message: { role: 'user', content: 'x'.repeat(16 * 1024) },
+    }) + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const snap = harness.projector.snapshot('pty-1');
+    if (!snap) throw new Error('expected an initial snapshot');
+
+    const oversized = `${budgetDroppingEntry()}\n`;
+    fs.writeFileSync(file, oversized, 'utf8');
+    expect(fs.statSync(file).size).toBeLessThan(snap.cursor.fileSize);
+
+    const result = harness.projector.delta('pty-1', snap.cursor.tailOffset, {
+      cursorFileSize: snap.cursor.fileSize,
+    });
+    if (!result) throw new Error('expected a reset delta');
+    expect(result.reset).toBe(true);
+    expect(result.budgetDropped).toBe(true);
+    expect(result.events).toEqual([]);
+    expect(result.cursor.tailOffset).toBe(fs.statSync(file).size);
   });
 
   it('delta resets when the cursor offset is no longer a line boundary', () => {
