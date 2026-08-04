@@ -3666,5 +3666,75 @@ describe('WebTerminalServer', () => {
       expect(after.headId).toBe(before.headId);
       expect(after.events).toEqual(before.events);
     });
+
+    it('★ liveness is non-recording and reaches only panes the device has read', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      projectorMock.status.mockReturnValue({ available: true, reason: 'ok', transcriptBasename: 's.jsonl' });
+      projectorMock.snapshot.mockReturnValue({
+        events: [],
+        cursor: { headOffset: 0, tailOffset: 0, fileSize: 0, mtimeMs: 0 },
+        hasMore: false,
+        truncatedHead: false,
+      });
+
+      const ac = new AbortController();
+      const stream = await fetch(`${base()}/api/events`, {
+        signal: ac.signal,
+        headers: { ...h, Accept: 'text/event-stream' },
+      });
+      const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+      // One continuous pump into a buffer. A read-with-timeout loop would leave
+      // a pending read() behind on every timeout, and that orphan consumes the
+      // next chunk into a promise nobody awaits — the event vanishes.
+      let wire = '';
+      const pump = (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            if (chunk.value) wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch {
+          /* aborted at the end of the test */
+        }
+      })();
+      const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      try {
+        // Not a watcher yet — the device never opened s1's turn view, so its SSE
+        // must not carry s1's per-tool-call traffic.
+        server.emitAgentLiveness({ sessionId: 's1', state: 'idle', agent: 'Claude Code', at: 1 });
+        await settle(150);
+        expect(wire).not.toContain('agent.liveness');
+
+        expect((await fetch(`${base()}/api/sessions/s1/turns`, { headers: h })).status).toBe(200);
+
+        // A settled state skips the coalescing window: it is the transition the
+        // header exists to catch, so it must not wait out a second.
+        const before = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+        server.emitAgentLiveness({
+          sessionId: 's1',
+          state: 'awaiting_input',
+          agent: 'Claude Code',
+          at: 2,
+        });
+        await settle(200);
+        expect(wire).toContain('event: agent.liveness');
+        expect(wire).toContain('"state":"awaiting_input"');
+
+        // ...and none of it is recorded: a busy pane's liveness must never evict
+        // a pending approval from the replay window (#782 CRITICAL 3).
+        for (let i = 0; i < 60; i++) {
+          server.emitAgentLiveness({ sessionId: 's1', state: 'tool', tool: 'Bash', agent: 'Claude Code', at: i });
+        }
+        const after = await (await fetch(`${base()}/api/events`, { headers: h })).json();
+        expect(after.headId).toBe(before.headId);
+        expect(after.events).toEqual(before.events);
+      } finally {
+        ac.abort();
+        await pump;
+      }
+    });
   });
 });

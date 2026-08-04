@@ -185,10 +185,25 @@ JSON backlog fetch (Bearer only).
 | `notify` | `{...payload, tier, id, epoch}` |
 | `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
 | `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
+| `agent.liveness` | `{sessionId, state, tool?, agent, at}` — what the pane is doing right now |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
-**`transcript.nudge` is the one event that is NOT in the backlog.** Every other
+`state` is `busy` / `tool` / `awaiting_permission` / `awaiting_input` / `idle`,
+and the union is **additive** — render an unknown state as a neutral "working"
+rather than dropping the event, the same rule `TurnEventKind` follows. `tool`
+carries the tool name when the daemon knows it, and only for the two tool
+states. `at` is the ms epoch the state was entered: render elapsed time from it
+rather than from when the event arrived, because the event may have waited out a
+coalescing window.
+
+Use this for a persistent activity header, and **do not derive that header from
+the turn snapshot instead**. An agent that stalls mid-turn writes nothing, so a
+snapshot-derived header cannot tell a stalled pane from a thinking one; this
+channel can, because it is fed by the agent's own hooks.
+
+**`transcript.nudge` and `agent.liveness` are the two events that are NOT in the
+backlog.** Every other
 kind is recorded, carries `id`/`epoch`, and replays on `?since=<cursor>`. The
 nudge is live-only and deliberately so: a busy pane raises one roughly every
 second, and recording those would push a pending `approval` out of the bounded
@@ -203,6 +218,15 @@ and is dropped outright while your SSE is down. Re-fetch the turn view once on
 every reconnect rather than waiting to be told. And **you only get nudges for
 panes whose turn view you have actually read** — the server starts sending them
 after your first successful `/turns` call for that pane.
+
+`agent.liveness` is live-only for the same reason and follows the same two
+rules, with one difference: its coalescing window keeps the **newest** state
+rather than the first, since a header is a state and not a "something changed"
+ping. The three settled states (`idle`, `awaiting_input`, `awaiting_permission`)
+skip the window entirely and are sent immediately — those are the transitions a
+user is watching the header to catch. A client that reconnects gets no liveness
+replay and should show a neutral header until the next event; a pane that went
+idle while the SSE was down is caught by the turn view, not by this channel.
 
 Identity fields (`id`, `epoch`) — and `tier` — are stamped **last**, so a
 pane-supplied payload can never shadow them.

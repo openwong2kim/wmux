@@ -67,6 +67,7 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
@@ -2812,6 +2813,12 @@ function registerRpcHandlers(
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
+        // Phone liveness header. The desktop reads pane state off this same
+        // broadcast; the phone has no pipe, so the web server gets the projected
+        // state (non-recording, coalesced, watchers only — see
+        // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
+        // off or nobody opened the pane's turn view.
+        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),

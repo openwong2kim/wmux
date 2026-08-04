@@ -14,6 +14,9 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
 import type { TranscriptProjector } from '../transcript/TranscriptProjector';
+// Type only — the projection from hook envelope to header state lives in the
+// hooks layer (see agentLiveness.ts). This module only fans the result out.
+import { isTerminalLiveness, type AgentLivenessBody } from '../hooks/agentLiveness';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import { capSnapshot } from './snapshotWindow';
@@ -499,6 +502,16 @@ const ATTENTION_TTL_MS = 30 * 60 * 1000;
  * keeps a write burst from fanning into one fetch per write.
  */
 const TRANSCRIPT_NUDGE_COALESCE_MS = 1000;
+/**
+ * Coalescing window for the non-recording liveness event. Same 1Hz floor as the
+ * nudge and for the same reason: a tool-heavy turn raises one PreToolUse per
+ * call, and the header only has to be RIGHT, not instantaneous. Unlike the
+ * nudge this window keeps the LATEST state rather than the first — a header is
+ * a state, not a "something changed" ping, so collapsing a burst to its head
+ * would leave the phone showing the tool that started the burst. Terminal
+ * states skip the window entirely (`isTerminalLiveness`).
+ */
+const AGENT_LIVENESS_COALESCE_MS = 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
@@ -778,6 +791,10 @@ export class WebTerminalServer {
   private readonly transcriptWatchers = new Map<string, Set<string>>();
   /** Per-pane coalescing timers for the non-recording transcript nudge. */
   private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-pane coalescing timers for the non-recording liveness event. */
+  private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Latest liveness state per pane, held for the open coalescing window. */
+  private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
 
   /**
    * Attention replay state.
@@ -1073,6 +1090,9 @@ export class WebTerminalServer {
     // stale (a device re-opens its panes and re-registers as it reads them).
     for (const timer of this.transcriptNudgeTimers.values()) clearTimeout(timer);
     this.transcriptNudgeTimers.clear();
+    for (const timer of this.livenessTimers.values()) clearTimeout(timer);
+    this.livenessTimers.clear();
+    this.pendingLiveness.clear();
     this.transcriptWatchers.clear();
 
     const server = this.server;
@@ -2136,6 +2156,12 @@ export class WebTerminalServer {
           clearTimeout(timer);
           this.transcriptNudgeTimers.delete(id);
         }
+        const liveness = this.livenessTimers.get(id);
+        if (liveness) {
+          clearTimeout(liveness);
+          this.livenessTimers.delete(id);
+        }
+        this.pendingLiveness.delete(id);
         res.writeHead(204, this.securityHeaders());
         res.end();
       })
@@ -2827,6 +2853,68 @@ export class WebTerminalServer {
       if (!watchers.has(this.watcherKey(client.principal))) continue;
       try {
         writeSse(client.res, 'transcript.nudge', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  /**
+   * Push one liveness state to the device(s) watching this pane, WITHOUT
+   * recording it — the same three rules the transcript nudge established, for
+   * the same reasons:
+   *
+   *   - NON-RECORDING. A busy pane raises one of these per tool call; through
+   *     `attentionLog` they would evict a pending approval from the replay
+   *     window, and a phone reconnecting would re-derive its badge from a log
+   *     that no longer holds the approval it is waiting on (#782 CRITICAL 3).
+   *     Liveness is a live signal by nature: a header state from before the
+   *     reconnect is worthless, so there is nothing to replay anyway.
+   *   - COALESCED per pane, keeping the newest state (see the constant).
+   *   - WATCHERS ONLY. A device that never opened this pane's turn view has no
+   *     header to feed, and its SSE channel should not carry another pane's
+   *     per-tool-call traffic.
+   *
+   * Terminal states (`isTerminalLiveness`) flush immediately and cancel any
+   * open window, so "waiting for you" never queues behind a stale tool name.
+   */
+  emitAgentLiveness(body: AgentLivenessBody): void {
+    if (this.eventClients.size === 0) return;
+    const { sessionId } = body;
+    if (isTerminalLiveness(body.state)) {
+      const timer = this.livenessTimers.get(sessionId);
+      if (timer) {
+        clearTimeout(timer);
+        this.livenessTimers.delete(sessionId);
+      }
+      this.pendingLiveness.delete(sessionId);
+      this.deliverLiveness(body);
+      return;
+    }
+    // Busy states: keep the newest and let the open window deliver it. Assigning
+    // before the timer check is what makes this last-write-wins rather than
+    // first-write-wins.
+    this.pendingLiveness.set(sessionId, body);
+    if (this.livenessTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.livenessTimers.delete(sessionId);
+      const pending = this.pendingLiveness.get(sessionId);
+      if (!pending) return;
+      this.pendingLiveness.delete(sessionId);
+      this.deliverLiveness(pending);
+    }, AGENT_LIVENESS_COALESCE_MS);
+    timer.unref?.();
+    this.livenessTimers.set(sessionId, timer);
+  }
+
+  private deliverLiveness(body: AgentLivenessBody): void {
+    const watchers = this.transcriptWatchers.get(body.sessionId);
+    if (!watchers || watchers.size === 0) return;
+    const wire = JSON.stringify(body);
+    for (const client of this.eventClients) {
+      if (!watchers.has(this.watcherKey(client.principal))) continue;
+      try {
+        writeSse(client.res, 'agent.liveness', wire);
       } catch {
         /* client stream broken — its own 'close' handler cleans up */
       }
