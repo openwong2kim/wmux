@@ -1454,6 +1454,37 @@ describe('WebTerminalServer', () => {
     expect(data.events[0]).toMatchObject({ approvalId: 'ap-risky', risk: 'critical' });
   });
 
+  it('★ projects the gate tool + input onto /api/approvals (#783)', async () => {
+    // The SSE nudge carries these, but a client that connects with a gate
+    // already pending builds its card from the LIST. Without them the operator
+    // is asked to approve a shell command with nothing on screen naming it —
+    // and `approvalWire` is an allowlist, so a new field reaches the wire only
+    // by being added here.
+    const info = await startRO();
+    const token = info.token as string;
+    approvalRecords.push(
+      mkApproval({
+        id: 'ap-gate',
+        kind: 'awaiting_permission',
+        toolName: 'Bash',
+        toolInputSummary: 'rm -rf /tmp/x',
+      }),
+    );
+    approvalRecords.push(mkApproval({ id: 'ap-question' }));
+
+    const res = await fetch(`${base()}/api/approvals`, { headers: bearer(token) });
+    const body = (await res.json()) as { pending: Array<Record<string, unknown>> };
+    expect(body.pending[0]).toMatchObject({
+      id: 'ap-gate',
+      kind: 'awaiting_permission',
+      toolName: 'Bash',
+      toolInputSummary: 'rm -rf /tmp/x',
+    });
+    // A screen-backed prompt has no tool — absent, not empty.
+    expect('toolName' in body.pending[1]).toBe(false);
+    expect('toolInputSummary' in body.pending[1]).toBe(false);
+  });
+
   it('projects question/options on the settled half too, empty list included', async () => {
     const info = await startRO();
     const token = info.token as string;
@@ -1508,6 +1539,29 @@ describe('WebTerminalServer', () => {
     });
     expect(input.status).toBe(403);
     expect(write).not.toHaveBeenCalled();
+  });
+
+  it('★ canResolveGates tracks exactly what a gate resolve requires (#783)', async () => {
+    // The daemon arms the permission gate only when this is true, so it must
+    // agree with the route: a read-only server refuses an awaiting_permission
+    // record, and arming against it would block the agent for the whole gate
+    // deadline in front of a card nobody can answer.
+    expect(server.canResolveGates).toBe(false); // not started
+    const ro = await startRO();
+    expect(server.canResolveGates).toBe(false);
+    approvalRecords.push(mkApproval({ id: 'ap-gate-ro', kind: 'awaiting_permission', toolName: 'Bash' }));
+    const refused = await postApproval(ro.token as string, 'ap-gate-ro', { decision: 'approve' });
+    expect(refused.status).toBe(403);
+
+    await server.stop();
+    const rw = await startRW();
+    expect(server.canResolveGates).toBe(true);
+    approvalRecords.push(mkApproval({ id: 'ap-gate-rw', kind: 'awaiting_permission', toolName: 'Bash' }));
+    const accepted = await postApproval(rw.token as string, 'ap-gate-rw', { decision: 'approve' });
+    expect(accepted.status).toBe(200);
+
+    await server.stop();
+    expect(server.canResolveGates).toBe(false);
   });
 
   it('passes a deny through unchanged', async () => {

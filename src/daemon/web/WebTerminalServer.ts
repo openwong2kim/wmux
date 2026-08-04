@@ -413,6 +413,22 @@ interface WebTerminalServerDeps {
    * resolves the live instance per request.
    */
   projector?: () => TranscriptProjector | null;
+  /**
+   * #783 — the gated-tools list from daemon config, so `/api/config` can expose
+   * it and the phone can explain "why is this call waiting?". A getter (not a
+   * static ref) because the list is editable at runtime via `wmux gate --add`.
+   * Optional: a server that did not wire it serves every other route, and
+   * `/api/config` reports an empty list.
+   */
+  gateConfig?: () => { gatedTools: string[] };
+  /**
+   * #783 — runtime escape hatch. `POST /api/gate/off` / `/api/gate/on` call
+   * this to disarm or re-arm the permission gate. Turning it off also defers
+   * whatever is already blocked, so the agent that is waiting right now moves
+   * immediately instead of sitting out its deadline (review: Codex). Optional:
+   * a server that did not wire it answers 503, and `WMUX_GATE=0` still works.
+   */
+  setGateEnabled?: (enabled: boolean) => void;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -859,6 +875,20 @@ export class WebTerminalServer {
 
   get isRunning(): boolean {
     return this.server !== null;
+  }
+
+  /**
+   * #783 — whether a permission gate raised right now could actually be
+   * ANSWERED. `POST /api/approvals/:id` refuses an `awaiting_permission` record
+   * without `--allow-input` (approving a tool runs it), so a read-only server —
+   * which is the default — raises a card nobody can resolve, and the agent
+   * waits out the full gate deadline for nothing. The daemon checks this before
+   * arming, so the two conditions can never drift apart. Deliberately NOT
+   * `status()`: that mints pairing codes as a side effect and would run on
+   * every tool call.
+   */
+  get canResolveGates(): boolean {
+    return this.server !== null && this.opts?.allowInput === true;
   }
 
   /** Daemon-internal live state for safe option-only reconfiguration. */
@@ -1481,6 +1511,10 @@ export class WebTerminalServer {
         allowInput: this.opts?.allowInput === true,
         allowUpload: this.opts?.allowUpload === true,
         allowTranscript: this.opts?.allowTranscript === true,
+        // #783 — the gated-tools list so the phone can say "this Bash call is
+        // waiting because Bash is in the gate list". Absent gateConfig → empty
+        // array (a daemon that predates the gate or did not wire it).
+        gatedTools: this.deps.gateConfig?.().gatedTools ?? [],
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -1541,6 +1575,30 @@ export class WebTerminalServer {
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
+    }
+    // #783 — runtime escape hatch: stop holding tool calls for a remote answer,
+    // from the next call on. This WIDENS what proceeds without remote review
+    // (high-risk tools stop waiting for the phone), so it takes the same grant
+    // as typing — a view-only device must not be able to disarm the gate
+    // (review: Claude). `/api/gate/on` re-arms it, so the hatch is symmetric
+    // and a phone that turned it off can put it back.
+    if (req.method === 'POST' && (p === '/api/gate/off' || p === '/api/gate/on')) {
+      if (this.opts?.allowInput !== true) {
+        return this.json(res, 403, {
+          error: 'read-only: server started without --allow-input',
+          detail: 'disarming the permission gate lets tools run without remote review — it needs the same grant as typing',
+        });
+      }
+      if (!this.deps.setGateEnabled) return this.json(res, 503, { error: 'gate control unavailable' });
+      const enable = p === '/api/gate/on';
+      this.deps.setGateEnabled(enable);
+      return this.json(res, 200, {
+        ok: true,
+        gateEnabled: enable,
+        detail: enable
+          ? 'gate on — gated tools wait for a remote answer again'
+          : 'gate off — the next tool call proceeds without prompting',
+      });
     }
     return this.json(res, 404, { error: 'not found' });
   }
@@ -2466,6 +2524,19 @@ export class WebTerminalServer {
     }
     if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
 
+    // A screen-backed prompt is answerable on a read-only server: the daemon
+    // already put that question on the pane, and the caller can only pick one
+    // of ITS options. A permission gate is a different grant — approving it
+    // runs the tool (arbitrary Bash, a write, a subagent), which is exactly
+    // what --allow-input governs. Gate it accordingly (review: Claude).
+    const record = approvals.list().pending.find((r) => r.id === id);
+    if (record?.kind === 'awaiting_permission' && this.opts?.allowInput !== true) {
+      return this.json(res, 403, {
+        error: 'read-only: server started without --allow-input',
+        detail: 'approving a tool permission runs the tool — it needs the same grant as typing',
+      });
+    }
+
     this.readJsonBody(req, res, (body) => {
       const decision = (body as { decision?: unknown } | null)?.decision;
       if (decision !== 'approve' && decision !== 'deny') {
@@ -2636,6 +2707,10 @@ export class WebTerminalServer {
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
       ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+      // #783 — gate-card fields so the phone can render what tool and what input.
+      ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
+      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
     });
   }
 
@@ -3394,6 +3469,12 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
     // Which specific choice was selected, when resolved via choiceKey.
     ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
+    // #783 — what the gate is asking about. The SSE nudge carries these, but a
+    // client that starts (or reconnects) with a gate already pending builds its
+    // card from THIS list: without them the operator is asked to approve a
+    // shell command with nothing on screen saying which one.
+    ...(r.toolName ? { toolName: r.toolName } : {}),
+    ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
   };
 }
 

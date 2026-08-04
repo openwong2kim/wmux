@@ -691,9 +691,11 @@ function isGateAnswerLost(result) {
 
 // Walk the targets in order under one shared deadline. Returns the last result
 // plus the target that produced it (logged, so bridge.log shows which endpoint
-// actually served the hook).
-async function sendToTargets(targets, buildRequest) {
-  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+// actually served the hook). The timeout defaults to HOOK_TIMEOUT_MS; the
+// permission-gate mode passes GATE_PERMISSION_TIMEOUT_MS because the daemon
+// holds the response open until the phone answers.
+async function sendToTargets(targets, buildRequest, timeoutMs = HOOK_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
   let result = { ok: false, error: 'no-target' };
   let target = null;
   for (const candidate of targets) {
@@ -705,16 +707,78 @@ async function sendToTargets(targets, buildRequest) {
   return { result, target };
 }
 
+// ----- #783 — PreToolUse permission gate output --------------------------
+
+// The modern Claude Code PreToolUse hook contract reads JSON from stdout and
+// looks for hookSpecificOutput.permissionDecision. We output this ONLY in
+// --permission-gate mode; every other invocation is byte-for-byte what it
+// always was (exit 0, no stdout).
+//
+//   allow = proceed without prompting the user.
+//   deny  = block the tool call (the reason is shown to the model).
+//   ask   = fall back to Claude Code's normal permission flow.
+//   defer = same as 'ask' for PreToolUse — "I have no opinion, ask the user".
+function outputPermissionDecision(decision, reasonText) {
+  const out = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: decision,
+      ...(reasonText ? { permissionDecisionReason: reasonText } : {}),
+    },
+  };
+  process.stdout.write(JSON.stringify(out) + '\n');
+}
+
+// The gate blocks until the phone answers or the broker self-defers. This MUST
+// be longer than the broker's DEFAULT_GATE_DEADLINE_MS (120s) so the broker
+// defers first and the bridge gets a real verdict instead of a pipe timeout.
+// Well under the harness's 600s PreToolUse budget.
+const GATE_PERMISSION_TIMEOUT_MS = 130_000;
+
 // ----- Main ---------------------------------------------------------------
 
 async function main() {
   const hookName = process.argv[2];
-  // Second argv token. `--gate` is the only one recognised; anything else is
-  // ignored, so an older wmux running a newer profile just behaves as before.
+  // Second argv token. `--gate` is the orchestrator Stop hook (exit-2-on-block);
+  // `--permission-gate` is the PreToolUse permission gate (JSON permissionDecision).
+  // Anything else is ignored, so an older wmux running a newer profile behaves
+  // as before.
   const gateMode = process.argv.slice(3).includes('--gate');
+  const permissionGateMode = process.argv.slice(3).includes('--permission-gate');
   if (!hookName || !HOOK_TO_KIND[hookName]) {
     logEvent('unknown-hook-name', { argv: process.argv });
     return; // exit 0 below
+  }
+
+  // #783 — PreToolUse permission gate. Three fast exit paths that NEVER reach
+  // the daemon, so the agent is never slowed when the gate does not apply:
+  //
+  //   1. WMUX_GATE=0  — the operator (or a script) disabled the gate for this
+  //      session. Read every call, so toggling takes effect on the next tool.
+  //   2. Headless     — `claude -p`, CI, and subagents all read the same
+  //      hooks.json. `WMUX_PTY_ID` is inherited by `claude -p` inside a pane
+  //      (src/mcp/index.ts:355), so the env check alone cannot tell headless
+  //      from interactive. `CLAUDE_CODE_ENTRYPOINT` is the distinguisher, and
+  //      it is MEASURED, not assumed: an interactive pane reports `cli`, while
+  //      `claude -p` reports `sdk-cli`. A tty check does NOT work here — Claude
+  //      Code pipes the hook's stdio, so `process.stderr.isTTY` is false in BOTH
+  //      modes and gating on it would keep the gate permanently dark. Anything
+  //      that is not a known interactive entrypoint defers, so an unrecognised
+  //      or future headless mode fails open rather than hanging.
+  //      WMUX_PTY_ID is same-user spoofable (env is writable from inside the
+  //      pane) — this is a UX guard, not a security control.
+  //   3. No WMUX_PTY_ID — the agent is running outside any wmux pane.
+  const INTERACTIVE_ENTRYPOINTS = new Set(['cli', 'vscode', 'jetbrains']);
+  if (permissionGateMode) {
+    if (process.env.WMUX_GATE === '0') {
+      outputPermissionDecision('ask', 'gate disabled (WMUX_GATE=0)');
+      return;
+    }
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    if (!process.env.WMUX_PTY_ID || !entrypoint || !INTERACTIVE_ENTRYPOINTS.has(entrypoint)) {
+      outputPermissionDecision('ask', 'headless or outside wmux');
+      return;
+    }
   }
 
   let payload;
@@ -731,9 +795,12 @@ async function main() {
   }
 
   // PreToolUse fires per tool call; we only treat AskUserQuestion as
-  // "awaiting input". A future broad PreToolUse matcher can never tunnel a
-  // spurious awaiting_input through here — other PreToolUse tools are dropped.
+  // "awaiting input" UNLESS this is a permission-gate call (--permission-gate
+  // mode handles ALL tool names and sends agent.awaiting_permission instead).
+  // A future broad PreToolUse matcher can never tunnel a spurious
+  // awaiting_input through here — other PreToolUse tools are dropped.
   if (hookName === 'PreToolUse'
+      && !permissionGateMode
       && !(payload && payload.tool_name === 'AskUserQuestion')) {
     logEvent('skip-pretooluse', { tool: payload && payload.tool_name });
     return;
@@ -834,9 +901,11 @@ async function main() {
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
-  const kind = hookName === 'PostToolUse'
-    ? getPostToolUseKind(payload)
-    : HOOK_TO_KIND[hookName];
+  const kind = permissionGateMode
+    ? 'agent.awaiting_permission'
+    : hookName === 'PostToolUse'
+      ? getPostToolUseKind(payload)
+      : HOOK_TO_KIND[hookName];
   const envelope = {
     kind,
     agent: 'claude',
@@ -873,14 +942,20 @@ async function main() {
   }
 
   // One id across the walk so a fallback is correlatable in the logs; each
-  // target gets its own method + token (see resolveTargets).
+  // target gets its own method + token (see resolveTargets). Permission-gate
+  // mode uses a MUCH longer timeout because the daemon holds the response open
+  // until the phone answers (or the broker self-defers).
   const requestId = `bridge-${randomUUID()}`;
-  const { result: rpcResult, target } = await sendToTargets(targets, (t) => ({
-    id: requestId,
-    method: t.method,
-    params: envelope,
-    token: t.token,
-  }));
+  const { result: rpcResult, target } = await sendToTargets(
+    targets,
+    (t) => ({
+      id: requestId,
+      method: t.method,
+      params: envelope,
+      token: t.token,
+    }),
+    permissionGateMode ? GATE_PERMISSION_TIMEOUT_MS : undefined,
+  );
   const targetName = target?.name;
 
   // RpcResponse wraps the handler's return in { id, ok, result, error }.
@@ -963,6 +1038,31 @@ async function main() {
     });
   }
 
+  // #783 — PreToolUse permission gate. The daemon's response carries
+  // permissionDecision ('allow'|'deny'|'ask'|'defer'). The bridge translates
+  // to the modern hookSpecificOutput JSON on stdout. Everything fails OPEN: a
+  // transport error, a non-gate daemon, or an absent field all default to
+  // 'ask' so the agent never hangs — it falls back to the local permission
+  // prompt, which is exactly what would happen without the gate.
+  if (permissionGateMode) {
+    const verdict = innerOk && rpcResult.result.permissionDecision
+      ? rpcResult.result.permissionDecision
+      : 'ask';
+    outputPermissionDecision(
+      verdict,
+      verdict === 'deny'
+        // Without a reason the model reads a bare refusal and retries the same
+        // call. Say who refused (review: Claude).
+        ? 'denied from the wmux remote approval'
+        : verdict === 'ask' && !innerOk
+          ? 'gate unreachable — falling back to local prompt'
+          : undefined,
+    );
+    logEvent('permission-gate', { hook: hookName, target: targetName, verdict });
+    // Always exit 0 — the decision is in stdout, not the exit code.
+    return 0;
+  }
+
   return gateExitCode;
 }
 
@@ -975,5 +1075,9 @@ main()
     return 0;
   })
   .then((code) => {
-    process.exit(typeof code === 'number' ? code : 0);
+    // `process.exitCode`, NOT `process.exit()`: the permission decision is a
+    // stdout write, and exiting outright can drop it before the pipe flushes —
+    // a remote deny would silently become "no decision" (review: Codex). Let
+    // the loop drain and exit on its own.
+    process.exitCode = typeof code === 'number' ? code : 0;
   });

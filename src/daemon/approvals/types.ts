@@ -50,8 +50,12 @@ export interface ApprovalRequest {
   workspaceId?: string;
   /** Agent SLUG ('claude'), not the display name — the keystroke map keys on it. */
   agent: string;
-  /** Only one kind exists in M2; the field is here so a future kind can join. */
-  kind: 'awaiting_input';
+  /**
+   * `awaiting_input` — an AskUserQuestion prompt (keystroke resolution).
+   * `awaiting_permission` — a PreToolUse gate on a high-risk tool (RPC-waiter
+   *   resolution, no keystroke). #783
+   */
+  kind: 'awaiting_input' | 'awaiting_permission';
   /**
    * A4 — WHAT is being asked, extracted from the hook envelope's `tool_input`
    * at creation time (see askUserQuestion.ts).
@@ -106,6 +110,18 @@ export interface ApprovalRequest {
   /** Epoch ms. */
   createdAt: number;
   state: ApprovalState;
+  /**
+   * #783 — the tool that triggered the gate. Present only on
+   * `kind:'awaiting_permission'` records. The phone shows this so the operator
+   * knows WHAT the gate is asking about (e.g. "Bash" → a shell command).
+   */
+  toolName?: string;
+  /**
+   * #783 — a short summary of the tool's input (sanitised + truncated). Present
+   * only on `kind:'awaiting_permission'` records. Lets the phone render "what
+   * command" / "what file" without a second round trip.
+   */
+  toolInputSummary?: string;
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
   resolvedBy?: string;
   resolvedAt?: number;
@@ -199,7 +215,10 @@ export type ApprovalExpiryReason =
   | 'session-start'
   | 'pane-gone'
   | 'prompt-gone'
-  | 'answered-locally';
+  | 'answered-locally'
+  // #783 — the gate self-deferred before the harness deadline (phone did not
+  // answer in time). The record is expired so a late phone tap gets a 410.
+  | 'gate-timed-out';
 
 /**
  * The half of the registry HookIngest drives. Separate from the read/resolve
@@ -218,6 +237,21 @@ export interface ApprovalHookSink {
     /** Structured choices with key+label, extracted alongside options. */
     choices?: ApprovalChoice[];
   }): void;
+  /**
+   * #783 — create a pending permission-gate record. Returns the new record's id
+   * SYNCHRONOUSLY (generated before the mutation is queued) so the caller can
+   * register the waiter with the GateBroker before the record is even on disk.
+   * The record carries `kind:'awaiting_permission'` and resolves through the
+   * same CAS as an `awaiting_input` record — `POST /api/approvals/:id` branches
+   * on kind and wakes the waiter instead of pressing a key.
+   */
+  noteGateAwaiting(input: {
+    sessionId: string;
+    agent: string;
+    workspaceId?: string;
+    toolName: string;
+    toolInputSummary?: string;
+  }): string;
   expireForSession(sessionId: string, reason: ApprovalExpiryReason): void;
 }
 

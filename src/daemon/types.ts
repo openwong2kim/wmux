@@ -4,6 +4,7 @@ import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
+import type { GateConfig } from './approvals/gateConfig';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -239,6 +240,20 @@ export interface DaemonConfig {
    * with an explicit error instead of silently. See docs/SECURITY.md §3.
    */
   browser?: BrowserCdpConfig;
+  /**
+   * #783 — PreToolUse permission gate control. OPTIONAL — old config.json files
+   * predate it and must keep loading, so `validateConfig` deliberately ignores
+   * this field and `loadConfig` backfills it per-field without resetting the
+   * rest of the file (same convention as `browser`/`lanlink`).
+   *
+   * `gatedTools` is the set of Claude Code tool names that trigger a remote
+   * permission gate when the agent runs inside a wmux pane. Defaults to the
+   * high-risk tools only (Bash, Write, Edit, NotebookEdit) — gating every tool
+   * would add constant latency on the Mac for little safety gain. The user
+   * extends it with `wmux gate --add`. An empty array disables the gate
+   * entirely (same as `WMUX_GATE=0`, but durable).
+   */
+  gate?: GateConfig;
 }
 
 /**

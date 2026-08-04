@@ -77,13 +77,14 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
 
     const s = readSettings();
     const hooks = s.hooks as Record<string, unknown[]>;
+    // Event KEYS (PreToolUse carries two groups: the gate + AskUserQuestion).
     expect(Object.keys(hooks).sort()).toEqual(
       ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );
@@ -130,8 +131,9 @@ describe('installHooks', () => {
     const hooks = s.hooks as Record<string, unknown[]>;
     // Foreign PreToolUse (matcher '') is preserved AND the wmux PreToolUse
     // (matcher AskUserQuestion) is appended — both coexist on the same event.
+    // Foreign + the two wmux groups (AskUserQuestion card + the wide gate).
     const pre = hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[];
-    expect(pre).toHaveLength(2);
+    expect(pre).toHaveLength(3);
     expect(pre.some((g) => g.matcher === '' && g.hooks[0].command === 'echo foreign-pre')).toBe(true);
     expect(
       pre.some((g) => g.matcher === 'AskUserQuestion' && g.hooks[0].command.includes('wmux-bridge.mjs')),
@@ -154,7 +156,9 @@ describe('installHooks', () => {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
         g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
       );
-      expect(wmuxGroups).toHaveLength(1);
+      // PreToolUse owns two wmux groups (the AskUserQuestion approval card and
+      // the wide permission gate); every other event owns exactly one.
+      expect(wmuxGroups).toHaveLength(event === 'PreToolUse' ? 2 : 1);
     }
   });
 
@@ -213,7 +217,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(true);
-    expect(outcome.removedForPlugin).toBe(5);
+    expect(outcome.removedForPlugin).toBe(6);
     expect(outcome.events).toEqual([]);
 
     // No wmux command remains; both foreign hooks are preserved.
@@ -233,9 +237,11 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     const hooks = readSettings().hooks as Record<string, unknown[]>;
-    expect(Object.keys(hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(Object.keys(hooks).sort()).toEqual(
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+    );
   });
 
   it('treats a malformed installed_plugins.json as plugin-absent (normal install)', () => {
@@ -243,7 +249,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
   });
 
@@ -272,7 +278,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
@@ -316,7 +322,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(5);
+    expect(outcome.removed).toBe(6);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -377,6 +383,8 @@ describe('statusHooks', () => {
     installHooks(paths());
     const s = statusHooks(paths());
     expect(s.settingsExists).toBe(true);
+    // installedEvents is a deduped event list, so PreToolUse appears once even
+    // though it carries two wmux groups.
     expect(s.installedEvents.sort()).toEqual(
       ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
     );
@@ -450,6 +458,33 @@ describe('statusHooks', () => {
     expect(s.features.permissionGate.state).toBe('off');
   });
 
+  it('does not let the wide permission-gate hook stand in for the approval card', () => {
+    // #783 put a second spec on PreToolUse. An event-level check would report
+    // the approval card healthy off the gate hook alone — the exact bug #787
+    // fixed, reintroduced by the merge. Features resolve per SPEC, so the gate
+    // is ok here and the card stays off.
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '',
+              hooks: [{ type: 'command', command: `node "${bridgeDest}" PreToolUse --permission-gate` }],
+            },
+          ],
+          PostToolUse: [wmuxHookGroup('PostToolUse', 'AskUserQuestion')],
+        },
+      }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.features.permissionGate.state).toBe('ok');
+    expect(s.features.approvalCard.state).toBe('off');
+  });
+
   it('uses effective match-all semantics for turn-boundary hooks', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(
@@ -484,7 +519,9 @@ describe('statusHooks', () => {
     expect(s.features.approvalCard.detail).toContain('plugin-managed');
     expect(s.features.turnEnd.state).toBe('ok');
     expect(s.features.turnEnd.detail).toContain('plugin-managed');
-    expect(s.features.permissionGate.state).toBe('off');
+    // The plugin's hooks.json ships the wide permission-gate hook too (#783).
+    expect(s.features.permissionGate.state).toBe('ok');
+    expect(s.features.permissionGate.detail).toContain('plugin-managed');
   });
 
   it('does not count an explicitly disabled plugin without manual hooks', () => {
@@ -513,17 +550,17 @@ describe('statusHooks', () => {
     expect(before.features.approvalCard.detail).toContain('wmux setup-hooks');
     expect(before.features.conversationRead.state).toBe('off');
     expect(before.features.turnEnd.state).toBe('off');
-    // permissionGate is not yet a shipped hook — always off, and crucially it
-    // must NOT advertise `wmux setup-hooks` as a fix (that would not help).
+    // #783 shipped the gate as a real hook, so it reports like the others:
+    // off before install, with the fix command that actually installs it.
     expect(before.features.permissionGate.state).toBe('off');
-    expect(before.features.permissionGate.detail).not.toContain('wmux setup-hooks');
+    expect(before.features.permissionGate.detail).toContain('wmux setup-hooks');
 
     installHooks(paths());
     const after = statusHooks(paths());
     expect(after.features.conversationRead.state).toBe('ok');
     expect(after.features.approvalCard.state).toBe('ok');
     expect(after.features.turnEnd.state).toBe('ok');
-    expect(after.features.permissionGate.state).toBe('off'); // still off until #783
+    expect(after.features.permissionGate.state).toBe('ok'); // #783 installs it
   });
 
   it('installs PreToolUse/PostToolUse scoped to AskUserQuestion (not matcher "")', () => {

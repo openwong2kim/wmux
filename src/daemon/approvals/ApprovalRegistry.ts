@@ -102,6 +102,21 @@ export interface ApprovalRegistryDeps {
   now?: () => number;
   /** Injected for test determinism. */
   newId?: () => string;
+  /**
+   * #783 — wake the GateBroker waiter when a `kind:'awaiting_permission'`
+   * record is resolved. The broker holds the bridge RPC response open; this
+   * call is what closes it. Optional: tests that don't exercise the gate path
+   * leave it absent, and a gate resolve without a broker is a no-op for the
+   * waiter (the record still flips to 'resolved' for /api/approvals).
+   */
+  notifyGateResolved?: (gateId: string, decision: 'approve' | 'deny') => void;
+  /**
+   * #783 — cancel the GateBroker waiter when a gate record is expired or
+   * superseded (turn ended, session died, newer gate superseded this one, etc).
+   * The waiter would otherwise hang until its own deadline; this tells it to
+   * defer immediately so the bridge falls back to the local permission flow.
+   */
+  notifyGateDropped?: (gateId: string) => void;
 }
 
 export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
@@ -230,6 +245,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
+        if (superseded.kind === 'awaiting_permission') {
+          this.deps.notifyGateDropped?.(superseded.id);
+        }
         events.push({ type: 'supersede', request: copyRequest(superseded) });
       }
       const created: ApprovalRequest = {
@@ -260,6 +278,66 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * #783 — create a pending permission-gate record. Same supersede rule as
+   * `noteHookAwaitingInput`: one pending record per session, so a new gate
+   * supersedes an existing one (the old tool call is moot once a new one is
+   * pending). Returns the id SYNCHRONOUSLY so the caller can register the
+   * GateBroker waiter before the mutation even reaches disk.
+   */
+  noteGateAwaiting(input: {
+    sessionId: string;
+    agent: string;
+    workspaceId?: string;
+    toolName: string;
+    toolInputSummary?: string;
+  }): string {
+    const id = this.newId();
+    const snapshot = {
+      id,
+      sessionId: input.sessionId,
+      agent: input.agent,
+      workspaceId: input.workspaceId,
+      toolName: input.toolName,
+      toolInputSummary: input.toolInputSummary,
+    };
+    this.mutate(() => {
+      // One-pending-per-session holds for SCREEN-backed prompts: a pane shows
+      // one question at a time, so a newer one replaced the older. Gates are
+      // different — the agent can call several gated tools in one turn, and
+      // each blocks its own bridge process. Superseding one would silently drop
+      // that tool to the local prompt while the phone operator, watching only
+      // the phone, sees nothing (review: Claude). So a gate never supersedes
+      // another gate; it only replaces a screen-backed prompt.
+      const superseded = this.requests.find(
+        (r) => r.state === 'pending'
+          && r.sessionId === snapshot.sessionId
+          && r.kind !== 'awaiting_permission',
+      );
+      const events: ApprovalEvent[] = [];
+      if (superseded) {
+        superseded.state = 'superseded';
+        superseded.resolvedAt = this.now();
+        events.push({ type: 'supersede', request: copyRequest(superseded) });
+      }
+      const created: ApprovalRequest = {
+        id: snapshot.id,
+        sessionId: snapshot.sessionId,
+        ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+        agent: snapshot.agent,
+        kind: 'awaiting_permission',
+        toolName: snapshot.toolName,
+        ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
+        createdAt: this.now(),
+        state: 'pending',
+      };
+      this.requests.push(created);
+      events.push({ type: 'create', request: copyRequest(created) });
+      return events;
+    });
+    return id;
+  }
+
+  /**
    * The turn this pane was blocked on is over (hook `agent.stop`), the pane
    * started a fresh session (`agent.session_start`), or the pane is gone. Any
    * pending request on it is answered-or-abandoned either way — nobody is
@@ -272,6 +350,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   expireForSession(sessionId: string, reason: ApprovalExpiryReason): Promise<void> {
     return this.mutate(() => this.expirePendingWhere((r) => r.sessionId === sessionId, reason));
+  }
+
+  /**
+   * Expire ONE record by id. The gate broker calls this when it defers a gate
+   * (#783): the tool has already fallen through to the local prompt, so the
+   * card must stop being answerable — otherwise a late tap gets a success
+   * receipt for a decision that changed nothing. Runs through the same
+   * serialized CAS, so a phone answer that already won finds nothing pending.
+   */
+  expireById(id: string, reason: ApprovalExpiryReason): Promise<void> {
+    return this.mutate(() => this.expirePendingWhere((r) => r.id === id, reason));
   }
 
   // ── Resolution ───────────────────────────────────────────────────────────
@@ -295,6 +384,37 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
             request: copyRequest(record),
           } as ApprovalResolveResult,
+        };
+      }
+
+      // #783 — gate records resolve through the GateBroker, not the PTY. There
+      // is no screen to re-read (the gate blocks inside the bridge process, not
+      // on the pane's TUI) and no keystroke to send. The CAS above already
+      // guarantees first-write-wins; notifyGateResolved wakes the waiter and
+      // the bridge returns the verdict to Claude Code.
+      if (record.kind === 'awaiting_permission') {
+        // choiceKey is meaningless for a gate — there are no on-screen options.
+        if (params.choiceKey !== undefined) {
+          return {
+            result: {
+              ok: false,
+              reason: 'invalid-choice-key',
+              request: copyRequest(record),
+            } as ApprovalResolveResult,
+          };
+        }
+        record.state = 'resolved';
+        record.decision = params.decision;
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        record.resolvedAt = this.now();
+        this.deps.notifyGateResolved?.(record.id, params.decision);
+        this.deps.log?.(
+          'info',
+          `[approvals] gate ${params.decision} ${record.id} on ${record.sessionId} by ${record.resolvedBy || 'unknown'}`,
+        );
+        return {
+          events: [{ type: 'resolve' as ApprovalEventType, request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true } as ApprovalResolveResult,
         };
       }
 
@@ -501,6 +621,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       if (r.state !== 'pending' || !match(r)) continue;
       r.state = 'expired';
       r.resolvedAt = this.now();
+      // #783 — cancel the broker waiter so the bridge defers immediately.
+      if (r.kind === 'awaiting_permission') {
+        this.deps.notifyGateDropped?.(r.id);
+      }
       events.push({ type: 'expire', request: copyRequest(r) });
     }
     if (events.length > 0) {

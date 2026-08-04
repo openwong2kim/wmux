@@ -46,7 +46,22 @@ export type AgentSignalKind =
   // pty configures this hook, and the brain-pty lane claims the signal before
   // it can reach the fleet ledger — it exists so the orchestrator's "one turn
   // at a time" contract still holds when the human types into the TUI directly.
-  | 'agent.user_prompt_submit';
+  | 'agent.user_prompt_submit'
+  // #783 — PreToolUse permission gate. A high-risk tool call is pending and the
+  // daemon is holding the bridge RPC open until a phone (or the gate deadline)
+  // resolves it. Metadata-only: it is pane STATE ("blocked on permission"), not
+  // a turn boundary, so it never enters the dedup ledger.
+  | 'agent.awaiting_permission'
+  // #783 — a permission gate was resolved (phone answered, deferred, or
+  // expired). Expire the gate record so a late phone tap gets a 410/409, and
+  // clear the pane's "blocked" label. Same early-expiry pattern as
+  // agent.input_answered.
+  | 'agent.permission_answered'
+  // #783 — liveness: a non-gated tool call passed through the permission hook
+  // and is running now. Feeds the phone header "tool running · elapsed". A
+  // PreToolUse that the daemon decided NOT to gate emits this instead of
+  // agent.awaiting_permission. Metadata-only (same class as agent.activity).
+  | 'agent.tool_started';
 
 /**
  * SLUG-form agent identifiers. Matches AgentPattern.slug in AgentDetector.ts.
@@ -160,6 +175,14 @@ export interface HookSignalResponse {
    *  `reason` is shown to the model verbatim (the bridge writes it to stderr,
    *  which Claude Code feeds back on exit 2). */
   block?: { reason: string };
+  /**
+   * #783 — PreToolUse permission gate verdict. Present when the signal was an
+   * `agent.awaiting_permission` request. The bridge translates this into the
+   * modern PreToolUse `hookSpecificOutput.permissionDecision` JSON on stdout.
+   * `allow` = proceed without prompting; `deny` = block; `ask`/`defer` = fall
+   * back to Claude Code's normal permission flow. Absent for non-gate signals.
+   */
+  permissionDecision?: 'allow' | 'deny' | 'ask' | 'defer';
   /** Reason hint when ok=false. Logged by the bridge to ~/.wmux/bridge.log. */
   reason?:
     | 'no-workspace-match'
@@ -192,7 +215,10 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.session_start' &&
     v['kind'] !== 'agent.awaiting_input' &&
     v['kind'] !== 'agent.input_answered' &&
-    v['kind'] !== 'agent.user_prompt_submit'
+    v['kind'] !== 'agent.user_prompt_submit' &&
+    v['kind'] !== 'agent.awaiting_permission' &&
+    v['kind'] !== 'agent.permission_answered' &&
+    v['kind'] !== 'agent.tool_started'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;

@@ -66,13 +66,29 @@ const ASK_QUESTION_HOOKS = [
 
 type HookEvent =
   | (typeof HOOK_EVENTS)[number]
-  | (typeof ASK_QUESTION_HOOKS)[number]['event'];
+  | (typeof ASK_QUESTION_HOOKS)[number]['event']
+  | 'PreToolUse'; // #783 — permission gate adds a wide PreToolUse
+
+/**
+ * #783 — the permission-gate hook. A WIDE PreToolUse matcher (every tool) that
+ * invokes the bridge with `--permission-gate`. The daemon decides gate vs
+ * pass-through based on the `gatedTools` config slice, so this matcher never
+ * needs editing — only the config does (`wmux gate --add/--remove`). Separate
+ * from the AskUserQuestion PreToolUse above (different argv mode, different
+ * signal kind, different resolution path — see CRITICAL 1 in the plan).
+ */
+const PERMISSION_GATE_SPEC = {
+  event: 'PreToolUse' as const,
+  matcher: '',
+  extraArgs: '--permission-gate',
+};
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly { event: HookEvent; matcher: string }[] = [
+const HOOK_SPECS: readonly { event: HookEvent; matcher: string; extraArgs?: string }[] = [
   ...HOOK_EVENTS.map((event) => ({ event, matcher: '' })),
   ...ASK_QUESTION_HOOKS,
+  PERMISSION_GATE_SPEC,
 ];
 
 /** Substring that identifies a wmux-owned hook command in settings.json. */
@@ -166,10 +182,11 @@ function writeJsonAtomic(filePath: string, data: unknown): void {
 }
 
 /** Build the command string for a hook event, referencing the stable bridge path. */
-function bridgeCommand(bridgeDest: string, event: HookEvent): string {
+function bridgeCommand(bridgeDest: string, event: HookEvent, extraArgs?: string): string {
   // Mirror hooks.json shape: `node "<abs path>" <HookName>`. Quote the path so
-  // spaces in the home directory don't break the command.
-  return `node "${bridgeDest}" ${event}`;
+  // spaces in the home directory don't break the command. #783: --permission-gate
+  // appends an argv token that switches the bridge to the gate JSON mode.
+  return `node "${bridgeDest}" ${event}${extraArgs ? ` ${extraArgs}` : ''}`;
 }
 
 /** A single hook command leaf, e.g. { type: 'command', command: '…' }. */
@@ -208,15 +225,38 @@ function isWmuxGroup(group: unknown): boolean {
  */
 function isEffectiveWmuxGroupForSpec(
   group: unknown,
-  spec: { event: HookEvent; matcher: string },
+  spec: { event: HookEvent; matcher: string; extraArgs?: string },
 ): boolean {
   if (!isWmuxGroup(group)) return false;
   const matcher = (group as HookGroup).matcher;
   if (matcher !== undefined && typeof matcher !== 'string') return false;
 
+  // Two specs now share the PreToolUse event — the AskUserQuestion approval
+  // pair and the wide `--permission-gate` group (#783) — so the event and the
+  // matcher no longer identify a spec on their own. Compare the argv tail as
+  // well: a group without `--permission-gate` can never satisfy the gate spec,
+  // and the gate's own group can never stand in for the approval card.
+  if (!hasArgvTail(group, spec)) return false;
+
   if (spec.matcher !== '') return matcher === spec.matcher;
   if (spec.event === 'Stop') return true;
   return matcher === undefined || matcher === '' || matcher === '*';
+}
+
+/** True when some wmux leaf in the group carries this spec's exact argv tail. */
+function hasArgvTail(
+  group: unknown,
+  spec: { event: HookEvent; extraArgs?: string },
+): boolean {
+  const hooks = (group as HookGroup).hooks;
+  if (!Array.isArray(hooks)) return false;
+  const tail = `${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
+  return hooks.some((h) => {
+    if (!h || typeof h !== 'object') return false;
+    const command = (h as HookLeaf).command;
+    if (typeof command !== 'string' || !command.includes(WMUX_BRIDGE_MARKER)) return false;
+    return command.trim().endsWith(tail);
+  });
 }
 
 // ----- Settings load (corruption-aware) -----------------------------------
@@ -466,7 +506,7 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
   for (const spec of HOOK_SPECS) {
     const group: HookGroup = {
       matcher: spec.matcher,
-      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event) }],
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
     };
     const existing = hooks[spec.event];
     hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];
@@ -626,7 +666,9 @@ export interface StatusOutcome {
    * approval card work?" not "is PreToolUse registered?". `installedEvents`
    * remains the effective settings.json view for scripts; `features` also
    * accounts for hooks supplied by an active marketplace plugin.
-   * `permissionGate` is 'off' until the phone permission gate ships (#783).
+   * `permissionGate` reports the wide PreToolUse gate hook (#783); it shares an
+   * event with the approval card, so features are resolved per SPEC, not per
+   * event.
    */
   features: {
     conversationRead: HookFeatureStatus;
@@ -678,6 +720,13 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     !isPluginExplicitlyDisabled(load.settings);
 
   const installedEvents: HookEvent[] = [];
+  // PreToolUse now carries TWO specs (the AskUserQuestion approval hook and the
+  // wide permission gate), so `installedEvents` — an event list — can no longer
+  // tell the features apart: the gate hook alone would report the approval card
+  // as healthy. Features read this spec-level set instead.
+  const installedSpecs = new Set<string>();
+  const specKey = (spec: { event: HookEvent; extraArgs?: string }): string =>
+    `${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
   if (!load.corrupted) {
     const hooks = load.settings.hooks;
     if (hooks && typeof hooks === 'object' && !Array.isArray(hooks)) {
@@ -688,6 +737,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
           Array.isArray(groups) &&
           groups.some((group) => isEffectiveWmuxGroupForSpec(group, spec))
         ) {
+          installedSpecs.add(specKey(spec));
           // HOOK_SPECS carries each event once, but dedup defensively.
           if (!installedEvents.includes(spec.event)) installedEvents.push(spec.event);
         }
@@ -712,8 +762,12 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
   // SessionStart, Stop/SubagentStop, and the approval-card lifecycle: its
   // PreToolUse is AskUserQuestion-scoped, while its broad PostToolUse bridge
   // promotes only AskUserQuestion completion to agent.input_answered.
-  // Permission gating remains deliberately separate until #783 ships.
+  // The permission gate (#783) is its own spec on the same event, reported
+  // separately below.
   const has = (e: HookEvent): boolean => installedEvents.includes(e);
+  /** Spec-level presence — the approval pair and the gate share PreToolUse. */
+  const hasSpec = (event: HookEvent, extraArgs?: string): boolean =>
+    installedSpecs.has(specKey({ event, ...(extraArgs ? { extraArgs } : {}) }));
   const FIX = 'wmux setup-hooks';
   const featureStatus = (
     pluginSupplies: boolean,
@@ -745,7 +799,9 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     ),
     approvalCard: featureStatus(
       pluginFeatures.approvalCard,
-      has('PreToolUse') && has('PostToolUse'),
+      // The AskUserQuestion-scoped pair specifically — the wide gate hook lives
+      // on the same event and must never stand in for it.
+      hasSpec('PreToolUse') && hasSpec('PostToolUse'),
       'PreToolUse + PostToolUse (AskUserQuestion) → card create + expire',
       `PreToolUse/PostToolUse:AskUserQuestion missing → run \`${FIX}\``,
     ),
@@ -755,9 +811,16 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
       'Stop + SubagentStop → turn-end nudge',
       `Stop/SubagentStop missing → run \`${FIX}\``,
     ),
-    // The phone permission gate (#783) is not yet a hook this install owns —
-    // report 'off' honestly rather than implying it can be fixed here.
-    permissionGate: { state: 'off' as const, detail: 'phone permission gate — not yet available' },
+    // #783 — the gate ships with its own wide PreToolUse hook, so this is a
+    // real install state now, not a placeholder. It arms only while an
+    // answering surface is up (`wmux web`); the detail says so, because a hook
+    // that is installed and dormant would otherwise read as broken.
+    permissionGate: featureStatus(
+      pluginActive,
+      hasSpec('PreToolUse', PERMISSION_GATE_SPEC.extraArgs),
+      'PreToolUse (all tools) → remote approval while `wmux web` is running',
+      `PreToolUse permission gate missing → run \`${FIX}\``,
+    ),
   };
 
   return {

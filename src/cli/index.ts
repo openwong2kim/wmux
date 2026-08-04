@@ -12,6 +12,7 @@ import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
 import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
+import { handleGate } from './commands/gate';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
@@ -132,6 +133,9 @@ CLAUDE CODE INTEGRATION
   setup-hooks                       Install Claude Code hooks (no plugin needed)
               [--remove]            Remove the wmux-owned hook entries
               [--status]            Report hook + bridge install state
+  gate --list                       Show tools in the permission gate (#783)
+  gate --add <tool>                 Add a tool to the permission gate
+  gate --remove <tool>              Remove a tool from the permission gate
   setup-statusline                  Show per-account usage in Claude's statusline
               [--remove]            Remove the wmux-owned statusLine entries
               [--status]            Report statusline install state
@@ -220,6 +224,8 @@ async function main(): Promise<void> {
       await handleMcp(rest, jsonMode);
     } else if (cmd === 'setup-hooks') {
       await handleSetupHooks(rest, jsonMode);
+    } else if (cmd === 'gate') {
+      handleGate(rest[0] ?? '--list', rest.slice(1), jsonMode);
     } else if (cmd === 'setup-statusline') {
       await handleSetupStatusline(rest, jsonMode);
     } else if (cmd === 'doctor') {

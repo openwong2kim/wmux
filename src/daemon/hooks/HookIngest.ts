@@ -38,6 +38,7 @@
 // below reports every signal as `fastPathed` and never `degraded`.
 
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { HookSignalRouter } from '../../shared/hooks/HookSignalRouter';
 import { SignalLatencyMeter, type LatencyStats } from '../../shared/hooks/SignalLatencyMeter';
 import { HookFloodMeter, describeHookFlood, type HookFloodSummary } from '../../shared/hooks/HookFloodMeter';
@@ -164,6 +165,15 @@ export interface HookIngestDeps {
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
   approvals?: ApprovalHookSink;
+  /**
+   * #783 — the gated-tools list from daemon config. A GETTER so `wmux gate
+   * --add` takes effect on the next tool call without a daemon restart: the
+   * CLI writes config.json, and this re-reads it per signal. When absent
+   * (tests, or a daemon that has not loaded config), EVERY tool passes through
+   * ungated (emits agent.tool_started, returns allow). This is the same
+   * direction as WMUX_GATE=0: the escape is fail-open, not fail-closed.
+   */
+  gateConfig?: () => { gatedTools: string[] };
   /**
    * Transcript projection — tell the TranscriptProjector that this pane's
    * transcript may have grown. Fired for EVERY resolved signal, including the
@@ -311,6 +321,31 @@ export function resolveSessionIdForCwd(
 }
 
 /**
+ * #783 — build a short, sanitized summary of a tool's input for the phone card.
+ * Shows the shell command for Bash, the file path for Write/Edit, etc. Control
+ * chars are stripped and the result is capped so the /api/approvals payload
+ * stays bounded. Returns undefined when there is nothing useful to show.
+ */
+const TOOL_INPUT_SUMMARY_MAX = 200;
+function summarizeToolInput(payload: Record<string, unknown> | undefined): string | undefined {
+  if (!payload) return undefined;
+  const toolInput = payload['tool_input'];
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return undefined;
+  const ti = toolInput as Record<string, unknown>;
+  const fields = ['command', 'file_path', 'path', 'url', 'pattern'];
+  for (const f of fields) {
+    const v = ti[f];
+    if (typeof v === 'string' && v.length > 0) {
+      const clean = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
+      return clean.length > TOOL_INPUT_SUMMARY_MAX
+        ? clean.slice(0, TOOL_INPUT_SUMMARY_MAX) + '…'
+        : clean;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Emit-class kinds — the turn boundaries. These are the only kinds that
  * produce a user-visible event and the only ones that touch the dedup ledger.
  */
@@ -334,8 +369,16 @@ function isEmitKind(kind: AgentSignalKind): kind is 'agent.stop' | 'agent.subage
  * pane is reused. They share `decision:'activity'`; consumers tell them apart
  * by `hookKind`.
  */
-function isMetadataKind(kind: AgentSignalKind): kind is 'agent.activity' | 'agent.session_start' {
-  return kind === 'agent.activity' || kind === 'agent.session_start';
+function isMetadataKind(kind: AgentSignalKind): kind is
+  'agent.activity' | 'agent.session_start' | 'agent.tool_started' | 'agent.awaiting_permission' {
+  // #783 — agent.tool_started (non-gated tool passed the gate hook, liveness)
+  // and agent.awaiting_permission (gated tool blocked, pane STATE) are metadata-
+  // only: they ride the same agent.event family tagged decision:'activity', and
+  // never touch the dedup ledger (they are not turn boundaries).
+  return kind === 'agent.activity'
+    || kind === 'agent.session_start'
+    || kind === 'agent.tool_started'
+    || kind === 'agent.awaiting_permission';
 }
 
 /**
@@ -411,6 +454,104 @@ export class HookIngest {
   }
 
   /**
+   * #783 — handle a PreToolUse permission-gate signal from the bridge. Called
+   * by the `daemon.hooks.signal` RPC handler INSTEAD of `handle()` for
+   * `agent.awaiting_permission` signals, because the daemon decides gate vs
+   * pass-through (the bridge sends one kind; the daemon reclassifies based on
+   * `gateConfig.gatedTools`).
+   *
+   * Returns `{ ok, gateId? }`:
+   *   - Tool NOT in gatedTools → broadcasts `agent.tool_started` (liveness),
+   *     returns `{ ok: true }` — the RPC handler answers `allow` immediately.
+   *   - Tool IS gated → creates a gate record via the approval sink,
+   *     broadcasts `agent.awaiting_permission`, returns `{ ok: true, gateId }`
+   *     — the RPC handler awaits the GateBroker for that id.
+   *   - Unroutable / no sessions → `{ ok: false, reason }` — fail open (allow).
+   *
+   * Never throws: the bridge is on the hook budget.
+   */
+  handlePermissionGate(signal: AgentSignal): {
+    ok: boolean;
+    reason?: string;
+    gateId?: string;
+    sessionId?: string;
+  } {
+    this.meter.recordSignal(signal.agent, signal.ts);
+
+    const startedAt = this.now();
+    let sessions: HookIngestSession[] = [];
+    let sessionId: string | null = null;
+    try {
+      sessions = this.deps.listLiveSessions();
+      sessionId = resolveSessionIdForSignal(signal, sessions);
+    } catch {
+      this.floodMeter.record({ degraded: true, fetchMs: this.now() - startedAt });
+      this.meter.recordWorkspaceMatch(false);
+      return { ok: false, reason: 'no-workspace-match' };
+    }
+    this.floodMeter.record({ degraded: false, fetchMs: this.now() - startedAt, fastPathed: true });
+    this.meter.recordWorkspaceMatch(sessionId != null);
+
+    if (!sessionId) {
+      // Agent running outside any wmux pane — fail open.
+      return { ok: false, reason: 'no-workspace-match' };
+    }
+
+    // Touch authority on every gate signal — the bridge is alive on this pane.
+    this.router.touchAuthority(sessionId, signal.agent, this.now());
+
+    // Transcript nudge: a PreToolUse means the agent is active.
+    try {
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
+    }
+
+    const toolName = typeof signal.payload?.tool_name === 'string'
+      ? signal.payload.tool_name
+      : null;
+    const gatedTools = this.deps.gateConfig?.().gatedTools ?? [];
+    const isGated = toolName !== null && gatedTools.includes(toolName);
+
+    if (!isGated) {
+      // Non-gated tool — emit tool_started for phone liveness header, allow.
+      this.broadcast(sessionId, {
+        agent: agentSlugToDisplay(signal.agent),
+        status: 'running',
+        message: '',
+        source: 'hook',
+        hookKind: 'agent.tool_started',
+        decision: 'activity',
+        signal,
+      });
+      return { ok: true, sessionId };
+    }
+
+    // Gated tool — create a gate record and broadcast awaiting_permission.
+    const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
+    const toolInputSummary = summarizeToolInput(signal.payload);
+    const gateId = this.deps.approvals?.noteGateAwaiting({
+      sessionId,
+      agent: signal.agent,
+      ...(workspaceId ? { workspaceId } : {}),
+      toolName,
+      ...(toolInputSummary ? { toolInputSummary } : {}),
+    }) ?? crypto.randomUUID();
+
+    this.broadcast(sessionId, {
+      agent: agentSlugToDisplay(signal.agent),
+      status: 'running',
+      message: '',
+      source: 'hook',
+      hookKind: 'agent.awaiting_permission',
+      decision: 'activity',
+      signal,
+    });
+
+    return { ok: true, gateId, sessionId };
+  }
+
+  /**
    * Ingest one envelope. Never throws — a malformed or unroutable signal is a
    * response code, not an error, because the bridge runs inside the agent's
    * process on a hard 2s budget and treats a rejection as a fatal hook.
@@ -464,6 +605,17 @@ export class HookIngest {
 
     // User answered a pending approval locally — no turn boundary, just expire the request.
     if (signal.kind === 'agent.input_answered') {
+      this.deps.approvals?.expireForSession(sessionId, 'answered-locally');
+      return { ok: true };
+    }
+
+    // #783 — a permission gate was answered locally (the bridge self-deferred
+    // after the harness deadline, or the user answered in the TUI). Same
+    // pattern as agent.input_answered: expire the gate record so a late phone
+    // tap gets a 410. This does NOT wake the waiter — the bridge already
+    // returned 'defer' to Claude Code and is gone. The expiry is for the
+    // /api/approvals list so the phone stops showing the card.
+    if (signal.kind === 'agent.permission_answered') {
       this.deps.approvals?.expireForSession(sessionId, 'answered-locally');
       return { ok: true };
     }

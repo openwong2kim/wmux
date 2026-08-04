@@ -67,12 +67,15 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
+import { isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { GateBroker } from './approvals/GateBroker';
+import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { buildWebPaneEnv } from './web/webPaneEnv';
@@ -140,6 +143,15 @@ function revokeAllWebDevices(
 // both webTerminalServer construction paths need it available.
 let approvalRegistry: ApprovalRegistry | null = null;
 
+// #783 — the gate broker holds bridge RPC responses open until a phone answers.
+// Module-scoped for the same reason as the registry: the RPC handler creates
+// waiters, the web route resolves them, and shutdown/session-died cancels them.
+let gateBroker: GateBroker | null = null;
+// #783 — runtime escape hatch set by POST /api/gate/off. Resets on daemon
+// restart (the operator can re-arm by restarting). The RPC handler checks this
+// before gating; HookIngest.emitToolStarted still fires for liveness.
+let gateRuntimeOff = false;
+
 /**
  * Build the registry. Split out of main() only so the two dependencies that
  * need a live sessionManager can be closures over it.
@@ -161,8 +173,6 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return null;
       const outcome = await generateTextSnapshot({
-        // Same dims backstop as daemon.readSessionText: a recovered session may
-        // not have real dims yet, and a 0-wide headless terminal fails soft.
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
@@ -175,10 +185,19 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return false;
       managed.ptyProcess.write(data);
-      // Approval choices (digit/ESC) submit immediately without CR/LF. Mark
-      // this as a real turn edge only after the PTY accepted the write.
       managed.bridge.noteInput(data, true);
       return true;
+    },
+    // #783 — wake the GateBroker waiter when a gate record is resolved by the
+    // phone. The broker holds the bridge RPC open; this call closes it.
+    notifyGateResolved: (gateId, decision) => {
+      gateBroker?.notifyResolved(gateId, decision);
+    },
+    // #783 — cancel the waiter when a gate record is expired or superseded
+    // (turn ended, session died, newer gate). The bridge defers to the local
+    // permission flow instead of hanging until its own timeout.
+    notifyGateDropped: (gateId) => {
+      gateBroker?.cancel(gateId, 'record-expired');
     },
     log: (level, message) => log(level, message),
   });
@@ -297,6 +316,17 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
         projector: () => transcriptProjector,
+        // #783 — expose the gated-tools list and the runtime escape hatch at
+        // BOTH construction sites (restore + operator start).
+        gateConfig: () => coerceGate(loadConfig().gate),
+        setGateEnabled: (enabled) => {
+          gateRuntimeOff = !enabled;
+          log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
+          // Turning it off must also free whatever is blocked right now —
+          // otherwise the agent the operator is trying to unstick keeps
+          // waiting out its deadline (review: Codex).
+          if (!enabled) gateBroker?.cancelAll('gate-disabled');
+        },
       });
     }
     const info = await webTerminalServer.start({
@@ -2308,6 +2338,13 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
+      // #783 — see the restore path.
+      gateConfig: () => coerceGate(loadConfig().gate),
+      setGateEnabled: (enabled) => {
+        gateRuntimeOff = !enabled;
+        log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
+        if (!enabled) gateBroker?.cancelAll('gate-disabled');
+      },
     });
   }
   const webServer = webTerminalServer;
@@ -2406,6 +2443,10 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
+    // #783 — the answering surface is going away, so every gate still holding a
+    // bridge open is now unanswerable. Defer them here instead of making each
+    // one wait out its own deadline in front of a blocked agent.
+    gateBroker?.cancelAll('web-stopped');
     const devicesRevoked = revokeAllWebDevices(webServer, 'operator-stop');
     const result = await stopWebServerDurably(
       () => clearWebState(wmuxDir),
@@ -2764,6 +2805,9 @@ function registerRpcHandlers(
       // approval request. Wired here, on the daemon-internal path, because this
       // is where provenance and the dedup decision are both already known.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+      // #783 — the gated-tools list from daemon config. A GETTER so `wmux gate
+      // --add` takes effect on the next tool call without a daemon restart.
+      gateConfig: () => coerceGate(loadConfig().gate),
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
@@ -2778,7 +2822,62 @@ function registerRpcHandlers(
     });
   }
   const ingest = hookIngest;
-  pipeServer.onRpc('daemon.hooks.signal', async (params) => ingest.handle(params));
+  // #783 — the permission gate needs to HOLD the RPC response open until the
+  // phone answers. Normal signals go through `ingest.handle` and return
+  // immediately; `agent.awaiting_permission` goes through `handlePermissionGate`
+  // and then awaits the GateBroker, which resolves on phone answer or self-defers.
+  pipeServer.onRpc('daemon.hooks.signal', async (params) => {
+    if (
+      params && typeof params === 'object' &&
+      'kind' in params && params.kind === 'agent.awaiting_permission'
+    ) {
+      if (!isAgentSignal(params)) return { ok: false, reason: 'invalid-envelope' };
+      const signal: AgentSignal = params;
+      // #783 — runtime escape hatch (POST /api/gate/off). The tool passes
+      // through ungated; we still emit agent.tool_started for phone liveness.
+      // `ask`, never `allow`. The wide PreToolUse matcher sees EVERY tool, so
+      // answering `allow` would hand a blanket auto-approval to every tool wmux
+      // does not gate — silently overriding Claude Code's own permission
+      // prompts and the user's settings.json deny rules. `ask` means "wmux has
+      // no opinion here", which is the whole point of an escape hatch: it falls
+      // back to the normal local flow. Only a real phone approval says `allow`.
+      // #783 — the gate arms ONLY while the card it raises can actually be
+      // ANSWERED. The desktop app raises a "Permission needed" notification but
+      // has no answer UI, so `POST /api/approvals/:id` is the only resolution
+      // path — and that route refuses a gate record without `--allow-input`.
+      // Both halves matter: a stopped web server AND a read-only one (the
+      // default) leave the card unanswerable, and the agent blocks for the full
+      // deadline before falling back to the local prompt. MEASURED on a live
+      // daemon: 120.1 s per gated tool call, paid by every Bash/Write/Edit in
+      // every pane. Dormant leaves the desktop-only user exactly where they
+      // were; `wmux web --allow-input` arms the gate.
+      // The module-level binding, not the captured `webServer` const: the
+      // restore path can assign the instance after this handler is registered.
+      if (gateRuntimeOff || webTerminalServer?.canResolveGates !== true) {
+        ingest.handle({ ...signal, kind: 'agent.tool_started' });
+        return { ok: true, permissionDecision: 'ask' as const };
+      }
+      const gate = ingest.handlePermissionGate(signal);
+      if (!gate.ok || !gate.gateId) {
+        // Unroutable or non-gated tool — hand it back to the local flow.
+        return {
+          ok: gate.ok,
+          ...(gate.reason ? { reason: gate.reason } : {}),
+          permissionDecision: 'ask' as const,
+        };
+      }
+      // Gated: await the broker. The bridge holds its stdout open until this
+      // resolves. The broker self-defers at 120s; the bridge times out at 130s.
+      const verdict = await gateBroker!.awaitVerdict(gate.gateId, gate.sessionId ?? '');
+      const permissionDecision = verdict.decision === 'allow'
+        ? 'allow' as const
+        : verdict.decision === 'deny'
+          ? 'deny' as const
+          : 'ask' as const;
+      return { ok: true, permissionDecision };
+    }
+    return ingest.handle(params);
+  });
   // A2 — signal-health readout for the Settings "Plugin signal health" card.
   // Main's own meter goes dark once the bridge targets the daemon directly, so
   // the card has to poll the daemon instead. Read-only and non-destructive; see
@@ -3879,6 +3978,11 @@ function wireEvents(
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
     hookIngest?.dropPty(payload.id);
+    // #783 — cancel any gate waiters for this session. The bridge process died
+    // with the pane; without this the daemon's promise would hang until the
+    // broker's self-defer timer fires, and the registry's expireForSession
+    // (called by dropPty above) already flipped the record to expired.
+    gateBroker?.cancelForSession(payload.id, 'pane-gone');
     // Transcript projection: the pane is gone, so its watch has no reader left…
     transcriptProjector?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
@@ -4472,6 +4576,10 @@ async function shutdown(
   // process open; clearing it just keeps a shutdown from logging one last
   // rolling summary on the way out.
   hookIngest?.dispose();
+  // #783 — defer every pending gate waiter so the exit is clean. Each held RPC
+  // response gets a 'defer', and the bridge falls back to the local permission
+  // flow instead of dying with a broken pipe.
+  gateBroker?.cancelAll('daemon-restart');
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
   transcriptProjector?.dispose();
@@ -4714,6 +4822,18 @@ async function main(): Promise<void> {
   // recovered session is a new PTY running a new agent process, so a remembered
   // approval would press a key into a program that never asked the question.
   approvalRegistry = createApprovalRegistry(sessionManager);
+
+  // #783 — construct the gate broker BEFORE the registry's first mutation, so
+  // the notifyGateResolved/notifyGateDropped callbacks resolve to a live broker.
+  gateBroker = new GateBroker({
+    log: (level, msg) => log(level, msg),
+    // A deferred gate must also stop being answerable: the tool has already
+    // fallen through to the local prompt, so a card left pending would hand a
+    // late tap a receipt for nothing (review: 3-MODEL).
+    expireRecord: (gateId) => {
+      void approvalRegistry?.expireById(gateId, 'gate-timed-out');
+    },
+  });
 
   // Push. Inert unless a relay is configured, which is the normal state until
   // the relay is deployed — an unconfigured install must not log a failure per
