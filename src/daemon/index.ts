@@ -2443,6 +2443,10 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
+    // #783 — the answering surface is going away, so every gate still holding a
+    // bridge open is now unanswerable. Defer them here instead of making each
+    // one wait out its own deadline in front of a blocked agent.
+    gateBroker?.cancelAll('web-stopped');
     const devicesRevoked = revokeAllWebDevices(webServer, 'operator-stop');
     const result = await stopWebServerDurably(
       () => clearWebState(wmuxDir),
@@ -2837,7 +2841,19 @@ function registerRpcHandlers(
       // prompts and the user's settings.json deny rules. `ask` means "wmux has
       // no opinion here", which is the whole point of an escape hatch: it falls
       // back to the normal local flow. Only a real phone approval says `allow`.
-      if (gateRuntimeOff) {
+      // #783 — the gate arms ONLY while the card it raises can actually be
+      // ANSWERED. The desktop app raises a "Permission needed" notification but
+      // has no answer UI, so `POST /api/approvals/:id` is the only resolution
+      // path — and that route refuses a gate record without `--allow-input`.
+      // Both halves matter: a stopped web server AND a read-only one (the
+      // default) leave the card unanswerable, and the agent blocks for the full
+      // deadline before falling back to the local prompt. MEASURED on a live
+      // daemon: 120.1 s per gated tool call, paid by every Bash/Write/Edit in
+      // every pane. Dormant leaves the desktop-only user exactly where they
+      // were; `wmux web --allow-input` arms the gate.
+      // The module-level binding, not the captured `webServer` const: the
+      // restore path can assign the instance after this handler is registered.
+      if (gateRuntimeOff || webTerminalServer?.canResolveGates !== true) {
         ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true, permissionDecision: 'ask' as const };
       }

@@ -458,6 +458,33 @@ describe('statusHooks', () => {
     expect(s.features.permissionGate.state).toBe('off');
   });
 
+  it('does not let the wide permission-gate hook stand in for the approval card', () => {
+    // #783 put a second spec on PreToolUse. An event-level check would report
+    // the approval card healthy off the gate hook alone — the exact bug #787
+    // fixed, reintroduced by the merge. Features resolve per SPEC, so the gate
+    // is ok here and the card stays off.
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '',
+              hooks: [{ type: 'command', command: `node "${bridgeDest}" PreToolUse --permission-gate` }],
+            },
+          ],
+          PostToolUse: [wmuxHookGroup('PostToolUse', 'AskUserQuestion')],
+        },
+      }),
+      'utf8',
+    );
+
+    const s = statusHooks(paths());
+    expect(s.features.permissionGate.state).toBe('ok');
+    expect(s.features.approvalCard.state).toBe('off');
+  });
+
   it('uses effective match-all semantics for turn-boundary hooks', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(
@@ -492,7 +519,9 @@ describe('statusHooks', () => {
     expect(s.features.approvalCard.detail).toContain('plugin-managed');
     expect(s.features.turnEnd.state).toBe('ok');
     expect(s.features.turnEnd.detail).toContain('plugin-managed');
-    expect(s.features.permissionGate.state).toBe('off');
+    // The plugin's hooks.json ships the wide permission-gate hook too (#783).
+    expect(s.features.permissionGate.state).toBe('ok');
+    expect(s.features.permissionGate.detail).toContain('plugin-managed');
   });
 
   it('does not count an explicitly disabled plugin without manual hooks', () => {
@@ -521,17 +550,17 @@ describe('statusHooks', () => {
     expect(before.features.approvalCard.detail).toContain('wmux setup-hooks');
     expect(before.features.conversationRead.state).toBe('off');
     expect(before.features.turnEnd.state).toBe('off');
-    // permissionGate is not yet a shipped hook — always off, and crucially it
-    // must NOT advertise `wmux setup-hooks` as a fix (that would not help).
+    // #783 shipped the gate as a real hook, so it reports like the others:
+    // off before install, with the fix command that actually installs it.
     expect(before.features.permissionGate.state).toBe('off');
-    expect(before.features.permissionGate.detail).not.toContain('wmux setup-hooks');
+    expect(before.features.permissionGate.detail).toContain('wmux setup-hooks');
 
     installHooks(paths());
     const after = statusHooks(paths());
     expect(after.features.conversationRead.state).toBe('ok');
     expect(after.features.approvalCard.state).toBe('ok');
     expect(after.features.turnEnd.state).toBe('ok');
-    expect(after.features.permissionGate.state).toBe('off'); // still off until #783
+    expect(after.features.permissionGate.state).toBe('ok'); // #783 installs it
   });
 
   it('installs PreToolUse/PostToolUse scoped to AskUserQuestion (not matcher "")', () => {

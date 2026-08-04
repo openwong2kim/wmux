@@ -877,6 +877,20 @@ export class WebTerminalServer {
     return this.server !== null;
   }
 
+  /**
+   * #783 — whether a permission gate raised right now could actually be
+   * ANSWERED. `POST /api/approvals/:id` refuses an `awaiting_permission` record
+   * without `--allow-input` (approving a tool runs it), so a read-only server —
+   * which is the default — raises a card nobody can resolve, and the agent
+   * waits out the full gate deadline for nothing. The daemon checks this before
+   * arming, so the two conditions can never drift apart. Deliberately NOT
+   * `status()`: that mints pairing codes as a side effect and would run on
+   * every tool call.
+   */
+  get canResolveGates(): boolean {
+    return this.server !== null && this.opts?.allowInput === true;
+  }
+
   /** Daemon-internal live state for safe option-only reconfiguration. */
   get currentStartState(): {
     tls: WebTlsConfig | undefined;
@@ -3455,6 +3469,12 @@ function approvalWire(r: ApprovalRequest): Record<string, unknown> {
     ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
     // Which specific choice was selected, when resolved via choiceKey.
     ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
+    // #783 — what the gate is asking about. The SSE nudge carries these, but a
+    // client that starts (or reconnects) with a gate already pending builds its
+    // card from THIS list: without them the operator is asked to approve a
+    // shell command with nothing on screen saying which one.
+    ...(r.toolName ? { toolName: r.toolName } : {}),
+    ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
   };
 }
 
