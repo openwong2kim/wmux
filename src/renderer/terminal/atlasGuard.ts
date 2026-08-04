@@ -36,20 +36,31 @@
 //            indefinitely.
 //
 //            Detection is by page IDENTITY, not page count. Counting alone has
-//            a blind spot that the trigger workload walks straight into: a
-//            merge is a net −3 (delete 4, add 1), so it is only visible as a
-//            drop while the pool stays shrunk. Under the very output burst that
-//            causes the merge, 3+ pages are re-allocated well inside one 2s
-//            poll, the count is back where it started, and CURE never fires —
+//            a blind spot that the trigger workload walks straight into. Read
+//            the real arity off `_createNewPage`: on the merge path it deletes
+//            the 4 selected pages, pushes the merged one, and then falls
+//            through to push the fresh page it was called for — delete 4, add
+//            2, a net −2. So the drop is only visible while the pool stays
+//            shrunk, and under the very output burst that causes the merge just
+//            2 pages are re-allocated well inside one 2s poll, the count is
+//            back where it started, and CURE never fires —
 //            the corruption then lasts indefinitely. Since growth only ever
 //            APPENDS, every previously seen index must still hold the SAME page
 //            object; any changed slot means pages were deleted and re-created.
 //            That signal survives regrowth, and it also catches the shape of
 //            merge where the count never drops at an observed boundary at all.
 //
-// The "last page in use" condition doubles as the anti-thrash gate: right
-// after a clear every page is empty, so PREVENT cannot refire until the pool
-// genuinely fills end-to-end again.
+// The "last page in use" condition is MEANT to double as the anti-thrash gate:
+// right after a clear every page is empty, so PREVENT cannot refire until the
+// pool genuinely fills end-to-end again.
+//
+// That gate does not hold in the field (v3.38.6, observed 2026-08-04): upstream
+// `clearTexture()` early-returns unless `_pages[0]` is idle, so the clear can be
+// a no-op while the pool stays full and PREVENT re-fires every poll — 305
+// consecutive `prevent — pages=14/16`, zero cure. Left as-is here deliberately:
+// fixing the thrash is its own change. What matters for THIS module is that the
+// merge detector must keep working THROUGH such a storm, which is why the poll
+// re-snapshots its baseline after a rebuild instead of dropping it (see tick).
 //
 // Internal-field dependency: reaching the atlas needs `addon._renderer
 // ._charAtlas` (same accepted trade-off as webglTeardown.ts's `_renderer._gl`)
@@ -132,6 +143,16 @@ export function detectMerge(prev: number[] | undefined, next: number[]): MergeSi
   return null;
 }
 
+/** Tag every page in the pool, in order. Reading this AFTER a rebuild is what
+ *  keeps the next poll honest without blinding it. */
+function snapshotTags(atlas: AtlasLike): number[] {
+  const pages = atlas.pages;
+  if (!pages || typeof pages.length !== 'number') return [];
+  const tags: number[] = new Array(pages.length);
+  for (let i = 0; i < pages.length; i++) tags[i] = pageTag(pages[i]);
+  return tags;
+}
+
 /** Duck-typed walk to the shared TextureAtlas behind a WebglAddon. Returns
  *  null whenever any internal is missing (DOM renderer, upstream reshape). */
 export function extractAtlas(addon: unknown): AtlasLike | null {
@@ -210,8 +231,7 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const pages = atlas.pages;
       if (!pages || typeof pages.length !== 'number') continue;
       const len = pages.length;
-      const tags: number[] = new Array(len);
-      for (let i = 0; i < len; i++) tags[i] = pageTag(pages[i]);
+      const tags = snapshotTags(atlas);
       const prev = prevPageTags.get(atlas as object);
       prevPageTags.set(atlas as object, tags);
 
@@ -236,10 +256,17 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
           ` — pages=${len}/${mergeTrigger}, panes=${group.length}`,
       );
       rebuildGroup(atlas, group);
-      // Re-baseline: the rebuild is itself a structural change, and a snapshot
-      // taken before it would read as a merge on the next poll and fire a
-      // second, redundant rebuild. Same reason recoverNow drops its baseline.
-      prevPageTags.delete(atlas as object);
+      // Re-baseline from the POST-rebuild pool. The rebuild is itself a
+      // structural change, so a snapshot taken before it could read as a merge
+      // on the next poll and fire a second, redundant rebuild.
+      //
+      // Re-snapshot, never drop. Dropping the baseline leaves `prev` undefined
+      // on the next poll, which blinds detectMerge for that whole interval —
+      // and PREVENT is not a one-off: in the field it repeats on EVERY tick
+      // (observed: 305 consecutive `prevent — pages=14/16`, zero cure). With a
+      // dropped baseline that means `prev` is undefined on every tick and the
+      // identity comparison never runs at all, exactly when it is needed most.
+      prevPageTags.set(atlas as object, snapshotTags(atlas));
     }
   }
 
@@ -260,11 +287,11 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       if (groups.size === 0) return;
       console.warn(`[wmux:atlas-guard] recover (${reason}) — atlases=${groups.size}`);
       for (const [atlas, group] of groups) {
-        // Reset the poll's merge-detection baseline: the rebuild empties the
-        // page pool, and a stale snapshot would read that as a "merge" and
-        // trigger a second, redundant rebuild on the next tick.
-        prevPageTags.delete(atlas as object);
         rebuildGroup(atlas, group);
+        // Re-baseline from the post-rebuild pool for the same reason the poll
+        // does: a stale snapshot would read the rebuild as a "merge" and fire a
+        // redundant one next tick, while dropping it would blind the next poll.
+        prevPageTags.set(atlas as object, snapshotTags(atlas));
       }
     },
   };
