@@ -20,6 +20,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
+import { BoundedLogWriter, createResilientTee, type TeeStream } from '../../shared/logTransport';
+
+export {
+  BoundedLogWriter,
+  createResilientTee,
+  isBrokenPipeError,
+  MAX_LOG_ARCHIVES,
+  MAX_LOG_FILE_BYTES,
+} from '../../shared/logTransport';
 
 type Level = 'info' | 'warn' | 'error';
 
@@ -27,10 +36,6 @@ let currentLogPath: string | null = null;
 let currentDate = '';
 let initialised = false;
 let logDirCreated = false;
-
-/** Each daily file is capped at 16 MiB with three archives (64 MiB/day max). */
-export const MAX_LOG_FILE_BYTES = 16 * 1024 * 1024;
-export const MAX_LOG_ARCHIVES = 3;
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -75,247 +80,6 @@ function resolveLogPath(): string | null {
   return currentLogPath;
 }
 
-/**
- * A rotation lock older than this is treated as abandoned by a crashed
- * process. Rotation is a handful of renames, so anything approaching a second
- * means the holder died mid-sequence.
- */
-const ROTATION_LOCK_STALE_MS = 10_000;
-
-/**
- * Synchronous bounded writer used by the tee. Small writes rotate as a unit so
- * normal log lines are never split. A single oversized write is chunked across
- * generations, keeping every individual file within the configured cap.
- *
- * Multi-process safe by construction. Several wmux processes legitimately share
- * one daily file — the log path is derived from `app.getPath('logs')` alone, so
- * an installed build and a dev build interleave in it. Two consequences drive
- * the design:
- *
- *   - The current size is never cached. An in-process byte counter drifts as
- *     soon as another process appends, and a drifted counter either rotates
- *     early (shredding the file into archives) or never rotates at all.
- *     `fs.appendFileSync` opens with O_APPEND, which is atomic per write, so
- *     stat-after-write is the only size that is true for every writer.
- *   - Rotation runs under an exclusive lock file and re-checks the size once it
- *     holds the lock. Without it, two processes crossing the threshold together
- *     both run the rename chain and the second one shifts a generation that the
- *     first already shifted, discarding a whole archive.
- */
-export class BoundedLogWriter {
-  constructor(
-    private readonly maxBytes = MAX_LOG_FILE_BYTES,
-    private readonly maxArchives = MAX_LOG_ARCHIVES,
-  ) {
-    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-      throw new Error('maxBytes must be a positive safe integer');
-    }
-    if (!Number.isSafeInteger(maxArchives) || maxArchives < 0) {
-      throw new Error('maxArchives must be a non-negative safe integer');
-    }
-  }
-
-  append(filePath: string, chunk: string | Uint8Array): void {
-    const data = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
-    if (data.length === 0) return;
-    let size = this.boundLegacyFile(filePath);
-
-    // Preserve ordinary log lines as one unit. Only a pathological single
-    // write larger than the whole file cap is split across generations.
-    if (data.length <= this.maxBytes && size > 0 && size + data.length > this.maxBytes) {
-      size = this.rotate(filePath, size);
-    }
-
-    let offset = 0;
-    while (offset < data.length) {
-      const room = this.maxBytes - size;
-      if (room <= 0) {
-        const rotated = this.rotate(filePath, size);
-        if (rotated >= this.maxBytes) {
-          // Another process holds the rotation lock. Spinning here would block
-          // a log write indefinitely, so append the remainder in one piece and
-          // let the next append (or the lock holder) restore the cap.
-          fs.appendFileSync(filePath, data.subarray(offset));
-          return;
-        }
-        size = rotated;
-        continue;
-      }
-      const length = Math.min(room, data.length - offset);
-      fs.appendFileSync(filePath, data.subarray(offset, offset + length));
-      size += length;
-      offset += length;
-    }
-  }
-
-  private sizeOf(filePath: string): number {
-    try {
-      return fs.statSync(filePath).size;
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * Upgrade safety: do not rotate a legacy multi-gigabyte file into an equally
-   * oversized archive. Retain its newest bytes, then let the caller rotate that
-   * bounded tail normally. Returns the resulting size.
-   */
-  private boundLegacyFile(filePath: string): number {
-    const size = this.sizeOf(filePath);
-    if (size <= this.maxBytes) return size;
-
-    this.withRotationLock(filePath, () => {
-      const current = this.sizeOf(filePath);
-      if (current <= this.maxBytes) return; // another process already bounded it
-      const tail = Buffer.allocUnsafe(this.maxBytes);
-      const fd = fs.openSync(filePath, 'r');
-      let bytesRead: number;
-      try {
-        bytesRead = fs.readSync(fd, tail, 0, tail.length, current - this.maxBytes);
-      } finally {
-        fs.closeSync(fd);
-      }
-      // Close the read handle before replacing the file; Windows does not
-      // guarantee that a second open can truncate a file with a live handle.
-      fs.writeFileSync(filePath, tail.subarray(0, bytesRead));
-    });
-
-    return this.sizeOf(filePath);
-  }
-
-  /**
-   * Rotate if the file is still at least `minSize` bytes once the lock is held.
-   * Returns the authoritative post-rotation size — still large when another
-   * process owns the lock, which the caller treats as "skip rotation".
-   */
-  private rotate(filePath: string, minSize: number): number {
-    this.withRotationLock(filePath, () => {
-      if (this.sizeOf(filePath) < minSize) return; // another process rotated first
-      this.rotateGenerations(filePath);
-    });
-    return this.sizeOf(filePath);
-  }
-
-  private rotateGenerations(filePath: string): void {
-    if (this.maxArchives === 0) {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      return;
-    }
-
-    const oldest = `${filePath}.${this.maxArchives}`;
-    if (fs.existsSync(oldest)) fs.unlinkSync(oldest);
-    for (let generation = this.maxArchives - 1; generation >= 1; generation--) {
-      const from = `${filePath}.${generation}`;
-      if (fs.existsSync(from)) fs.renameSync(from, `${filePath}.${generation + 1}`);
-    }
-    if (fs.existsSync(filePath)) fs.renameSync(filePath, `${filePath}.1`);
-  }
-
-  /**
-   * Run `fn` holding an exclusive `<file>.lock`. `wx` fails when the lock
-   * exists, which is the whole mutual-exclusion primitive — it is a single
-   * atomic syscall on every platform we ship. A lock left behind by a crashed
-   * process is broken once it goes stale. Returns false when the lock could not
-   * be taken, in which case `fn` never ran.
-   */
-  private withRotationLock(filePath: string, fn: () => void): boolean {
-    const lockPath = `${filePath}.lock`;
-    let fd: number;
-    try {
-      fd = fs.openSync(lockPath, 'wx');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
-      try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs < ROTATION_LOCK_STALE_MS) return false;
-        fs.unlinkSync(lockPath);
-        fd = fs.openSync(lockPath, 'wx');
-      } catch {
-        return false;
-      }
-    }
-    try {
-      fn();
-      return true;
-    } finally {
-      try { fs.closeSync(fd); } catch { /* already closed */ }
-      try { fs.unlinkSync(lockPath); } catch { /* already reaped */ }
-    }
-  }
-}
-
-interface TeeStream {
-  write(chunk: unknown, ...rest: unknown[]): boolean;
-  on(event: 'error', listener: (error: NodeJS.ErrnoException) => void): unknown;
-}
-
-/** True for host-pipe failures that must never be logged back to stdio. */
-export function isBrokenPipeError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
-}
-
-/**
- * Mirror a stream to the file sink while forwarding to the original target.
- *
- * Writable pipe failures are normally delivered through an asynchronous
- * `error` event, after `write()` has returned. A synchronous try/catch and a
- * synchronous reentrancy flag cannot catch that event. Disable this one
- * pass-through target as soon as it errors; file mirroring remains available
- * and the global uncaughtException handler never receives an EPIPE to log back
- * into the same broken pipe.
- */
-export function createResilientTee(
-  stream: TeeStream,
-  mirror: (chunk: unknown) => void,
-): (chunk: unknown, ...rest: unknown[]) => boolean {
-  const orig = stream.write.bind(stream);
-  let forwarding = true;
-  let writing = false;
-
-  // Do not log from this handler: doing so would write to the failing stream.
-  // Any stream error makes the inherited host target unsafe to reuse. The file
-  // sink is independent and continues accepting subsequent writes.
-  stream.on('error', () => { forwarding = false; });
-
-  const completeWithoutForwarding = (rest: unknown[]): true => {
-    const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
-    if (typeof callback === 'function') queueMicrotask(() => { callback(); });
-    return true;
-  };
-
-  return (chunk: unknown, ...rest: unknown[]): boolean => {
-    if (writing) return completeWithoutForwarding(rest);
-    writing = true;
-    try {
-      try { mirror(chunk); } catch { /* file logging is best-effort */ }
-      if (!forwarding) return completeWithoutForwarding(rest);
-      try {
-        // A write callback receives async failures before some stream
-        // implementations emit `error`. Disable forwarding before invoking the
-        // caller so a callback that logs the failure cannot start the loop.
-        const forwardedRest = [...rest];
-        const callbackIndex = forwardedRest.length - 1;
-        const callback = callbackIndex >= 0 ? forwardedRest[callbackIndex] : undefined;
-        if (typeof callback === 'function') {
-          forwardedRest[callbackIndex] = (error?: NodeJS.ErrnoException): void => {
-            if (error) forwarding = false;
-            callback(error);
-          };
-        }
-        return orig(chunk, ...forwardedRest);
-      } catch {
-        // Some hosts throw synchronously instead of emitting `error`.
-        forwarding = false;
-        return completeWithoutForwarding(rest);
-      }
-    } finally {
-      writing = false;
-    }
-  };
-}
-
 const boundedLogWriter = new BoundedLogWriter();
 
 function mirrorToFile(chunk: unknown): void {
@@ -353,8 +117,13 @@ export function initLogSink(): void {
   if (initialised) return;
   initialised = true;
 
-  function makeTee(stream: NodeJS.WriteStream): typeof stream.write {
-    return createResilientTee(stream as unknown as TeeStream, mirrorToFile) as typeof stream.write;
+  function makeTee(stream: NodeJS.WriteStream, label: string): typeof stream.write {
+    return createResilientTee(stream as unknown as TeeStream, mirrorToFile, {
+      label,
+      // The notice bypasses logLine()/console entirely — it exists to explain a
+      // stream that just failed, so it must not be routed through that stream.
+      notice: mirrorToFile,
+    }) as typeof stream.write;
   }
 
   // Tee BOTH stdout and stderr to the log file. Pre-this-change only
@@ -362,8 +131,8 @@ export function initLogSink(): void {
   // never made it to disk — invisible postmortem for the most common
   // logging call. console.warn / console.error / process.stderr.write
   // still go through stderr as before.
-  process.stderr.write = makeTee(process.stderr);
-  process.stdout.write = makeTee(process.stdout);
+  process.stderr.write = makeTee(process.stderr, 'stderr');
+  process.stdout.write = makeTee(process.stdout, 'stdout');
 
   // Auto-prune old daily log files. Bounded sync I/O at startup; errors
   // swallowed so logging can never crash the main process.

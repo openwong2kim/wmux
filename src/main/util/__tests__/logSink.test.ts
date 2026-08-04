@@ -36,8 +36,28 @@ describe('main log sink', () => {
   it('recognises errors that the global exception handlers must not write back to stdio', () => {
     expect(isBrokenPipeError(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).toBe(true);
     expect(isBrokenPipeError(Object.assign(new Error('destroyed'), { code: 'ERR_STREAM_DESTROYED' }))).toBe(true);
+    expect(isBrokenPipeError(Object.assign(new Error('bad fd'), { code: 'EBADF' }))).toBe(true);
     expect(isBrokenPipeError(Object.assign(new Error('disk full'), { code: 'ENOSPC' }))).toBe(false);
     expect(isBrokenPipeError('EPIPE')).toBe(false);
+  });
+
+  it('records why the pass-through went quiet, once, straight to the file', async () => {
+    const stream = new AsyncBrokenPipe();
+    const notices: string[] = [];
+    const tee = createResilientTee(stream, () => undefined, {
+      label: 'stdout',
+      notice: (line) => { notices.push(line); },
+    });
+
+    tee('first write');
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    stream.emit('error', Object.assign(new Error('again'), { code: 'EPIPE' }));
+    for (let i = 0; i < 10; i++) tee('later line');
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('stdout pass-through disabled (code=EPIPE)');
+    expect(notices[0]).toContain('logs to file only');
+    expect(notices[0].endsWith('\n')).toBe(true);
   });
 
   it('disables a broken pass-through after an asynchronous EPIPE instead of feeding uncaughtException recursion', async () => {
