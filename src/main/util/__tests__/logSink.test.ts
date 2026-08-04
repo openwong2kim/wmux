@@ -115,6 +115,70 @@ describe('main log sink', () => {
     for (const name of fs.readdirSync(dir)) expect(fs.statSync(path.join(dir, name)).size).toBeLessThanOrEqual(8);
   });
 
+  it('rotates on the real file size so a second process appending to the same file cannot overshoot the cap', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-shared-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'main-2026-08-04.log');
+    // Two writer instances model two wmux processes sharing one daily file.
+    const installed = new BoundedLogWriter(10, 2);
+    const devBuild = new BoundedLogWriter(10, 2);
+
+    installed.append(file, 'aaaaa');
+    devBuild.append(file, 'bbbbb');
+    // A cached per-process byte counter would still read 5 here and append to
+    // 15 bytes. The stat-based size sees 10 and rotates first.
+    installed.append(file, 'ccccc');
+
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('aaaaabbbbb');
+    expect(fs.readFileSync(file, 'utf8')).toBe('ccccc');
+    for (const name of fs.readdirSync(dir)) expect(fs.statSync(path.join(dir, name)).size).toBeLessThanOrEqual(10);
+  });
+
+  it('defers rotation while another process holds the lock instead of shifting a generation twice', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-lock-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'main-2026-08-04.log');
+    const writer = new BoundedLogWriter(10, 2);
+
+    writer.append(file, 'aaaaaaaaaa');
+    fs.writeFileSync(`${file}.lock`, ''); // another process is mid-rotation
+    writer.append(file, 'bbbbb');
+
+    // No archive was created and nothing was lost — the line went to the live
+    // file, which is briefly over cap.
+    expect(fs.existsSync(`${file}.1`)).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe('aaaaaaaaaabbbbb');
+
+    fs.unlinkSync(`${file}.lock`); // the other process finished
+    writer.append(file, 'ccccc');
+
+    // The over-cap live file is tail-bounded before it becomes an archive, so
+    // the cap holds for every generation even after a deferred rotation.
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('aaaaabbbbb');
+    expect(fs.readFileSync(file, 'utf8')).toBe('ccccc');
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
+    for (const name of fs.readdirSync(dir)) expect(fs.statSync(path.join(dir, name)).size).toBeLessThanOrEqual(10);
+  });
+
+  it('breaks a rotation lock abandoned by a crashed process', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-stale-lock-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'main-2026-08-04.log');
+    const writer = new BoundedLogWriter(10, 2);
+
+    writer.append(file, 'aaaaaaaaaa');
+    const lockPath = `${file}.lock`;
+    fs.writeFileSync(lockPath, '');
+    const stale = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, stale, stale);
+
+    writer.append(file, 'bbbbb');
+
+    expect(fs.readFileSync(`${file}.1`, 'utf8')).toBe('aaaaaaaaaa');
+    expect(fs.readFileSync(file, 'utf8')).toBe('bbbbb');
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it('bounds a legacy oversized daily file before rotating it', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-log-legacy-'));
     tempDirs.push(dir);

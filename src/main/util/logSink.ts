@@ -76,14 +76,33 @@ function resolveLogPath(): string | null {
 }
 
 /**
+ * A rotation lock older than this is treated as abandoned by a crashed
+ * process. Rotation is a handful of renames, so anything approaching a second
+ * means the holder died mid-sequence.
+ */
+const ROTATION_LOCK_STALE_MS = 10_000;
+
+/**
  * Synchronous bounded writer used by the tee. Small writes rotate as a unit so
  * normal log lines are never split. A single oversized write is chunked across
  * generations, keeping every individual file within the configured cap.
+ *
+ * Multi-process safe by construction. Several wmux processes legitimately share
+ * one daily file — the log path is derived from `app.getPath('logs')` alone, so
+ * an installed build and a dev build interleave in it. Two consequences drive
+ * the design:
+ *
+ *   - The current size is never cached. An in-process byte counter drifts as
+ *     soon as another process appends, and a drifted counter either rotates
+ *     early (shredding the file into archives) or never rotates at all.
+ *     `fs.appendFileSync` opens with O_APPEND, which is atomic per write, so
+ *     stat-after-write is the only size that is true for every writer.
+ *   - Rotation runs under an exclusive lock file and re-checks the size once it
+ *     holds the lock. Without it, two processes crossing the threshold together
+ *     both run the rename chain and the second one shifts a generation that the
+ *     first already shifted, discarding a whole archive.
  */
 export class BoundedLogWriter {
-  private activePath: string | null = null;
-  private activeBytes = 0;
-
   constructor(
     private readonly maxBytes = MAX_LOG_FILE_BYTES,
     private readonly maxArchives = MAX_LOG_ARCHIVES,
@@ -99,60 +118,88 @@ export class BoundedLogWriter {
   append(filePath: string, chunk: string | Uint8Array): void {
     const data = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
     if (data.length === 0) return;
-    this.activate(filePath);
+    let size = this.boundLegacyFile(filePath);
 
     // Preserve ordinary log lines as one unit. Only a pathological single
     // write larger than the whole file cap is split across generations.
-    if (data.length <= this.maxBytes && this.activeBytes > 0 && this.activeBytes + data.length > this.maxBytes) {
-      this.rotate(filePath);
+    if (data.length <= this.maxBytes && size > 0 && size + data.length > this.maxBytes) {
+      size = this.rotate(filePath, size);
     }
 
     let offset = 0;
     while (offset < data.length) {
-      if (this.activeBytes >= this.maxBytes) this.rotate(filePath);
-      const length = Math.min(this.maxBytes - this.activeBytes, data.length - offset);
+      const room = this.maxBytes - size;
+      if (room <= 0) {
+        const rotated = this.rotate(filePath, size);
+        if (rotated >= this.maxBytes) {
+          // Another process holds the rotation lock. Spinning here would block
+          // a log write indefinitely, so append the remainder in one piece and
+          // let the next append (or the lock holder) restore the cap.
+          fs.appendFileSync(filePath, data.subarray(offset));
+          return;
+        }
+        size = rotated;
+        continue;
+      }
+      const length = Math.min(room, data.length - offset);
       fs.appendFileSync(filePath, data.subarray(offset, offset + length));
-      this.activeBytes += length;
+      size += length;
       offset += length;
     }
   }
 
-  private activate(filePath: string): void {
-    if (this.activePath === filePath) return;
-    let size: number;
+  private sizeOf(filePath: string): number {
     try {
-      size = fs.statSync(filePath).size;
+      return fs.statSync(filePath).size;
     } catch {
-      this.activePath = filePath;
-      this.activeBytes = 0;
-      return;
+      return 0;
     }
+  }
 
-    // Upgrade safety: do not rotate a legacy multi-gigabyte file into an
-    // equally oversized archive. Retain its newest bytes, then let the next
-    // append rotate that bounded tail normally.
-    if (size > this.maxBytes) {
+  /**
+   * Upgrade safety: do not rotate a legacy multi-gigabyte file into an equally
+   * oversized archive. Retain its newest bytes, then let the caller rotate that
+   * bounded tail normally. Returns the resulting size.
+   */
+  private boundLegacyFile(filePath: string): number {
+    const size = this.sizeOf(filePath);
+    if (size <= this.maxBytes) return size;
+
+    this.withRotationLock(filePath, () => {
+      const current = this.sizeOf(filePath);
+      if (current <= this.maxBytes) return; // another process already bounded it
       const tail = Buffer.allocUnsafe(this.maxBytes);
       const fd = fs.openSync(filePath, 'r');
       let bytesRead: number;
       try {
-        bytesRead = fs.readSync(fd, tail, 0, tail.length, size - this.maxBytes);
+        bytesRead = fs.readSync(fd, tail, 0, tail.length, current - this.maxBytes);
       } finally {
         fs.closeSync(fd);
       }
       // Close the read handle before replacing the file; Windows does not
       // guarantee that a second open can truncate a file with a live handle.
       fs.writeFileSync(filePath, tail.subarray(0, bytesRead));
-      size = bytesRead;
-    }
-    this.activePath = filePath;
-    this.activeBytes = size;
+    });
+
+    return this.sizeOf(filePath);
   }
 
-  private rotate(filePath: string): void {
+  /**
+   * Rotate if the file is still at least `minSize` bytes once the lock is held.
+   * Returns the authoritative post-rotation size — still large when another
+   * process owns the lock, which the caller treats as "skip rotation".
+   */
+  private rotate(filePath: string, minSize: number): number {
+    this.withRotationLock(filePath, () => {
+      if (this.sizeOf(filePath) < minSize) return; // another process rotated first
+      this.rotateGenerations(filePath);
+    });
+    return this.sizeOf(filePath);
+  }
+
+  private rotateGenerations(filePath: string): void {
     if (this.maxArchives === 0) {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      this.activeBytes = 0;
       return;
     }
 
@@ -163,7 +210,37 @@ export class BoundedLogWriter {
       if (fs.existsSync(from)) fs.renameSync(from, `${filePath}.${generation + 1}`);
     }
     if (fs.existsSync(filePath)) fs.renameSync(filePath, `${filePath}.1`);
-    this.activeBytes = 0;
+  }
+
+  /**
+   * Run `fn` holding an exclusive `<file>.lock`. `wx` fails when the lock
+   * exists, which is the whole mutual-exclusion primitive — it is a single
+   * atomic syscall on every platform we ship. A lock left behind by a crashed
+   * process is broken once it goes stale. Returns false when the lock could not
+   * be taken, in which case `fn` never ran.
+   */
+  private withRotationLock(filePath: string, fn: () => void): boolean {
+    const lockPath = `${filePath}.lock`;
+    let fd: number;
+    try {
+      fd = fs.openSync(lockPath, 'wx');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs < ROTATION_LOCK_STALE_MS) return false;
+        fs.unlinkSync(lockPath);
+        fd = fs.openSync(lockPath, 'wx');
+      } catch {
+        return false;
+      }
+    }
+    try {
+      fn();
+      return true;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+      try { fs.unlinkSync(lockPath); } catch { /* already reaped */ }
+    }
   }
 }
 
