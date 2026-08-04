@@ -77,6 +77,27 @@ describe('claimPinnedRoute / getPinnedRoute', () => {
     expect(sendRpc).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let a late stale response clear a newer claim', async () => {
+    const sendRpc = vi
+      .fn()
+      .mockResolvedValueOnce({ ptyId: 'pty-old', workspaceId: 'ws-old' })
+      .mockResolvedValueOnce({ ptyId: 'pty-new', workspaceId: 'ws-new' });
+    const deps = makeDeps({ sendRpc });
+    const oldRoute = await claimPinnedRoute(deps);
+
+    // The first stale response releases the old generation, allowing a new
+    // route to be claimed while another RPC for the old route is still pending.
+    clearPinnedRoute(oldRoute);
+    const newRoute = await claimPinnedRoute(deps);
+
+    // That older RPC now reports the same stale route. Its captured generation
+    // must not invalidate the replacement that was claimed in the meantime.
+    clearPinnedRoute(oldRoute);
+
+    expect(getPinnedRoute()).toBe(newRoute);
+    expect(getPinnedRoute()).toEqual({ ptyId: 'pty-new', workspaceId: 'ws-new' });
+  });
+
   it('de-duplicates concurrent first calls so only one claim RPC fires', async () => {
     let resolveRpc!: (value: unknown) => void;
     const sendRpc = vi.fn().mockImplementation(

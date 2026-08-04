@@ -28,8 +28,8 @@ import type { RpcMethod } from '../shared/rpc';
 import { getConnectionScope } from './connectionScope';
 
 export interface PinnedRoute {
-  ptyId: string;
-  workspaceId: string;
+  readonly ptyId: string;
+  readonly workspaceId: string;
 }
 
 export interface ClaimDeps {
@@ -81,9 +81,15 @@ export function getPinnedRoute(): PinnedRoute | null {
  * clearing the pin lets the next terminal call claim a fresh workspace rather
  * than retrying the dead PTY forever. `slots()` keeps broker callers isolated:
  * invalidating one connection never disturbs another connection's route.
+ *
+ * When `expectedRoute` is supplied, object identity acts as the claim
+ * generation: a late response for an older claim cannot clear a newer one.
+ * Omitting it retains the unconditional form used by explicit resets.
  */
-export function clearPinnedRoute(): void {
-  slots().set(null);
+export function clearPinnedRoute(expectedRoute?: PinnedRoute | null): void {
+  const s = slots();
+  if (expectedRoute !== undefined && s.get() !== expectedRoute) return;
+  s.set(null);
 }
 
 /**

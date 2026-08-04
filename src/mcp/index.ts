@@ -4,7 +4,12 @@ import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
-import { claimPinnedRoute, clearPinnedRoute, getPinnedRoute } from './paneResolver';
+import {
+  claimPinnedRoute,
+  clearPinnedRoute,
+  getPinnedRoute,
+  type PinnedRoute,
+} from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
 import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
@@ -441,14 +446,15 @@ async function callRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
+  const pinnedRouteAtDispatch = getPinnedRoute();
   try {
     const result = await sendRpc(method, params);
-    if (isStaleIdentityResult(result)) invalidateStaleRoute();
+    if (isStaleIdentityResult(result)) invalidateStaleRoute(pinnedRouteAtDispatch);
     const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     return { content: [{ type: 'text', text }] };
   } catch (err) {
     if (isStaleIdentityResult(err instanceof Error ? err.message : String(err))) {
-      invalidateStaleRoute();
+      invalidateStaleRoute(pinnedRouteAtDispatch);
     }
     throw err;
   }
@@ -461,9 +467,9 @@ async function callRpc(
  * paneResolver's process/connection-local claim instead, so clearing only the
  * former leaves them pinned to a deleted PTY until the MCP server restarts.
  */
-function invalidateStaleRoute(): void {
+function invalidateStaleRoute(pinnedRouteAtDispatch: PinnedRoute | null): void {
   invalidateWorkspaceId();
-  clearPinnedRoute();
+  clearPinnedRoute(pinnedRouteAtDispatch);
 }
 
 /**

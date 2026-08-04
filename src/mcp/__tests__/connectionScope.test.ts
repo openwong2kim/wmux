@@ -90,6 +90,7 @@ describe('connectionScope isolation', () => {
       sendRpc: async () => ({ ptyId: pty, workspaceId: ws }),
     });
 
+    await claimPinnedRoute(claimFor('ws-global', 'pty-global'));
     await runInConnectionScope(a, () => claimPinnedRoute(claimFor('ws-a', 'pty-a')));
     await runInConnectionScope(b, () => claimPinnedRoute(claimFor('ws-b', 'pty-b')));
 
@@ -100,7 +101,10 @@ describe('connectionScope isolation', () => {
       ptyId: 'pty-b',
       workspaceId: 'ws-b',
     });
-    expect(getPinnedRoute()).toBeNull();
+    expect(getPinnedRoute()).toEqual({
+      ptyId: 'pty-global',
+      workspaceId: 'ws-global',
+    });
   });
 
   it('PlaywrightEngine.getInstance is per scope, stable within a scope, singleton outside', () => {
