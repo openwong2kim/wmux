@@ -9,9 +9,9 @@
  *
  * This sink solves that by tee-ing both `process.stdout.write` and
  * `process.stderr.write` to a daily-rotated file at
- * `~/.wmux/logs/daemon-YYYY-MM-DD.log`. After `initDaemonLogSink(baseDir)`
- * runs, every existing console.* call site is captured without rewriting
- * them.
+ * `~/.wmux/logs/daemon-YYYY-MM-DD.log`, capped at 16 MiB with three numbered
+ * archives. After `initDaemonLogSink(baseDir)` runs, every existing console.*
+ * call site is captured without rewriting them.
  *
  * This mirrors `src/main/util/logSink.ts` but has zero Electron dependency
  * — the daemon must not import `electron` (it would pull in a second copy
@@ -23,6 +23,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { BoundedLogWriter, createResilientTee, type TeeStream } from '../../shared/logTransport';
+
+export { isBrokenPipeError } from '../../shared/logTransport';
 
 type Level = 'info' | 'warn' | 'error';
 
@@ -68,6 +71,17 @@ function resolveLogPath(): string | null {
   return currentLogPath;
 }
 
+const boundedLogWriter = new BoundedLogWriter();
+
+function mirrorToFile(chunk: unknown): void {
+  const filePath = resolveLogPath();
+  if (!filePath) return;
+  const data = typeof chunk === 'string'
+    ? chunk
+    : (chunk instanceof Uint8Array ? chunk : String(chunk));
+  boundedLogWriter.append(filePath, data);
+}
+
 /**
  * Append a structured log line. Goes through stderr so the tee installed
  * in `initDaemonLogSink()` mirrors it into the file. Mostly redundant
@@ -98,57 +112,30 @@ export function initDaemonLogSink(baseDir: string): void {
   initialised = true;
   baseLogDir = path.join(baseDir, 'logs');
 
-  const wrap = (
-    stream: NodeJS.WriteStream,
-  ): void => {
-    const orig = stream.write.bind(stream);
-
-    // Reentrancy guard. Without this, an EPIPE thrown by `orig()` below
-    // becomes an `uncaughtException`, the registered handler logs via
-    // console.error, which routes back through *this* override — and
-    // EPIPE re-throws on the same broken pipe. Same incident pattern as
-    // main/logSink.ts (which grew a log file to 692 MB in ~17 min). The
-    // daemon is even more exposed because it always runs with detached
-    // / 'ignore' stdio from the launcher, so its inherited stdout/stderr
-    // are guaranteed-closed pipes from the OS's point of view.
-    let writing = false;
-
-    stream.write = ((chunk: unknown, ...rest: unknown[]) => {
-      if (writing) {
-        // Recursive entry — drop silently. The outer call already wrote
-        // the original chunk to the file and is mid-orig() pass-through.
-        return true;
-      }
-      writing = true;
-      try {
-        try {
-          const filePath = resolveLogPath();
-          if (filePath) {
-            const str = typeof chunk === 'string'
-              ? chunk
-              : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
-            fs.appendFileSync(filePath, str);
-          }
-        } catch { /* swallow — never break logging */ }
-
-        // Pass through to the original stream. Wrapped in its own
-        // try/catch because the daemon's inherited stdout/stderr from
-        // a `stdio: 'ignore'` spawn is a closed handle — orig() then
-        // throws EPIPE, which becomes uncaughtException without this.
-        try {
-          // @ts-expect-error - spread re-applies original signature
-          return orig(chunk, ...rest);
-        } catch {
-          return true;
-        }
-      } finally {
-        writing = false;
-      }
+  // Same transport as the main sink. A synchronous try/catch and a synchronous
+  // reentrancy flag — what this used to have — cannot see the failure that
+  // actually storms: on POSIX a broken stdio pipe is delivered as an
+  // asynchronous `error` event after write() has already returned, so it
+  // escapes as an uncaughtException whose handler logs it straight back onto
+  // the same pipe. `createResilientTee` listens for that event and retires the
+  // pass-through instead. This is the pattern that grew a main-process log file
+  // to 84.9 GiB in one session.
+  //
+  // The daemon is normally the *less* exposed of the two: the launcher spawns
+  // it with `stdio: 'ignore'`, which opens /dev/null for fds 0-2, and writes to
+  // /dev/null cannot fail with EPIPE. A daemon started in the foreground (a
+  // terminal, a CLI run) inherits real pipes and is exposed exactly like main.
+  const wrap = (stream: NodeJS.WriteStream, label: string): void => {
+    stream.write = createResilientTee(stream as unknown as TeeStream, mirrorToFile, {
+      label,
+      // The notice bypasses logLine()/console entirely — it exists to explain a
+      // stream that just failed, so it must not be routed through that stream.
+      notice: mirrorToFile,
     }) as typeof stream.write;
   };
 
-  wrap(process.stdout);
-  wrap(process.stderr);
+  wrap(process.stdout, 'stdout');
+  wrap(process.stderr, 'stderr');
 
   // Auto-prune old daily log files. Without this the logs/ directory
   // accumulates indefinitely (no rotation cap, no retention policy).
@@ -174,7 +161,7 @@ function pruneOldLogs(retentionDays: number): void {
   try {
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     for (const file of fs.readdirSync(baseLogDir)) {
-      if (!/^daemon-\d{4}-\d{2}-\d{2}\.log$/.test(file)) continue;
+      if (!/^daemon-\d{4}-\d{2}-\d{2}\.log(?:\.\d+)?$/.test(file)) continue;
       const full = path.join(baseLogDir, file);
       try {
         const st = fs.statSync(full);
