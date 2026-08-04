@@ -3667,6 +3667,68 @@ describe('WebTerminalServer', () => {
       expect(after.events).toEqual(before.events);
     });
 
+    it('serves a code-block body behind the same grant as the turn page', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      projectorMock.codeBlock.mockReturnValue({ body: 'console.log(1)\n' });
+
+      const res = await fetch(
+        `${base()}/api/sessions/s1/turns/block?srcOffset=64&n=2&eventId=ev-1`,
+        { headers: h },
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ body: 'console.log(1)\n', bytes: 15 });
+      // The eventId rides through: without it a rotated file answers at the same
+      // offset with another conversation's code.
+      expect(projectorMock.codeBlock).toHaveBeenCalledWith('s1', {
+        srcOffset: 64,
+        n: 2,
+        eventId: 'ev-1',
+      });
+    });
+
+    it('★ a stale ref is a 404, and an over-cap body says it was cut', async () => {
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+
+      // Rotated file / mid-line offset — the projector refuses. An empty 200
+      // here would render as "this block is empty" instead of "re-fetch".
+      projectorMock.codeBlock.mockReturnValue(null);
+      const stale = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=9&n=1`, { headers: h });
+      expect(stale.status).toBe(404);
+      expect((await stale.json()).error).toBe('block not found');
+
+      // Garbage refs never reach the projector.
+      projectorMock.codeBlock.mockClear();
+      for (const q of ['srcOffset=-1&n=1', 'srcOffset=0&n=0', 'srcOffset=abc&n=1', 'n=1']) {
+        const bad = await fetch(`${base()}/api/sessions/s1/turns/block?${q}`, { headers: h });
+        expect(bad.status).toBe(400);
+      }
+      expect(projectorMock.codeBlock).not.toHaveBeenCalled();
+
+      // A multi-megabyte tool body is cut at the cap, and SAYS it was cut —
+      // the seam lands mid-character here, which must not surface as U+FFFD.
+      const huge = `${'a'.repeat(1024 * 1024 - 1)}가나다`;
+      projectorMock.codeBlock.mockReturnValue({ body: huge });
+      const capped = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=0&n=1`, { headers: h });
+      const body = await capped.json();
+      expect(capped.status).toBe(200);
+      expect(body.truncated).toBe(true);
+      expect(body.bytes).toBe(Buffer.byteLength(huge, 'utf8'));
+      expect(body.body).not.toContain('�');
+      expect(Buffer.byteLength(body.body, 'utf8')).toBeLessThanOrEqual(1024 * 1024);
+    });
+
+    it('the block route refuses without --allow-transcript, by tag', async () => {
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/sessions/s1/turns/block?srcOffset=0&n=1`, {
+        headers: bearer(info.token as string),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error.startsWith('transcript-disabled:')).toBe(true);
+    });
+
     it('★ liveness is non-recording and reaches only panes the device has read', async () => {
       const info = await startWithTranscript();
       const h = bearer(info.token as string);

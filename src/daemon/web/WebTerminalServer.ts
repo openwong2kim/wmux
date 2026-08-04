@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { DaemonSessionManager } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
 // headless-terminal dependency chain stay out of this module. The web server is
@@ -514,6 +515,13 @@ const TRANSCRIPT_NUDGE_COALESCE_MS = 1000;
 const AGENT_LIVENESS_COALESCE_MS = 1000;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
+/**
+ * Ceiling on ONE expanded code block / tool body served to a phone. A single
+ * transcript line can legitimately hold megabytes (a `cat` of a large file), and
+ * the desktop reads those over a local pipe while a phone may be on cellular.
+ * Over the cap the response is a head plus `truncated`, never a silent cut.
+ */
+const MAX_BLOCK_BODY_BYTES = 1024 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -1552,6 +1560,9 @@ export class WebTerminalServer {
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
       }
+      if (req.method === 'GET' && rest.endsWith('/turns/block')) {
+        return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
+      }
       if (req.method === 'GET' && rest.endsWith('/turns')) {
         return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length), principal);
       }
@@ -1893,6 +1904,95 @@ export class WebTerminalServer {
       reset: result.reset,
       ...(result.budgetDropped ? { budgetDropped: true } : {}),
     });
+  }
+
+  /**
+   * `GET /api/sessions/:id/turns/block?srcOffset=&n=&eventId=` — the body behind
+   * a code-block or tool-body chip, the phone's half of what the desktop does
+   * over `daemon.transcript.codeBlock`.
+   *
+   * Bodies never ride the turn page itself (A3): the page carries a chip with
+   * `{n, lines, lang, srcOffset}` and the body is fetched here, on expand, as a
+   * single bounded line read. Without this route the phone could render the chip
+   * and nothing else — there was no way to open one.
+   *
+   * Same gate, same tag, same 404/503 split as `/turns`: this serves transcript
+   * content, so `--allow-transcript` governs it and nothing else may.
+   */
+  private handleSessionTurnBlock(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript-disabled: server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    if (!this.deps.sessionManager.getSession(sessionId)) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) {
+      this.json(res, 503, { error: 'transcript projector unavailable' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    // Read the raw params first: `Number(null)` is 0, so a MISSING srcOffset
+    // would otherwise read as "offset 0" and quietly answer with a block from
+    // the first line of the transcript instead of refusing.
+    const rawOffset = url.searchParams.get('srcOffset');
+    const rawN = url.searchParams.get('n');
+    const srcOffset = rawOffset === null ? NaN : Number(rawOffset);
+    const n = rawN === null ? NaN : Number(rawN);
+    if (!Number.isFinite(srcOffset) || srcOffset < 0 || !Number.isFinite(n) || n < 1) {
+      this.json(res, 400, {
+        error: 'bad-block-ref',
+        detail: 'srcOffset must be a non-negative integer and n a positive one',
+      });
+      return;
+    }
+    // The event id is what stops a rotated file from answering with a DIFFERENT
+    // conversation's code at the same offset. Optional on the wire because a
+    // producer may not have attributed one, and the projector then falls back to
+    // matching `n` alone — exactly the desktop RPC's contract.
+    const eventId = url.searchParams.get('eventId') ?? undefined;
+
+    const found = projector.codeBlock(sessionId, {
+      srcOffset: Math.floor(srcOffset),
+      n: Math.floor(n),
+      ...(eventId ? { eventId } : {}),
+    });
+    // A ref that no longer resolves is a 404 rather than an empty 200: the chip
+    // is stale (file rotated, offset mid-line, block gone), and a phone that got
+    // `{body: ''}` would render an empty expansion as if the block were empty.
+    if (!found) {
+      this.json(res, 404, { error: 'block not found' });
+      return;
+    }
+    // The desktop reads this over a local pipe; the phone may be on a hotel
+    // network, and one transcript line can legitimately hold megabytes of tool
+    // output. Cut at the cap and SAY so, rather than shipping the whole thing or
+    // pretending the block ends here — `truncated` is what stops a user copying
+    // a shortened body out with nothing saying it was shortened.
+    const bytes = Buffer.byteLength(found.body, 'utf8');
+    if (bytes > MAX_BLOCK_BODY_BYTES) {
+      // StringDecoder rather than `.toString()`: a byte cut lands mid-sequence
+      // as often as not, and toString would hand the phone a U+FFFD at the seam.
+      // The decoder holds the incomplete tail back instead, and never calling
+      // `end()` is what discards it.
+      const head = new StringDecoder('utf8').write(
+        Buffer.from(found.body, 'utf8').subarray(0, MAX_BLOCK_BODY_BYTES),
+      );
+      this.json(res, 200, { body: head, bytes, truncated: true });
+      return;
+    }
+    this.json(res, 200, { body: found.body, bytes });
   }
 
   private handleSessionResize(

@@ -552,6 +552,36 @@ conversation being unavailable.
 watching the same pane — no subscription, no shared cursor. Two devices and a
 desk can read one session at once and none of them can move the others.
 
+#### Opening a code block or a tool body
+
+```
+GET /api/sessions/<id>/turns/block?srcOffset=<n>&n=<n>[&eventId=<id>]
+  → 200 {body, bytes, truncated?}
+  → 400 {error: 'bad-block-ref', detail}
+  → 403 {error: 'transcript-disabled: …'}
+  → 404 {error: 'session not found'} | {error: 'block not found'}
+  → 503 {error: 'transcript projector unavailable'}
+```
+
+Turn pages never carry large bodies. A fenced code block arrives as a chip
+(`codeBlocks: [{n, lines, lang, path?, srcOffset}]`, with the prose carrying an
+inline ` code:<n> ` marker where it belongs), and a tool body over the
+inline cap arrives as `{n, bytes, inline?, truncated, srcOffset}`. Both are
+handles: pass the ref's `srcOffset` and `n` here when the user expands one.
+
+Send `eventId` — the id of the event the ref came from — whenever you have it.
+Transcripts rotate, and without it an offset from an older file can resolve
+inside a different conversation. The server re-reads that one transcript line
+per request and caches nothing, so expanding the same block twice is two reads
+rather than a stale copy.
+
+`bytes` is the body's true size. `truncated: true` means what you got is only
+its head (the server caps one body at 1 MB) — say so in the UI rather than
+letting someone copy a shortened body out believing it is whole. **`404 block
+not found` means the ref is stale**, not that the block was empty: the file
+rotated, or the offset no longer starts a line. Re-fetch the turn page rather
+than rendering an empty expansion.
+
 ---
 
 ## 6. Approvals
