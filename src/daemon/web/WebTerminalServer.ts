@@ -1779,6 +1779,10 @@ export class WebTerminalServer {
     sessionId: string,
     principal: WebPrincipal,
   ): void {
+    // Transcript pages can contain thinking blocks, full tool inputs, and file
+    // contents. Keep every response on this route out of client/intermediary
+    // caches so revoking transcript access does not leave a replayable copy.
+    res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) {
       this.json(res, 403, {
         error: 'transcript-disabled: server started without --allow-transcript',
