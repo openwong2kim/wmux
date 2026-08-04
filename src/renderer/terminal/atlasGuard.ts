@@ -91,7 +91,8 @@
 //      so `refresh()` skipped every unchanged cell and kept its old glyph
 //      coordinates into a pool that had just been emptied and re-packed. That
 //      IS the corruption. It was invisible while (1) made the clear a no-op;
-//      fixing (1) armed it. Field log, v3.38.7 on 2026-08-05: nine
+//      fixing (1) armed it. Field log, v3.38.7 on 2026-08-05 KST (the lines
+//      themselves are UTC, `2026-08-04T20:40-20:41Z`): nine
 //      `prevent … clear=cleared` events in the 90s before a corrupted-Hangul
 //      screenshot, zero merge cures — the merge path never ran. See
 //      `clearRenderModel` for the upstream pairing this now reproduces.
@@ -332,7 +333,8 @@ export interface ModelClearableAddon {
  * (we already emptied the pool, so upstream's page-0 probe short-circuits),
  * which is why the pool wipe stays a single shared operation.
  *
- * Field evidence for the ordering, 2026-08-05: v3.38.7 logged nine
+ * Field evidence for the ordering, 2026-08-05 KST (`2026-08-04T20:4xZ` in the
+ * log itself): v3.38.7 logged nine
  * `prevent … clear=cleared` events in the 90s before a corruption screenshot,
  * and zero merge cures. Under v3.38.6 the same clear was a silent no-op and
  * the same workload did not corrupt — the repair, not the merge, was the
