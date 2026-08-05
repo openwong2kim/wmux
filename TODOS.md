@@ -42,9 +42,9 @@
 
 ## ✅ #679 명시적 `surfaceId` 경로 검증 — 구멍 없음 (2026-08-05)
 - **원래 질문:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로도 소유권을 검증하는가?
-- **답:** 검증한다. 다만 그걸 닫은 건 #679가 아니라 그 뒤의 #695 작업이다. 3층 전부 확인:
+- **답:** 검증한다. 다만 그걸 닫은 건 #679가 아니라 그 뒤의 #695 작업이다. 세 층을 따라간 결과:
   1. **진입** — 브라우저 툴 전 호출 지점이 `getPageForScope(scope)` 하나만 쓴다. `scope`는 `requireBrowserTargetScope()` 산출물이고 workspaceId가 비면 fail-closed(`browserScope.ts`). `getPage()`는 private, 다른 진입점 없음 → 명시 surfaceId도 workspaceId 없이는 도달 불가.
-  2. **엔진 선택** — `selectRegisteredTarget()`이 명시 surfaceId를 대조한다: 최신 main은 `targetsScoped`로 서버가 필터, 레거시 main은 클라이언트가 `target.workspaceId !== workspaceId`를 `WORKSPACE_SCOPE_UNRESOLVED`로 거부(태그 없는 타깃도 거부).
+  2. **엔진 선택** — `selectRegisteredTarget()`이 명시 surfaceId를 대조한다. **두 분기의 검사 주체가 다르다**: 최신 main(`targetsScoped`)에서는 `browser.cdp.info`가 caller workspaceId로 **서버측 필터**를 이미 걸었으므로 응답에 남 워크스페이스 타깃이 없고, 클라이언트는 별도 재확인을 하지 않는다 — 이 경로의 소유권 검사는 서버 필터 **하나뿐**이다(서버가 소유권의 권위이므로 자가보고가 아니지만, 방어심층은 여기서 한 겹이다). 레거시 main에서만 클라이언트가 `target.workspaceId !== workspaceId`를 `WORKSPACE_SCOPE_UNRESOLVED`로 거부한다(태그 없는 타깃도 거부).
   3. **RPC 폴백 + 소유권** — #679 체인지로그가 "별개 구멍"이라 남겨둔 폴백은 이제 `sendScopedBrowserRpc`가 workspaceId를 강제 주입하고 params의 surfaceId를 덮어쓴다. 서버 핸들러는 전부 `scopeOf(params)`를 넘기고(누락 0건), 최종 판정은 `WebviewCdpManager.getTarget()`의 `ownedBy()` — 명시 surfaceId 분기에도 적용된다. `browser_tabs select/close`는 렌더러의 `findBrowserTab(workspaces, workspaceId, surfaceId)`로 워크스페이스-정확 조회.
 - **회귀 커버리지:** `PlaywrightEngine.test.ts`의 *"strict surface targeting rejects a legacy main that returns a foreign or untagged explicit target"*, `WebviewCdpManager.test.ts`의 `getTarget('b-surface', 'ws-A') === null`.
 - **남은 것(신규 아님):** 파이프에 workspaceId를 **아예 안 보내면** `ownedBy()`가 통과시키고 `browser.cdp.info`도 전 워크스페이스 타깃을 준다. 손으로 만든 소켓 클라이언트는 여전히 무제한 — #113 same-user 천장이자 "first-party CLI는 동일 신뢰" 설계 결정이며 코드 주석에 명시돼 있다.
