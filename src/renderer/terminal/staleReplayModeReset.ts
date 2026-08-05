@@ -23,11 +23,11 @@
  * the PTY. Display state (?1049 alt screen, ?25 cursor) is intentionally left
  * alone — resetting it would visibly alter the restored scrollback.
  *
- * Callers must gate on the daemon's `resumeAgent` field from pty.list: it is
- * only present for sessions recovered THIS daemon boot whose agent has not
- * been re-detected, i.e. exactly the panes where the mode-arming process is
- * known dead. A live reconnect (agent still running and legitimately using
- * the mouse) never carries it, so its modes are never clobbered.
+ * Callers must NOT apply this blindly — see staleReplayResetLevel() for which
+ * of the two constants below a given pane has earned. This full reset is only
+ * safe when the mode-arming process is KNOWN DEAD (daemon-boot recovery, or a
+ * dead-session snapshot paint), because ?2004 in particular is owned by the
+ * live shell, not just by TUIs.
  */
 export const STALE_REPLAY_INPUT_MODE_RESETS =
   '\x1b[?9l' + // X10 mouse
@@ -37,6 +37,29 @@ export const STALE_REPLAY_INPUT_MODE_RESETS =
   '\x1b[?1006l' + // SGR extended mouse encoding
   '\x1b[?1004l' + // focus in/out reporting
   '\x1b[?2004l'; // bracketed paste
+
+/**
+ * Mouse-reporting-only subset — the reset for panes we believe are STALE but
+ * whose shell is alive.
+ *
+ * ?2004 and ?1004 are deliberately excluded. A shell sitting at its prompt
+ * arms bracketed paste itself, and wmux decides whether to wrap a paste in
+ * `ESC[200~` by reading xterm's OWN `modes.bracketedPasteMode` (clipboardChunk
+ * .ts, Terminal.tsx, useTerminal.ts). Clearing ?2004 terminal-side therefore
+ * desynchronizes the two: the shell still expects wrapped pastes, wmux stops
+ * sending them, and a multi-line paste lands as N separate commands that the
+ * shell executes immediately. That is a far worse outcome than the junk the
+ * mouse reset exists to prevent, so it is confined to known-dead panes.
+ *
+ * The mouse modes carry no such risk: nothing but a TUI arms them, and a shell
+ * at its prompt has no use for them.
+ */
+export const STALE_REPLAY_MOUSE_MODE_RESETS =
+  '\x1b[?9l' + // X10 mouse
+  '\x1b[?1000l' + // VT200 mouse (click)
+  '\x1b[?1002l' + // button-event tracking (drag)
+  '\x1b[?1003l' + // any-event tracking (motion — the junk-input source)
+  '\x1b[?1006l'; // SGR extended mouse encoding
 
 /**
  * Stale-replay display-state reset ("frozen scroll window" bug).
@@ -80,26 +103,39 @@ export interface StaleReplayModeGateInput {
 }
 
 /**
- * Whether a replaying attach-flush should disable the replayed input-reporting
- * modes.
+ * How much of the replayed input-mode state a pane has earned the right to
+ * have cleared.
  *
- * `resumeAgent` alone was too narrow (#807): it is populated only on DAEMON
- * boot, so quitting and relaunching the APP while the daemon survives left
- * every gate false. The replay still re-armed the dead TUI's mouse tracking,
- * and the next pointer move over the pane wrote an SGR report into the fresh
- * shell's stdin — the literal `35;9;12M` junk on the prompt.
+ *  - `'full'`  — the arming process is known dead. Everything goes, ?2004
+ *                included, because no live shell owns it either.
+ *  - `'mouse'` — the pane looks stale but its SHELL is alive. Only mouse
+ *                reporting is cleared; see STALE_REPLAY_MOUSE_MODE_RESETS for
+ *                why touching ?2004 here corrupts pastes.
+ *  - `'none'`  — a live command owns the PTY, or there is no evidence.
  *
- * `commandRunning === false` closes that hole with the precise condition: OSC
- * 133 says the shell is at its prompt, so NO foreground process exists that
- * could legitimately own mouse/focus/paste reporting, and whatever the replay
- * armed is by definition stale. It also covers non-agent TUIs (vim, htop) that
- * `resumeAgent` never described.
+ * Why two levels rather than one boolean: `resumeAgent` alone was too narrow
+ * (#807). It is populated only on DAEMON boot, so quitting and relaunching the
+ * APP while the daemon survives left the gate false — the replay re-armed the
+ * dead TUI's mouse tracking and the next pointer move wrote an SGR report into
+ * the fresh shell's stdin, the literal `35;9;12M` junk on the prompt. Widening
+ * to OSC 133's "shell is at its prompt" fixes that, but that signal proves only
+ * that no FOREGROUND COMMAND is running — it says nothing about the shell,
+ * which is very much alive and owns bracketed paste. Hence the split.
  *
- * `true` (a live command owns the PTY) and `undefined` (no shell integration —
- * no evidence either way) both decline, so a running TUI's modes are never
- * clobbered.
+ * `commandRunning === true` declines outright and outranks `resumeAgent`: a
+ * recovered pane whose user has since started a fresh TUI has a live mode owner
+ * regardless of what the daemon recorded at boot.
  */
-export function shouldResetStaleReplayModes(session: StaleReplayModeGateInput | undefined): boolean {
-  if (!session) return false;
-  return Boolean(session.resumeAgent) || session.commandRunning === false;
+export type StaleReplayResetLevel = 'full' | 'mouse' | 'none';
+
+export function staleReplayResetLevel(
+  session: StaleReplayModeGateInput | undefined,
+): StaleReplayResetLevel {
+  if (!session) return 'none';
+  // A live foreground command owns the modes — never clobber it, even on a
+  // pane the daemon flagged for resume.
+  if (session.commandRunning === true) return 'none';
+  if (session.resumeAgent) return 'full';
+  if (session.commandRunning === false) return 'mouse';
+  return 'none';
 }

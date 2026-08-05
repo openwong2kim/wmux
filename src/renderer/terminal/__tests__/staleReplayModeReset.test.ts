@@ -20,8 +20,9 @@ import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
 import {
   STALE_REPLAY_INPUT_MODE_RESETS,
+  STALE_REPLAY_MOUSE_MODE_RESETS,
   STALE_REPLAY_DISPLAY_RESETS,
-  shouldResetStaleReplayModes,
+  staleReplayResetLevel,
 } from '../staleReplayModeReset';
 
 const write = (term: Terminal, data: string) =>
@@ -140,30 +141,76 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
   });
 });
 
-describe('shouldResetStaleReplayModes — the gate (#807)', () => {
-  it('resets when the daemon booted into recovery (the original 2026-07-02 case)', () => {
-    expect(shouldResetStaleReplayModes({ resumeAgent: 'claude' })).toBe(true);
+describe('STALE_REPLAY_MOUSE_MODE_RESETS — the alive-shell subset', () => {
+  it('disarms every mouse-reporting mode the replay could have armed', async () => {
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      expect(term.modes.mouseTrackingMode).toBe('any');
+
+      await write(term, STALE_REPLAY_MOUSE_MODE_RESETS);
+      expect(term.modes.mouseTrackingMode).toBe('none');
+    } finally {
+      term.dispose();
+    }
   });
 
-  it('resets when the shell is at its prompt after an app-only restart (#807 regression)', () => {
+  it('leaves bracketed paste armed — clearing it turns a multi-line paste into N executed commands', async () => {
+    // wmux decides whether to wrap a paste in ESC[200~ by reading xterm's OWN
+    // modes.bracketedPasteMode (clipboardChunk.ts:159, Terminal.tsx:289,
+    // useTerminal.ts:1647). A shell at its prompt has ?2004 armed and expects
+    // wrapped pastes. Clearing it terminal-side desyncs the two and the shell
+    // runs every pasted line. This is the everyday-path regression the split
+    // exists to prevent.
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      await write(term, STALE_REPLAY_MOUSE_MODE_RESETS);
+      expect(term.modes.bracketedPasteMode).toBe(true);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('is a strict subset of the full reset (no mode escapes the known-dead path)', () => {
+    for (const seq of STALE_REPLAY_MOUSE_MODE_RESETS.split('\x1b').filter(Boolean)) {
+      expect(STALE_REPLAY_INPUT_MODE_RESETS).toContain(`\x1b${seq}`);
+    }
+    expect(STALE_REPLAY_MOUSE_MODE_RESETS).not.toContain('2004');
+    expect(STALE_REPLAY_MOUSE_MODE_RESETS).not.toContain('1004');
+  });
+});
+
+describe('staleReplayResetLevel — the gate (#807)', () => {
+  it('clears everything when the daemon booted into recovery (the 2026-07-02 case)', () => {
+    expect(staleReplayResetLevel({ resumeAgent: 'claude' })).toBe('full');
+  });
+
+  it('clears mouse only when the shell sits at its prompt after an app-only restart', () => {
     // The daemon survived the app quit, so `resumeAgent` is absent — the exact
     // gap that let a replayed ?1003h/?1006h write `35;9;12M` into the prompt.
-    // OSC 133 says no foreground command owns the PTY, so nothing alive can
-    // own those modes.
-    expect(shouldResetStaleReplayModes({ commandRunning: false })).toBe(true);
+    // The SHELL is alive here, so ?2004 must survive.
+    expect(staleReplayResetLevel({ commandRunning: false })).toBe('mouse');
   });
 
   it('never clobbers a live TUI that legitimately armed mouse reporting', () => {
-    expect(shouldResetStaleReplayModes({ commandRunning: true })).toBe(false);
+    expect(staleReplayResetLevel({ commandRunning: true })).toBe('none');
   });
 
   it('declines without evidence (no shell integration → commandRunning undefined)', () => {
-    expect(shouldResetStaleReplayModes({})).toBe(false);
-    expect(shouldResetStaleReplayModes(undefined)).toBe(false);
+    expect(staleReplayResetLevel({})).toBe('none');
+    expect(staleReplayResetLevel(undefined)).toBe('none');
   });
 
-  it('recovery wins over a live command — a recovered pane holds no live agent', () => {
-    expect(shouldResetStaleReplayModes({ resumeAgent: 'claude', commandRunning: true })).toBe(true);
+  it('a live command outranks a stale recovery flag (the user started a fresh TUI)', () => {
+    // `resumeAgent` records what the daemon saw at ITS boot. If a foreground
+    // command owns the PTY now, that record is out of date and the live
+    // process owns the modes.
+    expect(staleReplayResetLevel({ resumeAgent: 'claude', commandRunning: true })).toBe('none');
+  });
+
+  it('a recovered pane idling at its prompt still earns the full reset', () => {
+    expect(staleReplayResetLevel({ resumeAgent: 'claude', commandRunning: false })).toBe('full');
   });
 });
 
@@ -184,10 +231,13 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(body).toMatch(/window\.electronAPI\.pty\.list\(\)/);
     // #807: the gate is the exported predicate. An inline `?.resumeAgent` here
     // is exactly the too-narrow test that missed app-restart-with-live-daemon.
-    expect(body).toMatch(/shouldResetStaleReplayModes\(/);
+    expect(body).toMatch(/staleReplayResetLevel\(/);
     expect(body).not.toMatch(/\?\.resumeAgent/);
+    // The alive-shell path must pick the mouse subset. Writing the full reset
+    // unconditionally is the paste-corruption regression.
+    expect(body).toMatch(/level === 'full' \? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_MOUSE_MODE_RESETS/);
     // Terminal-side only: the leaked modes live in xterm, the PTY never saw them.
-    expect(body).toMatch(/terminal\.write\(STALE_REPLAY_INPUT_MODE_RESETS\)/);
+    expect(body).toMatch(/terminal\.write\(/);
     expect(body).not.toMatch(/pty\.write/);
   });
 
