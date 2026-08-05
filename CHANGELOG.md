@@ -1,3 +1,75 @@
+## [3.38.8] — 2026-08-05
+
+### Added
+
+- **The phone can show what a pane is doing right now.** The turn view carries a
+  live activity header — thinking, which tool is running and for how long, waiting
+  for you — instead of leaving you to guess from a conversation that has stopped
+  growing. It rides its own channel rather than being read off the transcript, so
+  an agent that stalls mid-turn looks different from one that is still working.
+
+- **Code blocks and large tool outputs open on the phone.** Tapping a code chip
+  fetches the body instead of showing a chip that does nothing. Oversized bodies
+  arrive as a head and say they were cut, rather than pretending the block ends
+  there.
+
+- **The permission gate's state is visible and stays in sync.** A phone's gate
+  toggle opens showing whether the gate is actually armed, and turning it off from
+  one device updates the others immediately instead of leaving them showing the old
+  position until something else makes them re-read.
+
+### Fixed
+
+- **Full transcript access is now visible in web help and status.** The
+  `--allow-transcript` flag and its sensitive data scope are documented, and
+  `wmux web --status` reports whether the permission is enabled instead of
+  leaving operators unable to audit the grant. (#793)
+
+- **The phone now gets the right pane shape when the desk isn't looking.** A
+  pane the Mac app holds open used to be `attached` whether or not anyone could
+  see it, so a phone rendering it always got a desk-shaped (e.g. 151×47)
+  geometry and letterboxed a third of its portrait screen — every live pane
+  answered `409 desk-owns-size`. Size ownership is now visibility-based: the
+  renderer reports whether a pane is actually on screen (workspace + tab active
+  AND the window visible), and the route only keeps the desk's geometry when the
+  desk is watching. An attached-but-hidden pane (background workspace, inactive
+  tab, minimized window) takes the phone's numbers, and the desk silently
+  reclaims the size the moment somebody looks again. (#766)
+
+- **The orchestrator's own conversation is no longer readable from a phone.** The
+  brain pane is hidden from the pane list, but the transcript routes only checked
+  that a session existed — a device holding its id could read the whole thing.
+
+- **External MCP terminals now recover when their claimed workspace is deleted.**
+  Closing an external caller's dedicated MCP workspace used to leave every later
+  terminal operation targeting the dead PTY until the MCP server restarted. A
+  stale route is now released so the next operation claims a fresh workspace
+  automatically. (#797)
+
+- Terminal panes no longer render scattered wrong glyphs (worst on Korean and
+  other CJK text) during heavy multi-pane output. The shared-atlas guard emptied
+  the glyph pool and repainted, but a repaint skips every cell whose text has not
+  changed — so those cells kept pointing at glyph positions that no longer
+  existed. Each pane now rebuilds its render model alongside the wipe, the way
+  the renderer does it internally. The guard's speculative wipes are also rate
+  limited, so a saturated glyph pool no longer means a full re-raster of every
+  pane every two seconds.
+
+- **`wmux set-status` and `wmux set-progress` work again.** Both commands failed
+  every time with an internal message about an unresolvable calling pane, so
+  there was no way for automation to publish a run's live status or progress
+  into the workspace chrome. They now identify the calling pane the same way
+  `wmux send` does, and `--pane <ptyId>` targets another pane's workspace.
+  Outside a wmux pane they exit with a message that says what to do instead of
+  the daemon's internal resolver text. (#801)
+
+- **`wmux close-workspace` no longer reports closing a workspace it did not
+  close.** Closing an unknown workspace, or the last remaining one (wmux always
+  keeps one open), printed `Closed workspace: ws-…` and exited 0 while the
+  workspace stayed open — so a cleanup script had no way to tell a real close
+  from a refused one. Both cases now fail with an explanation, and the success
+  receipt is only issued after the workspace is confirmed gone. (#801)
+
 ## [3.38.7] — 2026-08-04
 
 ### Added
