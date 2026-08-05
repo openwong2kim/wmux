@@ -27,7 +27,7 @@ import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../term
 import { atlasGuard } from '../terminal/atlasGuard';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS, shouldResetStaleReplayModes } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1744,19 +1744,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // arming (mouse/focus/paste reporting) into xterm, so the fresh shell's
     // pane emits mouse reports that both dismiss the resume pill (onData
     // "user typed" heuristic) and land in the shell as junk input. After a
-    // replaying flush, ask the daemon whether this pane is a recovered agent
-    // shell (`resumeAgent` — set ONLY for sessions recovered this boot whose
-    // agent has NOT been re-detected) and if so disable the leaked modes,
-    // terminal-side only. The pty.list round-trip doubles as ordering: by the
-    // time it resolves, the replay bytes are already queued into xterm, so
-    // the resets always land after the sequences they cancel. Gating on the
-    // daemon (not the renderer's resumeHint slice) avoids the boot race where
-    // the flush completes before AppLayout has hydrated the hint.
+    // replaying flush, ask the daemon whether this pane can still have a
+    // process that legitimately owns those modes (shouldResetStaleReplayModes)
+    // and if not, disable the leaked ones, terminal-side only. The pty.list
+    // round-trip doubles as ordering: by the time it resolves, the replay
+    // bytes are already queued into xterm, so the resets always land after the
+    // sequences they cancel. Gating on the daemon (not the renderer's
+    // resumeHint slice) avoids the boot race where the flush completes before
+    // AppLayout has hydrated the hint.
     const resetStaleReplayModes = (recoveredBytes: number) => {
       if (recoveredBytes <= 0) return;
       void window.electronAPI.pty.list().then((sessions) => {
         if (terminalRef.current !== terminal) return;
-        if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
+        if (shouldResetStaleReplayModes(sessions.find((s) => s.id === ptyId))) {
           terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
           terminal.write(STALE_REPLAY_DISPLAY_RESETS);
         }

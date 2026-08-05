@@ -18,7 +18,11 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../staleReplayModeReset';
+import {
+  STALE_REPLAY_INPUT_MODE_RESETS,
+  STALE_REPLAY_DISPLAY_RESETS,
+  shouldResetStaleReplayModes,
+} from '../staleReplayModeReset';
 
 const write = (term: Terminal, data: string) =>
   new Promise<void>((resolve) => term.write(data, resolve));
@@ -136,13 +140,40 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
   });
 });
 
+describe('shouldResetStaleReplayModes — the gate (#805)', () => {
+  it('resets when the daemon booted into recovery (the original 2026-07-02 case)', () => {
+    expect(shouldResetStaleReplayModes({ resumeAgent: 'claude' })).toBe(true);
+  });
+
+  it('resets when the shell is at its prompt after an app-only restart (#805 regression)', () => {
+    // The daemon survived the app quit, so `resumeAgent` is absent — the exact
+    // gap that let a replayed ?1003h/?1006h write `35;9;12M` into the prompt.
+    // OSC 133 says no foreground command owns the PTY, so nothing alive can
+    // own those modes.
+    expect(shouldResetStaleReplayModes({ commandRunning: false })).toBe(true);
+  });
+
+  it('never clobbers a live TUI that legitimately armed mouse reporting', () => {
+    expect(shouldResetStaleReplayModes({ commandRunning: true })).toBe(false);
+  });
+
+  it('declines without evidence (no shell integration → commandRunning undefined)', () => {
+    expect(shouldResetStaleReplayModes({})).toBe(false);
+    expect(shouldResetStaleReplayModes(undefined)).toBe(false);
+  });
+
+  it('recovery wins over a live command — a recovered pane holds no live agent', () => {
+    expect(shouldResetStaleReplayModes({ resumeAgent: 'claude', commandRunning: true })).toBe(true);
+  });
+});
+
 describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
   const src = readFileSync(
     path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
     'utf8',
   );
 
-  it('gates on the daemon resumeAgent field (recovered-this-boot, agent not re-detected)', () => {
+  it('gates on the shared daemon-state predicate, not an inline resumeAgent check', () => {
     const idx = src.indexOf('const resetStaleReplayModes');
     expect(idx).toBeGreaterThan(-1);
     const body = src.slice(idx, idx + 900);
@@ -151,7 +182,10 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     // The daemon is the authority — NOT the renderer's resumeHint slice, which
     // hydrates racily against the boot flush.
     expect(body).toMatch(/window\.electronAPI\.pty\.list\(\)/);
-    expect(body).toMatch(/resumeAgent/);
+    // #805: the gate is the exported predicate. An inline `?.resumeAgent` here
+    // is exactly the too-narrow test that missed app-restart-with-live-daemon.
+    expect(body).toMatch(/shouldResetStaleReplayModes\(/);
+    expect(body).not.toMatch(/\?\.resumeAgent/);
     // Terminal-side only: the leaked modes live in xterm, the PTY never saw them.
     expect(body).toMatch(/terminal\.write\(STALE_REPLAY_INPUT_MODE_RESETS\)/);
     expect(body).not.toMatch(/pty\.write/);
@@ -178,7 +212,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_DISPLAY_RESETS/);
 
-    // Site 2: resetStaleReplayModes (resumeAgent-gated, reboot recovery).
+    // Site 2: resetStaleReplayModes (daemon-state gated).
     const resetFnIdx = src.indexOf('const resetStaleReplayModes');
     expect(resetFnIdx).toBeGreaterThan(-1);
     const resetFnBody = src.slice(resetFnIdx, resetFnIdx + 900);

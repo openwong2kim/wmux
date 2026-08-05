@@ -67,3 +67,39 @@ export const STALE_REPLAY_DISPLAY_RESETS =
   '\x1b[?6l' + // DECOM: origin mode off (cursor addressing absolute again)
   '\x1b[r' + // DECSTBM: scroll region back to full screen
   '\x1b8'; // DECRC: restore the cursor position saved above
+
+/** The subset of a `pty.list` entry this gate reads. */
+export interface StaleReplayModeGateInput {
+  /** Daemon-boot recovery hint — set only for sessions recovered this boot
+   *  whose agent has not been re-detected. */
+  resumeAgent?: string;
+  /** OSC 133 shell-integration state, surfaced only when the pane's shell
+   *  actually emits prompt markers. `false` = the shell is sitting at its
+   *  prompt with no foreground command. */
+  commandRunning?: boolean;
+}
+
+/**
+ * Whether a replaying attach-flush should disable the replayed input-reporting
+ * modes.
+ *
+ * `resumeAgent` alone was too narrow (#805): it is populated only on DAEMON
+ * boot, so quitting and relaunching the APP while the daemon survives left
+ * every gate false. The replay still re-armed the dead TUI's mouse tracking,
+ * and the next pointer move over the pane wrote an SGR report into the fresh
+ * shell's stdin — the literal `35;9;12M` junk on the prompt.
+ *
+ * `commandRunning === false` closes that hole with the precise condition: OSC
+ * 133 says the shell is at its prompt, so NO foreground process exists that
+ * could legitimately own mouse/focus/paste reporting, and whatever the replay
+ * armed is by definition stale. It also covers non-agent TUIs (vim, htop) that
+ * `resumeAgent` never described.
+ *
+ * `true` (a live command owns the PTY) and `undefined` (no shell integration —
+ * no evidence either way) both decline, so a running TUI's modes are never
+ * clobbered.
+ */
+export function shouldResetStaleReplayModes(session: StaleReplayModeGateInput | undefined): boolean {
+  if (!session) return false;
+  return Boolean(session.resumeAgent) || session.commandRunning === false;
+}
