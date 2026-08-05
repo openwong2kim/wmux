@@ -9,9 +9,11 @@
  * `clearAllPtyState()`, replacing every live session with a fresh empty one.
  *
  * The invariant that must hold: RECONCILE_TIMEOUT_MS > DAEMON_RPC_TIMEOUT_MS,
- * so the RPC always gets a chance to resolve (or reject) before the renderer
- * gives up and falls back to its destructive path. Derive one from the other
- * here and import on both sides so they can never drift again.
+ * so each RPC always gets a chance to resolve (or reject) before the renderer
+ * gives up and falls back to its destructive path. Startup uses this as a
+ * rolling no-progress watchdog because one reconcile pass can contain several
+ * serial RPCs; late reconnect uses it as a non-destructive total abort budget.
+ * Derive one from the other here so the per-stage ordering cannot drift again.
  *
  * This module has zero runtime dependencies and is safe to import from the
  * daemon, main, and renderer bundles alike.
@@ -21,8 +23,8 @@
 export const DAEMON_RPC_TIMEOUT_MS = 10_000;
 
 /**
- * Renderer startup reconcile timeout. Must exceed the RPC ceiling with a
- * margin so a single slow-but-successful `pty.list` (= daemon.listSessions)
+ * Renderer reconcile timeout. Must exceed the RPC ceiling with a margin so a
+ * single slow-but-successful daemon stage (including the re-query backoff)
  * never trips the destructive startup fallback.
  */
 export const RECONCILE_TIMEOUT_MS = DAEMON_RPC_TIMEOUT_MS + 5_000;

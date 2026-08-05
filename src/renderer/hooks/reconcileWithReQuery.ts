@@ -41,9 +41,9 @@ export interface ReconcileReQueryDeps {
 }
 
 /**
- * Backoff before the second daemon snapshot. Kept well under
- * RECONCILE_TIMEOUT_MS (DAEMON_RPC_TIMEOUT_MS + 5s = 15s) so one backoff plus
- * a second pty.list round-trip still fits the reconcile budget.
+ * Backoff before the second daemon snapshot. Kept well under the rolling
+ * RECONCILE_TIMEOUT_MS no-progress window (DAEMON_RPC_TIMEOUT_MS + 5s = 15s)
+ * so this backoff plus one pty.list round-trip fits within a single stage.
  */
 export const RECONCILE_REQUERY_BACKOFF_MS = 600;
 

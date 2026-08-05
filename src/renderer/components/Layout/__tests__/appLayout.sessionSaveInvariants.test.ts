@@ -15,6 +15,8 @@
  *   3. Rebind/clear actions apply through a compare-and-swap on the surface's
  *      CURRENT ptyId (a ≥600ms-stale snapshot must not stomp a ptyId that
  *      useTerminal's own reattach already replaced — Claude adversarial P2).
+ *   4. Startup's timeout is a rolling no-progress watchdog, and every remote
+ *      reconcile stage resets it (a valid multi-RPC pass may exceed 15s).
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -38,6 +40,35 @@ describe('AppLayout — axis A session-save invariants', () => {
     expect(finallyIdx).toBeGreaterThan(0);
     const finallyBlock = region.slice(finallyIdx, region.indexOf('})();', finallyIdx));
     expect(finallyBlock).not.toContain('saveSessionNow');
+  });
+
+  it('uses a rolling progress timeout and routes every reconcile IPC through it', () => {
+    const startup = startupRegion();
+    expect(startup).toContain('runWithProgressTimeout(');
+    expect(startup).toMatch(/reconcilePtys\(signal, reportProgress\)/);
+    expect(startup).not.toContain('Promise.race([');
+
+    const reconcileStart = source.indexOf('const reconcilePtys = useCallback');
+    const reconcileEnd = source.indexOf('// 앱 시작 시 세션 복원', reconcileStart);
+    expect(reconcileStart, 'reconcile callback not found').toBeGreaterThanOrEqual(0);
+    expect(reconcileEnd, 'startup effect boundary not found').toBeGreaterThan(reconcileStart);
+    const reconcile = source.slice(reconcileStart, reconcileEnd);
+
+    const helperStart = reconcile.indexOf('const invokeReconcile = async <T,>');
+    const firstStageStart = reconcile.indexOf('const listResult = await invokeReconcile', helperStart);
+    expect(helperStart, 'progress-aware IPC helper not found').toBeGreaterThanOrEqual(0);
+    expect(firstStageStart, 'first reconcile IPC stage not found').toBeGreaterThan(helperStart);
+
+    const helper = reconcile.slice(helperStart, firstStageStart);
+    expect(helper).toMatch(
+      /const result = await ipcInvoke<T>\(call\);\s*reportProgress\?\.\(\);\s*return result;/,
+    );
+
+    // Keep the invariant extensible: every current or future reconcile IPC
+    // stage must use the progress-aware helper, without pinning an exact count.
+    const stages = reconcile.slice(firstStageStart);
+    expect(stages).not.toMatch(/await ipcInvoke</);
+    expect(stages).toMatch(/await invokeReconcile</);
   });
 
   it('registered saver and beforeunload share the sessionLoadedRef guard', () => {
