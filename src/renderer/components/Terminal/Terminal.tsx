@@ -12,6 +12,7 @@ import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
 import BookmarkIndicator from './BookmarkIndicator';
 import ContextMenu from './ContextMenu';
+import ScrollToBottomButton from './ScrollToBottomButton';
 import '@xterm/xterm/css/xterm.css';
 
 const EMPTY_BOOKMARKS: number[] = [];
@@ -407,6 +408,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         bookmarks={bookmarks}
         containerRef={containerRef}
       />
+
+      {/* Floating scroll-to-bottom button — appears only when scrolled up */}
+      <ScrollToBottomButton terminal={terminalRef.current} />
 
       {/* Search bar overlay */}
       {showSearchBar && (
