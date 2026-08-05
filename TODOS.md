@@ -40,11 +40,14 @@
 - **교훈:** 워커가 빌드 산출물을 PATH 에 링크할 수 있다. 브리핑에 "임시 경로를 PATH 에 걸지 마라"를 넣을 것.
 
 
-## #679 명시적 `surfaceId` 경로 검증 (P0 — 미확인 구멍)
-- **What:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 그런데 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로가 소유권을 검증하는지는 추적이 끝나지 않았다.
-- **Why:** 안 막혀 있으면 **같은 결함의 두 번째 문**이다. "고쳤다"고 머지한 PR이 절반만 고친 상태가 되는 게 가장 나쁘다.
-- **Context:** 스코핑 조사 판이 `gh pr diff 679`로 확인하던 중 판이 종료돼 결론을 못 봤다. 시작점: `PlaywrightEngine.ts`의 `resolveSelectionContext` / `explicitSurfaceId` 취급.
-- **Priority:** P0 — #679 머지 전에 답이 나와야 한다.
+## ✅ #679 명시적 `surfaceId` 경로 검증 — 구멍 없음 (2026-08-05)
+- **원래 질문:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로도 소유권을 검증하는가?
+- **답:** 검증한다. 다만 그걸 닫은 건 #679가 아니라 그 뒤의 #695 작업이다. 3층 전부 확인:
+  1. **진입** — 브라우저 툴 전 호출 지점이 `getPageForScope(scope)` 하나만 쓴다. `scope`는 `requireBrowserTargetScope()` 산출물이고 workspaceId가 비면 fail-closed(`browserScope.ts`). `getPage()`는 private, 다른 진입점 없음 → 명시 surfaceId도 workspaceId 없이는 도달 불가.
+  2. **엔진 선택** — `selectRegisteredTarget()`이 명시 surfaceId를 대조한다: 최신 main은 `targetsScoped`로 서버가 필터, 레거시 main은 클라이언트가 `target.workspaceId !== workspaceId`를 `WORKSPACE_SCOPE_UNRESOLVED`로 거부(태그 없는 타깃도 거부).
+  3. **RPC 폴백 + 소유권** — #679 체인지로그가 "별개 구멍"이라 남겨둔 폴백은 이제 `sendScopedBrowserRpc`가 workspaceId를 강제 주입하고 params의 surfaceId를 덮어쓴다. 서버 핸들러는 전부 `scopeOf(params)`를 넘기고(누락 0건), 최종 판정은 `WebviewCdpManager.getTarget()`의 `ownedBy()` — 명시 surfaceId 분기에도 적용된다. `browser_tabs select/close`는 렌더러의 `findBrowserTab(workspaces, workspaceId, surfaceId)`로 워크스페이스-정확 조회.
+- **회귀 커버리지:** `PlaywrightEngine.test.ts`의 *"strict surface targeting rejects a legacy main that returns a foreign or untagged explicit target"*, `WebviewCdpManager.test.ts`의 `getTarget('b-surface', 'ws-A') === null`.
+- **남은 것(신규 아님):** 파이프에 workspaceId를 **아예 안 보내면** `ownedBy()`가 통과시키고 `browser.cdp.info`도 전 워크스페이스 타깃을 준다. 손으로 만든 소켓 클라이언트는 여전히 무제한 — #113 same-user 천장이자 "first-party CLI는 동일 신뢰" 설계 결정이며 코드 주석에 명시돼 있다.
 
 ## ✅ 스코핑 조사 U4·U8·U3 검증 완료 (2026-07-30)
 - **U8** (`meta.setStatus/setProgress`): **REAL (P2) → FIXED** — `meta.rpc.ts`에 senderPtyId 기반 워크스페이스 해석 추가. 외부 caller는 서버가 해석한 ws만 쓰고, 해석 불가면 **거부**(fail-closed). 렌더러가 ws 없는 payload를 활성 워크스페이스에 적용하므로 `undefined` 통과는 취약점 그대로였다.
