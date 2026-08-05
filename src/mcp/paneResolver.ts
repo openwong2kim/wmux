@@ -28,8 +28,8 @@ import type { RpcMethod } from '../shared/rpc';
 import { getConnectionScope } from './connectionScope';
 
 export interface PinnedRoute {
-  ptyId: string;
-  workspaceId: string;
+  readonly ptyId: string;
+  readonly workspaceId: string;
 }
 
 export interface ClaimDeps {
@@ -71,6 +71,25 @@ function slots(): PinSlots {
 /** The route claimed earlier in this process/connection, or null before the first claim. */
 export function getPinnedRoute(): PinnedRoute | null {
   return slots().get();
+}
+
+/**
+ * Drop the route claimed by the current process/connection.
+ *
+ * A claim is normally process-lived, but the user can delete its workspace
+ * while the MCP server stays alive. Once an RPC proves that route is stale,
+ * clearing the pin lets the next terminal call claim a fresh workspace rather
+ * than retrying the dead PTY forever. `slots()` keeps broker callers isolated:
+ * invalidating one connection never disturbs another connection's route.
+ *
+ * When `expectedRoute` is supplied, object identity acts as the claim
+ * generation: a late response for an older claim cannot clear a newer one.
+ * Omitting it retains the unconditional form used by explicit resets.
+ */
+export function clearPinnedRoute(expectedRoute?: PinnedRoute | null): void {
+  const s = slots();
+  if (expectedRoute !== undefined && s.get() !== expectedRoute) return;
+  s.set(null);
 }
 
 /**

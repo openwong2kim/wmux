@@ -121,6 +121,27 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).toMatch(/workspaceResolved\s*\?\s*MY_WORKSPACE_ID\s*:\s*''/);
   });
 
+  it('stale RPC outcomes invalidate identity and only the route generation they used', () => {
+    // A deleted first-party workspace is recovered through the verified cache;
+    // a deleted external claim is recovered through paneResolver. Leaving the
+    // latter intact makes every later terminal call reuse the dead PTY until
+    // the MCP process restarts.
+    const start = src.indexOf('function invalidateStaleRoute');
+    expect(start).toBeGreaterThan(0);
+    const block = src.slice(start, src.indexOf('\n}', start) + 2);
+    expect(block).toContain('invalidateWorkspaceId()');
+    expect(block).toContain('clearPinnedRoute(pinnedRouteAtDispatch)');
+
+    const callRpcStart = src.indexOf('async function callRpc');
+    const callRpcBlock = src.slice(callRpcStart, src.indexOf('\n}', callRpcStart) + 2);
+    expect(callRpcBlock).toMatch(
+      /const pinnedRouteAtDispatch = getPinnedRoute\(\);[\s\S]*await sendRpc/,
+    );
+    expect(
+      callRpcBlock.match(/invalidateStaleRoute\(pinnedRouteAtDispatch\)/g),
+    ).toHaveLength(2);
+  });
+
   it('the env-hint resolver (verifiedOnly) is fully removed — terminal IO never reaches it', () => {
     // resolveVerifiedWorkspaceId / the verifiedOnly opt were the old seam. They
     // are gone; terminal routing now has its own verified path. If they ever

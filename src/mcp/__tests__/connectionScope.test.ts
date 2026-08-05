@@ -9,7 +9,12 @@ import {
   getClientIdentity,
   clearClientIdentity,
 } from '../wmux-client';
-import { getPinnedRoute, claimPinnedRoute, __resetPaneResolverForTesting } from '../paneResolver';
+import {
+  claimPinnedRoute,
+  clearPinnedRoute,
+  getPinnedRoute,
+  __resetPaneResolverForTesting,
+} from '../paneResolver';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
 
 // Broker isolation invariants (Option A). The broker hosts N MCP server
@@ -76,6 +81,30 @@ describe('connectionScope isolation', () => {
     });
     // No leak into the process-global pin (single-child mode).
     expect(getPinnedRoute()).toBeNull();
+  });
+
+  it('clearing a stale pin affects only the current connection', async () => {
+    const a = createConnectionScope();
+    const b = createConnectionScope();
+    const claimFor = (ws: string, pty: string) => ({
+      sendRpc: async () => ({ ptyId: pty, workspaceId: ws }),
+    });
+
+    await claimPinnedRoute(claimFor('ws-global', 'pty-global'));
+    await runInConnectionScope(a, () => claimPinnedRoute(claimFor('ws-a', 'pty-a')));
+    await runInConnectionScope(b, () => claimPinnedRoute(claimFor('ws-b', 'pty-b')));
+
+    runInConnectionScope(a, () => clearPinnedRoute());
+
+    expect(runInConnectionScope(a, () => getPinnedRoute())).toBeNull();
+    expect(runInConnectionScope(b, () => getPinnedRoute())).toEqual({
+      ptyId: 'pty-b',
+      workspaceId: 'ws-b',
+    });
+    expect(getPinnedRoute()).toEqual({
+      ptyId: 'pty-global',
+      workspaceId: 'ws-global',
+    });
   });
 
   it('PlaywrightEngine.getInstance is per scope, stable within a scope, singleton outside', () => {
