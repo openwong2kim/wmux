@@ -23,7 +23,16 @@ enabled = true
 #                        serve rather than becoming an open proxy to Apple.
 
 # `wrangler deploy --env sandbox` publishes a second worker that talks to
-# Apple's sandbox host, for TestFlight/debug builds. Its secrets are separate.
+# Apple's sandbox host, for builds installed straight from Xcode — the ones
+# whose `aps-environment` entitlement reads `development`.
+#
+# TestFlight is NOT one of them. A TestFlight build is signed `production` and
+# its device tokens only resolve on Apple's production host, so pointing a
+# TestFlight install at this worker leaves `APNS_ENV` as a fallback that is
+# wrong for it. The per-request `apnsEnvironment` in src/index.ts covers for
+# that when the app reports its own stage, but the deployment default should
+# not need covering for: TestFlight and App Store installs belong on the
+# production worker above. Its secrets are separate.
 [env.sandbox]
 name = "wmux-push-relay-sandbox"
 
