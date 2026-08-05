@@ -255,6 +255,56 @@ describe('ApprovalRegistry — supersede and expire', () => {
     expect(h.events.filter((e) => e.type === 'expire')).toHaveLength(1);
   });
 
+  /**
+   * A turn that opens SEVERAL gated tools plus an AskUserQuestion. Only one
+   * pending record is superseded when the question arrives, so a second gate
+   * stays pending alongside it — the one way the two kinds coexist (a gate
+   * never supersedes another gate; see noteGateAwaiting).
+   */
+  async function gatesPlusQuestion(dropped: string[]): Promise<{ h: Harness; survivor: string }> {
+    const h = makeRegistry({ notifyGateDropped: (id) => { dropped.push(id); } });
+    await h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash',
+    });
+    await settle();
+    const survivor = await h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Write',
+    });
+    await settle();
+    await awaitingInput(h.registry, 'pty-a');
+    await settle();
+    return { h, survivor };
+  }
+
+  it('expireForSession scoped to awaiting_input leaves a pending gate and its waiter alive', async () => {
+    // #770 — answering the question on the PC says nothing about a gate the
+    // same turn opened. Sweeping it drops its waiter, so the tool falls back
+    // to the local prompt while the phone operator just sees the card vanish.
+    const dropped: string[] = [];
+    const { h, survivor } = await gatesPlusQuestion(dropped);
+    dropped.length = 0; // the question's own supersede already dropped one gate
+
+    await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input');
+    await settle();
+
+    const { pending } = h.registry.list();
+    expect(pending.map((r) => r.kind)).toEqual(['awaiting_permission']);
+    expect(pending[0].id).toBe(survivor);
+    expect(dropped).toEqual([]);
+  });
+
+  it('an unscoped expireForSession still sweeps every kind (turn-ended backstop)', async () => {
+    const dropped: string[] = [];
+    const { h, survivor } = await gatesPlusQuestion(dropped);
+    dropped.length = 0;
+
+    await h.registry.expireForSession('pty-a', 'turn-ended');
+    await settle();
+
+    expect(h.registry.list().pending).toHaveLength(0);
+    expect(dropped).toEqual([survivor]);
+  });
+
   it('expiring a pane with nothing pending emits nothing', async () => {
     const h = makeRegistry();
     await h.registry.expireForSession('pty-a', 'pane-gone');

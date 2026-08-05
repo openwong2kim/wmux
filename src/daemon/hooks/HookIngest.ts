@@ -605,7 +605,7 @@ export class HookIngest {
 
     // User answered a pending approval locally — no turn boundary, just expire the request.
     if (signal.kind === 'agent.input_answered') {
-      this.deps.approvals?.expireForSession(sessionId, 'answered-locally');
+      this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
       return { ok: true };
     }
 
@@ -616,7 +616,7 @@ export class HookIngest {
     // returned 'defer' to Claude Code and is gone. The expiry is for the
     // /api/approvals list so the phone stops showing the card.
     if (signal.kind === 'agent.permission_answered') {
-      this.deps.approvals?.expireForSession(sessionId, 'answered-locally');
+      this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_permission');
       return { ok: true };
     }
 

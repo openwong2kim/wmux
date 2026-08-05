@@ -48,7 +48,7 @@ const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart'] as const;
 /**
  * AskUserQuestion-scoped hook pair that drives the in-app approval card:
  *   PreToolUse  → card created  (agent.awaiting_input)
- *   PostToolUse → card expired   (agent.input_answered, fired:true)
+ *   PostToolUse → card expired   (agent.input_answered, on tool name alone)
  * Both are scoped to the AskUserQuestion matcher so they fire ONCE per
  * question, not on every tool call. The 2026-07-13 PostToolUse removal was
  * about a matcher:'' cost — a ~110ms node bridge per tool call feeding the
