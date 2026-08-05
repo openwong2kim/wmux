@@ -34,6 +34,13 @@ interface IdentifyResult {
  *   3. env WMUX_PTY_ID — stamped into the pane env at spawn; survives a walk
  *      miss (descendant processes several hops up the tree).
  * Returns '' when none resolve — the caller is not in a wmux pane.
+ *
+ * Only rung 2 is verified. `--pane` and the env hint are same-user forgeable:
+ * the daemon derives the workspace from the ptyId it is handed, but nothing
+ * proves the calling process owns that pane. That is the accepted #113 ceiling
+ * and exactly what `wmux send --pane` already allows, so this adds no new
+ * authority — but it is why the verified walk is tried before the env hint
+ * rather than the other way round, even though the hint is cheaper.
  */
 async function resolveMetaSenderPtyId(explicitPane: string): Promise<string> {
   if (explicitPane) return explicitPane;
