@@ -20,7 +20,7 @@ import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
 import {
   STALE_REPLAY_INPUT_MODE_RESETS,
-  STALE_REPLAY_MOUSE_MODE_RESETS,
+  STALE_REPLAY_ALIVE_SHELL_RESETS,
   STALE_REPLAY_DISPLAY_RESETS,
   staleReplayResetLevel,
 } from '../staleReplayModeReset';
@@ -141,15 +141,33 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
   });
 });
 
-describe('STALE_REPLAY_MOUSE_MODE_RESETS — the alive-shell subset', () => {
+describe('STALE_REPLAY_ALIVE_SHELL_RESETS — the alive-shell subset', () => {
   it('disarms every mouse-reporting mode the replay could have armed', async () => {
     const term = new Terminal();
     try {
       await write(term, DEAD_AGENT_ARMING);
       expect(term.modes.mouseTrackingMode).toBe('any');
 
-      await write(term, STALE_REPLAY_MOUSE_MODE_RESETS);
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
       expect(term.modes.mouseTrackingMode).toBe('none');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('disarms focus reporting — a leaked ?1004h types ESC[I into the prompt on every focus change', async () => {
+    // Same leak as the mouse modes: xterm emits CSI I / CSI O through onData,
+    // and useTerminal.ts forwards onData to the PTY unconditionally (its
+    // CSI I / CSI O check only spares the resume hint, it does not skip the
+    // write). A shell never arms ?1004 for itself, so there is no owner to
+    // desynchronize — unlike ?2004 below.
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      expect(term.modes.sendFocusMode).toBe(true);
+
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
+      expect(term.modes.sendFocusMode).toBe(false);
     } finally {
       term.dispose();
     }
@@ -165,7 +183,7 @@ describe('STALE_REPLAY_MOUSE_MODE_RESETS — the alive-shell subset', () => {
     const term = new Terminal();
     try {
       await write(term, DEAD_AGENT_ARMING);
-      await write(term, STALE_REPLAY_MOUSE_MODE_RESETS);
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
       expect(term.modes.bracketedPasteMode).toBe(true);
     } finally {
       term.dispose();
@@ -173,11 +191,11 @@ describe('STALE_REPLAY_MOUSE_MODE_RESETS — the alive-shell subset', () => {
   });
 
   it('is a strict subset of the full reset (no mode escapes the known-dead path)', () => {
-    for (const seq of STALE_REPLAY_MOUSE_MODE_RESETS.split('\x1b').filter(Boolean)) {
+    for (const seq of STALE_REPLAY_ALIVE_SHELL_RESETS.split('\x1b').filter(Boolean)) {
       expect(STALE_REPLAY_INPUT_MODE_RESETS).toContain(`\x1b${seq}`);
     }
-    expect(STALE_REPLAY_MOUSE_MODE_RESETS).not.toContain('2004');
-    expect(STALE_REPLAY_MOUSE_MODE_RESETS).not.toContain('1004');
+    expect(STALE_REPLAY_ALIVE_SHELL_RESETS).not.toContain('2004');
+    
   });
 });
 
@@ -235,7 +253,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(body).not.toMatch(/\?\.resumeAgent/);
     // The alive-shell path must pick the mouse subset. Writing the full reset
     // unconditionally is the paste-corruption regression.
-    expect(body).toMatch(/level === 'full' \? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_MOUSE_MODE_RESETS/);
+    expect(body).toMatch(/level === 'full' \? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_ALIVE_SHELL_RESETS/);
     // Terminal-side only: the leaked modes live in xterm, the PTY never saw them.
     expect(body).toMatch(/terminal\.write\(/);
     expect(body).not.toMatch(/pty\.write/);

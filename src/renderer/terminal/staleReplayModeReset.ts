@@ -39,27 +39,33 @@ export const STALE_REPLAY_INPUT_MODE_RESETS =
   '\x1b[?2004l'; // bracketed paste
 
 /**
- * Mouse-reporting-only subset — the reset for panes we believe are STALE but
- * whose shell is alive.
+ * The reset for panes we believe are STALE but whose shell is alive: every
+ * input-reporting mode a SHELL never arms for itself.
  *
- * ?2004 and ?1004 are deliberately excluded. A shell sitting at its prompt
- * arms bracketed paste itself, and wmux decides whether to wrap a paste in
- * `ESC[200~` by reading xterm's OWN `modes.bracketedPasteMode` (clipboardChunk
- * .ts, Terminal.tsx, useTerminal.ts). Clearing ?2004 terminal-side therefore
+ * Mouse tracking (?9/?1000/?1002/?1003/?1006) and focus reporting (?1004) both
+ * qualify — they are TUI features, and a shell sitting at its prompt has no use
+ * for either. Both also leak the same way: xterm emits their reports through
+ * onData, and useTerminal forwards onData to the PTY unconditionally (the
+ * CSI I / CSI O guard there only spares the resume hint, it does not stop the
+ * write). So a leaked ?1004h types `ESC[I` into the prompt on every focus
+ * change, exactly as a leaked ?1003h types `ESC[<35;9;12M` on every mouse move.
+ *
+ * ?2004 is the one exclusion, and it is not symmetric with the others: a shell
+ * at its prompt arms bracketed paste ITSELF, and wmux decides whether to wrap a
+ * paste in `ESC[200~` by reading xterm's OWN `modes.bracketedPasteMode`
+ * (clipboardChunk.ts, Terminal.tsx, useTerminal.ts). Clearing it terminal-side
  * desynchronizes the two: the shell still expects wrapped pastes, wmux stops
- * sending them, and a multi-line paste lands as N separate commands that the
- * shell executes immediately. That is a far worse outcome than the junk the
- * mouse reset exists to prevent, so it is confined to known-dead panes.
- *
- * The mouse modes carry no such risk: nothing but a TUI arms them, and a shell
- * at its prompt has no use for them.
+ * sending them, and a multi-line paste lands as N separate commands the shell
+ * executes immediately. That is far worse than the junk this reset prevents, so
+ * ?2004 stays confined to known-dead panes.
  */
-export const STALE_REPLAY_MOUSE_MODE_RESETS =
+export const STALE_REPLAY_ALIVE_SHELL_RESETS =
   '\x1b[?9l' + // X10 mouse
   '\x1b[?1000l' + // VT200 mouse (click)
   '\x1b[?1002l' + // button-event tracking (drag)
   '\x1b[?1003l' + // any-event tracking (motion — the junk-input source)
-  '\x1b[?1006l'; // SGR extended mouse encoding
+  '\x1b[?1006l' + // SGR extended mouse encoding
+  '\x1b[?1004l'; // focus in/out reporting (CSI I / CSI O — same leak, no shell owner)
 
 /**
  * Stale-replay display-state reset ("frozen scroll window" bug).
@@ -108,9 +114,10 @@ export interface StaleReplayModeGateInput {
  *
  *  - `'full'`  — the arming process is known dead. Everything goes, ?2004
  *                included, because no live shell owns it either.
- *  - `'mouse'` — the pane looks stale but its SHELL is alive. Only mouse
- *                reporting is cleared; see STALE_REPLAY_MOUSE_MODE_RESETS for
- *                why touching ?2004 here corrupts pastes.
+ *  - `'mouse'` — the pane looks stale but its SHELL is alive. Everything the
+ *                shell does not arm for itself is cleared; see
+ *                STALE_REPLAY_ALIVE_SHELL_RESETS for why ?2004 is the one mode
+ *                left alone here.
  *  - `'none'`  — a live command owns the PTY, or there is no evidence.
  *
  * Why two levels rather than one boolean: `resumeAgent` alone was too narrow

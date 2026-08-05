@@ -27,7 +27,7 @@ import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../term
 import { atlasGuard } from '../terminal/atlasGuard';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_MOUSE_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1760,7 +1760,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (terminalRef.current !== terminal) return;
         const level = staleReplayResetLevel(sessions.find((s) => s.id === ptyId));
         if (level === 'none') return;
-        terminal.write(level === 'full' ? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_MOUSE_MODE_RESETS);
+        terminal.write(level === 'full' ? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_ALIVE_SHELL_RESETS);
         terminal.write(STALE_REPLAY_DISPLAY_RESETS);
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };
