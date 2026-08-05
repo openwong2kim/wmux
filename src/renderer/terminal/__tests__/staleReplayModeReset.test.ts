@@ -18,7 +18,12 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Terminal } from '@xterm/xterm';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../staleReplayModeReset';
+import {
+  STALE_REPLAY_INPUT_MODE_RESETS,
+  STALE_REPLAY_ALIVE_SHELL_RESETS,
+  STALE_REPLAY_DISPLAY_RESETS,
+  staleReplayResetLevel,
+} from '../staleReplayModeReset';
 
 const write = (term: Terminal, data: string) =>
   new Promise<void>((resolve) => term.write(data, resolve));
@@ -136,13 +141,104 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
   });
 });
 
+describe('STALE_REPLAY_ALIVE_SHELL_RESETS — the alive-shell subset', () => {
+  it('disarms every mouse-reporting mode the replay could have armed', async () => {
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      expect(term.modes.mouseTrackingMode).toBe('any');
+
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
+      expect(term.modes.mouseTrackingMode).toBe('none');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('disarms focus reporting — a leaked ?1004h types ESC[I into the prompt on every focus change', async () => {
+    // Same leak as the mouse modes: xterm emits CSI I / CSI O through onData,
+    // and useTerminal.ts forwards onData to the PTY unconditionally (its
+    // CSI I / CSI O check only spares the resume hint, it does not skip the
+    // write). A shell never arms ?1004 for itself, so there is no owner to
+    // desynchronize — unlike ?2004 below.
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      expect(term.modes.sendFocusMode).toBe(true);
+
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
+      expect(term.modes.sendFocusMode).toBe(false);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('leaves bracketed paste armed — clearing it turns a multi-line paste into N executed commands', async () => {
+    // wmux decides whether to wrap a paste in ESC[200~ by reading xterm's OWN
+    // modes.bracketedPasteMode (clipboardChunk.ts:159, Terminal.tsx:289,
+    // useTerminal.ts:1647). A shell at its prompt has ?2004 armed and expects
+    // wrapped pastes. Clearing it terminal-side desyncs the two and the shell
+    // runs every pasted line. This is the everyday-path regression the split
+    // exists to prevent.
+    const term = new Terminal();
+    try {
+      await write(term, DEAD_AGENT_ARMING);
+      await write(term, STALE_REPLAY_ALIVE_SHELL_RESETS);
+      expect(term.modes.bracketedPasteMode).toBe(true);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('is a strict subset of the full reset (no mode escapes the known-dead path)', () => {
+    for (const seq of STALE_REPLAY_ALIVE_SHELL_RESETS.split('\x1b').filter(Boolean)) {
+      expect(STALE_REPLAY_INPUT_MODE_RESETS).toContain(`\x1b${seq}`);
+    }
+    expect(STALE_REPLAY_ALIVE_SHELL_RESETS).not.toContain('2004');
+    
+  });
+});
+
+describe('staleReplayResetLevel — the gate (#807)', () => {
+  it('clears everything when the daemon booted into recovery (the 2026-07-02 case)', () => {
+    expect(staleReplayResetLevel({ resumeAgent: 'claude' })).toBe('full');
+  });
+
+  it('clears mouse only when the shell sits at its prompt after an app-only restart', () => {
+    // The daemon survived the app quit, so `resumeAgent` is absent — the exact
+    // gap that let a replayed ?1003h/?1006h write `35;9;12M` into the prompt.
+    // The SHELL is alive here, so ?2004 must survive.
+    expect(staleReplayResetLevel({ commandRunning: false })).toBe('mouse');
+  });
+
+  it('never clobbers a live TUI that legitimately armed mouse reporting', () => {
+    expect(staleReplayResetLevel({ commandRunning: true })).toBe('none');
+  });
+
+  it('declines without evidence (no shell integration → commandRunning undefined)', () => {
+    expect(staleReplayResetLevel({})).toBe('none');
+    expect(staleReplayResetLevel(undefined)).toBe('none');
+  });
+
+  it('a live command outranks a stale recovery flag (the user started a fresh TUI)', () => {
+    // `resumeAgent` records what the daemon saw at ITS boot. If a foreground
+    // command owns the PTY now, that record is out of date and the live
+    // process owns the modes.
+    expect(staleReplayResetLevel({ resumeAgent: 'claude', commandRunning: true })).toBe('none');
+  });
+
+  it('a recovered pane idling at its prompt still earns the full reset', () => {
+    expect(staleReplayResetLevel({ resumeAgent: 'claude', commandRunning: false })).toBe('full');
+  });
+});
+
 describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
   const src = readFileSync(
     path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
     'utf8',
   );
 
-  it('gates on the daemon resumeAgent field (recovered-this-boot, agent not re-detected)', () => {
+  it('gates on the shared daemon-state predicate, not an inline resumeAgent check', () => {
     const idx = src.indexOf('const resetStaleReplayModes');
     expect(idx).toBeGreaterThan(-1);
     const body = src.slice(idx, idx + 900);
@@ -151,9 +247,15 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     // The daemon is the authority — NOT the renderer's resumeHint slice, which
     // hydrates racily against the boot flush.
     expect(body).toMatch(/window\.electronAPI\.pty\.list\(\)/);
-    expect(body).toMatch(/resumeAgent/);
+    // #807: the gate is the exported predicate. An inline `?.resumeAgent` here
+    // is exactly the too-narrow test that missed app-restart-with-live-daemon.
+    expect(body).toMatch(/staleReplayResetLevel\(/);
+    expect(body).not.toMatch(/\?\.resumeAgent/);
+    // The alive-shell path must pick the mouse subset. Writing the full reset
+    // unconditionally is the paste-corruption regression.
+    expect(body).toMatch(/level === 'full' \? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_ALIVE_SHELL_RESETS/);
     // Terminal-side only: the leaked modes live in xterm, the PTY never saw them.
-    expect(body).toMatch(/terminal\.write\(STALE_REPLAY_INPUT_MODE_RESETS\)/);
+    expect(body).toMatch(/terminal\.write\(/);
     expect(body).not.toMatch(/pty\.write/);
   });
 
@@ -178,7 +280,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_DISPLAY_RESETS/);
 
-    // Site 2: resetStaleReplayModes (resumeAgent-gated, reboot recovery).
+    // Site 2: resetStaleReplayModes (daemon-state gated).
     const resetFnIdx = src.indexOf('const resetStaleReplayModes');
     expect(resetFnIdx).toBeGreaterThan(-1);
     const resetFnBody = src.slice(resetFnIdx, resetFnIdx + 900);

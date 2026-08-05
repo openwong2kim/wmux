@@ -27,7 +27,7 @@ import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../term
 import { atlasGuard } from '../terminal/atlasGuard';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_DISPLAY_RESETS } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1744,22 +1744,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // arming (mouse/focus/paste reporting) into xterm, so the fresh shell's
     // pane emits mouse reports that both dismiss the resume pill (onData
     // "user typed" heuristic) and land in the shell as junk input. After a
-    // replaying flush, ask the daemon whether this pane is a recovered agent
-    // shell (`resumeAgent` — set ONLY for sessions recovered this boot whose
-    // agent has NOT been re-detected) and if so disable the leaked modes,
-    // terminal-side only. The pty.list round-trip doubles as ordering: by the
-    // time it resolves, the replay bytes are already queued into xterm, so
-    // the resets always land after the sequences they cancel. Gating on the
-    // daemon (not the renderer's resumeHint slice) avoids the boot race where
-    // the flush completes before AppLayout has hydrated the hint.
+    // replaying flush, ask the daemon how much of that state this pane has
+    // earned the right to clear (staleReplayResetLevel) and write only that
+    // much, terminal-side only. A pane whose SHELL is alive gets the mouse
+    // subset — clearing ?2004 there desynchronizes wmux's paste wrapping from
+    // the shell and turns a multi-line paste into N executed commands. The
+    // pty.list round-trip doubles as ordering: by the time it resolves, the
+    // replay bytes are already queued into xterm, so the resets always land
+    // after the sequences they cancel. Gating on the daemon (not the
+    // renderer's resumeHint slice) avoids the boot race where the flush
+    // completes before AppLayout has hydrated the hint.
     const resetStaleReplayModes = (recoveredBytes: number) => {
       if (recoveredBytes <= 0) return;
       void window.electronAPI.pty.list().then((sessions) => {
         if (terminalRef.current !== terminal) return;
-        if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
-          terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
-          terminal.write(STALE_REPLAY_DISPLAY_RESETS);
-        }
+        const level = staleReplayResetLevel(sessions.find((s) => s.id === ptyId));
+        if (level === 'none') return;
+        terminal.write(level === 'full' ? STALE_REPLAY_INPUT_MODE_RESETS : STALE_REPLAY_ALIVE_SHELL_RESETS);
+        terminal.write(STALE_REPLAY_DISPLAY_RESETS);
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };
     // Phase 3: settle an in-flight resync when its replay flush completes.
