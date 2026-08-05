@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { sendRequest } from '../client';
-import { printResult, ensureOk, parseFlag } from '../utils';
+import { printResult, ensureOk } from '../utils';
 import { resolveSelfContext, getParentPidDefault } from '../identity';
 import { ENV_KEYS } from '../../shared/constants';
 import type { RpcResponse } from '../../shared/rpc';
@@ -35,8 +35,7 @@ interface IdentifyResult {
  *      miss (descendant processes several hops up the tree).
  * Returns '' when none resolve — the caller is not in a wmux pane.
  */
-async function resolveMetaSenderPtyId(args: string[]): Promise<string> {
-  const explicitPane = parseFlag(args, '--pane');
+async function resolveMetaSenderPtyId(explicitPane: string): Promise<string> {
   if (explicitPane) return explicitPane;
   try {
     const ctx = await resolveSelfContext({
@@ -58,8 +57,8 @@ async function resolveMetaSenderPtyId(args: string[]): Promise<string> {
  * own guard produces "cannot resolve the calling pane's workspace — send a
  * verified senderPtyId", which tells a human nothing about what to do.
  */
-async function requireMetaSenderPtyId(cmd: string, args: string[]): Promise<string> {
-  const senderPtyId = await resolveMetaSenderPtyId(args);
+async function requireMetaSenderPtyId(cmd: string, explicitPane: string): Promise<string> {
+  const senderPtyId = await resolveMetaSenderPtyId(explicitPane);
   if (!senderPtyId) {
     console.error(
       `Error: ${cmd} cannot tell which workspace to write — no resolvable pane identity ` +
@@ -71,17 +70,58 @@ async function requireMetaSenderPtyId(cmd: string, args: string[]): Promise<stri
   return senderPtyId;
 }
 
-/** Strip routing flags so the remaining args are the command payload. */
-function stripSystemFlags(args: string[]): string[] {
-  const out: string[] = [];
+interface SystemArgs {
+  /** Explicit `--pane` target; '' when the caller did not name one. */
+  paneId: string;
+  /** Everything that was not a routing flag, in order. */
+  payload: string[];
+}
+
+/**
+ * Parse the routing flag and the payload in ONE pass.
+ *
+ * Two independent passes (parseFlag for the value, a stripper for the payload)
+ * disagree at the edges: parseFlag ignores a value starting with `-` while the
+ * stripper consumed the next token unconditionally, and neither recognised
+ * `--pane=<v>` — so `set-status --pane=pty-x hello` published the literal string
+ * "--pane=pty-x" to the caller's own workspace and exited 0. Parsing once
+ * removes that whole class rather than patching each case.
+ *
+ * An unrecognised `--flag` is an error, not payload: silently posting a mistyped
+ * flag as a status message is the same failure in a different costume. `--`
+ * ends flag parsing for a payload that legitimately starts with dashes.
+ */
+function parseSystemArgs(cmd: string, args: string[]): SystemArgs {
+  let paneId = '';
+  const payload: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--pane') {
-      i++; // skip value
+    const a = args[i];
+    if (a === '--') {
+      payload.push(...args.slice(i + 1));
+      break;
+    }
+    if (a === '--pane' || a.startsWith('--pane=')) {
+      const value = a.startsWith('--pane=') ? a.slice('--pane='.length) : args[i + 1];
+      if (!value || value.startsWith('-')) {
+        console.error(`Error: ${cmd}: --pane requires a <ptyId>`);
+        process.exit(1);
+      }
+      if (!a.includes('=')) i++; // consume the separate value token
+      paneId = value;
       continue;
     }
-    out.push(args[i]);
+    // Only double-dash is a flag — `set-progress -5` must reach the range check
+    // as a value, not die here as an unknown flag.
+    if (a.startsWith('--')) {
+      console.error(
+        `Error: ${cmd}: unknown flag "${a}". ` +
+          'Put -- before a payload that starts with dashes.',
+      );
+      process.exit(1);
+    }
+    payload.push(a);
   }
-  return out;
+  return { paneId, payload };
 }
 
 export async function handleSystem(
@@ -128,12 +168,15 @@ export async function handleSystem(
     }
 
     case 'set-status': {
-      const text = stripSystemFlags(args)[0];
-      if (text === undefined) {
+      const { paneId, payload } = parseSystemArgs('set-status', args);
+      // Join, don't take [0]: `set-status Build failed` used to publish "Build"
+      // and drop the rest without a word. `wmux send` has always joined.
+      const text = payload.join(' ');
+      if (!text) {
         console.error('Error: set-status requires <text>');
         process.exit(1);
       }
-      const senderPtyId = await requireMetaSenderPtyId('set-status', args);
+      const senderPtyId = await requireMetaSenderPtyId('set-status', paneId);
       response = await sendRequest('meta.setStatus', { text, senderPtyId });
       if (jsonMode) {
         printResult(response);
@@ -145,7 +188,8 @@ export async function handleSystem(
     }
 
     case 'set-progress': {
-      const raw = stripSystemFlags(args)[0];
+      const { paneId, payload } = parseSystemArgs('set-progress', args);
+      const raw = payload[0];
       if (raw === undefined) {
         console.error('Error: set-progress requires <0-100>');
         process.exit(1);
@@ -155,7 +199,7 @@ export async function handleSystem(
         console.error('Error: progress value must be a number between 0 and 100');
         process.exit(1);
       }
-      const senderPtyId = await requireMetaSenderPtyId('set-progress', args);
+      const senderPtyId = await requireMetaSenderPtyId('set-progress', paneId);
       response = await sendRequest('meta.setProgress', { value, senderPtyId });
       if (jsonMode) {
         printResult(response);

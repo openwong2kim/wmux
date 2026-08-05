@@ -60,8 +60,10 @@ describe('useRpcBridge — workspace.close receipt honesty (#799)', () => {
 
   it('verifies the removal actually landed before returning ok', () => {
     const block = closeHandler();
-    // Post-check against FRESH state — the entry-time guards cannot see a
-    // concurrent close that consumed the second-to-last workspace.
+    // Post-check against FRESH state. Not a race fix — nothing awaits between
+    // the guards and the mutation, so the check cannot fail today. It is an
+    // assertion that the handler's guards and removeWorkspace's own agree,
+    // which is precisely what drifted apart to produce #799.
     const postCheck = block.match(
       /useStore\.getState\(\)\.workspaces\.some\([\s\S]*?\)\s*\)\s*\{[\s\S]*?return \{ error:/,
     );

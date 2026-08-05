@@ -111,6 +111,52 @@ describe('set-status / set-progress carry a senderPtyId (#800)', () => {
     });
   });
 
+  it('accepts the --pane=<v> form instead of publishing it as the status', async () => {
+    // The two-parser version posted the literal "--pane=pty-other" to the
+    // caller's own workspace and exited 0.
+    await handleSystem('set-status', ['--pane=pty-other', 'hello'], false);
+    expect(rpc).toHaveBeenCalledWith('meta.setStatus', {
+      text: 'hello',
+      senderPtyId: 'pty-other',
+    });
+  });
+
+  it('joins the whole payload instead of dropping every word after the first', async () => {
+    await handleSystem('set-status', ['Build', 'failed'], false);
+    expect(rpc).toHaveBeenCalledWith('meta.setStatus', {
+      text: 'Build failed',
+      senderPtyId: 'pty-self',
+    });
+  });
+
+  it('rejects --pane with no value rather than eating the payload', async () => {
+    await expect(handleSystem('set-status', ['--pane'], false)).rejects.toThrow(ExitCalled);
+    await expect(handleSystem('set-status', ['--pane', '-x', 'hi'], false)).rejects.toThrow(
+      ExitCalled,
+    );
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown flag rather than publishing it as text', async () => {
+    await expect(handleSystem('set-status', ['--panne', 'pty-x'], false)).rejects.toThrow(
+      ExitCalled,
+    );
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('passes a dash-leading payload through after --', async () => {
+    await handleSystem('set-status', ['--', '--not-a-flag'], false);
+    expect(rpc).toHaveBeenCalledWith('meta.setStatus', {
+      text: '--not-a-flag',
+      senderPtyId: 'pty-self',
+    });
+  });
+
+  it('still treats a negative progress value as out-of-range, not an unknown flag', async () => {
+    await expect(handleSystem('set-progress', ['-5'], false)).rejects.toThrow(ExitCalled);
+    expect(errSpy.mock.calls.flat().join(' ')).toMatch(/between 0 and 100/);
+  });
+
   it('fails closed BEFORE any RPC when no identity resolves', async () => {
     selfContext.mockResolvedValue({});
     await expect(handleSystem('set-status', ['nope'], false)).rejects.toThrow(ExitCalled);

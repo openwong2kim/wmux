@@ -530,12 +530,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       } catch { /* best-effort */ }
     }
     store.removeWorkspace(id);
-    // Confirm the removal actually landed before acknowledging it. The guards
-    // above read the state at handler entry; concurrent closes (a cleanup
-    // script firing several `close-workspace` calls at once) can each pass a
-    // length>1 check and still have the slice's own last-workspace guard refuse
-    // the final one. Verifying afterwards is what makes the receipt truthful in
-    // that race, not just in the sequential case.
+    // Confirm the removal actually landed before acknowledging it. Today this
+    // cannot fail: nothing awaits between the guards above and here, so two
+    // concurrent closes cannot interleave on the renderer's single thread, and
+    // the guards mirror the slice's own. It is kept as an assertion, not as a
+    // race fix — the guards duplicate conditions that live in removeWorkspace,
+    // and the whole bug being fixed here is that the two drifted apart without
+    // anything noticing. If a future edit adds an await above, or the slice
+    // grows a third refusal, the receipt stays truthful instead of silently
+    // regressing to what #799 reported.
     if (useStore.getState().workspaces.some((w) => w.id === id)) {
       return { error: `workspace.close: "${id}" is still open — the removal was refused` };
     }
