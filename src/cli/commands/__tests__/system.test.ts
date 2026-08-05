@@ -152,6 +152,18 @@ describe('set-status / set-progress carry a senderPtyId (#800)', () => {
     });
   });
 
+  it('rejects an empty progress value instead of reporting 0%', async () => {
+    // Number('') is 0, so this used to succeed as "Progress set: 0%".
+    await expect(handleSystem('set-progress', [''], false)).rejects.toThrow(ExitCalled);
+    await expect(handleSystem('set-progress', ['   '], false)).rejects.toThrow(ExitCalled);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stray extra progress token instead of dropping it', async () => {
+    await expect(handleSystem('set-progress', ['10', 'extra'], false)).rejects.toThrow(ExitCalled);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('still treats a negative progress value as out-of-range, not an unknown flag', async () => {
     await expect(handleSystem('set-progress', ['-5'], false)).rejects.toThrow(ExitCalled);
     expect(errSpy.mock.calls.flat().join(' ')).toMatch(/between 0 and 100/);

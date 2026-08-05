@@ -196,9 +196,16 @@ export async function handleSystem(
 
     case 'set-progress': {
       const { paneId, payload } = parseSystemArgs('set-progress', args);
+      // Exactly one non-blank token. `Number('')` is 0, so an empty argument
+      // used to report "Progress set: 0%" — the same false success this PR
+      // exists to remove — and a stray second token was dropped in silence.
       const raw = payload[0];
-      if (raw === undefined) {
+      if (raw === undefined || raw.trim() === '') {
         console.error('Error: set-progress requires <0-100>');
+        process.exit(1);
+      }
+      if (payload.length > 1) {
+        console.error(`Error: set-progress takes one value, got ${payload.length}`);
         process.exit(1);
       }
       const value = Number(raw);

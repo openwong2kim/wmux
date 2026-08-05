@@ -83,8 +83,13 @@ describe('useRpcBridge — workspace.close receipt honesty (#799)', () => {
     );
   });
 
-  it('has exactly one ok receipt, and it is the last statement', () => {
+  it('has exactly one ok receipt, and it comes after the removal check', () => {
     const block = closeHandler();
     expect(block.match(/return \{ ok: true \};/g)).toHaveLength(1);
+    // Counting alone would still pass if the single receipt were returned
+    // BEFORE the check — which is the old behaviour this test exists to forbid.
+    expect(block.indexOf('useStore.getState().workspaces.some')).toBeLessThan(
+      block.indexOf('return { ok: true };'),
+    );
   });
 });
