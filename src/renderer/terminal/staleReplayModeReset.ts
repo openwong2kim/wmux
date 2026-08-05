@@ -83,7 +83,7 @@ export interface StaleReplayModeGateInput {
  * Whether a replaying attach-flush should disable the replayed input-reporting
  * modes.
  *
- * `resumeAgent` alone was too narrow (#805): it is populated only on DAEMON
+ * `resumeAgent` alone was too narrow (#807): it is populated only on DAEMON
  * boot, so quitting and relaunching the APP while the daemon survives left
  * every gate false. The replay still re-armed the dead TUI's mouse tracking,
  * and the next pointer move over the pane wrote an SGR report into the fresh

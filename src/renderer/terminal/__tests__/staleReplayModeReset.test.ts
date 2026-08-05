@@ -140,12 +140,12 @@ describe('STALE_REPLAY_DISPLAY_RESETS — behavioral (headless xterm)', () => {
   });
 });
 
-describe('shouldResetStaleReplayModes — the gate (#805)', () => {
+describe('shouldResetStaleReplayModes — the gate (#807)', () => {
   it('resets when the daemon booted into recovery (the original 2026-07-02 case)', () => {
     expect(shouldResetStaleReplayModes({ resumeAgent: 'claude' })).toBe(true);
   });
 
-  it('resets when the shell is at its prompt after an app-only restart (#805 regression)', () => {
+  it('resets when the shell is at its prompt after an app-only restart (#807 regression)', () => {
     // The daemon survived the app quit, so `resumeAgent` is absent — the exact
     // gap that let a replayed ?1003h/?1006h write `35;9;12M` into the prompt.
     // OSC 133 says no foreground command owns the PTY, so nothing alive can
@@ -182,7 +182,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     // The daemon is the authority — NOT the renderer's resumeHint slice, which
     // hydrates racily against the boot flush.
     expect(body).toMatch(/window\.electronAPI\.pty\.list\(\)/);
-    // #805: the gate is the exported predicate. An inline `?.resumeAgent` here
+    // #807: the gate is the exported predicate. An inline `?.resumeAgent` here
     // is exactly the too-narrow test that missed app-restart-with-live-daemon.
     expect(body).toMatch(/shouldResetStaleReplayModes\(/);
     expect(body).not.toMatch(/\?\.resumeAgent/);
