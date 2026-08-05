@@ -500,21 +500,45 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // agent inside them — while the workspace stays in the UI with dead
     // surfaces. Mirror the slice's guard so dispose only runs when the removal
     // will actually happen. (codex review P2)
+    //
+    // #799: report a refused removal as an ERROR instead of {ok:true}. Both
+    // no-op branches of removeWorkspace (unknown id, last-workspace guard) used
+    // to come back as success, so `wmux close-workspace <id>` printed
+    // "Closed workspace: ws-…" for a workspace that was still open — a scripted
+    // cleanup then treated a live workspace as gone. Same false-receipt class
+    // getResultError() was introduced for (surface.close).
     const ws = store.workspaces.find((w) => w.id === id);
-    if (ws && store.workspaces.length > 1) {
-      for (const ptyId of collectAllPtyIds(ws.rootPane)) {
-        // dispose() returns an IPC Promise, so a daemon-side failure (mid-
-        // respawn, session already dead) rejects asynchronously — a plain
-        // try/catch wouldn't catch it and workspace.close would emit an
-        // unhandled rejection while still reporting success. Swallow the
-        // rejection via .catch; the outer try guards a synchronous throw
-        // (e.g. electronAPI missing). Best-effort either way. (codex review P2)
-        try {
-          void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
-        } catch { /* best-effort */ }
-      }
+    if (!ws) {
+      return { error: `workspace.close: no workspace with id "${id}"` };
+    }
+    if (store.workspaces.length <= 1) {
+      return {
+        error:
+          `workspace.close: refusing to close "${id}" — it is the only workspace, ` +
+          'and wmux always keeps one open. Create another workspace first.',
+      };
+    }
+    for (const ptyId of collectAllPtyIds(ws.rootPane)) {
+      // dispose() returns an IPC Promise, so a daemon-side failure (mid-
+      // respawn, session already dead) rejects asynchronously — a plain
+      // try/catch wouldn't catch it and workspace.close would emit an
+      // unhandled rejection while still reporting success. Swallow the
+      // rejection via .catch; the outer try guards a synchronous throw
+      // (e.g. electronAPI missing). Best-effort either way. (codex review P2)
+      try {
+        void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
+      } catch { /* best-effort */ }
     }
     store.removeWorkspace(id);
+    // Confirm the removal actually landed before acknowledging it. The guards
+    // above read the state at handler entry; concurrent closes (a cleanup
+    // script firing several `close-workspace` calls at once) can each pass a
+    // length>1 check and still have the slice's own last-workspace guard refuse
+    // the final one. Verifying afterwards is what makes the receipt truthful in
+    // that race, not just in the sequential case.
+    if (useStore.getState().workspaces.some((w) => w.id === id)) {
+      return { error: `workspace.close: "${id}" is still open — the removal was refused` };
+    }
     return { ok: true };
   }
 
