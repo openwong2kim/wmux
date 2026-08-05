@@ -95,8 +95,11 @@ NOTIFICATION COMMANDS
          [--type info|warning|error|agent] [--workspace <id>]
 
 SYSTEM COMMANDS
-  set-status <text>                 Set a status message on the active workspace
-  set-progress <0-100>              Set a progress value on the active workspace
+  set-status <text> [--pane <id>]   Set a status message on your own workspace
+  set-progress <0-100> [--pane <id>]
+                                    Set a progress value on your own workspace
+                                    (both target the pane you are calling from;
+                                     --pane names another pane's workspace)
   identify                          Show wmux app info
   capabilities                      List all supported RPC methods
 
