@@ -50,6 +50,18 @@ const HOOK_TO_KIND = {
   SessionStart: 'agent.session_start',
 };
 
+// AskUserQuestion completing means the user answered it on this machine, so
+// PostToolUse is promoted to agent.input_answered and the daemon expires the
+// approval record a remote device is still showing as pending (#770). Every
+// other tool stays a plain activity stamp. PostToolUse only runs after a tool
+// completes, so the tool name is the whole signal.
+function getPostToolUseKind(payload) {
+  if (payload && payload.tool_name === 'AskUserQuestion') {
+    return 'agent.input_answered';
+  }
+  return 'agent.activity';
+}
+
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
 function getAuthTokenPath() {
@@ -516,7 +528,9 @@ async function main() {
 
   // Build the AgentSignal envelope.
   const envelope = {
-    kind: HOOK_TO_KIND[hookName],
+    kind: hookName === 'PostToolUse'
+      ? getPostToolUseKind(payload)
+      : HOOK_TO_KIND[hookName],
     agent: 'openclaude',
     agentSessionId: sessionIdFromTranscript(
       transcriptPath,

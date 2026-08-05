@@ -346,10 +346,26 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * `agent.subagent_stop` deliberately does NOT expire: a subagent finishing
    * says nothing about the main agent's question still sitting on screen.
    *
+   * `kind` narrows the sweep to one record kind. A locally answered
+   * AskUserQuestion says nothing about a permission gate the same turn opened
+   * in parallel, and expiring one drops its waiter (see expirePendingWhere) —
+   * the tool falls back to the local prompt while the phone operator, watching
+   * only the phone, sees the card vanish. That is the exact harm the supersede
+   * rule in noteHookAwaitingInput already refuses to cause; the sweep has to
+   * refuse it too. Omitted ⇒ every kind, which is what the turn/pane-lifecycle
+   * callers want.
+   *
    * Returns the settled promise for the same reason noteHookAwaitingInput does.
    */
-  expireForSession(sessionId: string, reason: ApprovalExpiryReason): Promise<void> {
-    return this.mutate(() => this.expirePendingWhere((r) => r.sessionId === sessionId, reason));
+  expireForSession(
+    sessionId: string,
+    reason: ApprovalExpiryReason,
+    kind?: ApprovalRequest['kind'],
+  ): Promise<void> {
+    return this.mutate(() => this.expirePendingWhere(
+      (r) => r.sessionId === sessionId && (kind === undefined || r.kind === kind),
+      reason,
+    ));
   }
 
   /**

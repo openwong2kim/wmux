@@ -252,7 +252,12 @@ export interface ApprovalHookSink {
     toolName: string;
     toolInputSummary?: string;
   }): string;
-  expireForSession(sessionId: string, reason: ApprovalExpiryReason): void;
+  /** `kind` narrows the sweep to one record kind; omitted ⇒ every kind. */
+  expireForSession(
+    sessionId: string,
+    reason: ApprovalExpiryReason,
+    kind?: ApprovalRequest['kind'],
+  ): void;
 }
 
 export interface ApprovalListResult {

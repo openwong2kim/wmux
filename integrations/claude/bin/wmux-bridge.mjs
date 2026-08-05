@@ -87,11 +87,21 @@ const HOOK_TO_KIND = {
   UserPromptSubmit: 'agent.user_prompt_submit',
 };
 
-// Determine signal kind for PostToolUse: if it's AskUserQuestion that fired
-// (completed), treat as input_answered (user answered locally); otherwise as
-// activity. Fired is true only on PostToolUse — PreToolUse never sets it.
+// Determine the signal kind for a PostToolUse hook. AskUserQuestion completing
+// means the user answered it right here on this machine, so it is promoted to
+// agent.input_answered — the daemon expires the approval record that a remote
+// device is still showing as pending (#770). Every other tool stays a plain
+// activity stamp.
+//
+// Only the tool name is consulted. PostToolUse fires exclusively AFTER a tool
+// completes, so reaching this function at all already means "it finished";
+// there is no second payload field to confirm that. (An earlier revision also
+// required `payload.fired`, which Claude Code's PostToolUse payload does not
+// carry — the promotion could never fire and #770 stayed broken.) Callers only
+// invoke this for hookName === 'PostToolUse', so a PreToolUse AskUserQuestion
+// can never reach it and be mistaken for an answer.
 function getPostToolUseKind(payload) {
-  if (payload && payload.tool_name === 'AskUserQuestion' && payload.fired) {
+  if (payload && payload.tool_name === 'AskUserQuestion') {
     return 'agent.input_answered';
   }
   return 'agent.activity';

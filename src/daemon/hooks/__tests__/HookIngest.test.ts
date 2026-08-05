@@ -45,7 +45,7 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
   const nudges: Array<{ sessionId: string; kind: AgentSignalKind }> = [];
   // #770 — track every approval-sink call so the locally-answered expiry path
   // can be asserted (expireForSession reason + that nothing broadcasts).
-  const approvalsCalls: Array<{ sessionId: string; reason: string }> = [];
+  const approvalsCalls: Array<{ sessionId: string; reason: string; kind?: string }> = [];
   let clock = 10_000;
   const deps = {
     listLiveSessions: () => sessions,
@@ -61,8 +61,8 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
     approvals: {
       noteHookAwaitingInput: () => { /* tracked at the registry level */ },
       noteGateAwaiting: () => 'gate-id',
-      expireForSession: (sessionId: string, reason: string) => {
-        approvalsCalls.push({ sessionId, reason });
+      expireForSession: (sessionId: string, reason: string, kind?: string) => {
+        approvalsCalls.push({ sessionId, reason, kind });
       },
     },
     log: () => { /* silent in tests */ },
@@ -201,10 +201,28 @@ describe('HookIngest', () => {
       const res = ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
       expect(res).toEqual({ ok: true });
       expect(fixture.approvalsCalls).toEqual([
-        { sessionId: 'pty-a', reason: 'answered-locally' },
+        { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' },
       ]);
       // Not a turn boundary or even a metadata ping: nothing fans out.
       expect(fixture.emitted).toHaveLength(0);
+    });
+
+    it('scopes the sweep to awaiting_input so a parallel permission gate survives', () => {
+      // A turn can open a gate and an AskUserQuestion at once. Answering the
+      // question locally says nothing about the gate, and expiring the gate
+      // record drops its waiter — the tool falls back to the local prompt
+      // while the phone operator just sees the card vanish.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
+      expect(fixture.approvalsCalls[0].kind).toBe('awaiting_input');
+    });
+
+    it('scopes a locally-answered permission gate to awaiting_permission', () => {
+      // The mirror of the rule above: a gate answered in the TUI must not
+      // expire a question card still on screen.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.permission_answered' }));
+      expect(fixture.approvalsCalls).toEqual([
+        { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_permission' },
+      ]);
     });
 
     it('does not capture a resume binding or nudge the transcript (early return)', () => {
@@ -225,8 +243,10 @@ describe('HookIngest', () => {
       fixture.advance(100);
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
       expect(fixture.approvalsCalls).toEqual([
-        { sessionId: 'pty-a', reason: 'answered-locally' },
-        { sessionId: 'pty-a', reason: 'turn-ended' },
+        { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' },
+        // The backstop stays kind-agnostic: the turn ended, so every pending
+        // record on the pane is moot regardless of kind.
+        { sessionId: 'pty-a', reason: 'turn-ended', kind: undefined },
       ]);
       // Only the stop broadcasts — input_answered stayed silent.
       expect(fixture.emitted).toHaveLength(1);
