@@ -58,6 +58,7 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
+import { runWithProgressTimeout } from '../../hooks/reconcileProgressTimeout';
 import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
@@ -99,9 +100,9 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
  *     ▼                                      │
  *   gen = ++startupGenRef                    │
  *   abortCtl = new AbortController           │
- *   await raceWithAbort(                     │
- *     reconcilePtys(abortCtl.signal),        │
- *     RECONCILE_TIMEOUT_MS                   │
+ *   await runWithProgressTimeout(            │
+ *     report => reconcilePtys(signal, report),│
+ *     RECONCILE_TIMEOUT_MS (stall window)    │
  *   )                                        │
  *     │                                      │
  *     ├── success ──────────────────────────┤
@@ -118,10 +119,11 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
  * into reconcilePtys so its `signal.aborted` checks early-return.
  *
  * RCA A2 — RECONCILE_TIMEOUT_MS now lives in shared/timeouts.ts and is
- * derived as DAEMON_RPC_TIMEOUT_MS + 5s (= 15s). Previously this was a
- * standalone 5_000 that had drifted BELOW the 10s RPC ceiling, so a daemon
- * that answered pty.list in 6–9s under load still lost the race and the
- * startup catch wiped every live session via clearAllPtyState().
+ * derived as DAEMON_RPC_TIMEOUT_MS + 5s (= 15s). It is a rolling no-progress
+ * watchdog, re-armed after each reconcile IPC stage. A fixed total timeout is
+ * unsafe now that one pass can serially list, promote, and re-list sessions:
+ * two individually valid slow RPCs could otherwise exceed 15s and make the
+ * startup catch wipe every live session via clearAllPtyState().
  */
 
 /** Collect all terminal surfaces from a pane tree */
@@ -596,14 +598,25 @@ export default function AppLayout() {
   //      Terminal.tsx self-create on mount — the well-tested fresh-pane
   //      path. The mount gate guarantees Terminal mounts AFTER this
   //      reconcile resolves, so the race is gone.
-  const reconcilePtys = useCallback(async (signal?: AbortSignal): Promise<void> => {
+  const reconcilePtys = useCallback(async (
+    signal?: AbortSignal,
+    reportProgress?: () => void,
+  ): Promise<void> => {
     if (reconcileInFlightRef.current) {
       console.log('[AppLayout] reconcile already in flight — awaiting shared promise');
       return reconcileInFlightRef.current;
     }
     const run = (async () => {
       try {
-        const listResult = await ipcInvoke<ReconcilePtySession[]>(() =>
+        // Every remote stage gets the daemon RPC ceiling independently. Report
+        // completion so startup's rolling watchdog measures a stalled stage,
+        // not the total duration of a legitimate multi-RPC reconcile pass.
+        const invokeReconcile = async <T,>(call: () => Promise<T>) => {
+          const result = await ipcInvoke<T>(call);
+          reportProgress?.();
+          return result;
+        };
+        const listResult = await invokeReconcile<ReconcilePtySession[]>(() =>
           window.electronAPI.pty.list({ includeDead: true })
         );
         if (!listResult.ok) {
@@ -725,7 +738,7 @@ export default function AppLayout() {
           const stillAbsent: typeof absentCandidates = [];
           if (window.electronAPI?.pty?.promote) {
             // Ask the daemon for suspended sessions that match our absent ptyIds.
-            const allRes = await ipcInvoke<{ id: string; state?: string }[]>(() =>
+            const allRes = await invokeReconcile<{ id: string; state?: string }[]>(() =>
               window.electronAPI.pty.list({ includeSuspended: true }),
             );
             const suspendedIds = new Set(
@@ -740,7 +753,7 @@ export default function AppLayout() {
                 continue;
               }
               // Try to promote this suspended session.
-              const promoteRes = await ipcInvoke<{ success: boolean; error?: string }>(() =>
+              const promoteRes = await invokeReconcile<{ success: boolean; error?: string }>(() =>
                 window.electronAPI.pty.promote(candidate.ptyId),
               );
               if (promoteRes.ok && promoteRes.data.success) {
@@ -765,7 +778,7 @@ export default function AppLayout() {
           let secondSnapshot: { id: string; surfaceId?: string; createdAt?: string }[] | null = null;
           const toClear = await resolvePtyIdsToClear(firstAbsent, {
             reList: async () => {
-              const r = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() => window.electronAPI.pty.list());
+              const r = await invokeReconcile<{ id: string; surfaceId?: string; createdAt?: string }[]>(() => window.electronAPI.pty.list());
               if (r.ok) secondSnapshot = r.data;
               return r.ok
                 ? { ok: true, ids: new Set(r.data.map((p: { id: string }) => p.id)) }
@@ -917,20 +930,20 @@ export default function AppLayout() {
           return;
         }
 
-        // Fix 0 — generation-tokened, AbortController-cancellable
-        // reconcile race. Timeout aborts the in-flight reconcile so
-        // late mutations don't overwrite the cleared-fallback state.
+        // Fix 0 — generation-tokened, AbortController-cancellable reconcile.
+        // The rolling watchdog aborts only after one stage makes no progress
+        // for the full budget; total duration may exceed one RPC timeout when
+        // list/promote/re-list stages each complete legitimately under load.
         abortCtl = new AbortController();
         const signal = abortCtl.signal;
-        await Promise.race([
-          reconcilePtys(signal),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => {
-              abortCtl?.abort();
-              reject(new Error(`reconcile timeout after ${RECONCILE_TIMEOUT_MS}ms`));
-            }, RECONCILE_TIMEOUT_MS)
-          ),
-        ]);
+        await runWithProgressTimeout(
+          (reportProgress) => reconcilePtys(signal, reportProgress),
+          {
+            timeoutMs: RECONCILE_TIMEOUT_MS,
+            label: 'startup reconcile',
+            onTimeout: () => abortCtl?.abort(),
+          },
+        );
         // v2 RCA fix (axis A): persist the reconciled layout ON SUCCESS ONLY.
         // Rebinds/clears from a completed reconcile must reach disk now — not
         // wait for the 5s tick a reboot could pre-empt. Deliberately NOT in the
