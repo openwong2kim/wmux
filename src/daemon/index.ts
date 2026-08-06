@@ -1247,6 +1247,15 @@ async function recoverSessions(
     // re-evaluated on the next launch.
     if (!recoverableIds.has(session.id)) continue;
 
+    // P0a: an SSH session's channel died with the daemon, and reconnect is P0b
+    // (the connection params live on the create request, not persisted meta —
+    // reconnect semantics: resume the same remote session vs a fresh shell is a
+    // design decision not yet made). Skip recovery rather than call the local
+    // spawn path with `cmd === 'ssh user@host'` (which would spawn a LOCAL ssh
+    // child that hangs at a host-key prompt) or throw on the missing ssh params.
+    // The record stays in state.sessions and is reaped by the dead-session TTL.
+    if (session.kind === 'ssh') continue;
+
     if (session.state === 'suspended' && session.bufferDumpPath) {
       // Attempt to recover suspended session
       try {

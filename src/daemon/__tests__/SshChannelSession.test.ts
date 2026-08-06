@@ -108,18 +108,40 @@ describe('SshChannelSession — SessionProcess surface', () => {
     b.kill();
   });
 
-  it('forwards shell stdout bytes to onData after ready → shell', async () => {
-    const session = new SshChannelSession({ host: 'h', username: 'u', cols: 100, rows: 30 });
+  it('forwards shell stdout bytes to onData after ready → shell', () => {
+    const session = new SshChannelSession({ host: 'h', username: 'u', cols: 100, rows: 30 }) as unknown as {
+      client: { emit: (ev: string) => void; runShell: (s: unknown) => void };
+      onData: (cb: (d: string) => void) => { dispose: () => void };
+      kill: () => void;
+    };
     const seen: string[] = [];
     session.onData((d) => seen.push(d));
-    // Drive: client emits ready, then the shell callback fires with a stream.
-    // The hoisted factory doesn't push to instances, so reach the client via the
-    // module's own wiring: SshChannelSession created `new Client()`. We access it
-    // by re-importing ssh2 and grabbing the constructor's last instance is not
-    // available — so instead drive through a known side effect: emit on ready.
-    // (See the next test for the instance-recording variant.)
-    void seen;
+    const { stream } = fakeStream();
+    session.client.emit('ready');
+    session.client.runShell(stream);
+    stream.emit('data', Buffer.from('remote-output', 'utf8'));
+    expect(seen.join('')).toBe('remote-output');
     session.kill();
+  });
+
+  it('fires onExit immediately for a late subscriber after a sync fail (no zombie)', () => {
+    // The sync fail path (e.g. an unreadable key file) calls fireExit BEFORE
+    // the bridge attaches onExit. Without the immediate-replay fix the session
+    // would sit "alive" forever (SSH skips processMonitor.watch). Drive a fail
+    // by pointing at a private key path that does not exist, then attach onExit
+    // AFTER construction and assert it still observes the exit.
+    const session = new SshChannelSession({
+      host: 'h',
+      username: 'u',
+      cols: 80,
+      rows: 24,
+      auth: { privateKeyPath: '/definitely/not/a/real/key/path__' },
+    }) as unknown as { onExit: (cb: (e: { exitCode: number; signal?: string }) => void) => { dispose: () => void } };
+    const exits: { exitCode: number; signal?: string }[] = [];
+    // Attach AFTER construction — the readFileSync fail already ran sync.
+    session.onExit((e) => exits.push(e));
+    expect(exits).toHaveLength(1);
+    expect(exits[0].exitCode).toBe(255);
   });
 
   it('routes stdout + stderr through onData and exit through onExit (end-to-end mock)', async () => {

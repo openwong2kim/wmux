@@ -1,5 +1,8 @@
 import { Client } from 'ssh2';
 import type { ConnectConfig } from 'ssh2';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import type { SessionProcess, SessionDisposable, SessionExitEvent } from './SessionProcess';
 
 /**
@@ -14,9 +17,12 @@ import type { SessionProcess, SessionDisposable, SessionExitEvent } from './Sess
  * Construction is synchronous on purpose. `createSession` is a synchronous
  * factory across the daemon (it returns `meta` with a `pid` immediately, and
  * dozens of call sites depend on that). So this object exposes the
- * `SessionProcess` surface the moment it is created: listeners attached before
- * the connection completes are queued and replayed once the channel streams.
- * This mirrors how node-pty works — you attach `onData` and bytes flow later.
+ * `SessionProcess` surface the moment it is created. Listeners attached before
+ * the connection completes are REGISTERED but receive bytes only once the
+ * channel streams (pre-ready bytes are not queued — same as node-pty, where
+ * onData is a subscription, not a buffer). An onExit attached after an exit
+ * fires immediately (see fireExit/lastExit) so the sync fail path can never
+ * strand the session as a deathless zombie.
  *
  * `pid` is synthetic: an SSH channel has no OS pid on the operator's machine.
  * A negative monotonic counter keeps it distinct from every real (positive)
@@ -72,6 +78,10 @@ export class SshChannelSession implements SessionProcess {
   private readonly exitListeners = new Set<(e: SessionExitEvent) => void>();
   private exited = false;
   private disposed = false;
+  // Last exit payload — kept so a listener attached AFTER exit (the bridge's
+  // onExit lands right after construction, but the sync fail path can fireExit
+  // before it) still observes the exit instead of leaving the session a zombie.
+  private lastExit: SessionExitEvent | null = null;
 
   constructor(private readonly opts: SshChannelOptions) {
     this.pid = sshPidCounter--;
@@ -95,11 +105,11 @@ export class SshChannelSession implements SessionProcess {
 
     if (auth.privateKeyPath) {
       try {
-        // Synchronous read: the key file is small and createSession is sync.
-        // A missing/unreadable key is a hard, immediate failure — better here
-        // than a hang waiting for ssh2's own auth timeout.
-        const fs = require('node:fs');
-        const key = fs.readFileSync(auth.privateKeyPath, 'utf8');
+        // Expand `~` — the schema explicitly accepts `~/.ssh/id_ed25519` as the
+        // happy path, but fs.readFileSync reads a LITERAL `~` dir (ENOENT).
+        // Mirrors DaemonSessionManager's expandTilde for cwd.
+        const expanded = auth.privateKeyPath.replace(/^~(?=[\\/]|$)/, os.homedir());
+        const key = fs.readFileSync(expanded, 'utf8');
         connectOpts.privateKey = key;
         if (auth.passphrase) connectOpts.passphrase = auth.passphrase;
       } catch (err) {
@@ -109,10 +119,34 @@ export class SshChannelSession implements SessionProcess {
     } else if (auth.password) {
       connectOpts.password = auth.password;
     } else {
-      // Default to the SSH agent — the most common "it just works" path, since
-      // the operator almost always has an agent with their key loaded.
-      connectOpts.agent = process.env.SSH_AUTH_SOCK ?? '';
+      // Default to the SSH agent. On POSIX that's SSH_AUTH_SOCK; on Windows the
+      // agent is pageant/npipe, which ssh2 auto-detects when `agent` is the
+      // literal string 'pageant' OR left for ssh2's platform default. Pass an
+      // empty string only when SSH_AUTH_SOCK is set (POSIX); otherwise omit so
+      // ssh2 uses its own Windows default rather than a dead socket path.
+      const sock = process.env.SSH_AUTH_SOCK;
+      if (sock) connectOpts.agent = sock;
     }
+
+    // Host key verification (MITM defense). Without this, ssh2 accepts ANY
+    // host key the peer presents — an attacker who can answer for the host
+    // name collects the operator's auth (key signature / agent / password)
+    // and proxies every byte. wmux.json's host is attacker-reachable (the file
+    // is checked into the repo), so this gate is load-bearing, not cosmetic.
+    //
+    // TOFU (trust-on-first-use) against ~/.wmux/ssh-known_hosts: the first
+    // connection to a host records its key's fingerprint; a later connection to
+    // the SAME host with a DIFFERENT key fails closed. This matches openssh's
+    // strict-host-key-checking=no first-use behavior — good enough for the
+    // "operator's own box" threat model of P0a, and far better than silent
+    // acceptance. A future P1 can wire ~/.ssh/known_hosts too.
+    connectOpts.hostVerifier = (key: Buffer, verify: (verified: boolean) => void): void => {
+      try {
+        verify(this.verifyHostKey(key) ? true : false);
+      } catch {
+        verify(false);
+      }
+    };
 
     this.client.on('ready', () => {
       if (this.disposed) {
@@ -195,9 +229,55 @@ export class SshChannelSession implements SessionProcess {
     this.fireExit({ exitCode: 255, signal: reason });
   }
 
+  /**
+   * Per-host known_hosts file. Lives under ~/.wmux/ (not ~/.ssh/) so wmux owns
+   * its lifecycle and a user's openssh known_hosts is never silently rewritten.
+   * One line per trusted host: `<host>:<port> <sha256-fingerprint>`.
+   */
+  private knownHostsPath(): string {
+    const dataDir = process.env.WMUX_DATA_DIR || path.join(os.homedir(), '.wmux');
+    return path.join(dataDir, 'ssh-known_hosts');
+  }
+
+  /**
+   * TOFU host-key check. Returns true when the presented key matches the
+   * recorded fingerprint for this host, OR when no fingerprint is recorded yet
+   * (first use — records it). Returns false on a MISMATCH (potential MITM).
+   * The host:port key matches the openssh known_hosts single-line shape.
+   */
+  private verifyHostKey(key: Buffer): boolean {
+    const crypto = require('node:crypto');
+    const fp = 'SHA256:' + crypto.createHash('sha256').update(key).digest('base64');
+    const hostKey = `${this.opts.host}:${this.opts.port ?? 22}`;
+    const khPath = this.knownHostsPath();
+    let lines: string[] = [];
+    try {
+      lines = fs.readFileSync(khPath, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    } catch {
+      lines = [];
+    }
+    const existing = lines.find((l) => l.startsWith(hostKey + ' '));
+    if (existing) {
+      const recorded = existing.slice(hostKey.length + 1).trim();
+      return recorded === fp;
+    }
+    // First use: record and accept. Best-effort write — a failure to persist
+    // must NOT block the connection (the operator is here now), so fall back to
+    // accept rather than strand them. The mismatch path above is the security-
+    // critical half; first-use recording is opportunistic.
+    try {
+      fs.mkdirSync(path.dirname(khPath), { recursive: true });
+      fs.appendFileSync(khPath, `${hostKey} ${fp}\n`);
+    } catch {
+      /* best-effort — see comment */
+    }
+    return true;
+  }
+
   private fireExit(payload: SessionExitEvent): void {
     if (this.exited) return;
     this.exited = true;
+    this.lastExit = payload;
     for (const cb of this.exitListeners) {
       try {
         cb(payload);
@@ -213,10 +293,19 @@ export class SshChannelSession implements SessionProcess {
   }
 
   onExit(listener: (e: SessionExitEvent) => void): SessionDisposable {
-    // If already exited, fire immediately so a late subscriber still sees the exit.
-    // The bridge attaches onExit synchronously after construction, so this path
-    // mainly guards against a reconnect-after-close race.
+    // If already exited, fire immediately. The bridge attaches onExit right
+    // after construction, but the sync fail path (readFileSync / connect throw)
+    // can fireExit BEFORE that attach — without this replay the session would
+    // sit "alive" with no death path (SSH skips processMonitor.watch), a
+    // permanent zombie. try/catch so one throwing listener can't block the add.
     this.exitListeners.add(listener);
+    if (this.exited && this.lastExit) {
+      try {
+        listener(this.lastExit);
+      } catch {
+        /* ignore — listener error does not unblock the death either way */
+      }
+    }
     return { dispose: () => this.exitListeners.delete(listener) };
   }
 
