@@ -83,6 +83,36 @@ export class RemoteHostsStore {
     return { ok: true, host: toPublic(host) };
   }
 
+  /** Registers a host from an already-exchanged origin + token — the
+   *  pair-with-code path (REMOTE_HOSTS_PAIR), which never has a pasted URL
+   *  to parse. Same duplicate-origin refusal and persist-before-mutate
+   *  discipline as add(). */
+  addDirect(origin: string, token: string, label?: string): { ok: true; host: RemoteHostPublic } | { ok: false; error: string } {
+    if (this.hosts.some((h) => h.origin === origin)) {
+      return { ok: false, error: 'already registered' };
+    }
+
+    let hostname: string;
+    try {
+      hostname = new URL(origin).hostname;
+    } catch {
+      hostname = origin;
+    }
+
+    const host: RemoteHost = {
+      id: crypto.randomUUID(),
+      label: label ?? hostname,
+      origin,
+      token,
+      addedAt: Date.now(),
+    };
+
+    const next = [...this.hosts, host];
+    this.persist(next);
+    this.hosts = next;
+    return { ok: true, host: toPublic(host) };
+  }
+
   remove(id: string): boolean {
     const next = this.hosts.filter((h) => h.id !== id);
     if (next.length === this.hosts.length) return false;

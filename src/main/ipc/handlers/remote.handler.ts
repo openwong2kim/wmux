@@ -23,6 +23,7 @@ import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import { parseWebUrl } from '../../../shared/remoteHosts';
 import type {
+  PairFailureReason,
   RemoteHost,
   RemoteHostPublic,
   RemoteWorkspaceSummary,
@@ -122,6 +123,81 @@ function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): strin
     case 'incompatible':
       return "that machine's wmux is too old for remote attach";
   }
+}
+
+/** Shape of a `GET /api/pair` 403 error body (WebTerminalServer.handlePair). */
+interface PairErrorBody {
+  error?: string;
+  detail?: string;
+  attemptsLeft?: number;
+}
+
+/** Shape of a successful `GET /api/pair` 200 body. deviceId/deviceSecret may
+ *  also be present but are the daemon's own bookkeeping — only `token` is
+ *  used, as the Bearer credential for this device. */
+interface PairSuccessBody {
+  token?: string;
+}
+
+type PairExchangeResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: PairFailureReason; attemptsLeft?: number };
+
+/** Exchanges a pairing code for a device-scoped token via the unauthenticated
+ *  `GET /api/pair` route. Never throws — a fetch failure is reported as
+ *  'unreachable', mirroring probeConfig's contract, and the code/token never
+ *  reach a throw path. */
+async function exchangePairCode(
+  origin: string,
+  code: string,
+  fetchImpl: typeof fetch,
+): Promise<PairExchangeResult> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${origin}/api/pair?code=${encodeURIComponent(code)}`, {
+      // Unauthenticated by design (no Bearer header — that's the point of
+      // pairing) but still a credential-minting request: never follow a
+      // redirect, and don't let a hung remote hang the modal forever.
+      redirect: 'error',
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, reason: 'unreachable' };
+  }
+
+  if (res.status === 403) {
+    let body: PairErrorBody;
+    try {
+      body = (await res.json()) as PairErrorBody;
+    } catch {
+      return { ok: false, reason: 'pairing-failed' };
+    }
+    switch (body.error) {
+      case 'expired':
+        return { ok: false, reason: 'expired' };
+      case 'too many attempts':
+        return { ok: false, reason: 'too-many-attempts' };
+      case 'invalid code':
+        return { ok: false, reason: 'invalid-code', attemptsLeft: body.attemptsLeft };
+      case 'insecure-transport':
+        return { ok: false, reason: 'insecure-transport' };
+      default:
+        return { ok: false, reason: 'pairing-failed' };
+    }
+  }
+
+  if (!res.ok) return { ok: false, reason: 'pairing-failed' };
+
+  let parsed: PairSuccessBody;
+  try {
+    parsed = (await res.json()) as PairSuccessBody;
+  } catch {
+    return { ok: false, reason: 'pairing-failed' };
+  }
+  if (typeof parsed.token !== 'string' || !parsed.token) {
+    return { ok: false, reason: 'pairing-failed' };
+  }
+  return { ok: true, token: parsed.token };
 }
 
 export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => void {
@@ -268,6 +344,66 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };
     }));
 
+  ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
+  ipcMain.handle(IPC.REMOTE_HOSTS_PAIR, wrapHandler(IPC.REMOTE_HOSTS_PAIR,
+    async (
+      _e: IpcMainInvokeEvent,
+      rawOrigin: unknown,
+      rawCode: unknown,
+      label?: unknown,
+    ): Promise<
+      | { ok: true; host: RemoteHostPublic }
+      | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
+    > => {
+      const originInput = assertString(rawOrigin, 'origin');
+      const code = assertString(rawCode, 'code').trim();
+      const safeLabel = label === undefined ? undefined : assertString(label, 'label');
+
+      let origin: string;
+      try {
+        const u = new URL(originInput);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          return { ok: false, reason: 'invalid-origin' };
+        }
+        origin = u.origin;
+      } catch {
+        return { ok: false, reason: 'invalid-origin' };
+      }
+
+      if (store.list().some((h) => h.origin === origin)) {
+        return { ok: false, reason: 'already-registered' };
+      }
+
+      const exchange = await exchangePairCode(origin, code, fetchImpl);
+      if (!exchange.ok) return exchange;
+
+      // Probe BEFORE persisting — same compatibility gate as hostsAdd, so a
+      // pre-remote-attach remote never makes it into the store even though
+      // the code exchange itself succeeded. An 'unauthorized' outcome here
+      // would mean the token we JUST minted was rejected on the very next
+      // request — treated the same as 'incompatible' rather than inventing
+      // a reason that would wrongly imply the CODE was wrong.
+      const probe = await probeConfig(origin, exchange.token, fetchImpl);
+      if (probe.kind !== 'ok') {
+        return { ok: false, reason: 'incompatible' };
+      }
+
+      // store.addDirect() persists via secureWriteTokenFile, which is
+      // fail-closed (throws on a chmod/ACL failure). Mirrors hostsAdd's C1
+      // discipline — never let that throw escape with the minted token
+      // still in scope as an in-flight local.
+      let result: ReturnType<typeof store.addDirect>;
+      try {
+        result = store.addDirect(origin, exchange.token, safeLabel);
+      } catch {
+        return { ok: false, reason: 'pairing-failed' };
+      }
+      if (!result.ok) return { ok: false, reason: 'already-registered' };
+
+      allowInputCache.set(result.host.id, probe.allowInput);
+      return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };
+    }));
+
   ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
   ipcMain.handle(IPC.REMOTE_HOSTS_REMOVE, wrapHandler(IPC.REMOTE_HOSTS_REMOVE,
     async (_e: IpcMainInvokeEvent, id: unknown): Promise<boolean> => {
@@ -367,6 +503,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   return () => {
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_LIST);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_ADD);
+    ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
     ipcMain.removeHandler(IPC.REMOTE_PANE_ATTACH);

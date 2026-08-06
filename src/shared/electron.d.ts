@@ -11,7 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type { WebStartArgs, WebTerminalInfo } from './web';
-import type { RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
+import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -149,6 +149,16 @@ declare global {
          *  remote (no route, unparseable body) is refused, never stored. */
         hostsAdd: (rawUrl: string, label?: string) => Promise<
           { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
+        >;
+        /** Exchanges an 8-char pairing code (read from the remote's
+         *  titlebar Web popover) for a device-scoped token via the
+         *  unauthenticated `GET /api/pair` route, then registers the host —
+         *  the credential-in-clipboard-free alternative to hostsAdd's
+         *  paste-URL flow. `reason` is machine-readable; the caller
+         *  translates it. */
+        hostsPair: (origin: string, code: string, label?: string) => Promise<
+          | { ok: true; host: RemoteHostPublic }
+          | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
         >;
         hostsRemove: (id: string) => Promise<boolean>;
         workspacesList: (hostId: string) => Promise<

@@ -150,6 +150,17 @@ function fakeStore(hosts: RemoteHost[] = []) {
       return { ok: true as const, host: pub };
     }),
     remove: vi.fn((id: string) => byId.delete(id)),
+    addDirect: vi.fn((origin: string, token: string, label?: string) => {
+      if ([...byId.values()].some((h) => h.origin === origin)) {
+        return { ok: false as const, error: 'already registered' };
+      }
+      let hostname = origin;
+      try { hostname = new URL(origin).hostname; } catch { /* keep origin as fallback */ }
+      const host: RemoteHost = { id: `host-${byId.size + 1}`, label: label ?? hostname, origin, token, addedAt: 0 };
+      byId.set(host.id, host);
+      const { token: _t, ...pub } = host;
+      return { ok: true as const, host: pub };
+    }),
   };
 }
 
@@ -266,6 +277,150 @@ describe('remote.handler — hostsAdd', () => {
     await expect(
       getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t'),
     ).resolves.toEqual({ ok: false, error: 'could not save host' });
+  });
+});
+
+describe('remote.handler — hostsPair', () => {
+  it('mints+stores a host on success and reports allowInput', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ deviceId: 'd1', deviceSecret: 's1', token: 'd1.s1' });
+      return jsonResponse({ allowInput: true });
+    });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'ABCD1234') as { ok: true; host: RemoteHostPublic };
+
+    expect(res.ok).toBe(true);
+    expect(res.host.allowInput).toBe(true);
+    expect(store.addDirect).toHaveBeenCalledWith('https://box:9600', 'd1.s1', undefined);
+
+    const [pairUrl, pairInit] = fetchImpl.mock.calls[0];
+    expect(pairUrl).toBe('https://box:9600/api/pair?code=ABCD1234');
+    expect(pairInit?.redirect).toBe('error');
+    expect(pairInit?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('strips a trailing path/slash down to the bare origin', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ token: 't' });
+      return jsonResponse({ allowInput: false });
+    });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600/some/path/', 'CODE');
+
+    expect(store.addDirect).toHaveBeenCalledWith('https://box:9600', 't', undefined);
+  });
+
+  it('refuses a non-http(s) origin without ever fetching', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'ftp://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'invalid-origin' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unparseable origin without ever fetching', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'not a url', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'invalid-origin' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a duplicate origin without ever fetching', async () => {
+    const existing: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+    const store = fakeStore([existing]);
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'already-registered' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['expired', 'expired'],
+    ['too many attempts', 'too-many-attempts'],
+    ['insecure-transport', 'insecure-transport'],
+    ['something-unmapped', 'pairing-failed'],
+  ])('maps a 403 body {error: %s} to reason %s', async (bodyError, expectedReason) => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: bodyError }, false, 403));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: expectedReason });
+    expect(store.addDirect).not.toHaveBeenCalled();
+  });
+
+  it('maps an "invalid code" 403 body to invalid-code and carries attemptsLeft', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid code', attemptsLeft: 3 }, false, 403));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'WRONG') as { ok: boolean; reason?: string; attemptsLeft?: number };
+
+    expect(res).toEqual({ ok: false, reason: 'invalid-code', attemptsLeft: 3 });
+  });
+
+  it('reports unreachable when the fetch itself throws', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'unreachable' });
+    expect(store.addDirect).not.toHaveBeenCalled();
+  });
+
+  it('reports pairing-failed for a 500', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'pairing failed' }, false, 500));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'pairing-failed' });
+  });
+
+  it('refuses an incompatible remote after a successful code exchange, without persisting', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ token: 'freshly-minted' });
+      return jsonResponse({}, false, 404); // /api/config probe fails
+    });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
+
+    expect(res).toEqual({ ok: false, reason: 'incompatible' });
+    expect(store.addDirect).not.toHaveBeenCalled();
+  });
+
+  it('never throws when store.addDirect() throws — reports pairing-failed instead', async () => {
+    const store = fakeStore();
+    store.addDirect.mockImplementationOnce(() => { throw new Error('EACCES: chmod failed'); });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ token: 't' });
+      return jsonResponse({ allowInput: true });
+    });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(
+      getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE'),
+    ).resolves.toEqual({ ok: false, reason: 'pairing-failed' });
   });
 });
 

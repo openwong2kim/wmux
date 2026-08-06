@@ -162,6 +162,58 @@ describe('RemoteHostsStore', () => {
     expect(store.list()[0]?.id).toBe(result.host.id);
   });
 
+  // addDirect — the pair-with-code path (REMOTE_HOSTS_PAIR), which already
+  // has an exchanged origin + token and never parses a pasted URL.
+  it('addDirect → list roundtrip excludes the token', () => {
+    const store = new RemoteHostsStore(filePath);
+    const result = store.addDirect('https://office-mac.example:9600', 'device-token-abc');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.host.label).toBe('office-mac.example');
+    expect((result.host as { token?: string }).token).toBeUndefined();
+
+    const full = store.get(result.host.id);
+    expect(full?.token).toBe('device-token-abc');
+    expect(full?.origin).toBe('https://office-mac.example:9600');
+  });
+
+  it('addDirect uses a custom label when provided, else defaults to the hostname', () => {
+    const store = new RemoteHostsStore(filePath);
+    const result = store.addDirect('https://office-mac.example:9600', 'device-token-abc', 'My Desktop');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.host.label).toBe('My Desktop');
+  });
+
+  it('addDirect refuses a duplicate origin', () => {
+    const store = new RemoteHostsStore(filePath);
+    store.addDirect('https://office-mac.example:9600', 'token-a');
+    const dup = store.addDirect('https://office-mac.example:9600', 'token-b');
+
+    expect(dup).toEqual({ ok: false, error: 'already registered' });
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it('addDirect refuses an origin already registered via add(), and vice versa', () => {
+    const store = new RemoteHostsStore(filePath);
+    store.add('https://office-mac.example:9600/?token=secret-abc');
+    const dup = store.addDirect('https://office-mac.example:9600', 'device-token');
+
+    expect(dup).toEqual({ ok: false, error: 'already registered' });
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it('a persist failure during addDirect() leaves list() unchanged', () => {
+    const store = new RemoteHostsStore(filePath);
+    secureWriteTokenFileMock.mockImplementationOnce(() => {
+      throw new Error('EACCES: chmod failed');
+    });
+
+    expect(() => store.addDirect('https://office-mac.example:9600', 'device-token')).toThrow();
+    expect(store.list()).toEqual([]);
+  });
+
   it('writes the token file with owner-only permissions (POSIX)', () => {
     if (process.platform === 'win32') return; // ACL semantics differ on Windows — see security.test.ts
     const store = new RemoteHostsStore(filePath);

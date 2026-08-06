@@ -33,6 +33,20 @@ export interface RemoteWorkspacesResponse {
   workspaces: RemoteWorkspaceSummary[];
 }
 
+/** Machine-readable reason for a REMOTE_HOSTS_PAIR failure — i18n happens
+ *  renderer-side (AttachRemoteModal maps each reason to a translated
+ *  string), so main never returns a human-facing message here. */
+export type PairFailureReason =
+  | 'invalid-origin'
+  | 'already-registered'
+  | 'expired'
+  | 'too-many-attempts'
+  | 'invalid-code'
+  | 'insecure-transport'
+  | 'unreachable'
+  | 'incompatible'
+  | 'pairing-failed';
+
 /** Parse a pasted `wmux web` URL into origin + token. Returns null when the
  * string is not an http(s) URL or carries no token= query param. */
 export function parseWebUrl(raw: string): { origin: string; token: string } | null {

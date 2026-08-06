@@ -22,7 +22,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type { WebStartArgs, WebTerminalInfo } from '../shared/web';
-import type { RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1213,6 +1213,11 @@ document.addEventListener('DOMContentLoaded', () => {
   hostsAdd: (rawUrl: string, label?: string) =>
     ipcRenderer.invoke(IPC.REMOTE_HOSTS_ADD, rawUrl, label) as Promise<
       { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
+    >,
+  hostsPair: (origin: string, code: string, label?: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_HOSTS_PAIR, origin, code, label) as Promise<
+      | { ok: true; host: RemoteHostPublic }
+      | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
     >,
   hostsRemove: (id: string) => ipcRenderer.invoke(IPC.REMOTE_HOSTS_REMOVE, id) as Promise<boolean>,
   workspacesList: (hostId: string) =>

@@ -509,6 +509,11 @@ export const IPC = {
   // Remote workspace attach (see src/shared/remoteHosts.ts)
   REMOTE_HOSTS_LIST: 'remote:hosts:list',
   REMOTE_HOSTS_ADD: 'remote:hosts:add',
+  // Pair-with-code registration over the unauthenticated GET /api/pair route
+  // (see WebTerminalServer.handlePair) — exchanges an 8-char code read from
+  // the remote's titlebar Web popover for a device-scoped token, in place of
+  // pasting the full wmux-web URL with the token embedded.
+  REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
   REMOTE_PANE_ATTACH: 'remote:pane:attach',
