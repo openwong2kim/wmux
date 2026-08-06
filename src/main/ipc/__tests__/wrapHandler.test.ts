@@ -298,6 +298,43 @@ describe('wrapHandler', () => {
       expect(summary).not.toContain('k1');
       expect(summary).toContain('fine');
     });
+
+    // C1 — remote.handler.ts's REMOTE_HOSTS_ADD takes the raw pasted wmux-web
+    // URL as a BARE STRING first arg (not wrapped in an object), so the
+    // key-based redaction above never sees it. A thrown error inside that
+    // handler must not leak the token through args_summary.
+    it('redacts a token= query param on a bare-string URL arg', () => {
+      const summary = buildArgsSummary(['https://box.example:9600/?token=sk-do-not-leak']);
+      expect(summary).toBeDefined();
+      expect(summary).not.toContain('sk-do-not-leak');
+      // URLSearchParams percent-encodes the bracket literals when the URL
+      // is serialized back to a string.
+      expect(summary).toContain('%5Bredacted%5D');
+      expect(summary).toContain('box.example');
+    });
+
+    it('leaves a bare-string URL without a token param untouched', () => {
+      const summary = buildArgsSummary(['https://box.example:9600/api/config']);
+      expect(summary).toBe('"https://box.example:9600/api/config"');
+    });
+
+    it('leaves a non-URL bare string untouched', () => {
+      const summary = buildArgsSummary(['not a url']);
+      expect(summary).toBe('"not a url"');
+    });
+
+    it('emits the redacted URL on a thrown error whose first arg is the raw URL', async () => {
+      const wrapped = wrapHandler('remote:hosts:add', (_event: unknown, _rawUrl: unknown) => {
+        throw new Error('could not save host');
+      });
+      await expect(
+        wrapped({} as never, 'https://box.example:9600/?token=sk-do-not-leak'),
+      ).rejects.toThrow();
+      const entry = parseLoggedEntry(writtenLines[0]);
+      const summary = entry.args_summary as string;
+      expect(summary).not.toContain('sk-do-not-leak');
+      expect(summary).toContain('%5Bredacted%5D');
+    });
   });
 
   // 7. [CODE] message prefix — defensive against Electron IPC property drop
