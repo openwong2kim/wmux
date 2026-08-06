@@ -40,11 +40,17 @@
 - **교훈:** 워커가 빌드 산출물을 PATH 에 링크할 수 있다. 브리핑에 "임시 경로를 PATH 에 걸지 마라"를 넣을 것.
 
 
-## #679 명시적 `surfaceId` 경로 검증 (P0 — 미확인 구멍)
-- **What:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 그런데 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로가 소유권을 검증하는지는 추적이 끝나지 않았다.
-- **Why:** 안 막혀 있으면 **같은 결함의 두 번째 문**이다. "고쳤다"고 머지한 PR이 절반만 고친 상태가 되는 게 가장 나쁘다.
-- **Context:** 스코핑 조사 판이 `gh pr diff 679`로 확인하던 중 판이 종료돼 결론을 못 봤다. 시작점: `PlaywrightEngine.ts`의 `resolveSelectionContext` / `explicitSurfaceId` 취급.
-- **Priority:** P0 — #679 머지 전에 답이 나와야 한다.
+## ✅ #679 명시적 `surfaceId` 경로 검증 — 툴 계층은 닫혀 있다 (2026-08-05)
+- **원래 질문:** PR #679는 *신원 해석 실패* 시 브라우저 페이지 선택이 fail-open 하던 걸 막았다. 호출자가 `surfaceId`를 **명시적으로 넘기는** 경로도 소유권을 검증하는가?
+- **답:** **툴 계층에 한해** 검증한다 — 이 범위 한정이 결론의 일부다. 전송 계층과 무스코프 호출 경로는 여전히 열려 있다(아래 "닫히지 않은 것"). 툴 계층을 닫은 건 #679가 아니라 그 뒤의 #695 작업이다. 세 층을 따라간 결과:
+  1. **진입** — 브라우저 툴 전 호출 지점이 `getPageForScope(scope)` 하나만 쓴다. `scope`는 `requireBrowserTargetScope()` 산출물이고 workspaceId가 비면 fail-closed(`browserScope.ts`). `getPage()`는 private, 다른 진입점 없음 → 명시 surfaceId도 workspaceId 없이는 도달 불가. **단 이건 규약이지 구조가 아니다**: `resolveSelectionContext`의 explicit 분기는 workspaceId 유무와 무관하게 ctx를 만들고, `selectRegisteredTarget`의 `(!workspaceId || targetsScoped)` 단락은 workspaceId가 없으면 surfaceId만으로 무검증 반환한다. 지금 안전한 이유는 전 호출자가 `getPageForScope`를 쓴다는 사실뿐 — 호출자 하나만 우회하면 깨진다.
+  2. **엔진 선택** — `selectRegisteredTarget()`이 명시 surfaceId를 대조한다. **두 분기의 검사 주체가 다르다**: 최신 main(`targetsScoped`)에서는 `browser.cdp.info`가 caller workspaceId로 **서버측 필터**를 이미 걸었으므로 응답에 남 워크스페이스 타깃이 없고, 클라이언트는 별도 재확인을 하지 않는다 — 이 경로의 소유권 검사는 서버 필터 **하나뿐**이다(서버가 소유권의 권위이므로 자가보고가 아니지만, 방어심층은 여기서 한 겹이다). 레거시 main에서만 클라이언트가 `target.workspaceId !== workspaceId`를 `WORKSPACE_SCOPE_UNRESOLVED`로 거부한다(태그 없는 타깃도 거부).
+  3. **RPC 폴백 + 소유권** — #679 체인지로그가 "별개 구멍"이라 남겨둔 폴백은 이제 `sendScopedBrowserRpc`가 workspaceId를 강제 주입하고 params의 surfaceId를 덮어쓴다. 서버 핸들러는 전부 `scopeOf(params)`를 넘기고(누락 0건), 최종 판정은 `WebviewCdpManager.getTarget()`의 `ownedBy()` — 명시 surfaceId 분기에도 적용된다. `browser_tabs select/close`는 렌더러의 `findBrowserTab(workspaces, workspaceId, surfaceId)`로 워크스페이스-정확 조회.
+- **회귀 커버리지:** `PlaywrightEngine.test.ts`의 *"strict surface targeting rejects a legacy main that returns a foreign or untagged explicit target"*, `WebviewCdpManager.test.ts`의 `getTarget('b-surface', 'ws-A') === null`.
+- **닫히지 않은 것 — 이 항목을 "구멍 없음"으로 읽지 마라:**
+  - **무스코프 호출 경로.** 파이프에 workspaceId를 **아예 안 보내면** `ownedBy(owner, undefined)`가 무조건 통과시키고 `getTarget`이 등록 맵 첫 세션을 반환한다. 도달 가능한 주체는 "손으로 만든 소켓 클라이언트"만이 아니다: `browser.evaluate`·`browser.read`·`browser.screenshot`은 `methodCapabilityMap`에서 **선언 가능한** capability이고(`RESERVED_PREFIXES`는 `wmux.`뿐), `PermissionEnforcer.check()`에는 **워크스페이스 차원이 아예 없다**(메서드 단위 capability만 본다). 즉 사용자가 승인한 **서드파티 MCP 플러그인**이 workspaceId를 생략하면 남의 워크스페이스 페이지에서 임의 JS 실행·스크린샷이 된다. 사용자는 "브라우저 평가"를 승인한 것이지 "모든 워크스페이스의 브라우저"를 승인한 게 아니다.
+  - **전송 계층.** `browser.cdp.info`는 scoped 응답에서도 `cdpPort`를 항상 반환한다(핸들러 주석이 이미 "NOT a hard seal"이라고 인정). `browser.read` 하나면 `connectOverCDP`로 전 워크스페이스 페이지를 직접 열거·조작할 수 있다. 위 툴 계층 검사는 **통제이지 경계가 아니다**.
+  - 이 둘은 #113 same-user 천장으로 뭉뚱그리기엔 주체 집합이 넓다. **#810**에서 추적한다.
 
 ## ✅ 스코핑 조사 U4·U8·U3 검증 완료 (2026-07-30)
 - **U8** (`meta.setStatus/setProgress`): **REAL (P2) → FIXED** — `meta.rpc.ts`에 senderPtyId 기반 워크스페이스 해석 추가. 외부 caller는 서버가 해석한 ws만 쓰고, 해석 불가면 **거부**(fail-closed). 렌더러가 ws 없는 payload를 활성 워크스페이스에 적용하므로 `undefined` 통과는 취약점 그대로였다.
