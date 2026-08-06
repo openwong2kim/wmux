@@ -20,18 +20,25 @@ const WS: AttachedRemoteWorkspace = {
   panes: [],
 };
 
+/**
+ * Roots are tracked so teardown can unmount them even when a test never
+ * reaches its own `unmount()` — an assertion that throws would otherwise leave
+ * a live root behind, and the next test's failure would be a consequence of
+ * this one rather than of its own subject.
+ */
+const mounted: Array<() => void> = [];
+
 function render(ui: React.ReactElement) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(ui));
-  return {
-    container,
-    unmount: () => {
-      act(() => root.unmount());
-      container.remove();
-    },
+  const unmount = () => {
+    act(() => root.unmount());
+    container.remove();
   };
+  mounted.push(unmount);
+  return { container, unmount };
 }
 
 /** Open the context menu on the row and return the Detach button. */
@@ -48,7 +55,11 @@ function openMenu(container: HTMLElement): HTMLButtonElement {
 }
 
 afterEach(() => {
-  document.body.innerHTML = '';
+  // Unmount rather than wipe innerHTML: clearing the DOM under a live root
+  // leaves React holding detached nodes and turns the next failure into noise.
+  while (mounted.length > 0) {
+    try { mounted.pop()!(); } catch { /* already unmounted by the test itself */ }
+  }
 });
 
 describe('RemoteWorkspaceItem', () => {
