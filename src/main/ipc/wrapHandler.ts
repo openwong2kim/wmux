@@ -76,6 +76,26 @@ const ENV_SUMMARY_KEYS = /^(env|profileenv)$/i;
 /** Depth cap so a pathological/cyclic payload can't blow the stack. */
 const MAX_REDACT_DEPTH = 6;
 
+/**
+ * A bare string arg that parses as a URL carrying a `token` query param
+ * (e.g. remote.handler.ts's REMOTE_HOSTS_ADD, whose first user arg IS the
+ * raw pasted wmux-web URL with the bearer token embedded) is redacted at
+ * that param before it ever reaches JSON.stringify. redactDeep only walks
+ * object keys, so a plain string argument passed straight through
+ * unredacted — this is the targeted guard for that gap.
+ */
+function redactUrlToken(s: string): string {
+  let url: URL;
+  try {
+    url = new URL(s);
+  } catch {
+    return s;
+  }
+  if (!url.searchParams.has('token')) return s;
+  url.searchParams.set('token', '[redacted]');
+  return url.toString();
+}
+
 /** Heuristic classification of an unknown error into one of the known codes. */
 function classifyError(err: unknown): IpcErrorCode {
   // Preserve explicit `code` property on the error if it is one of our known codes.
@@ -169,8 +189,12 @@ export function buildArgsSummary(args: readonly unknown[]): string | undefined {
   const first = args[0];
   let raw: string;
   try {
-    const redacted = redactDeep(first);
-    raw = JSON.stringify(redacted);
+    if (typeof first === 'string') {
+      raw = JSON.stringify(redactUrlToken(first));
+    } else {
+      const redacted = redactDeep(first);
+      raw = JSON.stringify(redacted);
+    }
   } catch {
     // redactDeep / JSON.stringify threw (circular, BigInt, a throwing getter…).
     // NEVER String()-fall-back an object: redaction was bypassed, and a hostile

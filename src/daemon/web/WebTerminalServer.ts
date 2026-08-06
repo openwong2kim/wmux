@@ -20,6 +20,7 @@ import type { TranscriptProjector } from '../transcript/TranscriptProjector';
 import { isTerminalLiveness, type AgentLivenessBody } from '../hooks/agentLiveness';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
+import type { RemotePaneSummary } from '../../shared/remoteHosts';
 import { capSnapshot } from './snapshotWindow';
 import {
   collectSessionDiff,
@@ -1582,6 +1583,9 @@ export class WebTerminalServer {
     if (req.method === 'GET' && p === '/api/sessions') {
       return this.json(res, 200, { sessions: this.listSessions() });
     }
+    if (req.method === 'GET' && p === '/api/workspaces') {
+      return this.handleWorkspacesList(res);
+    }
     if (req.method === 'POST' && p === '/api/sessions') {
       return this.handleSessionCreate(req, res);
     }
@@ -1710,6 +1714,47 @@ export class WebTerminalServer {
         ...workspaceLabelOf(s.env),
         ...shellLabelOf(s.cmd),
       }));
+  }
+
+  /**
+   * `GET /api/workspaces` — live workspaces, derived from session env.
+   *
+   * Same provenance as `rejectWorkspaceId` (main force-stamps
+   * `WMUX_WORKSPACE_ID` at spawn; the daemon persists the resolved env), so a
+   * workspace exists here iff at least one live pane runs in it. The uuid id
+   * IS surfaced — unlike the label-only `/api/sessions` field — because
+   * attach needs an address, and this route sits behind the same bearer auth
+   * that already exposes full scrollback.
+   */
+  private handleWorkspacesList(res: http.ServerResponse): void {
+    const byId = new Map<string, { id: string; name: string; panes: RemotePaneSummary[] }>();
+    for (const s of this.deps.sessionManager.listLiveSessions()) {
+      // Same exclusion as /api/sessions: the orchestrator brain pane must be
+      // neither listed nor allowed to synthesize a phantom workspace row.
+      if (isBrainPty({ id: s.id, env: s.env })) continue;
+      const id = s.env?.[ENV_KEYS.WORKSPACE_ID];
+      if (typeof id !== 'string' || !id) continue; // no workspace id → unaddressable, omitted
+      const entry = byId.get(id) ?? { id, name: '', panes: [] };
+      if (!entry.name) {
+        const n = s.env?.[ENV_KEYS.WORKSPACE_NAME];
+        if (typeof n === 'string' && n.trim()) entry.name = n.trim();
+      }
+      entry.panes.push({ sessionId: s.id, ...shellLabelOf(s.cmd), ...(s.cwd ? { cwd: s.cwd } : {}) });
+      byId.set(id, entry);
+    }
+    const workspaces = [...byId.values()]
+      .map((w) => ({ ...w, panes: w.panes.sort((a, b) => a.sessionId.localeCompare(b.sessionId)) }))
+      // Named workspaces sort first, alphabetically; unnamed ones sort last.
+      // An explicit boolean tiebreak (not a '￿' sentinel) because ICU
+      // collation may treat noncharacters as ignorable, which would invert
+      // the unnamed-last intent depending on locale.
+      .sort((a, b) => {
+        const aUnnamed = a.name === '';
+        const bUnnamed = b.name === '';
+        if (aUnnamed !== bUnnamed) return aUnnamed ? 1 : -1;
+        return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+      });
+    return this.json(res, 200, { workspaces });
   }
 
   // --- pane diff (read-only git) -------------------------------------------

@@ -1339,6 +1339,42 @@ export const en = {
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',
   'workspace.departed': 'departed',
+
+  // ─── Remote Workspace Attach (Task 7) ─────────────────────────────────────
+  'remote.attachTitle': 'Attach remote workspace',
+  'remote.addHost': 'Add host',
+  'remote.pasteUrlHint': 'Paste the URL printed by `wmux web` on the other machine',
+  'remote.attach': 'Attach',
+  'remote.detach': 'Detach',
+  'remote.loading': 'Loading…',
+  'remote.readOnly': 'Read-only — start the remote server with --allow-input to type',
+  'remote.exited': 'exited',
+  'remote.disconnected': 'Connection lost — the remote host is unreachable or the token was rejected',
+  'remote.removeHost': 'Remove host',
+  'remote.addFailed': 'Could not add host — check the app logs',
+  'remote.workspacesFailed': 'Could not load workspaces — check the app logs',
+  'remote.morePanes': '+{count} more panes',
+  'remote.mirrorDescription': 'Mirror a workspace from another wmux',
+  'remote.labelOptional': 'Label (optional)',
+  'remote.paneCount': '{count} panes',
+
+  // ─── Remote Workspace Attach: pair-with-code ──────────────────────────────
+  'remote.pairTab': 'Pair with code',
+  'remote.urlTab': 'Paste URL',
+  'remote.hostAddress': 'Host address',
+  'remote.hostAddressHint': 'e.g. https://office-mac.tailXXXX.ts.net',
+  'remote.pairCode': 'Pairing code',
+  'remote.pairHint': 'On the other machine, open the Web popover in the titlebar to see its pairing code',
+  'remote.pair': 'Pair',
+  'remote.pairInvalidOrigin': 'Enter a valid http(s) host address',
+  'remote.pairAlreadyRegistered': 'That host is already registered',
+  'remote.pairExpired': 'Code expired — read a fresh one from the remote’s Web popover',
+  'remote.pairTooManyAttempts': 'Too many wrong attempts — read a fresh code from the remote’s Web popover',
+  'remote.pairInvalidCode': 'Wrong code — {n} attempts left',
+  'remote.pairInsecure': 'The remote is not reachable over a secure connection',
+  'remote.pairUnreachable': 'Could not reach that host',
+  'remote.pairIncompatible': "That machine's wmux is too old for remote attach",
+  'remote.pairFailed': 'Pairing failed — check the app logs',
 } as const;
 
 export type TranslationKey = keyof typeof en;

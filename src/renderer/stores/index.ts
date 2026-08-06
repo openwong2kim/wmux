@@ -18,8 +18,9 @@ import { createRemoteInboxSlice, type RemoteInboxSlice } from './slices/remoteIn
 import { createChannelsSlice, type ChannelsSlice } from './slices/channelsSlice';
 import { createWorkTaskSlice, type WorkTaskSlice } from './slices/workTaskSlice';
 import { createDeckSlice, type DeckSlice } from './slices/deckSlice';
+import { createRemoteWorkspacesSlice, type RemoteWorkspacesSlice } from './slices/remoteWorkspacesSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -41,5 +42,6 @@ export const useStore = create<StoreState>()(
     ...createChannelsSlice(...args),
     ...createWorkTaskSlice(...args),
     ...createDeckSlice(...args),
+    ...createRemoteWorkspacesSlice(...args),
   }))
 );

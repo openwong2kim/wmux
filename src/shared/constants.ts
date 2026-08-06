@@ -506,6 +506,23 @@ export const IPC = {
   // user decision bound to the content hash the approval UI displayed.
   PROJECT_CONFIG_GET: 'project-config:get',
   PROJECT_CONFIG_SET_TRUST: 'project-config:set-trust',
+  // Remote workspace attach (see src/shared/remoteHosts.ts)
+  REMOTE_HOSTS_LIST: 'remote:hosts:list',
+  REMOTE_HOSTS_ADD: 'remote:hosts:add',
+  // Pair-with-code registration over the unauthenticated GET /api/pair route
+  // (see WebTerminalServer.handlePair) — exchanges an 8-char code read from
+  // the remote's titlebar Web popover for a device-scoped token, in place of
+  // pasting the full wmux-web URL with the token embedded.
+  REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
+  REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
+  REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
+  REMOTE_PANE_ATTACH: 'remote:pane:attach',
+  REMOTE_PANE_DETACH: 'remote:pane:detach',
+  REMOTE_PANE_WRITE: 'remote:pane:write',
+  REMOTE_PANE_DATA: 'remote:pane:data',      // main → renderer push
+  REMOTE_PANE_META: 'remote:pane:meta',      // main → renderer push (cols/rows/snapshot)
+  REMOTE_PANE_EXIT: 'remote:pane:exit',      // main → renderer push
+  REMOTE_PANE_ERROR: 'remote:pane:error',    // main → renderer push (reconnect gave up)
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

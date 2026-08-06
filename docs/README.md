@@ -26,6 +26,7 @@ Task recipes for when you already know what you want to do.
 - [React to events](./how-to/react-to-events.md) — the `events.poll` loop, the eight event types, opaque cursors, and filters.
 - [Write pane metadata](./how-to/write-pane-metadata.md) — `setMetadata` mergeModes, shared vs `custom` fields, and the optimistic-concurrency retry loop.
 - [Handle a daemon restart](./how-to/handle-daemon-restart.md) — detect `bootId` mismatch vs `resync`, and reconcile state from a fresh snapshot.
+- [Attach a remote machine's workspaces](./how-to/remote-workspaces.md) — the desktop app's remote attach flow, `--tailscale` setup, and its limitations.
 
 ## Reference
 
