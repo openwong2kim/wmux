@@ -3930,4 +3930,67 @@ describe('WebTerminalServer', () => {
       }
     });
   });
+
+  describe('GET /api/workspaces', () => {
+    it('groups live sessions by WMUX_WORKSPACE_ID and surfaces id+name+panes', async () => {
+      // Fixture already covers the matrix: s1 → ws-1 named "Workspace 1", s2 →
+      // ws-legacy (no name), s3 → no workspace id at all (unaddressable, so
+      // it must contribute no row and no phantom workspace).
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        workspaces: Array<{ id: string; name: string; panes: Array<{ sessionId: string; shell?: string; cwd?: string }> }>;
+      };
+      // Named workspace sorts before the unnamed one.
+      expect(body.workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-legacy']);
+      expect(body.workspaces[0].name).toBe('Workspace 1');
+      expect(body.workspaces[0].panes).toEqual([{ sessionId: 's1', shell: 'pwsh', cwd: '/x' }]);
+      expect(body.workspaces[1].name).toBe('');
+      expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y' }]);
+      // The env-less session (s3) is omitted entirely.
+      expect(body.workspaces.flatMap((w) => w.panes).map((p) => p.sessionId)).not.toContain('s3');
+    });
+
+    it('groups multiple panes into the same workspace, sorted by sessionId', async () => {
+      live.push({
+        id: 's4', cwd: '/x2', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+        cmd: '/usr/bin/bash',
+      });
+      try {
+        const info = await startRO();
+        const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        const body = (await res.json()) as { workspaces: Array<{ id: string; panes: Array<{ sessionId: string }> }> };
+        const ws1 = body.workspaces.find((w) => w.id === 'ws-1');
+        expect(ws1?.panes.map((p) => p.sessionId)).toEqual(['s1', 's4']);
+      } finally {
+        live.length = 3;
+      }
+    });
+
+    it('rejects an unauthenticated request exactly like /api/sessions', async () => {
+      await startRO();
+      const res = await fetch(`${base()}/api/workspaces`);
+      expect(res.status).toBe(401);
+    });
+
+    it('hides brain ptys — not listed, and no phantom workspace from their env', async () => {
+      live.push({
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1', WMUX_WORKSPACE_ID: 'ws-brain', WMUX_WORKSPACE_NAME: 'Brain' },
+        cmd: '/usr/local/bin/claude',
+      });
+      try {
+        const info = await startRO();
+        const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        const body = (await res.json()) as { workspaces: Array<{ id: string }> };
+        expect(body.workspaces.map((w) => w.id)).not.toContain('ws-brain');
+      } finally {
+        live.length = 3;
+      }
+    });
+  });
 });
