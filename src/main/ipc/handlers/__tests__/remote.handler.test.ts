@@ -40,7 +40,7 @@ vi.mock('electron', () => {
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
 import type { RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
-import type { RemoteHostClient, RemoteMetaEvent, RemoteDataEvent, RemoteExitEvent } from '../../../remote/RemoteHostClient';
+import type { RemoteHostClient, RemoteMetaEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
 
 function getHandler(channel: string): (...args: unknown[]) => unknown {
   const fn = ipcHandlers.get(channel);
@@ -59,15 +59,22 @@ function fakeSender(id: number) {
   const sent: Array<{ channel: string; payload: unknown }> = [];
   const destroyCbs: Array<() => void> = [];
   const goneCbs: Array<() => void> = [];
+  type NavCb = (e: unknown, url: string, isInPlace: boolean, isMainFrame: boolean) => void;
+  const navCbs: NavCb[] = [];
   return {
     id,
     isDestroyed: vi.fn(() => false),
     send: vi.fn((channel: string, payload: unknown) => { sent.push({ channel, payload }); }),
     once: vi.fn((event: string, cb: () => void) => { if (event === 'destroyed') destroyCbs.push(cb); }),
-    on: vi.fn((event: string, cb: () => void) => { if (event === 'render-process-gone') goneCbs.push(cb); }),
+    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'render-process-gone') goneCbs.push(cb as () => void);
+      if (event === 'did-start-navigation') navCbs.push(cb as NavCb);
+    }),
     sent,
     fireDestroyed: () => destroyCbs.forEach((cb) => cb()),
     fireGone: () => goneCbs.forEach((cb) => cb()),
+    fireNavigation: (isInPlace: boolean, isMainFrame: boolean) =>
+      navCbs.forEach((cb) => cb({}, 'https://example.com', isInPlace, isMainFrame)),
   };
 }
 
@@ -77,6 +84,7 @@ function fakeClient(host: RemoteHost) {
   const metaCbs: Array<(e: RemoteMetaEvent) => void> = [];
   const dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   const exitCbs: Array<(e: RemoteExitEvent) => void> = [];
+  const errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
   let nextAttachId = 0;
   return {
     host,
@@ -88,9 +96,11 @@ function fakeClient(host: RemoteHost) {
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
     onExit: vi.fn((cb: (e: RemoteExitEvent) => void) => { exitCbs.push(cb); }),
+    onError: vi.fn((cb: (e: RemoteErrorEvent) => void) => { errorCbs.push(cb); }),
     emitMeta: (e: RemoteMetaEvent) => metaCbs.forEach((cb) => cb(e)),
     emitData: (e: RemoteDataEvent) => dataCbs.forEach((cb) => cb(e)),
     emitExit: (e: RemoteExitEvent) => exitCbs.forEach((cb) => cb(e)),
+    emitError: (e: RemoteErrorEvent) => errorCbs.forEach((cb) => cb(e)),
   } as unknown as RemoteHostClient & {
     attach: ReturnType<typeof vi.fn>;
     detach: ReturnType<typeof vi.fn>;
@@ -100,6 +110,7 @@ function fakeClient(host: RemoteHost) {
     emitMeta: (e: RemoteMetaEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
     emitExit: (e: RemoteExitEvent) => void;
+    emitError: (e: RemoteErrorEvent) => void;
   };
 }
 
@@ -127,8 +138,8 @@ function fakeStore(hosts: RemoteHost[] = []) {
   };
 }
 
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, json: async () => body } as unknown as Response;
+function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {
+  return { ok, status, json: async () => body } as unknown as Response;
 }
 
 beforeEach(() => {
@@ -183,6 +194,56 @@ describe('remote.handler — hostsAdd', () => {
 
     expect(res).toEqual({ ok: false, error: 'invalid wmux web URL' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  // I3(b) — a 401/403 (rejected token) and a fetch-throw (unreachable host)
+  // used to both flatten into the same "too old" message as a 404. They are
+  // now distinguished so the user gets an actionable message.
+  it('reports a rejected token distinctly from "too old" on a 401', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({}, false, 401));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'token rejected — re-run wmux web on the remote and paste the new URL' });
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it('reports an unreachable host distinctly from "too old" when fetch throws', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'could not reach that host' });
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it('still reports "too old" for a genuinely incompatible remote (404)', async () => {
+    const store = fakeStore();
+    const fetchImpl = vi.fn(async () => jsonResponse({}, false, 404));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: "that machine's wmux is too old for remote attach" });
+  });
+
+  // C1 — store.add() persists via secureWriteTokenFile, which is
+  // fail-closed (throws on a chmod/ACL failure). The handler must never let
+  // that throw escape with the raw token-bearing URL still in scope as the
+  // args_summary'd first argument.
+  it('never throws when store.add() throws — reports a generic save failure instead', async () => {
+    const store = fakeStore();
+    store.add.mockImplementationOnce(() => { throw new Error('EACCES: chmod failed'); });
+    const fetchImpl = vi.fn(async () => jsonResponse({ allowInput: true }));
+    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(
+      getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t'),
+    ).resolves.toEqual({ ok: false, error: 'could not save host' });
   });
 });
 
@@ -374,6 +435,70 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     sender.fireGone();
 
     expect(client.detach).toHaveBeenCalledWith(a.attachId);
+  });
+
+  it("a main-frame, non-same-document 'did-start-navigation' (e.g. Cmd+R) detaches every attachId the sender owns", async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(112);
+    const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+    const b = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-2') as { attachId: string };
+
+    sender.fireNavigation(false, true); // isInPlace=false, isMainFrame=true
+
+    expect(client.detach).toHaveBeenCalledWith(a.attachId);
+    expect(client.detach).toHaveBeenCalledWith(b.attachId);
+    expect(client.detach).toHaveBeenCalledTimes(2);
+
+    // Idempotency keys were cleared too — a re-attach for the same
+    // (sender, host, session) opens a fresh attach, not the dead one.
+    client.attach.mockClear();
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+    expect(client.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a same-document 'did-start-navigation' (isInPlace)", async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(113);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+
+    sender.fireNavigation(true, true); // isInPlace=true — hash change/pushState, not a reload
+
+    expect(client.detach).not.toHaveBeenCalled();
+  });
+
+  it("ignores a subframe 'did-start-navigation' (isMainFrame=false)", async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(114);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+
+    sender.fireNavigation(false, false); // isMainFrame=false — an iframe/subframe nav
+
+    expect(client.detach).not.toHaveBeenCalled();
+  });
+
+  it('forwards a client onError to the owning sender on REMOTE_PANE_ERROR', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(115);
+    const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    client.emitError({ attachId, message: 'gave up reconnecting' });
+
+    expect(sender.sent).toContainEqual({
+      channel: IPC.REMOTE_PANE_ERROR,
+      payload: { attachId, message: 'gave up reconnecting' },
+    });
   });
 
   it('a second sender is unaffected by the first sender being destroyed', async () => {

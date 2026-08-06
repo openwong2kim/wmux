@@ -36,6 +36,16 @@ interface RemoteConfigProbe {
   allowInput?: boolean;
 }
 
+/** Distinguishes WHY a `/api/config` probe failed, so the caller can tell a
+ *  rejected token apart from an unreachable host apart from a genuinely
+ *  incompatible (pre-remote-attach) build — flattening these into one "too
+ *  old" message misdiagnoses the two recoverable cases. */
+type ProbeResult =
+  | { kind: 'ok'; allowInput: boolean }
+  | { kind: 'unauthorized' }
+  | { kind: 'unreachable' }
+  | { kind: 'incompatible' };
+
 export interface RegisterRemoteHandlersDeps {
   store: RemoteHostsStore;
   /** Test seam: how a RemoteHostClient is built for a host record. Defaults
@@ -61,22 +71,48 @@ function assertString(v: unknown, field: string): string {
 
 /** `GET /api/config` probe used both at add-time (gate old remotes out) and
  *  opportunistically on every workspacesList (keep the allowInput banner
- *  fresh). Never throws — a probe failure is reported as `null`. */
+ *  fresh). Never throws — a probe failure is reported via `kind`, never as
+ *  an exception. */
 async function probeConfig(
   origin: string,
   token: string,
   fetchImpl: typeof fetch,
-): Promise<RemoteConfigProbe | null> {
+): Promise<ProbeResult> {
+  let res: Response;
   try {
-    const res = await fetchImpl(`${origin}/api/config`, {
+    res = await fetchImpl(`${origin}/api/config`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
-    const parsed: unknown = await res.json();
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed as RemoteConfigProbe;
   } catch {
-    return null;
+    // fetch itself threw — DNS failure, connection refused, TLS error: the
+    // host could not be reached at all, as opposed to reaching it and being
+    // turned away.
+    return { kind: 'unreachable' };
+  }
+  if (res.status === 401 || res.status === 403) return { kind: 'unauthorized' };
+  if (!res.ok) return { kind: 'incompatible' };
+  let parsed: unknown;
+  try {
+    parsed = await res.json();
+  } catch {
+    return { kind: 'incompatible' };
+  }
+  if (!parsed || typeof parsed !== 'object') return { kind: 'incompatible' };
+  const allowInput = (parsed as RemoteConfigProbe).allowInput === true;
+  return { kind: 'ok', allowInput };
+}
+
+/** Add-time error string for a probe failure — three distinct messages so a
+ *  rejected token and an unreachable host aren't both misreported as "too
+ *  old". */
+function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): string {
+  switch (probe.kind) {
+    case 'unauthorized':
+      return 'token rejected — re-run wmux web on the remote and paste the new URL';
+    case 'unreachable':
+      return 'could not reach that host';
+    case 'incompatible':
+      return "that machine's wmux is too old for remote attach";
   }
 }
 
@@ -125,6 +161,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // attachment record stops being a reconnect target.
       detachAttach(e.attachId);
     });
+    client.onError((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_ERROR, e));
     clients.set(hostId, client);
     return client;
   }
@@ -139,7 +176,12 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
   /** Reload/crash cleanup (once per sender): a renderer reload never runs
    *  React unmount cleanup, so without this every Cmd+R leaks a live SSE
-   *  connection against the remote daemon. */
+   *  connection against the remote daemon. A PLAIN reload (Cmd+R) fires
+   *  neither 'destroyed' nor 'render-process-gone' in Electron — it's a
+   *  same-WebContents in-place navigation, not a teardown — so
+   *  'did-start-navigation' is the only event that observes it; a
+   *  same-document navigation (hash change, pushState) is excluded via
+   *  `isInPlace`, and a subframe navigation via `isMainFrame`. */
   function installSenderCleanup(sender: WebContents): void {
     if (trackedSenders.has(sender.id)) return;
     trackedSenders.add(sender.id);
@@ -151,6 +193,10 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     };
     sender.once('destroyed', onGone);
     sender.on('render-process-gone', onGone);
+    sender.on('did-start-navigation', (_e: unknown, _url: string, isInPlace: boolean, isMainFrame: boolean) => {
+      if (!isMainFrame || isInPlace) return;
+      onGone();
+    });
   }
 
   function publicHost(host: RemoteHostPublic): RemoteHostPublic {
@@ -179,19 +225,31 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         return { ok: false, error: 'already registered' };
       }
 
-      // Probe BEFORE persisting: an old remote (no /api/config, or a body we
-      // can't parse) never makes it into the store at all.
+      // Probe BEFORE persisting: an old/unreachable/token-rejected remote
+      // never makes it into the store at all.
       const probe = await probeConfig(parsed.origin, parsed.token, fetchImpl);
-      if (!probe) {
-        return { ok: false, error: "that machine's wmux is too old for remote attach" };
+      if (probe.kind !== 'ok') {
+        return { ok: false, error: probeFailureMessage(probe) };
       }
 
-      const result = store.add(url, safeLabel);
+      // store.add() persists via secureWriteTokenFile, which is fail-closed
+      // (throws on a chmod/ACL failure). If it throws here, `url` — the raw
+      // pasted URL with the bearer token still embedded — is in scope as
+      // this handler's first argument, and an uncaught throw would let
+      // wrapHandler's args_summary logging see it. Never let that happen:
+      // report a generic failure and keep the throw from ever reaching
+      // wrapHandler. (wrapHandler.ts also redacts a bare-string URL's
+      // `token` param as a second line of defense.)
+      let result: ReturnType<typeof store.add>;
+      try {
+        result = store.add(url, safeLabel);
+      } catch {
+        return { ok: false, error: 'could not save host' };
+      }
       if (!result.ok) return result;
 
-      const allowInput = probe.allowInput === true;
-      allowInputCache.set(result.host.id, allowInput);
-      return { ok: true, host: { ...result.host, allowInput } };
+      allowInputCache.set(result.host.id, probe.allowInput);
+      return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };
     }));
 
   ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
@@ -226,7 +284,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // Refresh allowInput opportunistically — best-effort, never blocks the
       // workspace list on a probe hiccup.
       const probe = await probeConfig(host.origin, host.token, fetchImpl);
-      if (probe) allowInputCache.set(id, probe.allowInput === true);
+      if (probe.kind === 'ok') allowInputCache.set(id, probe.allowInput);
 
       const client = getOrCreateClient(id);
       if (!client) return { ok: false, error: 'unknown host' };
