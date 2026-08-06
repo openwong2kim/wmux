@@ -34,12 +34,21 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
   return (
     <div className="relative mx-2">
       <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={isActive}
         className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
         }`}
         onClick={() => onSelect(workspace.key)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onSelect(workspace.key);
+          }
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
