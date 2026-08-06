@@ -70,11 +70,26 @@ function fakeSender(id: number) {
       if (event === 'render-process-gone') goneCbs.push(cb as () => void);
       if (event === 'did-start-navigation') navCbs.push(cb as NavCb);
     }),
+    removeListener: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'destroyed') {
+        const i = destroyCbs.indexOf(cb as () => void);
+        if (i !== -1) destroyCbs.splice(i, 1);
+      }
+      if (event === 'render-process-gone') {
+        const i = goneCbs.indexOf(cb as () => void);
+        if (i !== -1) goneCbs.splice(i, 1);
+      }
+      if (event === 'did-start-navigation') {
+        const i = navCbs.indexOf(cb as NavCb);
+        if (i !== -1) navCbs.splice(i, 1);
+      }
+    }),
     sent,
     fireDestroyed: () => destroyCbs.forEach((cb) => cb()),
     fireGone: () => goneCbs.forEach((cb) => cb()),
     fireNavigation: (isInPlace: boolean, isMainFrame: boolean) =>
       navCbs.forEach((cb) => cb({}, 'https://example.com', isInPlace, isMainFrame)),
+    listenerCounts: () => ({ destroyed: destroyCbs.length, gone: goneCbs.length, nav: navCbs.length }),
   };
 }
 
@@ -174,7 +189,7 @@ describe('remote.handler — hostsAdd', () => {
 
   it('persists + returns allowInput from a successful probe', async () => {
     const store = fakeStore();
-    const fetchImpl = vi.fn(async () => jsonResponse({ serverVersion: '1.0', protocolVersion: 1, minProtocolVersion: 1, allowInput: true }));
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ serverVersion: '1.0', protocolVersion: 1, minProtocolVersion: 1, allowInput: true }));
     registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: true; host: RemoteHostPublic };
@@ -182,7 +197,14 @@ describe('remote.handler — hostsAdd', () => {
     expect(res.ok).toBe(true);
     expect(res.host.allowInput).toBe(true);
     expect(store.add).toHaveBeenCalledWith('https://box:9600?token=t', undefined);
-    expect(fetchImpl).toHaveBeenCalledWith('https://box:9600/api/config', { headers: { Authorization: 'Bearer t' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://box:9600/api/config');
+    expect(init?.headers).toEqual({ Authorization: 'Bearer t' });
+    // M2 — a Bearer-credentialed probe must never follow a redirect and
+    // must not hang forever.
+    expect(init?.redirect).toBe('error');
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('rejects an invalid URL without ever probing', async () => {
@@ -470,6 +492,38 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     sender.fireNavigation(true, true); // isInPlace=true — hash change/pushState, not a reload
 
     expect(client.detach).not.toHaveBeenCalled();
+  });
+
+  // M1 — a plain reload does NOT destroy the WebContents, so the SAME
+  // sender re-enters installSenderCleanup on its next REMOTE_PANE_ATTACH.
+  // Without removing the three listeners onGone installs, every
+  // attach→navigation cycle stacks a duplicate set, and detach fires once
+  // per stacked listener on the next cycle instead of once.
+  it('two attach->navigation cycles on the same sender do not stack cleanup listeners', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(120) as ReturnType<typeof fakeSender> & { listenerCounts: () => Record<string, number> };
+
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+    expect(sender.listenerCounts()).toEqual({ destroyed: 1, gone: 1, nav: 1 });
+
+    // Cycle 1: a reload-style navigation fires onGone, which must remove
+    // all three listeners it installed.
+    sender.fireNavigation(false, true);
+    expect(sender.listenerCounts()).toEqual({ destroyed: 0, gone: 0, nav: 0 });
+
+    // Cycle 2: the next attach re-installs exactly one set, not a second
+    // stacked set on top of a leftover first set.
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
+    expect(sender.listenerCounts()).toEqual({ destroyed: 1, gone: 1, nav: 1 });
+
+    client.detach.mockClear();
+    sender.fireNavigation(false, true);
+    // Exactly one detach for this cycle's single attach — not two, which is
+    // what a stacked duplicate listener set would produce.
+    expect(client.detach).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a subframe 'did-start-navigation' (isMainFrame=false)", async () => {

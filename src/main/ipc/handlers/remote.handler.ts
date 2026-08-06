@@ -28,6 +28,10 @@ import type {
   RemoteWorkspaceSummary,
 } from '../../../shared/remoteHosts';
 
+// Bearer-credentialed probe — never let a hung remote hang the add/refresh
+// flow forever.
+const PROBE_TIMEOUT_MS = 10_000;
+
 /** Shape of a `GET /api/config` response we care about (WebTerminalServer.ts). */
 interface RemoteConfigProbe {
   serverVersion?: string;
@@ -82,6 +86,10 @@ async function probeConfig(
   try {
     res = await fetchImpl(`${origin}/api/config`, {
       headers: { Authorization: `Bearer ${token}` },
+      // Bearer-credentialed request: never follow a redirect, and don't
+      // let a hung probe hang the caller indefinitely.
+      redirect: 'error',
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
   } catch {
     // fetch itself threw — DNS failure, connection refused, TLS error: the
@@ -185,18 +193,26 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   function installSenderCleanup(sender: WebContents): void {
     if (trackedSenders.has(sender.id)) return;
     trackedSenders.add(sender.id);
-    const onGone = (): void => {
+    const onGoneListener = (): void => {
       for (const [attachId, record] of [...attachRecords.entries()]) {
         if (record.senderId === sender.id) detachAttach(attachId);
       }
       trackedSenders.delete(sender.id);
+      // A plain reload (Cmd+R) does NOT destroy the WebContents — it's the
+      // same sender re-entering installSenderCleanup on the next
+      // REMOTE_PANE_ATTACH. Without removing these listeners here, every
+      // reload cycle stacks a fresh set on top of the last.
+      sender.removeListener('destroyed', onGoneListener);
+      sender.removeListener('render-process-gone', onGoneListener);
+      sender.removeListener('did-start-navigation', onNavigationListener);
     };
-    sender.once('destroyed', onGone);
-    sender.on('render-process-gone', onGone);
-    sender.on('did-start-navigation', (_e: unknown, _url: string, isInPlace: boolean, isMainFrame: boolean) => {
+    const onNavigationListener = (_e: unknown, _url: string, isInPlace: boolean, isMainFrame: boolean): void => {
       if (!isMainFrame || isInPlace) return;
-      onGone();
-    });
+      onGoneListener();
+    };
+    sender.once('destroyed', onGoneListener);
+    sender.on('render-process-gone', onGoneListener);
+    sender.on('did-start-navigation', onNavigationListener);
   }
 
   function publicHost(host: RemoteHostPublic): RemoteHostPublic {

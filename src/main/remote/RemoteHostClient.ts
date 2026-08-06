@@ -60,6 +60,11 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 // merged into a single follow-up POST.
 const WRITE_COALESCE_MS = 5;
 
+// Bounded-reads timeout for the request/response calls (listWorkspaces,
+// write) — these are one-shot fetches, unlike the long-lived SSE stream,
+// so a hung remote must not leave the caller awaiting forever.
+const REQUEST_TIMEOUT_MS = 10_000;
+
 interface Attachment {
   attachId: string;
   sessionId: string;
@@ -129,6 +134,11 @@ export class RemoteHostClient implements RemotePaneEvents {
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
     const res = await this.fetchImpl(`${this.host.origin}/api/workspaces`, {
       headers: this.authHeaders(),
+      // Bearer-credentialed request: never silently follow a redirect —
+      // a redirected credentialed request is wrong here regardless of
+      // whether undici happens to strip Authorization cross-origin.
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
       throw new Error(`listWorkspaces failed: HTTP ${res.status}`);
@@ -206,6 +216,8 @@ export class RemoteHostClient implements RemotePaneEvents {
         method: 'POST',
         headers: this.authHeaders(),
         body,
+        redirect: 'error',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!res.ok) {
         let message = `write failed: HTTP ${res.status}`;
@@ -246,7 +258,10 @@ export class RemoteHostClient implements RemotePaneEvents {
     try {
       res = await this.fetchImpl(
         `${this.host.origin}/api/stream?session=${encodeURIComponent(attachment.sessionId)}`,
-        { headers: this.authHeaders(), signal: attachment.controller.signal },
+        // No timeout here — the SSE stream is long-lived by design. Still
+        // refuse a redirect on this Bearer-credentialed request, same as
+        // listWorkspaces/write.
+        { headers: this.authHeaders(), redirect: 'error', signal: attachment.controller.signal },
       );
     } catch (err) {
       this.scheduleReconnect(attachment, err);
@@ -274,12 +289,16 @@ export class RemoteHostClient implements RemotePaneEvents {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    // Successful (re)connect resets the backoff schedule.
-    attachment.reconnectAttempt = 0;
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) return;
+        // Reset the backoff schedule only once a frame has actually
+        // arrived — resetting it right after headers (connect-only, no
+        // data) would let a server that accepts the request then drops
+        // before sending anything retry forever, since the counter never
+        // gets a chance to climb past MAX_RECONNECT_ATTEMPTS.
+        attachment.reconnectAttempt = 0;
         buffer += decoder.decode(value, { stream: true });
         let sepIndex: number;
         while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {

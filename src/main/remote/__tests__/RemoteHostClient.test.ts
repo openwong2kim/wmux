@@ -81,6 +81,19 @@ describe('RemoteHostClient', () => {
       expect((init?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
       expect(result).toEqual({ workspaces: [{ id: 'w1', name: 'proj', panes: [] }] });
     });
+
+    // M2 — a credentialed listWorkspaces fetch must never follow a redirect
+    // and must not hang forever.
+    it('sets redirect: error and an abort timeout', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => ({ workspaces: [] }) }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.listWorkspaces();
+
+      const [, init] = fetchImpl.mock.calls[0];
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    });
   });
 
   describe('attach', () => {
@@ -103,6 +116,9 @@ describe('RemoteHostClient', () => {
       const [url, init] = fetchImpl.mock.calls[0];
       expect(url).toBe(`${host.origin}/api/stream?session=sess-1`);
       expect((init?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      // M2 — credentialed request, never follow a redirect. No timeout here
+      // (long-lived by design) — the abort signal is the attach controller.
+      expect(init?.redirect).toBe('error');
     });
 
     it('forwards truncated and omittedBytes from meta', async () => {
@@ -243,6 +259,9 @@ describe('RemoteHostClient', () => {
       expect(init?.method).toBe('POST');
       expect(init?.body).toBe('hello');
       expect((init?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      // M2 — same redirect/timeout policy as listWorkspaces.
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
     });
 
     it('serializes rapid writes into sequential POSTs with coalesced bodies', async () => {
@@ -361,6 +380,35 @@ describe('RemoteHostClient', () => {
 
       await vi.advanceTimersByTimeAsync(20000);
       expect(fetchImpl.mock.calls.length).toBe(callsAtGiveUp);
+    });
+
+    // M3 — the reconnect counter used to reset at pumpStream ENTRY (right
+    // after headers, before any frame). A server that accepts the request
+    // (200 + body) but then drops the stream before sending a single frame
+    // hit that reset every time, so reconnectAttempt could never climb past
+    // MAX_RECONNECT_ATTEMPTS and the retry loop ran forever. It must count
+    // toward the cap exactly like a fetch-level failure does.
+    it('a connect that succeeds at header level but dies before any frame still counts toward the reconnect cap', async () => {
+      vi.useFakeTimers();
+      // Every attempt: headers come back 200 OK, but the body stream errors
+      // immediately — no meta/data frame is ever read.
+      const fetchImpl = vi.fn(async () => erroringStreamResponse());
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const errors: Array<{ attachId: string; message: string }> = [];
+      client.onError((e) => errors.push(e));
+      client.attach('sess-1');
+
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(7000);
+      }
+
+      expect(errors).toHaveLength(1);
+      const callsAtGiveUp = fetchImpl.mock.calls.length;
+      expect(callsAtGiveUp).toBe(6); // initial + 5 retries, never unbounded
+
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(fetchImpl.mock.calls.length).toBe(callsAtGiveUp); // no further retries after giving up
     });
   });
 });
