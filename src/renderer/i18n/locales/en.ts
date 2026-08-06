@@ -1357,6 +1357,24 @@ export const en = {
   'remote.mirrorDescription': 'Mirror a workspace from another wmux',
   'remote.labelOptional': 'Label (optional)',
   'remote.paneCount': '{count} panes',
+
+  // ─── Remote Workspace Attach: pair-with-code ──────────────────────────────
+  'remote.pairTab': 'Pair with code',
+  'remote.urlTab': 'Paste URL',
+  'remote.hostAddress': 'Host address',
+  'remote.hostAddressHint': 'e.g. https://office-mac.tailXXXX.ts.net',
+  'remote.pairCode': 'Pairing code',
+  'remote.pairHint': 'On the other machine, open the Web popover in the titlebar to see its pairing code',
+  'remote.pair': 'Pair',
+  'remote.pairInvalidOrigin': 'Enter a valid http(s) host address',
+  'remote.pairAlreadyRegistered': 'That host is already registered',
+  'remote.pairExpired': 'Code expired — read a fresh one from the remote’s Web popover',
+  'remote.pairTooManyAttempts': 'Too many wrong attempts — read a fresh code from the remote’s Web popover',
+  'remote.pairInvalidCode': 'Wrong code — {n} attempts left',
+  'remote.pairInsecure': 'The remote is not reachable over a secure connection',
+  'remote.pairUnreachable': 'Could not reach that host',
+  'remote.pairIncompatible': "That machine's wmux is too old for remote attach",
+  'remote.pairFailed': 'Pairing failed — check the app logs',
 } as const;
 
 export type TranslationKey = keyof typeof en;

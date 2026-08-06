@@ -3,7 +3,25 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import type { RemoteHostPublic, RemoteWorkspaceSummary } from '../../../shared/remoteHosts';
+import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../../../shared/remoteHosts';
+
+type AddHostMode = 'pair' | 'url';
+
+/** Maps a REMOTE_HOSTS_PAIR failure reason to its translated message —
+ *  i18n lives here, renderer-side, not in main. */
+function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason, attemptsLeft?: number): string {
+  switch (reason) {
+    case 'invalid-origin': return t('remote.pairInvalidOrigin');
+    case 'already-registered': return t('remote.pairAlreadyRegistered');
+    case 'expired': return t('remote.pairExpired');
+    case 'too-many-attempts': return t('remote.pairTooManyAttempts');
+    case 'invalid-code': return t('remote.pairInvalidCode', { n: attemptsLeft ?? 0 });
+    case 'insecure-transport': return t('remote.pairInsecure');
+    case 'unreachable': return t('remote.pairUnreachable');
+    case 'incompatible': return t('remote.pairIncompatible');
+    case 'pairing-failed': return t('remote.pairFailed');
+  }
+}
 
 interface AttachRemoteModalProps {
   onClose: () => void;
@@ -27,10 +45,18 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [workspacesError, setWorkspacesError] = useState<string | null>(null);
 
+  const [addMode, setAddMode] = useState<AddHostMode>('pair');
+
   const [addUrl, setAddUrl] = useState('');
   const [addLabel, setAddLabel] = useState('');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+
+  const [pairOrigin, setPairOrigin] = useState('');
+  const [pairCode, setPairCode] = useState('');
+  const [pairLabel, setPairLabel] = useState('');
+  const [pairing, setPairing] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
 
   const refreshHosts = useCallback(async () => {
     const remote = window.electronAPI?.remote;
@@ -116,6 +142,31 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
       setAdding(false);
     }
   }, [addUrl, addLabel, refreshHosts, t]);
+
+  const handlePairHost = useCallback(async () => {
+    const remote = window.electronAPI?.remote;
+    if (!remote || !pairOrigin.trim() || !pairCode.trim()) return;
+    setPairing(true);
+    setPairError(null);
+    try {
+      const res = await remote.hostsPair(pairOrigin.trim(), pairCode.trim(), pairLabel.trim() || undefined);
+      if (res.ok) {
+        setPairOrigin('');
+        setPairCode('');
+        setPairLabel('');
+        await refreshHosts();
+      } else {
+        setPairError(pairReasonMessage(t, res.reason, res.attemptsLeft));
+      }
+    } catch {
+      // An IPC rejection (not the {ok:false} error-result path) must still
+      // reset `pairing` and surface something — mirrors handleAddHost's I4
+      // discipline for the paste-URL flow.
+      setPairError(t('remote.pairFailed'));
+    } finally {
+      setPairing(false);
+    }
+  }, [pairOrigin, pairCode, pairLabel, refreshHosts, t]);
 
   const handleRemoveHost = useCallback(async (hostId: string) => {
     const remote = window.electronAPI?.remote;
@@ -205,35 +256,105 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
 
             <div className="border-t my-3" style={{ borderColor: 'var(--bg-overlay)' }} />
 
-            <div className="space-y-1.5">
-              {/* Masked like a password — the URL carries the bearer token. */}
-              <Input
-                type="password"
-                placeholder={t('remote.pasteUrlHint')}
-                value={addUrl}
-                onChange={(e) => setAddUrl(e.target.value)}
-                className="text-[11px] font-mono w-full"
-                autoComplete="off"
-              />
-              <Input
-                type="text"
-                placeholder={t('remote.labelOptional')}
-                value={addLabel}
-                onChange={(e) => setAddLabel(e.target.value)}
-                className="text-[11px] font-mono w-full"
-              />
-              <Button
-                variant="secondary"
-                className="w-full text-[11px]"
-                disabled={adding || !addUrl.trim()}
-                onClick={handleAddHost}
+            <div className="flex gap-1 mb-2">
+              <button
+                type="button"
+                className="flex-1 px-2 py-1 rounded text-[11px] font-mono"
+                style={{
+                  background: addMode === 'pair' ? 'var(--bg-overlay)' : 'transparent',
+                  color: addMode === 'pair' ? 'var(--text-main)' : 'var(--text-subtle)',
+                }}
+                onClick={() => setAddMode('pair')}
               >
-                {t('remote.addHost')}
-              </Button>
-              {addError && (
-                <div className="text-[10px]" style={{ color: 'var(--accent-red)' }}>{addError}</div>
-              )}
+                {t('remote.pairTab')}
+              </button>
+              <button
+                type="button"
+                className="flex-1 px-2 py-1 rounded text-[11px] font-mono"
+                style={{
+                  background: addMode === 'url' ? 'var(--bg-overlay)' : 'transparent',
+                  color: addMode === 'url' ? 'var(--text-main)' : 'var(--text-subtle)',
+                }}
+                onClick={() => setAddMode('url')}
+              >
+                {t('remote.urlTab')}
+              </button>
             </div>
+
+            {addMode === 'pair' ? (
+              <div className="space-y-1.5">
+                <div className="text-[10px]" style={{ color: 'var(--text-subtle)' }}>{t('remote.pairHint')}</div>
+                <Input
+                  type="text"
+                  placeholder={t('remote.hostAddressHint')}
+                  value={pairOrigin}
+                  onChange={(e) => setPairOrigin(e.target.value)}
+                  className="text-[11px] font-mono w-full"
+                  autoComplete="off"
+                  aria-label={t('remote.hostAddress')}
+                />
+                {/* Not masked — this is an 8-char single-use, short-lived
+                    code, and it is already displayed openly on the remote
+                    screen, unlike a long-lived bearer token. */}
+                <Input
+                  type="text"
+                  placeholder={t('remote.pairCode')}
+                  value={pairCode}
+                  onChange={(e) => setPairCode(e.target.value)}
+                  className="text-[11px] font-mono w-full"
+                  autoComplete="off"
+                  aria-label={t('remote.pairCode')}
+                />
+                <Input
+                  type="text"
+                  placeholder={t('remote.labelOptional')}
+                  value={pairLabel}
+                  onChange={(e) => setPairLabel(e.target.value)}
+                  className="text-[11px] font-mono w-full"
+                />
+                <Button
+                  variant="secondary"
+                  className="w-full text-[11px]"
+                  disabled={pairing || !pairOrigin.trim() || !pairCode.trim()}
+                  onClick={handlePairHost}
+                >
+                  {t('remote.pair')}
+                </Button>
+                {pairError && (
+                  <div className="text-[10px]" style={{ color: 'var(--accent-red)' }}>{pairError}</div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {/* Masked like a password — the URL carries the bearer token. */}
+                <Input
+                  type="password"
+                  placeholder={t('remote.pasteUrlHint')}
+                  value={addUrl}
+                  onChange={(e) => setAddUrl(e.target.value)}
+                  className="text-[11px] font-mono w-full"
+                  autoComplete="off"
+                />
+                <Input
+                  type="text"
+                  placeholder={t('remote.labelOptional')}
+                  value={addLabel}
+                  onChange={(e) => setAddLabel(e.target.value)}
+                  className="text-[11px] font-mono w-full"
+                />
+                <Button
+                  variant="secondary"
+                  className="w-full text-[11px]"
+                  disabled={adding || !addUrl.trim()}
+                  onClick={handleAddHost}
+                >
+                  {t('remote.addHost')}
+                </Button>
+                {addError && (
+                  <div className="text-[10px]" style={{ color: 'var(--accent-red)' }}>{addError}</div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Right: the selected host's workspaces */}

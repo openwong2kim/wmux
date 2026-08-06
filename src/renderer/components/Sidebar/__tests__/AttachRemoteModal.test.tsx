@@ -34,6 +34,17 @@ async function flush(ticks = 8) {
   });
 }
 
+/** Simulates typing into a controlled <input> via React's onChange path
+ *  (native `.value =` bypasses React's tracked value, same trick the
+ *  pre-existing tests in this file use for the masked URL field). */
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 const HOST: RemoteHostPublic = {
   id: 'host-1',
   label: 'office-mac',
@@ -51,12 +62,14 @@ const WORKSPACE: RemoteWorkspaceSummary = {
 describe('AttachRemoteModal', () => {
   let hostsList: ReturnType<typeof vi.fn>;
   let hostsAdd: ReturnType<typeof vi.fn>;
+  let hostsPair: ReturnType<typeof vi.fn>;
   let hostsRemove: ReturnType<typeof vi.fn>;
   let workspacesList: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     hostsList = vi.fn().mockResolvedValue([HOST]);
     hostsAdd = vi.fn();
+    hostsPair = vi.fn();
     hostsRemove = vi.fn().mockResolvedValue(true);
     workspacesList = vi.fn().mockResolvedValue({ ok: true, workspaces: [WORKSPACE] });
 
@@ -64,6 +77,7 @@ describe('AttachRemoteModal', () => {
       remote: {
         hostsList,
         hostsAdd,
+        hostsPair,
         hostsRemove,
         workspacesList,
         paneAttach: vi.fn(),
@@ -97,6 +111,10 @@ describe('AttachRemoteModal', () => {
     hostsAdd.mockResolvedValue({ ok: false, error: 'refused: no /api/config route' });
     const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
+
+    // Paste URL is the second tab — pair-with-code is the default.
+    const urlTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Paste URL')!;
+    act(() => { urlTab.click(); });
 
     const urlInput = container.querySelector('input[type="password"]') as HTMLInputElement;
     act(() => {
@@ -233,6 +251,9 @@ describe('AttachRemoteModal', () => {
     const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
+    const urlTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Paste URL')!;
+    act(() => { urlTab.click(); });
+
     const urlInput = container.querySelector('input[type="password"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
     act(() => {
@@ -251,5 +272,122 @@ describe('AttachRemoteModal', () => {
     expect(container.textContent).toContain('Could not add host');
 
     unmount();
+  });
+
+  describe('pair-with-code tab', () => {
+    it('is the default tab and shows the host-address + pairing-code inputs', async () => {
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      expect(container.querySelector('input[aria-label="Host address"]')).toBeTruthy();
+      expect(container.querySelector('input[aria-label="Pairing code"]')).toBeTruthy();
+      // The code field is deliberately NOT masked (short-lived, already
+      // shown openly on the remote screen) — unlike the URL field.
+      expect(container.querySelector('input[aria-label="Pairing code"]')?.getAttribute('type')).toBe('text');
+
+      unmount();
+    });
+
+    it('switching to Paste URL and back hides/shows the respective inputs', async () => {
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const urlTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Paste URL')!;
+      act(() => { urlTab.click(); });
+
+      expect(container.querySelector('input[aria-label="Host address"]')).toBeFalsy();
+      expect(container.querySelector('input[type="password"]')).toBeTruthy();
+
+      const pairTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair with code')!;
+      act(() => { pairTab.click(); });
+
+      expect(container.querySelector('input[aria-label="Host address"]')).toBeTruthy();
+      expect(container.querySelector('input[type="password"]')).toBeFalsy();
+
+      unmount();
+    });
+
+    it('a successful pair calls hostsPair, refreshes hosts, and clears the fields', async () => {
+      const PAIRED: RemoteHostPublic = { id: 'host-2', label: 'new-box', origin: 'https://new-box.example:9600', addedAt: 3, allowInput: true };
+      hostsPair.mockResolvedValue({ ok: true, host: PAIRED });
+      hostsList.mockResolvedValueOnce([HOST]).mockResolvedValueOnce([HOST, PAIRED]);
+
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const originInput = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
+      const codeInput = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+      setInputValue(originInput, 'https://new-box.example:9600');
+      setInputValue(codeInput, 'ABCD1234');
+
+      const pairButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair')!;
+      act(() => { pairButton.click(); });
+      await flush();
+
+      expect(hostsPair).toHaveBeenCalledWith('https://new-box.example:9600', 'ABCD1234', undefined);
+      expect(hostsList).toHaveBeenCalledTimes(2); // initial load + post-pair refresh
+      expect((container.querySelector('input[aria-label="Host address"]') as HTMLInputElement).value).toBe('');
+
+      unmount();
+    });
+
+    it('an invalid-code reason renders its distinct message with the attempts count', async () => {
+      hostsPair.mockResolvedValue({ ok: false, reason: 'invalid-code', attemptsLeft: 2 });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const originInput = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
+      const codeInput = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+      setInputValue(originInput, 'https://box.example:9600');
+      setInputValue(codeInput, 'WRONGCOD');
+
+      const pairButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair')!;
+      act(() => { pairButton.click(); });
+      await flush();
+
+      expect(container.textContent).toContain('Wrong code — 2 attempts left');
+
+      unmount();
+    });
+
+    it('an expired reason renders its distinct message', async () => {
+      hostsPair.mockResolvedValue({ ok: false, reason: 'expired' });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const originInput = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
+      const codeInput = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+      setInputValue(originInput, 'https://box.example:9600');
+      setInputValue(codeInput, 'DEADCODE');
+
+      const pairButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair')!;
+      act(() => { pairButton.click(); });
+      await flush();
+
+      expect(container.textContent).toContain('Code expired');
+
+      unmount();
+    });
+
+    it('hostsPair rejecting leaves the Pair button enabled and shows a generic error', async () => {
+      hostsPair.mockRejectedValue(new Error('IPC channel closed'));
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const originInput = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
+      const codeInput = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+      setInputValue(originInput, 'https://box.example:9600');
+      setInputValue(codeInput, 'CODECODE');
+
+      const pairButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair') as HTMLButtonElement;
+      act(() => { pairButton.click(); });
+      await flush();
+
+      expect(hostsPair).toHaveBeenCalled();
+      expect(pairButton.disabled).toBe(false);
+      expect(container.textContent).toContain('Pairing failed');
+
+      unmount();
+    });
   });
 });
