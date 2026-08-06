@@ -28,17 +28,45 @@ code required. If you are writing an external client instead, see
 
 ## Steps
 
+There are two ways to register the remote host locally: pairing with a code
+(recommended), or pasting the URL `wmux web` prints. Both end up at the same
+place — a registered host you can pick workspaces from.
+
+### Pairing with a code (recommended)
+
+1. On the remote machine, run `wmux web --tailscale --allow-input` (or
+   without `--allow-input` for read-only), then open the **Web popover** in
+   the titlebar. It shows an 8-character pairing code, valid for 10 minutes
+   and single-use.
+
+2. Locally, open the titlebar `+` menu, choose **"Attach remote
+   workspace…"**, and stay on the default **"Pair with code"** tab. Enter
+   the remote's host address (e.g. `https://office-mac.tailXXXX.ts.net`) and
+   the code you just read, then click **Pair**.
+
+3. The app exchanges the code for a token over `GET /api/pair` and registers
+   the host — no token ever touches your clipboard or the URL bar.
+
+This is the recommended path for two reasons: nothing sensitive is ever
+copy-pasted, and the token this mints is **device-scoped** — the remote can
+revoke just this one PC from its device list later, instead of every
+attached device sharing (and losing access with) one long-lived token.
+
+### Pasting the URL (fallback)
+
 1. On the remote machine, run `wmux web --tailscale --allow-input` (or
    without `--allow-input` for read-only). It prints a URL with a bearer
    token embedded — this is what you'll paste locally.
 
-2. Locally, open the titlebar `+` menu and choose **"Attach remote
-   workspace…"**.
+2. Locally, open the titlebar `+` menu, choose **"Attach remote
+   workspace…"**, and switch to the **"Paste URL"** tab.
 
-3. In the modal, paste the printed URL into the add-host field (the input is
-   masked, like a password field — the token travels in the URL, so it's
-   never echoed back to you in the UI or in error messages) and give it a
-   label if you want one, then click **Add host**.
+3. Paste the printed URL into the add-host field (the input is masked, like
+   a password field — the token travels in the URL, so it's never echoed
+   back to you in the UI or in error messages) and give it a label if you
+   want one, then click **Add host**.
+
+### After registering a host
 
 4. Select the host on the left. The right side lists its workspaces — this
    list is derived from the remote's **live panes right now**
@@ -94,18 +122,28 @@ need to re-add it with a freshly printed URL.
     refused (401/403). Re-running `wmux web` on the remote mints a fresh
     token; paste that new URL to re-add the host, or use the remove button
     on the old entry first if it's still listed.
+- **A pairing code has a 10-minute window and 5 guesses.** After that, or on
+  a duplicate/unreachable/too-old host, pairing fails with its own distinct
+  message — an expired or exhausted code is fixed by opening the remote's
+  Web popover again for a fresh one.
 - **`--allow-input` doesn't mean "safe."** Typing into a remote pane runs
   real commands on that machine, same as being at its terminal. Treat a
   writable remote attach with the same care as SSH access.
 
 ## Security notes
 
-The pasted URL's embedded token is a bearer credential: it grants scrollback
+Either registration path ends with a bearer credential granting scrollback
 read, and — if the remote was started with `--allow-input` — keystroke
-injection on that machine, to anyone who has it. Treat it like a password.
-Locally, registered hosts (including their tokens) are stored in a
-permission-hardened file (owner-only read/write) alongside your other wmux
-state, the same discipline used for the daemon's existing token files.
+injection on that machine. Treat it like a password. Locally, registered
+hosts (including their tokens) are stored in a permission-hardened file
+(owner-only read/write) alongside your other wmux state, the same
+discipline used for the daemon's existing token files.
+
+The two paths differ in what that credential *is*: the pasted URL carries
+the remote's shared operator token (the same one for every device that ever
+pasted it), while pairing mints a fresh **device-scoped** token per PC —
+the remote's device list can revoke this one machine without touching any
+other attached device.
 
 ## See also
 
