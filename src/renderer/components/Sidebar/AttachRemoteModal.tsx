@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+// Aliased: the Escape-key effect below binds a DOM listener and needs the
+// global KeyboardEvent, so React's must not shadow it.
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
@@ -41,6 +44,12 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const [loadingHosts, setLoadingHosts] = useState(true);
 
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
+  // The LIVE selection, for `autoSelect` to consult after an await. Reading
+  // `selectedHostId` there reads whatever the closure captured when the pair
+  // request started — which is `null` in the exact case the guard exists for:
+  // the operator picking a host while that request is still in flight.
+  const selectedHostIdRef = useRef<string | null>(null);
+  useEffect(() => { selectedHostIdRef.current = selectedHostId; }, [selectedHostId]);
   const [workspaces, setWorkspaces] = useState<RemoteWorkspaceSummary[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [workspacesError, setWorkspacesError] = useState<string | null>(null);
@@ -119,6 +128,30 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     }
   }, [refreshHosts, t]);
 
+  /**
+   * Show the host that was just registered.
+   *
+   * Registering IS the request to look at that host, and without this the
+   * right pane keeps rendering its no-host-selected state — a successful pair
+   * that looks exactly like a no-op.
+   *
+   * Two constraints it has to respect:
+   *
+   *  - NOT awaited by the caller. `selectHost` probes the remote for its
+   *    workspace list, which can run to the full RPC timeout; awaiting it
+   *    inside the try would hold `pairing`/`adding` true for that whole time,
+   *    leaving the form blank and the button disabled long after the
+   *    registration itself succeeded — indistinguishable from a failure.
+   *  - Skipped once the operator has picked a host themselves. `selectHost`
+   *    sets `selectedHostId` unconditionally (its seq guard covers only the
+   *    RESPONSE), so a late auto-select would yank the pane away from a host
+   *    they chose while the pairing request was in flight.
+   */
+  const autoSelect = useCallback((hostId: string) => {
+    if (selectedHostIdRef.current !== null) return;
+    void selectHost(hostId);
+  }, [selectHost]);
+
   const handleAddHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;
     if (!remote || !addUrl.trim()) return;
@@ -130,6 +163,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
         setAddUrl('');
         setAddLabel('');
         await refreshHosts();
+        autoSelect(res.host.id);
       } else {
         setAddError(res.error);
       }
@@ -141,7 +175,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } finally {
       setAdding(false);
     }
-  }, [addUrl, addLabel, refreshHosts, t]);
+  }, [addUrl, addLabel, refreshHosts, autoSelect, t]);
 
   const handlePairHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;
@@ -155,6 +189,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
         setPairCode('');
         setPairLabel('');
         await refreshHosts();
+        autoSelect(res.host.id);
       } else {
         setPairError(pairReasonMessage(t, res.reason, res.attemptsLeft));
       }
@@ -166,7 +201,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } finally {
       setPairing(false);
     }
-  }, [pairOrigin, pairCode, pairLabel, refreshHosts, t]);
+  }, [pairOrigin, pairCode, pairLabel, refreshHosts, autoSelect, t]);
 
   const handleRemoveHost = useCallback(async (hostId: string) => {
     const remote = window.electronAPI?.remote;
@@ -198,6 +233,21 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   }, [hosts, selectedHostId, attachRemoteWorkspace, onClose]);
 
   const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
+
+  // Single source for "can this form submit". The Enter guard and the button's
+  // disabled prop read the same const so they cannot drift into Enter firing a
+  // request the button is presenting as unavailable.
+  const pairDisabled = pairing || !pairOrigin.trim() || !pairCode.trim();
+  const addDisabled = adding || !addUrl.trim();
+
+  const submitOnEnter = (disabled: boolean, run: () => void) =>
+    (e: ReactKeyboardEvent<HTMLInputElement>) => {
+      // isComposing: mid-IME Enter commits the candidate text, it does not
+      // mean submit. Swallowing it here would eat the composition instead.
+      if (e.key !== 'Enter' || e.nativeEvent.isComposing || disabled) return;
+      e.preventDefault();
+      run();
+    };
 
   return (
     <div
@@ -289,6 +339,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   placeholder={t('remote.hostAddressHint')}
                   value={pairOrigin}
                   onChange={(e) => setPairOrigin(e.target.value)}
+                  onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
                   className="text-[11px] font-mono w-full"
                   autoComplete="off"
                   aria-label={t('remote.hostAddress')}
@@ -301,6 +352,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   placeholder={t('remote.pairCode')}
                   value={pairCode}
                   onChange={(e) => setPairCode(e.target.value)}
+                  onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
                   className="text-[11px] font-mono w-full"
                   autoComplete="off"
                   aria-label={t('remote.pairCode')}
@@ -310,12 +362,13 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   placeholder={t('remote.labelOptional')}
                   value={pairLabel}
                   onChange={(e) => setPairLabel(e.target.value)}
+                  onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
                   className="text-[11px] font-mono w-full"
                 />
                 <Button
                   variant="secondary"
                   className="w-full text-[11px]"
-                  disabled={pairing || !pairOrigin.trim() || !pairCode.trim()}
+                  disabled={pairDisabled}
                   onClick={handlePairHost}
                 >
                   {t('remote.pair')}
@@ -332,6 +385,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   placeholder={t('remote.pasteUrlHint')}
                   value={addUrl}
                   onChange={(e) => setAddUrl(e.target.value)}
+                  onKeyDown={submitOnEnter(addDisabled, handleAddHost)}
                   className="text-[11px] font-mono w-full"
                   autoComplete="off"
                 />
@@ -340,12 +394,13 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   placeholder={t('remote.labelOptional')}
                   value={addLabel}
                   onChange={(e) => setAddLabel(e.target.value)}
+                  onKeyDown={submitOnEnter(addDisabled, handleAddHost)}
                   className="text-[11px] font-mono w-full"
                 />
                 <Button
                   variant="secondary"
                   className="w-full text-[11px]"
-                  disabled={adding || !addUrl.trim()}
+                  disabled={addDisabled}
                   onClick={handleAddHost}
                 >
                   {t('remote.addHost')}
@@ -359,9 +414,13 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
 
           {/* Right: the selected host's workspaces */}
           <div className="flex-1 min-w-0 overflow-y-auto px-4 py-3 space-y-2">
+            {/* Two distinct nothing-to-show states. Sharing one string here
+                (it used to reuse the paste-URL placeholder) told an operator
+                who had ALREADY registered a host to go paste a URL — the one
+                thing they no longer needed to do. */}
             {!selectedHostId && (
               <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>
-                {t('remote.pasteUrlHint')}
+                {hosts.length === 0 ? t('remote.noHostsHint') : t('remote.selectHostHint')}
               </div>
             )}
             {selectedHostId && loadingWorkspaces && (
@@ -369,6 +428,15 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
             )}
             {selectedHostId && workspacesError && (
               <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{workspacesError}</div>
+            )}
+            {/* A host whose panes are all closed returns an empty list, which
+                would otherwise render as a blank pane with no explanation —
+                the workspace list is derived from live panes, not a saved
+                registry, so "empty" is a normal state that needs saying. */}
+            {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length === 0 && (
+              <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>
+                {t('remote.noWorkspaces')}
+              </div>
             )}
             {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.map((ws) => (
               <div

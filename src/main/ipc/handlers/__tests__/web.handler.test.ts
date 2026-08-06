@@ -459,3 +459,188 @@ describe('web.handler — graceful degradation', () => {
     expect(res.error).toContain('RPC timeout');
   });
 });
+
+/**
+ * The roster surface. Two properties matter beyond plain forwarding:
+ * `deviceList` answers from the STORE (so a stopped server still has a roster),
+ * and `deviceRevoke` must never report success it cannot stand behind — a
+ * credential believed revoked but still on disk is the whole hazard.
+ */
+describe('web.handler — device roster', () => {
+  it('deviceList forwards daemon.web.deviceList and unwraps the roster', async () => {
+    const roster = [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2, allowInput: true }];
+    installConnected({ devices: roster });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[] };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceList', {});
+    expect(res.devices).toEqual(roster);
+  });
+
+  // A daemon too old to send the grant predates per-device grants entirely,
+  // which means every device on it has been typing under the server flag.
+  // Defaulting those to read-only would draw a screen full of false badges.
+  it('deviceList grandfathers a grantless record from an older daemon to allowed', async () => {
+    installConnected({ devices: [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2 }] });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: { allowInput: boolean }[] };
+    expect(res.devices[0]!.allowInput).toBe(true);
+  });
+
+  it('deviceSetInput forwards an explicit grant and returns the daemon verdict', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, {
+      deviceId: 'd1',
+      allowInput: false,
+    })) as { ok: boolean };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceSetInput', { deviceId: 'd1', allowInput: false });
+    expect(res.ok).toBe(true);
+  });
+
+  // Never coerce: a missing grant must not be read as "take it away" or "hand
+  // it over" — both are decisions the caller did not make.
+  it('deviceSetInput refuses a non-boolean grant without touching the daemon', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'not-found' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('deviceSetInput reports unknown when the RPC throws', async () => {
+    const throwing = vi.fn(async () => { throw new Error('pipe closed'); });
+    const dc = { rpc: throwing, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, {
+      deviceId: 'd1',
+      allowInput: true,
+    })) as { ok: boolean; reason?: string };
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('deviceList reports an empty roster plus an error when the daemon is down', async () => {
+    const dc = { rpc: vi.fn(), isConnected: false } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    // A REASON CODE, not an English sentence — the renderer translates it.
+    expect(res.error).toBe('unavailable');
+    expect((dc.rpc as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('deviceList does not pass off a malformed reply as a roster', async () => {
+    installConnected({ devices: 'not-an-array' });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    expect(res.error).toBe('malformed');
+  });
+
+  it('deviceRevoke forwards the id and returns the daemon verdict', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as { ok: boolean };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceRevoke', { deviceId: 'd1' });
+    expect(res.ok).toBe(true);
+  });
+
+  it('deviceRevoke passes a persist-failed verdict through rather than flattening it', async () => {
+    installConnected({ ok: false, reason: 'persist-failed', closed: 2 });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+      closed?: number;
+    };
+    // `closed` rides along: it is the only evidence of whether the device is
+    // off the air right now, which the copy depends on.
+    expect(res).toEqual({ ok: false, reason: 'persist-failed', closed: 2 });
+  });
+
+  // The one that matters. A timeout / cut pipe / unknown method means the
+  // daemon may never have run the revoke, so nothing was necessarily blocked
+  // and no stream was necessarily cut. Reporting persist-failed here would let
+  // the UI tell the operator their connections were severed when the request
+  // never left the machine.
+  it('deviceRevoke reports unknown — not persist-failed — when the RPC throws', async () => {
+    const throwing = vi.fn(async () => { throw new Error('pipe closed mid-write'); });
+    const dc = { rpc: throwing, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('deviceRevoke reports unknown on a malformed reply', async () => {
+    installConnected({ nonsense: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  // `WebDeviceSummary` mirrors the daemon's shape instead of importing it, so
+  // nothing makes the two move together. A non-number revokedAt that merely
+  // passed `!== undefined` would paint a LIVE device as a tombstone and take
+  // its revoke button away — locking the operator out of the one device they
+  // came here for.
+  it('deviceList narrows revokedAt to a number', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'good', name: 'iPhone', createdAt: 1, lastSeenAt: 2 },
+        { deviceId: 'null-revoked', name: 'Mac', createdAt: 1, lastSeenAt: 2, revokedAt: null },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as {
+      devices: { deviceId: string; revokedAt?: number }[];
+    };
+    expect(res.devices.map((d) => d.deviceId)).toEqual(['good', 'null-revoked']);
+    // The null did NOT survive as a truthy tombstone marker.
+    expect(res.devices[1]!.revokedAt).toBeUndefined();
+  });
+
+  // ALL or nothing. Showing the parseable ones would present a partial roster
+  // as the complete one, and the record hidden that way is a live device the
+  // operator then cannot revoke.
+  it('deviceList fails the whole read when ANY record is unparseable', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'good', name: 'iPhone', createdAt: 1, lastSeenAt: 2 },
+        { deviceId: 'no-times', name: 'Broken' },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    expect(res.error).toBe('malformed');
+  });
+
+  // The absent/explicit distinction has to survive this hop, or the daemon's
+  // server-flag default is unreachable and every omitting caller mutes its
+  // device.
+  it('pairStart forwards allowInput only when the renderer states it', async () => {
+    installConnected({ ok: true, running: true });
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'iPhone' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'iPhone' });
+
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'iPhone', allowInput: false });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'iPhone', allowInput: false });
+  });
+
+  it('deviceRevoke refuses a blank id without touching the daemon', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, {})) as { ok: boolean; reason?: string };
+    expect(res).toEqual({ ok: false, reason: 'not-found' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('deviceRevoke says nothing was attempted when the daemon is down', async () => {
+    const dc = { rpc: vi.fn(), isConnected: false } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'unavailable' });
+    expect((dc.rpc as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+});

@@ -255,7 +255,14 @@ export interface WebTerminalInfo {
  * it stop guessing.
  */
 export type DeviceAuthResult =
-  | { ok: true; deviceId: string; name?: string }
+  /**
+   * `allowInput` is REQUIRED, not optional. A resolver that forgets it would
+   * otherwise silently resolve to `undefined` and read as read-only at the
+   * gate — every paired device muted by an omission tsc could have caught.
+   * The daemon injects the real store here, which is where the two shapes are
+   * checked against each other.
+   */
+  | { ok: true; deviceId: string; name?: string; allowInput: boolean }
   | { ok: false; reason: 'unknown' | 'revoked' };
 
 /**
@@ -279,7 +286,7 @@ export type DeviceAuthResult =
  */
 export interface WebDeviceResolver {
   resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
-  mint(params: { name?: string }): Promise<{ deviceId: string; deviceSecret: string }>;
+  mint(params: { name?: string; allowInput?: boolean }): Promise<{ deviceId: string; deviceSecret: string }>;
   /**
    * Record a successful auth. Optional because it is bookkeeping, not
    * authorization: a store that does not track `lastSeenAt` is still a valid
@@ -306,7 +313,11 @@ export interface WebDeviceResolver {
  */
 export type WebPrincipal =
   | { kind: 'operator' }
-  | { kind: 'device'; deviceId: string; name?: string };
+  /**
+   * A paired device. `allowInput` is ITS grant, not the server's — the server
+   * flag remains the ceiling and is applied on top by `mayInput`.
+   */
+  | { kind: 'device'; deviceId: string; name?: string; allowInput: boolean };
 
 /** Authenticated identity, or why the credential was refused. */
 type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 'unknown' | 'revoked' };
@@ -859,6 +870,37 @@ export class WebTerminalServer {
    */
   private pendingDeviceName: string | undefined;
   /**
+   * Input grant for the device the CURRENT code will register.
+   *
+   * Taken at the same moment as the name and for the same reason: this is the
+   * only point where a human is present to say what the device is FOR. The
+   * phone types a code and nothing else, so if the answer is not captured here
+   * there is no later moment to capture it in.
+   *
+   * When nobody states a grant, this falls back to the SERVER's `--allow-input`
+   * (see `defaultPendingGrant`). That is not a weaker default, it is the only
+   * one that keeps headless hosts working: `wmux web --allow-input` on a box
+   * with no GUI mints its pairing code from `start()`, with no operator present
+   * to tick anything, and the roster UI that could grant input afterwards does
+   * not exist there. Defaulting those to read-only would make every device
+   * paired from a terminal permanently mute with no way to fix it — a
+   * regression against the behaviour this whole feature is narrowing.
+   *
+   * A caller that DOES state a grant always wins, which is how the GUI's
+   * unticked checkbox still means read-only on an input-enabled server.
+   */
+  private pendingDeviceAllowInput = false;
+
+  /**
+   * The grant a pairing code carries when nobody said. Typing `--allow-input`
+   * IS the operator's decision on a host where there is nowhere else to make
+   * one; this reads it rather than inventing a stricter answer they cannot act
+   * on.
+   */
+  private defaultPendingGrant(): boolean {
+    return this.opts?.allowInput === true;
+  }
+  /**
    * Outstanding stream tickets, keyed by the ticket itself (B3).
    *
    * In memory only and cleared on stop(): a ticket is a capability to open a
@@ -979,6 +1021,8 @@ export class WebTerminalServer {
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
     this.pendingDeviceName = undefined;
+    // AFTER `this.opts` is set — the default reads the flag from it.
+    this.pendingDeviceAllowInput = this.defaultPendingGrant();
     this.generatePairCode();
 
     // A malformed request or a client that drops mid-handshake must not crash
@@ -1001,6 +1045,7 @@ export class WebTerminalServer {
         this.pairExpiresAt = 0;
         this.pairAttempts = 0;
         this.pendingDeviceName = undefined;
+        this.pendingDeviceAllowInput = false;
         reject(err);
       };
       const onListening = () => {
@@ -1086,6 +1131,7 @@ export class WebTerminalServer {
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
+    this.pendingDeviceAllowInput = false;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
 
@@ -1164,13 +1210,17 @@ export class WebTerminalServer {
    * walks to the phone, types it, and only then learns the server would never
    * have minted anything.
    */
-  startPairing(params: { name?: string } = {}): WebPairStartResult {
+  startPairing(params: { name?: string; allowInput?: boolean } = {}): WebPairStartResult {
     if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
     const refusal = this.mintRefusal();
     if (refusal) return { ok: false, error: refusal };
     const label = typeof params.name === 'string' ? params.name.trim() : '';
     this.generatePairCode();
     this.pendingDeviceName = label || undefined;
+    // `??`, not `===`: an omitted grant inherits the server's, an explicit
+    // `false` stays false. Collapsing those two would either mute the GUI's
+    // unticked box or mute every headless pairing.
+    this.pendingDeviceAllowInput = params.allowInput ?? this.defaultPendingGrant();
     return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
   }
 
@@ -1270,7 +1320,19 @@ export class WebTerminalServer {
       this.streamTickets.delete(raw);
       return null;
     }
-    return { kind: 'device', deviceId: held.deviceId, ...(held.name ? { name: held.name } : {}) };
+    // `allowInput: false`, ALWAYS — a stream ticket is a read capability, not a
+    // credential. It is handed out for the two SSE routes because EventSource
+    // cannot set headers, it lives two minutes, and it is not re-checked against
+    // the roster while it does. Baking a grant into it would mean an input
+    // permission that survives the operator taking it away, on the one object
+    // here that is deliberately not revalidated. Nothing behind a ticket writes
+    // today; this keeps that true if a future route forgets.
+    return {
+      kind: 'device',
+      deviceId: held.deviceId,
+      ...(held.name ? { name: held.name } : {}),
+      allowInput: false,
+    };
   }
 
   /** Drop expired tickets, then the oldest if the cap is still exceeded. */
@@ -1387,7 +1449,10 @@ export class WebTerminalServer {
       // lazily, and a regenerated code has no name behind it even if the one it
       // replaced did.
       ...(pair.code && this.pendingDeviceName
-        ? { pendingDeviceName: this.pendingDeviceName }
+        ? {
+            pendingDeviceName: this.pendingDeviceName,
+            pendingDeviceAllowInput: this.pendingDeviceAllowInput,
+          }
         : {}),
     };
   }
@@ -1554,7 +1619,12 @@ export class WebTerminalServer {
       // reads as "protocol 0", the same way a missing `allowUpload` reads as
       // false.
       return this.json(res, 200, {
-        allowInput: this.opts?.allowInput === true,
+        // THIS CALLER's effective grant, not the server flag. A phone paired
+        // read-only asks the same question a phone paired with input does, and
+        // answering with the server-wide value would hand it a keyboard the
+        // write routes then refuse — a read-only device showing a live composer
+        // that 403s on every keystroke.
+        allowInput: this.mayInput(principal),
         allowUpload: this.opts?.allowUpload === true,
         allowTranscript: this.opts?.allowTranscript === true,
         // #783 — the gated-tools list so the phone can say "this Bash call is
@@ -1587,7 +1657,7 @@ export class WebTerminalServer {
       return this.handleWorkspacesList(res);
     }
     if (req.method === 'POST' && p === '/api/sessions') {
-      return this.handleSessionCreate(req, res);
+      return this.handleSessionCreate(req, res, principal);
     }
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
@@ -1604,7 +1674,7 @@ export class WebTerminalServer {
         return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
       }
       if (req.method === 'DELETE') {
-        return this.handleSessionDelete(res, rest);
+        return this.handleSessionDelete(res, rest, principal);
       }
     }
     if (req.method === 'GET' && p === '/api/stream') {
@@ -1631,7 +1701,7 @@ export class WebTerminalServer {
       return this.handlePushRegistration(req, res, principal);
     }
     if (req.method === 'POST' && p === '/api/input') {
-      return this.handleInput(req, res, url);
+      return this.handleInput(req, res, url, principal);
     }
     if (req.method === 'POST' && p === '/api/upload') {
       return this.handleUpload(req, res);
@@ -1649,11 +1719,12 @@ export class WebTerminalServer {
     // (review: Claude). `/api/gate/on` re-arms it, so the hatch is symmetric
     // and a phone that turned it off can put it back.
     if (req.method === 'POST' && (p === '/api/gate/off' || p === '/api/gate/on')) {
-      if (this.opts?.allowInput !== true) {
-        return this.json(res, 403, {
-          error: 'read-only: server started without --allow-input',
-          detail: 'disarming the permission gate lets tools run without remote review — it needs the same grant as typing',
-        });
+      if (!this.mayInput(principal)) {
+        return this.refuseInput(
+          res,
+          principal,
+          'disarming the permission gate lets tools run without remote review — it needs the same grant as typing',
+        );
       }
       if (!this.deps.setGateEnabled) return this.json(res, 503, { error: 'gate control unavailable' });
       const enable = p === '/api/gate/on';
@@ -2235,12 +2306,17 @@ export class WebTerminalServer {
    * only differently revocable, so gating on the credential FORM rather than on
    * the server's input policy would be a boundary that is not one.
    */
-  private handleSessionCreate(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (this.opts?.allowInput !== true) {
-      return this.json(res, 403, {
-        error: 'read-only: server started without --allow-input',
-        detail: 'creating a shell is arbitrary execution — it requires the same grant as typing',
-      });
+  private handleSessionCreate(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    principal: WebPrincipal,
+  ): void {
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(
+        res,
+        principal,
+        'creating a shell is arbitrary execution — it requires the same grant as typing',
+      );
     }
     const lifecycle = this.deps.lifecycle;
     if (!lifecycle) return this.json(res, 503, { error: 'lifecycle unavailable' });
@@ -2330,12 +2406,13 @@ export class WebTerminalServer {
   }
 
   /** `DELETE /api/sessions/:id` — close a pane. See handleSessionCreate for the gate. */
-  private handleSessionDelete(res: http.ServerResponse, rawId: string): void {
-    if (this.opts?.allowInput !== true) {
-      return this.json(res, 403, {
-        error: 'read-only: server started without --allow-input',
-        detail: 'closing a pane destroys running work — it requires the same grant as typing',
-      });
+  private handleSessionDelete(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(
+        res,
+        principal,
+        'closing a pane destroys running work — it requires the same grant as typing',
+      );
     }
     const lifecycle = this.deps.lifecycle;
     if (!lifecycle) return this.json(res, 503, { error: 'lifecycle unavailable' });
@@ -2448,9 +2525,14 @@ export class WebTerminalServer {
 
   // --- input (opt-in) -----------------------------------------------------
 
-  private handleInput(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
-    if (this.opts?.allowInput !== true) {
-      return this.json(res, 403, { error: 'read-only: server started without --allow-input' });
+  private handleInput(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(res, principal, 'typing runs commands on this machine');
     }
     const sessionId = url.searchParams.get('session') ?? '';
     const managed = this.deps.sessionManager.getSession(sessionId);
@@ -2764,11 +2846,12 @@ export class WebTerminalServer {
     // runs the tool (arbitrary Bash, a write, a subagent), which is exactly
     // what --allow-input governs. Gate it accordingly (review: Claude).
     const record = approvals.list().pending.find((r) => r.id === id);
-    if (record?.kind === 'awaiting_permission' && this.opts?.allowInput !== true) {
-      return this.json(res, 403, {
-        error: 'read-only: server started without --allow-input',
-        detail: 'approving a tool permission runs the tool — it needs the same grant as typing',
-      });
+    if (record?.kind === 'awaiting_permission' && !this.mayInput(principal)) {
+      return this.refuseInput(
+        res,
+        principal,
+        'approving a tool permission runs the tool — it needs the same grant as typing',
+      );
     }
 
     this.readJsonBody(req, res, (body) => {
@@ -3421,7 +3504,10 @@ export class WebTerminalServer {
 
     let minted: { deviceId: string; deviceSecret: string };
     try {
-      minted = await devices.mint({ name: this.pendingDeviceName });
+      minted = await devices.mint({
+        name: this.pendingDeviceName,
+        allowInput: this.pendingDeviceAllowInput,
+      });
     } catch (err) {
       // The roster could not be persisted. Do NOT burn the code and do NOT
       // fall back to the shared token: a credential the daemon cannot
@@ -3445,6 +3531,9 @@ export class WebTerminalServer {
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
+    // Back to the server's default rather than to `false`: a redeemed code
+    // must not leave the NEXT device on this host worse off than the first.
+    this.pendingDeviceAllowInput = this.defaultPendingGrant();
   }
 
   // --- helpers ------------------------------------------------------------
@@ -3518,8 +3607,50 @@ export class WebTerminalServer {
     this.touchDevice(result.deviceId);
     return {
       ok: true,
-      principal: { kind: 'device', deviceId: result.deviceId, ...(result.name ? { name: result.name } : {}) },
+      principal: {
+        kind: 'device',
+        deviceId: result.deviceId,
+        ...(result.name ? { name: result.name } : {}),
+        allowInput: result.allowInput,
+      },
     };
+  }
+
+  /**
+   * May this caller type, spawn or close a pane, toggle the permission gate, or
+   * approve a tool permission?
+   *
+   * These five are ONE grant and always have been — the codebase argues each of
+   * them back to "it requires the same grant as typing". This is where that
+   * grant is decided, so a new write route gets the whole rule by asking rather
+   * than by remembering to repeat it.
+   *
+   * TWO gates, and the order is the security property:
+   *
+   *  1. `--allow-input` is the CEILING. A server started without it grants
+   *     nothing to anyone, exactly as before per-device grants existed, so
+   *     "I started it read-only" remains a complete answer and the CLI banner
+   *     keeps meaning what it says.
+   *  2. Within that, a device brings its own grant. The operator token does
+   *     not: it IS the operator, and a credential the operator is holding at
+   *     their own desk is not something the roster is entitled to narrow.
+   */
+  private mayInput(principal: WebPrincipal): boolean {
+    if (this.opts?.allowInput !== true) return false;
+    return principal.kind === 'operator' || principal.allowInput;
+  }
+
+  /** The 403 for a caller the grant above refused, worded for whichever gate said no. */
+  private refuseInput(res: http.ServerResponse, principal: WebPrincipal, detail: string): void {
+    const serverReadOnly = this.opts?.allowInput !== true;
+    return this.json(res, 403, {
+      error: serverReadOnly
+        ? 'read-only: server started without --allow-input'
+        : 'read-only: this device was paired without permission to type',
+      detail: serverReadOnly
+        ? detail
+        : `${detail}. Grant it from "Paired devices" on the machine running wmux web.`,
+    });
   }
 
   /** Report a device's activity to the roster. Bookkeeping — never fatal. */

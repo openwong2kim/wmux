@@ -4,6 +4,10 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import {
   WEB_DEFAULT_PORT,
+  type WebDeviceListError,
+  type WebDeviceRevokeResult,
+  type WebDeviceSetInputResult,
+  type WebDeviceSummary,
   type WebStartArgs,
   type WebTerminalInfo,
 } from '../../../shared/web';
@@ -234,8 +238,14 @@ export function registerWebHandlers(
   ipcMain.handle(
     IPC.WEB_PAIR_START,
     wrapHandler(IPC.WEB_PAIR_START, async (_event, input: unknown): Promise<WebTerminalInfo> => {
-      const name =
-        input && typeof input === 'object' ? String((input as { name?: unknown }).name ?? '') : '';
+      const pairArgs = input && typeof input === 'object' ? (input as { name?: unknown; allowInput?: unknown }) : {};
+      const name = String(pairArgs.name ?? '');
+      // Absent stays ABSENT across this hop. Collapsing it to `false` here
+      // would reach the daemon as an explicit refusal and override
+      // `defaultPendingGrant()`, muting every device paired by a caller that
+      // does not send the field — which is the whole point of the daemon
+      // reading it as optional.
+      const allowInput = typeof pairArgs.allowInput === 'boolean' ? pairArgs.allowInput : undefined;
       const dc = getDaemonClient();
       if (!dc || !dc.isConnected) {
         return {
@@ -249,7 +259,10 @@ export function registerWebHandlers(
       // rather than hand-assemble one and let the two drift.
       let failure: string | undefined;
       try {
-        const res = (await dc.rpc('daemon.web.pairStart', { name })) as {
+        const res = (await dc.rpc('daemon.web.pairStart', {
+          name,
+          ...(allowInput !== undefined ? { allowInput } : {}),
+        })) as {
           ok?: boolean;
           error?: string;
         };
@@ -270,6 +283,133 @@ export function registerWebHandlers(
         });
       }
       return withFront(info);
+    }),
+  );
+
+  /**
+   * Keep only records the renderer can actually render.
+   *
+   * The daemon is trusted, but `WebDeviceSummary` is a hand-kept MIRROR of its
+   * `DeviceSummary` rather than an import, so nothing makes the two move
+   * together. The narrowing that matters is `revokedAt`: a non-number that is
+   * merely `!== undefined` (a `null` from a future serializer) would paint a
+   * LIVE device as a tombstone and take its revoke button away — an operator
+   * locked out of revoking the one device they came here for.
+   */
+  const asDeviceSummary = (raw: unknown): WebDeviceSummary | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const d = raw as Record<string, unknown>;
+    if (typeof d['deviceId'] !== 'string' || d['deviceId'] === '') return null;
+    if (typeof d['createdAt'] !== 'number' || typeof d['lastSeenAt'] !== 'number') return null;
+    return {
+      deviceId: d['deviceId'],
+      name: typeof d['name'] === 'string' ? d['name'] : '',
+      createdAt: d['createdAt'],
+      lastSeenAt: d['lastSeenAt'],
+      // A daemon too old to send this predates per-device grants, which means
+      // every device on it typed under the server flag. `true` reports what
+      // that roster can actually do; defaulting to false would draw a screen
+      // full of read-only badges for devices that are typing right now.
+      allowInput: typeof d['allowInput'] === 'boolean' ? d['allowInput'] : true,
+      ...(typeof d['revokedAt'] === 'number' ? { revokedAt: d['revokedAt'] } : {}),
+    };
+  };
+
+  ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
+  ipcMain.handle(
+    IPC.WEB_DEVICE_LIST,
+    wrapHandler(
+      IPC.WEB_DEVICE_LIST,
+      async (): Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }> => {
+        const dc = getDaemonClient();
+        // A REASON CODE, not a sentence. Every other string in this modal goes
+        // through t(); an English message baked in here would be the only part
+        // of a credential screen that ignores the operator's locale.
+        if (!dc || !dc.isConnected) return { devices: [], error: 'unavailable' };
+        try {
+          // `daemon.web.deviceList` answers {devices}, NOT a WebTerminalInfo — it
+          // reads the roster store, which outlives any one run of the server. A
+          // stopped server still has devices worth revoking.
+          const res = (await dc.rpc('daemon.web.deviceList', {})) as { devices?: unknown };
+          if (!Array.isArray(res?.devices)) return { devices: [], error: 'malformed' };
+          const parsed = res.devices.map(asDeviceSummary);
+          // ALL or nothing. Dropping the unparseable ones and showing the rest
+          // would present a partial roster as the complete one — and the
+          // record hidden that way is a live device the operator then cannot
+          // revoke, which is the exact fail-open this screen exists to avoid.
+          if (parsed.some((d) => d === null)) return { devices: [], error: 'malformed' };
+          return { devices: parsed as WebDeviceSummary[] };
+        } catch (err) {
+          console.warn(`[web] deviceList failed: ${(err as Error)?.message ?? String(err)}`);
+          return { devices: [], error: 'unavailable' };
+        }
+      },
+    ),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
+  ipcMain.handle(
+    IPC.WEB_DEVICE_REVOKE,
+    wrapHandler(IPC.WEB_DEVICE_REVOKE, async (_event, input: unknown): Promise<WebDeviceRevokeResult> => {
+      const deviceId =
+        input && typeof input === 'object' ? String((input as { deviceId?: unknown }).deviceId ?? '') : '';
+      if (!deviceId) return { ok: false, reason: 'not-found' };
+      const dc = getDaemonClient();
+      // 'unavailable' rather than a generic failure: nothing was revoked AND
+      // nothing was attempted, which the operator must read differently from a
+      // roster write that failed halfway.
+      if (!dc || !dc.isConnected) return { ok: false, reason: 'unavailable' };
+      try {
+        const res = (await dc.rpc('daemon.web.deviceRevoke', { deviceId })) as WebDeviceRevokeResult;
+        if (res && typeof res === 'object' && typeof res.ok === 'boolean') {
+          // `closed` rides along: it is the only evidence of whether the device
+          // is off the air right now, which is a separate question from whether
+          // the roster write landed.
+          return typeof res.closed === 'number' ? res : { ok: res.ok, ...(res.reason ? { reason: res.reason } : {}) };
+        }
+        console.warn(`[web] deviceRevoke ${deviceId}: malformed daemon response`);
+        return { ok: false, reason: 'unknown' };
+      } catch (err) {
+        // 'unknown', NOT 'persist-failed'. A timeout, a cut pipe, or an older
+        // daemon that has no such method means the revoke may never have run —
+        // so nothing was necessarily blocked and no stream was necessarily cut.
+        // Reporting persist-failed here would let the UI tell the operator
+        // their connections were severed when the request never left the box.
+        //
+        // Logged because the daemon audits only SUCCESSFUL revocations: without
+        // this line a failed attempt on a credential surface leaves no trace
+        // anywhere. The deviceId is a public handle, never secret material.
+        console.warn(`[web] deviceRevoke ${deviceId} failed: ${(err as Error)?.message ?? String(err)}`);
+        return { ok: false, reason: 'unknown' };
+      }
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_DEVICE_SET_INPUT);
+  ipcMain.handle(
+    IPC.WEB_DEVICE_SET_INPUT,
+    wrapHandler(IPC.WEB_DEVICE_SET_INPUT, async (_event, input: unknown): Promise<WebDeviceSetInputResult> => {
+      const args = input && typeof input === 'object' ? (input as { deviceId?: unknown; allowInput?: unknown }) : {};
+      const deviceId = typeof args.deviceId === 'string' ? args.deviceId : '';
+      // Never coerce. A missing or non-boolean grant must not be read as "take
+      // it away" or "hand it over" — both are decisions the caller did not make.
+      if (!deviceId || typeof args.allowInput !== 'boolean') return { ok: false, reason: 'not-found' };
+      const dc = getDaemonClient();
+      if (!dc || !dc.isConnected) return { ok: false, reason: 'unavailable' };
+      try {
+        const res = (await dc.rpc('daemon.web.deviceSetInput', {
+          deviceId,
+          allowInput: args.allowInput,
+        })) as WebDeviceSetInputResult;
+        if (res && typeof res === 'object' && typeof res.ok === 'boolean') return res;
+        console.warn(`[web] deviceSetInput ${deviceId}: malformed daemon response`);
+        return { ok: false, reason: 'unknown' };
+      } catch (err) {
+        // Same discipline as deviceRevoke: a daemon that did not answer leaves
+        // the grant in an unknown state, and the caller re-lists to find out.
+        console.warn(`[web] deviceSetInput ${deviceId} failed: ${(err as Error)?.message ?? String(err)}`);
+        return { ok: false, reason: 'unknown' };
+      }
     }),
   );
 
@@ -314,5 +454,8 @@ export function registerWebHandlers(
     ipcMain.removeHandler(IPC.WEB_STOP);
     ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
     ipcMain.removeHandler(IPC.WEB_PAIR_START);
+    ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
+    ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
+    ipcMain.removeHandler(IPC.WEB_DEVICE_SET_INPUT);
   };
 }

@@ -10,7 +10,14 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from './lanlink';
-import type { WebStartArgs, WebTerminalInfo } from './web';
+import type {
+  WebDeviceListError,
+  WebDeviceRevokeResult,
+  WebDeviceSetInputResult,
+  WebDeviceSummary,
+  WebStartArgs,
+  WebTerminalInfo,
+} from './web';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
@@ -134,7 +141,34 @@ declare global {
          * rows cannot be operated — "which of these three do I revoke?" has no
          * answer six months later.
          */
-        pairStart: (name: string) => Promise<WebTerminalInfo>;
+        pairStart: (name: string, allowInput?: boolean) => Promise<WebTerminalInfo>;
+        /**
+         * The paired-device roster.
+         *
+         * Answers from the device STORE, not from a running server, so it is
+         * readable while `wmux web` is stopped — which is exactly when an
+         * operator who has just stopped sharing wants to check what still
+         * holds a credential. Carries no secret material.
+         */
+        deviceList: () => Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }>;
+        /**
+         * Revoke one device permanently and cut its live streams.
+         *
+         * Irreversible: revocation is never cleared, and a device returns only
+         * by pairing again. `ok:false` with `persist-failed` means the streams
+         * were cut but the roster write did NOT land, so the credential comes
+         * back on the next daemon boot.
+         */
+        deviceRevoke: (deviceId: string) => Promise<WebDeviceRevokeResult>;
+        /**
+         * Grant or withdraw one device's permission to type.
+         *
+         * Narrows within `--allow-input`, never past it: a server started
+         * read-only grants nothing to anyone regardless of what this says.
+         * Withdrawing takes effect on the device's next request and drops its
+         * live streams so the phone re-handshakes into its smaller grant.
+         */
+        deviceSetInput: (deviceId: string, allowInput: boolean) => Promise<WebDeviceSetInputResult>;
       };
       /**
        * Remote workspace attach — registered remote wmux web hosts + the

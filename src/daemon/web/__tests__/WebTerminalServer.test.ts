@@ -222,9 +222,9 @@ function makeDeps() {
  * stream; `box.mintThrows` covers a roster the daemon cannot persist.
  */
 function makeDevices() {
-  const roster = new Map<string, { secret: string; name?: string; revoked: boolean }>();
+  const roster = new Map<string, { secret: string; name?: string; revoked: boolean; allowInput: boolean }>();
   const resolveCalls: Array<{ deviceId: string; secret: string }> = [];
-  const mintCalls: Array<{ name?: string }> = [];
+  const mintCalls: Array<{ name?: string; allowInput?: boolean }> = [];
   const touchCalls: string[] = [];
   const pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }> = [];
   const box = { mintThrows: false };
@@ -236,7 +236,14 @@ function makeDevices() {
       seq += 1;
       const deviceId = `dev-${seq}`;
       const deviceSecret = `s3cr3t-${seq}`;
-      roster.set(deviceId, { secret: deviceSecret, name: params.name, revoked: false });
+      roster.set(deviceId, {
+        secret: deviceSecret,
+        name: params.name,
+        revoked: false,
+        // Mirrors the real store: the grant is explicit on every new record and
+        // only an absent one (a pre-grant roster) reads as allowed.
+        allowInput: params.allowInput !== false,
+      });
       return { deviceId, deviceSecret };
     },
     async resolve(deviceId, secret) {
@@ -247,7 +254,7 @@ function makeDevices() {
       if (!rec) return { ok: false, reason: 'unknown' };
       if (rec.revoked) return { ok: false, reason: 'revoked' };
       if (rec.secret !== secret) return { ok: false, reason: 'unknown' };
-      return { ok: true, deviceId, ...(rec.name ? { name: rec.name } : {}) };
+      return { ok: true, deviceId, ...(rec.name ? { name: rec.name } : {}), allowInput: rec.allowInput };
     },
     touch(deviceId) {
       touchCalls.push(deviceId);
@@ -1960,13 +1967,183 @@ describe('WebTerminalServer', () => {
   // ── per-device credentials (M3) ────────────────────────────────────────────
 
   /** Name a device, redeem its code, and return what the phone would store. */
-  const pairDevice = async (name?: string) => {
-    const started = server.startPairing({ name });
+  const pairDevice = async (name?: string, allowInput = true) => {
+    const started = server.startPairing({ name, allowInput });
     if (!started.ok) throw new Error(`startPairing refused: ${started.error}`);
     const res = await fetch(`${base()}/api/pair?code=${started.code}`);
     expect(res.status).toBe(200);
     return (await res.json()) as { deviceId: string; deviceSecret: string; token: string };
   };
+
+  /**
+   * Per-device input grants — the gate.
+   *
+   * `--allow-input` is the CEILING and a device's own grant narrows within it.
+   * Five routes share that one grant (typing, pane create, pane close, the
+   * permission-gate toggle, and approving a tool permission), so each is
+   * checked: a route that reads the server flag directly instead of asking
+   * would be a hole nothing else covers.
+   */
+  describe('per-device input grants', () => {
+    it('a device paired read-only is refused on every input route, on a server with input ON', async () => {
+      await startRW();
+      const viewer = await pairDevice('Wall display', false);
+      const h = bearer(viewer.token);
+
+      const typed = await fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: h, body: 'ls' });
+      expect(typed.status).toBe(403);
+      // The copy has to name the DEVICE, not the server — the operator reading
+      // it on a phone would otherwise go restart a server that is already on.
+      expect((await typed.json() as { error: string }).error).toContain('paired without permission');
+
+      const created = await fetch(`${base()}/api/sessions`, {
+        method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{}',
+      });
+      expect(created.status).toBe(403);
+
+      const deleted = await fetch(`${base()}/api/sessions/s1`, { method: 'DELETE', headers: h });
+      expect(deleted.status).toBe(403);
+
+      const gate = await fetch(`${base()}/api/gate/off`, { method: 'POST', headers: h });
+      expect(gate.status).toBe(403);
+    });
+
+    it('a device paired with the grant still types', async () => {
+      await startRW();
+      const typer = await pairDevice('iPhone', true);
+      const res = await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(typer.token), body: 'ls',
+      });
+      expect(res.status).toBe(204);
+    });
+
+    // The ceiling. A grant is not a way around a server the operator started
+    // read-only, and the refusal must still blame the server so the fix is
+    // findable.
+    it('the server flag overrides a granted device', async () => {
+      await startRO();
+      const typer = await pairDevice('iPhone', true);
+      const res = await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(typer.token), body: 'ls',
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json() as { error: string }).error).toContain('without --allow-input');
+    });
+
+    // The operator token is the operator. The roster does not narrow a
+    // credential they are holding at their own desk.
+    it('the operator token is not narrowed by any device grant', async () => {
+      const info = await startRW();
+      await pairDevice('Wall display', false);
+      const res = await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(info.token!), body: 'ls',
+      });
+      expect(res.status).toBe(204);
+    });
+
+    it('/api/config reports the CALLER grant, not the server flag', async () => {
+      await startRW();
+      const viewer = await pairDevice('Wall display', false);
+      const typer = await pairDevice('iPhone', true);
+
+      const asViewer = await (await fetch(`${base()}/api/config`, { headers: bearer(viewer.token) })).json() as { allowInput: boolean };
+      const asTyper = await (await fetch(`${base()}/api/config`, { headers: bearer(typer.token) })).json() as { allowInput: boolean };
+      // A read-only device that was told `true` here would render a composer
+      // that 403s on every keystroke.
+      expect(asViewer.allowInput).toBe(false);
+      expect(asTyper.allowInput).toBe(true);
+    });
+
+    // A ticket exists because EventSource cannot set headers. It is not
+    // revalidated against the roster while it lives, so it must never be a
+    // path to input.
+    /**
+     * The headless case, and the reason the default is the server flag rather
+     * than `false`. A box with no GUI mints its pairing code inside `start()`
+     * with nobody present to tick anything, and the roster UI that could grant
+     * input afterwards does not exist there. Defaulting to read-only would make
+     * every device paired from a terminal permanently mute.
+     */
+    it('a code minted by start() inherits the server flag, so headless pairing still types', async () => {
+      await startRW();
+      const code = server.status().pairCode as string;
+      const res = await fetch(`${base()}/api/pair?code=${code}`);
+      expect(res.status).toBe(200);
+      const { token } = await res.json() as { token: string };
+
+      const typed = await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      });
+      expect(typed.status).toBe(204);
+    });
+
+    it('a second headless pairing is not downgraded by the first having been redeemed', async () => {
+      await startRW();
+      await fetch(`${base()}/api/pair?code=${server.status().pairCode as string}`);
+
+      server.refreshPairCode();
+      const second = await fetch(`${base()}/api/pair?code=${server.status().pairCode as string}`);
+      expect(second.status).toBe(200);
+      const { token } = await second.json() as { token: string };
+
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      })).status).toBe(204);
+    });
+
+    // An explicit refusal still wins over the server default — otherwise the
+    // GUI's unticked checkbox would mean nothing on an input-enabled server.
+    it('an explicit read-only pairing beats the server default', async () => {
+      await startRW();
+      const viewer = await pairDevice('Wall display', false);
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(viewer.token), body: 'ls',
+      })).status).toBe(403);
+    });
+
+    // The grant belongs to the PAIRING SESSION, like the pending name: a code
+    // regenerated after a burned attempt budget is the same operator pairing
+    // the same device, and must not quietly change what they chose. Pinned
+    // because both reviewers read the preserved-vs-reset question as ambiguous.
+    it('a regenerated code keeps the grant chosen for that pairing session', async () => {
+      await startRW();
+      const started = server.startPairing({ name: 'Wall display', allowInput: false });
+      expect(started.ok).toBe(true);
+
+      for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+      let replacement: string;
+      try {
+        await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+        replacement = server.status().pairCode as string;
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const res = await fetch(`${base()}/api/pair?code=${replacement}`);
+      expect(res.status).toBe(200);
+      const { token } = await res.json() as { token: string };
+      // Still read-only: the replacement carried the session's own decision,
+      // not the server default it would otherwise have fallen back to.
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      })).status).toBe(403);
+    });
+
+    it('a stream ticket never carries an input grant', async () => {
+      await startRW();
+      const typer = await pairDevice('iPhone', true);
+      const issued = await fetch(`${base()}/api/stream-ticket`, { method: 'POST', headers: bearer(typer.token) });
+      expect(issued.status).toBe(200);
+      const { ticket } = await issued.json() as { ticket: string };
+
+      const res = await fetch(`${base()}/api/input?session=s1&token=${encodeURIComponent(ticket)}`, {
+        method: 'POST', body: 'ls',
+      });
+      expect(res.status).not.toBe(200);
+    });
+  });
 
   /** Open a pane SSE stream with a credential in the Authorization header. */
   const openStream = async (cred: string) => {
@@ -2009,7 +2186,9 @@ describe('WebTerminalServer', () => {
     expect(paired.token).not.toBe(info.token);
     // The operator named the device BEFORE the code existed (§3): a roster of
     // UUIDs cannot be operated, so the name has to reach the store.
-    expect(deviceMintCalls).toEqual([{ name: 'Wife phone' }]);
+    // The grant rides with the name for the same reason: both are decided at
+    // the desk, and the phone types only a code.
+    expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true }]);
 
     // A second pairing is a DIFFERENT device — that is the whole point.
     const second = await pairDevice('Tablet');
@@ -2504,13 +2683,17 @@ describe('WebTerminalServer', () => {
 
     const paired = await fetch(`${base()}/api/pair?code=${replacement}`);
     expect(paired.status).toBe(200);
-    expect(deviceMintCalls).toEqual([{ name: 'Named phone' }]);
+    // `startPairing` was called with a name and no grant, so the device
+    // registers read-only — an unstated grant is never read as "yes".
+    expect(deviceMintCalls).toEqual([{ name: 'Named phone', allowInput: false }]);
 
-    // Redeeming consumes the name: the next device must not inherit it.
+    // Redeeming consumes the name AND the grant: the next device inherits
+    // neither. A code minted without a fresh decision registers a read-only
+    // device rather than quietly handing on the last one's keyboard.
     server.refreshPairCode();
     const next = server.status().pairCode as string;
     expect((await fetch(`${base()}/api/pair?code=${next}`)).status).toBe(200);
-    expect(deviceMintCalls[1]).toEqual({ name: undefined });
+    expect(deviceMintCalls[1]).toEqual({ name: undefined, allowInput: false });
   });
 
   // ── stream tickets (B3) ────────────────────────────────────────────────────

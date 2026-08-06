@@ -21,7 +21,14 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from '../shared/lanlink';
-import type { WebStartArgs, WebTerminalInfo } from '../shared/web';
+import type {
+  WebDeviceListError,
+  WebDeviceRevokeResult,
+  WebDeviceSetInputResult,
+  WebDeviceSummary,
+  WebStartArgs,
+  WebTerminalInfo,
+} from '../shared/web';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
@@ -1197,11 +1204,20 @@ document.addEventListener('DOMContentLoaded', () => {
   status: (args?: { verifyFront?: boolean }) =>
     ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
-  pairStart: (name: string) =>
-    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name }) as Promise<WebTerminalInfo>,
+  pairStart: (name: string, allowInput = false) =>
+    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
+  // Roster surface. Unlike the calls above these do NOT resolve a
+  // WebTerminalInfo: the device roster is owned by the store, not by a running
+  // server, so it answers even while the server is stopped.
+  deviceList: () =>
+    ipcRenderer.invoke(IPC.WEB_DEVICE_LIST) as Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }>,
+  deviceRevoke: (deviceId: string) =>
+    ipcRenderer.invoke(IPC.WEB_DEVICE_REVOKE, { deviceId }) as Promise<WebDeviceRevokeResult>,
+  deviceSetInput: (deviceId: string, allowInput: boolean) =>
+    ipcRenderer.invoke(IPC.WEB_DEVICE_SET_INPUT, { deviceId, allowInput }) as Promise<WebDeviceSetInputResult>,
 };
 
 // Remote workspace attach — registered remote wmux web hosts + the per-pane

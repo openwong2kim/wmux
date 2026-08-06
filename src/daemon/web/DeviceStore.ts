@@ -61,7 +61,7 @@ const STATE_FILE = 'devices.json';
  * tell a guesser which half of the credential was right.
  */
 export type DeviceAuthResult =
-  | { ok: true; deviceId: string; name?: string }
+  | { ok: true; deviceId: string; name?: string; allowInput: boolean }
   | { ok: false; reason: 'unknown' | 'revoked' };
 
 export type DeviceBatchRevocationCause =
@@ -86,6 +86,8 @@ export interface DeviceSummary {
   createdAt: number;
   /** Last successful auth (in memory always; persisted at most once a minute). */
   lastSeenAt: number;
+  /** Resolved input grant — what this device can actually do right now. */
+  allowInput: boolean;
   /** Set once, never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
 }
@@ -104,6 +106,8 @@ export interface MintedDevice {
   deviceSecret: string;
   name: string;
   createdAt: number;
+  /** The grant this device was minted with, echoed so the pairing surface can confirm it. */
+  allowInput: boolean;
 }
 
 /** Outcome of `daemon.web.deviceRevoke`. Fail-closed: `ok` means PERSISTED. */
@@ -245,7 +249,26 @@ interface DeviceRecord {
   createdAt: number;
   lastSeenAt: number;
   revokedAt?: number;
+  /**
+   * Whether this device may type, spawn/close panes, toggle the permission
+   * gate, and approve tool permissions — the one grant `--allow-input` used to
+   * hand out server-wide.
+   *
+   * OPTIONAL, and absent means GRANTED. Every record minted since this field
+   * existed writes it explicitly, so `undefined` can only be a roster written
+   * before it did — a device that has been typing all along under the server
+   * flag. Defaulting those to read-only would silently mute every paired phone
+   * on upgrade, which is a data-loss-shaped surprise for a field nobody chose.
+   * The server flag is still the ceiling, so grandfathering cannot grant more
+   * than the operator already had switched on.
+   */
+  allowInput?: boolean;
   push?: DevicePushRegistration;
+}
+
+/** Resolve a record's grant, applying the grandfather rule in one place. */
+function recordAllowsInput(record: DeviceRecord): boolean {
+  return record.allowInput ?? true;
 }
 
 export interface DevicePersistedState {
@@ -332,6 +355,9 @@ export class DeviceStore {
         name: d.name,
         createdAt: d.createdAt,
         lastSeenAt: d.lastSeenAt,
+        // RESOLVED, not the raw field: the roster UI must show what the device
+        // can actually do, and a legacy record's absent field means granted.
+        allowInput: recordAllowsInput(d),
         ...(d.revokedAt !== undefined ? { revokedAt: d.revokedAt } : {}),
       }));
   }
@@ -351,8 +377,20 @@ export class DeviceStore {
    * HTTP handler awaits this, and a promise-returning signature leaves room to
    * move the write off the event loop later without touching that call site.
    */
-  async mint(params: { name?: string } = {}): Promise<MintedDevice> {
+  async mint(params: { name?: string; allowInput?: boolean } = {}): Promise<MintedDevice> {
     const name = params.name ?? '';
+    // Written EXPLICITLY on every new record, never left absent. That is what
+    // keeps an absent field meaning "roster predates this field" rather than
+    // "a recent pairing that happened not to say" — the only way the
+    // grandfather rule above stays sound.
+    //
+    // Defaults to FALSE, which is deliberately NOT the grandfather default.
+    // Those are two different questions: a record already on disk belongs to a
+    // device that has been typing all along, while a fresh mint with no stated
+    // grant is a caller who did not decide. Read-only is the recoverable
+    // outcome — the operator grants it from the roster — where a keyboard
+    // handed out by omission is not noticed until something has been typed.
+    const allowInput = params.allowInput === true;
     const at = this.now();
     const secret = crypto.randomBytes(DEVICE_SECRET_BYTES).toString('base64url');
     const salt = crypto.randomBytes(DEVICE_SALT_BYTES);
@@ -368,6 +406,7 @@ export class DeviceStore {
       kdf,
       createdAt: at,
       lastSeenAt: at,
+      allowInput,
     };
     this.derivations += 1;
 
@@ -386,8 +425,11 @@ export class DeviceStore {
     // the whole roster would buy a timestamp that is already correct.
     this.lastSeenPersistedAt.set(deviceId, at);
     this.audit.append({ event: 'pair', deviceId, name: record.name });
-    this.log('info', `[web] paired device "${record.name}" (${deviceId})`);
-    return { deviceId, deviceSecret: secret, name: record.name, createdAt: at };
+    this.log(
+      'info',
+      `[web] paired device "${record.name}" (${deviceId}) — input ${allowInput ? 'ALLOWED' : 'read-only'}`,
+    );
+    return { deviceId, deviceSecret: secret, name: record.name, createdAt: at, allowInput };
   }
 
   /**
@@ -426,6 +468,54 @@ export class DeviceStore {
       return { ok: false, reason: 'persist-failed' };
     }
     this.log('info', `[web] revoked device "${record.name}" (${deviceId})`);
+    return { ok: true };
+  }
+
+  /**
+   * Change one device's input grant.
+   *
+   * Fail-closed on the same terms as `revoke`: `ok` only once the change is on
+   * disk, because an operator told "read-only now" will stop worrying about
+   * that phone, and a grant that a restart resurrects is exactly the lie the
+   * revoke path already refuses to tell.
+   *
+   * The in-memory record is updated FIRST and kept even when the write fails.
+   * The two directions fail in opposite ways and only one of them is safe:
+   * REVOKING input must take effect immediately whatever the disk does (the
+   * next request is gated on the record, so the device stops typing now, and
+   * `ok:false` tells the operator to retry before a restart). GRANTING input
+   * that fails to persist is the same shape, and it is fine — the extra
+   * capability evaporates on restart rather than outliving the roster.
+   *
+   * No cache invalidation: `verified` caches the SECRET derivation, which this
+   * does not touch, and the grant is read from the record on every request.
+   */
+  setInput(deviceId: string, allowInput: boolean): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' } {
+    const record = this.devices.get(deviceId);
+    if (!record) return { ok: false, reason: 'not-found' };
+    // A tombstone has no capabilities to adjust. Silently "granting" input to a
+    // revoked device would put a row on screen claiming a power it cannot use.
+    if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked' };
+
+    if (recordAllowsInput(record) === allowInput) {
+      // Already there. Still force the field to exist, so a legacy record stops
+      // depending on the grandfather rule the moment the operator touches it.
+      if (record.allowInput === undefined) {
+        record.allowInput = allowInput;
+        if (!this.persist()) return { ok: false, reason: 'persist-failed' };
+      }
+      return { ok: true };
+    }
+
+    record.allowInput = allowInput;
+    if (!this.persist()) {
+      this.log(
+        'error',
+        `[web] input grant for ${deviceId} could not be persisted; it is ${allowInput ? 'granted' : 'blocked'} in memory only`,
+      );
+      return { ok: false, reason: 'persist-failed' };
+    }
+    this.log('info', `[web] device "${record.name}" (${deviceId}) input ${allowInput ? 'ALLOWED' : 'set read-only'}`);
     return { ok: true };
   }
 
@@ -623,7 +713,7 @@ export class DeviceStore {
       this.audit.append({ event: 'auth-failure', deviceId, reason: 'unknown' }, { coalesceKey: deviceId });
       return REJECT_UNKNOWN;
     }
-    return { ok: true, deviceId, name: record.name };
+    return { ok: true, deviceId, name: record.name, allowInput: recordAllowsInput(record) };
   }
 
   /**
@@ -935,6 +1025,20 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
   // phone may not hold and deliver a notification it cannot open.
   const push = coercePush(o['push']);
   if (push) record.push = push;
+  // ABSENT and MALFORMED are different, and only the first grandfathers.
+  //
+  // Absent marks a record written before per-device grants existed, whose
+  // device has been typing under the server flag all along — `recordAllowsInput`
+  // reads that as granted so an upgrade mutes nobody.
+  //
+  // PRESENT-but-not-a-boolean is someone having tried to state something we
+  // cannot read, and it resolves to read-only. Letting it fall through to the
+  // absent branch would turn a persisted `"false"` string into a restored input
+  // permission on the next boot — a corrupted or tampered record silently
+  // regaining the one capability this field exists to withhold.
+  if ('allowInput' in o && o['allowInput'] !== undefined) {
+    record.allowInput = o['allowInput'] === true;
+  }
   // Any truthy finite revokedAt keeps the device refused. A malformed one is
   // treated as REVOKED rather than active: fail-closed is the only safe read of
   // "this record may have been revoked".

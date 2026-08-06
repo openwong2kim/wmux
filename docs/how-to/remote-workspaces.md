@@ -145,6 +145,31 @@ pasted it), while pairing mints a fresh **device-scoped** token per PC —
 the remote's device list can revoke this one machine without touching any
 other attached device.
 
+To revoke, go to the **remote** machine and open **Paired devices…** in its
+titlebar Web popover. Each device is listed by the name it was given at pair
+time; revoking one cuts its live connections immediately and permanently. A
+revoked device comes back only by pairing again. The roster reads from the
+device store rather than the running server, so it is available even after
+`wmux web --stop` — worth checking after you stop sharing, since stopping
+the server does not by itself retire the credentials it handed out.
+
+Typing is granted per device. When you pair one, the Web popover asks
+whether it may type; afterwards the grant is a checkbox on its row in
+**Paired devices…**, so a device can be made read-only without revoking it.
+
+`--allow-input` on the server is the **ceiling**, not the grant: a server
+started without it lets nothing type regardless of what any device's row
+says, and the roster tells you so. Devices paired before per-device grants
+existed keep the access they had — they were typing under the server flag,
+and an upgrade does not silently mute them.
+
+On a **headless host** — `wmux web --allow-input` in a terminal, no desktop
+app — there is no popover to tick and no roster to grant from afterwards, so
+the pairing code that server prints carries the server's own flag. Pairing
+from a terminal therefore works exactly as it did before per-device grants
+existed. The per-device choice is what the GUI adds on top, not a hoop the
+CLI now has to jump through.
+
 ## See also
 
 - [Connect to wmux](./connect-to-wmux.md) — the underlying protocol, if

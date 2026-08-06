@@ -98,6 +98,8 @@ export interface WebTerminalInfo {
    * popover.
    */
   pendingDeviceName?: string;
+  /** The input grant the pending code will register the device with. */
+  pendingDeviceAllowInput?: boolean;
   /**
    * Why the transport could not be brought up, when a start asked for one it
    * could not get (tailscale absent, logged out, someone else serving on :443).
@@ -147,6 +149,78 @@ export interface PairRefusal {
   /** Operator-readable specifics. For logs and tooltips, never for the UI copy. */
   detail: string;
 }
+
+/**
+ * One paired device, as the operator's roster shows it.
+ *
+ * A structural mirror of the daemon's `DeviceSummary` (`daemon/web/DeviceStore`)
+ * rather than an import: shared/ must not pull daemon internals into the
+ * renderer bundle, and the daemon deliberately keeps that type free of secret
+ * material — no secret, no hash, no salt — so mirroring costs nothing but a
+ * tsc-checked seam in the handler.
+ */
+export interface WebDeviceSummary {
+  deviceId: string;
+  /** Operator-chosen label. Empty for devices paired before naming was required. */
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /**
+   * Whether this device may type, spawn/close panes, toggle the permission
+   * gate, and approve tool permissions. RESOLVED by the daemon, so a roster
+   * written before per-device grants existed reports the grandfathered `true`
+   * rather than an absent field the UI would have to interpret.
+   *
+   * The server's `--allow-input` is still the ceiling: a device can show
+   * `true` here while the server is read-only, meaning "allowed once input is
+   * switched on", which is what the roster has to display to be operable.
+   */
+  allowInput: boolean;
+  /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
+  revokedAt?: number;
+}
+
+/** Result of changing one device's input grant. Fail-closed, like the revoke. */
+export interface WebDeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed' | 'unavailable' | 'unknown';
+}
+
+/**
+ * Result of revoking one device. Fail-closed: `ok` means the roster write
+ * PERSISTED and survives a restart.
+ *
+ * The failure reasons are kept apart because the UI makes a SAFETY CLAIM from
+ * them, and the claims are not interchangeable:
+ *
+ *   `persist-failed`  the daemon ran the revoke: the device is blocked in
+ *                     memory and its live streams were cut, but the write did
+ *                     not land, so the credential returns on the next boot.
+ *   `unknown`         the daemon never answered (RPC timeout, pipe cut,
+ *                     unknown method on an older daemon). NOTHING can be
+ *                     claimed — the revoke may not have run at all.
+ *   `unavailable`     no daemon connection; nothing was attempted.
+ *   `not-found`       no such device on the roster.
+ *
+ * Collapsing `unknown` into `persist-failed` is how a screen ends up telling an
+ * operator their connections were cut when the request never left the machine.
+ */
+export interface WebDeviceRevokeResult {
+  ok: boolean;
+  reason?: 'not-found' | 'persist-failed' | 'unavailable' | 'unknown';
+  /**
+   * Live SSE streams actually torn down, straight from the daemon.
+   *
+   * Load-bearing, not diagnostics: `{ok:false, closed:2}` and
+   * `{ok:false, closed:0}` are different facts about whether the device is off
+   * the air RIGHT NOW, and the copy differs accordingly. Absent whenever the
+   * daemon did not answer.
+   */
+  closed?: number;
+}
+
+/** Why a roster read produced nothing. Translated renderer-side, like the revoke reasons. */
+export type WebDeviceListError = 'unavailable' | 'malformed';
 
 /** Renderer → main start request. `expose` maps to the 0.0.0.0 bind. */
 export interface WebStartArgs {

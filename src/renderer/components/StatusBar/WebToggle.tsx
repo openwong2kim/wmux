@@ -10,6 +10,7 @@ import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconBrowser } from '../icons';
+import PairedDevicesModal from './PairedDevicesModal';
 import {
   webIsExposed,
   type WebStartArgs,
@@ -159,6 +160,18 @@ export interface WebPopoverBodyProps {
   onDeviceNameChange: (value: string) => void;
   /** Name the device, then mint its code (`daemon.web.pairStart`). */
   onStartPairing: () => void;
+  /** Whether the device this code registers may type. Taken WITH the name. */
+  pairAllowInput: boolean;
+  onTogglePairAllowInput: () => void;
+  /**
+   * Open the paired-device roster.
+   *
+   * Offered in BOTH the running and stopped bodies on purpose: the roster is
+   * owned by the device store, not by the listener, so devices keep their
+   * credentials across a stop — and "I just stopped sharing, what still has
+   * access?" is asked precisely when the server is off.
+   */
+  onOpenDevices: () => void;
   t: (key: string) => string;
 }
 
@@ -191,10 +204,24 @@ export function WebPopoverBody({
   onNewPairCode,
   onDeviceNameChange,
   onStartPairing,
+  onOpenDevices,
+  pairAllowInput,
+  onTogglePairAllowInput,
   deviceName,
   qr,
   t,
 }: WebPopoverBodyProps) {
+  // Same control in both bodies below — declared once so the running and
+  // stopped branches cannot drift into different labels or styling.
+  const devicesLink = (
+    <button
+      type="button"
+      onClick={onOpenDevices}
+      className={`self-start text-[10px] text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+    >
+      {t('web.devicesLink')}
+    </button>
+  );
   if (!info.running) {
     return (
       <div className="flex flex-col gap-2.5">
@@ -278,6 +305,7 @@ export function WebPopoverBody({
         >
           {busy ? t('web.starting') : t('web.start')}
         </button>
+        {devicesLink}
       </div>
     );
   }
@@ -460,6 +488,21 @@ export function WebPopoverBody({
               aria-label={t('web.nameHint')}
               className={`w-full rounded-[6px] bg-[var(--bg-base)] px-2 py-1 text-[11px] text-[var(--text-main)] placeholder:text-[var(--text-muted)] ${FOCUS_RING}`}
             />
+            {/* Asked HERE, with the name, for the same reason the name is: this
+                is the only moment a human is present to say what the device is
+                for. The phone types a code and nothing else. Unticked by
+                default — read-only is the mistake you can fix from the roster,
+                where a keyboard handed out by accident is not noticed until
+                something has been typed. */}
+            <label className="flex items-center gap-2 text-[10px] text-[var(--text-sub)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={pairAllowInput}
+                onChange={onTogglePairAllowInput}
+                className="accent-[var(--accent)]"
+              />
+              {t('web.pairAllowInput')}
+            </label>
             <button
               type="button"
               onClick={onStartPairing}
@@ -499,6 +542,8 @@ export function WebPopoverBody({
         </span>
       ) : null}
 
+      {devicesLink}
+
       <button
         type="button"
         onClick={onStop}
@@ -528,6 +573,23 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [expose, setExpose] = useState(false);
   const [tailscale, setTailscale] = useState(false);
   const [deviceName, setDeviceName] = useState('');
+  const [devicesOpen, setDevicesOpen] = useState(false);
+  const [pairAllowInput, setPairAllowInput] = useState(false);
+  /**
+   * Drop the grant once the code it belonged to has been redeemed.
+   *
+   * `pendingDeviceName` clearing is the server telling us the pairing session
+   * ended. Without this the ticked box outlives it, and the NEXT device the
+   * operator pairs inherits an input grant from a decision made about a
+   * different one. Keyed on the name rather than on the code so a code
+   * REFRESHED for the same unredeemed session keeps the choice.
+   */
+  const hadPendingName = useRef(false);
+  useEffect(() => {
+    const has = typeof info.pendingDeviceName === 'string' && info.pendingDeviceName !== '';
+    if (hadPendingName.current && !has) setPairAllowInput(false);
+    hadPendingName.current = has;
+  }, [info.pendingDeviceName]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -708,12 +770,15 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     const name = (info.pendingDeviceName ?? deviceName).trim();
     setBusy(true);
     try {
-      if (name && a.pairStart) setInfo(await a.pairStart(name));
+      // The grant rides along. Without it the preload default (`false`)
+      // overrode the ticked checkbox, so "New code" quietly registered a
+      // read-only device while the UI said otherwise.
+      if (name && a.pairStart) setInfo(await a.pairStart(name, pairAllowInput));
       else if (a.pairRefresh) setInfo(await a.pairRefresh());
     } finally {
       setBusy(false);
     }
-  }, [deviceName, info.pendingDeviceName]);
+  }, [deviceName, info.pendingDeviceName, pairAllowInput]);
 
   /**
    * Send an install link to the OS browser.
@@ -734,11 +799,19 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     if (!a?.pairStart || !name) return;
     setBusy(true);
     try {
-      setInfo(await a.pairStart(name));
+      setInfo(await a.pairStart(name, pairAllowInput));
     } finally {
       setBusy(false);
     }
-  }, [deviceName]);
+  }, [deviceName, pairAllowInput]);
+
+  // Close the popover as the roster opens. Both are dismiss-on-outside-click
+  // surfaces, and leaving the 288px popover behind a 440px modal means the
+  // modal's own backdrop click lands on the popover's outside-click handler.
+  const handleOpenDevices = useCallback(() => {
+    setOpen(false);
+    setDevicesOpen(true);
+  }, []);
 
   // The URL is the one value that is directly actionable on this machine, so
   // clicking it opens the browser instead of leaving the operator to copy and
@@ -842,11 +915,19 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             deviceName={deviceName}
             onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
             onStartPairing={handleStartPairing}
+            onOpenDevices={handleOpenDevices}
+            pairAllowInput={pairAllowInput}
+            onTogglePairAllowInput={() => setPairAllowInput((v) => !v)}
             qr={qr}
             t={t}
           />
         </div>
       ) : null}
+
+      {/* Sibling of the popover, not a child: opening the roster closes the
+          popover (a 288px box has no room behind a 440px modal), and a modal
+          nested inside a node that just unmounted would go with it. */}
+      {devicesOpen ? <PairedDevicesModal onClose={() => setDevicesOpen(false)} /> : null}
     </div>
   );
 }
