@@ -117,7 +117,14 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     // single client's events back out to the RIGHT sender.
     client.onMeta((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_META, e));
     client.onData((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_DATA, e));
-    client.onExit((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_EXIT, e));
+    client.onExit((e) => {
+      pushToOwner(e.attachId, IPC.REMOTE_PANE_EXIT, e);
+      // The remote session is gone — forget the attach so a re-attach for
+      // the same (sender, host, session) opens a FRESH SSE stream instead of
+      // idempotently handing back a dead attachId, and so the client's own
+      // attachment record stops being a reconnect target.
+      detachAttach(e.attachId);
+    });
     clients.set(hostId, client);
     return client;
   }

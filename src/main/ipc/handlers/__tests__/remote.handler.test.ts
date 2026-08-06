@@ -289,6 +289,25 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     expect(client.attach).toHaveBeenCalledTimes(2);
   });
 
+  it('an exit event detaches the dead attach and clears its idempotency key', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+
+    const sender = fakeSender(111);
+    const first = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    client.emitExit({ attachId: first.attachId });
+
+    expect(client.detach).toHaveBeenCalledWith(first.attachId);
+
+    // Re-attaching the same (sender, host, session) must open a NEW attach —
+    // the idempotent branch must not hand back the now-dead attachId.
+    const second = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+    expect(second.attachId).not.toBe(first.attachId);
+    expect(client.attach).toHaveBeenCalledTimes(2);
+  });
+
   it('paneDetach forwards to the client and forgets the attach', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
