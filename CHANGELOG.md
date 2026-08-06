@@ -1,3 +1,60 @@
+## [3.38.9] — 2026-08-06
+
+### Added
+
+- **Scroll-to-bottom button on the terminal.** When a terminal's scrollback
+  runs far ahead of the viewport, a small button now appears at the
+  bottom-right; one click returns to the latest output. It shows only while
+  you are scrolled up and hides again the moment you are back at the bottom.
+  (#806)
+
+- **Attach a remote machine's live panes into your local sidebar.** Run
+  `wmux web --tailscale --allow-input` on the remote box, then in the app go
+  Titlebar `+` → "Attach remote workspace…", paste the URL `wmux web` printed,
+  and pick a workspace from its live list. The attached workspace shows up in
+  its own sidebar section with a mirror grid (up to 6 concurrent panes) that
+  reads scrollback and, when the remote allows it, types into the remote
+  panes. Detaching never touches anything on the remote — there is no
+  remote create, rename, or close from this view yet.
+
+- **Pair with a code instead of pasting the URL.** In the same "Attach
+  remote workspace…" modal, the "Pair with code" tab exchanges an 8-char
+  code read from the remote's titlebar Web popover for a device-scoped
+  token — no bearer token ever touches the clipboard, and the remote can
+  revoke just that one device later.
+
+### Fixed
+
+- **Prevented slow startup reconciliation from clearing live terminal bindings.** Startup restore now measures stalled daemon stages instead of the total duration of multi-step list, promotion, and re-query work, so slow but responsive recovery no longer falls back to a blank slate. (#805)
+
+- **Quitting and relaunching wmux no longer leaves junk like `35;9;12M` typed
+  at the shell prompt.** A pane that had been running a TUI agent kept that
+  agent's mouse-tracking sequences in its replay buffer. Reattaching replayed
+  them into a fresh terminal, so the shell — which never asked for mouse
+  reporting — received an SGR mouse report the moment the pointer crossed the
+  pane, and the terminal pasted the tail of that report onto the prompt. The
+  disarm already existed but only fired when the daemon itself had just booted
+  into recovery, so an app-only restart (daemon still running) skipped it.
+  It now also fires on panes whose shell integration reports them sitting at a
+  prompt. Panes without shell integration still need a daemon restart to clear
+  the modes. A running TUI's mouse tracking is left alone either way, and
+  bracketed paste is only cleared on panes whose shell is known to be gone.
+
+- **Questions answered on the PC now clear from the phone approval inbox
+  right away.** The signal that reports a locally answered AskUserQuestion
+  never actually fired: the hook bridge required a payload field Claude Code
+  does not send, so answered questions sat as pending ghost cards until the
+  agent's turn ended. The bridge now promotes the answer on the tool name
+  alone (and the OpenClaude bridge, which was missing the promotion entirely,
+  gained it too), so the pending card expires within seconds of the local
+  answer. (#808)
+
+- **A question answered on the PC no longer cancels a permission request
+  waiting on your phone.** Clearing the answered question swept every pending
+  approval on that pane, so a tool permission the same turn had asked for
+  disappeared from the inbox and fell back to the local prompt. Each now
+  clears only its own kind of request. (#808)
+
 ## [3.38.8] — 2026-08-05
 
 ### Added
