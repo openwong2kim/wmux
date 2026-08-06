@@ -35,9 +35,15 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const refreshHosts = useCallback(async () => {
     const remote = window.electronAPI?.remote;
     if (!remote) return [];
-    const list = await remote.hostsList();
-    setHosts(list);
-    return list;
+    try {
+      const list = await remote.hostsList();
+      setHosts(list);
+      return list;
+    } catch {
+      // IPC rejection (e.g. daemon hiccup) — leave the previously-shown list
+      // as-is rather than throwing out of an effect/callback.
+      return [];
+    }
   }, []);
 
   useEffect(() => {
@@ -58,34 +64,64 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     setLoadingWorkspaces(true);
     const remote = window.electronAPI?.remote;
     if (!remote) { setLoadingWorkspaces(false); return; }
-    const res = await remote.workspacesList(hostId);
-    if (res.ok) {
-      setWorkspaces(res.workspaces);
-      // allowInput may be stale/undefined until a probe runs — a successful
-      // workspacesList call IS that probe, so refetch hosts here to pick up
-      // the freshened flag before deciding the read-only tag below.
-      await refreshHosts();
-    } else {
-      setWorkspacesError(res.error);
+    try {
+      const res = await remote.workspacesList(hostId);
+      if (res.ok) {
+        setWorkspaces(res.workspaces);
+        // allowInput may be stale/undefined until a probe runs — a successful
+        // workspacesList call IS that probe, so refetch hosts here to pick up
+        // the freshened flag before deciding the read-only tag below.
+        await refreshHosts();
+      } else {
+        setWorkspacesError(res.error);
+      }
+    } catch {
+      // Unexpected IPC rejection — surface a generic error instead of
+      // leaving loadingWorkspaces stuck true forever.
+      setWorkspacesError(t('remote.workspacesFailed'));
+    } finally {
+      setLoadingWorkspaces(false);
     }
-    setLoadingWorkspaces(false);
-  }, [refreshHosts]);
+  }, [refreshHosts, t]);
 
   const handleAddHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;
     if (!remote || !addUrl.trim()) return;
     setAdding(true);
     setAddError(null);
-    const res = await remote.hostsAdd(addUrl.trim(), addLabel.trim() || undefined);
-    setAdding(false);
-    if (res.ok) {
-      setAddUrl('');
-      setAddLabel('');
-      await refreshHosts();
-    } else {
-      setAddError(res.error);
+    try {
+      const res = await remote.hostsAdd(addUrl.trim(), addLabel.trim() || undefined);
+      if (res.ok) {
+        setAddUrl('');
+        setAddLabel('');
+        await refreshHosts();
+      } else {
+        setAddError(res.error);
+      }
+    } catch {
+      // An IPC rejection (not the {ok:false} error-result path) must still
+      // reset `adding` and surface something — otherwise the Add button
+      // stays disabled forever with no visible feedback.
+      setAddError(t('remote.addFailed'));
+    } finally {
+      setAdding(false);
     }
-  }, [addUrl, addLabel, refreshHosts]);
+  }, [addUrl, addLabel, refreshHosts, t]);
+
+  const handleRemoveHost = useCallback(async (hostId: string) => {
+    const remote = window.electronAPI?.remote;
+    if (!remote) return;
+    try {
+      await remote.hostsRemove(hostId);
+    } finally {
+      if (selectedHostId === hostId) {
+        setSelectedHostId(null);
+        setWorkspaces([]);
+        setWorkspacesError(null);
+      }
+      await refreshHosts();
+    }
+  }, [refreshHosts, selectedHostId]);
 
   const handleAttach = useCallback((ws: RemoteWorkspaceSummary) => {
     const host = hosts.find((h) => h.id === selectedHostId);
@@ -131,18 +167,29 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                 <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('remote.loading')}</div>
               ) : (
                 hosts.map((host) => (
-                  <button
-                    key={host.id}
-                    type="button"
-                    className="w-full text-left px-2 py-1.5 rounded text-[12px] font-mono truncate"
-                    style={{
-                      background: host.id === selectedHostId ? 'var(--bg-overlay)' : 'transparent',
-                      color: host.id === selectedHostId ? 'var(--text-main)' : 'var(--text-sub)',
-                    }}
-                    onClick={() => selectHost(host.id)}
-                  >
-                    {host.label}
-                  </button>
+                  <div key={host.id} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      className="flex-1 min-w-0 text-left px-2 py-1.5 rounded text-[12px] font-mono truncate"
+                      style={{
+                        background: host.id === selectedHostId ? 'var(--bg-overlay)' : 'transparent',
+                        color: host.id === selectedHostId ? 'var(--text-main)' : 'var(--text-sub)',
+                      }}
+                      onClick={() => selectHost(host.id)}
+                    >
+                      {host.label}
+                    </button>
+                    <button
+                      type="button"
+                      title={t('remote.removeHost')}
+                      aria-label={t('remote.removeHost')}
+                      className="flex-shrink-0 px-1.5 py-1 rounded text-[11px] font-mono"
+                      style={{ color: 'var(--text-subtle)' }}
+                      onClick={() => handleRemoveHost(host.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))
               )}
             </div>

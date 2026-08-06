@@ -61,6 +61,14 @@ connection — it never creates, closes, or otherwise touches anything on the
 remote. There is currently no way to create, rename, or close a remote
 workspace from this view; attach/detach is all that's exposed.
 
+## Removing a registered host
+
+Each host row in the attach modal has a remove button (×) next to it.
+Removing a host forgets its stored URL/token locally and tears down any
+live mirror connections to it — it does not touch anything on the remote
+machine. Use this when a host's token has been rejected (see above) and you
+need to re-add it with a freshly printed URL.
+
 ## Limitations
 
 - **Workspace list is live-pane-derived.** Only workspaces with at least one
@@ -74,10 +82,18 @@ workspace from this view; attach/detach is all that's exposed.
 - **Pane geometry is frozen per connection.** If the remote pane is resized
   after you attach, the mirror keeps showing the old geometry until the
   stream reconnects — it does not renegotiate size live.
-- **Old remotes are refused at add-time.** If the URL you paste points at a
-  wmux build that predates this feature (no `/api/config` remote-attach
-  probe), adding the host fails with an explicit "too old" error rather than
-  silently misbehaving.
+- **Old/unreachable/rejected remotes are refused at add-time**, with a
+  distinct message for each cause rather than one catch-all failure:
+  - *"that machine's wmux is too old for remote attach"* — the URL points
+    at a wmux build that predates this feature (no `/api/config`
+    remote-attach probe, or a response this app can't parse).
+  - *"could not reach that host"* — the connection itself failed (host
+    down, wrong Tailscale name, network blip).
+  - *"token rejected — re-run wmux web on the remote and paste the new
+    URL"* — the host was reached, but the embedded bearer token was
+    refused (401/403). Re-running `wmux web` on the remote mints a fresh
+    token; paste that new URL to re-add the host, or use the remove button
+    on the old entry first if it's still listed.
 - **`--allow-input` doesn't mean "safe."** Typing into a remote pane runs
   real commands on that machine, same as being at its terminal. Treat a
   writable remote attach with the same care as SSH access.

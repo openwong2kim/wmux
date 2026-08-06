@@ -51,18 +51,20 @@ const WORKSPACE: RemoteWorkspaceSummary = {
 describe('AttachRemoteModal', () => {
   let hostsList: ReturnType<typeof vi.fn>;
   let hostsAdd: ReturnType<typeof vi.fn>;
+  let hostsRemove: ReturnType<typeof vi.fn>;
   let workspacesList: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     hostsList = vi.fn().mockResolvedValue([HOST]);
     hostsAdd = vi.fn();
+    hostsRemove = vi.fn().mockResolvedValue(true);
     workspacesList = vi.fn().mockResolvedValue({ ok: true, workspaces: [WORKSPACE] });
 
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       remote: {
         hostsList,
         hostsAdd,
-        hostsRemove: vi.fn(),
+        hostsRemove,
         workspacesList,
         paneAttach: vi.fn(),
         paneDetach: vi.fn(),
@@ -70,6 +72,7 @@ describe('AttachRemoteModal', () => {
         onPaneMeta: vi.fn(() => () => {}),
         onPaneData: vi.fn(() => () => {}),
         onPaneExit: vi.fn(() => () => {}),
+        onPaneError: vi.fn(() => () => {}),
       },
     };
 
@@ -158,6 +161,55 @@ describe('AttachRemoteModal', () => {
       workspaceId: 'ws-abcdef12',
       name: 'my-project',
     });
+
+    unmount();
+  });
+
+  // I3(a) — hostsRemove existed on the handler/preload/types but nothing in
+  // the renderer ever called it, so a dead-token host was unrecoverable
+  // short of hand-editing the persisted hosts file.
+  it('the remove-host button calls hostsRemove and refreshes the host list', async () => {
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    await flush();
+
+    hostsList.mockResolvedValue([]); // simulate the host being gone after removal
+    const removeButton = container.querySelector('button[aria-label="Remove host"]') as HTMLButtonElement;
+    expect(removeButton).toBeTruthy();
+    act(() => {
+      removeButton.click();
+    });
+    await flush();
+
+    expect(hostsRemove).toHaveBeenCalledWith('host-1');
+    expect(hostsList).toHaveBeenCalledTimes(2); // initial load + post-remove refresh
+
+    unmount();
+  });
+
+  // I4 — an IPC rejection (not the {ok:false} error-result path) used to
+  // skip the `adding=false` reset, leaving the Add button permanently
+  // disabled with no error shown.
+  it('hostsAdd rejecting leaves the Add button enabled and shows a generic error', async () => {
+    hostsAdd.mockRejectedValue(new Error('IPC channel closed'));
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    await flush();
+
+    const urlInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(urlInput, 'https://host.example/?token=secret');
+      urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const addButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Add host') as HTMLButtonElement;
+    act(() => {
+      addButton.click();
+    });
+    await flush();
+
+    expect(hostsAdd).toHaveBeenCalled();
+    expect(addButton.disabled).toBe(false);
+    expect(container.textContent).toContain('Could not add host');
 
     unmount();
   });
