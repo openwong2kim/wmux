@@ -30,6 +30,7 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [exited, setExited] = useState(false);
+  const [disconnected, setDisconnected] = useState(false);
 
   // Mount the xterm instance once, for the lifetime of this component.
   useEffect(() => {
@@ -49,6 +50,7 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
   useEffect(() => {
     if (!attachId) return;
     setExited(false);
+    setDisconnected(false);
     const remote = window.electronAPI?.remote;
     if (!remote) return;
 
@@ -70,6 +72,10 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
       if (e.attachId !== attachId) return;
       setExited(true);
     });
+    const offError = remote.onPaneError((e) => {
+      if (e.attachId !== attachId) return;
+      setDisconnected(true);
+    });
     const dataDisposable = termRef.current?.onData((data) => {
       remote.paneWrite(attachId, data);
     });
@@ -78,6 +84,7 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
       offMeta();
       offData();
       offExit();
+      offError();
       dataDisposable?.dispose();
       remote.paneDetach(attachId);
     };
@@ -100,6 +107,14 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
           style={{ color: 'var(--text-muted)', background: 'rgba(0,0,0,0.55)' }}
         >
           {t('remote.exited')}
+        </div>
+      )}
+      {disconnected && (
+        <div
+          className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
+          style={{ color: 'var(--accent-red)', background: 'rgba(0,0,0,0.55)' }}
+        >
+          {t('remote.disconnected')}
         </div>
       )}
     </div>

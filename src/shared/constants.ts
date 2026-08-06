@@ -517,6 +517,7 @@ export const IPC = {
   REMOTE_PANE_DATA: 'remote:pane:data',      // main → renderer push
   REMOTE_PANE_META: 'remote:pane:meta',      // main → renderer push (cols/rows/snapshot)
   REMOTE_PANE_EXIT: 'remote:pane:exit',      // main → renderer push
+  REMOTE_PANE_ERROR: 'remote:pane:error',    // main → renderer push (reconnect gave up)
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

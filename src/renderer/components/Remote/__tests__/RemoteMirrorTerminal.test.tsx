@@ -64,6 +64,7 @@ describe('RemoteMirrorTerminal', () => {
   let metaHandlers: Handler[];
   let dataHandlers: Handler[];
   let exitHandlers: Handler[];
+  let errorHandlers: Handler[];
   let paneDetach: ReturnType<typeof vi.fn>;
   let paneWrite: ReturnType<typeof vi.fn>;
 
@@ -72,6 +73,7 @@ describe('RemoteMirrorTerminal', () => {
     metaHandlers = [];
     dataHandlers = [];
     exitHandlers = [];
+    errorHandlers = [];
     paneDetach = vi.fn();
     paneWrite = vi.fn();
 
@@ -88,6 +90,10 @@ describe('RemoteMirrorTerminal', () => {
         onPaneExit: (cb: Handler) => {
           exitHandlers.push(cb);
           return () => { exitHandlers = exitHandlers.filter((h) => h !== cb); };
+        },
+        onPaneError: (cb: Handler) => {
+          errorHandlers.push(cb);
+          return () => { errorHandlers = errorHandlers.filter((h) => h !== cb); };
         },
         paneDetach,
         paneWrite,
@@ -167,5 +173,38 @@ describe('RemoteMirrorTerminal', () => {
     expect(metaHandlers).toHaveLength(0);
     unmount();
     expect(paneDetach).not.toHaveBeenCalled();
+  });
+
+  it('shows a disconnected overlay when the client gives up reconnecting', () => {
+    const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    expect(container.textContent).not.toContain('Connection lost');
+
+    act(() => {
+      errorHandlers.forEach((h) => h({ attachId: 'a1', message: 'gave up reconnecting' }));
+    });
+
+    expect(container.textContent).toContain('Connection lost');
+
+    unmount();
+  });
+
+  it('ignores an error event for a different attachId', () => {
+    const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    act(() => {
+      errorHandlers.forEach((h) => h({ attachId: 'other', message: 'gave up' }));
+    });
+
+    expect(container.textContent).not.toContain('Connection lost');
+
+    unmount();
+  });
+
+  it('unsubscribes onPaneError on unmount', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    expect(errorHandlers).toHaveLength(1);
+    unmount();
+    expect(errorHandlers).toHaveLength(0);
   });
 });

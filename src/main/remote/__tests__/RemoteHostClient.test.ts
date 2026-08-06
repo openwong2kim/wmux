@@ -336,5 +336,31 @@ describe('RemoteHostClient', () => {
         expect(received).toEqual(['meta:80x24']);
       });
     });
+
+    it('gives up after 5 consecutive failed reconnects, emits onError, and schedules no further retries', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('connect failed');
+      });
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const errors: Array<{ attachId: string; message: string }> = [];
+      client.onError((e) => errors.push(e));
+      const attachId = client.attach('sess-1');
+
+      // Drain the initial attach failure plus 5 reconnect attempts. Max
+      // backoff step is 5s +/- 30% jitter, so 7s per round is always enough.
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(7000);
+      }
+
+      expect(errors).toEqual([{ attachId, message: 'connect failed' }]);
+      // Initial attempt (1) + 5 retries = 6 total fetch calls, never a 7th.
+      const callsAtGiveUp = fetchImpl.mock.calls.length;
+      expect(callsAtGiveUp).toBe(6);
+
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(fetchImpl.mock.calls.length).toBe(callsAtGiveUp);
+    });
   });
 });

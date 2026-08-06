@@ -30,10 +30,16 @@ export interface RemoteExitEvent {
   attachId: string;
 }
 
+export interface RemoteErrorEvent {
+  attachId: string;
+  message: string;
+}
+
 export interface RemotePaneEvents {
   onMeta(cb: (e: RemoteMetaEvent) => void): void;
   onData(cb: (e: RemoteDataEvent) => void): void;
   onExit(cb: (e: RemoteExitEvent) => void): void;
+  onError(cb: (e: RemoteErrorEvent) => void): void;
 }
 
 // Reconnect backoff: 1s -> 2s -> 5s, capped, with +/-30% jitter so that a
@@ -41,6 +47,12 @@ export interface RemotePaneEvents {
 // hammer the remote host in lockstep.
 const BACKOFF_STEPS_MS = [1000, 2000, 5000];
 const JITTER_RATIO = 0.3;
+
+// After this many consecutive failed reconnect attempts, stop retrying and
+// emit onError instead — otherwise a dead remote gets hammered forever
+// (every ~5s, the max backoff step) while the renderer sits on a silent
+// blank mirror with no signal the stream is gone for good.
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Write coalescing window: two POSTs in flight at once can land out of order
 // and scramble keystrokes, and per-character POSTs at desktop typing rates
@@ -91,6 +103,7 @@ export class RemoteHostClient implements RemotePaneEvents {
   private metaCbs: Array<(e: RemoteMetaEvent) => void> = [];
   private dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   private exitCbs: Array<(e: RemoteExitEvent) => void> = [];
+  private errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
 
   constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch) {
     this.host = host;
@@ -107,6 +120,10 @@ export class RemoteHostClient implements RemotePaneEvents {
 
   onExit(cb: (e: RemoteExitEvent) => void): void {
     this.exitCbs.push(cb);
+  }
+
+  onError(cb: (e: RemoteErrorEvent) => void): void {
+    this.errorCbs.push(cb);
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
@@ -332,8 +349,13 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
   }
 
-  private scheduleReconnect(attachment: Attachment, _err: unknown): void {
+  private scheduleReconnect(attachment: Attachment, err: unknown): void {
     if (attachment.detached) return;
+    if (attachment.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      const message = err instanceof Error ? err.message : String(err ?? 'stream error');
+      for (const cb of this.errorCbs) cb({ attachId: attachment.attachId, message });
+      return;
+    }
     const delay = backoffForAttempt(attachment.reconnectAttempt);
     attachment.reconnectAttempt += 1;
     attachment.reconnectTimer = setTimeout(() => {

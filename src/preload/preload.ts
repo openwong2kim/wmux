@@ -1242,6 +1242,11 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.REMOTE_PANE_EXIT, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_EXIT, listener); };
   },
+  onPaneError: (callback: (e: { attachId: string; message: string }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; message: string }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_ERROR, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_ERROR, listener); };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

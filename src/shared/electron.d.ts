@@ -167,6 +167,9 @@ declare global {
         ) => () => void;
         onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
         onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;
+        /** Fires once reconnection gives up after too many consecutive
+         *  failures — the stream is dead until a fresh attach. */
+        onPaneError: (callback: (e: { attachId: string; message: string }) => void) => () => void;
       };
     };
     clipboardAPI: {
