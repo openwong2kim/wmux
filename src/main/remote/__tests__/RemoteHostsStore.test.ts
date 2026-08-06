@@ -1,8 +1,24 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemoteHostsStore } from '../RemoteHostsStore';
+
+const { secureWriteTokenFileMock } = vi.hoisted(() => ({
+  secureWriteTokenFileMock: vi.fn(),
+}));
+
+vi.mock('../../../shared/security', async () => {
+  const actual = await vi.importActual<typeof import('../../../shared/security')>('../../../shared/security');
+  // Defaults to the real implementation so every pre-existing test in this
+  // file (persistence, permissions, corrupt-file tolerance) is unaffected —
+  // only the M4 test below overrides it to simulate a persist failure.
+  secureWriteTokenFileMock.mockImplementation(actual.secureWriteTokenFile);
+  return {
+    ...actual,
+    secureWriteTokenFile: secureWriteTokenFileMock,
+  };
+});
 
 describe('RemoteHostsStore', () => {
   let dir: string;
@@ -115,6 +131,35 @@ describe('RemoteHostsStore', () => {
 
     const store2 = new RemoteHostsStore(filePath);
     expect(store2.list()).toHaveLength(1);
+  });
+
+  // M4 — add()/remove() used to mutate `this.hosts` BEFORE persist(), so a
+  // secureWriteTokenFile throw (fail-closed on a chmod/ACL failure) left
+  // memory and disk desynced: list() would show a host that was never
+  // actually saved. Build-then-persist-then-assign fixes that.
+  it('a persist failure during add() leaves list() unchanged', () => {
+    const store = new RemoteHostsStore(filePath);
+    secureWriteTokenFileMock.mockImplementationOnce(() => {
+      throw new Error('EACCES: chmod failed');
+    });
+
+    expect(() => store.add('https://office-mac.example:9600/?token=secret-abc')).toThrow();
+    expect(store.list()).toEqual([]);
+  });
+
+  it('a persist failure during remove() leaves list() unchanged', () => {
+    const store = new RemoteHostsStore(filePath);
+    const result = store.add('https://office-mac.example:9600/?token=secret-abc');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    secureWriteTokenFileMock.mockImplementationOnce(() => {
+      throw new Error('EACCES: chmod failed');
+    });
+
+    expect(() => store.remove(result.host.id)).toThrow();
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0]?.id).toBe(result.host.id);
   });
 
   it('writes the token file with owner-only permissions (POSIX)', () => {

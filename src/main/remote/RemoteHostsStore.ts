@@ -77,21 +77,22 @@ export class RemoteHostsStore {
       addedAt: Date.now(),
     };
 
-    this.hosts.push(host);
-    this.persist();
+    const next = [...this.hosts, host];
+    this.persist(next);
+    this.hosts = next;
     return { ok: true, host: toPublic(host) };
   }
 
   remove(id: string): boolean {
-    const before = this.hosts.length;
-    this.hosts = this.hosts.filter((h) => h.id !== id);
-    if (this.hosts.length === before) return false;
-    this.persist();
+    const next = this.hosts.filter((h) => h.id !== id);
+    if (next.length === this.hosts.length) return false;
+    this.persist(next);
+    this.hosts = next;
     return true;
   }
 
-  private persist(): void {
-    secureWriteTokenFile(this.filePath, JSON.stringify(this.hosts));
+  private persist(hosts: RemoteHost[]): void {
+    secureWriteTokenFile(this.filePath, JSON.stringify(hosts));
   }
 
   private load(): void {
