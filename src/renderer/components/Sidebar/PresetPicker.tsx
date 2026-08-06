@@ -125,7 +125,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         onClick={() => setAttachRemoteOpen(true)}
       >
         <div className="font-semibold">{t('remote.attachTitle')}…</div>
-        <div className="text-[var(--text-muted)] text-[10px]">Mirror a workspace from another wmux</div>
+        <div className="text-[var(--text-muted)] text-[10px]">{t('remote.mirrorDescription')}</div>
       </button>
     </div>
   );

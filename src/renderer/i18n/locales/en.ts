@@ -1354,6 +1354,9 @@ export const en = {
   'remote.addFailed': 'Could not add host — check the app logs',
   'remote.workspacesFailed': 'Could not load workspaces — check the app logs',
   'remote.morePanes': '+{count} more panes',
+  'remote.mirrorDescription': 'Mirror a workspace from another wmux',
+  'remote.labelOptional': 'Label (optional)',
+  'remote.paneCount': '{count} panes',
 } as const;
 
 export type TranslationKey = keyof typeof en;

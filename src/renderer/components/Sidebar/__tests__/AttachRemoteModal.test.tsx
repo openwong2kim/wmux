@@ -186,6 +186,45 @@ describe('AttachRemoteModal', () => {
     unmount();
   });
 
+  // m9 — a stale-response race: select host A then host B before A's
+  // workspacesList resolves. A resolving last must not clobber B's list
+  // while B is still the selected host.
+  it('keeps the latest selected host\'s workspaces when an earlier selection resolves last', async () => {
+    const HOST_B: RemoteHostPublic = { id: 'host-2', label: 'other-box', origin: 'https://other:9600', addedAt: 2, allowInput: true };
+    const WORKSPACE_B: RemoteWorkspaceSummary = { id: 'ws-b', name: 'other-project', panes: [] };
+    hostsList.mockResolvedValue([HOST, HOST_B]);
+
+    let resolveA: ((v: { ok: true; workspaces: RemoteWorkspaceSummary[] }) => void) | undefined;
+    const pendingA = new Promise<{ ok: true; workspaces: RemoteWorkspaceSummary[] }>((resolve) => { resolveA = resolve; });
+    workspacesList.mockImplementation((hostId: string) => {
+      if (hostId === 'host-1') return pendingA;
+      return Promise.resolve({ ok: true, workspaces: [WORKSPACE_B] });
+    });
+
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+    await flush();
+
+    const hostAButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
+    const hostBButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'other-box')!;
+
+    act(() => { hostAButton.click(); }); // A's workspacesList hangs (pendingA)
+    await flush();
+    act(() => { hostBButton.click(); }); // B resolves immediately
+    await flush();
+
+    expect(container.textContent).toContain('other-project');
+    expect(container.textContent).not.toContain('my-project');
+
+    // A's stale response arrives after B already won — must not overwrite.
+    act(() => { resolveA?.({ ok: true, workspaces: [WORKSPACE] }); });
+    await flush();
+
+    expect(container.textContent).toContain('other-project');
+    expect(container.textContent).not.toContain('my-project');
+
+    unmount();
+  });
+
   // I4 — an IPC rejection (not the {ok:false} error-result path) used to
   // skip the `adding=false` reset, leaving the Add button permanently
   // disabled with no error shown.

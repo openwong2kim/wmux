@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
@@ -57,7 +57,14 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Guards against a stale-response race: select host A then quickly B — if
+  // A's workspacesList resolves after B's, it must not overwrite B's list.
+  // Only the response matching the CURRENT request sequence number is
+  // allowed to commit state.
+  const selectRequestSeq = useRef(0);
+
   const selectHost = useCallback(async (hostId: string) => {
+    const seq = ++selectRequestSeq.current;
     setSelectedHostId(hostId);
     setWorkspaces([]);
     setWorkspacesError(null);
@@ -66,6 +73,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     if (!remote) { setLoadingWorkspaces(false); return; }
     try {
       const res = await remote.workspacesList(hostId);
+      if (seq !== selectRequestSeq.current) return; // a newer selectHost superseded this one
       if (res.ok) {
         setWorkspaces(res.workspaces);
         // allowInput may be stale/undefined until a probe runs — a successful
@@ -78,9 +86,10 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } catch {
       // Unexpected IPC rejection — surface a generic error instead of
       // leaving loadingWorkspaces stuck true forever.
+      if (seq !== selectRequestSeq.current) return;
       setWorkspacesError(t('remote.workspacesFailed'));
     } finally {
-      setLoadingWorkspaces(false);
+      if (seq === selectRequestSeq.current) setLoadingWorkspaces(false);
     }
   }, [refreshHosts, t]);
 
@@ -208,7 +217,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
               />
               <Input
                 type="text"
-                placeholder="Label (optional)"
+                placeholder={t('remote.labelOptional')}
                 value={addLabel}
                 onChange={(e) => setAddLabel(e.target.value)}
                 className="text-[11px] font-mono w-full"
@@ -251,7 +260,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                     {ws.name || ws.id.slice(0, 8)}
                   </div>
                   <div className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {ws.panes.length} panes
+                    {t('remote.paneCount', { count: ws.panes.length })}
                     {selectedHost?.allowInput === false && (
                       <span className="ml-2" style={{ color: 'var(--accent)' }}>{t('remote.readOnly')}</span>
                     )}
