@@ -12,7 +12,7 @@ code required. If you are writing an external client instead, see
 - The **remote** machine runs wmux with the web server exposed over
   Tailscale:
 
-  ```
+  ```bash
   wmux web --tailscale --allow-input
   ```
 
