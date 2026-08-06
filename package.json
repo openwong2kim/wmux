@@ -14,7 +14,7 @@
     "package": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge package",
     "make": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge make",
     "lint": "eslint --ext .ts,.tsx .",
-    "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty && npm run build:daemon-web",
+    "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty --external:ssh2 --external:cpu-features && npm run build:daemon-web",
     "build:daemon-web": "node scripts/build-daemon-web.mjs",
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js && node scripts/copy-bridge.mjs",
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
