@@ -325,8 +325,94 @@ describe('AttachRemoteModal', () => {
       await flush();
 
       expect(hostsPair).toHaveBeenCalledWith('https://new-box.example:9600', 'ABCD1234', undefined);
-      expect(hostsList).toHaveBeenCalledTimes(2); // initial load + post-pair refresh
+      // initial load + post-pair refresh + the refresh inside the auto-select
+      // that follows it (selectHost refetches to pick up the probed allowInput)
+      expect(hostsList).toHaveBeenCalledTimes(3);
       expect((container.querySelector('input[aria-label="Host address"]') as HTMLInputElement).value).toBe('');
+
+      unmount();
+    });
+
+    // Regression: pairing burns a single-use code, then the modal used to sit
+    // on its no-host-selected state — which was itself wired to the paste-URL
+    // hint. A successful pair looked identical to a no-op and told the
+    // operator to go paste a URL they had just avoided needing.
+    it('a successful pair auto-selects the new host and lists its workspaces', async () => {
+      const PAIRED: RemoteHostPublic = { id: 'host-2', label: 'new-box', origin: 'https://new-box.example:9600', addedAt: 3, allowInput: true };
+      hostsPair.mockResolvedValue({ ok: true, host: PAIRED });
+      hostsList.mockResolvedValue([HOST, PAIRED]);
+
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      setInputValue(container.querySelector('input[aria-label="Host address"]') as HTMLInputElement, 'https://new-box.example:9600');
+      setInputValue(container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement, 'ABCD1234');
+
+      const pairButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pair')!;
+      act(() => { pairButton.click(); });
+      await flush();
+
+      expect(workspacesList).toHaveBeenCalledWith('host-2');
+      expect(container.textContent).toContain('my-project');
+      expect(container.textContent).not.toContain('Select a host to see its workspaces');
+
+      unmount();
+    });
+
+    it('Enter in the pairing-code field submits, and does nothing while the form is incomplete', async () => {
+      hostsPair.mockResolvedValue({ ok: true, host: HOST });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const codeInput = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+
+      // Host address still blank — the button is disabled, so Enter must be too.
+      setInputValue(codeInput, 'ABCD1234');
+      act(() => { codeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+      await flush();
+      expect(hostsPair).not.toHaveBeenCalled();
+
+      setInputValue(container.querySelector('input[aria-label="Host address"]') as HTMLInputElement, 'https://new-box.example:9600');
+      act(() => { codeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+      await flush();
+
+      expect(hostsPair).toHaveBeenCalledWith('https://new-box.example:9600', 'ABCD1234', undefined);
+
+      unmount();
+    });
+  });
+
+  describe('right-pane empty states', () => {
+    it('tells you to select a host once one is registered, not to paste a URL', async () => {
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      expect(container.textContent).toContain('Select a host to see its workspaces');
+      expect(container.textContent).not.toContain('Paste the URL printed by');
+
+      unmount();
+    });
+
+    it('tells you how to register the first host when none are registered', async () => {
+      hostsList.mockResolvedValue([]);
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      expect(container.textContent).toContain('Pair with a code, or paste the URL');
+
+      unmount();
+    });
+
+    it('explains an empty workspace list instead of rendering a blank pane', async () => {
+      workspacesList.mockResolvedValue({ ok: true, workspaces: [] });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
+      act(() => { hostButton.click(); });
+      await flush();
+
+      expect(container.textContent).toContain('the list is built from panes that are open right now');
 
       unmount();
     });
