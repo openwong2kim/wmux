@@ -755,12 +755,15 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     const name = (info.pendingDeviceName ?? deviceName).trim();
     setBusy(true);
     try {
-      if (name && a.pairStart) setInfo(await a.pairStart(name));
+      // The grant rides along. Without it the preload default (`false`)
+      // overrode the ticked checkbox, so "New code" quietly registered a
+      // read-only device while the UI said otherwise.
+      if (name && a.pairStart) setInfo(await a.pairStart(name, pairAllowInput));
       else if (a.pairRefresh) setInfo(await a.pairRefresh());
     } finally {
       setBusy(false);
     }
-  }, [deviceName, info.pendingDeviceName]);
+  }, [deviceName, info.pendingDeviceName, pairAllowInput]);
 
   /**
    * Send an install link to the OS browser.

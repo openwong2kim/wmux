@@ -163,6 +163,13 @@ says, and the roster tells you so. Devices paired before per-device grants
 existed keep the access they had — they were typing under the server flag,
 and an upgrade does not silently mute them.
 
+On a **headless host** — `wmux web --allow-input` in a terminal, no desktop
+app — there is no popover to tick and no roster to grant from afterwards, so
+the pairing code that server prints carries the server's own flag. Pairing
+from a terminal therefore works exactly as it did before per-device grants
+existed. The per-device choice is what the GUI adds on top, not a hoop the
+CLI now has to jump through.
+
 ## See also
 
 - [Connect to wmux](./connect-to-wmux.md) — the underlying protocol, if

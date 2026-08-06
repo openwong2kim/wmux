@@ -877,12 +877,29 @@ export class WebTerminalServer {
    * phone types a code and nothing else, so if the answer is not captured here
    * there is no later moment to capture it in.
    *
-   * Defaults to false when a code is minted without an opinion. Read-only is
-   * the recoverable mistake — the operator grants it afterwards from the
-   * roster — where handing typing to a device that should not have had it is
-   * not noticed until something has already been typed.
+   * When nobody states a grant, this falls back to the SERVER's `--allow-input`
+   * (see `defaultPendingGrant`). That is not a weaker default, it is the only
+   * one that keeps headless hosts working: `wmux web --allow-input` on a box
+   * with no GUI mints its pairing code from `start()`, with no operator present
+   * to tick anything, and the roster UI that could grant input afterwards does
+   * not exist there. Defaulting those to read-only would make every device
+   * paired from a terminal permanently mute with no way to fix it — a
+   * regression against the behaviour this whole feature is narrowing.
+   *
+   * A caller that DOES state a grant always wins, which is how the GUI's
+   * unticked checkbox still means read-only on an input-enabled server.
    */
   private pendingDeviceAllowInput = false;
+
+  /**
+   * The grant a pairing code carries when nobody said. Typing `--allow-input`
+   * IS the operator's decision on a host where there is nowhere else to make
+   * one; this reads it rather than inventing a stricter answer they cannot act
+   * on.
+   */
+  private defaultPendingGrant(): boolean {
+    return this.opts?.allowInput === true;
+  }
   /**
    * Outstanding stream tickets, keyed by the ticket itself (B3).
    *
@@ -1004,7 +1021,8 @@ export class WebTerminalServer {
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
     this.pendingDeviceName = undefined;
-    this.pendingDeviceAllowInput = false;
+    // AFTER `this.opts` is set — the default reads the flag from it.
+    this.pendingDeviceAllowInput = this.defaultPendingGrant();
     this.generatePairCode();
 
     // A malformed request or a client that drops mid-handshake must not crash
@@ -1199,7 +1217,10 @@ export class WebTerminalServer {
     const label = typeof params.name === 'string' ? params.name.trim() : '';
     this.generatePairCode();
     this.pendingDeviceName = label || undefined;
-    this.pendingDeviceAllowInput = params.allowInput === true;
+    // `??`, not `===`: an omitted grant inherits the server's, an explicit
+    // `false` stays false. Collapsing those two would either mute the GUI's
+    // unticked box or mute every headless pairing.
+    this.pendingDeviceAllowInput = params.allowInput ?? this.defaultPendingGrant();
     return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
   }
 
@@ -3510,7 +3531,9 @@ export class WebTerminalServer {
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
-    this.pendingDeviceAllowInput = false;
+    // Back to the server's default rather than to `false`: a redeemed code
+    // must not leave the NEXT device on this host worse off than the first.
+    this.pendingDeviceAllowInput = this.defaultPendingGrant();
   }
 
   // --- helpers ------------------------------------------------------------

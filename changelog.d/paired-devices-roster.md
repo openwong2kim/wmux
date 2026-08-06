@@ -45,3 +45,8 @@
   `/api/config` now answers with the calling device's own grant instead of the
   server-wide flag, so a read-only phone no longer renders a composer that
   rejects every keystroke.
+
+  Headless hosts are unaffected: `wmux web --allow-input` in a terminal has no
+  popover to tick and no roster to grant from later, so the code it prints
+  carries the server's own flag and pairing from a terminal works exactly as
+  it did before. The per-device choice is what the GUI adds on top.

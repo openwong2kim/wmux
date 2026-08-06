@@ -2057,6 +2057,80 @@ describe('WebTerminalServer', () => {
     // A ticket exists because EventSource cannot set headers. It is not
     // revalidated against the roster while it lives, so it must never be a
     // path to input.
+    /**
+     * The headless case, and the reason the default is the server flag rather
+     * than `false`. A box with no GUI mints its pairing code inside `start()`
+     * with nobody present to tick anything, and the roster UI that could grant
+     * input afterwards does not exist there. Defaulting to read-only would make
+     * every device paired from a terminal permanently mute.
+     */
+    it('a code minted by start() inherits the server flag, so headless pairing still types', async () => {
+      await startRW();
+      const code = server.status().pairCode as string;
+      const res = await fetch(`${base()}/api/pair?code=${code}`);
+      expect(res.status).toBe(200);
+      const { token } = await res.json() as { token: string };
+
+      const typed = await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      });
+      expect(typed.status).toBe(204);
+    });
+
+    it('a second headless pairing is not downgraded by the first having been redeemed', async () => {
+      await startRW();
+      await fetch(`${base()}/api/pair?code=${server.status().pairCode as string}`);
+
+      server.refreshPairCode();
+      const second = await fetch(`${base()}/api/pair?code=${server.status().pairCode as string}`);
+      expect(second.status).toBe(200);
+      const { token } = await second.json() as { token: string };
+
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      })).status).toBe(204);
+    });
+
+    // An explicit refusal still wins over the server default — otherwise the
+    // GUI's unticked checkbox would mean nothing on an input-enabled server.
+    it('an explicit read-only pairing beats the server default', async () => {
+      await startRW();
+      const viewer = await pairDevice('Wall display', false);
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(viewer.token), body: 'ls',
+      })).status).toBe(403);
+    });
+
+    // The grant belongs to the PAIRING SESSION, like the pending name: a code
+    // regenerated after a burned attempt budget is the same operator pairing
+    // the same device, and must not quietly change what they chose. Pinned
+    // because both reviewers read the preserved-vs-reset question as ambiguous.
+    it('a regenerated code keeps the grant chosen for that pairing session', async () => {
+      await startRW();
+      const started = server.startPairing({ name: 'Wall display', allowInput: false });
+      expect(started.ok).toBe(true);
+
+      for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+      let replacement: string;
+      try {
+        await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+        replacement = server.status().pairCode as string;
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const res = await fetch(`${base()}/api/pair?code=${replacement}`);
+      expect(res.status).toBe(200);
+      const { token } = await res.json() as { token: string };
+      // Still read-only: the replacement carried the session's own decision,
+      // not the server default it would otherwise have fallen back to.
+      expect((await fetch(`${base()}/api/input?session=s1`, {
+        method: 'POST', headers: bearer(token), body: 'ls',
+      })).status).toBe(403);
+    });
+
     it('a stream ticket never carries an input grant', async () => {
       await startRW();
       const typer = await pairDevice('iPhone', true);

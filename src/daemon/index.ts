@@ -2511,12 +2511,15 @@ function registerRpcHandlers(
     // name (it has to; the pre-M3 pairing path still exists), so the
     // requirement lives at the operator seam.
     if (!name) return { ok: false, error: 'a device name is required to pair' };
-    // Absent reads as read-only, matching the server's own default. An older
-    // caller that never learned to send this gets the recoverable outcome —
-    // a device that cannot type until the operator grants it — rather than
-    // one silently holding a keyboard nobody asked to hand over.
-    const allowInput = params['allowInput'] === true;
-    return webServer.startPairing({ name, allowInput });
+    // Forwarded ONLY when the caller actually stated one. Coercing an absent
+    // field to `false` here would override the server's default and mute every
+    // device paired by a client that predates this parameter — including the
+    // CLI, which has no way to state it.
+    const allowInput = params['allowInput'];
+    return webServer.startPairing({
+      name,
+      ...(typeof allowInput === 'boolean' ? { allowInput } : {}),
+    });
   });
 
   pipeServer.onRpc('daemon.web.deviceList', async () => {
@@ -2538,7 +2541,11 @@ function registerRpcHandlers(
     // re-check the roster per request (so typing stops immediately either way),
     // dropping the streams makes the phone re-handshake and pick up its new,
     // smaller grant instead of showing a composer it can no longer use.
-    if (result.ok && !allowInput) webServer.disconnectDevice(deviceId);
+    // NOT gated on `result.ok`. A failed persist still leaves the device
+    // read-only in memory, so its open streams are already outliving the
+    // capability behind them — leaving them up means a phone showing a live
+    // composer that 403s on every keystroke.
+    if (!allowInput) webServer.disconnectDevice(deviceId);
     return result;
   });
 
