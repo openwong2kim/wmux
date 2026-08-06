@@ -19,7 +19,7 @@ function gridStyle(count: number): CSSProperties {
 /** One pane cell: owns the paneAttach call (and its resulting attachId), the
  *  shell/cwd caption, and the mirror terminal itself. Attach is idempotent in
  *  main, so a StrictMode double-effect here is harmless. */
-function PaneCell({ hostId, pane }: { hostId: string; pane: RemotePaneSummary }) {
+function PaneCell({ hostId, pane, readOnly }: { hostId: string; pane: RemotePaneSummary; readOnly: boolean }) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -31,6 +31,12 @@ function PaneCell({ hostId, pane }: { hostId: string; pane: RemotePaneSummary })
       if (cancelled) return;
       if (res.ok) setAttachId(res.attachId);
       else setError(res.error);
+    }).catch((err: unknown) => {
+      // Unexpected IPC rejection (not the {ok:false} result path) — surface
+      // it the same way a rejected attach result does, rather than leaving
+      // this cell silently stuck with attachId: null forever.
+      if (cancelled) return;
+      setError(err instanceof Error ? err.message : String(err));
     });
     return () => { cancelled = true; };
   }, [hostId, pane.sessionId]);
@@ -45,7 +51,7 @@ function PaneCell({ hostId, pane }: { hostId: string; pane: RemotePaneSummary })
         {pane.cwd ? ` — ${pane.cwd}` : ''}
       </div>
       <div className="flex-1 min-h-0">
-        <RemoteMirrorTerminal attachId={attachId} error={error} />
+        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} />
       </div>
     </div>
   );
@@ -97,7 +103,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
         style={{ display: 'grid', ...gridStyle(visiblePanes.length), gap: '2px', background: 'var(--bg-surface)' }}
       >
         {visiblePanes.map((pane) => (
-          <PaneCell key={pane.sessionId} hostId={workspace.hostId} pane={pane} />
+          <PaneCell key={pane.sessionId} hostId={workspace.hostId} pane={pane} readOnly={allowInput === false} />
         ))}
       </div>
       {hiddenCount > 0 && (

@@ -74,7 +74,7 @@ describe('RemoteMirrorTerminal', () => {
     dataHandlers = [];
     exitHandlers = [];
     errorHandlers = [];
-    paneDetach = vi.fn();
+    paneDetach = vi.fn(() => Promise.resolve());
     paneWrite = vi.fn();
 
     (window as unknown as { electronAPI: unknown }).electronAPI = {
@@ -166,6 +166,33 @@ describe('RemoteMirrorTerminal', () => {
     const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
     unmount();
     expect(paneDetach).toHaveBeenCalledWith('a1');
+  });
+
+  // m8 — a rejected paneDetach (e.g. daemon hiccup on teardown) must not
+  // throw out of the unmount cleanup; it's best-effort and swallowed.
+  it('does not throw when paneDetach rejects on unmount', async () => {
+    paneDetach.mockImplementation(() => Promise.reject(new Error('IPC channel closed')));
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    expect(() => unmount()).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  // m7 — when the host is read-only, keystrokes must be swallowed locally
+  // instead of forwarded (the server would reject them anyway, but a
+  // forwarded write is a wasted POST at best and a confusing partial-echo
+  // at worst).
+  it('does not forward paneWrite when readOnly is true', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" readOnly />);
+    const term = termInstances[0];
+
+    act(() => {
+      term.onDataHandler?.('ls\n');
+    });
+
+    expect(paneWrite).not.toHaveBeenCalled();
+
+    unmount();
   });
 
   it('does nothing while attachId is null (attach still in flight)', () => {

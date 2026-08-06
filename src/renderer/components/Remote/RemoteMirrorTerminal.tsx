@@ -7,6 +7,9 @@ export interface RemoteMirrorTerminalProps {
   attachId: string | null;
   /** Set when the attach itself failed (e.g. a rejected paneAttach). */
   error?: string;
+  /** True when the remote host was started without --allow-input — writes
+   *  must be swallowed locally rather than silently dropped server-side. */
+  readOnly?: boolean;
 }
 
 /** Decode a base64 payload into raw bytes and hand it to xterm as-is — the
@@ -25,12 +28,17 @@ function decodeBase64Bytes(b64: string): Uint8Array {
  * single owner, the remote daemon). A container/remote aspect mismatch is
  * letterboxed by the parent's CSS, not by resizing the terminal.
  */
-export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
   const t = useT();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [exited, setExited] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
+  // Read via ref inside the attach-lifecycle effect below so a readOnly
+  // flip (allowInput probe resolving after mount) doesn't tear down and
+  // re-subscribe the whole attach — only paneWrite needs the live value.
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
 
   // Mount the xterm instance once, for the lifetime of this component.
   useEffect(() => {
@@ -77,6 +85,7 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
       setDisconnected(true);
     });
     const dataDisposable = termRef.current?.onData((data) => {
+      if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
       remote.paneWrite(attachId, data);
     });
 
@@ -86,7 +95,7 @@ export default function RemoteMirrorTerminal({ attachId, error }: RemoteMirrorTe
       offExit();
       offError();
       dataDisposable?.dispose();
-      remote.paneDetach(attachId);
+      remote.paneDetach(attachId).catch(() => { /* best-effort teardown — nothing for the caller to act on */ });
     };
   }, [attachId]);
 
