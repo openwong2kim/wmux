@@ -10,7 +10,12 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from './lanlink';
-import type { WebStartArgs, WebTerminalInfo } from './web';
+import type {
+  WebDeviceRevokeResult,
+  WebDeviceSummary,
+  WebStartArgs,
+  WebTerminalInfo,
+} from './web';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
@@ -135,6 +140,24 @@ declare global {
          * answer six months later.
          */
         pairStart: (name: string) => Promise<WebTerminalInfo>;
+        /**
+         * The paired-device roster.
+         *
+         * Answers from the device STORE, not from a running server, so it is
+         * readable while `wmux web` is stopped — which is exactly when an
+         * operator who has just stopped sharing wants to check what still
+         * holds a credential. Carries no secret material.
+         */
+        deviceList: () => Promise<{ devices: WebDeviceSummary[]; error?: string }>;
+        /**
+         * Revoke one device permanently and cut its live streams.
+         *
+         * Irreversible: revocation is never cleared, and a device returns only
+         * by pairing again. `ok:false` with `persist-failed` means the streams
+         * were cut but the roster write did NOT land, so the credential comes
+         * back on the next daemon boot.
+         */
+        deviceRevoke: (deviceId: string) => Promise<WebDeviceRevokeResult>;
       };
       /**
        * Remote workspace attach — registered remote wmux web hosts + the

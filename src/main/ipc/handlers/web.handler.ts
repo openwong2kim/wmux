@@ -4,6 +4,8 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import {
   WEB_DEFAULT_PORT,
+  type WebDeviceRevokeResult,
+  type WebDeviceSummary,
   type WebStartArgs,
   type WebTerminalInfo,
 } from '../../../shared/web';
@@ -273,6 +275,53 @@ export function registerWebHandlers(
     }),
   );
 
+  ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
+  ipcMain.handle(
+    IPC.WEB_DEVICE_LIST,
+    wrapHandler(IPC.WEB_DEVICE_LIST, async (): Promise<{ devices: WebDeviceSummary[]; error?: string }> => {
+      const dc = getDaemonClient();
+      if (!dc || !dc.isConnected) {
+        return { devices: [], error: 'wmux web runs inside the background daemon, which is not running.' };
+      }
+      try {
+        // `daemon.web.deviceList` answers {devices}, NOT a WebTerminalInfo — it
+        // reads the roster store, which outlives any one run of the server. A
+        // stopped server still has devices worth revoking.
+        const res = (await dc.rpc('daemon.web.deviceList', {})) as { devices?: unknown };
+        return Array.isArray(res?.devices)
+          ? { devices: res.devices as WebDeviceSummary[] }
+          : { devices: [], error: 'daemon.web.deviceList: malformed daemon response' };
+      } catch (err) {
+        return { devices: [], error: (err as Error)?.message ?? String(err) };
+      }
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
+  ipcMain.handle(
+    IPC.WEB_DEVICE_REVOKE,
+    wrapHandler(IPC.WEB_DEVICE_REVOKE, async (_event, input: unknown): Promise<WebDeviceRevokeResult> => {
+      const deviceId =
+        input && typeof input === 'object' ? String((input as { deviceId?: unknown }).deviceId ?? '') : '';
+      if (!deviceId) return { ok: false, reason: 'not-found' };
+      const dc = getDaemonClient();
+      // 'unavailable' rather than a generic failure: nothing was revoked AND
+      // nothing was attempted, which the operator must read differently from a
+      // roster write that failed halfway.
+      if (!dc || !dc.isConnected) return { ok: false, reason: 'unavailable' };
+      try {
+        const res = (await dc.rpc('daemon.web.deviceRevoke', { deviceId })) as WebDeviceRevokeResult;
+        if (res && typeof res === 'object' && typeof res.ok === 'boolean') return res;
+        return { ok: false, reason: 'persist-failed' };
+      } catch {
+        // A rejected RPC leaves the roster in an unknown state. Report the
+        // pessimistic outcome: the caller re-lists either way, and claiming a
+        // revoke that may not have persisted is the one lie that matters here.
+        return { ok: false, reason: 'persist-failed' };
+      }
+    }),
+  );
+
   ipcMain.removeHandler(IPC.WEB_STOP);
   ipcMain.handle(
     IPC.WEB_STOP,
@@ -314,5 +363,7 @@ export function registerWebHandlers(
     ipcMain.removeHandler(IPC.WEB_STOP);
     ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
     ipcMain.removeHandler(IPC.WEB_PAIR_START);
+    ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
+    ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
   };
 }

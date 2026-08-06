@@ -145,6 +145,19 @@ pasted it), while pairing mints a fresh **device-scoped** token per PC —
 the remote's device list can revoke this one machine without touching any
 other attached device.
 
+To revoke, go to the **remote** machine and open **Paired devices…** in its
+titlebar Web popover. Each device is listed by the name it was given at pair
+time; revoking one cuts its live connections immediately and permanently. A
+revoked device comes back only by pairing again. The roster reads from the
+device store rather than the running server, so it is available even after
+`wmux web --stop` — worth checking after you stop sharing, since stopping
+the server does not by itself retire the credentials it handed out.
+
+Note that `--allow-input` is a property of the **server**, not of a device:
+there is no per-device read-only mode. If the remote runs with input
+enabled, every paired device can type. Revoking is the per-device control;
+the input grant is all-or-nothing.
+
 ## See also
 
 - [Connect to wmux](./connect-to-wmux.md) — the underlying protocol, if

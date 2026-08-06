@@ -478,6 +478,10 @@ export const IPC = {
   WEB_PAIR_REFRESH: 'web:pairRefresh',
   /** Name a device, THEN mint its code. The daemon refuses a blank name. */
   WEB_PAIR_START: 'web:pairStart',
+  /** The operator's paired-device roster. Carries no secret material. */
+  WEB_DEVICE_LIST: 'web:deviceList',
+  /** Revoke one device permanently and cut its live streams. */
+  WEB_DEVICE_REVOKE: 'web:deviceRevoke',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

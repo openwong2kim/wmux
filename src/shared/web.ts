@@ -148,6 +148,38 @@ export interface PairRefusal {
   detail: string;
 }
 
+/**
+ * One paired device, as the operator's roster shows it.
+ *
+ * A structural mirror of the daemon's `DeviceSummary` (`daemon/web/DeviceStore`)
+ * rather than an import: shared/ must not pull daemon internals into the
+ * renderer bundle, and the daemon deliberately keeps that type free of secret
+ * material — no secret, no hash, no salt — so mirroring costs nothing but a
+ * tsc-checked seam in the handler.
+ */
+export interface WebDeviceSummary {
+  deviceId: string;
+  /** Operator-chosen label. Empty for devices paired before naming was required. */
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
+  revokedAt?: number;
+}
+
+/**
+ * Result of revoking one device.
+ *
+ * Fail-closed, and the distinction matters to the UI: `ok` means the roster
+ * write PERSISTED. A `persist-failed` device had its live streams cut anyway
+ * (an established SSE never re-authenticates) but WILL come back on the next
+ * daemon boot, so the operator has to be told it is not actually gone.
+ */
+export interface WebDeviceRevokeResult {
+  ok: boolean;
+  reason?: 'not-found' | 'persist-failed' | 'unavailable';
+}
+
 /** Renderer → main start request. `expose` maps to the 0.0.0.0 bind. */
 export interface WebStartArgs {
   /** Enable keyboard input (default false — read-only preserves the default). */

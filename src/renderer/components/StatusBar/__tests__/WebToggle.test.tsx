@@ -47,6 +47,7 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     onCopyPairCode: vi.fn(),
     onOpenUrl: vi.fn(),
     onNewPairCode: vi.fn(),
+    onOpenDevices: vi.fn(),
     t,
   };
   return renderToStaticMarkup(createElement(WebPopoverBody, { ...base, ...overrides }));

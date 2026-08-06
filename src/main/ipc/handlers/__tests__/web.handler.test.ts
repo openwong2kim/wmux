@@ -459,3 +459,83 @@ describe('web.handler — graceful degradation', () => {
     expect(res.error).toContain('RPC timeout');
   });
 });
+
+/**
+ * The roster surface. Two properties matter beyond plain forwarding:
+ * `deviceList` answers from the STORE (so a stopped server still has a roster),
+ * and `deviceRevoke` must never report success it cannot stand behind — a
+ * credential believed revoked but still on disk is the whole hazard.
+ */
+describe('web.handler — device roster', () => {
+  it('deviceList forwards daemon.web.deviceList and unwraps the roster', async () => {
+    const roster = [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2 }];
+    installConnected({ devices: roster });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[] };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceList', {});
+    expect(res.devices).toEqual(roster);
+  });
+
+  it('deviceList reports an empty roster plus an error when the daemon is down', async () => {
+    const dc = { rpc: vi.fn(), isConnected: false } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    expect(res.error).toBeTruthy();
+    expect((dc.rpc as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('deviceList does not pass off a malformed reply as a roster', async () => {
+    installConnected({ devices: 'not-an-array' });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    expect(res.error).toContain('malformed');
+  });
+
+  it('deviceRevoke forwards the id and returns the daemon verdict', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as { ok: boolean };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceRevoke', { deviceId: 'd1' });
+    expect(res.ok).toBe(true);
+  });
+
+  it('deviceRevoke passes a persist-failed verdict through rather than flattening it', async () => {
+    installConnected({ ok: false, reason: 'persist-failed' });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'persist-failed' });
+  });
+
+  // A rejected RPC leaves the roster in an unknown state. Reporting ok:false is
+  // the only honest answer — the operator re-reads the list either way, and the
+  // one unacceptable outcome is claiming a revoke that never landed.
+  it('deviceRevoke reports failure when the RPC throws', async () => {
+    const throwing = vi.fn(async () => { throw new Error('pipe closed mid-write'); });
+    const dc = { rpc: throwing, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'persist-failed' });
+  });
+
+  it('deviceRevoke refuses a blank id without touching the daemon', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, {})) as { ok: boolean; reason?: string };
+    expect(res).toEqual({ ok: false, reason: 'not-found' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('deviceRevoke says nothing was attempted when the daemon is down', async () => {
+    const dc = { rpc: vi.fn(), isConnected: false } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'unavailable' });
+    expect((dc.rpc as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+});
