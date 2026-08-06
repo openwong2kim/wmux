@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import { terminalFontFamilyCss } from '../../utils/terminalFont';
+import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
+import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -40,17 +44,81 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
+  /**
+   * The same visual settings a local pane gets.
+   *
+   * A mirror is still one of this app's terminals, and it sits in the sidebar
+   * next to local ones. Constructing it bare left it on xterm's own defaults —
+   * `monospace` at 15px against a black background — so it rendered in a
+   * different face, one pixel larger, and outside the theme's ANSI palette
+   * (DESIGN.md: terminal content owns that palette). Visible as "why is this
+   * pane slightly bolder and bigger", which is exactly what it was.
+   */
+  const terminalFontSize = useStore((s) => s.terminalFontSize);
+  const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const theme = useStore((s) => s.theme) as ThemeId;
+  const customThemeColors = useStore((s) => s.customThemeColors);
+  const xtermTheme = theme === 'custom' && customThemeColors
+    ? extractXtermColors(customThemeColors)
+    : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha'];
+  // True-colour foregrounds from remote TUIs land here the same way they do
+  // locally, so the same contrast floor applies — see useTerminal.ts for why
+  // dark themes get a lower one.
+  const minimumContrastRatio = resolveMinimumContrastRatio(xtermTheme.background);
+
+  // Read inside the mount effect without joining its deps — same discipline as
+  // `readOnlyRef` above. The effect must stay `[]`-keyed (see below), but it
+  // still needs the CURRENT settings at construction so the first paint is
+  // already correct rather than flashing xterm's defaults.
+  const terminalFontSizeRef = useRef(terminalFontSize);
+  terminalFontSizeRef.current = terminalFontSize;
+  const terminalFontFamilyRef = useRef(terminalFontFamily);
+  terminalFontFamilyRef.current = terminalFontFamily;
+  const xtermThemeRef = useRef(xtermTheme);
+  xtermThemeRef.current = xtermTheme;
+  const minimumContrastRatioRef = useRef(minimumContrastRatio);
+  minimumContrastRatioRef.current = minimumContrastRatio;
+
   // Mount the xterm instance once, for the lifetime of this component.
+  //
+  // Settings are passed at construction AND kept in sync by the effect below,
+  // rather than listed in this effect's deps: re-creating the terminal on a
+  // font change would drop the mirrored scrollback, and the remote only
+  // repaints on a fresh attach.
   useEffect(() => {
     if (!containerRef.current) return;
-    const term = new Terminal({ convertEol: false, scrollback: 2000, disableStdin: false });
+    const term = new Terminal({
+      convertEol: false,
+      scrollback: 2000,
+      disableStdin: false,
+      fontSize: terminalFontSizeRef.current,
+      fontFamily: terminalFontFamilyCss(terminalFontFamilyRef.current),
+      theme: xtermThemeRef.current,
+      minimumContrastRatio: minimumContrastRatioRef.current,
+    });
     term.open(containerRef.current);
+    containerRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
     termRef.current = term;
     return () => {
       term.dispose();
       termRef.current = null;
     };
   }, []);
+
+  // Apply visual settings at runtime without recreating the terminal, so
+  // tweaking the font does not wipe what the remote has already sent. Mirrors
+  // the local pane's own settings effect.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = terminalFontSize;
+    term.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
+    term.options.theme = xtermTheme;
+    term.options.minimumContrastRatio = minimumContrastRatio;
+    if (containerRef.current) {
+      containerRef.current.style.backgroundColor = xtermTheme.background ?? '';
+    }
+  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio]);
 
   // Subscribe/attach lifecycle keyed on attachId. Geometry arrives once per
   // connection — every onPaneMeta (fresh attach OR reconnect) means "reset
