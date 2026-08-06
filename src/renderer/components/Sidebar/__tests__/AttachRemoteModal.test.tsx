@@ -69,10 +69,10 @@ describe('AttachRemoteModal', () => {
         paneAttach: vi.fn(),
         paneDetach: vi.fn(),
         paneWrite: vi.fn(),
-        onPaneMeta: vi.fn(() => () => {}),
-        onPaneData: vi.fn(() => () => {}),
-        onPaneExit: vi.fn(() => () => {}),
-        onPaneError: vi.fn(() => () => {}),
+        onPaneMeta: vi.fn(() => () => { /* noop unsubscribe */ }),
+        onPaneData: vi.fn(() => () => { /* noop unsubscribe */ }),
+        onPaneExit: vi.fn(() => () => { /* noop unsubscribe */ }),
+        onPaneError: vi.fn(() => () => { /* noop unsubscribe */ }),
       },
     };
 
@@ -84,7 +84,7 @@ describe('AttachRemoteModal', () => {
   });
 
   it('renders hosts from window.electronAPI.remote', async () => {
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     expect(hostsList).toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe('AttachRemoteModal', () => {
 
   it('shows the add-host error string verbatim on failure', async () => {
     hostsAdd.mockResolvedValue({ ok: false, error: 'refused: no /api/config route' });
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     const urlInput = container.querySelector('input[type="password"]') as HTMLInputElement;
@@ -122,7 +122,7 @@ describe('AttachRemoteModal', () => {
   });
 
   it('selecting a host lists its workspaces', async () => {
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
@@ -138,7 +138,7 @@ describe('AttachRemoteModal', () => {
   });
 
   it('Attach dispatches attachRemoteWorkspace with the composed key', async () => {
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
@@ -169,7 +169,7 @@ describe('AttachRemoteModal', () => {
   // the renderer ever called it, so a dead-token host was unrecoverable
   // short of hand-editing the persisted hosts file.
   it('the remove-host button calls hostsRemove and refreshes the host list', async () => {
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     hostsList.mockResolvedValue([]); // simulate the host being gone after removal
@@ -191,7 +191,7 @@ describe('AttachRemoteModal', () => {
   // disabled with no error shown.
   it('hostsAdd rejecting leaves the Add button enabled and shows a generic error', async () => {
     hostsAdd.mockRejectedValue(new Error('IPC channel closed'));
-    const { container, unmount } = render(<AttachRemoteModal onClose={() => {}} />);
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
     await flush();
 
     const urlInput = container.querySelector('input[type="password"]') as HTMLInputElement;
