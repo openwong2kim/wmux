@@ -160,6 +160,9 @@ export interface WebPopoverBodyProps {
   onDeviceNameChange: (value: string) => void;
   /** Name the device, then mint its code (`daemon.web.pairStart`). */
   onStartPairing: () => void;
+  /** Whether the device this code registers may type. Taken WITH the name. */
+  pairAllowInput: boolean;
+  onTogglePairAllowInput: () => void;
   /**
    * Open the paired-device roster.
    *
@@ -202,6 +205,8 @@ export function WebPopoverBody({
   onDeviceNameChange,
   onStartPairing,
   onOpenDevices,
+  pairAllowInput,
+  onTogglePairAllowInput,
   deviceName,
   qr,
   t,
@@ -483,6 +488,21 @@ export function WebPopoverBody({
               aria-label={t('web.nameHint')}
               className={`w-full rounded-[6px] bg-[var(--bg-base)] px-2 py-1 text-[11px] text-[var(--text-main)] placeholder:text-[var(--text-muted)] ${FOCUS_RING}`}
             />
+            {/* Asked HERE, with the name, for the same reason the name is: this
+                is the only moment a human is present to say what the device is
+                for. The phone types a code and nothing else. Unticked by
+                default — read-only is the mistake you can fix from the roster,
+                where a keyboard handed out by accident is not noticed until
+                something has been typed. */}
+            <label className="flex items-center gap-2 text-[10px] text-[var(--text-sub)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={pairAllowInput}
+                onChange={onTogglePairAllowInput}
+                className="accent-[var(--accent)]"
+              />
+              {t('web.pairAllowInput')}
+            </label>
             <button
               type="button"
               onClick={onStartPairing}
@@ -554,6 +574,7 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [tailscale, setTailscale] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [pairAllowInput, setPairAllowInput] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -760,11 +781,11 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
     if (!a?.pairStart || !name) return;
     setBusy(true);
     try {
-      setInfo(await a.pairStart(name));
+      setInfo(await a.pairStart(name, pairAllowInput));
     } finally {
       setBusy(false);
     }
-  }, [deviceName]);
+  }, [deviceName, pairAllowInput]);
 
   // Close the popover as the roster opens. Both are dismiss-on-outside-click
   // surfaces, and leaving the 288px popover behind a 440px modal means the
@@ -877,6 +898,8 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
             onDeviceNameChange={(v) => setDeviceName(v.slice(0, DEVICE_NAME_MAX))}
             onStartPairing={handleStartPairing}
             onOpenDevices={handleOpenDevices}
+            pairAllowInput={pairAllowInput}
+            onTogglePairAllowInput={() => setPairAllowInput((v) => !v)}
             qr={qr}
             t={t}
           />

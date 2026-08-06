@@ -482,6 +482,8 @@ export const IPC = {
   WEB_DEVICE_LIST: 'web:deviceList',
   /** Revoke one device permanently and cut its live streams. */
   WEB_DEVICE_REVOKE: 'web:deviceRevoke',
+  /** Grant or withdraw one device's permission to type. */
+  WEB_DEVICE_SET_INPUT: 'web:deviceSetInput',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

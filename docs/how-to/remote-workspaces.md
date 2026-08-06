@@ -153,10 +153,15 @@ device store rather than the running server, so it is available even after
 `wmux web --stop` — worth checking after you stop sharing, since stopping
 the server does not by itself retire the credentials it handed out.
 
-Note that `--allow-input` is a property of the **server**, not of a device:
-there is no per-device read-only mode. If the remote runs with input
-enabled, every paired device can type. Revoking is the per-device control;
-the input grant is all-or-nothing.
+Typing is granted per device. When you pair one, the Web popover asks
+whether it may type; afterwards the grant is a checkbox on its row in
+**Paired devices…**, so a device can be made read-only without revoking it.
+
+`--allow-input` on the server is the **ceiling**, not the grant: a server
+started without it lets nothing type regardless of what any device's row
+says, and the roster tells you so. Devices paired before per-device grants
+existed keep the access they had — they were typing under the server flag,
+and an upgrade does not silently mute them.
 
 ## See also
 

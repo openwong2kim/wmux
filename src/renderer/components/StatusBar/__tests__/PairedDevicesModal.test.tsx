@@ -38,6 +38,7 @@ const PHONE: WebDeviceSummary = {
   name: 'iPhone',
   createdAt: NOW - 86_400_000,
   lastSeenAt: NOW - 60_000,
+  allowInput: true,
 };
 
 const OLD: WebDeviceSummary = {
@@ -45,6 +46,7 @@ const OLD: WebDeviceSummary = {
   name: '',
   createdAt: NOW - 30 * 86_400_000,
   lastSeenAt: NOW - 20 * 86_400_000,
+  allowInput: false,
 };
 
 function revokeButtons(container: HTMLElement): HTMLButtonElement[] {
@@ -56,12 +58,14 @@ function revokeButtons(container: HTMLElement): HTMLButtonElement[] {
 describe('PairedDevicesModal', () => {
   let deviceList: ReturnType<typeof vi.fn>;
   let deviceRevoke: ReturnType<typeof vi.fn>;
+  let deviceSetInput: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     deviceList = vi.fn().mockResolvedValue({ devices: [PHONE, OLD] });
     deviceRevoke = vi.fn().mockResolvedValue({ ok: true });
+    deviceSetInput = vi.fn().mockResolvedValue({ ok: true });
     (window as unknown as { electronAPI: unknown }).electronAPI = {
-      web: { deviceList, deviceRevoke },
+      web: { deviceList, deviceRevoke, deviceSetInput },
     };
   });
 

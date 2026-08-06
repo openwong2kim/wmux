@@ -98,6 +98,8 @@ export interface WebTerminalInfo {
    * popover.
    */
   pendingDeviceName?: string;
+  /** The input grant the pending code will register the device with. */
+  pendingDeviceAllowInput?: boolean;
   /**
    * Why the transport could not be brought up, when a start asked for one it
    * could not get (tailscale absent, logged out, someone else serving on :443).
@@ -163,8 +165,25 @@ export interface WebDeviceSummary {
   name: string;
   createdAt: number;
   lastSeenAt: number;
+  /**
+   * Whether this device may type, spawn/close panes, toggle the permission
+   * gate, and approve tool permissions. RESOLVED by the daemon, so a roster
+   * written before per-device grants existed reports the grandfathered `true`
+   * rather than an absent field the UI would have to interpret.
+   *
+   * The server's `--allow-input` is still the ceiling: a device can show
+   * `true` here while the server is read-only, meaning "allowed once input is
+   * switched on", which is what the roster has to display to be operable.
+   */
+  allowInput: boolean;
   /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
+}
+
+/** Result of changing one device's input grant. Fail-closed, like the revoke. */
+export interface WebDeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed' | 'unavailable' | 'unknown';
 }
 
 /**

@@ -26,3 +26,22 @@
   claiming the device was disconnected. If the roster cannot be read, the
   screen says so instead of showing an empty list, which on a credential
   surface would read as "nobody has access".
+
+### Changed
+
+- **`--allow-input` is now a ceiling, not the whole answer.** Typing — along
+  with spawning and closing panes, toggling the permission gate, and approving
+  a tool permission, which have always been one grant — is decided per device.
+  The Web popover asks when you pair one, and the grant is a checkbox on its
+  row afterwards, so a phone can be made read-only without being revoked.
+
+  A server started without `--allow-input` still lets nothing type, from any
+  device, exactly as before; the flag bounds the grants rather than being
+  replaced by them. Devices paired before this existed keep the access they
+  had — they were typing under the server flag, and an upgrade does not mute
+  them. A newly paired device is read-only unless you say otherwise, because
+  that is the mistake you can fix from the roster.
+
+  `/api/config` now answers with the calling device's own grant instead of the
+  server-wide flag, so a read-only phone no longer renders a composer that
+  rejects every keystroke.

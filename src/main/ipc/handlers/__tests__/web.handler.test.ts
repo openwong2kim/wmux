@@ -468,11 +468,53 @@ describe('web.handler — graceful degradation', () => {
  */
 describe('web.handler — device roster', () => {
   it('deviceList forwards daemon.web.deviceList and unwraps the roster', async () => {
-    const roster = [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2 }];
+    const roster = [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2, allowInput: true }];
     installConnected({ devices: roster });
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[] };
     expect(rpc).toHaveBeenCalledWith('daemon.web.deviceList', {});
     expect(res.devices).toEqual(roster);
+  });
+
+  // A daemon too old to send the grant predates per-device grants entirely,
+  // which means every device on it has been typing under the server flag.
+  // Defaulting those to read-only would draw a screen full of false badges.
+  it('deviceList grandfathers a grantless record from an older daemon to allowed', async () => {
+    installConnected({ devices: [{ deviceId: 'd1', name: 'iPhone', createdAt: 1, lastSeenAt: 2 }] });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: { allowInput: boolean }[] };
+    expect(res.devices[0]!.allowInput).toBe(true);
+  });
+
+  it('deviceSetInput forwards an explicit grant and returns the daemon verdict', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, {
+      deviceId: 'd1',
+      allowInput: false,
+    })) as { ok: boolean };
+    expect(rpc).toHaveBeenCalledWith('daemon.web.deviceSetInput', { deviceId: 'd1', allowInput: false });
+    expect(res.ok).toBe(true);
+  });
+
+  // Never coerce: a missing grant must not be read as "take it away" or "hand
+  // it over" — both are decisions the caller did not make.
+  it('deviceSetInput refuses a non-boolean grant without touching the daemon', async () => {
+    installConnected({ ok: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'not-found' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('deviceSetInput reports unknown when the RPC throws', async () => {
+    const throwing = vi.fn(async () => { throw new Error('pipe closed'); });
+    const dc = { rpc: throwing, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execAbsent);
+    const res = (await getHandler(IPC.WEB_DEVICE_SET_INPUT)(fakeEvent, {
+      deviceId: 'd1',
+      allowInput: true,
+    })) as { ok: boolean; reason?: string };
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
   });
 
   it('deviceList reports an empty roster plus an error when the daemon is down', async () => {

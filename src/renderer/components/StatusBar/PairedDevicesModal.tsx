@@ -74,6 +74,23 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  /**
+   * Is the server's `--allow-input` off?
+   *
+   * The roster shows each device's own grant, but that grant is a ceiling away
+   * from being usable. Without this the screen would show ticked boxes on a
+   * server where nothing can type — technically accurate per device, and a
+   * complete misread of what is actually possible right now.
+   */
+  const [serverReadOnly, setServerReadOnly] = useState(false);
+  useEffect(() => {
+    const api = window.electronAPI?.web;
+    if (!api?.status) return;
+    void api.status().then((info) => {
+      if (mounted.current) setServerReadOnly(info.running === true && info.allowInput !== true);
+    }).catch(() => { /* the roster is still worth showing without the ceiling hint */ });
+  }, []);
+
   const revokeInFlight = revoking !== null;
 
   // Escape is ignored mid-revoke for the same reason the backdrop is: the
@@ -84,6 +101,37 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, revokeInFlight]);
+
+  const handleSetInput = useCallback(async (deviceId: string, allowInput: boolean) => {
+    const api = window.electronAPI?.web;
+    if (!api?.deviceSetInput) return;
+    setRevokeError(null);
+    try {
+      const res = await api.deviceSetInput(deviceId, allowInput);
+      if (!mounted.current) return;
+      if (!res.ok) {
+        setRevokeError({
+          deviceId,
+          message:
+            res.reason === 'persist-failed'
+              ? t('web.grantPersistFailed')
+              : res.reason === 'unavailable'
+                ? t('web.revokeUnavailable')
+                : res.reason === 'revoked'
+                  ? t('web.grantRevoked')
+                  : res.reason === 'not-found'
+                    ? t('web.revokeNotFound')
+                    : t('web.grantUnknown'),
+        });
+      }
+    } catch {
+      if (mounted.current) setRevokeError({ deviceId, message: t('web.grantUnknown') });
+    } finally {
+      // Re-list either way: the daemon is the authority on what the grant now
+      // is, and a failed write may still have taken effect in memory.
+      await refresh();
+    }
+  }, [refresh, t]);
 
   const handleRevoke = useCallback(async (deviceId: string) => {
     const api = window.electronAPI?.web;
@@ -185,6 +233,12 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
           <div className="text-[11px] mt-1" style={{ color: 'var(--text-sub)' }}>
             {t('web.devicesSubtitle')}
           </div>
+          {/* Says the ticked boxes below are dormant, not active. */}
+          {serverReadOnly && (
+            <div className="text-[10px] mt-1.5 leading-snug" style={{ color: 'var(--accent)' }}>
+              {t('web.grantCeilingHint')}
+            </div>
+          )}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
@@ -227,6 +281,29 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
                       : t('web.deviceLastSeen', { when: timeAgo(d.lastSeenAt) })}
                   </div>
                 </div>
+
+                {!revoked && (
+                  // The grant, and the control for it, in one place. A checkbox
+                  // rather than a second destructive button: taking typing away
+                  // is reversible here, which is exactly what separates it from
+                  // the revoke sitting next to it.
+                  <label
+                    className={`flex-shrink-0 flex items-center gap-1.5 text-[10px] cursor-pointer ${
+                      serverReadOnly ? 'opacity-50' : ''
+                    }`}
+                    style={{ color: 'var(--text-sub)' }}
+                    title={serverReadOnly ? t('web.grantCeilingHint') : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={d.allowInput}
+                      onChange={(e) => { void handleSetInput(d.deviceId, e.target.checked); }}
+                      className="accent-[var(--accent)]"
+                      aria-label={t('web.grantLabel')}
+                    />
+                    {t('web.grantLabel')}
+                  </label>
+                )}
 
                 {!revoked && (
                   // Two clicks, deliberately. Revocation is permanent — the

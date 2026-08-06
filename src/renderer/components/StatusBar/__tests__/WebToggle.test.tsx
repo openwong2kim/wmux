@@ -48,6 +48,8 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     onOpenUrl: vi.fn(),
     onNewPairCode: vi.fn(),
     onOpenDevices: vi.fn(),
+    pairAllowInput: false,
+    onTogglePairAllowInput: vi.fn(),
     t,
   };
   return renderToStaticMarkup(createElement(WebPopoverBody, { ...base, ...overrides }));

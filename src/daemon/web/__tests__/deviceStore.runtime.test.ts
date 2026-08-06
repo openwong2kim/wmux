@@ -51,6 +51,9 @@ describe('DeviceStore — mint / verify round trip', () => {
       ok: true,
       deviceId: minted.deviceId,
       name: 'Pixel 9',
+      // Minted without a stated grant, so read-only. The auth result carries
+      // it because that is what the request gate reads.
+      allowInput: false,
     });
     expect(s.resolve(minted.deviceId, `${minted.deviceSecret}x`)).toEqual({
       ok: false,
@@ -344,7 +347,10 @@ describe('DeviceStore — roster housekeeping', () => {
     const s = store();
     await s.mint({ name: 'Phone' });
     const [row] = s.list();
-    expect(Object.keys(row).sort()).toEqual(['createdAt', 'deviceId', 'lastSeenAt', 'name']);
+    // `allowInput` is a capability flag, not secret material — it is what the
+    // roster UI renders the grant from. The guard stays exact so anything that
+    // is NOT on this list has to be argued for.
+    expect(Object.keys(row).sort()).toEqual(['allowInput', 'createdAt', 'deviceId', 'lastSeenAt', 'name']);
   });
 
   it('throttles lastSeenAt writes but always updates in memory', async () => {

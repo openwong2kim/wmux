@@ -24,6 +24,7 @@ import type {
 import type {
   WebDeviceListError,
   WebDeviceRevokeResult,
+  WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
   WebTerminalInfo,
@@ -1203,8 +1204,8 @@ document.addEventListener('DOMContentLoaded', () => {
   status: (args?: { verifyFront?: boolean }) =>
     ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
-  pairStart: (name: string) =>
-    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name }) as Promise<WebTerminalInfo>,
+  pairStart: (name: string, allowInput = false) =>
+    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
@@ -1215,6 +1216,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.WEB_DEVICE_LIST) as Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }>,
   deviceRevoke: (deviceId: string) =>
     ipcRenderer.invoke(IPC.WEB_DEVICE_REVOKE, { deviceId }) as Promise<WebDeviceRevokeResult>,
+  deviceSetInput: (deviceId: string, allowInput: boolean) =>
+    ipcRenderer.invoke(IPC.WEB_DEVICE_SET_INPUT, { deviceId, allowInput }) as Promise<WebDeviceSetInputResult>,
 };
 
 // Remote workspace attach — registered remote wmux web hosts + the per-pane

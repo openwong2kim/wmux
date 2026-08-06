@@ -2511,12 +2511,35 @@ function registerRpcHandlers(
     // name (it has to; the pre-M3 pairing path still exists), so the
     // requirement lives at the operator seam.
     if (!name) return { ok: false, error: 'a device name is required to pair' };
-    return webServer.startPairing({ name });
+    // Absent reads as read-only, matching the server's own default. An older
+    // caller that never learned to send this gets the recoverable outcome —
+    // a device that cannot type until the operator grants it — rather than
+    // one silently holding a keyboard nobody asked to hand over.
+    const allowInput = params['allowInput'] === true;
+    return webServer.startPairing({ name, allowInput });
   });
 
   pipeServer.onRpc('daemon.web.deviceList', async () => {
     await afterRestore();
     return { devices: getDeviceStore().list() };
+  });
+
+  pipeServer.onRpc('daemon.web.deviceSetInput', async (params) => {
+    await afterRestore();
+    const deviceId = typeof params['deviceId'] === 'string' ? params['deviceId'] : '';
+    if (!deviceId) return { ok: false, reason: 'not-found' };
+    // Explicit boolean only. Coercing a missing field would let a malformed
+    // call silently revoke or hand out a typing grant.
+    if (typeof params['allowInput'] !== 'boolean') return { ok: false, reason: 'not-found' };
+    const allowInput = params['allowInput'];
+    const result = getDeviceStore().setInput(deviceId, allowInput);
+    // Taking input away has a live half, exactly like revoke: a device holding
+    // an open SSE stream keeps receiving pane bytes, and while the WRITE routes
+    // re-check the roster per request (so typing stops immediately either way),
+    // dropping the streams makes the phone re-handshake and pick up its new,
+    // smaller grant instead of showing a composer it can no longer use.
+    if (result.ok && !allowInput) webServer.disconnectDevice(deviceId);
+    return result;
   });
 
   pipeServer.onRpc('daemon.web.deviceRevoke', async (params) => {

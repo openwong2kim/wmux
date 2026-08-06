@@ -13,6 +13,7 @@ import type {
 import type {
   WebDeviceListError,
   WebDeviceRevokeResult,
+  WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
   WebTerminalInfo,
@@ -140,7 +141,7 @@ declare global {
          * rows cannot be operated — "which of these three do I revoke?" has no
          * answer six months later.
          */
-        pairStart: (name: string) => Promise<WebTerminalInfo>;
+        pairStart: (name: string, allowInput?: boolean) => Promise<WebTerminalInfo>;
         /**
          * The paired-device roster.
          *
@@ -159,6 +160,15 @@ declare global {
          * back on the next daemon boot.
          */
         deviceRevoke: (deviceId: string) => Promise<WebDeviceRevokeResult>;
+        /**
+         * Grant or withdraw one device's permission to type.
+         *
+         * Narrows within `--allow-input`, never past it: a server started
+         * read-only grants nothing to anyone regardless of what this says.
+         * Withdrawing takes effect on the device's next request and drops its
+         * live streams so the phone re-handshakes into its smaller grant.
+         */
+        deviceSetInput: (deviceId: string, allowInput: boolean) => Promise<WebDeviceSetInputResult>;
       };
       /**
        * Remote workspace attach — registered remote wmux web hosts + the
