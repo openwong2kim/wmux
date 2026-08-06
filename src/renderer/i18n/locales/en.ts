@@ -1339,6 +1339,17 @@ export const en = {
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',
   'workspace.departed': 'departed',
+
+  // ─── Remote Workspace Attach (Task 7) ─────────────────────────────────────
+  'remote.attachTitle': 'Attach remote workspace',
+  'remote.addHost': 'Add host',
+  'remote.pasteUrlHint': 'Paste the URL printed by `wmux web` on the other machine',
+  'remote.attach': 'Attach',
+  'remote.detach': 'Detach',
+  'remote.loading': 'Loading…',
+  'remote.readOnly': 'Read-only — start the remote server with --allow-input to type',
+  'remote.exited': 'exited',
+  'remote.morePanes': '+{count} more panes',
 } as const;
 
 export type TranslationKey = keyof typeof en;

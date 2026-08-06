@@ -1,6 +1,8 @@
-import { useEffect, useRef, useCallback, type CSSProperties } from 'react';
+import { useEffect, useRef, useCallback, useState, type CSSProperties } from 'react';
 import { LAYOUT_PRESETS } from '../../../shared/layoutPresets';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
+import AttachRemoteModal from './AttachRemoteModal';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -14,9 +16,15 @@ interface PresetPickerProps {
 }
 
 export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps) {
+  const t = useT();
   const addWorkspace = useStore((s) => s.addWorkspace);
   const addWorkspaceWithPreset = useStore((s) => s.addWorkspaceWithPreset);
   const ref = useRef<HTMLDivElement>(null);
+  // Selecting "Attach remote workspace…" swaps this dropdown for the modal
+  // rather than closing it — AttachRemoteModal owns its own full-screen
+  // backdrop dismissal, and the whole thing closes via the same onClose the
+  // picker itself uses once the modal is done.
+  const [attachRemoteOpen, setAttachRemoteOpen] = useState(false);
 
   const handleSelect = useCallback((presetId: string | null) => {
     if (presetId === null) {
@@ -64,6 +72,10 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  if (attachRemoteOpen) {
+    return <AttachRemoteModal onClose={onClose} />;
+  }
+
   return (
     <div
       ref={ref}
@@ -103,6 +115,18 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
           <div className="text-[var(--text-muted)] text-[10px]">{preset.description}</div>
         </button>
       ))}
+
+      <div className="border-t border-[var(--bg-surface)] my-0.5" />
+
+      {/* Remote Workspace Attach entry — opens AttachRemoteModal in place of
+          this dropdown (see attachRemoteOpen above). */}
+      <button
+        className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+        onClick={() => setAttachRemoteOpen(true)}
+      >
+        <div className="font-semibold">{t('remote.attachTitle')}…</div>
+        <div className="text-[var(--text-muted)] text-[10px]">Mirror a workspace from another wmux</div>
+      </button>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import WorkspaceItem from './WorkspaceItem';
+import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
 import type { Pane } from '../../../shared/types';
@@ -44,6 +45,10 @@ export default function Sidebar() {
     return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
   }, [workspaces, wsSearch]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
+  const activeRemoteKey = useStore((s) => s.activeRemoteKey);
+  const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
+  const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -225,6 +230,24 @@ export default function Sidebar() {
             onReorder={reorderWorkspace}
           />
         ))}
+
+        {/* Remote section — attached mirrors from other wmux hosts, rendered
+            under the local workspace rows. A remote workspace is never part
+            of `workspaces[]` (see remoteWorkspacesSlice), so it gets its own
+            row type here instead of joining the map above. */}
+        {remoteWorkspaces.length > 0 && (
+          <div className="pt-2 mt-1 border-t space-y-0.5" style={{ borderColor: 'var(--border-soft)' }}>
+            {remoteWorkspaces.map((rw) => (
+              <RemoteWorkspaceItem
+                key={rw.key}
+                workspace={rw}
+                isActive={rw.key === activeRemoteKey}
+                onSelect={setActiveRemoteKey}
+                onDetach={detachRemoteWorkspace}
+              />
+            ))}
+          </div>
+        )}
       </div>
       )}
 
