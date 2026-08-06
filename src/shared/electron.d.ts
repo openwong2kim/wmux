@@ -11,6 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type { WebStartArgs, WebTerminalInfo } from './web';
+import type { RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -134,6 +135,38 @@ declare global {
          * answer six months later.
          */
         pairStart: (name: string) => Promise<WebTerminalInfo>;
+      };
+      /**
+       * Remote workspace attach — registered remote wmux web hosts + the
+       * per-pane attach/detach/write/push bridge to them (main-owned
+       * RemoteHostClient, one per host). `paneWrite` is fire-and-forget,
+       * like `pty.write`; the `onPane*` subscriptions return an unsubscribe
+       * fn, like every other push channel here.
+       */
+      remote?: {
+        hostsList: () => Promise<RemoteHostPublic[]>;
+        /** Probes the remote's `/api/config` before persisting — a pre-attach
+         *  remote (no route, unparseable body) is refused, never stored. */
+        hostsAdd: (rawUrl: string, label?: string) => Promise<
+          { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
+        >;
+        hostsRemove: (id: string) => Promise<boolean>;
+        workspacesList: (hostId: string) => Promise<
+          { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+        >;
+        /** Idempotent per (host, session) for this renderer — a repeat call
+         *  (e.g. React StrictMode's double-effect) returns the SAME attachId
+         *  rather than opening a second SSE stream on the remote. */
+        paneAttach: (hostId: string, sessionId: string) => Promise<
+          { ok: true; attachId: string } | { ok: false; error: string }
+        >;
+        paneDetach: (attachId: string) => Promise<void>;
+        paneWrite: (attachId: string, data: string) => void;
+        onPaneMeta: (
+          callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void,
+        ) => () => void;
+        onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
+        onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;
       };
     };
     clipboardAPI: {

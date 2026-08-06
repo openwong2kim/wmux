@@ -22,6 +22,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type { WebStartArgs, WebTerminalInfo } from '../shared/web';
+import type { RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1201,6 +1202,46 @@ document.addEventListener('DOMContentLoaded', () => {
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
+};
+
+// Remote workspace attach — registered remote wmux web hosts + the per-pane
+// attach/detach/write/push bridge. Request/response via invoke (mirrors
+// lanlink/web); paneWrite is fire-and-forget (send), like pty.write.
+// Extends the electronAPI literal in place (mirrors .lanlink/.web above).
+(electronAPI as Record<string, unknown>).remote = {
+  hostsList: () => ipcRenderer.invoke(IPC.REMOTE_HOSTS_LIST) as Promise<RemoteHostPublic[]>,
+  hostsAdd: (rawUrl: string, label?: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_HOSTS_ADD, rawUrl, label) as Promise<
+      { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
+    >,
+  hostsRemove: (id: string) => ipcRenderer.invoke(IPC.REMOTE_HOSTS_REMOVE, id) as Promise<boolean>,
+  workspacesList: (hostId: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
+      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+    >,
+  paneAttach: (hostId: string, sessionId: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_PANE_ATTACH, hostId, sessionId) as Promise<
+      { ok: true; attachId: string } | { ok: false; error: string }
+    >,
+  paneDetach: (attachId: string) => ipcRenderer.invoke(IPC.REMOTE_PANE_DETACH, attachId) as Promise<void>,
+  paneWrite: (attachId: string, data: string) => {
+    ipcRenderer.send(IPC.REMOTE_PANE_WRITE, attachId, data);
+  },
+  onPaneMeta: (callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_META, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_META, listener); };
+  },
+  onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; dataB64: string }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_DATA, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_DATA, listener); };
+  },
+  onPaneExit: (callback: (e: { attachId: string }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_EXIT, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_EXIT, listener); };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

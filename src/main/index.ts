@@ -70,6 +70,8 @@ import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from '.
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
+import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
+import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -101,7 +103,7 @@ import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
-import { loadConfig } from '../daemon/config';
+import { loadConfig, getWmuxDir } from '../daemon/config';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
@@ -666,6 +668,11 @@ registerProjectConfigHandlers();
 // handler fails a no-senderPtyId mutation closed, and this ipcMain.handle
 // channel is unreachable from the pipe. See channelLocal.handler.ts.
 registerChannelLocalHandlers(() => daemonClient);
+// Remote workspace attach — renderer-only surface (same trust posture as
+// channelLocal above). Registered once, outside the daemon-swap cycle: the
+// registered hosts/tokens live on disk in main, independent of the local
+// daemon connection. See remote.handler.ts for the push-routing contract.
+registerRemoteHandlers({ store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')) });
 // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
 // invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
 // 동일 renderer-trusted 신원).
