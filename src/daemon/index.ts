@@ -1733,6 +1733,9 @@ function registerRpcHandlers(
             ...(p.supervision.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
           }
         : undefined,
+      // P0a: thread the transport kind + SSH target through to the factory.
+      kind: p.kind,
+      ssh: p.ssh,
     });
     if (session.supervision) {
       paneSupervisor.arm(
@@ -1742,16 +1745,22 @@ function registerRpcHandlers(
       );
     }
 
-    // Start process monitoring
-    processMonitor.watch(session.id, session.pid, () => {
-      // Process died externally — session manager's bridge exit handler
-      // should already handle this via PTY onExit, but this is a safety net
-      const managed = sessionManager.getSession(session.id);
-      if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
-        managed.meta.state = 'dead';
-        sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
-      }
-    });
+    // Start process monitoring. P0a: an SSH session's `pid` is a synthetic
+    // negative id with no OS process behind it, so the pid-polling watchdog
+    // (tasklist / kill -0) would either error or immediately declare it dead.
+    // Remote liveness is event-driven: the channel's own close surfaces through
+    // the bridge's onExit → session:died. Skip the pid watch for remote panes.
+    if (session.kind !== 'ssh') {
+      processMonitor.watch(session.id, session.pid, () => {
+        // Process died externally — session manager's bridge exit handler
+        // should already handle this via PTY onExit, but this is a safety net
+        const managed = sessionManager.getSession(session.id);
+        if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
+          managed.meta.state = 'dead';
+          sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
+        }
+      });
+    }
 
     // Save state immediately
     const state = buildState(sessionManager);

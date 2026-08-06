@@ -9,7 +9,7 @@ import { IPC, ENV_KEYS, isBrainPty } from '../../../shared/constants';
 import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
-import { sanitizePtyText } from '../../../shared/types';
+import { sanitizePtyText, type SshSessionParams } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
@@ -102,6 +102,9 @@ type PtyCreateOptions = {
   /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
    * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
   spawnKind?: SpawnKind;
+  /** P0a: drive this pane over SSH to `ssh` instead of a local shell. */
+  kind?: 'local' | 'ssh';
+  ssh?: SshSessionParams;
 };
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
@@ -464,6 +467,10 @@ export function registerPTYHandlers(
         env: resolvedEnv,
         ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
         ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
+        // P0a: forward the transport kind + SSH target when the pane is remote.
+        // The daemon factory branches on these; absent means a local node-pty child.
+        ...(options?.kind ? { kind: options.kind } : {}),
+        ...(options?.ssh ? { ssh: options.ssh } : {}),
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)

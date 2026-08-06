@@ -13,7 +13,7 @@
 
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createLeafPane, assignPaneOrdinals, generateId, type Pane, type PaneBranch, type Workspace } from '../../../shared/types';
+import { createLeafPane, assignPaneOrdinals, generateId, type Pane, type PaneBranch, type Workspace, type SshSessionParams } from '../../../shared/types';
 import type { ProjectConfigState, WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 
 /** Per-pane bootstrap payload recorded at layout-apply time. `cwd` is already
@@ -45,6 +45,11 @@ export interface ProjectPaneSeed {
    * honors it verbatim at replay. Only ever set alongside `restart`.
    */
   restorePermissionMode?: boolean;
+  /** P0a: a remote (SSH) leaf. Mutually exclusive with url/command/cwd/role/restart
+   * (the schema rejects combining them). The funnel turns this into a kind:'ssh'
+   * pty.create that the daemon drives over an SSH channel. */
+  kind?: 'ssh';
+  ssh?: SshSessionParams;
 }
 
 export interface ApplyProjectLayoutResult {
@@ -119,7 +124,15 @@ function buildTree(
   if (node.type === 'leaf') {
     const leaf = createLeafPane();
     const seed: ProjectPaneSeed = {};
-    if (node.url !== undefined) {
+    if (node.kind === 'ssh' && node.ssh) {
+      // P0a remote leaf — drives a pane over SSH. The schema already enforced
+      // mutual exclusion with url/command/cwd/role/restart, so a remote leaf
+      // carries ONLY the connection target. cwd is left unset: the remote shell
+      // starts in its own $HOME, and an author who wants a specific remote dir
+      // puts a `cd` in ssh.remoteCommand.
+      seed.kind = 'ssh';
+      seed.ssh = node.ssh;
+    } else if (node.url !== undefined) {
       seed.url = node.url;
     } else {
       if (node.command !== undefined) seed.command = node.command;

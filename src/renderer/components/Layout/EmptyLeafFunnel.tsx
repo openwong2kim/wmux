@@ -109,6 +109,38 @@ export function EmptyLeafFunnel() {
       // wmux.json. Consumed immediately, same replay rule as splitCwdSeed.
       const projectSeed = storeState.projectPaneSeed[paneId];
       if (projectSeed) storeState.clearProjectPaneSeed(paneId);
+      // P0a: a remote (SSH) leaf — drive a pane over an SSH channel to the
+      // operator's own box. No local cwd/shell/role/supervision applies (the
+      // remote shell owns its env), so this is a minimal pty.create carrying
+      // only the connection target. spawnKind is left unset on purpose: a
+      // remote pane is automation, not a user-opened shell, so main's
+      // fail-closed env policy applies (no credential pass-through).
+      if (projectSeed?.kind === 'ssh' && projectSeed.ssh) {
+        ptyCreateInFlightRef.current.add(paneId);
+        void ipcInvoke<{ id: string; cwd?: string }>(() =>
+          window.electronAPI.pty.create({
+            workspaceId: wsId,
+            kind: 'ssh',
+            ssh: projectSeed.ssh,
+          }),
+        ).then((result) => {
+          ptyCreateInFlightRef.current.delete(paneId);
+          if (!result.ok) return;
+          const created = result.data;
+          const liveWs = useStore.getState().workspaces.find((w) => w.id === wsId);
+          const livePane = liveWs ? findLiveLeaf(liveWs.rootPane, paneId) : null;
+          if (!livePane || livePane.surfaces.length > 0) {
+            window.electronAPI.pty.dispose(created.id);
+            return;
+          }
+          // A remote pane has no local shell path; label it so the tab makes
+          // sense at a glance. cwd metadata is left untouched — the remote
+          // shell's directory is not a local directory to act on.
+          const host = projectSeed.ssh?.host ?? 'remote';
+          addSurface(paneId, created.id, `SSH · ${host}`, created.cwd || '');
+        });
+        continue;
+      }
       if (projectSeed?.url) {
         // #517 external backend: a project-seeded browser leaf delegates to the
         // OS browser rather than mounting an embedded webview.

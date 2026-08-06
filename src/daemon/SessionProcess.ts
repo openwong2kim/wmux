@@ -69,21 +69,3 @@ export interface SessionProcess {
  */
 export type SessionKind = 'local' | 'ssh';
 
-/**
- * Connection parameters for an SSH session. Carried on a wmux.json leaf and
- * threaded through createSession → SshChannelSession. Auth fields are pointers
- * (a key PATH, an agent flag), never secrets in the config — a password, when
- * used, is supplied in-memory at request time and never persisted.
- */
-export interface SshSessionParams {
-  host: string;
-  port?: number;
-  username: string;
-  /** Path on the OPERATOR's machine to a private key file. Never a key's bytes. */
-  privateKeyPath?: string;
-  /** Use the SSH agent (SSH_AUTH_SOCK). Defaults to true when no other auth set. */
-  agent?: boolean;
-  /** Optional remote command to exec instead of an interactive shell. */
-  remoteCommand?: string;
-}
-

@@ -133,6 +133,25 @@ export type Pane = PaneLeaf | PaneBranch;
 // Stored on Workspace (persisted in session.json), deliberately NOT on
 // WorkspaceMetadata: metadata is published over event/RPC paths and is the
 // wrong surface for user-entered, potentially secret-adjacent values.
+
+/**
+ * P0a: connection parameters for an SSH-driven pane. Lives in shared (not the
+ * daemon) so the RPC layer, the wmux.json schema, and the daemon factory all
+ * share one type. Auth fields are POINTERS (a key PATH, an agent flag), never
+ * a secret in the config — a password, when used, is supplied in-memory at
+ * request time and never persisted.
+ */
+export interface SshSessionParams {
+  host: string;
+  port?: number;
+  username: string;
+  /** Path on the OPERATOR's machine to a private key file. Never a key's bytes. */
+  privateKeyPath?: string;
+  /** Use the SSH agent (SSH_AUTH_SOCK). Defaults to true when no other auth set. */
+  agent?: boolean;
+  /** Optional remote command to exec instead of an interactive shell. */
+  remoteCommand?: string;
+}
 export interface WorkspaceProfile {
   /** Env vars merged into new PTYs after the safe-inherited baseline. */
   env?: Record<string, string>;

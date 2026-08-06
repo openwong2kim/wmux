@@ -1,6 +1,7 @@
 // === JSON-RPC Protocol Types ===
 
 import type { ResumeBinding } from './agentResume';
+import type { SshSessionParams } from './types';
 
 export interface RpcRequest {
   id: string;
@@ -656,6 +657,16 @@ export interface DaemonCreateSessionParams {
   exec?: { command: string };
   /** X8: arm the daemon-side PaneSupervisor for this session. */
   supervision?: DaemonSupervisionPolicy;
+  /**
+   * P0a remote agent. `kind === 'ssh'` drives the pane over an SSH channel
+   * (SshChannelSession) instead of a local node-pty child. `ssh` carries the
+   * validated connection target; both fields come from a wmux.json leaf that
+   * passed normalizeSshLeaf. SSH sessions are NOT supervised in P0a and their
+   * liveness is event-driven (the channel's close), so the daemon skips the
+   * pid-based ProcessMonitor watch for them.
+   */
+  kind?: 'local' | 'ssh';
+  ssh?: SshSessionParams;
 }
 
 /**

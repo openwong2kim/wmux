@@ -1,5 +1,6 @@
 import type { SpawnKind } from '../../shared/spawnKind';
 import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
+import type { SshSessionParams } from '../../shared/types';
 import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
 
 export interface PtyCreateOptions {
@@ -48,6 +49,9 @@ export interface PtyCreateOptions {
      * mode only; forwarded through pty.create to the daemon's supervision policy. */
     restorePermissionMode?: boolean;
   };
+  /** P0a: drive this pane over SSH to `ssh` instead of a local shell. */
+  kind?: 'local' | 'ssh';
+  ssh?: SshSessionParams;
 }
 
 export interface SurfaceCwdHealInput {
