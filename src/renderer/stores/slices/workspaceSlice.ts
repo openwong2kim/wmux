@@ -44,6 +44,18 @@ export function clearColdParkEntry(
 }
 
 /**
+ * Task 6 (Remote Workspace Attach) — same convention as clearColdParkEntry:
+ * call at EVERY site that assigns activeWorkspaceId, so selecting/promoting
+ * a local workspace always drops any remote mirror selection. Without this,
+ * WorkspaceCenter (which checks activeRemoteKey first) keeps showing a remote
+ * mirror while the sidebar highlights the newly-active local workspace.
+ * Guarded for stores/tests without the remoteWorkspacesSlice mounted.
+ */
+export function clearRemoteSelection(state: { activeRemoteKey?: string | null }): void {
+  if (state.activeRemoteKey !== undefined && state.activeRemoteKey !== null) state.activeRemoteKey = null;
+}
+
+/**
  * Drop multiview members whose workspace is gone, and disband a group left with
  * fewer than two. Call from every path where workspaces disappear — the same set
  * clearColdParkEntry covers (removeWorkspace, company destroy/removeDept,
@@ -238,6 +250,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
+      clearRemoteSelection(state);
     }),
 
     addWorkspaceWithPreset: (presetId, name) => set((state: StoreState) => {
@@ -274,6 +287,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
+      clearRemoteSelection(state);
     }),
 
     duplicateWorkspace: (id) => set((state: StoreState) => {
@@ -315,6 +329,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Insert right after the source for intuitive placement, then activate.
       state.workspaces.splice(idx + 1, 0, ws);
       state.activeWorkspaceId = ws.id;
+      clearRemoteSelection(state);
     }),
 
     // NOTE: PTY cleanup is the caller's responsibility (see Sidebar.handleClose, useKeyboard Ctrl+Shift+W)
@@ -436,6 +451,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           next ?? state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
         // Cold-park: the newly-promoted workspace must not stay parked.
         clearColdParkEntry(state, state.activeWorkspaceId);
+        clearRemoteSelection(state);
       }
       // D-teardown: removing a workspace (sidebar X, Ctrl+Shift+W, kill-pane)
       // unmounts the marked-region DOM the inspect overlay queries. setActiveWorkspace
@@ -496,6 +512,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
       }
       state.activeWorkspaceId = id;
+      clearRemoteSelection(state);
       // D-teardown: a workspace switch invalidates any marked-region queries
       // the inspect overlay is holding, so exit inspect explicitly rather than
       // letting it dangle against a now-unmounted DOM (inspect is preserved as
@@ -697,6 +714,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // The previous session's group cannot describe this one's workspaces.
       pruneMultiviewMembership(state);
       state.activeWorkspaceId = data.activeWorkspaceId;
+      clearRemoteSelection(state);
       state.sidebarVisible = data.sidebarVisible;
 
       // ── P2 hydration backfill (checklist F) ──────────────────────────────
