@@ -583,14 +583,11 @@ describe('web.handler — device roster', () => {
   // passed `!== undefined` would paint a LIVE device as a tombstone and take
   // its revoke button away — locking the operator out of the one device they
   // came here for.
-  it('deviceList drops malformed records and narrows revokedAt to a number', async () => {
+  it('deviceList narrows revokedAt to a number', async () => {
     installConnected({
       devices: [
         { deviceId: 'good', name: 'iPhone', createdAt: 1, lastSeenAt: 2 },
         { deviceId: 'null-revoked', name: 'Mac', createdAt: 1, lastSeenAt: 2, revokedAt: null },
-        { deviceId: 'no-times', name: 'Broken' },
-        null,
-        'nonsense',
       ],
     });
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as {
@@ -599,6 +596,34 @@ describe('web.handler — device roster', () => {
     expect(res.devices.map((d) => d.deviceId)).toEqual(['good', 'null-revoked']);
     // The null did NOT survive as a truthy tombstone marker.
     expect(res.devices[1]!.revokedAt).toBeUndefined();
+  });
+
+  // ALL or nothing. Showing the parseable ones would present a partial roster
+  // as the complete one, and the record hidden that way is a live device the
+  // operator then cannot revoke.
+  it('deviceList fails the whole read when ANY record is unparseable', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'good', name: 'iPhone', createdAt: 1, lastSeenAt: 2 },
+        { deviceId: 'no-times', name: 'Broken' },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
+    expect(res.devices).toEqual([]);
+    expect(res.error).toBe('malformed');
+  });
+
+  // The absent/explicit distinction has to survive this hop, or the daemon's
+  // server-flag default is unreachable and every omitting caller mutes its
+  // device.
+  it('pairStart forwards allowInput only when the renderer states it', async () => {
+    installConnected({ ok: true, running: true });
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'iPhone' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'iPhone' });
+
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'iPhone', allowInput: false });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'iPhone', allowInput: false });
   });
 
   it('deviceRevoke refuses a blank id without touching the daemon', async () => {

@@ -44,6 +44,12 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const [loadingHosts, setLoadingHosts] = useState(true);
 
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
+  // The LIVE selection, for `autoSelect` to consult after an await. Reading
+  // `selectedHostId` there reads whatever the closure captured when the pair
+  // request started — which is `null` in the exact case the guard exists for:
+  // the operator picking a host while that request is still in flight.
+  const selectedHostIdRef = useRef<string | null>(null);
+  useEffect(() => { selectedHostIdRef.current = selectedHostId; }, [selectedHostId]);
   const [workspaces, setWorkspaces] = useState<RemoteWorkspaceSummary[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [workspacesError, setWorkspacesError] = useState<string | null>(null);
@@ -142,9 +148,9 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
    *    they chose while the pairing request was in flight.
    */
   const autoSelect = useCallback((hostId: string) => {
-    if (selectedHostId !== null) return;
+    if (selectedHostIdRef.current !== null) return;
     void selectHost(hostId);
-  }, [selectHost, selectedHostId]);
+  }, [selectHost]);
 
   const handleAddHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;

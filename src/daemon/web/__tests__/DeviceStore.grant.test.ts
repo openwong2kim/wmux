@@ -81,6 +81,23 @@ describe('DeviceStore — input grants', () => {
     expect(auth).toMatchObject({ ok: true, allowInput: true });
   });
 
+  // ABSENT grandfathers; PRESENT-but-malformed does not. A persisted "false"
+  // string that fell through to the grandfather branch would restore input
+  // permission on the next boot — a corrupted or tampered record regaining the
+  // one capability the field exists to withhold.
+  it('fails closed on a malformed grant rather than grandfathering it', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'tampered', allowInput: false });
+    const file = path.join(dir, 'devices.json');
+    const state = JSON.parse(fs.readFileSync(file, 'utf8')) as { devices: Record<string, unknown>[] };
+    for (const rec of state.devices) rec['allowInput'] = 'false';
+    fs.writeFileSync(file, JSON.stringify(state));
+
+    const reloaded = store();
+    expect(reloaded.list().find((x) => x.deviceId === d.deviceId)?.allowInput).toBe(false);
+    expect(await reloaded.resolve(d.deviceId, d.deviceSecret)).toMatchObject({ ok: true, allowInput: false });
+  });
+
   it('setInput flips the grant and survives a reload', async () => {
     const s = store();
     const d = await s.mint({ name: 'iPhone', allowInput: true });

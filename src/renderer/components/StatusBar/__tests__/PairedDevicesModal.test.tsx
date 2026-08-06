@@ -235,6 +235,55 @@ describe('PairedDevicesModal', () => {
     unmount();
   });
 
+  // Escape and the backdrop were already blocked; leaving the explicit Close
+  // live made both of those decorative.
+  it('blocks the Close button while a revoke is in flight', async () => {
+    let resolveRevoke: (v: unknown) => void = () => { /* replaced below */ };
+    deviceRevoke.mockReturnValue(new Promise((r) => { resolveRevoke = r; }));
+    const onClose = vi.fn();
+    const { container, unmount } = render(<PairedDevicesModal onClose={onClose} />);
+    await flush();
+
+    const btn = revokeButtons(container)[0]!;
+    act(() => { btn.click(); });
+    await flush();
+    act(() => { btn.click(); });
+    await flush();
+
+    const close = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Close')!;
+    expect(close.disabled).toBe(true);
+    act(() => { close.click(); });
+    expect(onClose).not.toHaveBeenCalled();
+
+    act(() => { resolveRevoke({ ok: true }); });
+    await flush();
+    expect((Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Close') as HTMLButtonElement).disabled).toBe(false);
+
+    unmount();
+  });
+
+  it('reports a missing grant bridge instead of swallowing the click', async () => {
+    (window as unknown as { electronAPI: unknown }).electronAPI = { web: { deviceList } };
+    const { container, unmount } = render(<PairedDevicesModal onClose={() => { /* noop */ }} />);
+    await flush();
+
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    // React tracks `checked` behind a value setter, so assigning the property
+    // directly is invisible to onChange — same trick the sibling suites use.
+    const setChecked = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'checked',
+    )!.set!;
+    act(() => {
+      setChecked.call(box, !box.checked);
+      box.dispatchEvent(new Event('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain('daemon is not running');
+
+    unmount();
+  });
+
   it('drops stale rows when the post-revoke re-list fails', async () => {
     const { container, unmount } = render(<PairedDevicesModal onClose={() => { /* noop */ }} />);
     await flush();

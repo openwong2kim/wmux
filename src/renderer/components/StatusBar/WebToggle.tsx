@@ -575,6 +575,21 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [deviceName, setDeviceName] = useState('');
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pairAllowInput, setPairAllowInput] = useState(false);
+  /**
+   * Drop the grant once the code it belonged to has been redeemed.
+   *
+   * `pendingDeviceName` clearing is the server telling us the pairing session
+   * ended. Without this the ticked box outlives it, and the NEXT device the
+   * operator pairs inherits an input grant from a decision made about a
+   * different one. Keyed on the name rather than on the code so a code
+   * REFRESHED for the same unredeemed session keeps the choice.
+   */
+  const hadPendingName = useRef(false);
+  useEffect(() => {
+    const has = typeof info.pendingDeviceName === 'string' && info.pendingDeviceName !== '';
+    if (hadPendingName.current && !has) setPairAllowInput(false);
+    hadPendingName.current = has;
+  }, [info.pendingDeviceName]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);

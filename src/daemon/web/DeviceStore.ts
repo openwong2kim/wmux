@@ -1025,13 +1025,20 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
   // phone may not hold and deliver a notification it cannot open.
   const push = coercePush(o['push']);
   if (push) record.push = push;
-  // Only a real boolean survives. ABSENT is meaningful here and must stay
-  // absent — it is what marks a record written before per-device grants
-  // existed, which `recordAllowsInput` reads as granted. Coercing anything
-  // else (a string, a null from some future serializer) to `false` would mute
-  // a device on a malformed field; leaving it absent grandfathers it instead,
-  // which matches how every other optional field on this record fails.
-  if (typeof o['allowInput'] === 'boolean') record.allowInput = o['allowInput'];
+  // ABSENT and MALFORMED are different, and only the first grandfathers.
+  //
+  // Absent marks a record written before per-device grants existed, whose
+  // device has been typing under the server flag all along — `recordAllowsInput`
+  // reads that as granted so an upgrade mutes nobody.
+  //
+  // PRESENT-but-not-a-boolean is someone having tried to state something we
+  // cannot read, and it resolves to read-only. Letting it fall through to the
+  // absent branch would turn a persisted `"false"` string into a restored input
+  // permission on the next boot — a corrupted or tampered record silently
+  // regaining the one capability this field exists to withhold.
+  if ('allowInput' in o && o['allowInput'] !== undefined) {
+    record.allowInput = o['allowInput'] === true;
+  }
   // Any truthy finite revokedAt keeps the device refused. A malformed one is
   // treated as REVOKED rather than active: fail-closed is the only safe read of
   // "this record may have been revoked".

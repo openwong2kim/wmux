@@ -104,7 +104,11 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
 
   const handleSetInput = useCallback(async (deviceId: string, allowInput: boolean) => {
     const api = window.electronAPI?.web;
-    if (!api?.deviceSetInput) return;
+    // A silent return leaves the checkbox flipped with nothing having happened.
+    if (!api?.deviceSetInput) {
+      setRevokeError({ deviceId, message: t('web.revokeUnavailable') });
+      return;
+    }
     setRevokeError(null);
     try {
       const res = await api.deviceSetInput(deviceId, allowInput);
@@ -363,10 +367,14 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
           <span className="text-[10px]" style={{ color: 'var(--text-subtle)' }}>
             {listError ? t('web.devicesCountUnknown') : t('web.devicesLiveCount', { count: liveCount })}
           </span>
+          {/* Same rule as Escape and the backdrop: a destructive call the
+              operator confirmed must not be dismissable before its verdict has
+              been shown. Leaving this one live made the other two decorative. */}
           <button
             type="button"
             onClick={onClose}
-            className={`rounded-[5px] px-3 py-1 text-[11px] transition-colors ${FOCUS_RING}`}
+            disabled={revokeInFlight}
+            className={`rounded-[5px] px-3 py-1 text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`}
             style={{ background: 'var(--bg-overlay)', color: 'var(--text-main)' }}
           >
             {t('web.devicesClose')}

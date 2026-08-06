@@ -240,7 +240,12 @@ export function registerWebHandlers(
     wrapHandler(IPC.WEB_PAIR_START, async (_event, input: unknown): Promise<WebTerminalInfo> => {
       const pairArgs = input && typeof input === 'object' ? (input as { name?: unknown; allowInput?: unknown }) : {};
       const name = String(pairArgs.name ?? '');
-      const allowInput = pairArgs.allowInput === true;
+      // Absent stays ABSENT across this hop. Collapsing it to `false` here
+      // would reach the daemon as an explicit refusal and override
+      // `defaultPendingGrant()`, muting every device paired by a caller that
+      // does not send the field — which is the whole point of the daemon
+      // reading it as optional.
+      const allowInput = typeof pairArgs.allowInput === 'boolean' ? pairArgs.allowInput : undefined;
       const dc = getDaemonClient();
       if (!dc || !dc.isConnected) {
         return {
@@ -254,7 +259,10 @@ export function registerWebHandlers(
       // rather than hand-assemble one and let the two drift.
       let failure: string | undefined;
       try {
-        const res = (await dc.rpc('daemon.web.pairStart', { name, allowInput })) as {
+        const res = (await dc.rpc('daemon.web.pairStart', {
+          name,
+          ...(allowInput !== undefined ? { allowInput } : {}),
+        })) as {
           ok?: boolean;
           error?: string;
         };
@@ -324,7 +332,13 @@ export function registerWebHandlers(
           // stopped server still has devices worth revoking.
           const res = (await dc.rpc('daemon.web.deviceList', {})) as { devices?: unknown };
           if (!Array.isArray(res?.devices)) return { devices: [], error: 'malformed' };
-          return { devices: res.devices.map(asDeviceSummary).filter((d): d is WebDeviceSummary => d !== null) };
+          const parsed = res.devices.map(asDeviceSummary);
+          // ALL or nothing. Dropping the unparseable ones and showing the rest
+          // would present a partial roster as the complete one — and the
+          // record hidden that way is a live device the operator then cannot
+          // revoke, which is the exact fail-open this screen exists to avoid.
+          if (parsed.some((d) => d === null)) return { devices: [], error: 'malformed' };
+          return { devices: parsed as WebDeviceSummary[] };
         } catch (err) {
           console.warn(`[web] deviceList failed: ${(err as Error)?.message ?? String(err)}`);
           return { devices: [], error: 'unavailable' };
