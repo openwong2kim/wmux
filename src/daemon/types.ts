@@ -26,7 +26,14 @@ export interface DaemonSession {
   state: DaemonSessionState;
   createdAt: string;        // ISO 8601
   lastActivity: string;     // ISO 8601
-  pid: number;              // child process PID
+  pid: number;              // child process PID (synthetic negative id for SSH)
+  /**
+   * P0a: the transport this session runs over. `'local'` is a node-pty child
+   * (the only kind before this field, so an absent value is treated as local).
+   * `'ssh'` is a remote channel — `pid` is synthetic, liveness is event-driven
+   * (the channel's close), and supervision/restart is not yet supported.
+   */
+  kind?: 'local' | 'ssh';
   /**
    * OS-reported creation time of `pid`, as the platform prints it (Windows
    * WMIC `CreationDate`, posix `ps -o lstart=`). Opaque — only ever compared

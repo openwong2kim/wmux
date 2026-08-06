@@ -75,6 +75,7 @@
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/ssh2": "^1.15.5",
     "@typescript-eslint/eslint-plugin": "^5.62.0",
     "@typescript-eslint/parser": "^5.62.0",
     "@vitejs/plugin-react": "^4.7.0",
@@ -111,6 +112,7 @@
     "react-dom": "^19.2.4",
     "react-resizable-panels": "^4.7.3",
     "smol-toml": "^1.6.1",
+    "ssh2": "^1.17.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   }

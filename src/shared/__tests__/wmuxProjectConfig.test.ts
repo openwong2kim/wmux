@@ -189,6 +189,153 @@ describe('normalizeWmuxProjectConfig — layout (all-or-nothing)', () => {
   });
 });
 
+describe('normalizeWmuxProjectConfig — P0a SSH leaf (kind: ssh)', () => {
+  // The SSH leaf is a third pane kind, mutually exclusive with the local
+  // terminal and the browser. A malicious wmux.json (checked into the repo,
+  // attacker-reachable) must not smuggle shell metacharacters into an ssh
+  // argv or point a private-key path at the project root. These tests lock
+  // the validator: a bad value drops the WHOLE layout (consistent with how
+  // the supervision/role validators behave on typos).
+  const baseSshLeaf = () => ({
+    kind: 'ssh' as const,
+    ssh: { host: 'build-box.local', username: 'dev' },
+  });
+
+  it('accepts a minimal ssh leaf and threads the validated fields', () => {
+    const config = normalizeWmuxProjectConfig({ layout: baseSshLeaf() });
+    expect(config?.layout).toMatchObject({
+      type: 'leaf',
+      kind: 'ssh',
+      ssh: { host: 'build-box.local', username: 'dev' },
+    });
+  });
+
+  it('accepts port, privateKeyPath (home-relative), agent, remoteCommand', () => {
+    const config = normalizeWmuxProjectConfig({
+      layout: {
+        kind: 'ssh',
+        ssh: {
+          host: '10.0.0.5',
+          port: 2222,
+          username: 'ci',
+          privateKeyPath: '~/.ssh/id_ed25519',
+          agent: true,
+          remoteCommand: 'cd repo && claude',
+        },
+      },
+    });
+    expect(config?.layout).toMatchObject({
+      kind: 'ssh',
+      ssh: { host: '10.0.0.5', port: 2222, username: 'ci', privateKeyPath: '~/.ssh/id_ed25519' },
+    });
+  });
+
+  it('drops the layout when ssh fields are missing on a kind:ssh leaf', () => {
+    expect(normalizeWmuxProjectConfig({ layout: { kind: 'ssh' } })).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({ layout: { kind: 'ssh', ssh: { host: 'h' } } }),
+    ).toBeUndefined(); // no username
+    expect(
+      normalizeWmuxProjectConfig({ layout: { kind: 'ssh', ssh: { username: 'u' } } }),
+    ).toBeUndefined(); // no host
+  });
+
+  it('rejects a host with shell metacharacters or whitespace', () => {
+    for (const host of ['build box', 'host;rm -rf /', 'host$(x)', 'a|b', 'h\nx']) {
+      expect(
+        normalizeWmuxProjectConfig({ layout: { kind: 'ssh', ssh: { host, username: 'u' } } }),
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects an out-of-range or non-integer port', () => {
+    for (const port of [0, 65536, 70000, -1, 1.5]) {
+      expect(
+        normalizeWmuxProjectConfig({
+          layout: { kind: 'ssh', ssh: { host: 'h', username: 'u', port } },
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects a privateKeyPath that is a bare relative path (project-root escape vector)', () => {
+    // A checked-in wmux.json pointing at ./id_rsa would resolve against the
+    // trusted project root — exactly the attack the absolute/~/drive rule prevents.
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u', privateKeyPath: 'id_rsa' } },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u', privateKeyPath: 'secrets/key' } },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('accepts an absolute privateKeyPath on posix and a drive path on windows', () => {
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u', privateKeyPath: '/home/u/.ssh/id' } },
+      }),
+    ).toBeDefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u', privateKeyPath: 'C:\\Users\\u\\.ssh\\id' } },
+      }),
+    ).toBeDefined();
+  });
+
+  it('rejects a kind:ssh leaf that also carries local-only fields (command/cwd/url/role/restart)', () => {
+    // A remote pane is neither a local shell nor a browser, and supervision
+    // (restart) is not supported on SSH in P0a — the contradictions drop the layout.
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u' }, command: 'x' },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u' }, cwd: 'pkg' },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u' }, url: 'https://x' },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u' }, role: 'builder' },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { kind: 'ssh', ssh: { host: 'h', username: 'u' }, restart: 'always' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects ssh fields on a leaf WITHOUT kind:ssh (silent downgrade guard)', () => {
+    // Without kind:'ssh', ssh fields would be meaningless; reject rather than
+    // ignore, so an author typo (e.g. misspelling `kind`) doesn't silently
+    // produce a local pane that ignores the connection config.
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { command: 'x', ssh: { host: 'h', username: 'u' } },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('validates that an ssh leaf still counts toward the leaf budget', () => {
+    // 12 is the cap; 13 ssh leaves drops the layout (DoS guard covers remote panes too).
+    const leaves = Array.from({ length: 13 }, () => ({ kind: 'ssh', ssh: { host: 'h', username: 'u' } }));
+    expect(
+      normalizeWmuxProjectConfig({ layout: { direction: 'vertical', panes: leaves } }),
+    ).toBeUndefined();
+  });
+});
+
 describe('normalizeWmuxProjectConfig — X8 supervision (strict, decision ⑪)', () => {
   // Helper: a two-leaf horizontal branch whose FIRST leaf carries the override
   // under test, so layout-drop vs. leaf-shape is unambiguous.

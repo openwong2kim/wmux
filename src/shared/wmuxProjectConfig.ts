@@ -22,6 +22,7 @@
 
 import { WORKSPACE_PROFILE_COMMAND_MAX, WORKSPACE_PROFILE_STARTUP_CWD_MAX } from './types';
 import { ORCH_ROLES, sanitizeOrchRole } from './orchestratorRole';
+import path from 'node:path';
 
 /** File name probed for at/above a workspace's cwd (stops at the repo root). */
 export const WMUX_PROJECT_CONFIG_FILENAME = 'wmux.json';
@@ -108,6 +109,27 @@ export interface WmuxProjectLayoutLeaf {
    * `restorePermissionMode` override the expansion.
    */
   restorePermissionMode?: boolean;
+  /**
+   * P0a: declare a REMOTE pane driven over SSH instead of a local PTY. When
+   * present, `ssh` must be too, and `command`/`cwd`/`url`/`restart`/`role` are
+   * rejected (a remote pane is not a local shell, not a browser, and not
+   * supervised in P0a). `cwd` for a remote pane would be a REMOTE absolute
+   * path, which the project-relative validator must not touch — authors who
+   * want the remote shell to start somewhere specific put a `cd` in
+   * `ssh.remoteCommand`. The remote shell always launches interactively.
+   */
+  kind?: 'ssh';
+  ssh?: {
+    host: string;
+    port?: number;
+    username: string;
+    /** Path on the OPERATOR's machine to a private key file. Never key bytes. */
+    privateKeyPath?: string;
+    /** Use the SSH agent. Defaults to true when no privateKeyPath given. */
+    agent?: boolean;
+    /** Optional remote command (interactive shell when omitted). */
+    remoteCommand?: string;
+  };
 }
 
 export interface WmuxProjectLayoutBranch {
@@ -185,6 +207,70 @@ export function isValidProjectRelativeCwd(input: string): boolean {
   if (input.startsWith('/') || input.startsWith('\\')) return false; // root/UNC
   const segments = input.split(/[\\/]+/);
   return segments.every((seg) => seg !== '..');
+}
+
+/**
+ * P0a: validate a remote SSH target on a wmux.json leaf. The host is a DNS name
+ * or IP (NOT a path — it must never carry shell metacharacters that could be
+ * smuggled into an ssh command), the port is 1..65535, and a private key path
+ * is constrained to the operator's home or an absolute path (never a relative
+ * one that would resolve against the project root — the key is the operator's,
+ * not the repo's). Returns a clean object or `null` when invalid.
+ */
+function normalizeSshLeaf(src: unknown): {
+  host: string;
+  port?: number;
+  username: string;
+  privateKeyPath?: string;
+  agent?: boolean;
+  remoteCommand?: string;
+} | null {
+  if (typeof src !== 'object' || src === null) return null;
+  const s = src as Record<string, unknown>;
+  // Host: 1..253 chars, letters/digits/dot/hyphen/bracketed-ipv6 only. Anything
+  // else (spaces, shell metachars, slashes) is rejected so it can never reach an
+  // argv position where a parser might split it.
+  const host = typeof s.host === 'string' ? s.host.trim() : '';
+  if (host.length === 0 || host.length > 253) return null;
+  // Allow bracketed IPv6 ([::1]) and bare IPv6 by permitting hex/colons too.
+  if (!/^[A-Za-z0-9._:\[\]-]+$/.test(host)) return null;
+  const username = typeof s.username === 'string' ? s.username.trim() : '';
+  // Username: reasonable charset; reject control chars and spaces only.
+  if (username.length === 0 || username.length > 64 || /[\s\x00-\x1f]/.test(username)) return null;
+  let port: number | undefined;
+  if (s.port !== undefined) {
+    if (typeof s.port !== 'number' || !Number.isInteger(s.port) || s.port < 1 || s.port > 65535) return null;
+    port = s.port;
+  }
+  let privateKeyPath: string | undefined;
+  if (s.privateKeyPath !== undefined) {
+    if (typeof s.privateKeyPath !== 'string') return null;
+    const p = s.privateKeyPath.trim();
+    // Must be absolute or start with ~ — never a bare relative path that would
+    // resolve against the trusted project root (a checked-in wmux.json pointing
+    // at ./id_rsa would be an attack vector). Length-bounded.
+    if (p.length === 0 || p.length > 1024) return null;
+    if (!p.startsWith('~') && !path.isAbsolute(p) && !/^[A-Za-z]:[\\/]/.test(p)) return null;
+    privateKeyPath = p;
+  }
+  let remoteCommand: string | undefined;
+  if (s.remoteCommand !== undefined) {
+    if (typeof s.remoteCommand !== 'string') return null;
+    const rc = s.remoteCommand.trim();
+    if (rc.length === 0 || rc.length > WORKSPACE_PROFILE_COMMAND_MAX) return null;
+    remoteCommand = rc;
+  }
+  let agent: boolean | undefined;
+  if (s.agent !== undefined) {
+    if (typeof s.agent !== 'boolean') return null;
+    agent = s.agent;
+  }
+  const out: { host: string; port?: number; username: string; privateKeyPath?: string; agent?: boolean; remoteCommand?: string } = { host, username };
+  if (port !== undefined) out.port = port;
+  if (privateKeyPath !== undefined) out.privateKeyPath = privateKeyPath;
+  if (agent !== undefined) out.agent = agent;
+  if (remoteCommand !== undefined) out.remoteCommand = remoteCommand;
+  return out;
 }
 
 /**
@@ -404,6 +490,8 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
     unattended?: unknown;
     restorePermissionMode?: unknown;
     role?: unknown;
+    kind?: unknown;
+    ssh?: unknown;
   };
 
   // Branch: presence of `panes` is the discriminator.
@@ -441,6 +529,24 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   // A pane is either a terminal (command/cwd) or a browser (url) — both is a
   // contradiction the author must resolve, not something to guess at.
   if (url !== undefined && (command !== undefined || cwd !== undefined)) return null;
+
+  // P0a: a remote (SSH) pane is a third kind, mutually exclusive with the local
+  // terminal and the browser. A remote pane is not a local shell, so a local
+  // `command`/`cwd` is a contradiction (cwd would be a REMOTE absolute path the
+  // project-relative validator would reject anyway); it is not a browser; and
+  // supervision (restart) is not supported on SSH in P0a (reconnect is P0b), so
+  // a restart policy on a remote leaf is rejected rather than silently dropped.
+  const isSshLeaf = src.kind === 'ssh';
+  if (isSshLeaf) {
+    if (url !== undefined || command !== undefined || cwd !== undefined) return null;
+    if (src.role !== undefined) return null;
+    if (src.restart !== undefined || src.unattended !== undefined || src.restorePermissionMode !== undefined) return null;
+    const ssh = normalizeSshLeaf(src.ssh);
+    if (ssh === null) return null;
+    const leaf: WmuxProjectLayoutLeaf = { type: 'leaf', kind: 'ssh', ssh };
+    return leaf;
+  }
+  if (src.ssh !== undefined) return null; // ssh fields without kind:'ssh'
 
   // D2 role. Strict like the supervision fields: an unknown role name is a typo
   // that would silently yield an unenforced pane, so it drops the layout rather

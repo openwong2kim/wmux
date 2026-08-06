@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { IPty } from 'node-pty';
+import type { SessionProcess } from './SessionProcess';
 import { OscParser } from '../main/pty/OscParser';
 import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector, type AgentEventStatus } from '../main/pty/AgentDetector';
@@ -171,7 +171,7 @@ export class DaemonPTYBridge extends EventEmitter {
   private static readonly ANSI_STRIP = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[?]?[0-9;]*[hlm]/g;
 
   setupDataForwarding(
-    ptyProcess: IPty,
+    ptyProcess: SessionProcess,
     ringBuffer: RingBuffer,
     sessionId: string,
     promptLog?: PromptEventLog,

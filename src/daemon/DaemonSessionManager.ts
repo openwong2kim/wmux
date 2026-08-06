@@ -7,6 +7,8 @@ import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, DaemonConfig } from './types';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
+import type { SessionProcess, SessionKind, SshSessionParams } from './SessionProcess';
+import { SshChannelSession } from './SshChannelSession';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
@@ -65,7 +67,7 @@ function stripReservedNamespace(env: Record<string, string>): Record<string, str
  */
 export interface ManagedSession {
   meta: DaemonSession;
-  ptyProcess: IPty;
+  ptyProcess: SessionProcess;
   ringBuffer: RingBuffer;
   bridge: DaemonPTYBridge;
   /** Structured prompt/command boundaries emitted by OSC 133 shell integration. */
@@ -256,10 +258,34 @@ export class DaemonSessionManager extends EventEmitter {
      * runaway-guard 'stopped' survives reboots.
      */
     supervision?: DaemonSessionSupervision;
+    /**
+     * P0a remote agent. When `kind === 'ssh'`, the pane is driven over an SSH
+     * channel to `ssh.host` instead of a local node-pty child. `cwd`/`env`
+     * become display/identity-only (the remote shell owns its own environment);
+     * `cmd` is replaced by an `ssh user@host` display string. Supervision
+     * (restart policy) is REJECTED on ssh in P0a — reconnect semantics are P0b.
+     */
+    kind?: SessionKind;
+    ssh?: SshSessionParams;
   }): DaemonSession {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
       throw new Error(`Invalid session ID: must be 1-64 chars of [a-zA-Z0-9_-]`);
+    }
+
+    // P0a: an SSH pane runs over a remote channel, not a local PTY. Supervision
+    // (restart policy) is rejected on this kind — the supervisor re-spawns a
+    // LOCAL process from `cmd`, which is meaningless for SSH; reconnect
+    // semantics land in P0b (RemotePaneSupervisor). Rejecting here keeps the
+    // persisted meta free of a policy the daemon cannot honor.
+    const isSsh = params.kind === 'ssh';
+    if (isSsh) {
+      if (!params.ssh || !params.ssh.host || !params.ssh.username) {
+        throw new Error('SSH session requires ssh.host and ssh.username');
+      }
+      if (params.supervision) {
+        throw new Error('Supervised restart is not supported on SSH sessions yet (planned: P0b)');
+      }
     }
 
     // Resolve effective config once. The daemon main calls setConfig()
@@ -307,6 +333,13 @@ export class DaemonSessionManager extends EventEmitter {
     // cwd). Single choke point — every caller-supplied cwd converges here.
     const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    // For an SSH pane, `cmd` is display-only — what the badge, `wmux
+    // list-panes`, and sessions.json show. It never executes locally. Keep it
+    // human-readable so an operator scanning a fleet can tell panes apart.
+    if (isSsh && params.ssh) {
+      const portSuffix = params.ssh.port ? `:${params.ssh.port}` : '';
+      cmd = `ssh ${params.ssh.username}@${params.ssh.host}${portSuffix}`;
+    }
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -420,19 +453,40 @@ export class DaemonSessionManager extends EventEmitter {
     // shell path differs from Windows. Surface an actionable message instead of
     // letting the raw node-pty error propagate as an opaque session-create
     // failure. (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
-    let ptyProcess: IPty;
-    try {
-      ptyProcess = pty.spawn(cmd, spawnArgs, {
-        name: 'xterm-256color',
+    //
+    // P0a: an SSH pane skips the local spawn entirely — the process handle is a
+    // remote channel. Construction is synchronous (the channel connects in the
+    // background and surfaces bytes via onData once ready), so the same meta +
+    // bridge wiring downstream works unchanged.
+    let ptyProcess: SessionProcess;
+    if (isSsh && params.ssh) {
+      const ssh = params.ssh;
+      ptyProcess = new SshChannelSession({
+        host: ssh.host,
+        port: ssh.port,
+        username: ssh.username,
         cols,
         rows,
-        cwd,
-        env,
-        useConpty: true,
+        remoteCommand: ssh.remoteCommand,
+        auth: {
+          privateKeyPath: ssh.privateKeyPath,
+          agent: ssh.agent,
+        },
       });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
+    } else {
+      try {
+        ptyProcess = pty.spawn(cmd, spawnArgs, {
+          name: 'xterm-256color',
+          cols,
+          rows,
+          cwd,
+          env,
+          useConpty: true,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
+      }
     }
 
     const now = new Date().toISOString();
@@ -445,6 +499,10 @@ export class DaemonSessionManager extends EventEmitter {
       // immortalised orphan shells — a TTL could never fire post-restart.
       lastActivity: params.lastActivity ?? now,
       pid: ptyProcess.pid,
+      // P0a: persist the transport so recovery, capability advertisement, and
+      // the factory can branch without sniffing. Absent === 'local' for every
+      // record written before this field, which is why readers default it.
+      kind: isSsh ? 'ssh' : 'local',
       cmd,
       cwd,
       // Same value as `cwd` for a brand-new session, and deliberately a second

@@ -61,6 +61,11 @@ export function registerSystemRpc(router: RpcRouter): void {
           // pane ids, pty ids, and event cursors are all invalidated.
           bootId: eventBus.bootId,
         },
+        // P0a: transport kinds a pane can be created over on this build. MCP
+        // clients and `wmux doctor` feature-detect remote-agent support from
+        // this list rather than inferring from method names. 'local' is always
+        // present; 'ssh' lands with the P0a slice.
+        transports: ['local', 'ssh'],
       },
     });
   });
