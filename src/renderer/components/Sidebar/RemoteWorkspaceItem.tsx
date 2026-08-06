@@ -83,7 +83,14 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             boxShadow:
               '0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent)',
           }}
-          onClick={(e) => e.stopPropagation()}
+          // MOUSEDOWN, not click. The dismiss listener above is on `mousedown`,
+          // which fires first — so stopping only `click` let the menu unmount
+          // under the pointer before the button's own click could ever land,
+          // and Detach did nothing at all. React's synthetic stopPropagation
+          // calls the native one, which is what keeps the document listener
+          // from seeing this. (Same shape AttachRemoteModal already uses for
+          // its backdrop.)
+          onMouseDown={(e) => e.stopPropagation()}
         >
           <button
             type="button"
