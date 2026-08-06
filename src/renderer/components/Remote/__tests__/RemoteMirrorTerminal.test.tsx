@@ -21,7 +21,7 @@ class FakeTerminal {
   disposed = false;
   onDataHandler: ((data: string) => void) | null = null;
 
-  open(): void {}
+  open(): void { /* noop — the fake never touches the DOM container */ }
   reset(): void { this.resetCalls++; }
   resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
   write(data: unknown): void { this.written.push(data); }
