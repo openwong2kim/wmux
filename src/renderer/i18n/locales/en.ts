@@ -1349,6 +1349,10 @@ export const en = {
   'remote.loading': 'Loading…',
   'remote.readOnly': 'Read-only — start the remote server with --allow-input to type',
   'remote.exited': 'exited',
+  'remote.disconnected': 'Connection lost — the remote host is unreachable or the token was rejected',
+  'remote.removeHost': 'Remove host',
+  'remote.addFailed': 'Could not add host — check the app logs',
+  'remote.workspacesFailed': 'Could not load workspaces — check the app logs',
   'remote.morePanes': '+{count} more panes',
 } as const;
 
