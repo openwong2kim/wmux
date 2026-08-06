@@ -1744,8 +1744,16 @@ export class WebTerminalServer {
     }
     const workspaces = [...byId.values()]
       .map((w) => ({ ...w, panes: w.panes.sort((a, b) => a.sessionId.localeCompare(b.sessionId)) }))
-      // Named workspaces sort first; '￿' pushes unnamed ones to the end.
-      .sort((a, b) => (a.name || '￿').localeCompare(b.name || '￿') || a.id.localeCompare(b.id));
+      // Named workspaces sort first, alphabetically; unnamed ones sort last.
+      // An explicit boolean tiebreak (not a '￿' sentinel) because ICU
+      // collation may treat noncharacters as ignorable, which would invert
+      // the unnamed-last intent depending on locale.
+      .sort((a, b) => {
+        const aUnnamed = a.name === '';
+        const bUnnamed = b.name === '';
+        if (aUnnamed !== bUnnamed) return aUnnamed ? 1 : -1;
+        return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+      });
     return this.json(res, 200, { workspaces });
   }
 

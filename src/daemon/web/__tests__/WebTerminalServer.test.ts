@@ -3970,6 +3970,40 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    // m6 — the sort used to push unnamed workspaces last via a '￿' (U+FFFF)
+    // sentinel compared through localeCompare, which relies on ICU
+    // collation treating that noncharacter as sorting after every real
+    // name — not guaranteed across locales/ICU builds. An explicit boolean
+    // tiebreak (unnamed vs named) makes the ordering locale-independent.
+    // This also covers the multi-unnamed tie: they fall back to id order.
+    it('sorts multiple unnamed workspaces last, ordered by id', async () => {
+      live.push(
+        {
+          id: 's5', cwd: '/z', cols: 80, rows: 24, state: 'detached',
+          agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-zzz' },
+          cmd: '/usr/bin/bash',
+        },
+        {
+          id: 's6', cwd: '/a', cols: 80, rows: 24, state: 'detached',
+          agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-aaa' },
+          cmd: '/usr/bin/bash',
+        },
+      );
+      try {
+        const info = await startRO();
+        const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        const body = (await res.json()) as { workspaces: Array<{ id: string; name: string }> };
+        // Named ('ws-1') first; the two unnamed ones ('ws-aaa','ws-legacy',
+        // 'ws-zzz') last, ordered by id, never mixed in with named entries.
+        expect(body.workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-aaa', 'ws-legacy', 'ws-zzz']);
+        expect(body.workspaces.slice(1).every((w) => w.name === '')).toBe(true);
+      } finally {
+        live.length = 3;
+      }
+    });
+
     it('rejects an unauthenticated request exactly like /api/sessions', async () => {
       await startRO();
       const res = await fetch(`${base()}/api/workspaces`);
