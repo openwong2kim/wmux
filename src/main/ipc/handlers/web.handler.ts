@@ -4,6 +4,7 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import {
   WEB_DEFAULT_PORT,
+  type WebDeviceListError,
   type WebDeviceRevokeResult,
   type WebDeviceSummary,
   type WebStartArgs,
@@ -275,26 +276,54 @@ export function registerWebHandlers(
     }),
   );
 
+  /**
+   * Keep only records the renderer can actually render.
+   *
+   * The daemon is trusted, but `WebDeviceSummary` is a hand-kept MIRROR of its
+   * `DeviceSummary` rather than an import, so nothing makes the two move
+   * together. The narrowing that matters is `revokedAt`: a non-number that is
+   * merely `!== undefined` (a `null` from a future serializer) would paint a
+   * LIVE device as a tombstone and take its revoke button away — an operator
+   * locked out of revoking the one device they came here for.
+   */
+  const asDeviceSummary = (raw: unknown): WebDeviceSummary | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const d = raw as Record<string, unknown>;
+    if (typeof d['deviceId'] !== 'string' || d['deviceId'] === '') return null;
+    if (typeof d['createdAt'] !== 'number' || typeof d['lastSeenAt'] !== 'number') return null;
+    return {
+      deviceId: d['deviceId'],
+      name: typeof d['name'] === 'string' ? d['name'] : '',
+      createdAt: d['createdAt'],
+      lastSeenAt: d['lastSeenAt'],
+      ...(typeof d['revokedAt'] === 'number' ? { revokedAt: d['revokedAt'] } : {}),
+    };
+  };
+
   ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
   ipcMain.handle(
     IPC.WEB_DEVICE_LIST,
-    wrapHandler(IPC.WEB_DEVICE_LIST, async (): Promise<{ devices: WebDeviceSummary[]; error?: string }> => {
-      const dc = getDaemonClient();
-      if (!dc || !dc.isConnected) {
-        return { devices: [], error: 'wmux web runs inside the background daemon, which is not running.' };
-      }
-      try {
-        // `daemon.web.deviceList` answers {devices}, NOT a WebTerminalInfo — it
-        // reads the roster store, which outlives any one run of the server. A
-        // stopped server still has devices worth revoking.
-        const res = (await dc.rpc('daemon.web.deviceList', {})) as { devices?: unknown };
-        return Array.isArray(res?.devices)
-          ? { devices: res.devices as WebDeviceSummary[] }
-          : { devices: [], error: 'daemon.web.deviceList: malformed daemon response' };
-      } catch (err) {
-        return { devices: [], error: (err as Error)?.message ?? String(err) };
-      }
-    }),
+    wrapHandler(
+      IPC.WEB_DEVICE_LIST,
+      async (): Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }> => {
+        const dc = getDaemonClient();
+        // A REASON CODE, not a sentence. Every other string in this modal goes
+        // through t(); an English message baked in here would be the only part
+        // of a credential screen that ignores the operator's locale.
+        if (!dc || !dc.isConnected) return { devices: [], error: 'unavailable' };
+        try {
+          // `daemon.web.deviceList` answers {devices}, NOT a WebTerminalInfo — it
+          // reads the roster store, which outlives any one run of the server. A
+          // stopped server still has devices worth revoking.
+          const res = (await dc.rpc('daemon.web.deviceList', {})) as { devices?: unknown };
+          if (!Array.isArray(res?.devices)) return { devices: [], error: 'malformed' };
+          return { devices: res.devices.map(asDeviceSummary).filter((d): d is WebDeviceSummary => d !== null) };
+        } catch (err) {
+          console.warn(`[web] deviceList failed: ${(err as Error)?.message ?? String(err)}`);
+          return { devices: [], error: 'unavailable' };
+        }
+      },
+    ),
   );
 
   ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
@@ -311,13 +340,26 @@ export function registerWebHandlers(
       if (!dc || !dc.isConnected) return { ok: false, reason: 'unavailable' };
       try {
         const res = (await dc.rpc('daemon.web.deviceRevoke', { deviceId })) as WebDeviceRevokeResult;
-        if (res && typeof res === 'object' && typeof res.ok === 'boolean') return res;
-        return { ok: false, reason: 'persist-failed' };
-      } catch {
-        // A rejected RPC leaves the roster in an unknown state. Report the
-        // pessimistic outcome: the caller re-lists either way, and claiming a
-        // revoke that may not have persisted is the one lie that matters here.
-        return { ok: false, reason: 'persist-failed' };
+        if (res && typeof res === 'object' && typeof res.ok === 'boolean') {
+          // `closed` rides along: it is the only evidence of whether the device
+          // is off the air right now, which is a separate question from whether
+          // the roster write landed.
+          return typeof res.closed === 'number' ? res : { ok: res.ok, ...(res.reason ? { reason: res.reason } : {}) };
+        }
+        console.warn(`[web] deviceRevoke ${deviceId}: malformed daemon response`);
+        return { ok: false, reason: 'unknown' };
+      } catch (err) {
+        // 'unknown', NOT 'persist-failed'. A timeout, a cut pipe, or an older
+        // daemon that has no such method means the revoke may never have run —
+        // so nothing was necessarily blocked and no stream was necessarily cut.
+        // Reporting persist-failed here would let the UI tell the operator
+        // their connections were severed when the request never left the box.
+        //
+        // Logged because the daemon audits only SUCCESSFUL revocations: without
+        // this line a failed attempt on a credential surface leaves no trace
+        // anywhere. The deviceId is a public handle, never secret material.
+        console.warn(`[web] deviceRevoke ${deviceId} failed: ${(err as Error)?.message ?? String(err)}`);
+        return { ok: false, reason: 'unknown' };
       }
     }),
   );

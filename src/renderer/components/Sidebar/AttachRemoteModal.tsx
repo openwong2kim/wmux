@@ -122,6 +122,30 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     }
   }, [refreshHosts, t]);
 
+  /**
+   * Show the host that was just registered.
+   *
+   * Registering IS the request to look at that host, and without this the
+   * right pane keeps rendering its no-host-selected state — a successful pair
+   * that looks exactly like a no-op.
+   *
+   * Two constraints it has to respect:
+   *
+   *  - NOT awaited by the caller. `selectHost` probes the remote for its
+   *    workspace list, which can run to the full RPC timeout; awaiting it
+   *    inside the try would hold `pairing`/`adding` true for that whole time,
+   *    leaving the form blank and the button disabled long after the
+   *    registration itself succeeded — indistinguishable from a failure.
+   *  - Skipped once the operator has picked a host themselves. `selectHost`
+   *    sets `selectedHostId` unconditionally (its seq guard covers only the
+   *    RESPONSE), so a late auto-select would yank the pane away from a host
+   *    they chose while the pairing request was in flight.
+   */
+  const autoSelect = useCallback((hostId: string) => {
+    if (selectedHostId !== null) return;
+    void selectHost(hostId);
+  }, [selectHost, selectedHostId]);
+
   const handleAddHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;
     if (!remote || !addUrl.trim()) return;
@@ -133,11 +157,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
         setAddUrl('');
         setAddLabel('');
         await refreshHosts();
-        // Registering IS the request to look at that host — selecting it here
-        // is what turns a silent success into visible progress. Without this
-        // the right pane keeps rendering its no-host-selected state, which
-        // reads as "nothing happened" right after a successful add.
-        await selectHost(res.host.id);
+        autoSelect(res.host.id);
       } else {
         setAddError(res.error);
       }
@@ -149,7 +169,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } finally {
       setAdding(false);
     }
-  }, [addUrl, addLabel, refreshHosts, selectHost, t]);
+  }, [addUrl, addLabel, refreshHosts, autoSelect, t]);
 
   const handlePairHost = useCallback(async () => {
     const remote = window.electronAPI?.remote;
@@ -163,9 +183,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
         setPairCode('');
         setPairLabel('');
         await refreshHosts();
-        // Same reason as handleAddHost: a burnt single-use code has to buy
-        // visible progress, not a cleared form and an unchanged screen.
-        await selectHost(res.host.id);
+        autoSelect(res.host.id);
       } else {
         setPairError(pairReasonMessage(t, res.reason, res.attemptsLeft));
       }
@@ -177,7 +195,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } finally {
       setPairing(false);
     }
-  }, [pairOrigin, pairCode, pairLabel, refreshHosts, selectHost, t]);
+  }, [pairOrigin, pairCode, pairLabel, refreshHosts, autoSelect, t]);
 
   const handleRemoveHost = useCallback(async (hostId: string) => {
     const remote = window.electronAPI?.remote;

@@ -168,17 +168,40 @@ export interface WebDeviceSummary {
 }
 
 /**
- * Result of revoking one device.
+ * Result of revoking one device. Fail-closed: `ok` means the roster write
+ * PERSISTED and survives a restart.
  *
- * Fail-closed, and the distinction matters to the UI: `ok` means the roster
- * write PERSISTED. A `persist-failed` device had its live streams cut anyway
- * (an established SSE never re-authenticates) but WILL come back on the next
- * daemon boot, so the operator has to be told it is not actually gone.
+ * The failure reasons are kept apart because the UI makes a SAFETY CLAIM from
+ * them, and the claims are not interchangeable:
+ *
+ *   `persist-failed`  the daemon ran the revoke: the device is blocked in
+ *                     memory and its live streams were cut, but the write did
+ *                     not land, so the credential returns on the next boot.
+ *   `unknown`         the daemon never answered (RPC timeout, pipe cut,
+ *                     unknown method on an older daemon). NOTHING can be
+ *                     claimed — the revoke may not have run at all.
+ *   `unavailable`     no daemon connection; nothing was attempted.
+ *   `not-found`       no such device on the roster.
+ *
+ * Collapsing `unknown` into `persist-failed` is how a screen ends up telling an
+ * operator their connections were cut when the request never left the machine.
  */
 export interface WebDeviceRevokeResult {
   ok: boolean;
-  reason?: 'not-found' | 'persist-failed' | 'unavailable';
+  reason?: 'not-found' | 'persist-failed' | 'unavailable' | 'unknown';
+  /**
+   * Live SSE streams actually torn down, straight from the daemon.
+   *
+   * Load-bearing, not diagnostics: `{ok:false, closed:2}` and
+   * `{ok:false, closed:0}` are different facts about whether the device is off
+   * the air RIGHT NOW, and the copy differs accordingly. Absent whenever the
+   * daemon did not answer.
+   */
+  closed?: number;
 }
+
+/** Why a roster read produced nothing. Translated renderer-side, like the revoke reasons. */
+export type WebDeviceListError = 'unavailable' | 'malformed';
 
 /** Renderer → main start request. `expose` maps to the 0.0.0.0 bind. */
 export interface WebStartArgs {

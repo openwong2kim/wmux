@@ -22,6 +22,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSummary,
   WebStartArgs,
@@ -1211,7 +1212,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // WebTerminalInfo: the device roster is owned by the store, not by a running
   // server, so it answers even while the server is stopped.
   deviceList: () =>
-    ipcRenderer.invoke(IPC.WEB_DEVICE_LIST) as Promise<{ devices: WebDeviceSummary[]; error?: string }>,
+    ipcRenderer.invoke(IPC.WEB_DEVICE_LIST) as Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }>,
   deviceRevoke: (deviceId: string) =>
     ipcRenderer.invoke(IPC.WEB_DEVICE_REVOKE, { deviceId }) as Promise<WebDeviceRevokeResult>,
 };

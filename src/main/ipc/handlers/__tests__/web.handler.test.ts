@@ -480,7 +480,8 @@ describe('web.handler — device roster', () => {
     registerWebHandlers(() => dc, execAbsent);
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
     expect(res.devices).toEqual([]);
-    expect(res.error).toBeTruthy();
+    // A REASON CODE, not an English sentence — the renderer translates it.
+    expect(res.error).toBe('unavailable');
     expect((dc.rpc as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
@@ -488,7 +489,7 @@ describe('web.handler — device roster', () => {
     installConnected({ devices: 'not-an-array' });
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[]; error?: string };
     expect(res.devices).toEqual([]);
-    expect(res.error).toContain('malformed');
+    expect(res.error).toBe('malformed');
   });
 
   it('deviceRevoke forwards the id and returns the daemon verdict', async () => {
@@ -499,18 +500,23 @@ describe('web.handler — device roster', () => {
   });
 
   it('deviceRevoke passes a persist-failed verdict through rather than flattening it', async () => {
-    installConnected({ ok: false, reason: 'persist-failed' });
+    installConnected({ ok: false, reason: 'persist-failed', closed: 2 });
     const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
       ok: boolean;
       reason?: string;
+      closed?: number;
     };
-    expect(res).toEqual({ ok: false, reason: 'persist-failed' });
+    // `closed` rides along: it is the only evidence of whether the device is
+    // off the air right now, which the copy depends on.
+    expect(res).toEqual({ ok: false, reason: 'persist-failed', closed: 2 });
   });
 
-  // A rejected RPC leaves the roster in an unknown state. Reporting ok:false is
-  // the only honest answer — the operator re-reads the list either way, and the
-  // one unacceptable outcome is claiming a revoke that never landed.
-  it('deviceRevoke reports failure when the RPC throws', async () => {
+  // The one that matters. A timeout / cut pipe / unknown method means the
+  // daemon may never have run the revoke, so nothing was necessarily blocked
+  // and no stream was necessarily cut. Reporting persist-failed here would let
+  // the UI tell the operator their connections were severed when the request
+  // never left the machine.
+  it('deviceRevoke reports unknown — not persist-failed — when the RPC throws', async () => {
     const throwing = vi.fn(async () => { throw new Error('pipe closed mid-write'); });
     const dc = { rpc: throwing, isConnected: true } as unknown as DaemonClient;
     registerWebHandlers(() => dc, execAbsent);
@@ -518,7 +524,39 @@ describe('web.handler — device roster', () => {
       ok: boolean;
       reason?: string;
     };
-    expect(res).toEqual({ ok: false, reason: 'persist-failed' });
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('deviceRevoke reports unknown on a malformed reply', async () => {
+    installConnected({ nonsense: true });
+    const res = (await getHandler(IPC.WEB_DEVICE_REVOKE)(fakeEvent, { deviceId: 'd1' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(res).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  // `WebDeviceSummary` mirrors the daemon's shape instead of importing it, so
+  // nothing makes the two move together. A non-number revokedAt that merely
+  // passed `!== undefined` would paint a LIVE device as a tombstone and take
+  // its revoke button away — locking the operator out of the one device they
+  // came here for.
+  it('deviceList drops malformed records and narrows revokedAt to a number', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'good', name: 'iPhone', createdAt: 1, lastSeenAt: 2 },
+        { deviceId: 'null-revoked', name: 'Mac', createdAt: 1, lastSeenAt: 2, revokedAt: null },
+        { deviceId: 'no-times', name: 'Broken' },
+        null,
+        'nonsense',
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as {
+      devices: { deviceId: string; revokedAt?: number }[];
+    };
+    expect(res.devices.map((d) => d.deviceId)).toEqual(['good', 'null-revoked']);
+    // The null did NOT survive as a truthy tombstone marker.
+    expect(res.devices[1]!.revokedAt).toBeUndefined();
   });
 
   it('deviceRevoke refuses a blank id without touching the daemon', async () => {

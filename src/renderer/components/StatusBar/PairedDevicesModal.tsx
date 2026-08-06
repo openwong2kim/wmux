@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+// Aliased so the document-level Escape listener below still sees the DOM
+// KeyboardEvent rather than React's synthetic one.
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { timeAgo } from '../../utils/timeAgo';
-import type { WebDeviceSummary } from '../../../shared/web';
+import type { WebDeviceListError, WebDeviceSummary } from '../../../shared/web';
 
 /**
  * The operator's paired-device roster, and the only surface that can revoke one.
@@ -27,33 +30,60 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
 
   const [devices, setDevices] = useState<WebDeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [listError, setListError] = useState<string | null>(null);
+  const [listError, setListError] = useState<WebDeviceListError | null>(null);
   /** deviceId awaiting its second click — see the two-step note below. */
   const [confirming, setConfirming] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
-  const [revokeError, setRevokeError] = useState<string | null>(null);
+  /** Which device failed, and why. Rendered in ITS row, not as a floating line. */
+  const [revokeError, setRevokeError] = useState<{ deviceId: string; message: string } | null>(null);
+
+  // A revoke is in flight and its verdict has nowhere else to land. Guards the
+  // setState calls after the await, and — with the close paths below — is why
+  // that verdict cannot be dismissed before it is read.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const refresh = useCallback(async () => {
     const api = window.electronAPI?.web;
-    if (!api?.deviceList) { setLoading(false); return; }
+    // No bridge is a READ FAILURE, not an empty roster. On a credential screen
+    // "we could not ask" must never render as "nobody has access" — that is the
+    // one wrong answer that reads as reassuring.
+    if (!api?.deviceList) {
+      if (!mounted.current) return;
+      setDevices([]);
+      setListError('unavailable');
+      setLoading(false);
+      return;
+    }
     try {
       const res = await api.deviceList();
-      setDevices(res.devices);
+      if (!mounted.current) return;
+      // Clear the rows when the read failed. Keeping the previous list would
+      // leave a device the operator just revoked sitting there with a live
+      // Revoke button, and the footer counting it as active.
+      setDevices(res.error ? [] : res.devices);
       setListError(res.error ?? null);
-    } catch (err) {
-      setListError((err as Error)?.message ?? String(err));
+    } catch {
+      if (!mounted.current) return;
+      setDevices([]);
+      setListError('unavailable');
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const revokeInFlight = revoking !== null;
+
+  // Escape is ignored mid-revoke for the same reason the backdrop is: the
+  // verdict of a destructive call the operator confirmed must not be
+  // dismissable before it has been shown.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !revokeInFlight) onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, revokeInFlight]);
 
   const handleRevoke = useCallback(async (deviceId: string) => {
     const api = window.electronAPI?.web;
@@ -62,18 +92,31 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     setRevokeError(null);
     try {
       const res = await api.deviceRevoke(deviceId);
+      if (!mounted.current) return;
       if (!res.ok) {
-        setRevokeError(
-          res.reason === 'persist-failed' ? t('web.revokePersistFailed')
-            : res.reason === 'unavailable' ? t('web.revokeUnavailable')
-              : t('web.revokeNotFound'),
-        );
+        // Each reason makes a DIFFERENT claim about whether this device is off
+        // the air right now, so none of them may share copy. `persist-failed`
+        // is the only one that earns "its connections were cut", and only when
+        // the daemon reported actually cutting some.
+        const message =
+          res.reason === 'persist-failed'
+            ? (res.closed ?? 0) > 0
+              ? t('web.revokePersistFailed')
+              : t('web.revokePersistFailedNoCut')
+            : res.reason === 'unavailable'
+              ? t('web.revokeUnavailable')
+              : res.reason === 'not-found'
+                ? t('web.revokeNotFound')
+                : t('web.revokeUnknown');
+        setRevokeError({ deviceId, message });
       }
     } catch {
-      setRevokeError(t('web.revokePersistFailed'));
+      if (mounted.current) setRevokeError({ deviceId, message: t('web.revokeUnknown') });
     } finally {
-      setRevoking(null);
-      setConfirming(null);
+      if (mounted.current) {
+        setRevoking(null);
+        setConfirming(null);
+      }
       // Re-list unconditionally. A failed revoke may still have cut the live
       // streams, and a succeeded one leaves a tombstone — either way the
       // roster on screen is stale the moment the call returns.
@@ -90,18 +133,50 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
   });
   const liveCount = devices.filter((d) => d.revokedAt === undefined).length;
 
+  /**
+   * Focus lands in the dialog and stays there.
+   *
+   * The popover that opened this closes on the way, which drops focus to
+   * `<body>` — so without this a destructive confirm is on screen while Tab
+   * walks the app behind it and a screen reader keeps reading the background.
+   */
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { dialogRef.current?.focus(); }, []);
+
+  const handleTrapTab = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return;
+    const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusables || focusables.length === 0) return;
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === dialogRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-[var(--z-modal-top)] flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.45)' }}
-      onMouseDown={onClose}
+      onMouseDown={() => { if (!revokeInFlight) onClose(); }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
         aria-label={t('web.devicesTitle')}
-        className="w-[440px] max-h-[80vh] rounded-[7px] shadow-2xl flex flex-col font-sans"
+        className={`w-[440px] max-h-[80vh] rounded-[7px] shadow-2xl flex flex-col font-sans outline-none`}
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={handleTrapTab}
       >
         <div className="px-5 pt-4 pb-3 border-b" style={{ borderColor: 'var(--bg-overlay)' }}>
           <div className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
@@ -117,8 +192,11 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
             <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('web.devicesLoading')}</div>
           )}
           {!loading && listError && (
-            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{listError}</div>
+            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>
+              {listError === 'unavailable' ? t('web.devicesUnavailable') : t('web.devicesMalformed')}
+            </div>
           )}
+          {/* "Nobody is paired" is only ever said after a read that SUCCEEDED. */}
           {!loading && !listError && ordered.length === 0 && (
             <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('web.devicesEmpty')}</div>
           )}
@@ -128,9 +206,10 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
             return (
               <div
                 key={d.deviceId}
-                className="flex items-center justify-between gap-3 px-3 py-2 rounded"
+                className="px-3 py-2 rounded"
                 style={{ background: 'var(--bg-overlay)', opacity: revoked ? 0.55 : 1 }}
               >
+                <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-[12px] font-mono truncate" style={{ color: 'var(--text-main)' }}>
                     {/* A device paired before naming was required has no name.
@@ -177,12 +256,23 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
                         : t('web.revoke')}
                   </button>
                 )}
+                </div>
+                {/* In THIS row. A shared line at the foot of the list said
+                    nothing about which device failed — and the re-list that
+                    follows a failure re-sorts the rows underneath it. */}
+                {revokeError?.deviceId === d.deviceId && (
+                  <div className="text-[10px] leading-snug pt-1.5" style={{ color: 'var(--accent-red)' }}>
+                    {revokeError.message}
+                  </div>
+                )}
               </div>
             );
           })}
 
-          {revokeError && (
-            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{revokeError}</div>
+          {/* A failure whose device is gone from the re-listed roster would
+              otherwise vanish with it. */}
+          {revokeError && !ordered.some((d) => d.deviceId === revokeError.deviceId) && (
+            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{revokeError.message}</div>
           )}
         </div>
 
@@ -190,8 +280,11 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
           className="px-4 py-2.5 border-t flex items-center justify-between"
           style={{ borderColor: 'var(--bg-overlay)' }}
         >
+          {/* A count is a CLAIM about how many devices hold a credential. When
+              the read failed there is no such number, and printing "0 active"
+              would be the same fail-open the empty-state above avoids. */}
           <span className="text-[10px]" style={{ color: 'var(--text-subtle)' }}>
-            {t('web.devicesLiveCount', { count: liveCount })}
+            {listError ? t('web.devicesCountUnknown') : t('web.devicesLiveCount', { count: liveCount })}
           </span>
           <button
             type="button"

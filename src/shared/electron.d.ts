@@ -11,6 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type {
+  WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSummary,
   WebStartArgs,
@@ -148,7 +149,7 @@ declare global {
          * operator who has just stopped sharing wants to check what still
          * holds a credential. Carries no secret material.
          */
-        deviceList: () => Promise<{ devices: WebDeviceSummary[]; error?: string }>;
+        deviceList: () => Promise<{ devices: WebDeviceSummary[]; error?: WebDeviceListError }>;
         /**
          * Revoke one device permanently and cut its live streams.
          *
