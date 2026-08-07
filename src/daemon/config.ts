@@ -11,6 +11,10 @@ import {
 import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
+import {
+  DESKTOP_PRESENCE_STALE_AFTER_MS,
+  type PushPresenceSuppressionConfig,
+} from './push/presence';
 
 /** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
@@ -136,6 +140,41 @@ export function createDefaultConfig(): DaemonConfig {
     browser: { cdp: { enabled: true } },
     // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
     gate: createDefaultGateConfig(),
+    // Presence-based push suppression. ON by default: a phone buzz while the
+    // user is looking at the desktop inbox is noise. Every uncertainty still
+    // sends — see `daemon/push/presence.ts`.
+    pushPresenceSuppression: {
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    },
+  };
+}
+
+/**
+ * Per-field backfill for `pushPresenceSuppression` (same discipline as
+ * `browser.cdp`). `validateConfig` ignores the slice, so a garbage value here
+ * can never trigger the whole-file reset.
+ *
+ * The asymmetry that matters: a malformed `staleAfterMs` falls back to the
+ * default rather than to "infinite", because a huge freshness window would
+ * suppress pushes forever off one ancient focus report. A non-positive value
+ * is left as-is and read by `isDesktopPresent` as "never fresh", which sends.
+ */
+function coercePushPresenceSuppression(
+  raw: unknown,
+  defaults: PushPresenceSuppressionConfig,
+): PushPresenceSuppressionConfig {
+  const slice = (raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {});
+  const enabledRaw = slice['enabled'];
+  const staleRaw = slice['staleAfterMs'];
+  return {
+    enabled: typeof enabledRaw === 'boolean' ? enabledRaw : defaults.enabled,
+    staleAfterMs:
+      typeof staleRaw === 'number' && Number.isFinite(staleRaw)
+        ? Math.floor(staleRaw)
+        : defaults.staleAfterMs,
   };
 }
 
@@ -336,6 +375,16 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → DEFAULT_GATED_TOOLS. A malformed slice
     // degrades to the defaults too, never silently disabling the gate.
     config.gate = coerceGate(config.gate);
+
+    // ── Presence-based push suppression: per-field backfill ──
+    // Absent slice (old config.json) → ON with the default freshness window.
+    config.pushPresenceSuppression = coercePushPresenceSuppression(
+      config.pushPresenceSuppression,
+      defaults.pushPresenceSuppression ?? {
+        enabled: true,
+        staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+      },
+    );
 
     return config;
   } catch (err) {
