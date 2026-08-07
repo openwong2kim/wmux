@@ -6,6 +6,7 @@ import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
 import type { GateConfig } from './approvals/gateConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
+import type { PushPresenceSuppressionConfig } from './push/presence';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -272,6 +273,20 @@ export interface DaemonConfig {
    * tokens. See `push/notifyPayload.ts`.
    */
   notifySinks?: NotifySinkConfig[];
+  /**
+   * Presence-based push suppression. OPTIONAL — old config.json files predate
+   * it and must keep loading, so `validateConfig` deliberately ignores this
+   * field and `loadConfig` backfills it per-field without resetting the rest of
+   * the file (same convention as `gate`/`browser`/`lanlink`).
+   *
+   * When the desktop app is attached to the daemon AND its window was focused
+   * within `staleAfterMs`, the phone push for an approval is skipped — the
+   * event still reaches the in-app inbox the user is already looking at. Ships
+   * ON, because the default failure mode is toward notifying: an unknown,
+   * stale, or never-reported presence sends the push, and a `critical`-risk
+   * approval sends it regardless. See `daemon/push/presence.ts`.
+   */
+  pushPresenceSuppression?: PushPresenceSuppressionConfig;
 }
 
 /**

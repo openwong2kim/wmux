@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig, saveConfig, getWmuxDir, readNotifySinks } from './config';
+import {
+  loadConfig,
+  saveConfig,
+  getWmuxDir,
+  readNotifySinks,
+  readPushPresenceSuppression,
+} from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
@@ -76,6 +82,14 @@ import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
 import { WebhookSink } from './push/WebhookSink';
 import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
+import {
+  DeferredPushQueue,
+  DesktopPresenceTracker,
+  createPresenceRpcHandler,
+  isDesktopPresent,
+  shouldSuppressPush,
+  type PushPresenceSuppressionConfig,
+} from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -4957,17 +4971,93 @@ async function main(): Promise<void> {
     sinks: () => readNotifySinks((level, msg) => log(level, msg)),
     log: (level, msg) => log(level, msg),
   });
+  // Presence-based suppression. The predicate lives in `push/presence.ts` and
+  // is consulted HERE rather than inside PushSender: the answer is about the
+  // human, not the transport, so every notification sink can ask the same
+  // question. `desktopPresence` is fed by the `daemon.presence.desktop` RPC
+  // registered below.
+  const desktopPresence = new DesktopPresenceTracker();
+  // A read that never repairs the file. `loadConfig` rewrites config.json with
+  // defaults when it cannot parse it, which is right at boot and catastrophic
+  // on a per-approval path — see `readPushPresenceSuppression`.
+  const presenceConfig = (): PushPresenceSuppressionConfig => readPushPresenceSuppression();
+  const desktopIsPresent = (): boolean =>
+    isDesktopPresent(desktopPresence.snapshot(), Date.now(), presenceConfig().staleAfterMs);
+  // Suppression must not be loss. A held push is delivered as soon as presence
+  // ends — by a reported transition, or by the freshness window expiring with
+  // nobody there to report anything. Same collapseId, so the phone replaces
+  // the pane's banner rather than stacking a second one.
+  const deferredPush = new DeferredPushQueue({
+    send: (payload, opts) => pushSender.notify(payload, opts),
+    isPresent: desktopIsPresent,
+    staleAfterMs: () => presenceConfig().staleAfterMs,
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
-    // Only a NEW request is worth a phone buzzing. A resolve or an expire is
-    // the thing the notification was asking for, already handled.
-    if (event.type !== 'create') return;
+    // A resolve/expire/supersede is the thing the notification was asking for.
+    // If one is still parked, it is now moot — drop it rather than buzzing a
+    // phone about a question that has already been answered.
+    if (event.type !== 'create') {
+      deferredPush.forget(event.request.id);
+      return;
+    }
     const r = event.request;
-    pushSender.notify(buildApprovalPushPayload(r), { collapseId: approvalPushCollapseId(r) });
+    const payload = buildApprovalPushPayload(r);
+    // The outbound sink is a separate channel from the phone, and presence says
+    // nothing about it: an operator who put a URL in `notifySinks` asked for
+    // every approval, focused desktop or not. Only the APNs push below is held.
     webhookSink?.notify(
       buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
     );
+    if (
+      shouldSuppressPush({
+        state: desktopPresence.snapshot(),
+        now: Date.now(),
+        config: presenceConfig(),
+        ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
+      })
+    ) {
+      // The approval id only — never the question, the choices, or anything
+      // else the payload carries.
+      log('info', `[push] held for ${r.id}: desktop is present`);
+      deferredPush.park(r.id, payload, approvalPushCollapseId(r));
+      return;
+    }
+    pushSender.notify(payload, { collapseId: approvalPushCollapseId(r) });
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // Desktop presence, reported by the Electron main process on every
+  // focus/blur transition. Registered here rather than in `registerRpcHandlers`
+  // so the wiring stays additive — the tracker is a boot-scope value and
+  // threading it through that function's parameter list would touch a
+  // signature many call sites share.
+  //
+  // Transitions only, no heartbeat: a blur retracts presence immediately, and a
+  // focus that is never followed by anything simply ages out of the freshness
+  // window. That keeps the RPC silent while the user works, which is the whole
+  // point of not running a timer.
+  //
+  // First-party only — the gate and its reasoning live in
+  // `createPresenceRpcHandler`, which is where the test for the spoofed-report
+  // case can reach it.
+  const presenceRpc = createPresenceRpcHandler({
+    isFirstParty: (clientId) => pipeServer.isFirstParty(clientId),
+    tracker: desktopPresence,
+    // A blur is the main release signal for a held push — check immediately
+    // rather than waiting for the expiry timer.
+    onPresenceChanged: () => deferredPush.onPresenceChanged(),
+    log: (level, msg) => log(level, msg),
+  });
+  pipeServer.onRpc('daemon.presence.desktop', async (params, ctx) =>
+    presenceRpc(params, ctx.clientId),
+  );
+  // A desktop that went away is not present, whatever it last reported. Without
+  // this, killing the app mid-focus would leave a fresh report standing for the
+  // rest of the freshness window and swallow the pushes it was meant to hand off.
+  pipeServer.onClientClose((clientId) => {
+    desktopPresence.forget(clientId);
+    deferredPush.onPresenceChanged();
+  });
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
   // cannot cascade into session-state failure. The service receives
