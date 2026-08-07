@@ -29,7 +29,7 @@ import type {
   WebStartArgs,
   WebTerminalInfo,
 } from '../shared/web';
-import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1240,6 +1240,12 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
       { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
     >,
+  attachmentsList: () =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
+  attachmentsAdd: (descriptor: RemoteAttachmentDescriptor) =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_ADD, descriptor) as Promise<boolean>,
+  attachmentsRemove: (key: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_REMOVE, key) as Promise<boolean>,
   paneAttach: (hostId: string, sessionId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_PANE_ATTACH, hostId, sessionId) as Promise<
       { ok: true; attachId: string } | { ok: false; error: string }

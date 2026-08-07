@@ -6,6 +6,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
+import { remoteAttachmentKey } from '../../../shared/remoteHosts';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../../../shared/remoteHosts';
 
 type AddHostMode = 'pair' | 'url';
@@ -208,6 +209,11 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     if (!remote) return;
     try {
       await remote.hostsRemove(hostId);
+      // Main cascades the persisted descriptors, but the renderer's mirrors
+      // are memory-only: without this they stay in the sidebar for the rest of
+      // the session and fail every poll as an unknown host.
+      const orphans = useStore.getState().remoteWorkspaces.filter((w) => w.hostId === hostId);
+      for (const w of orphans) useStore.getState().detachRemoteWorkspace(w.key);
     } finally {
       if (selectedHostId === hostId) {
         setSelectedHostId(null);
@@ -222,7 +228,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     const host = hosts.find((h) => h.id === selectedHostId);
     if (!host) return;
     attachRemoteWorkspace({
-      key: `${host.id}:${ws.id}`,
+      key: remoteAttachmentKey(host.id, ws.id),
       hostId: host.id,
       hostLabel: host.label,
       workspaceId: ws.id,

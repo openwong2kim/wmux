@@ -522,6 +522,12 @@ export const IPC = {
   REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
+  // Persisted attach descriptors (see RemoteAttachmentsStore). The renderer's
+  // remote-workspace slice is memory-only, so these are what survive a reload
+  // and an app restart; panes are never stored, only re-fetched.
+  REMOTE_ATTACHMENTS_LIST: 'remote:attachments:list',
+  REMOTE_ATTACHMENTS_ADD: 'remote:attachments:add',
+  REMOTE_ATTACHMENTS_REMOVE: 'remote:attachments:remove',
   REMOTE_PANE_ATTACH: 'remote:pane:attach',
   REMOTE_PANE_DETACH: 'remote:pane:detach',
   REMOTE_PANE_WRITE: 'remote:pane:write',

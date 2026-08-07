@@ -39,7 +39,7 @@ vi.mock('electron', () => {
 
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
-import type { RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
+import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
 import type { RemoteHostClient, RemoteMetaEvent, RemoteResizeEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
 
 function getHandler(channel: string): (...args: unknown[]) => unknown {
@@ -168,6 +168,24 @@ function fakeStore(hosts: RemoteHost[] = []) {
   };
 }
 
+/** A minimal fake RemoteAttachmentsStore — in-memory, same shape as the real
+ *  one (which is exercised directly in RemoteAttachmentsStore.test.ts). */
+function fakeAttachments(seed: RemoteAttachmentDescriptor[] = []) {
+  const byKey = new Map(seed.map((a) => [a.key, a]));
+  return {
+    list: vi.fn((): RemoteAttachmentDescriptor[] => [...byKey.values()]),
+    add: vi.fn((d: RemoteAttachmentDescriptor) => { byKey.set(d.key, d); }),
+    remove: vi.fn((key: string) => byKey.delete(key)),
+    removeByHost: vi.fn((hostId: string) => {
+      let n = 0;
+      for (const [key, a] of [...byKey.entries()]) {
+        if (a.hostId === hostId) { byKey.delete(key); n++; }
+      }
+      return n;
+    }),
+  };
+}
+
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {
   return { ok, status, json: async () => body } as unknown as Response;
 }
@@ -182,7 +200,7 @@ describe('remote.handler — hostsAdd', () => {
   it('probes /api/config before persisting and refuses an old remote (404)', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({}, false));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
@@ -193,7 +211,7 @@ describe('remote.handler — hostsAdd', () => {
   it('refuses an old remote that returns unparseable JSON', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => { throw new Error('bad json'); } } as unknown as Response));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
@@ -205,7 +223,7 @@ describe('remote.handler — hostsAdd', () => {
   it('persists + returns allowInput from a successful probe', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ serverVersion: '1.0', protocolVersion: 1, minProtocolVersion: 1, allowInput: true }));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: true; host: RemoteHostPublic };
 
@@ -225,7 +243,7 @@ describe('remote.handler — hostsAdd', () => {
   it('rejects an invalid URL without ever probing', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn();
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'not a url') as { ok: boolean; error?: string };
 
@@ -239,7 +257,7 @@ describe('remote.handler — hostsAdd', () => {
   it('reports a rejected token distinctly from "too old" on a 401', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({}, false, 401));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
@@ -250,7 +268,7 @@ describe('remote.handler — hostsAdd', () => {
   it('reports an unreachable host distinctly from "too old" when fetch throws', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
@@ -261,7 +279,7 @@ describe('remote.handler — hostsAdd', () => {
   it('still reports "too old" for a genuinely incompatible remote (404)', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({}, false, 404));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
@@ -276,7 +294,7 @@ describe('remote.handler — hostsAdd', () => {
     const store = fakeStore();
     store.add.mockImplementationOnce(() => { throw new Error('EACCES: chmod failed'); });
     const fetchImpl = vi.fn(async () => jsonResponse({ allowInput: true }));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     await expect(
       getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t'),
@@ -291,7 +309,7 @@ describe('remote.handler — hostsPair', () => {
       if (String(url).includes('/api/pair')) return jsonResponse({ deviceId: 'd1', deviceSecret: 's1', token: 'd1.s1' });
       return jsonResponse({ allowInput: true });
     });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'ABCD1234') as { ok: true; host: RemoteHostPublic };
 
@@ -311,7 +329,7 @@ describe('remote.handler — hostsPair', () => {
       if (String(url).includes('/api/pair')) return jsonResponse({ token: 't' });
       return jsonResponse({ allowInput: false });
     });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600/some/path/', 'CODE');
 
@@ -321,7 +339,7 @@ describe('remote.handler — hostsPair', () => {
   it('refuses a non-http(s) origin without ever fetching', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn();
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'ftp://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -332,7 +350,7 @@ describe('remote.handler — hostsPair', () => {
   it('refuses an unparseable origin without ever fetching', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn();
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'not a url', 'CODE') as { ok: boolean; reason?: string };
 
@@ -344,7 +362,7 @@ describe('remote.handler — hostsPair', () => {
     const existing: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
     const store = fakeStore([existing]);
     const fetchImpl = vi.fn();
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -360,7 +378,7 @@ describe('remote.handler — hostsPair', () => {
   ])('maps a 403 body {error: %s} to reason %s', async (bodyError, expectedReason) => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({ error: bodyError }, false, 403));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -371,7 +389,7 @@ describe('remote.handler — hostsPair', () => {
   it('maps an "invalid code" 403 body to invalid-code and carries attemptsLeft', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid code', attemptsLeft: 3 }, false, 403));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'WRONG') as { ok: boolean; reason?: string; attemptsLeft?: number };
 
@@ -381,7 +399,7 @@ describe('remote.handler — hostsPair', () => {
   it('reports unreachable when the fetch itself throws', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -392,7 +410,7 @@ describe('remote.handler — hostsPair', () => {
   it('reports pairing-failed for a 500', async () => {
     const store = fakeStore();
     const fetchImpl = vi.fn(async () => jsonResponse({ error: 'pairing failed' }, false, 500));
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -405,7 +423,7 @@ describe('remote.handler — hostsPair', () => {
       if (String(url).includes('/api/pair')) return jsonResponse({ token: 'freshly-minted' });
       return jsonResponse({}, false, 404); // /api/config probe fails
     });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE') as { ok: boolean; reason?: string };
 
@@ -420,7 +438,7 @@ describe('remote.handler — hostsPair', () => {
       if (String(url).includes('/api/pair')) return jsonResponse({ token: 't' });
       return jsonResponse({ allowInput: true });
     });
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     await expect(
       getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE'),
@@ -436,7 +454,7 @@ describe('remote.handler — workspacesList', () => {
     const client = fakeClient(host);
     client.listWorkspaces.mockRejectedValueOnce(new Error('network down'));
     const fetchImpl = vi.fn(async () => jsonResponse({ allowInput: false }));
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_WORKSPACES_LIST)({}, 'h1') as { ok: boolean; error?: string };
 
@@ -448,7 +466,7 @@ describe('remote.handler — workspacesList', () => {
     const client = fakeClient(host);
     client.listWorkspaces.mockResolvedValueOnce({ workspaces: [{ id: 'w1', name: 'proj', panes: [] }] });
     const fetchImpl = vi.fn(async () => jsonResponse({ allowInput: false }));
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_WORKSPACES_LIST)({}, 'h1') as { ok: true; workspaces: unknown[] };
 
@@ -459,7 +477,7 @@ describe('remote.handler — workspacesList', () => {
   it('reports unknown host without touching a client', async () => {
     const store = fakeStore([]);
     const fetchImpl = vi.fn();
-    registerRemoteHandlers({ store: store as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const res = await getHandler(IPC.REMOTE_WORKSPACES_LIST)({}, 'missing') as { ok: boolean; error?: string };
 
@@ -474,7 +492,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('wires client events to the attaching event.sender with the right channel names', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(101);
     const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
@@ -498,7 +516,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('never pushes to a destroyed sender', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(102);
     const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
@@ -512,7 +530,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('a duplicate attach for the same (sender, host, session) returns the existing attachId without a second SSE open', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(103);
     const first = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
@@ -525,7 +543,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('a different session on the same sender opens a distinct attach', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(104);
     const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { ok: true; attachId: string };
@@ -538,7 +556,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('an exit event detaches the dead attach and clears its idempotency key', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(111);
     const first = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -557,7 +575,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('paneDetach forwards to the client and forgets the attach', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(105);
     const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -574,7 +592,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('paneWrite forwards to the owning client fire-and-forget', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(110);
     const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -587,7 +605,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('paneWrite for an unknown attachId is a silent no-op', () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     expect(() => getListener(IPC.REMOTE_PANE_WRITE)({}, 'never-attached', 'hello')).not.toThrow();
     expect(client.write).not.toHaveBeenCalled();
@@ -596,7 +614,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it("sender 'destroyed' detaches every attachId it owns", async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(106);
     const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -612,7 +630,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it("sender 'render-process-gone' detaches every attachId it owns", async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(107);
     const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -625,7 +643,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it("a main-frame, non-same-document 'did-start-navigation' (e.g. Cmd+R) detaches every attachId the sender owns", async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(112);
     const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -647,7 +665,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it("ignores a same-document 'did-start-navigation' (isInPlace)", async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(113);
     await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
@@ -665,7 +683,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('two attach->navigation cycles on the same sender do not stack cleanup listeners', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(120) as ReturnType<typeof fakeSender> & { listenerCounts: () => Record<string, number> };
 
@@ -692,7 +710,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it("ignores a subframe 'did-start-navigation' (isMainFrame=false)", async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(114);
     await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1');
@@ -705,7 +723,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('forwards a client onError to the owning sender on REMOTE_PANE_ERROR', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(115);
     const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
@@ -721,7 +739,7 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
   it('a second sender is unaffected by the first sender being destroyed', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const senderA = fakeSender(108);
     const senderB = fakeSender(109);
@@ -742,7 +760,7 @@ describe('remote.handler — quit + host removal cleanup', () => {
     const store = fakeStore([host1, host2]);
     const clientsByHost = new Map<string, ReturnType<typeof fakeClient>>();
     registerRemoteHandlers({
-      store: store as never,
+      store: store as never, attachments: fakeAttachments() as never,
       clientFactory: (h) => {
         const c = fakeClient(h);
         clientsByHost.set(h.id, c);
@@ -766,7 +784,7 @@ describe('remote.handler — quit + host removal cleanup', () => {
     const host1: RemoteHost = { id: 'h1', label: 'box1', origin: 'https://box1:9600', token: 't1', addedAt: 0 };
     const store = fakeStore([host1]);
     const client = fakeClient(host1);
-    registerRemoteHandlers({ store: store as never, clientFactory: () => client });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
 
     const sender = fakeSender(201);
     await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 's1');
@@ -775,5 +793,128 @@ describe('remote.handler — quit + host removal cleanup', () => {
 
     expect(removed).toBe(true);
     expect(client.detachAll).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('remote.handler — attachment descriptors', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box1', origin: 'https://box1:9600', token: 't1', addedAt: 0 };
+  const descriptor: RemoteAttachmentDescriptor = {
+    key: 'h1:ws-1',
+    hostId: 'h1',
+    hostLabel: 'box1',
+    workspaceId: 'ws-1',
+    name: 'Remote WS',
+  };
+
+  it('add → list roundtrips a descriptor', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, descriptor)).resolves.toBe(true);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([descriptor]);
+  });
+
+  it('strips a pane list off an add — panes are never persisted', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, panes: [{ sessionId: 's1' }] });
+    expect(attachments.add).toHaveBeenCalledWith(descriptor);
+  });
+
+  it('refuses a descriptor for an unregistered host', async () => {
+    const store = fakeStore();
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, descriptor)).resolves.toBe(false);
+    expect(attachments.add).not.toHaveBeenCalled();
+  });
+
+  it('reports false rather than rejecting when the disk write fails', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    attachments.add.mockImplementation(() => { throw new Error('EACCES'); });
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, descriptor)).resolves.toBe(false);
+  });
+
+  it('remove drops the descriptor and reports whether it existed', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'h1:ws-1')).resolves.toBe(true);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'h1:ws-1')).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([]);
+  });
+
+  // Finding 9 — `key` is what every later lookup addresses the record by.
+  it('refuses a descriptor whose key does not derive from its own ids', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, key: 'h9:ws-9' })).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, key: 'ws-1' })).resolves.toBe(false);
+    expect(attachments.add).not.toHaveBeenCalled();
+  });
+
+  it('refuses a remove for a key nothing could have minted', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'no-separator')).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, ':ws-1')).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'h1:')).resolves.toBe(false);
+    expect(attachments.remove).not.toHaveBeenCalled();
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([descriptor]);
+  });
+
+  // Finding 5 — the cascade runs AFTER the host is already gone from the
+  // store, so letting it throw would report a completed removal as a failure.
+  it('hostsRemove still reports success when the descriptor cascade fails', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    attachments.removeByHost.mockImplementation(() => { throw new Error('EACCES'); });
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never, clientFactory: () => client });
+    // Clients are lazy — attach once so there is something left to tear down.
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender: fakeSender(202) }, 'h1', 's1');
+
+    await expect(getHandler(IPC.REMOTE_HOSTS_REMOVE)({}, 'h1')).resolves.toBe(true);
+    // The rest of the teardown still ran.
+    expect(client.detachAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('hostsRemove cascades into the descriptors of that host', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor, { ...descriptor, key: 'h2:ws-1', hostId: 'h2' }]);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await getHandler(IPC.REMOTE_HOSTS_REMOVE)({}, 'h1');
+    expect(attachments.removeByHost).toHaveBeenCalledWith('h1');
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([
+      { ...descriptor, key: 'h2:ws-1', hostId: 'h2' },
+    ]);
+  });
+
+  it('a renderer reload tears down live SSE attaches but keeps the descriptors', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never, clientFactory: () => client });
+
+    const sender = fakeSender(300);
+    const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 's1') as { ok: true; attachId: string };
+    sender.fireNavigation(false, true);
+
+    expect(client.detach).toHaveBeenCalledWith(res.attachId);
+    // The descriptor survives — that is what the renderer restores from.
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([descriptor]);
   });
 });

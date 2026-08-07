@@ -73,6 +73,7 @@ import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.hand
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
+import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -683,7 +684,10 @@ registerChannelLocalHandlers(() => daemonClient);
 // channelLocal above). Registered once, outside the daemon-swap cycle: the
 // registered hosts/tokens live on disk in main, independent of the local
 // daemon connection. See remote.handler.ts for the push-routing contract.
-registerRemoteHandlers({ store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')) });
+registerRemoteHandlers({
+  store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')),
+  attachments: new RemoteAttachmentsStore(path.join(getWmuxDir(), 'remote-attachments.json')),
+});
 // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
 // invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
 // 동일 renderer-trusted 신원).

@@ -58,13 +58,20 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
         <div className="flex min-w-0 items-center gap-2">
           <div
             className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: isActive ? 'var(--accent)' : 'var(--text-muted)' }}
+            style={{ backgroundColor: isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
           />
           <div className="flex-1 min-w-0">
             <div className="text-caption font-mono truncate">
               {workspace.name || workspace.workspaceId.slice(0, 8)}
             </div>
-            <div className="text-[10px] font-mono truncate" style={{ color: 'var(--accent)' }}>
+            {/* A stale entry is unreachable, not gone: it keeps its row (only
+                the user detaches) but drops the live accent colour and says
+                why on hover. */}
+            <div
+              className="text-[10px] font-mono truncate"
+              style={{ color: workspace.stale ? 'var(--text-muted)' : 'var(--accent)' }}
+              title={workspace.stale ? t('remote.disconnected') : undefined}
+            >
               {workspace.hostLabel}
             </div>
           </div>

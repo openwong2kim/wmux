@@ -94,6 +94,52 @@ describe('RemoteHostClient', () => {
       expect(init?.redirect).toBe('error');
       expect(init?.signal).toBeInstanceOf(AbortSignal);
     });
+
+    // Finding 3 — the body comes off ANOTHER machine. It used to be handed on
+    // with nothing but a cast, so a shape the remote had no business sending
+    // threw far downstream and took a whole refresh round with it.
+    describe('normalises an untrustworthy body', () => {
+      function clientFor(body: unknown): RemoteHostClient {
+        const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => body }) as unknown as Response);
+        return new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+      }
+
+      it('turns a non-array `workspaces` into an empty list', async () => {
+        await expect(clientFor({ workspaces: null }).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor({ workspaces: 'nope' }).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor({}).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor(null).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+      });
+
+      it('turns a null pane list into an empty one', async () => {
+        await expect(clientFor({ workspaces: [{ id: 'w1', name: 'proj', panes: null }] }).listWorkspaces())
+          .resolves.toEqual({ workspaces: [{ id: 'w1', name: 'proj', panes: [] }] });
+      });
+
+      it('drops entries that cannot be addressed and keeps the rest', async () => {
+        const body = {
+          workspaces: [
+            null,
+            { name: 'no id', panes: [] },
+            { id: '', panes: [] },
+            { id: 'w1', panes: [{ sessionId: 's1', shell: 'zsh' }, { shell: 'no session id' }, 42] },
+          ],
+        };
+        await expect(clientFor(body).listWorkspaces()).resolves.toEqual({
+          workspaces: [{ id: 'w1', name: '', panes: [{ sessionId: 's1', shell: 'zsh' }] }],
+        });
+      });
+
+      it('rejects a body that is not JSON at all', async () => {
+        const fetchImpl = vi.fn(async () => ({
+          ok: true,
+          status: 200,
+          json: async () => { throw new SyntaxError('Unexpected token <'); },
+        }) as unknown as Response);
+        const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+        await expect(client.listWorkspaces()).rejects.toThrow(/not JSON/);
+      });
+    });
   });
 
   describe('attach', () => {
