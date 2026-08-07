@@ -28,10 +28,11 @@ function decodeBase64Bytes(b64: string): Uint8Array {
 
 /**
  * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
- * meta event (cols/rows) is the ONLY thing that drives `term.resize()` — this
- * component never calls a resize API back toward the remote (geometry has a
- * single owner, the remote daemon). A container/remote aspect mismatch is
- * letterboxed by the parent's CSS, not by resizing the terminal.
+ * own geometry events (meta on attach, resize afterwards) are the ONLY thing
+ * that drives `term.resize()` — this component never calls a resize API back
+ * toward the remote (geometry has a single owner, the remote daemon). A
+ * container/remote aspect mismatch is letterboxed by the parent's CSS, not by
+ * resizing the terminal.
  */
 export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
   const t = useT();
@@ -173,9 +174,9 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     }
   }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio]);
 
-  // Subscribe/attach lifecycle keyed on attachId. Geometry arrives once per
-  // connection — every onPaneMeta (fresh attach OR reconnect) means "reset
-  // terminal, resize, repaint", never a delta.
+  // Subscribe/attach lifecycle keyed on attachId. Every onPaneMeta (fresh
+  // attach OR reconnect) means "reset terminal, resize, repaint", never a
+  // delta; a later geometry change comes through onPaneResize instead.
   useEffect(() => {
     if (!attachId) return;
     setExited(false);
@@ -193,6 +194,14 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       term.write(decodeBase64Bytes(e.snapshotB64), () => {
         repaintingRef.current = false;
       });
+    });
+    // A resize on the machine that owns the pane. Geometry only: no reset and
+    // no repaint, so the mirrored scrollback and the user's scroll position
+    // survive someone dragging a divider on the other machine. The remote app
+    // repaints itself on SIGWINCH; those bytes arrive through onPaneData.
+    const offResize = remote.onPaneResize((e) => {
+      if (e.attachId !== attachId) return;
+      termRef.current?.resize(e.cols, e.rows);
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -216,6 +225,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
 
     return () => {
       offMeta();
+      offResize();
       offData();
       offExit();
       offError();

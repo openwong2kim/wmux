@@ -668,12 +668,14 @@ const MIN_RESIZE_INTERVAL_MS = 250;
 const RESIZE_TRACKING_CAP = 256;
 
 /**
- * Trailing debounce before an SSE stream answers an applied resize with a fresh
- * meta+snapshot pair. A drag-resize applies a geometry per frame and each pair
- * costs a full window; one repaint once the drag settles is what a viewer
- * actually needs.
+ * Trailing debounce before an SSE stream answers an applied resize with fresh
+ * geometry. Deliberately LONGER than MIN_RESIZE_INTERVAL_MS: with a shorter
+ * window every resize the rate limiter lets through is already spaced far
+ * enough apart to defeat the debounce, so a device alternating two geometries
+ * would fan one message per accepted resize out to every viewer. Above the
+ * limiter's own floor, a storm collapses into one message.
  */
-const RESIZE_RESEND_DEBOUNCE_MS = 150;
+const RESIZE_META_DEBOUNCE_MS = 400;
 
 /**
  * Did the caller mention this field at all — as opposed to sending a value the
@@ -2515,11 +2517,16 @@ export class WebTerminalServer {
       }
     };
     // An applied resize invalidates the client's grid: every absolute-positioned
-    // frame that follows was computed for the new size. `meta` alone is not
-    // enough — the Electron mirror client holds a meta until a snapshot follows
-    // it and never dispatches a lone one — so the answer is a fresh PAIR.
-    // Trailing-debounced because a drag-resize applies many geometries in a
-    // second and each pair costs a full window.
+    // frame that follows was computed for the new size. The answer is the new
+    // GEOMETRY and nothing else.
+    //
+    // Not a fresh snapshot: re-sending the window would be ~341 KB of base64
+    // per viewer per resize plus a full ring copy each, and every client does
+    // `reset()` before replaying it — so a viewer scrolled up reading would be
+    // wiped and yanked to the bottom every time someone dragged a divider on
+    // the machine that owns the pane. A TUI repaints itself on SIGWINCH and a
+    // shell at a prompt behaves exactly as a local terminal does, so the bytes
+    // that follow are enough on their own.
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const onResize = (): void => {
       if (resizeTimer) clearTimeout(resizeTimer);
@@ -2528,11 +2535,11 @@ export class WebTerminalServer {
         const current = this.deps.sessionManager.getSession(sessionId);
         if (!current) return;
         try {
-          this.writeSnapshotFrame(res, current);
+          writeSse(res, 'meta', JSON.stringify(this.streamMeta(current, { resize: true })));
         } catch {
           /* client stream broken — the 'close' handler cleans up */
         }
-      }, RESIZE_RESEND_DEBOUNCE_MS);
+      }, RESIZE_META_DEBOUNCE_MS);
     };
 
     bridge.on('data', onData);
@@ -2561,10 +2568,21 @@ export class WebTerminalServer {
   }
 
   /**
-   * One `meta` + `snapshot` pair: the initial paint, and the repaint after an
-   * applied resize. Always both events, in that order — every client resets its
-   * terminal on the pair, and the Electron mirror only delivers a `meta` that a
-   * `snapshot` follows.
+   * The `meta` event body. `resize: true` marks the geometry-only form a client
+   * gets mid-stream: there is no snapshot behind it, so a client that pairs the
+   * two must dispatch this one on its own rather than hold it for a partner
+   * that will never arrive.
+   */
+  private streamMeta(
+    managed: ManagedSession,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return { cols: managed.meta.cols, rows: managed.meta.rows, ...extra };
+  }
+
+  /**
+   * The `meta` + `snapshot` pair that paints a stream on attach. Always both
+   * events, in that order — every client resets its terminal on the pair.
    *
    * The snapshot payload is the capped window PREFIXED by a synthetic
    * mode preamble (see util/outputModeTracker.ts). The prefix rides the
@@ -2579,12 +2597,10 @@ export class WebTerminalServer {
     // would pull each time. The truncation rides `meta` rather than a new event
     // name, so a cached frontend that predates it is unaffected.
     const snapshot = capSnapshot(managed.ringBuffer.readAll());
-    const meta = {
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
+    const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
-    };
+    });
     // Absolute stream offset of the window's FIRST byte. The tracker needs it
     // to decide whether the alt-screen entry is something the window already
     // carries — re-asserting one that is still in there paints the scrollback

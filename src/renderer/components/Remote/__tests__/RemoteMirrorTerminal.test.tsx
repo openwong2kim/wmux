@@ -98,6 +98,7 @@ function render(ui: React.ReactElement) {
 
 describe('RemoteMirrorTerminal', () => {
   let metaHandlers: Handler[];
+  let resizeHandlers: Handler[];
   let dataHandlers: Handler[];
   let exitHandlers: Handler[];
   let errorHandlers: Handler[];
@@ -108,6 +109,7 @@ describe('RemoteMirrorTerminal', () => {
     setupLog.length = 0;
     termInstances.length = 0;
     metaHandlers = [];
+    resizeHandlers = [];
     dataHandlers = [];
     exitHandlers = [];
     errorHandlers = [];
@@ -119,6 +121,10 @@ describe('RemoteMirrorTerminal', () => {
         onPaneMeta: (cb: Handler) => {
           metaHandlers.push(cb);
           return () => { metaHandlers = metaHandlers.filter((h) => h !== cb); };
+        },
+        onPaneResize: (cb: Handler) => {
+          resizeHandlers.push(cb);
+          return () => { resizeHandlers = resizeHandlers.filter((h) => h !== cb); };
         },
         onPaneData: (cb: Handler) => {
           dataHandlers.push(cb);
@@ -226,6 +232,44 @@ describe('RemoteMirrorTerminal', () => {
     expect(paneWrite).toHaveBeenCalledTimes(1);
     expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
 
+    unmount();
+  });
+
+  // A resize on the machine that owns the pane arrives as GEOMETRY. Answering
+  // it with a fresh snapshot would mean `reset()` + replay on every viewer —
+  // wiping the mirrored scrollback and yanking a user who was scrolled up back
+  // to the bottom every time someone dragged a divider on the other machine.
+  it('★ re-grids on a resize event without resetting or repainting', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+
+    act(() => {
+      metaHandlers.forEach((h) =>
+        h({ attachId: 'a1', cols: 80, rows: 24, snapshotB64: btoa('scrollback') }),
+      );
+      term.flushWrites();
+    });
+    const resetsAfterAttach = term.resetCalls;
+    const writesAfterAttach = term.written.length;
+
+    act(() => {
+      resizeHandlers.forEach((h) => h({ attachId: 'a1', cols: 120, rows: 40 }));
+    });
+
+    expect(term.resized.at(-1)).toEqual({ cols: 120, rows: 40 });
+    expect(term.resetCalls).toBe(resetsAfterAttach); // scrollback survives
+    expect(term.written).toHaveLength(writesAfterAttach); // nothing repainted
+
+    unmount();
+  });
+
+  it('ignores a resize aimed at a different attach', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    act(() => {
+      resizeHandlers.forEach((h) => h({ attachId: 'other', cols: 10, rows: 5 }));
+    });
+    expect(term.resized).toHaveLength(0);
     unmount();
   });
 

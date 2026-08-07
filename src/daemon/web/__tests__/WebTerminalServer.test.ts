@@ -4373,68 +4373,126 @@ describe('WebTerminalServer', () => {
       expect(after.status).toBe(200);
     });
 
-    it('★ re-sends meta AND a snapshot on an applied resize, debounced', async () => {
-      // A lone `meta` is never delivered by the Electron mirror client — it
-      // buffers meta and only dispatches it merged with the NEXT snapshot — so
-      // resize propagation has to be a pair, not a bare geometry update.
-      primeRing('\x1b[?1049h');
-      const info = await startRO();
-      const ac = new AbortController();
-      const url = `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`;
-      const res = await fetch(url, { signal: ac.signal });
-      expect(res.status).toBe(200);
-      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-      let text = '';
-      // `reader.read()` on an idle SSE stream never settles, so every read is
-      // raced against the remaining budget rather than checked after the fact.
-      const pump = async (untilCount: number, budgetMs: number): Promise<void> => {
-        const deadline = Date.now() + budgetMs;
-        while (Date.now() < deadline && snapshots(text).length < untilCount) {
-          const chunk = await Promise.race([
-            reader.read(),
-            new Promise<null>((r) => setTimeout(() => r(null), Math.max(1, deadline - Date.now()))),
-          ]);
-          if (!chunk) break;
-          if (chunk.done) break;
-          if (chunk.value) text += Buffer.from(chunk.value).toString('utf8');
-        }
+    // ── resize propagation ──────────────────────────────────────────────
+    //
+    // An applied resize invalidates the viewer's grid, so it has to hear about
+    // it. What it must NOT get is a fresh snapshot: that is a full ring copy
+    // and ~341 KB of base64 per viewer per resize, and every client resets its
+    // terminal before replaying one — so a viewer scrolled up reading would be
+    // wiped and dragged to the bottom each time someone resized the pane on
+    // the machine that owns it.
+    describe('applied resize', () => {
+      /** Open a stream and keep pumping its body into a growing string. */
+      const openPumped = async (): Promise<{
+        ac: AbortController;
+        body: () => string;
+        pump: (budgetMs: number) => Promise<void>;
+      }> => {
+        const info = await startRO();
+        const ac = new AbortController();
+        const res = await fetch(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          { signal: ac.signal },
+        );
+        expect(res.status).toBe(200);
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        let text = '';
+        // `reader.read()` on an idle SSE stream never settles, so every read is
+        // raced against the remaining budget. The losing read is CARRIED to the
+        // next pump rather than dropped — an orphaned read still consumes the
+        // next chunk, which is how a resize frame goes missing without anyone
+        // noticing the test never saw it.
+        let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+        const pump = async (budgetMs: number): Promise<void> => {
+          const deadline = Date.now() + budgetMs;
+          for (;;) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) return;
+            if (!pending) pending = reader.read();
+            const settled = await Promise.race([
+              pending.then((v) => ({ v })),
+              new Promise<null>((r) => setTimeout(() => r(null), remaining)),
+            ]);
+            if (!settled) return; // budget spent; `pending` survives for next time
+            pending = null;
+            if (settled.v.done) return;
+            if (settled.v.value) text += Buffer.from(settled.v.value).toString('utf8');
+          }
+        };
+        await pump(500);
+        return { ac, body: () => text, pump };
       };
-      await pump(1, 2000);
-      expect(snapshots(text)).toHaveLength(1);
 
-      // A drag-resize: several applied resizes in a burst. The stream must
-      // answer with ONE refreshed pair, not one per event.
-      managed.meta.cols = 100;
-      managed.meta.rows = 40;
-      for (let i = 0; i < 5; i++) bridge.emit('resize');
-      await pump(2, 2000);
-      // Give the debounce window room to fire a second time if it were going to.
-      await new Promise((r) => setTimeout(r, 300));
-      await pump(3, 100);
+      it('★ answers with meta ONLY — never a second snapshot', async () => {
+        primeRing('\x1b[?1049h');
+        const s = await openPumped();
+        expect(snapshots(s.body())).toHaveLength(1);
 
-      expect(snapshots(text)).toHaveLength(2);
-      const metaEvents = metas(text);
-      expect(metaEvents).toHaveLength(2);
-      expect(metaEvents[1]).toMatchObject({ cols: 100, rows: 40 });
-      // The refreshed snapshot carries the preamble too — the client resets its
-      // terminal on every meta+snapshot pair.
-      expect(snapshots(text)[1].startsWith('\x1b[?1049h')).toBe(true);
-    }, 15000);
+        managed.meta.cols = 100;
+        managed.meta.rows = 40;
+        bridge.emit('resize');
+        await s.pump(1200);
+        s.ac.abort();
 
-    it('drops the pending resize resend when the client disconnects', async () => {
-      primeRing('hello\n');
-      const info = await startRO();
-      const ac = new AbortController();
-      await readStream(
-        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
-        ac,
-        (t) => snapshots(t).length >= 1,
-      );
-      bridge.emit('resize');
-      ac.abort();
-      await new Promise((r) => setTimeout(r, 300));
-      // No listener left behind by the aborted stream.
-      expect(bridge.listenerCount('resize')).toBe(0);
+        // The new geometry arrived…
+        const metaEvents = metas(s.body());
+        expect(metaEvents).toHaveLength(2);
+        expect(metaEvents[1]).toMatchObject({ cols: 100, rows: 40, resize: true });
+        // …and the viewer's scrollback was not re-sent under it.
+        expect(snapshots(s.body())).toHaveLength(1);
+      }, 15000);
+
+      it('★ collapses a storm into one, and still answers the next one', async () => {
+        // The debounce has to outlast MIN_RESIZE_INTERVAL_MS (250) or every
+        // resize the rate limiter lets through is already spaced far enough
+        // apart to defeat it — which is exactly what a 150 ms window did.
+        primeRing('hello\n');
+        const s = await openPumped();
+        expect(metas(s.body())).toHaveLength(1);
+
+        // Two accepted resizes one limiter-interval apart still merge…
+        bridge.emit('resize');
+        await new Promise((r) => setTimeout(r, 260));
+        bridge.emit('resize');
+        await s.pump(1200);
+        expect(metas(s.body())).toHaveLength(2);
+
+        // …while one that lands after the window has closed is its own message.
+        managed.meta.cols = 132;
+        bridge.emit('resize');
+        await s.pump(1200);
+        s.ac.abort();
+        const metaEvents = metas(s.body());
+        expect(metaEvents).toHaveLength(3);
+        expect(metaEvents[2]).toMatchObject({ cols: 132, resize: true });
+      }, 20000);
+
+      it('drops the pending resize when the client disconnects', async () => {
+        primeRing('hello\n');
+        // The debounce callback re-reads the session, so counting that read is
+        // a direct signal for "the timer fired" — an assertion that a leftover
+        // `clearTimeout` deletion cannot pass, unlike a listener count.
+        const mgr = sessionManager as unknown as { getSession: (id: string) => unknown };
+        const inner = mgr.getSession.bind(mgr);
+        let reads = 0;
+        mgr.getSession = (id: string) => { reads += 1; return inner(id); };
+
+        const info = await startRO();
+        const ac = new AbortController();
+        await readStream(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          ac,
+          (t) => snapshots(t).length >= 1,
+        );
+        bridge.emit('resize');
+        ac.abort();
+        const atAbort = reads;
+        // Long enough for the debounce to have fired twice over.
+        await new Promise((r) => setTimeout(r, 1200));
+
+        expect(reads).toBe(atAbort); // nothing woke up behind the closed stream
+        expect(bridge.listenerCount('resize')).toBe(0);
+      }, 15000);
     });
   });
 });
