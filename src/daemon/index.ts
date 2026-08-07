@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig, saveConfig, getWmuxDir } from './config';
+import { loadConfig, saveConfig, getWmuxDir, readNotifySinks } from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
@@ -74,7 +74,7 @@ import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
-import { WebhookSink, coerceNotifySinks } from './push/WebhookSink';
+import { WebhookSink } from './push/WebhookSink';
 import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { GateBroker } from './approvals/GateBroker';
@@ -4946,10 +4946,15 @@ async function main(): Promise<void> {
   // the operator puts a URL in `config.notifySinks`; `WMUX_NOTIFY_SINKS=0`
   // turns it off outright. Outbound only — no new listening surface.
   //
-  // `sinks()` re-reads config on every notification so an edit takes effect
-  // without a daemon restart, matching how `gateConfig` is wired above.
+  // `sinks()` re-reads config so an edit takes effect without a daemon restart,
+  // matching how `gateConfig` is wired above — but through `readNotifySinks`,
+  // NOT `loadConfig`. loadConfig repairs a bad file by overwriting it with
+  // defaults, which is correct at boot and unacceptable on a per-notification
+  // path: one transient read error while an approval fires would replace the
+  // operator's entire config. readNotifySinks only ever reads, and caches on
+  // mtime so the steady state is a stat rather than a parse.
   webhookSink = new WebhookSink({
-    sinks: () => coerceNotifySinks(loadConfig().notifySinks),
+    sinks: () => readNotifySinks((level, msg) => log(level, msg)),
     log: (level, msg) => log(level, msg),
   });
   approvalRegistry.onEvent((event) => {

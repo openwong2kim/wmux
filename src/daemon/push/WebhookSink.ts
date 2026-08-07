@@ -37,8 +37,8 @@ const EVENT_KINDS: readonly NotifyEventKind[] = ['approval', 'attention'];
 /**
  * How many sinks one config may name.
  *
- * Every notification fans out to all of them serially, so an unbounded list is
- * an unbounded stall on a slow endpoint. Eight is well past any real setup.
+ * Every notification fans out to all of them at once, so the list is also the
+ * concurrency of one send. Eight is well past any real setup.
  */
 export const NOTIFY_SINKS_MAX = 8;
 
@@ -74,7 +74,7 @@ export function coerceNotifySinks(
       log?.('warn', `[notify] ignoring a ${type} sink: the url must be an absolute http(s) URL`);
       continue;
     }
-    const events = coerceEvents(slice['events']);
+    const events = coerceEvents(slice['events'], type, log);
     out.push({
       type: type as NotifySinkConfig['type'],
       url,
@@ -84,14 +84,33 @@ export function coerceNotifySinks(
   return out;
 }
 
-function coerceEvents(raw: unknown): NotifyEventKind[] | undefined {
+function coerceEvents(
+  raw: unknown,
+  type: string,
+  log?: (level: 'warn', message: string) => void,
+): NotifyEventKind[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const events = raw.filter(
-    (e): e is NotifyEventKind => typeof e === 'string' && EVENT_KINDS.includes(e as NotifyEventKind),
-  );
+  const events: NotifyEventKind[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string' && EVENT_KINDS.includes(entry as NotifyEventKind)) {
+      events.push(entry as NotifyEventKind);
+      continue;
+    }
+    // NAMED, because the failure mode is invisible: `"aproval"` silences the
+    // sink forever and looks exactly like a sink whose events never fire.
+    log?.(
+      'warn',
+      `[notify] ${type} sink: unknown event ${JSON.stringify(entry)} — known events are ` +
+        `${EVENT_KINDS.join(', ')}`,
+    );
+  }
   // An array that named nothing we recognise stays an EMPTY list rather than
   // becoming "all events": the operator was clearly trying to narrow, and
-  // widening on a typo is the wrong direction to fail in.
+  // widening on a typo is the wrong direction to fail in. It is loud, though —
+  // a permanently silent sink is worth a line in the log.
+  if (events.length === 0) {
+    log?.('warn', `[notify] ${type} sink: no recognised events — it will never fire`);
+  }
   return events;
 }
 
@@ -116,15 +135,31 @@ export function isSendableUrl(raw: string): boolean {
   return parsed.protocol === 'http:' || parsed.protocol === 'https:';
 }
 
-/** Same reasoning as PUSH_QUEUE_CAP: a backlog of "answer me now" is not worth delivering. */
+/**
+ * Same reasoning as PUSH_QUEUE_CAP: a backlog of "answer me now" is not worth
+ * delivering. Applied PER EVENT KIND — see `queues`.
+ */
 export const NOTIFY_QUEUE_CAP = 32;
 
 /** Give up rather than hold a slot indefinitely. */
 export const NOTIFY_TIMEOUT_MS = 5_000;
 
-/** ntfy priority levels. 4 = high (buzzes through), 3 = default. */
+/**
+ * ntfy priority levels. 5 = max (bypasses most quiet settings), 4 = high,
+ * 3 = default.
+ *
+ * The tiers are the point: a `rm -rf` approval and a turn-completion ping
+ * arriving with the same urgency trains people to ignore both.
+ */
+const NTFY_PRIORITY_MAX = '5';
 const NTFY_PRIORITY_HIGH = '4';
 const NTFY_PRIORITY_DEFAULT = '3';
+
+/** The ntfy `Priority` header for one payload. */
+function ntfyPriority(payload: NotifyPayload): string {
+  if (payload.event !== 'approval') return NTFY_PRIORITY_DEFAULT;
+  return payload.risk === 'critical' ? NTFY_PRIORITY_MAX : NTFY_PRIORITY_HIGH;
+}
 
 export interface WebhookSinkDeps {
   /** Re-read per notification, so a config edit takes effect without a restart. */
@@ -137,12 +172,30 @@ export interface WebhookSinkDeps {
 export class WebhookSink {
   private readonly deps: WebhookSinkDeps;
   private readonly fetchImpl: typeof fetch;
-  private readonly queue: NotifyPayload[] = [];
+  /**
+   * One queue PER EVENT KIND, not one shared FIFO.
+   *
+   * A shared queue with drop-oldest has a failure mode that defeats the whole
+   * feature: `attention` fires on every turn a machine completes, so a busy
+   * afternoon can push 32 turn-completions through the queue and evict the one
+   * `approval` that is actually blocking an agent. Notifications are not
+   * fungible, so they do not share a budget — a flood of the chatty kind can
+   * only ever evict its own.
+   *
+   * `approval` also drains first, so a backlog of the chatty kind cannot delay
+   * the kind someone is waiting on.
+   */
+  private readonly queues: Record<NotifyEventKind, NotifyPayload[]> = {
+    approval: [],
+    attention: [],
+  };
   /** The in-flight drain, or null — same seam PushSender uses so `flush` waits. */
   private drainPromise: Promise<void> | null = null;
-  private dropped = 0;
+  private readonly dropped: Record<NotifyEventKind, number> = { approval: 0, attention: 0 };
   /** Last failure per sink url, so a steady outage logs once, not per send. */
   private readonly lastFailure = new Map<string, number | null>();
+  /** Urls already warned about for cleartext, so the notice is once per url. */
+  private readonly cleartextWarned = new Set<string>();
 
   constructor(deps: WebhookSinkDeps) {
     this.deps = deps;
@@ -165,36 +218,60 @@ export class WebhookSink {
    */
   notify(payload: NotifyPayload): void {
     if (!this.enabled) return;
-    if (this.queue.length >= NOTIFY_QUEUE_CAP) {
-      this.queue.shift();
-      this.dropped += 1;
+    const queue = this.queues[payload.event];
+    if (queue.length >= NOTIFY_QUEUE_CAP) {
+      queue.shift();
+      this.dropped[payload.event] += 1;
+      const n = this.dropped[payload.event];
       // One line per burst, not per drop.
-      if (this.dropped === 1 || this.dropped % 25 === 0) {
-        this.deps.log?.('warn', `[notify] queue full, dropped ${this.dropped} notification(s)`);
+      if (n === 1 || n % 25 === 0) {
+        this.deps.log?.('warn', `[notify] ${payload.event} queue full, dropped ${n} notification(s)`);
       }
     }
-    this.queue.push(payload);
+    queue.push(payload);
     void this.drain();
   }
 
-  /** Test seam: wait for the queue to empty. */
+  /** Anything queued, in either kind? */
+  private pending(): boolean {
+    return this.queues.approval.length > 0 || this.queues.attention.length > 0;
+  }
+
+  /** The next payload to send — approvals first, then attention. */
+  private take(): NotifyPayload | undefined {
+    return this.queues.approval.shift() ?? this.queues.attention.shift();
+  }
+
+  /**
+   * Test seam: wait until nothing is queued AND no drain is running.
+   *
+   * The loop is not belt-and-braces. A drain that finished can be restarted
+   * from its own `finally` (see `drain`), so a single `await` can return while
+   * a freshly restarted drain is still in flight.
+   */
   async flush(): Promise<void> {
-    await this.drain();
+    while (this.drainPromise || this.pending()) {
+      await this.drain();
+    }
   }
 
   private drain(): Promise<void> {
     if (!this.drainPromise) {
       this.drainPromise = this.runDrain().finally(() => {
         this.drainPromise = null;
+        // RESTART, do not just clear. `runDrain` returns synchronously when it
+        // finds the queues empty, but this callback runs a microtask later —
+        // and a `notify()` landing in that gap sees a non-null `drainPromise`,
+        // joins the drain that is already finishing, and has its payload
+        // stranded until some unrelated event happens to start another one.
+        if (this.pending()) void this.drain();
       });
     }
     return this.drainPromise;
   }
 
   private async runDrain(): Promise<void> {
-    while (this.queue.length > 0) {
-      const next = this.queue.shift();
-      if (!next) break;
+    for (let next = this.take(); next !== undefined; next = this.take()) {
       try {
         await this.send(next);
       } catch (err) {
@@ -204,21 +281,57 @@ export class WebhookSink {
     }
   }
 
+  /**
+   * Fan one payload out to every matching sink CONCURRENTLY.
+   *
+   * Serially, one endpoint that black-holes packets costs every sink behind it
+   * the full 5 s timeout — with the cap at eight sinks that is a 40 s stall on
+   * a queue whose entire purpose is telling someone an agent is blocked right
+   * now. `allSettled` because one dead sink must not abort delivery to the
+   * healthy ones, and because a rejection here would unwind into `runDrain`'s
+   * catch and get logged as if the whole notification failed.
+   */
   private async send(payload: NotifyPayload): Promise<void> {
-    for (const sink of this.deps.sinks()) {
-      if (sink.events && !sink.events.includes(payload.event)) continue;
+    const matching = this.deps.sinks().filter((sink) => {
+      if (sink.events && !sink.events.includes(payload.event)) return false;
       // Re-checked at send time, not just at coerce time: `sinks()` re-reads
       // config, so an edit between boot and now has not been through coercion.
-      if (!isSendableUrl(sink.url)) continue;
-      const status = await this.postOnce(sink, payload);
-      this.noteOutcome(sink, status);
-    }
+      return isSendableUrl(sink.url);
+    });
+    await Promise.allSettled(
+      matching.map(async (sink) => {
+        this.warnCleartextOnce(sink);
+        const status = await this.postOnce(sink, payload);
+        this.noteOutcome(sink, status);
+      }),
+    );
+  }
+
+  /**
+   * Say once, per url, that an `http:` sink is not private.
+   *
+   * `http:` stays ALLOWED — a self-hosted ntfy on the LAN is the main reason
+   * this feature exists and forcing TLS there would just mean nobody uses it.
+   * But the body names which machine wants attention, and on ntfy the topic in
+   * the URL is the only thing standing between a stranger and the notification
+   * stream. That is worth knowing once, not suppressing.
+   */
+  private warnCleartextOnce(sink: NotifySinkConfig): void {
+    if (this.cleartextWarned.has(sink.url)) return;
+    if (!sink.url.startsWith('http://')) return;
+    this.cleartextWarned.add(sink.url);
+    this.deps.log?.(
+      'warn',
+      `[notify] the ${sink.type} sink uses http:// — notifications, and an ntfy topic name, ` +
+        'travel in cleartext. Use https:// unless this stays on a trusted network.',
+    );
   }
 
   /** One attempt. Returns the HTTP status, or null when it never got an answer. */
   private async postOnce(sink: NotifySinkConfig, payload: NotifyPayload): Promise<number | null> {
+    let res: Response;
     try {
-      const res = await this.fetchImpl(sink.url, {
+      res = await this.fetchImpl(sink.url, {
         method: 'POST',
         ...(sink.type === 'ntfy'
           ? {
@@ -226,7 +339,7 @@ export class WebhookSink {
                 'content-type': 'text/plain; charset=utf-8',
                 // ntfy reads these; both are derived, never agent text.
                 Title: payload.title,
-                Priority: payload.event === 'approval' ? NTFY_PRIORITY_HIGH : NTFY_PRIORITY_DEFAULT,
+                Priority: ntfyPriority(payload),
               },
               body: notifyMessageText(payload),
             }
@@ -238,12 +351,18 @@ export class WebhookSink {
         redirect: 'manual',
         signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
       });
-      return res.status;
     } catch {
       // Never log the URL — it can carry an ntfy topic that is itself the
       // secret protecting the notification stream.
       return null;
     }
+    // The status is all we want, but undici holds the connection and its
+    // buffers until the body is consumed or cancelled. Reading only `res.status`
+    // and dropping the response leaks a socket per notification until GC gets
+    // round to it — on a long-lived daemon sending these all day, that is a
+    // slow leak plus a connection pool that never recycles.
+    await discardBody(res);
+    return res.status;
   }
 
   /**
@@ -269,6 +388,27 @@ export class WebhookSink {
         ? `[notify] no response from the ${sink.type} sink`
         : `[notify] the ${sink.type} sink answered ${status}`,
     );
+  }
+}
+
+/**
+ * Release the response body without looking at it.
+ *
+ * `cancel()` is the cheap path — it tells the transport we want none of it, so
+ * nothing is buffered. A body that was already consumed (or a stub response in
+ * a test) has no stream, and `arrayBuffer()` covers that; both are wrapped
+ * because a failure to drain is not a failure to notify, and must never turn a
+ * delivered notification into a logged error.
+ */
+async function discardBody(res: Response): Promise<void> {
+  try {
+    if (res.body && !res.bodyUsed) {
+      await res.body.cancel();
+      return;
+    }
+    if (!res.bodyUsed) await res.arrayBuffer();
+  } catch {
+    // Nothing to do — the status was already read.
   }
 }
 

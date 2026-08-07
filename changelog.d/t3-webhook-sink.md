@@ -20,5 +20,8 @@
   never carries the agent's question, tool input, terminal output, file paths or
   any id that can address a pane — the destination is a server you chose but the
   body travels in the clear, and a shared ntfy topic is not the place for your
-  terminal. Approvals go out at ntfy's high priority; turn-completions at
-  default.
+  terminal. On ntfy the priority follows the stakes — an approval that names a
+  destructive action goes out at max, an ordinary approval at high, a
+  turn-completion at default — so the two never arrive looking equally urgent.
+  Approvals also get their own queue, so a busy afternoon of turn-completions
+  can never push out the one notification somebody is actually blocked on.

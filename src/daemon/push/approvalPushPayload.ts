@@ -10,8 +10,8 @@
  * version of it shipped a `risk` that was only ever set on the critical branch
  * — which switched the button off for every approval on earth.
  */
-import { hasElevatedRisk } from '../../shared/criticalPatterns';
 import { PUSH_RISK_CRITICAL, PUSH_RISK_NORMAL, type PushPayload } from '../../shared/push/pushEnvelope';
+import { approvalHasElevatedRisk } from './approvalRisk';
 import type { ApprovalChoice, ApprovalRequest } from '../approvals/types';
 
 /** Shown when the agent gave us no question text to quote. */
@@ -49,7 +49,7 @@ export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload 
     // and the button was withheld, so a careless copy would turn a
     // fail-CLOSED into a fail-OPEN for the softer tier. `hasElevatedRisk`
     // counts both tiers for exactly this decision.
-    risk: elevatedRisk(request) ? PUSH_RISK_CRITICAL : PUSH_RISK_NORMAL,
+    risk: approvalHasElevatedRisk(request) ? PUSH_RISK_CRITICAL : PUSH_RISK_NORMAL,
   };
 }
 
@@ -99,7 +99,8 @@ const AFFIRMATIVE_MAX_CHOICES = 2;
  * use. An empty or missing label cannot title a button, so it falls back
  * rather than borrowing a generic word.
  *
- * `risk` is unaffected and still decides this independently — `elevatedRisk`
+ * `risk` is unaffected and still decides this independently — the shared
+ * `approvalHasElevatedRisk`
  * already scans choice labels precisely so that this relaxation could not turn
  * into a gap.
  */
@@ -115,31 +116,6 @@ function lockScreenChoiceFields(
     return { requiresInAppChoice: true };
   }
   return { firstOption: labels[0] };
-}
-
-/**
- * Does anything the agent wrote name a destructive action, at either tier?
- *
- * `choices` labels are scanned too. Today a request that has them also sets
- * `requiresInAppChoice`, which withholds the affirmative on its own — but that
- * is two independent reasons agreeing, not one covering the other, and the day
- * the choice rule changes this must not quietly become the gap.
- */
-function elevatedRisk(request: ApprovalRequest): boolean {
-  if (request.risk === 'critical') return true;
-  // A permission gate (#783) carries no question and no choices — the thing
-  // being approved is the tool call itself. Scanning only the question would
-  // score every gate as `normal` and light up the one-tap lock-screen button
-  // for `rm -rf` with nothing on screen to read (review: Claude). The tool name
-  // and its input summary ARE the text to judge here.
-  if (request.kind === 'awaiting_permission') {
-    return hasElevatedRisk(request.toolName, request.toolInputSummary);
-  }
-  return hasElevatedRisk(
-    request.question,
-    ...(request.options ?? []),
-    ...(request.choices ?? []).map((c) => c.label),
-  );
 }
 
 /** One pending request per pane, so a re-prompt replaces its own banner. */

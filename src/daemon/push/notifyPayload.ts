@@ -20,7 +20,7 @@
  * payload stays inside it. Adding a field is a decision about what a third
  * party gets to read; make it there, on purpose.
  */
-import { hasElevatedRisk } from '../../shared/criticalPatterns';
+import { approvalHasElevatedRisk } from './approvalRisk';
 import type { ApprovalRequest } from '../approvals/types';
 
 /** What raised the notification. */
@@ -104,16 +104,16 @@ export function buildApprovalNotifyPayload(
     pane: shortId(request.sessionId),
     ...(request.workspaceId ? { workspace: shortId(request.workspaceId) } : {}),
     ...(request.agent ? { agent: request.agent } : {}),
-    // RE-DERIVED, not copied from `request.risk`, for the same reason
-    // `approvalPushPayload` re-derives it: the record's field is set only on
-    // the harder tier, so copying it would score a softer destructive match as
-    // ordinary. Here the consequence is only a notification priority, not a
-    // lock-screen button — but the two paths disagreeing about what is
-    // dangerous is its own bug, so they run the same scan.
+    // RE-DERIVED, not copied from `request.risk`: the record's field is set
+    // only on the harder tier, so copying it would score a softer destructive
+    // match as ordinary. Here the consequence is only a notification priority,
+    // not a lock-screen button — but the two paths disagreeing about what is
+    // dangerous is its own bug, so this calls the SAME function the sealed
+    // phone payload calls. See `approvalRisk.ts`.
     //
     // Deliberately the ONLY thing derived from the agent's text. The text
     // itself does not travel.
-    ...(elevatedRisk(request) ? { risk: 'critical' as const } : {}),
+    ...(approvalHasElevatedRisk(request) ? { risk: 'critical' as const } : {}),
     at: new Date(identity.now).toISOString(),
   };
 }
@@ -152,26 +152,4 @@ export function notifyMessageText(payload: NotifyPayload): string {
   parts.push(`pane ${payload.pane}`);
   if (payload.workspace) parts.push(`ws ${payload.workspace}`);
   return parts.join(' · ');
-}
-
-/**
- * Does anything the agent wrote name a destructive action, at either tier?
- *
- * Mirrors `approvalPushPayload`'s `elevatedRisk` rather than importing it: that
- * function belongs to the sealed phone path, and this module must be readable
- * as a self-contained statement of what a third party learns. Both count both
- * tiers, and a permission gate is judged on its tool name and input summary
- * because it carries no question. NEITHER of those strings leaves this
- * function — only the boolean does.
- */
-function elevatedRisk(request: ApprovalRequest): boolean {
-  if (request.risk === 'critical') return true;
-  if (request.kind === 'awaiting_permission') {
-    return hasElevatedRisk(request.toolName, request.toolInputSummary);
-  }
-  return hasElevatedRisk(
-    request.question,
-    ...(request.options ?? []),
-    ...(request.choices ?? []).map((c) => c.label),
-  );
 }
