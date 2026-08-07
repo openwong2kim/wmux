@@ -20,6 +20,29 @@ vi.mock('../../../shared/security', async () => {
   };
 });
 
+/**
+ * Windows needs more than the 5s default here, and the reason is a real cost
+ * rather than a slow test.
+ *
+ * `RemoteHostsStore.persist()` goes through `secureWriteTokenFile`, which
+ * writes IN PLACE. On Windows an in-place overwrite preserves the existing
+ * file's ACL, so any broad EXPLICIT ACE on it survives and only the PowerShell
+ * DACL rebuild removes one — measured at 1.8-3.8s under antivirus, per the
+ * note in `daemon/web/DeviceStore.ts`. Every test here that writes twice
+ * therefore spends most of a 5s budget inside two ACL rebuilds, and whether it
+ * finishes comes down to how fast the runner is that minute.
+ *
+ * That marginality has failed `removes a host by id` and `tolerates a corrupt
+ * file on construct` on unrelated PRs, so the flake is a tax on every change in
+ * the repo, not on this file.
+ *
+ * The budget is raised rather than the cost hidden: the stall is real, it lands
+ * on the × button in the attach modal on Windows, and fixing it properly is
+ * tracked in #820. This only stops a documented cost from being measured
+ * against a budget that never accounted for it.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
 describe('RemoteHostsStore', () => {
   let dir: string;
   let filePath: string;
