@@ -150,11 +150,47 @@
   }
   if (termHost) termHost.addEventListener('click', function () { focusFromGesture(term); });
 
+  // Repaint gate: how many snapshots are currently being fed to the parser.
+  //
+  // xterm answers device queries ITSELF — DA1 (ESC[c), DSR/CPR (ESC[6n),
+  // DECRPM — and delivers those answers through the same onData that carries
+  // typing. A replayed snapshot contains whatever queries the pane's app sent,
+  // so replaying one made this browser type phantom answers into a live shell.
+  // The machine that owns the pane has its own terminal and is the
+  // authoritative responder; a viewer must never answer.
+  //
+  // A count rather than a flag: xterm parses a big write in slices, so a
+  // reconnect can start a second repaint while the first is still being
+  // consumed, and a flag would let the first callback reopen the gate under it.
+  //
+  // The eventual root fix is to neutralise the QUERIES rather than filter the
+  // answers — either in xterm (parser.registerCsiHandler swallowing DA/DSR/
+  // DECRQM) or by having the daemon strip them from the bytes it fans out.
+  // Both are bigger than this file.
+  var termRepaints = 0;
+
+  /** Replay `bytes` into `t` with the gate held for as long as it parses. */
+  function repaint(t, bytes, inc, dec) {
+    t.reset();
+    inc();
+    try {
+      t.write(bytes, dec);
+    } catch (e) {
+      // write() can throw before the callback is ever queued (xterm refuses
+      // past its discard watermark). Not releasing here would latch the gate
+      // and silently swallow every keystroke for the rest of the page's life.
+      dec();
+    }
+  }
+
   function ensureTerm(cols, rows) {
     if (!term) {
       term = newTerm(cols, rows);
       term.open(termHost);
-      if (allowInput) term.onData(function (d) { sendInput(d); });
+      if (allowInput) term.onData(function (d) {
+        if (termRepaints > 0) return; // parser reply to a replayed query
+        sendInput(d);
+      });
     } else if (cols && rows) {
       term.resize(cols, rows);
     }
@@ -1150,7 +1186,11 @@
       attention: true,
       meta: function (m) { ensureTerm(m.cols, m.rows); },
       snapshot: function (bytes) {
-        if (term) { term.reset(); term.write(bytes); }
+        if (term) {
+          repaint(term, bytes,
+            function () { termRepaints += 1; },
+            function () { termRepaints = Math.max(0, termRepaints - 1); });
+        }
         hideOverlay();
         setConn('live', 'live');
       },
@@ -1258,7 +1298,7 @@
     // detached node measures as 0 and renders nothing.
     gridEl.appendChild(el);
 
-    var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false };
+    var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false, repaints: 0 };
     tile.term = newTerm(s.cols, s.rows);
     tile.term.open(host);
     // Same reason as the single-pane host: on iOS the keyboard only comes up
@@ -1274,7 +1314,10 @@
       // focus back on each reply, which pinned the page to whichever pane
       // chattered most (caught in live dogfood — a tap looked like it did
       // nothing). Focus moves on an explicit tap only.
-      tile.term.onData(function (d) { sendTo(tile.sessionId, d); });
+      tile.term.onData(function (d) {
+        if (tile.repaints > 0) return; // parser reply to a replayed query
+        sendTo(tile.sessionId, d);
+      });
     }
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
@@ -1286,7 +1329,11 @@
         rescale();
       },
       snapshot: function (bytes) {
-        if (tile.term) { tile.term.reset(); tile.term.write(bytes); }
+        if (tile.term) {
+          repaint(tile.term, bytes,
+            function () { tile.repaints += 1; },
+            function () { tile.repaints = Math.max(0, tile.repaints - 1); });
+        }
         rescale();
         if (tile.sessionId === currentSession) setConn('live', 'live');
       },
