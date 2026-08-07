@@ -529,8 +529,13 @@ registerSessionHandlers(() => daemonClient?.isConnected === true);
 
 // Presence reporting for push suppression. Registered once on `app` (not on a
 // BrowserWindow) so it survives window recreation; the getter closes over the
-// live `daemonClient` for the same reason as above.
-attachDesktopPresenceReporter(app, () => daemonClient);
+// live `daemonClient` for the same reason as above. powerMonitor is wired too:
+// a lock screen does not blur the window, so without it the daemon would keep
+// holding notifications after the user locked up and left.
+attachDesktopPresenceReporter(app, () => daemonClient, {
+  powerMonitor,
+  isFocused: () => BrowserWindow.getFocusedWindow() !== null,
+});
 
 // Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
 // (installed in `src/renderer/hooks/useRpcBridge.ts`) into the live pipe
@@ -1142,10 +1147,27 @@ app.on('ready', async () => {
     onInstall: async (client) => {
       daemonClient = client;
       console.log('[Main] Connected to wmux-daemon (auth verified)');
-      // A fresh daemon has never heard a focus transition, and the user may
-      // have been sitting in a focused window the whole time. Without this
-      // one-shot the app would look absent until the next alt-tab.
-      reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+      // Claim the first-party role, then report presence. The daemon refuses
+      // `daemon.presence.desktop` from a client it cannot place — a report
+      // that withholds a notification must not be sendable by the MCP server,
+      // the CLI, or an agent talked into it — so the handshake has to land
+      // first. Both are best-effort: an old daemon without either method
+      // simply never learns the user is present and keeps sending pushes.
+      //
+      // The presence report is a one-shot because a fresh daemon has never
+      // heard a focus transition, and the user may have been sitting in a
+      // focused window the whole time. Without it the app looks absent until
+      // the next alt-tab. A new connection is a new pipe client id, so the
+      // daemon starts from empty presence and this is the only thing that
+      // fills it in.
+      void client
+        .rpc('daemon.client.identify', { role: 'main' })
+        .then(() => {
+          reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+        })
+        .catch(() => {
+          // Old daemon: no identify, therefore no presence, therefore pushes.
+        });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the
