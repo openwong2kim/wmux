@@ -11,6 +11,7 @@ import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 import { OutputModeTracker } from '../../util/outputModeTracker';
+import { capSnapshot } from '../snapshotWindow';
 
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
@@ -41,7 +42,14 @@ function makeDeps() {
     // #766 — the desk is showing the pane unless a test flips this; the
     // resize route only honors 'attached' when this is also true.
     viewerVisible: true,
-    ringBuffer: { readAll: () => Buffer.from('screen-bytes') },
+    ringBuffer: {
+      readAll: () => Buffer.from('screen-bytes'),
+      // The real ring's monotonic lifetime counter. A fake ring never wraps,
+      // so "everything ever written" is exactly what readAll returns — and
+      // keeping it a getter means a test that restages readAll gets a
+      // consistent counter for free.
+      get totalBytesWritten(): number { return this.readAll().length; },
+    },
     bridge,
     ptyProcess: { write },
   };
@@ -375,7 +383,7 @@ describe('WebTerminalServer', () => {
     viewerVisible: boolean;
     // Reassigned by the snapshot-preamble tests to stage a ring larger than the
     // 256 KB window.
-    ringBuffer: { readAll: () => Buffer };
+    ringBuffer: { readAll: () => Buffer; readonly totalBytesWritten: number };
   };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
@@ -4258,76 +4266,111 @@ describe('WebTerminalServer', () => {
         (m) => JSON.parse(m[1]) as Record<string, unknown>,
       );
 
+    /** 400 KB of output — comfortably more than the 256 KB snapshot window. */
+    const FILLER = 'x'.repeat(400 * 1024) + '\n';
+
     /**
-     * Fill the fake session's ring with `head` followed by enough filler that
-     * `head` falls outside the snapshot window, and feed the same bytes to a
-     * real tracker hung off the fake bridge (the daemon does this at ring-write
-     * time in DaemonPTYBridge).
+     * Stage the fake session's ring on `text` and feed the SAME bytes, with the
+     * same offsets, to a real tracker hung off the fake bridge — which is what
+     * DaemonPTYBridge does at ring-write time.
      */
-    const primeRing = (head: string): void => {
-      const filler = 'x'.repeat(400 * 1024) + '\n';
-      const text = head + filler;
+    const stageRing = (text: string): void => {
       managed.ringBuffer.readAll = () => Buffer.from(text, 'utf8');
       const tracker = new OutputModeTracker();
-      tracker.feed(text);
+      tracker.feed(text, Buffer.byteLength(text, 'utf8'));
       Object.assign(bridge, { outputModes: tracker });
+    };
+
+    /** `head` far enough back that it has scrolled out of the window. */
+    const primeRing = (head: string): void => stageRing(head + FILLER);
+
+    /** Exactly what the client SHOULD receive when nothing is prepended. */
+    const bareWindow = (): string =>
+      capSnapshot(managed.ringBuffer.readAll()).bytes.toString('utf8');
+
+    /** Open the stream and return the first snapshot payload. */
+    const firstSnapshot = async (): Promise<string> => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      const [first] = snapshots(text);
+      expect(first).toBeDefined();
+      return first;
     };
 
     it('★ prepends an alt-screen preamble when ?1049h scrolled out of the window', async () => {
       // The exact field shape: the app entered the alternate screen at startup
       // and has been painting ever since, so the switch is 400 KB back.
       primeRing('\x1b[?1049h\x1b[2J\x1b[H');
-      const info = await startRO();
-      const ac = new AbortController();
-      const text = await readStream(
-        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
-        ac,
-        (t) => snapshots(t).length >= 1,
-      );
-      ac.abort();
-
-      const [first] = snapshots(text);
-      expect(first).toBeDefined();
+      const first = await firstSnapshot();
       // The window itself no longer contains the switch…
-      expect(first.slice(32)).not.toContain('\x1b[?1049h');
+      expect(bareWindow()).not.toContain('\x1b[?1049h');
       // …so the payload has to open with it, plus an erase + home so the
       // absolute-positioned frames that follow start from a blank grid.
-      expect(first.startsWith('\x1b[?1049h\x1b[2J\x1b[H')).toBe(true);
+      expect(first).toBe('\x1b[?1049h\x1b[2J\x1b[H' + bareWindow());
     });
 
-    it('sends no preamble for a plain normal-buffer session', async () => {
-      primeRing('hello from a shell\n');
-      const info = await startRO();
-      const ac = new AbortController();
-      const text = await readStream(
-        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
-        ac,
-        (t) => snapshots(t).length >= 1,
-      );
-      ac.abort();
+    it('★ sends NO alt preamble when the window still contains the entry', async () => {
+      // The common case: an app launched a moment ago, so its own `?1049h` is
+      // inside the window. Asserting the switch first would paint the shell
+      // scrollback ahead of it into the ALTERNATE buffer; the window's own
+      // switch then no-ops, and the app's eventual `?1049l` would drop the user
+      // on an empty normal buffer with the scrollback gone.
+      stageRing(FILLER + 'line1\r\nline2\r\n\x1b[?1049h\x1b[2J\x1b[HVIM FRAME');
+      const first = await firstSnapshot();
+      expect(bareWindow()).toContain('\x1b[?1049h');
+      expect(first).toBe(bareWindow());
+    });
 
-      const [first] = snapshots(text);
-      expect(first).toBeDefined();
-      expect(first.startsWith('\x1b')).toBe(false);
+    it('sends no preamble at all for a plain normal-buffer session', async () => {
+      // Deliberately full of escape sequences — colours, and an alt screen the
+      // app entered AND left — so "the payload happens not to start with ESC"
+      // cannot pass for a real assertion. The only acceptable answer is the
+      // window, byte for byte.
+      primeRing('\x1b[32m$ vim\x1b[0m\n\x1b[?1049h\x1b[2Jediting\x1b[?1049l\x1b[?1002l\n');
+      const first = await firstSnapshot();
+      expect(first).toBe(bareWindow());
     });
 
     it('carries non-default modes other than alt screen (bracketed paste, mouse SGR)', async () => {
       primeRing('\x1b[?2004h\x1b[?1002;1006h');
-      const info = await startRO();
-      const ac = new AbortController();
-      const text = await readStream(
-        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
-        ac,
-        (t) => snapshots(t).length >= 1,
-      );
-      ac.abort();
-
-      const [first] = snapshots(text);
+      const first = await firstSnapshot();
       expect(first).toContain('\x1b[?1002h');
       expect(first).toContain('\x1b[?1006h');
       expect(first).toContain('\x1b[?2004h');
       // No alt-screen switch was sent, so none is asserted.
       expect(first).not.toContain('\x1b[?1049h');
+    });
+
+    it('ends just this stream when the initial frame cannot be built', async () => {
+      // `readAll()` copies the whole ring — up to 64 MB — and `Buffer.concat`
+      // allocates again on top. The headers are already out by then, so there
+      // is no error status left to send; what matters is that the throw does
+      // NOT escape the request handler, because an uncaught exception in a
+      // daemon request handler ends the daemon, not the request.
+      managed.ringBuffer.readAll = () => { throw new Error('Array buffer allocation failed'); };
+      const info = await startRO();
+      const ac = new AbortController();
+      const res = await fetch(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        { signal: ac.signal },
+      );
+      expect(res.status).toBe(200);
+      // The stream closes rather than hanging, and carries no frames.
+      const body = await res.text();
+      expect(snapshots(body)).toHaveLength(0);
+
+      // The daemon is still serving — the failure was scoped to one client.
+      managed.ringBuffer.readAll = () => Buffer.from('recovered');
+      const after = await fetch(`${base()}/api/sessions`, {
+        headers: { Authorization: `Bearer ${info.token as string}` },
+      });
+      expect(after.status).toBe(200);
     });
 
     it('★ re-sends meta AND a snapshot on an applied resize, debounced', async () => {

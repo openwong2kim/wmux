@@ -2478,7 +2478,22 @@ export class WebTerminalServer {
       ...this.securityHeaders(),
     });
 
-    this.writeSnapshotFrame(res, managed);
+    // The headers are already out, so there is no status code left to send on
+    // failure — but `readAll()` + `Buffer.concat` on a ring of up to 64 MB can
+    // throw (allocation), and an exception escaping a request handler reaches
+    // `uncaughtException` and takes the whole daemon with it. One client's
+    // initial paint is not worth the fleet.
+    try {
+      this.writeSnapshotFrame(res, managed);
+    } catch (err) {
+      this.deps.log('warn', `[web] initial snapshot failed for ${sessionId}: ${errMsg(err)}`);
+      try {
+        res.end();
+      } catch {
+        /* socket already gone — the end state we wanted either way */
+      }
+      return;
+    }
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
     // not disturb the GUI's SessionPipe. maxListeners is relaxed because each
@@ -2570,7 +2585,15 @@ export class WebTerminalServer {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
     };
-    const preamble = managed.bridge.outputModes?.preamble() ?? '';
+    // Absolute stream offset of the window's FIRST byte. The tracker needs it
+    // to decide whether the alt-screen entry is something the window already
+    // carries — re-asserting one that is still in there paints the scrollback
+    // ahead of it into the alternate buffer and loses it (see
+    // util/outputModeTracker.ts). Derived from the ring's own monotonic
+    // counter, which is stable across wraps and counts a recovered session's
+    // pre-filled scrollback, so both sides speak the same coordinates.
+    const windowStart = managed.ringBuffer.totalBytesWritten - snapshot.bytes.length;
+    const preamble = managed.bridge.outputModes?.preamble(windowStart) ?? '';
     const payload = preamble
       ? Buffer.concat([Buffer.from(preamble, 'utf8'), snapshot.bytes])
       : snapshot.bytes;

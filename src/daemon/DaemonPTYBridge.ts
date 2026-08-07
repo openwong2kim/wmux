@@ -200,8 +200,20 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // Fed from the same place the ring is written, so the tracked modes always
     // describe exactly the bytes the ring holds.
+    //
+    // Including the bytes that were already there: a RECOVERED session's ring is
+    // pre-filled with saved scrollback BEFORE this bridge exists (see
+    // DaemonSessionManager.createSession), and those are precisely the
+    // long-running fullscreen sessions the preamble exists for — a tracker that
+    // started at power-on defaults here would report "no alt screen" for a pane
+    // that has been inside vim since before the daemon restarted. One pass over
+    // the ring, once per PTY lifetime.
     const modeTracker = new OutputModeTracker();
     this.modeTracker = modeTracker;
+    const prefilled = ringBuffer.readAll();
+    if (prefilled.length > 0) {
+      modeTracker.feed(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
+    }
 
     const agentDetector = new AgentDetector();
     this.agentDetector = agentDetector;
@@ -355,7 +367,9 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.muted) return;
       try {
         ringBuffer.write(buf);
-        modeTracker.feed(data);
+        // AFTER the ring write: the tracker's offsets are in the ring's own
+        // coordinate system, so it needs the counter this chunk already moved.
+        modeTracker.feed(data, ringBuffer.totalBytesWritten);
         oscParser.process(data);
 
         // Prompt-based CWD detection — fallback for shells WITHOUT the
