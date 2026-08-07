@@ -13,15 +13,34 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import RemoteMirrorTerminal from '../RemoteMirrorTerminal';
+import { useStore } from '../../../stores';
+
+// One shared log so "before open()" is an assertion about the same clock.
+// Two independent counters would compare cleanly and prove nothing.
+const setupLog = vi.hoisted(() => [] as string[]);
+const widthModelMock = vi.hoisted(() => vi.fn());
+vi.mock('../../../../shared/terminalUnicode', () => ({
+  applyUnicodeWidthModel: (t: unknown) => {
+    setupLog.push('width-model');
+    widthModelMock(t);
+  },
+}));
 
 class FakeTerminal {
+  /** What the component asked for at construction. */
+  ctorOptions: Record<string, unknown> = {};
+  /** Live options bag, like xterm's — the runtime settings effect writes here. */
+  options: Record<string, unknown> = {};
   written: unknown[] = [];
   resized: Array<{ cols: number; rows: number }> = [];
   resetCalls = 0;
   disposed = false;
   onDataHandler: ((data: string) => void) | null = null;
 
-  open(): void { /* noop — the fake never touches the DOM container */ }
+  open(): void {
+    // Ordering only — the fake never touches the DOM container.
+    setupLog.push('open');
+  }
   reset(): void { this.resetCalls++; }
   resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
   write(data: unknown): void { this.written.push(data); }
@@ -36,8 +55,10 @@ const termInstances: FakeTerminal[] = [];
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
-    constructor() {
+    constructor(opts: Record<string, unknown>) {
       const t = new FakeTerminal();
+      t.ctorOptions = { ...opts };
+      t.options = { ...opts };
       termInstances.push(t);
       return t as unknown as this;
     }
@@ -69,6 +90,7 @@ describe('RemoteMirrorTerminal', () => {
   let paneWrite: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    setupLog.length = 0;
     termInstances.length = 0;
     metaHandlers = [];
     dataHandlers = [];
@@ -233,5 +255,86 @@ describe('RemoteMirrorTerminal', () => {
     expect(errorHandlers).toHaveLength(1);
     unmount();
     expect(errorHandlers).toHaveLength(0);
+  });
+
+  /**
+   * A mirror sits in the sidebar next to local panes and must not look like a
+   * different application. Constructed bare it fell back to xterm's own
+   * defaults — `monospace` at 15px on black, outside the theme's ANSI palette
+   * — which read as "this pane is slightly bolder and bigger" and was.
+   */
+  /**
+   * The mirror re-renders a grid the REMOTE daemon computed. `terminalUnicode`
+   * exists because two grids that must agree drift silently otherwise, and
+   * this was the one terminal that skipped it — visible as torn, interleaved
+   * rows on CJK text, where every character is double-width.
+   */
+  it('applies the shared Unicode width model, before open()', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    expect(widthModelMock).toHaveBeenCalledWith(termInstances[0]);
+    // The addon has to be installed before the terminal is attached, or the
+    // first paint measures with the wrong model.
+    expect(setupLog).toEqual(['width-model', 'open']);
+
+    unmount();
+  });
+
+  // The component's header claims the parent CSS letterboxes an aspect
+  // mismatch. Nothing in the chain did, so a remote pane taller than its cell
+  // painted over the composer and the sidebar.
+  it('clips its own overflow rather than trusting a parent to do it', () => {
+    const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    const outer = container.firstElementChild as HTMLElement;
+    expect(outer.className).toContain('overflow-hidden');
+    expect((outer.firstElementChild as HTMLElement).className).toContain('overflow-hidden');
+
+    unmount();
+  });
+
+  describe('visual settings', () => {
+    // Reads the COMPONENT's ctor bag. The sibling ctor suite proves this flag
+    // is what keeps the width model from throwing; this proves the component
+    // actually sends it. Neither test alone would have caught the crash.
+    it('asks for proposed API, which the width model requires', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      expect(termInstances[0]!.ctorOptions['allowProposedApi']).toBe(true);
+      unmount();
+    });
+
+    it('constructs with the app font and theme, not xterm defaults', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+      const opts = termInstances[0]!.ctorOptions;
+      // xterm's own defaults are fontSize 15 / fontFamily 'monospace'. Asserting
+      // against those specifically is the point: this is the regression.
+      expect(opts['fontSize']).toBe(useStore.getState().terminalFontSize);
+      expect(opts['fontSize']).not.toBe(15);
+      expect(String(opts['fontFamily'])).toContain(useStore.getState().terminalFontFamily);
+      expect(opts['fontFamily']).not.toBe('monospace');
+      expect(opts['theme']).toBeTruthy();
+      expect(typeof opts['minimumContrastRatio']).toBe('number');
+
+      unmount();
+    });
+
+    it('applies a font-size change without recreating the terminal', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      const before = termInstances.length;
+
+      await act(async () => {
+        useStore.setState({ terminalFontSize: 22 });
+      });
+
+      // Same instance, new option — recreating would drop everything the
+      // remote has already sent, and the remote only repaints on re-attach.
+      expect(termInstances).toHaveLength(before);
+      expect(term.disposed).toBe(false);
+      expect(term.options['fontSize']).toBe(22);
+
+      unmount();
+    });
   });
 });
