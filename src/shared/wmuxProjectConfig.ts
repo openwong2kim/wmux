@@ -50,10 +50,42 @@ export const PROJECT_SUPERVISION_BURST_MAX = 20;
 export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN = 30;
 export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX = 3600;
 
+// ── T2 fan-out caps ──────────────────────────────────────────────────────────
+// A fan-out spawns up to FANOUT_MAX_TASKS worktrees at once; each one may want
+// its own dev-server port, and each one may need a repo-specific preparation
+// step (copy `.env`, `npm install`) before its agent starts. Both are declared
+// here, in the SAME trust-gated file the supervised panes use — `setup` is a
+// shell command and therefore only ever runs from a 'trusted' wmux.json.
+/** Lowest port a `fanout.portRange` may claim (privileged ports are refused). */
+export const PROJECT_FANOUT_PORT_MIN = 1024;
+/** Highest port a `fanout.portRange` may claim. */
+export const PROJECT_FANOUT_PORT_MAX = 65535;
+
 export interface WmuxProjectCommand {
   id: string;
   title: string;
   command: string;
+}
+
+/**
+ * Per-repo fan-out settings (T2). Both fields are optional; an invalid value
+ * drops the whole `fanout` section (the rest of the file still applies), which
+ * fails closed for `setup` — nothing runs — and merely returns port assignment
+ * to its pre-feature state.
+ */
+export interface WmuxProjectFanout {
+  /**
+   * Inclusive port window, authored as `"3000-3010"`. Each fan-out task is
+   * assigned one free port from it, exported as `WMUX_TASK_PORT` in the task
+   * pane's environment, so N parallel dev servers don't collide.
+   */
+  portRange?: { min: number; max: number };
+  /**
+   * Shell command run inside a freshly created fan-out worktree BEFORE the
+   * agent starts (e.g. `cp ../../.env . && npm ci`). Runs only when the user
+   * has trusted THESE wmux.json bytes — see ProjectConfigStore.
+   */
+  setup?: string;
 }
 
 export interface WmuxProjectLayoutLeaf {
@@ -124,6 +156,7 @@ export interface WmuxProjectConfig {
   version: 1;
   commands?: WmuxProjectCommand[];
   layout?: WmuxProjectLayoutNode;
+  fanout?: WmuxProjectFanout;
 }
 
 /**
@@ -476,6 +509,55 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   return leaf;
 }
 
+// ── fanout ───────────────────────────────────────────────────────────────────
+
+/**
+ * Parse a `"min-max"` port window. Returns null for anything that isn't two
+ * plain decimal numbers inside the allowed range with min <= max — a typo must
+ * not resolve to a half-window that silently collides.
+ */
+export function parseFanoutPortRange(input: unknown): { min: number; max: number } | null {
+  if (typeof input !== 'string') return null;
+  const match = /^\s*(\d{1,5})\s*-\s*(\d{1,5})\s*$/.exec(input);
+  if (!match) return null;
+  const min = Number(match[1]);
+  const max = Number(match[2]);
+  if (!Number.isInteger(min) || !Number.isInteger(max)) return null;
+  if (min < PROJECT_FANOUT_PORT_MIN || max > PROJECT_FANOUT_PORT_MAX) return null;
+  if (min > max) return null;
+  return { min, max };
+}
+
+/**
+ * Normalize the `fanout` section. Returns undefined when nothing usable
+ * remains — including when a field is present but malformed, so a bad `setup`
+ * string can never partially survive into an executable position.
+ */
+function normalizeFanout(input: unknown): WmuxProjectFanout | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const src = input as { portRange?: unknown; setup?: unknown };
+
+  let portRange: { min: number; max: number } | undefined;
+  if (src.portRange !== undefined) {
+    const parsed = parseFanoutPortRange(src.portRange);
+    if (parsed === null) return undefined;
+    portRange = parsed;
+  }
+
+  let setup: string | undefined;
+  if (src.setup !== undefined) {
+    const cmd = normCommand(src.setup);
+    if (cmd === undefined) return undefined;
+    setup = cmd;
+  }
+
+  if (portRange === undefined && setup === undefined) return undefined;
+  const out: WmuxProjectFanout = {};
+  if (portRange !== undefined) out.portRange = portRange;
+  if (setup !== undefined) out.setup = setup;
+  return out;
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 /**
@@ -487,7 +569,7 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
  */
 export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { version?: unknown; commands?: unknown; layout?: unknown };
+  const src = input as { version?: unknown; commands?: unknown; layout?: unknown; fanout?: unknown };
 
   if (src.version !== undefined && src.version !== 1) return undefined;
 
@@ -499,17 +581,22 @@ export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | 
     layout = normalizeLayoutNode(src.layout, 1, { leaves: 0 }) ?? undefined;
   }
 
-  if (commands.length === 0 && layout === undefined) return undefined;
+  const fanout = normalizeFanout(src.fanout);
+
+  if (commands.length === 0 && layout === undefined && fanout === undefined) return undefined;
   const config: WmuxProjectConfig = { version: 1 };
   if (commands.length > 0) config.commands = commands;
   if (layout !== undefined) config.layout = layout;
+  if (fanout !== undefined) config.fanout = fanout;
   return config;
 }
 
 /**
  * Every shell command the config can run — what the trust dialog must show
  * verbatim before the user approves. Order: custom commands first, then
- * layout startup commands (depth-first, matching visual order).
+ * layout startup commands (depth-first, matching visual order), then the
+ * fan-out worktree setup hook (T2) — it executes on the same grant, so it has
+ * to be visible in the same list.
  */
 export function collectConfigCommands(config: WmuxProjectConfig): string[] {
   const out: string[] = [];
@@ -522,6 +609,7 @@ export function collectConfigCommands(config: WmuxProjectConfig): string[] {
     node.children.forEach(walk);
   };
   if (config.layout !== undefined) walk(config.layout);
+  if (config.fanout?.setup !== undefined) out.push(config.fanout.setup);
   return out;
 }
 
