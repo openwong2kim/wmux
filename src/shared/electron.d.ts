@@ -209,6 +209,11 @@ declare global {
         onPaneMeta: (
           callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void,
         ) => () => void;
+        /** Geometry-only: the remote pane was resized while attached. Re-grid
+         *  and keep what is on screen — unlike onPaneMeta, nothing is reset. */
+        onPaneResize: (
+          callback: (e: { attachId: string; cols: number; rows: number }) => void,
+        ) => () => void;
         onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
         onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;
         /** Fires once reconnection gives up after too many consecutive

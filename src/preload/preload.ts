@@ -1253,6 +1253,11 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.REMOTE_PANE_META, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_META, listener); };
   },
+  onPaneResize: (callback: (e: { attachId: string; cols: number; rows: number }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; cols: number; rows: number }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_RESIZE, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_RESIZE, listener); };
+  },
   onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => {
     const listener = (_event: unknown, payload: { attachId: string; dataB64: string }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_DATA, listener);

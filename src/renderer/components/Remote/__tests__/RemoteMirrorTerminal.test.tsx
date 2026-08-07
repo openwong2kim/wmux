@@ -43,7 +43,26 @@ class FakeTerminal {
   }
   reset(): void { this.resetCalls++; }
   resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
-  write(data: unknown): void { this.written.push(data); }
+  /**
+   * xterm's `write(data, callback)` — the callback fires once the parser has
+   * consumed the chunk, which is the seam the repaint gate hangs off. The fake
+   * holds it so a test can drive "during the write" and "after the write"
+   * separately, and `flushWrites()` is the "after".
+   */
+  pendingWriteCallbacks: Array<() => void> = [];
+  /** Set to make write() throw the way xterm's WriteBuffer does past its
+   *  discard watermark — BEFORE the callback is ever queued. */
+  writeThrows = false;
+  write(data: unknown, cb?: () => void): void {
+    if (this.writeThrows) throw new Error('write buffer full');
+    this.written.push(data);
+    if (cb) this.pendingWriteCallbacks.push(cb);
+  }
+  flushWrites(): void {
+    const cbs = this.pendingWriteCallbacks;
+    this.pendingWriteCallbacks = [];
+    cbs.forEach((cb) => cb());
+  }
   onData(cb: (data: string) => void): { dispose: () => void } {
     this.onDataHandler = cb;
     return { dispose: vi.fn() };
@@ -83,6 +102,7 @@ function render(ui: React.ReactElement) {
 
 describe('RemoteMirrorTerminal', () => {
   let metaHandlers: Handler[];
+  let resizeHandlers: Handler[];
   let dataHandlers: Handler[];
   let exitHandlers: Handler[];
   let errorHandlers: Handler[];
@@ -93,6 +113,7 @@ describe('RemoteMirrorTerminal', () => {
     setupLog.length = 0;
     termInstances.length = 0;
     metaHandlers = [];
+    resizeHandlers = [];
     dataHandlers = [];
     exitHandlers = [];
     errorHandlers = [];
@@ -104,6 +125,10 @@ describe('RemoteMirrorTerminal', () => {
         onPaneMeta: (cb: Handler) => {
           metaHandlers.push(cb);
           return () => { metaHandlers = metaHandlers.filter((h) => h !== cb); };
+        },
+        onPaneResize: (cb: Handler) => {
+          resizeHandlers.push(cb);
+          return () => { resizeHandlers = resizeHandlers.filter((h) => h !== cb); };
         },
         onPaneData: (cb: Handler) => {
           dataHandlers.push(cb);
@@ -181,6 +206,161 @@ describe('RemoteMirrorTerminal', () => {
 
     expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
 
+    unmount();
+  });
+
+  // ①c — xterm auto-answers DA1/DSR/CPR through the same onData this component
+  // forwards, so anything it parses can make the mirror type into the REMOTE
+  // pane's stdin. The remote's own GUI is the authoritative responder
+  // (HeadlessSnapshot never wires onData for the same reason).
+  //
+  // Two layers: replies are filtered by shape wherever they come from, and the
+  // whole channel is closed for the duration of a repaint, where a snapshot's
+  // worth of queries lands at once.
+  const attach = (snapshot = 'scrollback'): void => {
+    act(() => {
+      metaHandlers.forEach((h) =>
+        h({ attachId: 'a1', cols: 80, rows: 24, snapshotB64: btoa(snapshot) }),
+      );
+    });
+  };
+
+  it('★ suppresses paneWrite while a snapshot repaint is being written', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    attach('\x1b[?1049h\x1b[c');
+
+    // Ordinary typing, not a reply — so this asserts the GATE, not the filter.
+    // The write callback has not fired yet: the parser is still consuming, and
+    // that is exactly when it emits its answers.
+    act(() => { term.onDataHandler?.('x'); });
+    expect(paneWrite).not.toHaveBeenCalled();
+
+    // Once the chunk is consumed the gate drops and real typing flows again.
+    act(() => { term.flushWrites(); });
+    act(() => { term.onDataHandler?.('ls\n'); });
+    expect(paneWrite).toHaveBeenCalledTimes(1);
+    expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
+
+    unmount();
+  });
+
+  it('★ keeps the gate closed while two repaints overlap', () => {
+    // xterm parses a big write in ~12 ms slices, so a reconnect can start a
+    // second repaint while the first is still being consumed. With a boolean
+    // gate the FIRST callback reopened the channel underneath the second.
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    attach('first');
+    attach('second');
+    expect(term.pendingWriteCallbacks).toHaveLength(2);
+
+    // The first snapshot finishes parsing; the second has not.
+    act(() => { term.pendingWriteCallbacks.shift()?.(); });
+    act(() => { term.onDataHandler?.('x'); });
+    expect(paneWrite).not.toHaveBeenCalled();
+
+    // Both done — back to normal.
+    act(() => { term.flushWrites(); });
+    act(() => { term.onDataHandler?.('x'); });
+    expect(paneWrite).toHaveBeenCalledTimes(1);
+
+    unmount();
+  });
+
+  it('★ a throwing write does not latch the gate shut forever', () => {
+    // xterm's WriteBuffer refuses past its discard watermark, and it throws
+    // before the callback exists — so nothing would ever reopen the gate, and
+    // the pane would silently swallow every keystroke from then on.
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    term.writeThrows = true;
+    attach('too much');
+    term.writeThrows = false;
+
+    act(() => { term.onDataHandler?.('ls\n'); });
+    expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
+
+    unmount();
+  });
+
+  it('★ never forwards a device-query reply on the LIVE data path', () => {
+    // The repaint gate does not cover this: a TUI sends `ESC[6n` mid-session,
+    // long after any snapshot, and the mirror was answering it.
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    attach();
+    act(() => { term.flushWrites(); }); // repaint over — the gate is open
+
+    const replies = [
+      '\x1b[?62;1;6c', // DA1
+      '\x1b[>0;276;0c', // DA2
+      '\x1b[0n', // DSR
+      '\x1b[24;80R', // CPR
+      '\x1b[?2004;1$y', // DECRPM
+      '\x1b[8;24;80t', // text-area report
+      '\x1bP1$r0m\x1b\\', // DECRQSS
+      '\x1b]11;rgb:1e1e/1e1e/2e2e\x07', // OSC background report
+    ];
+    act(() => { replies.forEach((r) => term.onDataHandler?.(r)); });
+    expect(paneWrite).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('still forwards the escape sequences a KEY produces', () => {
+    // The filter is shape-based, so it has to leave real input alone: arrows,
+    // modified arrows, function keys, shift-tab, bracketed paste, mouse.
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    attach();
+    act(() => { term.flushWrites(); });
+
+    const keys = [
+      '\x1b[A', '\x1b[D', '\x1b[1;5C', '\x1b[3~', '\x1b[15~', '\x1b[Z',
+      '\x1bOR', '\x1b[200~pasted\x1b[201~', '\x1b[<0;10;5M', '\x03',
+    ];
+    act(() => { keys.forEach((k) => term.onDataHandler?.(k)); });
+    expect(paneWrite).toHaveBeenCalledTimes(keys.length);
+
+    unmount();
+  });
+
+  // A resize on the machine that owns the pane arrives as GEOMETRY. Answering
+  // it with a fresh snapshot would mean `reset()` + replay on every viewer —
+  // wiping the mirrored scrollback and yanking a user who was scrolled up back
+  // to the bottom every time someone dragged a divider on the other machine.
+  it('★ re-grids on a resize event without resetting or repainting', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+
+    act(() => {
+      metaHandlers.forEach((h) =>
+        h({ attachId: 'a1', cols: 80, rows: 24, snapshotB64: btoa('scrollback') }),
+      );
+      term.flushWrites();
+    });
+    const resetsAfterAttach = term.resetCalls;
+    const writesAfterAttach = term.written.length;
+
+    act(() => {
+      resizeHandlers.forEach((h) => h({ attachId: 'a1', cols: 120, rows: 40 }));
+    });
+
+    expect(term.resized.at(-1)).toEqual({ cols: 120, rows: 40 });
+    expect(term.resetCalls).toBe(resetsAfterAttach); // scrollback survives
+    expect(term.written).toHaveLength(writesAfterAttach); // nothing repainted
+
+    unmount();
+  });
+
+  it('ignores a resize aimed at a different attach', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    act(() => {
+      resizeHandlers.forEach((h) => h({ attachId: 'other', cols: 10, rows: 5 }));
+    });
+    expect(term.resized).toHaveLength(0);
     unmount();
   });
 

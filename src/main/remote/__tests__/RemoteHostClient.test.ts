@@ -121,6 +121,53 @@ describe('RemoteHostClient', () => {
       expect(init?.redirect).toBe('error');
     });
 
+    // ── geometry-only frames ─────────────────────────────────────────────
+    //
+    // The daemon answers a resize with `meta` and nothing else: re-sending the
+    // window would cost a full ring copy per viewer and every client resets its
+    // terminal before replaying one, wiping the viewer's scrollback. A meta
+    // held for a snapshot that is never coming is how those resizes used to
+    // reach the mirror as nothing at all.
+    it('★ dispatches a resize-marked meta as geometry, not as a repaint', async () => {
+      const body =
+        META_SNAPSHOT +
+        'event: meta\ndata: {"cols":100,"rows":40,"resize":true}\n\n' +
+        'event: data\ndata: aGVsbG8=\n\n';
+      const fetchImpl = vi.fn(async () => sseResponse([body]));
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const received: string[] = [];
+      client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
+      client.onResize((e) => received.push(`resize:${e.cols}x${e.rows}`));
+      client.onData((e) => received.push(`data:${e.dataB64}`));
+
+      client.attach('sess-1');
+      await vi.waitFor(() => {
+        expect(received).toEqual(['meta:80x24', 'resize:100x40', 'data:aGVsbG8=']);
+      });
+    });
+
+    it('★ releases a bare meta that no snapshot follows, as geometry', async () => {
+      // Belt and braces for a peer that omits the marker: a held meta must not
+      // sit in the buffer for the rest of the stream.
+      const body =
+        META_SNAPSHOT +
+        'event: meta\ndata: {"cols":120,"rows":30}\n\n' +
+        'event: data\ndata: aGVsbG8=\n\n';
+      const fetchImpl = vi.fn(async () => sseResponse([body]));
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const received: string[] = [];
+      client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
+      client.onResize((e) => received.push(`resize:${e.cols}x${e.rows}`));
+      client.onData((e) => received.push(`data:${e.dataB64}`));
+
+      client.attach('sess-1');
+      await vi.waitFor(() => {
+        expect(received).toEqual(['meta:80x24', 'resize:120x30', 'data:aGVsbG8=']);
+      });
+    });
+
     it('forwards truncated and omittedBytes from meta', async () => {
       const body =
         'event: meta\ndata: {"cols":80,"rows":24,"truncated":true,"omittedBytes":42}\n\n' +
