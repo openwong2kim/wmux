@@ -15,6 +15,17 @@ import { act } from 'react';
 import RemoteMirrorTerminal from '../RemoteMirrorTerminal';
 import { useStore } from '../../../stores';
 
+// One shared log so "before open()" is an assertion about the same clock.
+// Two independent counters would compare cleanly and prove nothing.
+const setupLog = vi.hoisted(() => [] as string[]);
+const widthModelMock = vi.hoisted(() => vi.fn());
+vi.mock('../../../../shared/terminalUnicode', () => ({
+  applyUnicodeWidthModel: (t: unknown) => {
+    setupLog.push('width-model');
+    widthModelMock(t);
+  },
+}));
+
 class FakeTerminal {
   /** What the component asked for at construction. */
   ctorOptions: Record<string, unknown> = {};
@@ -26,7 +37,10 @@ class FakeTerminal {
   disposed = false;
   onDataHandler: ((data: string) => void) | null = null;
 
-  open(): void { /* noop — the fake never touches the DOM container */ }
+  open(): void {
+    // Ordering only — the fake never touches the DOM container.
+    setupLog.push('open');
+  }
   reset(): void { this.resetCalls++; }
   resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
   write(data: unknown): void { this.written.push(data); }
@@ -76,6 +90,7 @@ describe('RemoteMirrorTerminal', () => {
   let paneWrite: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    setupLog.length = 0;
     termInstances.length = 0;
     metaHandlers = [];
     dataHandlers = [];
@@ -248,6 +263,36 @@ describe('RemoteMirrorTerminal', () => {
    * defaults — `monospace` at 15px on black, outside the theme's ANSI palette
    * — which read as "this pane is slightly bolder and bigger" and was.
    */
+  /**
+   * The mirror re-renders a grid the REMOTE daemon computed. `terminalUnicode`
+   * exists because two grids that must agree drift silently otherwise, and
+   * this was the one terminal that skipped it — visible as torn, interleaved
+   * rows on CJK text, where every character is double-width.
+   */
+  it('applies the shared Unicode width model, before open()', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    expect(widthModelMock).toHaveBeenCalledWith(termInstances[0]);
+    // The addon has to be installed before the terminal is attached, or the
+    // first paint measures with the wrong model.
+    expect(setupLog).toEqual(['width-model', 'open']);
+
+    unmount();
+  });
+
+  // The component's header claims the parent CSS letterboxes an aspect
+  // mismatch. Nothing in the chain did, so a remote pane taller than its cell
+  // painted over the composer and the sidebar.
+  it('clips its own overflow rather than trusting a parent to do it', () => {
+    const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+
+    const outer = container.firstElementChild as HTMLElement;
+    expect(outer.className).toContain('overflow-hidden');
+    expect((outer.firstElementChild as HTMLElement).className).toContain('overflow-hidden');
+
+    unmount();
+  });
+
   describe('visual settings', () => {
     it('constructs with the app font and theme, not xterm defaults', () => {
       const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);

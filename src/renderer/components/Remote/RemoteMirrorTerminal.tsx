@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
+import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
@@ -96,6 +97,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       theme: xtermThemeRef.current,
       minimumContrastRatio: minimumContrastRatioRef.current,
     });
+    // The width model, BEFORE open() — same order as the local pane.
+    //
+    // `terminalUnicode.ts` exists because two grids that must agree will drift
+    // silently if each names its own addon: "the daemon wraps a row at a
+    // different column than the screen does, and everything after it sits one
+    // or more cells off." A mirror is exactly that situation — the remote
+    // daemon computed the grid, this terminal re-renders it — and it was the
+    // one terminal not going through the helper. On CJK text, where every
+    // character is double-width, the drift is visible as torn, interleaved
+    // rows rather than a subtle offset.
+    applyUnicodeWidthModel(term);
     term.open(containerRef.current);
     containerRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
     termRef.current = term;
@@ -168,8 +180,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   }, [attachId]);
 
   return (
-    <div className="relative w-full h-full min-h-0 min-w-0">
-      <div ref={containerRef} className="absolute inset-0" />
+    // `overflow-hidden` is the letterboxing this component's header describes
+    // ("letterboxed by the parent's CSS, not by resizing the terminal") and
+    // that nothing in the chain actually applied — not here, not PaneCell, not
+    // WorkspaceCenter. Geometry has a single owner, the remote daemon, so a
+    // remote pane with more rows than this cell can show renders an element
+    // TALLER than its box; with nothing clipping it, the overflow painted over
+    // the composer and the sidebar.
+    <div className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
+      <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
       {error && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[11px] font-mono px-2 text-center"
