@@ -596,6 +596,65 @@ describe('HookIngest', () => {
       expect(stats.perAgent.claude).toBe(12);
     });
   });
+
+  describe('permission gate vs the session permission mode', () => {
+    // Build an ingest whose gate config actually gates Bash, and count the
+    // gate records it opens. The shared fixture leaves gateConfig unset (=
+    // nothing gated), which would make every assertion here vacuously pass.
+    function gatingIngest() {
+      const base = makeDeps();
+      let gatesOpened = 0;
+      const ingestWithGate = new HookIngest({
+        ...base.deps,
+        gateConfig: () => ({ gatedTools: ['Bash'] }),
+        approvals: {
+          ...base.deps.approvals,
+          noteGateAwaiting: () => {
+            gatesOpened += 1;
+            return 'gate-id';
+          },
+        },
+      });
+      return { ingestWithGate, gates: () => gatesOpened, emitted: base.emitted };
+    }
+
+    function gateSignal(permissionMode?: string): AgentSignal {
+      return makeSignal({
+        kind: 'agent.awaiting_permission',
+        ptyId: 'pty-a',
+        payload: {
+          tool_name: 'Bash',
+          ...(permissionMode ? { permission_mode: permissionMode } : {}),
+        },
+      });
+    }
+
+    it('passes a bypassPermissions session straight through without opening a gate', () => {
+      // The user launched with --dangerously-skip-permissions: re-asking is the
+      // exact thing they opted out of, and with no phone attached every gated
+      // call would stall until the deadline.
+      const { ingestWithGate, gates, emitted } = gatingIngest();
+      const result = ingestWithGate.handlePermissionGate(gateSignal('bypassPermissions'));
+
+      expect(result.ok).toBe(true);
+      expect(result.gateId).toBeUndefined();
+      expect(gates()).toBe(0);
+      // Liveness still flows, so the phone header keeps showing the pane busy.
+      expect(emitted.at(-1)?.data.hookKind).toBe('agent.tool_started');
+    });
+
+    it('still gates the same tool when the session prompts (acceptEdits / default / absent)', () => {
+      // acceptEdits auto-approves edits but still prompts for Bash, so its gate
+      // stays meaningful — only bypassPermissions is a declared opt-out.
+      for (const mode of ['acceptEdits', 'default', 'plan', undefined]) {
+        const { ingestWithGate, gates } = gatingIngest();
+        const result = ingestWithGate.handlePermissionGate(gateSignal(mode));
+
+        expect(result.gateId, `mode=${String(mode)}`).toBe('gate-id');
+        expect(gates(), `mode=${String(mode)}`).toBe(1);
+      }
+    });
+  });
 });
 
 describe('resolveSessionIdForSignal', () => {
