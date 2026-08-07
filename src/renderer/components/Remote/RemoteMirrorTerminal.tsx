@@ -46,6 +46,26 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   readOnlyRef.current = readOnly;
 
   /**
+   * True while a snapshot/repaint is being fed to the parser, to keep xterm's
+   * automatic REPLIES off the remote pane's stdin.
+   *
+   * xterm answers device queries itself — DA1 (`ESC[c`), DSR/CPR (`ESC[6n`),
+   * DECRPM — and it delivers those answers through the SAME `onData` this
+   * component forwards to `remote.paneWrite`. A replayed snapshot contains
+   * whatever queries the remote app sent, so replaying it made the mirror type
+   * phantom responses into the remote pane. The remote's own GUI terminal is
+   * the authoritative responder; a mirror must never answer. This is the same
+   * reason HeadlessSnapshot states in its header that "no onData handler is
+   * ever wired" to its offscreen terminal.
+   *
+   * A repaint cannot distinguish a parser reply from a keystroke the user
+   * raced into the same window, so the gate suppresses `paneWrite` outright.
+   * Repaint windows are milliseconds; losing a keystroke to one is far cheaper
+   * than injecting query answers into a live remote shell.
+   */
+  const repaintingRef = useRef(false);
+
+  /**
    * The same visual settings a local pane gets.
    *
    * A mirror is still one of this app's terminals, and it sits in the sidebar
@@ -169,7 +189,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       if (!term) return;
       term.reset();
       term.resize(e.cols, e.rows);
-      term.write(decodeBase64Bytes(e.snapshotB64));
+      repaintingRef.current = true;
+      term.write(decodeBase64Bytes(e.snapshotB64), () => {
+        repaintingRef.current = false;
+      });
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -187,6 +210,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
+      if (repaintingRef.current) return; // parser reply to a replayed query — see repaintingRef
       remote.paneWrite(attachId, data);
     });
 

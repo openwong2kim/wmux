@@ -43,7 +43,22 @@ class FakeTerminal {
   }
   reset(): void { this.resetCalls++; }
   resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
-  write(data: unknown): void { this.written.push(data); }
+  /**
+   * xterm's `write(data, callback)` — the callback fires once the parser has
+   * consumed the chunk, which is the seam the repaint gate hangs off. The fake
+   * holds it so a test can drive "during the write" and "after the write"
+   * separately, and `flushWrites()` is the "after".
+   */
+  pendingWriteCallbacks: Array<() => void> = [];
+  write(data: unknown, cb?: () => void): void {
+    this.written.push(data);
+    if (cb) this.pendingWriteCallbacks.push(cb);
+  }
+  flushWrites(): void {
+    const cbs = this.pendingWriteCallbacks;
+    this.pendingWriteCallbacks = [];
+    cbs.forEach((cb) => cb());
+  }
   onData(cb: (data: string) => void): { dispose: () => void } {
     this.onDataHandler = cb;
     return { dispose: vi.fn() };
@@ -179,6 +194,36 @@ describe('RemoteMirrorTerminal', () => {
       term.onDataHandler?.('ls\n');
     });
 
+    expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
+
+    unmount();
+  });
+
+  // ①c — xterm auto-answers DA1/DSR/CPR through the same onData this component
+  // forwards, so replaying a snapshot that contains those queries used to type
+  // phantom responses into the REMOTE pane's stdin. The remote's own GUI is the
+  // authoritative responder (HeadlessSnapshot never wires onData for the same
+  // reason); the mirror must stay silent for the duration of the repaint.
+  it('★ suppresses paneWrite while a snapshot repaint is being written', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+
+    act(() => {
+      metaHandlers.forEach((h) =>
+        h({ attachId: 'a1', cols: 80, rows: 24, snapshotB64: btoa('\x1b[?1049h\x1b[c') }),
+      );
+    });
+    // The write callback has NOT fired yet — the parser is still consuming, and
+    // this is exactly when it emits its reply.
+    act(() => {
+      term.onDataHandler?.('\x1b[?62;c'); // a DA1 response xterm generated itself
+    });
+    expect(paneWrite).not.toHaveBeenCalled();
+
+    // Once the chunk is consumed the gate drops and real typing flows again.
+    act(() => { term.flushWrites(); });
+    act(() => { term.onDataHandler?.('ls\n'); });
+    expect(paneWrite).toHaveBeenCalledTimes(1);
     expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
 
     unmount();
