@@ -74,6 +74,8 @@ import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
+import { WebhookSink, coerceNotifySinks } from './push/WebhookSink';
+import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -97,6 +99,11 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+// Outbound webhook/ntfy notifications. Module-scoped for the same reason
+// `webTerminalServer` is: the hook-event site that fires attention pings is
+// registered before the boot path that constructs this, so both sides read the
+// handle at fire time and a null is simply "not configured yet".
+let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
 let transcriptDiscovery: TranscriptDiscovery | null = null;
 
@@ -2854,6 +2861,18 @@ function registerRpcHandlers(
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        // Outbound notification sinks: the END of a turn, and only the real one.
+        // `agent.subagent_stop` also reports `status:'complete'`, and a run with
+        // a dozen subagents would fire a dozen pings for one turn — so this keys
+        // on the signal kind, not the projected status.
+        if (data.signal.kind === 'agent.stop') {
+          webhookSink?.notify(
+            buildAttentionNotifyPayload(
+              { sessionId, ...(data.agent ? { agent: data.agent } : {}) },
+              { id: randomUUID(), now: Date.now() },
+            ),
+          );
+        }
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),
@@ -4923,12 +4942,25 @@ async function main(): Promise<void> {
     forgetPush: (deviceId) => getDeviceStore().forgetPush(deviceId),
     log: (level, msg) => log(level, msg),
   });
+  // The phone-less path, alongside push rather than instead of it. Inert until
+  // the operator puts a URL in `config.notifySinks`; `WMUX_NOTIFY_SINKS=0`
+  // turns it off outright. Outbound only — no new listening surface.
+  //
+  // `sinks()` re-reads config on every notification so an edit takes effect
+  // without a daemon restart, matching how `gateConfig` is wired above.
+  webhookSink = new WebhookSink({
+    sinks: () => coerceNotifySinks(loadConfig().notifySinks),
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
     // Only a NEW request is worth a phone buzzing. A resolve or an expire is
     // the thing the notification was asking for, already handled.
     if (event.type !== 'create') return;
     const r = event.request;
     pushSender.notify(buildApprovalPushPayload(r), { collapseId: approvalPushCollapseId(r) });
+    webhookSink?.notify(
+      buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
+    );
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file

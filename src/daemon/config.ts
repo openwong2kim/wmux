@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { BrowserCdpConfig, ChannelRetentionConfig, DaemonConfig } from './types';
 import { coerceGate, createDefaultGateConfig } from './approvals/gateConfig';
+import { coerceNotifySinks } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
@@ -136,6 +137,9 @@ export function createDefaultConfig(): DaemonConfig {
     browser: { cdp: { enabled: true } },
     // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
     gate: createDefaultGateConfig(),
+    // Outbound webhook/ntfy notifications. Empty = off; written out so a fresh
+    // config.json shows operators the key exists without turning anything on.
+    notifySinks: [],
   };
 }
 
@@ -336,6 +340,16 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → DEFAULT_GATED_TOOLS. A malformed slice
     // degrades to the defaults too, never silently disabling the gate.
     config.gate = coerceGate(config.gate);
+
+    // ── Outbound notification sinks: per-field backfill ──
+    // Absent slice (every config.json written before this existed) → an empty
+    // list, i.e. no outbound traffic. Degrading to "off" rather than to a
+    // default is the point: a sink the operator did not configure would be a
+    // connection they did not ask for. validateConfig ignores the field, so a
+    // malformed entry drops on its own without resetting the file.
+    config.notifySinks = coerceNotifySinks(config.notifySinks, (level, message) => {
+      console.warn(`[daemon/config] ${level}: ${message}`);
+    });
 
     return config;
   } catch (err) {
