@@ -294,6 +294,15 @@ describe('RemoteMirrorTerminal', () => {
   });
 
   describe('visual settings', () => {
+    // Reads the COMPONENT's ctor bag. The sibling ctor suite proves this flag
+    // is what keeps the width model from throwing; this proves the component
+    // actually sends it. Neither test alone would have caught the crash.
+    it('asks for proposed API, which the width model requires', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      expect(termInstances[0]!.ctorOptions['allowProposedApi']).toBe(true);
+      unmount();
+    });
+
     it('constructs with the app font and theme, not xterm defaults', () => {
       const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
 

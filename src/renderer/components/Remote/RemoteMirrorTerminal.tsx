@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
@@ -59,13 +59,25 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   const terminalFontFamily = useStore((s) => s.terminalFontFamily);
   const theme = useStore((s) => s.theme) as ThemeId;
   const customThemeColors = useStore((s) => s.customThemeColors);
-  const xtermTheme = theme === 'custom' && customThemeColors
-    ? extractXtermColors(customThemeColors)
-    : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha'];
+  // Memoised on identity, not just value. `extractXtermColors` builds a new
+  // object every call, so a custom theme would hand the settings effect below a
+  // dep that never compares equal — re-assigning `options.theme` on every
+  // parent render, and with it an xterm ColorSet rebuild, a glyph-atlas clear
+  // and a full refresh. Builtin themes come from a module constant and were
+  // already stable; this makes custom ones behave the same.
+  const xtermTheme = useMemo(
+    () => (theme === 'custom' && customThemeColors
+      ? extractXtermColors(customThemeColors)
+      : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha']),
+    [theme, customThemeColors],
+  );
   // True-colour foregrounds from remote TUIs land here the same way they do
   // locally, so the same contrast floor applies — see useTerminal.ts for why
   // dark themes get a lower one.
-  const minimumContrastRatio = resolveMinimumContrastRatio(xtermTheme.background);
+  const minimumContrastRatio = useMemo(
+    () => resolveMinimumContrastRatio(xtermTheme.background),
+    [xtermTheme],
+  );
 
   // Read inside the mount effect without joining its deps — same discipline as
   // `readOnlyRef` above. The effect must stay `[]`-keyed (see below), but it
@@ -96,6 +108,12 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       fontFamily: terminalFontFamilyCss(terminalFontFamilyRef.current),
       theme: xtermThemeRef.current,
       minimumContrastRatio: minimumContrastRatioRef.current,
+      // REQUIRED by the width model below. `Unicode11Addon.activate` reads
+      // `term.unicode`, which xterm gates behind this flag and throws without
+      // it — synchronously, inside a mount effect, where the nearest boundary
+      // is the one wrapping the whole main area. One attached remote workspace
+      // would take the entire local pane grid down with it.
+      allowProposedApi: true,
     });
     // The width model, BEFORE open() — same order as the local pane.
     //
@@ -107,10 +125,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     // one terminal not going through the helper. On CJK text, where every
     // character is double-width, the drift is visible as torn, interleaved
     // rows rather than a subtle offset.
+    // Registered BEFORE the addon and open(). If either throws, the cleanup
+    // below still runs against a terminal this ref knows about, instead of
+    // leaking the instance (DOM, listeners, buffers) on every mount attempt.
+    termRef.current = term;
     applyUnicodeWidthModel(term);
     term.open(containerRef.current);
     containerRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
-    termRef.current = term;
     return () => {
       term.dispose();
       termRef.current = null;
