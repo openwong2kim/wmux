@@ -204,6 +204,32 @@ describe('AttachRemoteModal', () => {
     unmount();
   });
 
+  // Finding 5 — main cascades the persisted descriptors, but the renderer's
+  // mirrors are memory-only: they used to stay in the sidebar for the rest of
+  // the session, failing every poll as an unknown host.
+  it('drops the removed host\'s mirrors from the sidebar', async () => {
+    useStore.setState({
+      remoteWorkspaces: [
+        { key: 'host-1:ws-abcdef12', hostId: 'host-1', hostLabel: 'office-mac', workspaceId: 'ws-abcdef12', name: 'my-project', panes: [] },
+        { key: 'host-2:ws-other', hostId: 'host-2', hostLabel: 'other-box', workspaceId: 'ws-other', name: 'other', panes: [] },
+      ],
+      activeRemoteKey: 'host-1:ws-abcdef12',
+    });
+
+    const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+    await flush();
+
+    hostsList.mockResolvedValue([]);
+    const removeButton = container.querySelector('button[aria-label="Remove host"]') as HTMLButtonElement;
+    act(() => { removeButton.click(); });
+    await flush();
+
+    expect(useStore.getState().remoteWorkspaces.map((w) => w.key)).toEqual(['host-2:ws-other']);
+    expect(useStore.getState().activeRemoteKey).toBeNull();
+
+    unmount();
+  });
+
   // m9 — a stale-response race: select host A then host B before A's
   // workspacesList resolves. A resolving last must not clobber B's list
   // while B is still the selected host.

@@ -94,6 +94,52 @@ describe('RemoteHostClient', () => {
       expect(init?.redirect).toBe('error');
       expect(init?.signal).toBeInstanceOf(AbortSignal);
     });
+
+    // Finding 3 — the body comes off ANOTHER machine. It used to be handed on
+    // with nothing but a cast, so a shape the remote had no business sending
+    // threw far downstream and took a whole refresh round with it.
+    describe('normalises an untrustworthy body', () => {
+      function clientFor(body: unknown): RemoteHostClient {
+        const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => body }) as unknown as Response);
+        return new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+      }
+
+      it('turns a non-array `workspaces` into an empty list', async () => {
+        await expect(clientFor({ workspaces: null }).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor({ workspaces: 'nope' }).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor({}).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+        await expect(clientFor(null).listWorkspaces()).resolves.toEqual({ workspaces: [] });
+      });
+
+      it('turns a null pane list into an empty one', async () => {
+        await expect(clientFor({ workspaces: [{ id: 'w1', name: 'proj', panes: null }] }).listWorkspaces())
+          .resolves.toEqual({ workspaces: [{ id: 'w1', name: 'proj', panes: [] }] });
+      });
+
+      it('drops entries that cannot be addressed and keeps the rest', async () => {
+        const body = {
+          workspaces: [
+            null,
+            { name: 'no id', panes: [] },
+            { id: '', panes: [] },
+            { id: 'w1', panes: [{ sessionId: 's1', shell: 'zsh' }, { shell: 'no session id' }, 42] },
+          ],
+        };
+        await expect(clientFor(body).listWorkspaces()).resolves.toEqual({
+          workspaces: [{ id: 'w1', name: '', panes: [{ sessionId: 's1', shell: 'zsh' }] }],
+        });
+      });
+
+      it('rejects a body that is not JSON at all', async () => {
+        const fetchImpl = vi.fn(async () => ({
+          ok: true,
+          status: 200,
+          json: async () => { throw new SyntaxError('Unexpected token <'); },
+        }) as unknown as Response);
+        const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+        await expect(client.listWorkspaces()).rejects.toThrow(/not JSON/);
+      });
+    });
   });
 
   describe('attach', () => {
@@ -119,6 +165,53 @@ describe('RemoteHostClient', () => {
       // M2 — credentialed request, never follow a redirect. No timeout here
       // (long-lived by design) — the abort signal is the attach controller.
       expect(init?.redirect).toBe('error');
+    });
+
+    // ── geometry-only frames ─────────────────────────────────────────────
+    //
+    // The daemon answers a resize with `meta` and nothing else: re-sending the
+    // window would cost a full ring copy per viewer and every client resets its
+    // terminal before replaying one, wiping the viewer's scrollback. A meta
+    // held for a snapshot that is never coming is how those resizes used to
+    // reach the mirror as nothing at all.
+    it('★ dispatches a resize-marked meta as geometry, not as a repaint', async () => {
+      const body =
+        META_SNAPSHOT +
+        'event: meta\ndata: {"cols":100,"rows":40,"resize":true}\n\n' +
+        'event: data\ndata: aGVsbG8=\n\n';
+      const fetchImpl = vi.fn(async () => sseResponse([body]));
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const received: string[] = [];
+      client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
+      client.onResize((e) => received.push(`resize:${e.cols}x${e.rows}`));
+      client.onData((e) => received.push(`data:${e.dataB64}`));
+
+      client.attach('sess-1');
+      await vi.waitFor(() => {
+        expect(received).toEqual(['meta:80x24', 'resize:100x40', 'data:aGVsbG8=']);
+      });
+    });
+
+    it('★ releases a bare meta that no snapshot follows, as geometry', async () => {
+      // Belt and braces for a peer that omits the marker: a held meta must not
+      // sit in the buffer for the rest of the stream.
+      const body =
+        META_SNAPSHOT +
+        'event: meta\ndata: {"cols":120,"rows":30}\n\n' +
+        'event: data\ndata: aGVsbG8=\n\n';
+      const fetchImpl = vi.fn(async () => sseResponse([body]));
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const received: string[] = [];
+      client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
+      client.onResize((e) => received.push(`resize:${e.cols}x${e.rows}`));
+      client.onData((e) => received.push(`data:${e.dataB64}`));
+
+      client.attach('sess-1');
+      await vi.waitFor(() => {
+        expect(received).toEqual(['meta:80x24', 'resize:120x30', 'data:aGVsbG8=']);
+      });
     });
 
     it('forwards truncated and omittedBytes from meta', async () => {

@@ -18,7 +18,7 @@ import type {
   WebStartArgs,
   WebTerminalInfo,
 } from './web';
-import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -198,6 +198,16 @@ declare global {
         workspacesList: (hostId: string) => Promise<
           { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
         >;
+        /** Persisted attach descriptors — read on renderer boot to restore
+         *  the attachments a reload/restart wiped out of the memory-only
+         *  slice. Panes are never part of a descriptor: they are re-fetched
+         *  from the host with workspacesList at restore time. */
+        attachmentsList: () => Promise<RemoteAttachmentDescriptor[]>;
+        /** Resolves false when the descriptor could not be recorded (unknown
+         *  host, or a disk write failure) — never rejects, because the attach
+         *  it describes has already happened. */
+        attachmentsAdd: (descriptor: RemoteAttachmentDescriptor) => Promise<boolean>;
+        attachmentsRemove: (key: string) => Promise<boolean>;
         /** Idempotent per (host, session) for this renderer — a repeat call
          *  (e.g. React StrictMode's double-effect) returns the SAME attachId
          *  rather than opening a second SSE stream on the remote. */
@@ -208,6 +218,11 @@ declare global {
         paneWrite: (attachId: string, data: string) => void;
         onPaneMeta: (
           callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void,
+        ) => () => void;
+        /** Geometry-only: the remote pane was resized while attached. Re-grid
+         *  and keep what is on screen — unlike onPaneMeta, nothing is reset. */
+        onPaneResize: (
+          callback: (e: { attachId: string; cols: number; rows: number }) => void,
         ) => () => void;
         onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
         onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;

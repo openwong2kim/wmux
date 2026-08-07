@@ -27,11 +27,53 @@ function decodeBase64Bytes(b64: string): Uint8Array {
 }
 
 /**
+ * Answers xterm generates BY ITSELF in response to a device query, which it
+ * delivers through the same `onData` a user's keystrokes come out of.
+ *
+ * A mirror must never answer: the machine that owns the pane has its own
+ * terminal, that one is the authoritative responder, and a second answer is a
+ * line of garbage typed into a live remote shell. (HeadlessSnapshot avoids the
+ * whole problem by never wiring `onData` at all — a mirror cannot, because it
+ * also has to carry real typing.)
+ *
+ * Matching by SHAPE is what makes this safe to apply to the live stream and not
+ * just to a replay: no key or key combination xterm encodes produces any of
+ * these. Arrows and function keys end in `A`–`H`, `~`, or an uppercase letter;
+ * a reply ends in lowercase `c`, `n`, `y`, `t`, or the specific `R` of a cursor
+ * report, and the DCS/OSC forms have no keyboard analogue at all.
+ *
+ * The stronger fix is upstream: neutralise the QUERIES so no reply is ever
+ * generated (xterm's `parser.registerCsiHandler` can swallow DA/DSR/DECRQM
+ * before the default handler answers), or have the daemon strip them from the
+ * bytes it fans out. Both are larger than this pane and out of scope here.
+ */
+// eslint-disable-next-line no-control-regex
+const DEVICE_REPLY_RE = new RegExp(
+  '^(?:' +
+    // Device attributes (DA1/DA2/DA3) and device status / cursor position.
+    '\\x1b\\[[?>=]?[0-9;]*[cnR]' +
+    // DECRPM — "mode Ps is currently Pm".
+    '|\\x1b\\[\\?[0-9;]*\\$y' +
+    // Window / text-area reports (CSI 8 ; rows ; cols t and friends).
+    '|\\x1b\\[[0-9;]+t' +
+    // DCS replies: DECRQSS, XTVERSION, DA3.
+    '|\\x1bP[^\\x1b]*\\x1b\\\\' +
+    // OSC colour reports (`rgb:....` under BEL or ST).
+    '|\\x1b\\][0-9;]*;?rgb:[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)' +
+    ')$',
+);
+
+export function isDeviceReply(data: string): boolean {
+  return DEVICE_REPLY_RE.test(data);
+}
+
+/**
  * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
- * meta event (cols/rows) is the ONLY thing that drives `term.resize()` — this
- * component never calls a resize API back toward the remote (geometry has a
- * single owner, the remote daemon). A container/remote aspect mismatch is
- * letterboxed by the parent's CSS, not by resizing the terminal.
+ * own geometry events (meta on attach, resize afterwards) are the ONLY thing
+ * that drives `term.resize()` — this component never calls a resize API back
+ * toward the remote (geometry has a single owner, the remote daemon). A
+ * container/remote aspect mismatch is letterboxed by the parent's CSS, not by
+ * resizing the terminal.
  */
 export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
   const t = useT();
@@ -44,6 +86,24 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   // re-subscribe the whole attach — only paneWrite needs the live value.
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
+
+  /**
+   * How many snapshot repaints are currently being fed to the parser. Second
+   * line of defence behind {@link isDeviceReply}: a reply shape that list does
+   * not know about still cannot escape during a replay, which is where a
+   * snapshot's worth of queries arrives at once.
+   *
+   * A COUNT, not a flag. xterm parses a large write in ~12 ms slices, so a
+   * second repaint can start while the first is still being consumed — and with
+   * a boolean the first callback would open the gate while the second snapshot
+   * was still parsing.
+   *
+   * A repaint cannot distinguish a reply from a keystroke the user raced into
+   * the same window, so the gate suppresses `paneWrite` outright. Repaint
+   * windows are milliseconds; losing a keystroke to one is far cheaper than
+   * injecting query answers into a live remote shell.
+   */
+  const repaintDepthRef = useRef(0);
 
   /**
    * The same visual settings a local pane gets.
@@ -153,9 +213,9 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     }
   }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio]);
 
-  // Subscribe/attach lifecycle keyed on attachId. Geometry arrives once per
-  // connection — every onPaneMeta (fresh attach OR reconnect) means "reset
-  // terminal, resize, repaint", never a delta.
+  // Subscribe/attach lifecycle keyed on attachId. Every onPaneMeta (fresh
+  // attach OR reconnect) means "reset terminal, resize, repaint", never a
+  // delta; a later geometry change comes through onPaneResize instead.
   useEffect(() => {
     if (!attachId) return;
     setExited(false);
@@ -169,7 +229,27 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       if (!term) return;
       term.reset();
       term.resize(e.cols, e.rows);
-      term.write(decodeBase64Bytes(e.snapshotB64));
+      repaintDepthRef.current += 1;
+      try {
+        term.write(decodeBase64Bytes(e.snapshotB64), () => {
+          repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+        });
+      } catch {
+        // `write` can throw before it ever queues the callback (xterm's
+        // WriteBuffer refuses past DISCARD_WATERMARK). Not decrementing here
+        // would latch the gate for the rest of the pane's life and silently
+        // swallow every keystroke — a far worse outcome than a lost repaint,
+        // which the next attach or reconnect replaces anyway.
+        repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+      }
+    });
+    // A resize on the machine that owns the pane. Geometry only: no reset and
+    // no repaint, so the mirrored scrollback and the user's scroll position
+    // survive someone dragging a divider on the other machine. The remote app
+    // repaints itself on SIGWINCH; those bytes arrive through onPaneData.
+    const offResize = remote.onPaneResize((e) => {
+      if (e.attachId !== attachId) return;
+      termRef.current?.resize(e.cols, e.rows);
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -187,11 +267,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
+      // A query answer xterm produced on its own, from a replayed snapshot OR
+      // from live output — the remote app sends `ESC[6n` mid-session too, and
+      // gating only the repaint left that path answering. See isDeviceReply.
+      if (isDeviceReply(data)) return;
+      if (repaintDepthRef.current > 0) return;
       remote.paneWrite(attachId, data);
     });
 
     return () => {
       offMeta();
+      offResize();
       offData();
       offExit();
       offError();

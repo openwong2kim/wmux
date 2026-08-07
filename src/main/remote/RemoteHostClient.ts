@@ -10,7 +10,12 @@
 // endpoint on the remote host.
 
 import * as crypto from 'crypto';
-import type { RemoteHost, RemoteWorkspacesResponse } from '../../shared/remoteHosts';
+import type {
+  RemoteHost,
+  RemotePaneSummary,
+  RemoteWorkspaceSummary,
+  RemoteWorkspacesResponse,
+} from '../../shared/remoteHosts';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -19,6 +24,18 @@ export interface RemoteMetaEvent {
   snapshotB64: string;
   truncated?: boolean;
   omittedBytes?: number;
+}
+
+/**
+ * A geometry-only update: the remote pane was resized while we were attached.
+ * Separate from {@link RemoteMetaEvent} because it carries NO snapshot — the
+ * receiver resizes its grid and keeps everything already on screen, where a
+ * meta event means "reset and repaint".
+ */
+export interface RemoteResizeEvent {
+  attachId: string;
+  cols: number;
+  rows: number;
 }
 
 export interface RemoteDataEvent {
@@ -37,6 +54,7 @@ export interface RemoteErrorEvent {
 
 export interface RemotePaneEvents {
   onMeta(cb: (e: RemoteMetaEvent) => void): void;
+  onResize(cb: (e: RemoteResizeEvent) => void): void;
   onData(cb: (e: RemoteDataEvent) => void): void;
   onExit(cb: (e: RemoteExitEvent) => void): void;
   onError(cb: (e: RemoteErrorEvent) => void): void;
@@ -72,6 +90,11 @@ interface Attachment {
   // Buffered meta JSON, held until the paired `snapshot` frame arrives so a
   // single onMeta callback carries cols/rows/snapshotB64/truncated together
   // (matching the RemotePaneEvents contract — there is no separate onSnapshot).
+  //
+  // Only the ATTACH frame is a pair. A mid-stream geometry update arrives on
+  // its own and is dispatched as a resize instead — holding it here for a
+  // partner that never comes is how a resize used to reach the mirror as
+  // nothing at all.
   pendingMeta: { cols: number; rows: number; truncated?: boolean; omittedBytes?: number } | null;
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -98,6 +121,44 @@ function backoffForAttempt(attempt: number): number {
   return jitteredDelay(step);
 }
 
+/** `/api/workspaces` is a trust boundary: the body is produced by ANOTHER
+ *  machine, possibly running an older or misbehaving build, and nothing but a
+ *  TypeScript cast stood between it and callers that do `.find()` / `.map()`
+ *  on it. A single malformed body used to throw far downstream and take a
+ *  whole refresh round — every other host in it — with it.
+ *
+ *  So: normalise here, once, where every caller benefits. Anything that does
+ *  not match the declared shape is DROPPED rather than passed on; a workspace
+ *  with no usable id, or a pane with no sessionId, cannot be addressed anyway. */
+function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const list = (body as { workspaces?: unknown }).workspaces;
+  if (!Array.isArray(list)) return [];
+
+  const workspaces: RemoteWorkspaceSummary[] = [];
+  for (const rawWs of list) {
+    if (typeof rawWs !== 'object' || rawWs === null) continue;
+    const ws = rawWs as Record<string, unknown>;
+    if (typeof ws.id !== 'string' || !ws.id) continue;
+
+    const panes: RemotePaneSummary[] = [];
+    if (Array.isArray(ws.panes)) {
+      for (const rawPane of ws.panes) {
+        if (typeof rawPane !== 'object' || rawPane === null) continue;
+        const pane = rawPane as Record<string, unknown>;
+        if (typeof pane.sessionId !== 'string' || !pane.sessionId) continue;
+        panes.push({
+          sessionId: pane.sessionId,
+          ...(typeof pane.shell === 'string' ? { shell: pane.shell } : {}),
+          ...(typeof pane.cwd === 'string' ? { cwd: pane.cwd } : {}),
+        });
+      }
+    }
+    workspaces.push({ id: ws.id, name: typeof ws.name === 'string' ? ws.name : '', panes });
+  }
+  return workspaces;
+}
+
 export class RemoteHostClient implements RemotePaneEvents {
   private readonly host: RemoteHost;
   private readonly fetchImpl: typeof fetch;
@@ -106,6 +167,7 @@ export class RemoteHostClient implements RemotePaneEvents {
   private readonly writeQueues = new Map<string, WriteQueueState>();
 
   private metaCbs: Array<(e: RemoteMetaEvent) => void> = [];
+  private resizeCbs: Array<(e: RemoteResizeEvent) => void> = [];
   private dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   private exitCbs: Array<(e: RemoteExitEvent) => void> = [];
   private errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
@@ -117,6 +179,10 @@ export class RemoteHostClient implements RemotePaneEvents {
 
   onMeta(cb: (e: RemoteMetaEvent) => void): void {
     this.metaCbs.push(cb);
+  }
+
+  onResize(cb: (e: RemoteResizeEvent) => void): void {
+    this.resizeCbs.push(cb);
   }
 
   onData(cb: (e: RemoteDataEvent) => void): void {
@@ -143,7 +209,13 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!res.ok) {
       throw new Error(`listWorkspaces failed: HTTP ${res.status}`);
     }
-    return (await res.json()) as RemoteWorkspacesResponse;
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error('listWorkspaces failed: response body was not JSON');
+    }
+    return { workspaces: normalizeWorkspaces(body) };
   }
 
   attach(sessionId: string): string {
@@ -330,12 +402,26 @@ export class RemoteHostClient implements RemotePaneEvents {
 
     switch (event) {
       case 'meta': {
-        let parsed: { cols: number; rows: number; truncated?: boolean; omittedBytes?: number };
+        let parsed: {
+          cols: number; rows: number;
+          truncated?: boolean; omittedBytes?: number; resize?: boolean;
+        };
         try {
           parsed = JSON.parse(data);
         } catch {
           return; // malformed frame — drop rather than crash the pump
         }
+        // Geometry-only: the daemon marks the mid-stream form, which has no
+        // snapshot behind it. Dispatch it straight through so the mirror
+        // resizes its grid WITHOUT resetting and losing its scrollback.
+        if (parsed.resize) {
+          this.dispatchResize(attachment, parsed);
+          return;
+        }
+        // Belt and braces for a peer that sends a bare meta without the marker:
+        // a held meta that a second meta overtakes was never going to get its
+        // snapshot either, so let it out as geometry rather than dropping it.
+        this.flushPendingMetaAsResize(attachment);
         attachment.pendingMeta = parsed;
         return;
       }
@@ -355,10 +441,12 @@ export class RemoteHostClient implements RemotePaneEvents {
         return;
       }
       case 'data': {
+        this.flushPendingMetaAsResize(attachment);
         for (const cb of this.dataCbs) cb({ attachId: attachment.attachId, dataB64: data });
         return;
       }
       case 'exit': {
+        this.flushPendingMetaAsResize(attachment);
         for (const cb of this.exitCbs) cb({ attachId: attachment.attachId });
         return;
       }
@@ -366,6 +454,23 @@ export class RemoteHostClient implements RemotePaneEvents {
         // Unknown/fan-out event (e.g. `attention`) — never treat as pane bytes.
         return;
     }
+  }
+
+  /** A held meta that turned out to have no snapshot behind it is geometry. */
+  private flushPendingMetaAsResize(attachment: Attachment): void {
+    const held = attachment.pendingMeta;
+    if (!held) return;
+    attachment.pendingMeta = null;
+    this.dispatchResize(attachment, held);
+  }
+
+  private dispatchResize(attachment: Attachment, geometry: { cols: number; rows: number }): void {
+    const evt: RemoteResizeEvent = {
+      attachId: attachment.attachId,
+      cols: geometry.cols,
+      rows: geometry.rows,
+    };
+    for (const cb of this.resizeCbs) cb(evt);
   }
 
   private scheduleReconnect(attachment: Attachment, err: unknown): void {

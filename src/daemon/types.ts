@@ -5,6 +5,8 @@ import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
 import type { GateConfig } from './approvals/gateConfig';
+import type { NotifySinkConfig } from './push/WebhookSink';
+import type { PushPresenceSuppressionConfig } from './push/presence';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -254,6 +256,37 @@ export interface DaemonConfig {
    * entirely (same as `WMUX_GATE=0`, but durable).
    */
   gate?: GateConfig;
+  /**
+   * Outbound notification sinks — a webhook or ntfy URL that gets a small
+   * plaintext ping when an approval is raised or an agent turn ends. For people
+   * running wmux without the phone app; the sealed APNs path is unaffected and
+   * independent.
+   *
+   * OPTIONAL and OFF by default (absent = an empty list = no outbound traffic).
+   * `validateConfig` deliberately ignores it and `loadConfig` backfills it
+   * per-field, same convention as `browser`/`lanlink`/`gate`. A malformed entry
+   * is dropped individually rather than resetting the file.
+   *
+   * The payload is a hard-allowlisted summary — event kind, static title, agent
+   * name, short pane/workspace id prefixes, a derived risk tier and a timestamp.
+   * It never carries the agent's question, tool input, terminal output, paths or
+   * tokens. See `push/notifyPayload.ts`.
+   */
+  notifySinks?: NotifySinkConfig[];
+  /**
+   * Presence-based push suppression. OPTIONAL — old config.json files predate
+   * it and must keep loading, so `validateConfig` deliberately ignores this
+   * field and `loadConfig` backfills it per-field without resetting the rest of
+   * the file (same convention as `gate`/`browser`/`lanlink`).
+   *
+   * When the desktop app is attached to the daemon AND its window was focused
+   * within `staleAfterMs`, the phone push for an approval is skipped — the
+   * event still reaches the in-app inbox the user is already looking at. Ships
+   * ON, because the default failure mode is toward notifying: an unknown,
+   * stale, or never-reported presence sends the push, and a `critical`-risk
+   * approval sends it regardless. See `daemon/push/presence.ts`.
+   */
+  pushPresenceSuppression?: PushPresenceSuppressionConfig;
 }
 
 /**
