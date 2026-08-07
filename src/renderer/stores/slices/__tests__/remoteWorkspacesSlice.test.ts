@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
-import { createRemoteWorkspacesSlice, type RemoteWorkspacesSlice, type AttachedRemoteWorkspace } from '../remoteWorkspacesSlice';
+import { createRemoteWorkspacesSlice, mergePaneSets, type RemoteWorkspacesSlice, type AttachedRemoteWorkspace } from '../remoteWorkspacesSlice';
 import { createWorkspace, type SessionData } from '../../../../shared/types';
 
 // Minimal store: workspaceSlice + remoteWorkspacesSlice only. Mirrors the
@@ -148,5 +148,90 @@ describe('remoteWorkspacesSlice', () => {
       store.getState().loadSession(data);
       expect(store.getState().activeRemoteKey).toBeNull();
     });
+  });
+});
+
+describe('mergePaneSets', () => {
+  const p = (sessionId: string, shell?: string) => ({ sessionId, shell });
+
+  it('drops panes that are gone from the remote', () => {
+    expect(mergePaneSets([p('a'), p('b'), p('c')], [p('a'), p('c')]))
+      .toEqual([p('a'), p('c')]);
+  });
+
+  it('appends newly opened panes at the end', () => {
+    expect(mergePaneSets([p('a'), p('b')], [p('a'), p('b'), p('c')]))
+      .toEqual([p('a'), p('b'), p('c')]);
+  });
+
+  it('keeps existing order when the remote reorders (grid must not shuffle)', () => {
+    expect(mergePaneSets([p('a'), p('b'), p('c')], [p('c'), p('b'), p('a')]))
+      .toEqual([p('a'), p('b'), p('c')]);
+  });
+
+  it('places a new pane after the survivors even when the remote lists it first', () => {
+    expect(mergePaneSets([p('a'), p('b')], [p('new'), p('b')]))
+      .toEqual([p('b'), p('new')]);
+  });
+
+  it('takes fresh field values for panes that survive', () => {
+    expect(mergePaneSets([p('a', 'bash')], [p('a', 'zsh')])).toEqual([p('a', 'zsh')]);
+  });
+});
+
+describe('remoteWorkspacesSlice — live pane membership', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+    store.getState().attachRemoteWorkspace(makeRemote({ panes: [{ sessionId: 'a' }, { sessionId: 'b' }] }));
+  });
+
+  it('setRemoteWorkspacePanes applies a removal and an addition in one update', () => {
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [{ sessionId: 'b' }, { sessionId: 'c' }]);
+    expect(store.getState().remoteWorkspaces[0].panes.map((p) => p.sessionId)).toEqual(['b', 'c']);
+  });
+
+  it('setRemoteWorkspacePanes does not churn the array when nothing changed', () => {
+    const before = store.getState().remoteWorkspaces[0].panes;
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [{ sessionId: 'a' }, { sessionId: 'b' }]);
+    expect(store.getState().remoteWorkspaces[0].panes).toBe(before);
+  });
+
+  it('setRemoteWorkspacePanes ignores an unknown key', () => {
+    store.getState().setRemoteWorkspacePanes('host-1:gone', [{ sessionId: 'z' }]);
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().remoteWorkspaces[0].panes).toHaveLength(2);
+  });
+
+  it('a successful pane update clears the stale flag', () => {
+    store.getState().setRemoteWorkspaceStale('host-1:ws-1', true);
+    expect(store.getState().remoteWorkspaces[0].stale).toBe(true);
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [{ sessionId: 'a' }, { sessionId: 'b' }]);
+    expect(store.getState().remoteWorkspaces[0].stale).toBe(false);
+  });
+
+  it('setRemoteWorkspaceStale never drops the entry', () => {
+    store.getState().setRemoteWorkspaceStale('host-1:ws-1', true);
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().activeRemoteKey).toBe('host-1:ws-1');
+  });
+});
+
+describe('remoteWorkspacesSlice — restore', () => {
+  it('restore adds the entry WITHOUT stealing the selection', () => {
+    const store = createTestStore();
+    store.getState().restoreRemoteWorkspace(makeRemote({ stale: true }));
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().remoteWorkspaces[0].stale).toBe(true);
+    expect(store.getState().activeRemoteKey).toBeNull();
+  });
+
+  it('restore dedups by key, like attach', () => {
+    const store = createTestStore();
+    store.getState().restoreRemoteWorkspace(makeRemote());
+    store.getState().restoreRemoteWorkspace(makeRemote({ name: 'Renamed' }));
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().remoteWorkspaces[0].name).toBe('Renamed');
   });
 });

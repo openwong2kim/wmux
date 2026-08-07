@@ -46,6 +46,7 @@ import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
+import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
@@ -386,6 +387,10 @@ export default function AppLayout() {
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
+  // Remote workspace attach — restore persisted attachments on boot (the slice
+  // is memory-only, so a reload wipes it) and keep each mirror's pane set in
+  // sync with the remote (exit events + a 10s safety-net poll).
+  useRemoteAttachmentsLifecycle();
   // Command Deck Phase 2 — own the Commander brain stream subscription
   // (always-on, mounted once) so orchestrator turn events land in deckSlice even
   // when the dock or the Commander tab is not visible.
