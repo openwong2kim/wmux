@@ -37,6 +37,7 @@ import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
+import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -525,6 +526,11 @@ const mcpHandlerOptions = {
 // handlers see every connect/disconnect transition that mutates that
 // variable (no closure snapshot).
 registerSessionHandlers(() => daemonClient?.isConnected === true);
+
+// Presence reporting for push suppression. Registered once on `app` (not on a
+// BrowserWindow) so it survives window recreation; the getter closes over the
+// live `daemonClient` for the same reason as above.
+attachDesktopPresenceReporter(app, () => daemonClient);
 
 // Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
 // (installed in `src/renderer/hooks/useRpcBridge.ts`) into the live pipe
@@ -1136,6 +1142,10 @@ app.on('ready', async () => {
     onInstall: async (client) => {
       daemonClient = client;
       console.log('[Main] Connected to wmux-daemon (auth verified)');
+      // A fresh daemon has never heard a focus transition, and the user may
+      // have been sitting in a focused window the whole time. Without this
+      // one-shot the app would look absent until the next alt-tab.
+      reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the
