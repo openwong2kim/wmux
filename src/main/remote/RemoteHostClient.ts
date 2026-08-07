@@ -10,7 +10,12 @@
 // endpoint on the remote host.
 
 import * as crypto from 'crypto';
-import type { RemoteHost, RemoteWorkspacesResponse } from '../../shared/remoteHosts';
+import type {
+  RemoteHost,
+  RemotePaneSummary,
+  RemoteWorkspaceSummary,
+  RemoteWorkspacesResponse,
+} from '../../shared/remoteHosts';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -98,6 +103,44 @@ function backoffForAttempt(attempt: number): number {
   return jitteredDelay(step);
 }
 
+/** `/api/workspaces` is a trust boundary: the body is produced by ANOTHER
+ *  machine, possibly running an older or misbehaving build, and nothing but a
+ *  TypeScript cast stood between it and callers that do `.find()` / `.map()`
+ *  on it. A single malformed body used to throw far downstream and take a
+ *  whole refresh round — every other host in it — with it.
+ *
+ *  So: normalise here, once, where every caller benefits. Anything that does
+ *  not match the declared shape is DROPPED rather than passed on; a workspace
+ *  with no usable id, or a pane with no sessionId, cannot be addressed anyway. */
+function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const list = (body as { workspaces?: unknown }).workspaces;
+  if (!Array.isArray(list)) return [];
+
+  const workspaces: RemoteWorkspaceSummary[] = [];
+  for (const rawWs of list) {
+    if (typeof rawWs !== 'object' || rawWs === null) continue;
+    const ws = rawWs as Record<string, unknown>;
+    if (typeof ws.id !== 'string' || !ws.id) continue;
+
+    const panes: RemotePaneSummary[] = [];
+    if (Array.isArray(ws.panes)) {
+      for (const rawPane of ws.panes) {
+        if (typeof rawPane !== 'object' || rawPane === null) continue;
+        const pane = rawPane as Record<string, unknown>;
+        if (typeof pane.sessionId !== 'string' || !pane.sessionId) continue;
+        panes.push({
+          sessionId: pane.sessionId,
+          ...(typeof pane.shell === 'string' ? { shell: pane.shell } : {}),
+          ...(typeof pane.cwd === 'string' ? { cwd: pane.cwd } : {}),
+        });
+      }
+    }
+    workspaces.push({ id: ws.id, name: typeof ws.name === 'string' ? ws.name : '', panes });
+  }
+  return workspaces;
+}
+
 export class RemoteHostClient implements RemotePaneEvents {
   private readonly host: RemoteHost;
   private readonly fetchImpl: typeof fetch;
@@ -143,7 +186,13 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!res.ok) {
       throw new Error(`listWorkspaces failed: HTTP ${res.status}`);
     }
-    return (await res.json()) as RemoteWorkspacesResponse;
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error('listWorkspaces failed: response body was not JSON');
+    }
+    return { workspaces: normalizeWorkspaces(body) };
   }
 
   attach(sessionId: string): string {
