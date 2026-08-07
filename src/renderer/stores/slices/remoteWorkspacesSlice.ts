@@ -27,6 +27,13 @@ export interface AttachedRemoteWorkspace {
    *  because a laptop slept would be silent data loss — it just renders
    *  disconnected until a refresh succeeds or the user detaches. */
   stale?: boolean;
+  /** Bumped every time this entry recovers from `stale`. A host that slept
+   *  long enough for RemoteHostClient to give up reconnecting comes back with
+   *  the SAME remote sessionIds, so the pane list is byte-identical and
+   *  nothing below would otherwise re-attach — every mirror would stay blank
+   *  forever with no visible error. PaneCell keys its attach effect off this
+   *  counter, so a recovery re-opens the streams. */
+  attachEpoch?: number;
 }
 
 /** Fire-and-forget descriptor persistence. Guarded for the node test
@@ -50,20 +57,30 @@ function toDescriptor(w: AttachedRemoteWorkspace): RemoteAttachmentDescriptor {
  *  ordering: panes that are still there keep their slot (so the mirror grid
  *  never reshuffles when an unrelated pane closes), panes that are gone drop
  *  out, and newly opened panes append at the end. Field updates (shell/cwd)
- *  from the fetch always win. */
+ *  from the fetch always win.
+ *
+ *  sessionId is also the React key of a pane cell, so the result is
+ *  deduplicated: the pane list comes off another machine and a remote that
+ *  reports the same sessionId twice must not render two cells under one key. */
 export function mergePaneSets(
   current: RemotePaneSummary[],
   next: RemotePaneSummary[],
 ): RemotePaneSummary[] {
   const nextById = new Map(next.map((p) => [p.sessionId, p]));
-  const kept: RemotePaneSummary[] = [];
+  const merged: RemotePaneSummary[] = [];
+  const seen = new Set<string>();
   for (const pane of current) {
     const fresh = nextById.get(pane.sessionId);
-    if (fresh) kept.push(fresh);
+    if (!fresh || seen.has(pane.sessionId)) continue;
+    seen.add(pane.sessionId);
+    merged.push(fresh);
   }
-  const currentIds = new Set(current.map((p) => p.sessionId));
-  const added = next.filter((p) => !currentIds.has(p.sessionId));
-  return [...kept, ...added];
+  for (const pane of next) {
+    if (seen.has(pane.sessionId)) continue;
+    seen.add(pane.sessionId);
+    merged.push(pane);
+  }
+  return merged;
 }
 
 /** Whether a merge result is indistinguishable from what is already in the
@@ -87,15 +104,16 @@ export interface RemoteWorkspacesSlice {
   attachRemoteWorkspace: (w: AttachedRemoteWorkspace) => void;
   /** Boot-time replay of a persisted descriptor: adds the entry WITHOUT
    * selecting it (a restore must not steal the user's view) and without
-   * re-persisting what it just read. */
+   * re-persisting what it just read. ADDITIVE ONLY — see the implementation. */
   restoreRemoteWorkspace: (w: AttachedRemoteWorkspace) => void;
   /** Remove the entry AND its persisted descriptor; clears activeRemoteKey
    * only if it was the active one. */
   detachRemoteWorkspace: (key: string) => void;
   /** Applies a freshly fetched pane set (exit event / poll) with stable
    * ordering, and clears `stale` — a successful fetch means reachable. No-ops
-   * when nothing changed. */
-  setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[]) => void;
+   * when nothing changed. `name` follows the remote when the fetch carries
+   * one, so a workspace renamed on the other machine renames here too. */
+  setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
   /** Marks the entry unreachable (or reachable again) without dropping it. */
   setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
   /** Selecting a LOCAL workspace calls this with null. */
@@ -112,7 +130,10 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       if (idx === -1) {
         state.remoteWorkspaces.push(w);
       } else {
-        state.remoteWorkspaces[idx] = w;
+        // Carry the epoch across a re-attach: its only job is to be different
+        // from the value the mounted PaneCells last saw, and resetting it
+        // would tear down streams that are perfectly healthy.
+        state.remoteWorkspaces[idx] = { ...w, attachEpoch: state.remoteWorkspaces[idx].attachEpoch };
       }
       state.activeRemoteKey = w.key;
     });
@@ -123,10 +144,15 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     if (api?.attachmentsAdd) void api.attachmentsAdd(toDescriptor(w)).catch(() => { /* see above */ });
   },
 
+  // ADDITIVE ONLY. A boot restore fetches each host's panes before it lands,
+  // which can take a full request timeout per unreachable host, and the user
+  // is free to act on the same key meanwhile. Overwriting would blank a mirror
+  // they just attached (panes: [], stale: true), and re-adding a key they
+  // detached would resurrect a ghost row with no descriptor behind it. Present
+  // key wins, always.
   restoreRemoteWorkspace: (w) => set((state: StoreState) => {
-    const idx = state.remoteWorkspaces.findIndex((r: AttachedRemoteWorkspace) => r.key === w.key);
-    if (idx === -1) state.remoteWorkspaces.push(w);
-    else state.remoteWorkspaces[idx] = w;
+    if (state.remoteWorkspaces.some((r: AttachedRemoteWorkspace) => r.key === w.key)) return;
+    state.remoteWorkspaces.push(w);
   }),
 
   detachRemoteWorkspace: (key) => {
@@ -140,18 +166,31 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     if (api?.attachmentsRemove) void api.attachmentsRemove(key).catch(() => { /* fire-and-forget, as above */ });
   },
 
-  setRemoteWorkspacePanes: (key, panes) => set((state: StoreState) => {
+  setRemoteWorkspacePanes: (key, panes, name) => set((state: StoreState) => {
     const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
     if (!entry) return;
+    // The pane list originates on another machine: refuse a non-array rather
+    // than letting it throw here and abort the caller's whole refresh round.
+    if (!Array.isArray(panes)) return;
     const merged = mergePaneSets(entry.panes, panes);
     if (!samePanes(entry.panes, merged)) entry.panes = merged;
-    if (entry.stale) entry.stale = false;
+    if (name !== undefined && name !== entry.name) entry.name = name;
+    if (entry.stale) {
+      entry.stale = false;
+      entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
+    }
   }),
 
   setRemoteWorkspaceStale: (key, stale) => set((state: StoreState) => {
     const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
-    if (!entry || entry.stale === stale) return;
+    if (!entry) return;
+    // Normalise before comparing: a never-flagged entry has `undefined`, not
+    // `false`, and treating that as a real transition would bump the epoch —
+    // and tear down live streams — on the very first successful fetch.
+    const wasStale = entry.stale === true;
+    if (wasStale === stale) return;
     entry.stale = stale;
+    if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
   }),
 
   setActiveRemoteKey: (key) => set((state: StoreState) => {
