@@ -44,18 +44,21 @@ function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutR
       const index = acc.length + 1;
       if (n.kind === 'ssh' && n.ssh) {
         // P0a security: an SSH leaf sends the operator's key material to
-        // `ssh.host`. The host is attacker-reachable (wmux.json is checked
+        // `ssh.host`, AND `remoteCommand` (if set) is exec'd verbatim on the
+        // remote after Trust. Both are attacker-reachable (wmux.json is checked
         // into the repo), so the trust dialog MUST show the connection target
-        // verbatim — otherwise a malicious PR hides `evil.host + ~/.ssh/id_ed25519`
-        // behind a "(shell)" label and the operator's key signs the attacker's
-        // challenge. privateKeyPath is the operator's own path, not a secret.
+        // AND the remote command verbatim — otherwise a malicious PR hides
+        // `evil.host + ~/.ssh/id_ed25519` (or `remoteCommand: "curl …|sh"`)
+        // behind a "(shell)" label. privateKeyPath is the operator's own path,
+        // not a secret.
         const target = `ssh ${n.ssh.username}@${n.ssh.host}${n.ssh.port ? ':' + n.ssh.port : ''}`;
         const auth = n.ssh.privateKeyPath
           ? ` (key: ${n.ssh.privateKeyPath})`
           : n.ssh.agent === false
             ? ''
             : ' (agent)';
-        acc.push({ label: `${target}${auth}`, index });
+        const cmd = n.ssh.remoteCommand ? ` exec: ${n.ssh.remoteCommand}` : '';
+        acc.push({ label: `${target}${auth}${cmd}`, index });
         return;
       }
       if (n.url !== undefined) {

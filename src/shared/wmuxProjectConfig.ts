@@ -628,7 +628,12 @@ export function collectConfigCommands(config: WmuxProjectConfig): string[] {
       // connection target, not a hidden "(shell)".
       if (node.kind === 'ssh' && node.ssh) {
         const target = `ssh ${node.ssh.username}@${node.ssh.host}${node.ssh.port ? ':' + node.ssh.port : ''}`;
-        out.push(target + (node.ssh.privateKeyPath ? ` (key: ${node.ssh.privateKeyPath})` : ' (agent)'));
+        const auth = node.ssh.privateKeyPath ? ` (key: ${node.ssh.privateKeyPath})` : ' (agent)';
+        // remoteCommand is exec'd verbatim on the remote after Trust, so it must
+        // appear in the disclosure list just like the host — a malicious PR can
+        // hide `remoteCommand: "curl …|sh"` behind a benign-looking target line.
+        const cmd = node.ssh.remoteCommand ? ` exec: ${node.ssh.remoteCommand}` : '';
+        out.push(target + auth + cmd);
       } else if (node.command !== undefined) {
         out.push(node.command);
       }

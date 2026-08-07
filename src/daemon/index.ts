@@ -1169,9 +1169,15 @@ async function recoverSessions(
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
-  // P0a: SSH session ids skipped by recovery — dropped from the persisted state
-  // because they cannot reconnect (P0b) and would otherwise linger as ghosts.
+  // P0a: SSH session ids to drop from the persisted state. They cannot reconnect
+  // (P0b) and would otherwise linger as ghost panes. Populated for EVERY ssh
+  // record up front (recovered-skip AND cap-excluded AND dead) so no ssh id
+  // survives the preservedFromState filter by taking a continue path that
+  // bypasses the per-record add below.
   const trackedSshIds = new Set<string>();
+  for (const s of state.sessions) {
+    if (s.kind === 'ssh') trackedSshIds.add(s.id);
+  }
   // X6 ③ (CodeRabbit): pre-read the spool (no consume) so an exec/supervised agent
   // pane whose exact binding only exists in the spool replays as `--resume <id>`,
   // not `--continue`. The post-recovery ingestResumeSpool still does the durable
