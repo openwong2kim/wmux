@@ -42,6 +42,22 @@ function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutR
   const walk = (n: WmuxProjectLayoutNode): void => {
     if (n.type === 'leaf') {
       const index = acc.length + 1;
+      if (n.kind === 'ssh' && n.ssh) {
+        // P0a security: an SSH leaf sends the operator's key material to
+        // `ssh.host`. The host is attacker-reachable (wmux.json is checked
+        // into the repo), so the trust dialog MUST show the connection target
+        // verbatim — otherwise a malicious PR hides `evil.host + ~/.ssh/id_ed25519`
+        // behind a "(shell)" label and the operator's key signs the attacker's
+        // challenge. privateKeyPath is the operator's own path, not a secret.
+        const target = `ssh ${n.ssh.username}@${n.ssh.host}${n.ssh.port ? ':' + n.ssh.port : ''}`;
+        const auth = n.ssh.privateKeyPath
+          ? ` (key: ${n.ssh.privateKeyPath})`
+          : n.ssh.agent === false
+            ? ''
+            : ' (agent)';
+        acc.push({ label: `${target}${auth}`, index });
+        return;
+      }
       if (n.url !== undefined) {
         acc.push({ label: `→ ${n.url}`, index });
       } else {

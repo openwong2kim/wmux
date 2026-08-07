@@ -622,7 +622,16 @@ export function collectConfigCommands(config: WmuxProjectConfig): string[] {
   for (const cmd of config.commands ?? []) out.push(cmd.command);
   const walk = (node: WmuxProjectLayoutNode): void => {
     if (node.type === 'leaf') {
-      if (node.command !== undefined) out.push(node.command);
+      // P0a: an SSH leaf is not a shell command, but it IS something the trust
+      // dialog must disclose — it sends the operator's key material to ssh.host.
+      // Surface it in the same verbatim list so the operator approves the
+      // connection target, not a hidden "(shell)".
+      if (node.kind === 'ssh' && node.ssh) {
+        const target = `ssh ${node.ssh.username}@${node.ssh.host}${node.ssh.port ? ':' + node.ssh.port : ''}`;
+        out.push(target + (node.ssh.privateKeyPath ? ` (key: ${node.ssh.privateKeyPath})` : ' (agent)'));
+      } else if (node.command !== undefined) {
+        out.push(node.command);
+      }
       return;
     }
     node.children.forEach(walk);
