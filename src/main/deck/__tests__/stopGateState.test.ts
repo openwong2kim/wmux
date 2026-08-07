@@ -16,6 +16,11 @@ import {
   clearGateVerdict,
   resetGateVerdicts,
   GATE_VERDICT_TTL_MS,
+  noteGateCapOut,
+  suppressedGateFingerprint,
+  clearGateCapOut,
+  resetGateCapOuts,
+  GATE_CAP_SUPPRESSION_TTL_MS,
 } from '../stopGateState';
 import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../stopGate';
 import type { FleetSnapshot } from '../../../shared/workspaceMirror';
@@ -119,5 +124,42 @@ describe('stopGateState (#733)', () => {
       now: NOW,
     });
     expect(verdict.block && verdict.outstandingPtyIds).toEqual([]);
+  });
+});
+
+// Rule 5 companion state: what the gate was holding on when it capped out.
+// The record's whole job is to keep the NEXT turn's gate from re-buying the
+// same refusal run on unchanged state — and to expire so a wedged fleet still
+// gets a rate-limited reminder.
+describe('cap-out suppression (stop gate rule 5)', () => {
+  beforeEach(() => resetGateCapOuts());
+
+  it('remembers the fingerprint the gate capped out on', () => {
+    noteGateCapOut(WS, 'work-1@500|pty-a:running');
+    expect(suppressedGateFingerprint(WS)).toBe('work-1@500|pty-a:running');
+  });
+
+  it('does not leak across workspaces', () => {
+    noteGateCapOut(WS, 'fp');
+    expect(suppressedGateFingerprint('ws-2')).toBe(null);
+  });
+
+  it('expires so a truly wedged fleet still gets a rate-limited reminder', () => {
+    const t0 = 1_000_000;
+    noteGateCapOut(WS, 'fp', t0);
+    expect(suppressedGateFingerprint(WS, t0 + GATE_CAP_SUPPRESSION_TTL_MS - 1)).toBe('fp');
+    expect(suppressedGateFingerprint(WS, t0 + GATE_CAP_SUPPRESSION_TTL_MS + 1)).toBe(null);
+  });
+
+  it('clears on demand — a human turn or a retired commander re-arms the gate', () => {
+    noteGateCapOut(WS, 'fp');
+    clearGateCapOut(WS);
+    expect(suppressedGateFingerprint(WS)).toBe(null);
+  });
+
+  it('last write wins when the gate caps out on a new state', () => {
+    noteGateCapOut(WS, 'old');
+    noteGateCapOut(WS, 'new');
+    expect(suppressedGateFingerprint(WS)).toBe('new');
   });
 });

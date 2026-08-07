@@ -97,6 +97,13 @@ function cleanText(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
+/** Whitespace-insensitive comparison key for follow-up dedupe. A human
+ *  re-sending the same instruction through the TUI picks up re-wrapped lines
+ *  and paste artifacts, so byte equality misses most real duplicates. */
+function dedupeKey(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 function sanitizeTask(value: unknown): DeckWorkA2aTask | null {
   if (!isRecord(value)) return null;
   const taskId = cleanText(value.taskId, 256);
@@ -301,7 +308,15 @@ export function beginOrContinueDeckWork(
   if (current && !isDeckWorkParked(current)) {
     const followUp = cleanText(cleaned, MAX_FOLLOW_UP_CHARS);
     const followUps = [...current.followUps];
-    if (followUp && followUp !== current.objective && followUps.at(-1) !== followUp) {
+    // Dedupe against the objective AND every retained follow-up, not only the
+    // last one. A human supervising a poll loop re-sends the same instruction
+    // every cycle; each copy that got past the old last-item check was then
+    // re-rendered into EVERY later turn's [active-work] block, compounding the
+    // duplication quadratically (transcript, 2026-08-07). A re-send is a
+    // re-confirmation, not a new instruction — updatedAt still advances below,
+    // so the record shows the touch either way.
+    const seen = new Set([current.objective, ...followUps].map(dedupeKey));
+    if (followUp && !seen.has(dedupeKey(followUp))) {
       followUps.push(followUp);
     }
     next = {
@@ -493,4 +508,22 @@ export function renderActiveDeckWorkBlock(work: ActiveDeckWork): string {
     'use deck_ask_decision and leave this work active.',
   );
   return lines.join('\n');
+}
+
+/** One-line stand-in for an [active-work] block this conversation has already
+ *  seen, byte-identical. The visible TUI brain re-types its whole prompt on
+ *  screen, and the full block — objective, every follow-up, every A2A row,
+ *  the ownership imperatives — re-sent on every wake was the largest recurring
+ *  injection in a supervision loop. The id keeps the reminder correlatable
+ *  with the full block earlier in the conversation; the two imperatives that
+ *  must survive summarization (still ACTIVE, only deck_complete_work finishes
+ *  it) are restated because they are the contract, not context.
+ *
+ *  Never used for a PARKED record: parking changes what the block MEANS (a
+ *  prohibition, not ownership), so a parked record always renders in full. */
+export function renderActiveDeckWorkReminderLine(work: ActiveDeckWork): string {
+  return (
+    `[active-work] id: ${work.id} — unchanged since your last turn (full contract earlier in this conversation). ` +
+    'Still ACTIVE: you still own it, and only a successful deck_complete_work({summary, verification}) finishes it.'
+  );
 }

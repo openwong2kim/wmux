@@ -21,6 +21,7 @@ import {
   loadActiveDeckWorks,
   hasPendingDeckWorkA2aTasks,
   renderActiveDeckWorkBlock,
+  renderActiveDeckWorkReminderLine,
   renderStrandedDeckWorkBlock,
   getDeckWorkPath,
   setDeckWorkBootId,
@@ -78,6 +79,30 @@ describe('deckWorkStore — ownership lifecycle', () => {
     beginOrContinueDeckWork('ws-1', 'retry', dir);
     const third = beginOrContinueDeckWork('ws-1', 'retry', dir)!.work;
     expect(third.followUps).toEqual(['retry']);
+  });
+
+  it('collapses a NON-adjacent repeat — a poll-loop human re-sends the same instruction', () => {
+    // Transcript 2026-08-07: the same supervision instruction re-sent every
+    // cycle got past the last-item-only check whenever another message landed
+    // in between, then re-rendered into every later turn's [active-work] block.
+    beginOrContinueDeckWork('ws-1', 'objective', dir);
+    beginOrContinueDeckWork('ws-1', 'check the pane', dir);
+    beginOrContinueDeckWork('ws-1', 'also run tests', dir);
+    const fourth = beginOrContinueDeckWork('ws-1', 'check the pane', dir)!.work;
+    expect(fourth.followUps).toEqual(['check the pane', 'also run tests']);
+  });
+
+  it('collapses a whitespace-variant repeat (TUI re-wrap / paste artifacts)', () => {
+    beginOrContinueDeckWork('ws-1', 'objective', dir);
+    beginOrContinueDeckWork('ws-1', 'check the pane and report', dir);
+    const third = beginOrContinueDeckWork('ws-1', 'check the  pane\nand report', dir)!.work;
+    expect(third.followUps).toEqual(['check the pane and report']);
+  });
+
+  it('a whitespace-variant of the objective is not a follow-up either', () => {
+    beginOrContinueDeckWork('ws-1', 'build it', dir);
+    const again = beginOrContinueDeckWork('ws-1', 'build  it', dir)!.work;
+    expect(again.followUps).toEqual([]);
   });
 
   it('caps the follow-up list, keeping the most recent', () => {
@@ -483,6 +508,20 @@ describe('deckWorkStore — boot-scoped permission (parked records)', () => {
   it('unparkDeckWork is a no-op when there is no record', () => {
     expect(() => unparkDeckWork('ws-none', dir)).not.toThrow();
     expect(loadActiveDeckWork('ws-none', dir)).toBeNull();
+  });
+});
+
+describe('renderActiveDeckWorkReminderLine', () => {
+  it('names the id and restates the two imperatives that must survive summarization', () => {
+    beginOrContinueDeckWork('ws-1', 'ship the roster', dir, 1_000);
+    const work = loadActiveDeckWork('ws-1', dir)!;
+    const line = renderActiveDeckWorkReminderLine(work);
+    expect(line).toContain('[active-work]');
+    expect(line).toContain(work.id);
+    expect(line).toMatch(/still ACTIVE/i);
+    expect(line).toContain('deck_complete_work');
+    // A reminder, not the contract: the objective and follow-ups stay out.
+    expect(line).not.toContain('ship the roster');
   });
 });
 
