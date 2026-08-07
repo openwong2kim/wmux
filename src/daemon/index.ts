@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig, saveConfig, getWmuxDir, readPushPresenceSuppression } from './config';
+import {
+  loadConfig,
+  saveConfig,
+  getWmuxDir,
+  readNotifySinks,
+  readPushPresenceSuppression,
+} from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
@@ -74,6 +80,8 @@ import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
+import { WebhookSink } from './push/WebhookSink';
+import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
 import {
   DeferredPushQueue,
   DesktopPresenceTracker,
@@ -105,6 +113,11 @@ let webTerminalServer: WebTerminalServer | null = null;
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
 let hookIngest: HookIngest | null = null;
+// Outbound webhook/ntfy notifications. Module-scoped for the same reason
+// `webTerminalServer` is: the hook-event site that fires attention pings is
+// registered before the boot path that constructs this, so both sides read the
+// handle at fire time and a null is simply "not configured yet".
+let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
 let transcriptDiscovery: TranscriptDiscovery | null = null;
 
@@ -2862,6 +2875,18 @@ function registerRpcHandlers(
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        // Outbound notification sinks: the END of a turn, and only the real one.
+        // `agent.subagent_stop` also reports `status:'complete'`, and a run with
+        // a dozen subagents would fire a dozen pings for one turn — so this keys
+        // on the signal kind, not the projected status.
+        if (data.signal.kind === 'agent.stop') {
+          webhookSink?.notify(
+            buildAttentionNotifyPayload(
+              { sessionId, ...(data.agent ? { agent: data.agent } : {}) },
+              { id: randomUUID(), now: Date.now() },
+            ),
+          );
+        }
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),
@@ -4931,6 +4956,21 @@ async function main(): Promise<void> {
     forgetPush: (deviceId) => getDeviceStore().forgetPush(deviceId),
     log: (level, msg) => log(level, msg),
   });
+  // The phone-less path, alongside push rather than instead of it. Inert until
+  // the operator puts a URL in `config.notifySinks`; `WMUX_NOTIFY_SINKS=0`
+  // turns it off outright. Outbound only — no new listening surface.
+  //
+  // `sinks()` re-reads config so an edit takes effect without a daemon restart,
+  // matching how `gateConfig` is wired above — but through `readNotifySinks`,
+  // NOT `loadConfig`. loadConfig repairs a bad file by overwriting it with
+  // defaults, which is correct at boot and unacceptable on a per-notification
+  // path: one transient read error while an approval fires would replace the
+  // operator's entire config. readNotifySinks only ever reads, and caches on
+  // mtime so the steady state is a stat rather than a parse.
+  webhookSink = new WebhookSink({
+    sinks: () => readNotifySinks((level, msg) => log(level, msg)),
+    log: (level, msg) => log(level, msg),
+  });
   // Presence-based suppression. The predicate lives in `push/presence.ts` and
   // is consulted HERE rather than inside PushSender: the answer is about the
   // human, not the transport, so every notification sink can ask the same
@@ -4963,6 +5003,12 @@ async function main(): Promise<void> {
     }
     const r = event.request;
     const payload = buildApprovalPushPayload(r);
+    // The outbound sink is a separate channel from the phone, and presence says
+    // nothing about it: an operator who put a URL in `notifySinks` asked for
+    // every approval, focused desktop or not. Only the APNs push below is held.
+    webhookSink?.notify(
+      buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
+    );
     if (
       shouldSuppressPush({
         state: desktopPresence.snapshot(),

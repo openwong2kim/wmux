@@ -5,6 +5,7 @@ import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
 import type { GateConfig } from './approvals/gateConfig';
+import type { NotifySinkConfig } from './push/WebhookSink';
 import type { PushPresenceSuppressionConfig } from './push/presence';
 
 /** Session lifecycle state */
@@ -255,6 +256,23 @@ export interface DaemonConfig {
    * entirely (same as `WMUX_GATE=0`, but durable).
    */
   gate?: GateConfig;
+  /**
+   * Outbound notification sinks — a webhook or ntfy URL that gets a small
+   * plaintext ping when an approval is raised or an agent turn ends. For people
+   * running wmux without the phone app; the sealed APNs path is unaffected and
+   * independent.
+   *
+   * OPTIONAL and OFF by default (absent = an empty list = no outbound traffic).
+   * `validateConfig` deliberately ignores it and `loadConfig` backfills it
+   * per-field, same convention as `browser`/`lanlink`/`gate`. A malformed entry
+   * is dropped individually rather than resetting the file.
+   *
+   * The payload is a hard-allowlisted summary — event kind, static title, agent
+   * name, short pane/workspace id prefixes, a derived risk tier and a timestamp.
+   * It never carries the agent's question, tool input, terminal output, paths or
+   * tokens. See `push/notifyPayload.ts`.
+   */
+  notifySinks?: NotifySinkConfig[];
   /**
    * Presence-based push suppression. OPTIONAL — old config.json files predate
    * it and must keep loading, so `validateConfig` deliberately ignores this

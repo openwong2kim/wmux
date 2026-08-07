@@ -4,7 +4,7 @@
 
 ### The workspace multiplexer for AI agents.
 
-Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and an integrated browser your agents can drive. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
+Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** and harvest with **atomic adoption**: tick the hunks you want and they land as one all-or-nothing `git apply` — **your tree takes the whole selection or stays untouched**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and an integrated browser your agents can drive. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
 
 <img width="924" alt="wmux — the workspace multiplexer for AI agents, on Windows and macOS" src="docs/banner.png" />
 
@@ -18,7 +18,7 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 
 </div>
 
-> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS.**
+> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS.** *Building in the open since March 2026.*
 
 ---
 
