@@ -11,7 +11,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import type { RemoteHost, RemoteHostPublic } from '../../shared/remoteHosts';
 import { parseWebUrl } from '../../shared/remoteHosts';
-import { reHardenTokenFileAcl, secureReplaceTokenFile } from '../../shared/security';
+import { reHardenTokenFileAcl, secureReplaceTokenFile, sweepStaleTokenTemps } from '../../shared/security';
 
 function toPublic(host: RemoteHost): RemoteHostPublic {
   const { token: _token, ...rest } = host;
@@ -139,6 +139,10 @@ export class RemoteHostsStore {
         return;
       }
       reHardenTokenFileAcl(this.filePath);
+      // Clear any temp copy a crash or a lost unlink race left behind. They
+      // hold the same credentials as the real file, so they do not get to
+      // outlive it.
+      sweepStaleTokenTemps(this.filePath);
       const raw = fs.readFileSync(this.filePath, 'utf8');
       const parsed: unknown = JSON.parse(raw);
       this.hosts = isRemoteHostArray(parsed) ? parsed : [];

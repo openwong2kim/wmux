@@ -8,6 +8,11 @@ const fsMock = vi.hoisted(() => ({
   unlinkSync: vi.fn(),
   chmodSync: vi.fn(),
   renameSync: vi.fn(),
+  openSync: vi.fn(),
+  closeSync: vi.fn(),
+  fsyncSync: vi.fn(),
+  readdirSync: vi.fn(),
+  constants: { O_CREAT: 512, O_EXCL: 2048, O_WRONLY: 1, O_NOFOLLOW: 256 },
   promises: { chmod: vi.fn() },
 }));
 
@@ -22,6 +27,11 @@ vi.mock('fs', () => ({
   unlinkSync: fsMock.unlinkSync,
   chmodSync: fsMock.chmodSync,
   renameSync: fsMock.renameSync,
+  openSync: fsMock.openSync,
+  closeSync: fsMock.closeSync,
+  fsyncSync: fsMock.fsyncSync,
+  readdirSync: fsMock.readdirSync,
+  constants: fsMock.constants,
   promises: fsMock.promises,
 }));
 
@@ -827,41 +837,99 @@ describe('secureReplaceTokenFile', () => {
     execFileSyncMock.mockReset();
     fsMock.existsSync.mockReset();
     fsMock.renameSync.mockReset();
+    fsMock.openSync.mockReset().mockReturnValue(7);
+    fsMock.closeSync.mockReset();
+    fsMock.fsyncSync.mockReset();
+    fsMock.readdirSync.mockReset().mockReturnValue([]);
   });
 
-  it('hardens the temp file and renames it in — never PowerShell, never a plain overwrite', async () => {
+  const target = () => path.join('C:', 'Users', 'tester', '.wmux', 'remoteHosts.json');
+
+  function winSetup(): void {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     stubPowershellPresent(true);
     stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const target = path.join('C:', 'Users', 'tester', '.wmux', 'remoteHosts.json');
-    // Directory and target both already exist — the overwrite case.
     fsMock.existsSync.mockReturnValue(true);
+  }
 
+  it('creates the temp exclusively, under a name an attacker cannot predict', async () => {
+    winSetup();
     const { secureReplaceTokenFile } = await import('../security');
-    secureReplaceTokenFile(target, '[{"id":"h1"}]');
+    secureReplaceTokenFile(target(), '[]');
 
-    // Written to a temp path, not over the target.
-    const written = fsMock.writeFileSync.mock.calls.at(-1);
-    expect(written?.[0]).not.toBe(target);
-    expect(String(written?.[0])).toContain('.tmp');
+    const [tmpPath, flags, mode] = fsMock.openSync.mock.calls.at(-1)!;
+    expect(String(tmpPath)).toMatch(/\.[0-9a-f]{24}\.tmp$/);   // random, not pid+time
+    // O_EXCL is what refuses a planted symlink instead of following it.
+    expect(Number(flags) & fsMock.constants.O_EXCL).toBeTruthy();
+    expect(Number(flags) & fsMock.constants.O_CREAT).toBeTruthy();
+    expect(mode).toBe(0o600);
+  });
 
-    // Hardened via the fast icacls primitive on that temp path...
-    const icacls = execFileSyncMock.mock.calls.find((c) => String(c[0]).includes('icacls.exe'));
-    expect(icacls).toBeTruthy();
-    expect(String(icacls?.[1]?.[0])).toContain('.tmp');
+  it('hardens the temp BEFORE the credential is written into it', async () => {
+    winSetup();
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target(), '[{"token":"secret"}]');
 
-    // ...and NOT via the PowerShell DACL rebuild, which is the whole point.
+    const icaclsOrder = execFileSyncMock.mock.invocationCallOrder.at(-1)!;
+    const writeOrder = fsMock.writeFileSync.mock.invocationCallOrder.at(-1)!;
+    // The in-place path wrote into an already-hardened file. A fresh inode
+    // starts with only the parent's inherited ACEs, so the content must not
+    // land before the lockdown does.
+    expect(icaclsOrder).toBeLessThan(writeOrder);
+  });
+
+  it('never takes the PowerShell rebuild — that stall is the whole point', async () => {
+    winSetup();
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target(), '[]');
+
     const ps = execFileSyncMock.mock.calls.find((c) => String(c[0]).includes('powershell.exe'));
     expect(ps).toBeFalsy();
+  });
 
-    // Published by rename only after hardening.
-    expect(fsMock.renameSync).toHaveBeenCalledWith(written?.[0], target);
-    const renameOrder = fsMock.renameSync.mock.invocationCallOrder[0]!;
-    const icaclsOrder = execFileSyncMock.mock.invocationCallOrder.at(-1)!;
-    expect(icaclsOrder).toBeLessThan(renameOrder);
+  it('fsyncs the content, then renames', async () => {
+    winSetup();
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target(), '[]');
+
+    const fsyncOrder = fsMock.fsyncSync.mock.invocationCallOrder[0]!;
+    const renameOrder = fsMock.renameSync.mock.invocationCallOrder.at(-1)!;
+    expect(fsyncOrder).toBeLessThan(renameOrder);
+  });
+
+  // Windows + antivirus is the environment this function exists to serve, and
+  // it is the one where a scanner holds the handle of the file icacls just
+  // touched. A bare rename would throw there.
+  it('retries a transient rename failure on Windows', async () => {
+    winSetup();
+    let calls = 0;
+    fsMock.renameSync.mockImplementation(() => {
+      calls++;
+      if (calls < 3) {
+        const err = new Error('EBUSY') as NodeJS.ErrnoException;
+        err.code = 'EBUSY';
+        throw err;
+      }
+    });
+
+    const { secureReplaceTokenFile } = await import('../security');
+    expect(() => secureReplaceTokenFile(target(), '[]')).not.toThrow();
+    expect(calls).toBe(3);
+  });
+
+  it('does not retry a non-transient rename failure', async () => {
+    winSetup();
+    fsMock.renameSync.mockImplementation(() => {
+      const err = new Error('ENOSPC') as NodeJS.ErrnoException;
+      err.code = 'ENOSPC';
+      throw err;
+    });
+
+    const { secureReplaceTokenFile } = await import('../security');
+    expect(() => secureReplaceTokenFile(target(), '[]')).toThrow(/Failed to securely replace/);
+    expect(fsMock.renameSync).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the previous file untouched when hardening fails, and drops the temp', async () => {
@@ -869,49 +937,67 @@ describe('secureReplaceTokenFile', () => {
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     stubPowershellPresent(false);
+    fsMock.existsSync.mockReturnValue(true);
     execFileSyncMock.mockImplementation(() => { throw new Error('icacls denied'); });
 
-    const target = path.join('C:', 'Users', 'tester', '.wmux', 'remoteHosts.json');
-    fsMock.existsSync.mockReturnValue(true);
-
     const { secureReplaceTokenFile } = await import('../security');
-    expect(() => secureReplaceTokenFile(target, '[]')).toThrow(/Failed to securely replace/);
+    expect(() => secureReplaceTokenFile(target(), '[]')).toThrow(/Failed to securely replace/);
 
-    // The credential never became visible under the real name...
     expect(fsMock.renameSync).not.toHaveBeenCalled();
-    // ...and the temp copy of it was removed.
     const unlinked = fsMock.unlinkSync.mock.calls.at(-1);
     expect(String(unlinked?.[0])).toContain('.tmp');
-    expect(unlinked?.[0]).not.toBe(target);
+    // The credential never reached the real name, and nothing was written into
+    // the temp either — hardening failed before the content step.
+    expect(fsMock.writeFileSync).not.toHaveBeenCalled();
   });
 
   it('delegates the very first write to the fresh-file path', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    const target = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
-    // Directory exists, target does not.
-    fsMock.existsSync.mockImplementation((p: unknown) => String(p) !== target);
+    const t = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
+    fsMock.existsSync.mockImplementation((p: unknown) => String(p) !== t);
 
     const { secureReplaceTokenFile } = await import('../security');
-    secureReplaceTokenFile(target, '[]');
+    secureReplaceTokenFile(t, '[]');
 
-    // Straight to the target, no temp dance — there is nothing to replace.
-    expect(fsMock.writeFileSync).toHaveBeenCalledWith(target, '[]', { encoding: 'utf8', mode: 0o600 });
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(t, '[]', { encoding: 'utf8', mode: 0o600 });
     expect(fsMock.renameSync).not.toHaveBeenCalled();
   });
+});
 
-  it('chmods the temp file on POSIX before publishing it', async () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    const target = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
-    fsMock.existsSync.mockReturnValue(true);
+describe('sweepStaleTokenTemps', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    fsMock.readdirSync.mockReset();
+    fsMock.unlinkSync.mockReset();
+  });
 
-    const { secureReplaceTokenFile } = await import('../security');
-    secureReplaceTokenFile(target, '[]');
+  // A crash between write and rename leaves a full copy of the credentials
+  // under a temp name. Owner-only, but nothing else in the tree ever looks at
+  // them, so without this they accumulate for the life of the install.
+  it('removes only this file\'s leftover temps', async () => {
+    const t = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
+    fsMock.readdirSync.mockReturnValue([
+      'remoteHosts.json',
+      'remoteHosts.json.aabbccddeeff001122334455.tmp',
+      'remoteHosts.json.99887766554433221100ffee.tmp',
+      'devices.json.deadbeefdeadbeefdeadbeef.tmp',
+      'unrelated.txt',
+    ]);
 
-    const chmodded = fsMock.chmodSync.mock.calls.at(-1);
-    expect(String(chmodded?.[0])).toContain('.tmp');
-    expect(chmodded?.[1]).toBe(0o600);
-    const chmodOrder = fsMock.chmodSync.mock.invocationCallOrder.at(-1)!;
-    const renameOrder = fsMock.renameSync.mock.invocationCallOrder.at(-1)!;
-    expect(chmodOrder).toBeLessThan(renameOrder);
+    const { sweepStaleTokenTemps } = await import('../security');
+    sweepStaleTokenTemps(t);
+
+    const removed = fsMock.unlinkSync.mock.calls.map((c) => path.basename(String(c[0]))).sort();
+    expect(removed).toEqual([
+      'remoteHosts.json.99887766554433221100ffee.tmp',
+      'remoteHosts.json.aabbccddeeff001122334455.tmp',
+    ]);
+  });
+
+  it('never throws when the directory cannot be read', async () => {
+    fsMock.readdirSync.mockImplementation(() => { throw new Error('EACCES'); });
+    const { sweepStaleTokenTemps } = await import('../security');
+    expect(() => sweepStaleTokenTemps('/nope/remoteHosts.json')).not.toThrow();
   });
 });

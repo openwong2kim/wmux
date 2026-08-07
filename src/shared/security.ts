@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execFileSync, spawn } from 'child_process';
@@ -435,6 +436,54 @@ function applyRestrictiveWindowsAclForFreshFile(filePath: string): void {
 }
 
 /**
+ * Rename delays for the win32 commit retry, mirroring
+ * `daemon/util/atomicWrite/core.ts`.
+ *
+ * NOT imported from there: `shared/` is consumed by the renderer and preload
+ * and must not depend on `daemon/`, and that module's writer unconditionally
+ * rotates the previous file to `.bak` — which for a token file would leave a
+ * second, unhardened copy of live credentials on disk. The retry POLICY is
+ * what transfers; the writer around it is not.
+ */
+const RENAME_RETRY_DELAYS_MS: readonly number[] = [10, 20, 40, 80, 160];
+
+/** Rename failures that antivirus holding a just-written handle produces. */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+/** Block without burning CPU. Matches atomicWrite's sync sleep. */
+function sleepSyncMs(ms: number): void {
+  const shared = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(shared), 0, 0, ms);
+}
+
+/**
+ * `fs.renameSync` with the retry the platform actually needs.
+ *
+ * On Windows a scanner can hold the handle of a file we JUST wrote — and this
+ * path guarantees a scan, because it runs icacls over the temp file
+ * immediately beforehand. A bare rename therefore throws intermittently in
+ * exactly the environment this whole function exists to serve. Documented in
+ * `atomicWrite/core.ts` against the same failure (#658).
+ *
+ * POSIX has no such contention: rename is atomic and does not fail on a busy
+ * file, so the loop exits on the first attempt there.
+ */
+function renameWithTransientRetrySync(from: string, to: string): void {
+  const delays = process.platform === 'win32' ? RENAME_RETRY_DELAYS_MS : [];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      const transient = code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+      if (!transient || attempt >= delays.length) throw err;
+      sleepSyncMs(delays[attempt]!);
+    }
+  }
+}
+
+/**
  * Replace a token file that is written REPEATEDLY, without paying the
  * overwrite penalty and without opening a deferred-hardening window.
  *
@@ -482,25 +531,122 @@ export function secureReplaceTokenFile(filePath: string, contents: string): void
   // Same directory: rename is only atomic within a volume, and the temp file
   // must inherit the SAME ACEs the real file would, or hardening it would be
   // measuring the wrong parent.
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  //
+  // The name is RANDOM, not pid+timestamp. A predictable path in a directory an
+  // attacker can write to is a symlink-plant: they pre-create the name, our
+  // write follows the link, and the credential lands wherever they pointed it.
+  // Cheap to remove as a question, so it is removed.
+  const tmp = `${filePath}.${crypto.randomBytes(12).toString('hex')}.tmp`;
+  let fd: number | undefined;
   try {
-    fs.writeFileSync(tmp, contents, { encoding: 'utf8', mode: 0o600 });
+    // O_EXCL is the real guard: creation FAILS if the path already exists,
+    // including as a symlink, so a planted link is refused rather than
+    // followed. O_NOFOLLOW is belt-and-braces on POSIX (0 on Windows). The
+    // 0600 mode applies to the inode at birth, so there is no instant where
+    // the file exists more permissively on POSIX.
+    fd = fs.openSync(
+      tmp,
+      // eslint-disable-next-line no-bitwise
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+
+    // HARDEN BEFORE CONTENT, on Windows specifically.
+    //
+    // The in-place path never had an exposure window: it wrote into a file
+    // that was already hardened, because writeFileSync preserves the existing
+    // ACL. Creating a fresh inode gives up that property — a brand-new file
+    // carries only the parent's inherited ACEs, which may be broad. Writing
+    // the token first and hardening second would open a window this function
+    // is supposed to be closing, so the order is inverted: the empty file is
+    // locked down, and only then does the credential go into it.
     if (process.platform === 'win32') {
       applyRestrictiveWindowsAclForFreshFile(tmp);
-    } else {
-      // `mode` covers the new inode, but honour the same explicit-repair
-      // discipline the in-place path uses rather than trusting the umask.
-      fs.chmodSync(tmp, 0o600);
     }
-    fs.renameSync(tmp, filePath);
+
+    fs.writeFileSync(fd, contents, { encoding: 'utf8' });
+    // Durability before the rename: without it, "a crash can no longer leave a
+    // half-written registry" is not a claim this function can make. A
+    // write+rename with no fsync can surface as a zero-length file after a
+    // crash on ext4 data=ordered or APFS — and `load()` folds a parse failure
+    // into an empty list, so the operator would just see every remote host
+    // gone. Mirrors `atomicWrite/core.ts`'s durable path.
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+
+    renameWithTransientRetrySync(tmp, filePath);
+
+    // Durability of the directory ENTRY the rename created. Skipped on win32,
+    // which does not support directory-handle fsync — the file itself is
+    // already durable there via the fsync above. Best-effort: the data is
+    // committed either way.
+    if (process.platform !== 'win32') {
+      try {
+        const dirFd = fs.openSync(dir, 'r');
+        try {
+          fs.fsyncSync(dirFd);
+        } finally {
+          fs.closeSync(dirFd);
+        }
+      } catch {
+        // Directory fsync is unavailable on some filesystems; not fatal.
+      }
+    }
   } catch (err) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed, or never validly opened.
+      }
+    }
     try {
       fs.unlinkSync(tmp);
-    } catch {
-      // Best-effort cleanup; the temp file may never have been created.
+    } catch (unlinkErr) {
+      // NOT silent. If this fails on Windows — a scanner still holding the
+      // handle — a copy of the credential registry stays on disk under the
+      // temp name. It is owner-only (hardened before the content went in), but
+      // the operator should still be told it is there. `sweepStaleTokenTemps`
+      // clears it on the next load.
+      const code = (unlinkErr as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'ENOENT') {
+        console.warn(`[secureReplaceTokenFile] could not remove temp file ${tmp}:`, unlinkErr);
+      }
     }
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to securely replace ${filePath}: ${message}`);
+  }
+}
+
+/**
+ * Delete leftover `secureReplaceTokenFile` temp files next to a token file.
+ *
+ * A crash between write and rename, or an unlink that lost a race with a
+ * scanner, leaves a full copy of the credentials under a temp name. They are
+ * created owner-only so the exposure is bounded, but "bounded" is not "gone" —
+ * nothing else in the tree ever looks at these, so without a sweep they
+ * accumulate for the life of the install.
+ *
+ * Best-effort by design: called from a load path, where failing to tidy up
+ * must never stop the caller from reading its file.
+ */
+export function sweepStaleTokenTemps(filePath: string): void {
+  const dir = path.dirname(filePath);
+  const prefix = `${path.basename(filePath)}.`;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+    try {
+      fs.unlinkSync(path.join(dir, name));
+    } catch {
+      // Still held, or already gone. The next load tries again.
+    }
   }
 }
 
