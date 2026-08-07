@@ -2,7 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createDefaultConfig, loadConfig, saveConfig, getWmuxDir } from '../config';
+import {
+  createDefaultConfig,
+  loadConfig,
+  saveConfig,
+  getWmuxDir,
+  readNotifySinks,
+  resetNotifySinksCache,
+} from '../config';
 import type { DaemonConfig } from '../types';
 
 /** Use a temp directory instead of the real ~/.wmux */
@@ -455,5 +462,65 @@ describe('loadConfig — browser.cdp backfill (#613, non-destructive)', () => {
     const c0 = createDefaultConfig();
     writeRawConfig({ ...c0, browser: { cdp: { enabled: false } } });
     expect(loadConfig().browser).toEqual({ cdp: { enabled: false } });
+  });
+});
+
+describe("readNotifySinks — the notify path's read-only view", () => {
+  const configFile = (): string => path.join(getWmuxDir(), 'config.json');
+
+  beforeEach(() => {
+    // The mtime cache is module state, and each test writes a fresh
+    // config.json into a NEW temp dir — without this, test N could be served
+    // test N-1's entry.
+    resetNotifySinksCache();
+  });
+
+  it('reads and coerces the slice', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({
+      ...c0,
+      notifySinks: [
+        { type: 'ntfy', url: 'https://ntfy.sh/topic', events: ['approval'] },
+        { type: 'webhook', url: 'file:///etc/passwd' },
+      ],
+    });
+    expect(readNotifySinks()).toEqual([
+      { type: 'ntfy', url: 'https://ntfy.sh/topic', events: ['approval'] },
+    ]);
+  });
+
+  it('★ NEVER rewrites config.json — not even when it cannot be parsed', () => {
+    // The whole reason this function exists rather than reusing loadConfig.
+    // loadConfig repairs a broken file by replacing it with defaults, which is
+    // right at boot and catastrophic on a per-notification path: one transient
+    // failure would silently discard the operator's entire configuration.
+    const garbage = '{ this is not json';
+    fs.mkdirSync(getWmuxDir(), { recursive: true });
+    fs.writeFileSync(configFile(), garbage, 'utf-8');
+
+    expect(readNotifySinks()).toEqual([]);
+    expect(fs.readFileSync(configFile(), 'utf-8')).toBe(garbage);
+  });
+
+  it('★ does not CREATE config.json when none exists', () => {
+    expect(readNotifySinks()).toEqual([]);
+    expect(fs.existsSync(configFile())).toBe(false);
+  });
+
+  it('picks up an edit rather than serving the cache forever', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, notifySinks: [{ type: 'ntfy', url: 'https://ntfy.sh/one' }] });
+    expect(readNotifySinks()).toHaveLength(1);
+
+    // Two sinks, so the (mtimeMs, size) cache key changes even if the clock
+    // has not ticked between the two writes.
+    writeRawConfig({
+      ...c0,
+      notifySinks: [
+        { type: 'ntfy', url: 'https://ntfy.sh/one' },
+        { type: 'webhook', url: 'https://hooks.example/two' },
+      ],
+    });
+    expect(readNotifySinks()).toHaveLength(2);
   });
 });

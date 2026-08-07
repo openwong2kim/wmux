@@ -241,6 +241,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     // callbacks; the attachId on each event is how a shared callback fans a
     // single client's events back out to the RIGHT sender.
     client.onMeta((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_META, e));
+    client.onResize((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_RESIZE, e));
     client.onData((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_DATA, e));
     client.onExit((e) => {
       pushToOwner(e.attachId, IPC.REMOTE_PANE_EXIT, e);

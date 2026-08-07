@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { BrowserCdpConfig, ChannelRetentionConfig, DaemonConfig } from './types';
 import { coerceGate, createDefaultGateConfig } from './approvals/gateConfig';
+import { coerceNotifySinks, type NotifySinkConfig } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
@@ -136,6 +137,9 @@ export function createDefaultConfig(): DaemonConfig {
     browser: { cdp: { enabled: true } },
     // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
     gate: createDefaultGateConfig(),
+    // Outbound webhook/ntfy notifications. Empty = off; written out so a fresh
+    // config.json shows operators the key exists without turning anything on.
+    notifySinks: [],
   };
 }
 
@@ -194,6 +198,66 @@ function coerceBrowserCdp(raw: unknown, defaults: BrowserCdpConfig): BrowserCdpC
       enabled: typeof enabledRaw === 'boolean' ? enabledRaw : defaults.cdp.enabled,
     },
   };
+}
+
+/**
+ * The notify path's READ-ONLY view of `notifySinks`.
+ *
+ * Deliberately not `loadConfig()`. That function is a boot-time repair tool: a
+ * read error or a parse failure makes it REWRITE config.json with defaults,
+ * which is right when the daemon is starting and needs a usable file, and
+ * catastrophic on a per-notification hot path — one transient `EMFILE` while an
+ * approval fires would silently replace the operator's whole config with
+ * defaults. Nothing here writes, creates a directory, or mutates anything.
+ *
+ * Cached on (mtimeMs, size) so the steady state is one `stat` per notification
+ * rather than a full read+parse, while a `wmux` config edit still takes effect
+ * on the next event without a daemon restart.
+ *
+ * A failure degrades to "no sinks" — the same OFF that an absent key means.
+ */
+let notifySinksCache: { mtimeMs: number; size: number; sinks: NotifySinkConfig[] } | null = null;
+
+export function readNotifySinks(
+  log?: (level: 'warn', message: string) => void,
+): NotifySinkConfig[] {
+  const configPath = getConfigPath();
+  try {
+    const stat = fs.statSync(configPath);
+    if (
+      notifySinksCache &&
+      notifySinksCache.mtimeMs === stat.mtimeMs &&
+      notifySinksCache.size === stat.size
+    ) {
+      return notifySinksCache.sinks;
+    }
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw, (key, value) => {
+      // Same prototype-pollution guard loadConfig uses.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    });
+    const slice =
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)['notifySinks']
+        : undefined;
+    // Coercion warnings ride the caller's logger, and the cache means they are
+    // emitted once per config EDIT rather than once per notification.
+    const sinks = coerceNotifySinks(slice, log);
+    notifySinksCache = { mtimeMs: stat.mtimeMs, size: stat.size, sinks };
+    return sinks;
+  } catch {
+    // No file, unreadable, or unparseable — all mean "no sinks" here, and none
+    // of them means "rewrite the operator's config". The cache is cleared so a
+    // repaired file is picked up rather than shadowed by a stale entry.
+    notifySinksCache = null;
+    return [];
+  }
+}
+
+/** Test seam: forget the mtime cache so a rewritten temp config is re-read. */
+export function resetNotifySinksCache(): void {
+  notifySinksCache = null;
 }
 
 /**
@@ -336,6 +400,16 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → DEFAULT_GATED_TOOLS. A malformed slice
     // degrades to the defaults too, never silently disabling the gate.
     config.gate = coerceGate(config.gate);
+
+    // ── Outbound notification sinks: per-field backfill ──
+    // Absent slice (every config.json written before this existed) → an empty
+    // list, i.e. no outbound traffic. Degrading to "off" rather than to a
+    // default is the point: a sink the operator did not configure would be a
+    // connection they did not ask for. validateConfig ignores the field, so a
+    // malformed entry drops on its own without resetting the file.
+    config.notifySinks = coerceNotifySinks(config.notifySinks, (level, message) => {
+      console.warn(`[daemon/config] ${level}: ${message}`);
+    });
 
     return config;
   } catch (err) {

@@ -40,7 +40,7 @@ vi.mock('electron', () => {
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
 import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
-import type { RemoteHostClient, RemoteMetaEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
+import type { RemoteHostClient, RemoteMetaEvent, RemoteResizeEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
 
 function getHandler(channel: string): (...args: unknown[]) => unknown {
   const fn = ipcHandlers.get(channel);
@@ -97,6 +97,7 @@ function fakeSender(id: number) {
  *  test can push a fake event straight through the shared client wiring. */
 function fakeClient(host: RemoteHost) {
   const metaCbs: Array<(e: RemoteMetaEvent) => void> = [];
+  const resizeCbs: Array<(e: RemoteResizeEvent) => void> = [];
   const dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   const exitCbs: Array<(e: RemoteExitEvent) => void> = [];
   const errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
@@ -109,10 +110,12 @@ function fakeClient(host: RemoteHost) {
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
+    onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
     onExit: vi.fn((cb: (e: RemoteExitEvent) => void) => { exitCbs.push(cb); }),
     onError: vi.fn((cb: (e: RemoteErrorEvent) => void) => { errorCbs.push(cb); }),
     emitMeta: (e: RemoteMetaEvent) => metaCbs.forEach((cb) => cb(e)),
+    emitResize: (e: RemoteResizeEvent) => resizeCbs.forEach((cb) => cb(e)),
     emitData: (e: RemoteDataEvent) => dataCbs.forEach((cb) => cb(e)),
     emitExit: (e: RemoteExitEvent) => exitCbs.forEach((cb) => cb(e)),
     emitError: (e: RemoteErrorEvent) => errorCbs.forEach((cb) => cb(e)),
@@ -123,6 +126,7 @@ function fakeClient(host: RemoteHost) {
     write: ReturnType<typeof vi.fn>;
     listWorkspaces: ReturnType<typeof vi.fn>;
     emitMeta: (e: RemoteMetaEvent) => void;
+    emitResize: (e: RemoteResizeEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
     emitExit: (e: RemoteExitEvent) => void;
     emitError: (e: RemoteErrorEvent) => void;
@@ -495,11 +499,15 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
     expect(res.ok).toBe(true);
 
     client.emitMeta({ attachId: res.attachId, cols: 80, rows: 24, snapshotB64: 'AA==' });
+    // Geometry-only, on its own channel: the renderer re-grids without the
+    // reset+repaint a META implies.
+    client.emitResize({ attachId: res.attachId, cols: 100, rows: 40 });
     client.emitData({ attachId: res.attachId, dataB64: 'BB==' });
     client.emitExit({ attachId: res.attachId });
 
     expect(sender.sent).toEqual([
       { channel: IPC.REMOTE_PANE_META, payload: { attachId: res.attachId, cols: 80, rows: 24, snapshotB64: 'AA==' } },
+      { channel: IPC.REMOTE_PANE_RESIZE, payload: { attachId: res.attachId, cols: 100, rows: 40 } },
       { channel: IPC.REMOTE_PANE_DATA, payload: { attachId: res.attachId, dataB64: 'BB==' } },
       { channel: IPC.REMOTE_PANE_EXIT, payload: { attachId: res.attachId } },
     ]);

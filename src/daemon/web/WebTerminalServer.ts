@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import type { DaemonSessionManager } from '../DaemonSessionManager';
+import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
 // headless-terminal dependency chain stay out of this module. The web server is
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
@@ -666,6 +666,16 @@ const MIN_RESIZE_INTERVAL_MS = 250;
 
 /** Sessions tracked for rate limiting before the map is swept against the roster. */
 const RESIZE_TRACKING_CAP = 256;
+
+/**
+ * Trailing debounce before an SSE stream answers an applied resize with fresh
+ * geometry. Deliberately LONGER than MIN_RESIZE_INTERVAL_MS: with a shorter
+ * window every resize the rate limiter lets through is already spaced far
+ * enough apart to defeat the debounce, so a device alternating two geometries
+ * would fan one message per accepted resize out to every viewer. Above the
+ * limiter's own floor, a storm collapses into one message.
+ */
+const RESIZE_META_DEBOUNCE_MS = 400;
 
 /**
  * Did the caller mention this field at all — as opposed to sending a value the
@@ -2470,20 +2480,22 @@ export class WebTerminalServer {
       ...this.securityHeaders(),
     });
 
-    // Initial paint: the bytes SessionPipe flushes to the GUI on attach, capped
-    // to a window — the ring is 8 MB by default and up to 64 MB, and base64
-    // inflates it by a third, which a phone reconnecting at every tunnel would
-    // pull each time. The truncation rides `meta` rather than a new event name,
-    // so a cached frontend that predates it is unaffected.
-    const snapshot = capSnapshot(managed.ringBuffer.readAll());
-    const meta = {
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-      truncated: snapshot.truncated,
-      omittedBytes: snapshot.omittedBytes,
-    };
-    writeSse(res, 'meta', JSON.stringify(meta));
-    writeSse(res, 'snapshot', snapshot.bytes.toString('base64'));
+    // The headers are already out, so there is no status code left to send on
+    // failure — but `readAll()` + `Buffer.concat` on a ring of up to 64 MB can
+    // throw (allocation), and an exception escaping a request handler reaches
+    // `uncaughtException` and takes the whole daemon with it. One client's
+    // initial paint is not worth the fleet.
+    try {
+      this.writeSnapshotFrame(res, managed);
+    } catch (err) {
+      this.deps.log('warn', `[web] initial snapshot failed for ${sessionId}: ${errMsg(err)}`);
+      try {
+        res.end();
+      } catch {
+        /* socket already gone — the end state we wanted either way */
+      }
+      return;
+    }
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
     // not disturb the GUI's SessionPipe. maxListeners is relaxed because each
@@ -2504,15 +2516,47 @@ export class WebTerminalServer {
         /* ignore */
       }
     };
+    // An applied resize invalidates the client's grid: every absolute-positioned
+    // frame that follows was computed for the new size. The answer is the new
+    // GEOMETRY and nothing else.
+    //
+    // Not a fresh snapshot: re-sending the window would be ~341 KB of base64
+    // per viewer per resize plus a full ring copy each, and every client does
+    // `reset()` before replaying it — so a viewer scrolled up reading would be
+    // wiped and yanked to the bottom every time someone dragged a divider on
+    // the machine that owns the pane. A TUI repaints itself on SIGWINCH and a
+    // shell at a prompt behaves exactly as a local terminal does, so the bytes
+    // that follow are enough on their own.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = (): void => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        const current = this.deps.sessionManager.getSession(sessionId);
+        if (!current) return;
+        try {
+          writeSse(res, 'meta', JSON.stringify(this.streamMeta(current, { resize: true })));
+        } catch {
+          /* client stream broken — the 'close' handler cleans up */
+        }
+      }, RESIZE_META_DEBOUNCE_MS);
+    };
+
     bridge.on('data', onData);
     bridge.on('exit', onExit);
+    bridge.on('resize', onResize);
 
     const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
       stopHeartbeat();
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+        resizeTimer = null;
+      }
       bridge.removeListener('data', onData);
       bridge.removeListener('exit', onExit);
+      bridge.removeListener('resize', onResize);
     };
     const client: SseClient = { res, sessionId, detach, principal };
     this.clients.add(client);
@@ -2521,6 +2565,56 @@ export class WebTerminalServer {
       detach();
       this.clients.delete(client);
     });
+  }
+
+  /**
+   * The `meta` event body. `resize: true` marks the geometry-only form a client
+   * gets mid-stream: there is no snapshot behind it, so a client that pairs the
+   * two must dispatch this one on its own rather than hold it for a partner
+   * that will never arrive.
+   */
+  private streamMeta(
+    managed: ManagedSession,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return { cols: managed.meta.cols, rows: managed.meta.rows, ...extra };
+  }
+
+  /**
+   * The `meta` + `snapshot` pair that paints a stream on attach. Always both
+   * events, in that order — every client resets its terminal on the pair.
+   *
+   * The snapshot payload is the capped window PREFIXED by a synthetic
+   * mode preamble (see util/outputModeTracker.ts). The prefix rides the
+   * existing `snapshot` event rather than a new event name, so a cached
+   * frontend that predates it replays it as ordinary bytes — which is exactly
+   * what it is. `omittedBytes` still counts only the ring bytes dropped from
+   * the front; the preamble was never in the ring.
+   */
+  private writeSnapshotFrame(res: http.ServerResponse, managed: ManagedSession): void {
+    // Capped to a window — the ring is 8 MB by default and up to 64 MB, and
+    // base64 inflates it by a third, which a phone reconnecting at every tunnel
+    // would pull each time. The truncation rides `meta` rather than a new event
+    // name, so a cached frontend that predates it is unaffected.
+    const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    const meta = this.streamMeta(managed, {
+      truncated: snapshot.truncated,
+      omittedBytes: snapshot.omittedBytes,
+    });
+    // Absolute stream offset of the window's FIRST byte. The tracker needs it
+    // to decide whether the alt-screen entry is something the window already
+    // carries — re-asserting one that is still in there paints the scrollback
+    // ahead of it into the alternate buffer and loses it (see
+    // util/outputModeTracker.ts). Derived from the ring's own monotonic
+    // counter, which is stable across wraps and counts a recovered session's
+    // pre-filled scrollback, so both sides speak the same coordinates.
+    const windowStart = managed.ringBuffer.totalBytesWritten - snapshot.bytes.length;
+    const preamble = managed.bridge.outputModes?.preamble(windowStart) ?? '';
+    const payload = preamble
+      ? Buffer.concat([Buffer.from(preamble, 'utf8'), snapshot.bytes])
+      : snapshot.bytes;
+    writeSse(res, 'meta', JSON.stringify(meta));
+    writeSse(res, 'snapshot', payload.toString('base64'));
   }
 
   // --- input (opt-in) -----------------------------------------------------
