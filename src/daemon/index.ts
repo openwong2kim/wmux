@@ -74,6 +74,11 @@ import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
+import {
+  DESKTOP_PRESENCE_STALE_AFTER_MS,
+  DesktopPresenceTracker,
+  shouldSuppressPush,
+} from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -4923,14 +4928,59 @@ async function main(): Promise<void> {
     forgetPush: (deviceId) => getDeviceStore().forgetPush(deviceId),
     log: (level, msg) => log(level, msg),
   });
+  // Presence-based suppression. The predicate lives in `push/presence.ts` and
+  // is consulted HERE rather than inside PushSender: the answer is about the
+  // human, not the transport, so every notification sink can ask the same
+  // question. `desktopPresence` is fed by the `daemon.presence.desktop` RPC
+  // registered below.
+  const desktopPresence = new DesktopPresenceTracker();
   approvalRegistry.onEvent((event) => {
     // Only a NEW request is worth a phone buzzing. A resolve or an expire is
     // the thing the notification was asking for, already handled.
     if (event.type !== 'create') return;
     const r = event.request;
-    pushSender.notify(buildApprovalPushPayload(r), { collapseId: approvalPushCollapseId(r) });
+    const payload = buildApprovalPushPayload(r);
+    // A getter, like `gateConfig`, so toggling the knob takes effect without a
+    // daemon restart.
+    const presenceConfig = loadConfig().pushPresenceSuppression ?? {
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    };
+    if (
+      shouldSuppressPush({
+        state: desktopPresence.snapshot(),
+        now: Date.now(),
+        config: presenceConfig,
+        ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
+      })
+    ) {
+      // The approval id only — never the question, the choices, or anything
+      // else the payload carries.
+      log('info', `[push] suppressed for ${r.id}: desktop is present`);
+      return;
+    }
+    pushSender.notify(payload, { collapseId: approvalPushCollapseId(r) });
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // Desktop presence, reported by the Electron main process on every
+  // focus/blur transition. Registered here rather than in `registerRpcHandlers`
+  // so the wiring stays additive — the tracker is a boot-scope value and
+  // threading it through that function's parameter list would touch a
+  // signature many call sites share.
+  //
+  // Transitions only, no heartbeat: a blur retracts presence immediately, and a
+  // focus that is never followed by anything simply ages out of the freshness
+  // window. That keeps the RPC silent while the user works, which is the whole
+  // point of not running a timer.
+  pipeServer.onRpc('daemon.presence.desktop', async (params, ctx) => {
+    const focused = params['focused'] === true;
+    desktopPresence.report(ctx.clientId, focused, Date.now());
+    return { ok: true };
+  });
+  // A desktop that went away is not present, whatever it last reported. Without
+  // this, killing the app mid-focus would leave a fresh report standing for the
+  // rest of the freshness window and swallow the pushes it was meant to hand off.
+  pipeServer.onClientClose((clientId) => desktopPresence.forget(clientId));
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
   // cannot cascade into session-state failure. The service receives
