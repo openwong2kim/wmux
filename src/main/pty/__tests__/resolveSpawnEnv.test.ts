@@ -323,3 +323,38 @@ describe('resolveSpawnEnv — terminal capability defaults (#680)', () => {
     expect(env.TERM_PROGRAM).toBe('wmux');
   });
 });
+
+// #826 fan-out: the task port is handed to the pane as WMUX_TASK_PORT. It has
+// to arrive as FORCED identity, never as caller env — these pin why, so the
+// mechanism cannot be "fixed" back into the overlay by a later change.
+describe('resolveSpawnEnv — the reserved namespace and the fan-out task port', () => {
+  it('drops a WMUX_* key supplied as caller env (this is what ate the task port)', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      { WMUX_TASK_PORT: '3200', NORMAL_KEY: 'kept' },
+      {},
+    );
+    expect(env.WMUX_TASK_PORT).toBeUndefined();
+    // …while an ordinary caller key on the same overlay does arrive, so the
+    // failure is the reserved prefix and not the overlay itself.
+    expect(env.NORMAL_KEY).toBe('kept');
+  });
+
+  it('keeps a WMUX_* key that arrives as forced identity', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      undefined,
+      { WMUX_TASK_PORT: '3201' },
+    );
+    expect(env.WMUX_TASK_PORT).toBe('3201');
+  });
+
+  it('identity wins over a caller trying to set the same reserved key', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      { WMUX_TASK_PORT: '9999' },
+      { WMUX_TASK_PORT: '3202' },
+    );
+    expect(env.WMUX_TASK_PORT).toBe('3202');
+  });
+});
