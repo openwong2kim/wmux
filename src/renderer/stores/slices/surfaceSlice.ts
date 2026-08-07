@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
+import { hostPlatform } from '../../utils/hostPlatform';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -312,7 +313,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ptyId) return;
     // 프롬프트 스크래핑 오탐 방어 — 구버전 데몬이 화면 텍스트에서 긁은
     // 불가능한 모양의 경로(맥에서 "C:\…")는 기존 cwd를 덮지 않는다.
-    if (!isPlausibleCwd(cwd)) return;
+    //
+    // The platform MUST be passed explicitly. `isPlausibleCwd` defaults it to
+    // `process.platform`, and the renderer has no `process` — so the default
+    // resolves to 'linux' and every Windows path is rejected, silently freezing
+    // surface.cwd at whatever the pane started with (#833). GitTab/ReviewTab
+    // already pass it for exactly this reason; this call site was missed.
+    if (!isPlausibleCwd(cwd, hostPlatform())) return;
     for (const ws of state.workspaces) {
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {

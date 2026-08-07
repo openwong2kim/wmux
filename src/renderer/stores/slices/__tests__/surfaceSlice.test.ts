@@ -189,6 +189,50 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     expect(pane.surfaces[0].cwd).toBe('C:\\a');
   });
+
+  // #833. The plausibility guard takes a platform, and its default is
+  // `process.platform` — which the renderer does not have. Left to that
+  // default, every Windows path failed the guard and each surface's cwd froze
+  // at whatever the pane started with, for the entire life of the app.
+  //
+  // The host platform has to come from the preload bridge. These two cases pin
+  // both directions, so the guard cannot be made vacuous either: a real path
+  // for the host lands, an impossible one still does not.
+  describe('#833 — the guard reads the HOST platform, not the renderer default', () => {
+    const withPlatform = (platform: string | undefined, run: () => void) => {
+      const g = globalThis as unknown as { window?: unknown };
+      const had = 'window' in g;
+      const prev = g.window;
+      g.window = { electronAPI: platform ? { platform } : {} };
+      try { run(); } finally {
+        if (had) g.window = prev; else delete g.window;
+      }
+    };
+
+    it('applies a Windows path when the host is win32', () => {
+      const { state, slice } = createHarness();
+      const paneId = state.workspaces[0].rootPane.id;
+      slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
+
+      withPlatform('win32', () => slice.updateSurfaceCwd('pty-1', 'D:\\repo\\app'));
+
+      const pane = state.workspaces[0].rootPane;
+      if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+      expect(pane.surfaces[0].cwd).toBe('D:\\repo\\app');
+    });
+
+    it('still rejects a Windows path when the host is darwin', () => {
+      const { state, slice } = createHarness();
+      const paneId = state.workspaces[0].rootPane.id;
+      slice.addSurface(paneId, 'pty-1', 'zsh', '/Users/me');
+
+      withPlatform('darwin', () => slice.updateSurfaceCwd('pty-1', 'C:\\Users\\me'));
+
+      const pane = state.workspaces[0].rootPane;
+      if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+      expect(pane.surfaces[0].cwd).toBe('/Users/me');
+    });
+  });
 });
 
 describe('surfaceSlice.updateSurfaceTitle', () => {
