@@ -1169,6 +1169,9 @@ async function recoverSessions(
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
+  // P0a: SSH session ids skipped by recovery — dropped from the persisted state
+  // because they cannot reconnect (P0b) and would otherwise linger as ghosts.
+  const trackedSshIds = new Set<string>();
   // X6 ③ (CodeRabbit): pre-read the spool (no consume) so an exec/supervised agent
   // pane whose exact binding only exists in the spool replays as `--resume <id>`,
   // not `--continue`. The post-recovery ingestResumeSpool still does the durable
@@ -1253,8 +1256,14 @@ async function recoverSessions(
     // design decision not yet made). Skip recovery rather than call the local
     // spawn path with `cmd === 'ssh user@host'` (which would spawn a LOCAL ssh
     // child that hangs at a host-key prompt) or throw on the missing ssh params.
-    // The record stays in state.sessions and is reaped by the dead-session TTL.
-    if (session.kind === 'ssh') continue;
+    // The record is also dropped from the persisted state below (it cannot
+    // reconnect, so keeping it would leave a ghost pane the dead-TTL reaper
+    // never clears — the reaper walks the runtime Map, which never held this
+    // skipped session). trackedSshIds records the drop for that filter.
+    if (session.kind === 'ssh') {
+      trackedSshIds.add(session.id);
+      continue;
+    }
 
     if (session.state === 'suspended' && session.bufferDumpPath) {
       // Attempt to recover suspended session
@@ -1504,7 +1513,7 @@ async function recoverSessions(
     // any session the recovery cap excluded — which stays suspended).
     const liveState = buildState(sessionManager);
     const preservedFromState = state.sessions.filter(
-      (s) => !recoveredIds.has(s.id),
+      (s) => !recoveredIds.has(s.id) && !trackedSshIds.has(s.id),
     );
     liveState.sessions.push(...preservedFromState);
     stateWriter.saveImmediate(liveState);
