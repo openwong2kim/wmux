@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { FanOutService, buildInitialCommand, WORKER_DELIVERY_PREAMBLE } from '../FanOutService';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
+import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
 
 let metaRoot: string;
 beforeEach(() => {
@@ -90,7 +91,14 @@ function makeDaemonFake(opts?: {
 /** renderer fake — spawnWorkspace가 실제 workspaceId를 회수 반환. 반환한 ptyId도
  *  기록해 FanOutService가 그 id를 결과에 무변형 전달하는지 검증 가능케 한다(F11). */
 function makeRendererFake(opts?: { spawnFailOn?: (name: string) => boolean }) {
-  const spawned: Array<{ name: string; cwd: string; initialCommand: string; returnedPtyId?: string }> = [];
+  const spawned: Array<{
+    name: string;
+    cwd: string;
+    initialCommand: string;
+    /** T2 — per-task env (WMUX_TASK_PORT) main hands the renderer. */
+    env?: Record<string, string>;
+    returnedPtyId?: string;
+  }> = [];
   let seq = 0;
   const port: FanOutRendererPort = {
     spawnWorkspace: vi.fn(async (p) => {
@@ -540,5 +548,65 @@ describe('statusOf — the idempotency key as a poll handle', () => {
     const second = await svc.start(baseReq());
     expect(second).toBe(first);
     expect(worktrees.preflight.mock.calls.length).toBe(preflightCalls);
+  });
+});
+
+describe('T2 per-repo fan-out environment (ports + setup hook)', () => {
+  /** project fake — the trust-gated wmux.json reader FanOutService consumes. */
+  function makeProjectFake(state: ProjectConfigState) {
+    return { getState: vi.fn(async () => state) };
+  }
+
+  it('hands each task a distinct WMUX_TASK_PORT from the declared range', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const worktrees = makeWorktreesFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees,
+      project: makeProjectFake({
+        found: true,
+        root: '/repo',
+        trust: 'trusted',
+        config: { version: 1, fanout: { portRange: { min: 39100, max: 39120 } } },
+      }),
+    });
+
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    const ports = res.tasks.map((t) => t.port);
+    expect(ports.every((p) => typeof p === 'number')).toBe(true);
+    expect(new Set(ports).size).toBe(2);
+    // The same value reaches the pane's environment, not just the report.
+    for (const [k, t] of res.tasks.entries()) {
+      expect(renderer.spawned[k]?.env?.WMUX_TASK_PORT).toBe(String(t.port));
+    }
+  });
+
+  it('never runs a setup hook from an untrusted wmux.json, and says so', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const worktrees = makeWorktreesFake();
+    // A hook that would leave a marker file behind if it were ever executed.
+    const marker = path.join(metaRoot, 'hook-ran');
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees,
+      project: makeProjectFake({
+        found: true,
+        root: '/repo',
+        trust: 'stale',
+        config: { version: 1, fanout: { setup: `node -e "require('fs').writeFileSync('${marker}','x')"` } },
+      }),
+    });
+
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    expect(res.setupSkipped).toBe('stale');
+    expect(fs.existsSync(marker)).toBe(false);
+    // The tasks themselves still spawn — an ungated hook is skipped, not fatal.
+    expect(res.tasks.every((t) => t.ok)).toBe(true);
   });
 });
