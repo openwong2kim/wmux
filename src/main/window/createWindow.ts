@@ -3,6 +3,7 @@ import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { attachFlashFrameAutoClear } from './flashFrame';
+import { applyUiZoom } from './uiZoom';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
@@ -135,6 +136,25 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   };
   mainWindow.on('enter-full-screen', () => pushFullscreen(true));
   mainWindow.on('leave-full-screen', () => pushFullscreen(false));
+
+  // #822 prototype — UI zoom via WMUX_UI_ZOOM (e.g. WMUX_UI_ZOOM=1.4). Applied
+  // after first paint so the renderer has drawn the 36px bar the native
+  // controls are being centered against. Absent/invalid → untouched at 1.
+  const zoomEnv = process.env.WMUX_UI_ZOOM;
+  if (zoomEnv) {
+    const requested = Number(zoomEnv);
+    if (Number.isFinite(requested)) {
+      // `on`, not `once`: the dev path retries the Vite URL and each failed
+      // load still fires did-finish-load, so a one-shot apply lands on the
+      // error page and the real load resets the zoom factor.
+      mainWindow.webContents.on('did-finish-load', () => {
+        applyUiZoom(mainWindow, requested, {
+          color: '#151517',
+          symbolColor: '#A5A29C',
+        });
+      });
+    }
+  }
 
   if (!opts.deferLoad) {
     loadMainRenderer(mainWindow);
