@@ -27,6 +27,47 @@ function decodeBase64Bytes(b64: string): Uint8Array {
 }
 
 /**
+ * Answers xterm generates BY ITSELF in response to a device query, which it
+ * delivers through the same `onData` a user's keystrokes come out of.
+ *
+ * A mirror must never answer: the machine that owns the pane has its own
+ * terminal, that one is the authoritative responder, and a second answer is a
+ * line of garbage typed into a live remote shell. (HeadlessSnapshot avoids the
+ * whole problem by never wiring `onData` at all — a mirror cannot, because it
+ * also has to carry real typing.)
+ *
+ * Matching by SHAPE is what makes this safe to apply to the live stream and not
+ * just to a replay: no key or key combination xterm encodes produces any of
+ * these. Arrows and function keys end in `A`–`H`, `~`, or an uppercase letter;
+ * a reply ends in lowercase `c`, `n`, `y`, `t`, or the specific `R` of a cursor
+ * report, and the DCS/OSC forms have no keyboard analogue at all.
+ *
+ * The stronger fix is upstream: neutralise the QUERIES so no reply is ever
+ * generated (xterm's `parser.registerCsiHandler` can swallow DA/DSR/DECRQM
+ * before the default handler answers), or have the daemon strip them from the
+ * bytes it fans out. Both are larger than this pane and out of scope here.
+ */
+// eslint-disable-next-line no-control-regex
+const DEVICE_REPLY_RE = new RegExp(
+  '^(?:' +
+    // Device attributes (DA1/DA2/DA3) and device status / cursor position.
+    '\\x1b\\[[?>=]?[0-9;]*[cnR]' +
+    // DECRPM — "mode Ps is currently Pm".
+    '|\\x1b\\[\\?[0-9;]*\\$y' +
+    // Window / text-area reports (CSI 8 ; rows ; cols t and friends).
+    '|\\x1b\\[[0-9;]+t' +
+    // DCS replies: DECRQSS, XTVERSION, DA3.
+    '|\\x1bP[^\\x1b]*\\x1b\\\\' +
+    // OSC colour reports (`rgb:....` under BEL or ST).
+    '|\\x1b\\][0-9;]*;?rgb:[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)' +
+    ')$',
+);
+
+export function isDeviceReply(data: string): boolean {
+  return DEVICE_REPLY_RE.test(data);
+}
+
+/**
  * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
  * own geometry events (meta on attach, resize afterwards) are the ONLY thing
  * that drives `term.resize()` — this component never calls a resize API back
@@ -47,24 +88,22 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   readOnlyRef.current = readOnly;
 
   /**
-   * True while a snapshot/repaint is being fed to the parser, to keep xterm's
-   * automatic REPLIES off the remote pane's stdin.
+   * How many snapshot repaints are currently being fed to the parser. Second
+   * line of defence behind {@link isDeviceReply}: a reply shape that list does
+   * not know about still cannot escape during a replay, which is where a
+   * snapshot's worth of queries arrives at once.
    *
-   * xterm answers device queries itself — DA1 (`ESC[c`), DSR/CPR (`ESC[6n`),
-   * DECRPM — and it delivers those answers through the SAME `onData` this
-   * component forwards to `remote.paneWrite`. A replayed snapshot contains
-   * whatever queries the remote app sent, so replaying it made the mirror type
-   * phantom responses into the remote pane. The remote's own GUI terminal is
-   * the authoritative responder; a mirror must never answer. This is the same
-   * reason HeadlessSnapshot states in its header that "no onData handler is
-   * ever wired" to its offscreen terminal.
+   * A COUNT, not a flag. xterm parses a large write in ~12 ms slices, so a
+   * second repaint can start while the first is still being consumed — and with
+   * a boolean the first callback would open the gate while the second snapshot
+   * was still parsing.
    *
-   * A repaint cannot distinguish a parser reply from a keystroke the user
-   * raced into the same window, so the gate suppresses `paneWrite` outright.
-   * Repaint windows are milliseconds; losing a keystroke to one is far cheaper
-   * than injecting query answers into a live remote shell.
+   * A repaint cannot distinguish a reply from a keystroke the user raced into
+   * the same window, so the gate suppresses `paneWrite` outright. Repaint
+   * windows are milliseconds; losing a keystroke to one is far cheaper than
+   * injecting query answers into a live remote shell.
    */
-  const repaintingRef = useRef(false);
+  const repaintDepthRef = useRef(0);
 
   /**
    * The same visual settings a local pane gets.
@@ -190,10 +229,19 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       if (!term) return;
       term.reset();
       term.resize(e.cols, e.rows);
-      repaintingRef.current = true;
-      term.write(decodeBase64Bytes(e.snapshotB64), () => {
-        repaintingRef.current = false;
-      });
+      repaintDepthRef.current += 1;
+      try {
+        term.write(decodeBase64Bytes(e.snapshotB64), () => {
+          repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+        });
+      } catch {
+        // `write` can throw before it ever queues the callback (xterm's
+        // WriteBuffer refuses past DISCARD_WATERMARK). Not decrementing here
+        // would latch the gate for the rest of the pane's life and silently
+        // swallow every keystroke — a far worse outcome than a lost repaint,
+        // which the next attach or reconnect replaces anyway.
+        repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+      }
     });
     // A resize on the machine that owns the pane. Geometry only: no reset and
     // no repaint, so the mirrored scrollback and the user's scroll position
@@ -219,7 +267,11 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
-      if (repaintingRef.current) return; // parser reply to a replayed query — see repaintingRef
+      // A query answer xterm produced on its own, from a replayed snapshot OR
+      // from live output — the remote app sends `ESC[6n` mid-session too, and
+      // gating only the repaint left that path answering. See isDeviceReply.
+      if (isDeviceReply(data)) return;
+      if (repaintDepthRef.current > 0) return;
       remote.paneWrite(attachId, data);
     });
 
