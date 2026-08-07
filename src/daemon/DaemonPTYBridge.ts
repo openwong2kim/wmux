@@ -8,6 +8,7 @@ import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
+import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 
 /**
@@ -23,9 +24,12 @@ import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
  *  - 'active'   → { sessionId: string }                — onActive cycle start
  *  - 'idle'     → { sessionId: string }                — onActiveToIdle
  *  - 'exit'     → { sessionId: string, exitCode, signal }
+ *  - 'resize'   → (no payload) — an applied geometry change; consumers read the
+ *                 new size from the session's own meta.
  */
 export class DaemonPTYBridge extends EventEmitter {
   private oscParser: OscParser | null = null;
+  private modeTracker: OutputModeTracker | null = null;
   private agentDetector: AgentDetector | null = null;
   private activityMonitor: ActivityMonitor | null = null;
   private dataDisposable: (() => void) | null = null;
@@ -93,6 +97,21 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Called by DaemonSessionManager.resizeSession on every applied resize. */
   noteResize(): void {
     this.lastResizeAtMs = Date.now();
+    // One event for BOTH resize paths (the phone's /api/sessions/:id/resize and
+    // the desk's RPC) — they both land in resizeSession, and an SSE viewer whose
+    // grid is now the wrong size renders every later absolute-positioned frame
+    // in the wrong place.
+    this.emit('resize');
+  }
+
+  /**
+   * Live terminal-mode state reconstructed from this session's output, or null
+   * before data forwarding is set up. Read by the SSE snapshot path so a capped
+   * window that no longer contains the mode switches can still be replayed
+   * faithfully — see util/outputModeTracker.ts.
+   */
+  get outputModes(): OutputModeTracker | null {
+    return this.modeTracker;
   }
 
   /**
@@ -178,6 +197,11 @@ export class DaemonPTYBridge extends EventEmitter {
   ): void {
     const oscParser = new OscParser();
     this.oscParser = oscParser;
+
+    // Fed from the same place the ring is written, so the tracked modes always
+    // describe exactly the bytes the ring holds.
+    const modeTracker = new OutputModeTracker();
+    this.modeTracker = modeTracker;
 
     const agentDetector = new AgentDetector();
     this.agentDetector = agentDetector;
@@ -331,6 +355,7 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.muted) return;
       try {
         ringBuffer.write(buf);
+        modeTracker.feed(data);
         oscParser.process(data);
 
         // Prompt-based CWD detection — fallback for shells WITHOUT the
@@ -440,6 +465,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.submittedTurnPending = false;
     this.inputInBracketedPaste = false;
     this.oscParser = null;
+    this.modeTracker = null;
     this.agentDetector = null;
     this.activityMonitor = null;
     this.sessionId = null;

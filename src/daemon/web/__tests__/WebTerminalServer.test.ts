@@ -10,6 +10,7 @@ import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
+import { OutputModeTracker } from '../../util/outputModeTracker';
 
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
@@ -368,7 +369,14 @@ describe('WebTerminalServer', () => {
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
-  let managed: { meta: Record<string, unknown>; deferred: boolean; viewerVisible: boolean };
+  let managed: {
+    meta: Record<string, unknown>;
+    deferred: boolean;
+    viewerVisible: boolean;
+    // Reassigned by the snapshot-preamble tests to stage a ring larger than the
+    // 256 KB window.
+    ringBuffer: { readAll: () => Buffer };
+  };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
@@ -4208,6 +4216,182 @@ describe('WebTerminalServer', () => {
       } finally {
         live.length = 3;
       }
+    });
+  });
+
+  // ── mode-safe snapshot window + resize propagation ────────────────────────
+  //
+  // `/api/stream` paints the LAST 256 KB of the ring. A fullscreen TUI switched
+  // to the alternate screen once, long before that window, so the window's
+  // absolute-positioned frames used to land on the client's normal buffer and
+  // interleave with scrollback. The daemon reconstructs the mode state instead
+  // (OutputModeTracker) and prepends a preamble to the snapshot payload.
+  describe('stream snapshot mode preamble', () => {
+    /** Read the SSE body until `until` holds (or 2s), then return the text. */
+    const readStream = async (
+      url: string,
+      ac: AbortController,
+      until: (text: string) => boolean,
+    ): Promise<string> => {
+      const res = await fetch(url, { signal: ac.signal });
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let text = '';
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !until(text)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) text += Buffer.from(value).toString('utf8');
+      }
+      return text;
+    };
+
+    /** Every `snapshot` event payload, decoded from base64. */
+    const snapshots = (text: string): string[] =>
+      [...text.matchAll(/event: snapshot\ndata: ([^\n]*)\n/g)].map((m) =>
+        Buffer.from(m[1], 'base64').toString('utf8'),
+      );
+
+    /** Every `meta` event payload, parsed. */
+    const metas = (text: string): Array<Record<string, unknown>> =>
+      [...text.matchAll(/event: meta\ndata: ([^\n]*)\n/g)].map(
+        (m) => JSON.parse(m[1]) as Record<string, unknown>,
+      );
+
+    /**
+     * Fill the fake session's ring with `head` followed by enough filler that
+     * `head` falls outside the snapshot window, and feed the same bytes to a
+     * real tracker hung off the fake bridge (the daemon does this at ring-write
+     * time in DaemonPTYBridge).
+     */
+    const primeRing = (head: string): void => {
+      const filler = 'x'.repeat(400 * 1024) + '\n';
+      const text = head + filler;
+      managed.ringBuffer.readAll = () => Buffer.from(text, 'utf8');
+      const tracker = new OutputModeTracker();
+      tracker.feed(text);
+      Object.assign(bridge, { outputModes: tracker });
+    };
+
+    it('★ prepends an alt-screen preamble when ?1049h scrolled out of the window', async () => {
+      // The exact field shape: the app entered the alternate screen at startup
+      // and has been painting ever since, so the switch is 400 KB back.
+      primeRing('\x1b[?1049h\x1b[2J\x1b[H');
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+
+      const [first] = snapshots(text);
+      expect(first).toBeDefined();
+      // The window itself no longer contains the switch…
+      expect(first.slice(32)).not.toContain('\x1b[?1049h');
+      // …so the payload has to open with it, plus an erase + home so the
+      // absolute-positioned frames that follow start from a blank grid.
+      expect(first.startsWith('\x1b[?1049h\x1b[2J\x1b[H')).toBe(true);
+    });
+
+    it('sends no preamble for a plain normal-buffer session', async () => {
+      primeRing('hello from a shell\n');
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+
+      const [first] = snapshots(text);
+      expect(first).toBeDefined();
+      expect(first.startsWith('\x1b')).toBe(false);
+    });
+
+    it('carries non-default modes other than alt screen (bracketed paste, mouse SGR)', async () => {
+      primeRing('\x1b[?2004h\x1b[?1002;1006h');
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+
+      const [first] = snapshots(text);
+      expect(first).toContain('\x1b[?1002h');
+      expect(first).toContain('\x1b[?1006h');
+      expect(first).toContain('\x1b[?2004h');
+      // No alt-screen switch was sent, so none is asserted.
+      expect(first).not.toContain('\x1b[?1049h');
+    });
+
+    it('★ re-sends meta AND a snapshot on an applied resize, debounced', async () => {
+      // A lone `meta` is never delivered by the Electron mirror client — it
+      // buffers meta and only dispatches it merged with the NEXT snapshot — so
+      // resize propagation has to be a pair, not a bare geometry update.
+      primeRing('\x1b[?1049h');
+      const info = await startRO();
+      const ac = new AbortController();
+      const url = `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`;
+      const res = await fetch(url, { signal: ac.signal });
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let text = '';
+      // `reader.read()` on an idle SSE stream never settles, so every read is
+      // raced against the remaining budget rather than checked after the fact.
+      const pump = async (untilCount: number, budgetMs: number): Promise<void> => {
+        const deadline = Date.now() + budgetMs;
+        while (Date.now() < deadline && snapshots(text).length < untilCount) {
+          const chunk = await Promise.race([
+            reader.read(),
+            new Promise<null>((r) => setTimeout(() => r(null), Math.max(1, deadline - Date.now()))),
+          ]);
+          if (!chunk) break;
+          if (chunk.done) break;
+          if (chunk.value) text += Buffer.from(chunk.value).toString('utf8');
+        }
+      };
+      await pump(1, 2000);
+      expect(snapshots(text)).toHaveLength(1);
+
+      // A drag-resize: several applied resizes in a burst. The stream must
+      // answer with ONE refreshed pair, not one per event.
+      managed.meta.cols = 100;
+      managed.meta.rows = 40;
+      for (let i = 0; i < 5; i++) bridge.emit('resize');
+      await pump(2, 2000);
+      // Give the debounce window room to fire a second time if it were going to.
+      await new Promise((r) => setTimeout(r, 300));
+      await pump(3, 100);
+
+      expect(snapshots(text)).toHaveLength(2);
+      const metaEvents = metas(text);
+      expect(metaEvents).toHaveLength(2);
+      expect(metaEvents[1]).toMatchObject({ cols: 100, rows: 40 });
+      // The refreshed snapshot carries the preamble too — the client resets its
+      // terminal on every meta+snapshot pair.
+      expect(snapshots(text)[1].startsWith('\x1b[?1049h')).toBe(true);
+    }, 15000);
+
+    it('drops the pending resize resend when the client disconnects', async () => {
+      primeRing('hello\n');
+      const info = await startRO();
+      const ac = new AbortController();
+      await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      bridge.emit('resize');
+      ac.abort();
+      await new Promise((r) => setTimeout(r, 300));
+      // No listener left behind by the aborted stream.
+      expect(bridge.listenerCount('resize')).toBe(0);
     });
   });
 });

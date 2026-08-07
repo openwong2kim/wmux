@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import type { DaemonSessionManager } from '../DaemonSessionManager';
+import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
 // headless-terminal dependency chain stay out of this module. The web server is
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
@@ -666,6 +666,14 @@ const MIN_RESIZE_INTERVAL_MS = 250;
 
 /** Sessions tracked for rate limiting before the map is swept against the roster. */
 const RESIZE_TRACKING_CAP = 256;
+
+/**
+ * Trailing debounce before an SSE stream answers an applied resize with a fresh
+ * meta+snapshot pair. A drag-resize applies a geometry per frame and each pair
+ * costs a full window; one repaint once the drag settles is what a viewer
+ * actually needs.
+ */
+const RESIZE_RESEND_DEBOUNCE_MS = 150;
 
 /**
  * Did the caller mention this field at all — as opposed to sending a value the
@@ -2470,20 +2478,7 @@ export class WebTerminalServer {
       ...this.securityHeaders(),
     });
 
-    // Initial paint: the bytes SessionPipe flushes to the GUI on attach, capped
-    // to a window — the ring is 8 MB by default and up to 64 MB, and base64
-    // inflates it by a third, which a phone reconnecting at every tunnel would
-    // pull each time. The truncation rides `meta` rather than a new event name,
-    // so a cached frontend that predates it is unaffected.
-    const snapshot = capSnapshot(managed.ringBuffer.readAll());
-    const meta = {
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-      truncated: snapshot.truncated,
-      omittedBytes: snapshot.omittedBytes,
-    };
-    writeSse(res, 'meta', JSON.stringify(meta));
-    writeSse(res, 'snapshot', snapshot.bytes.toString('base64'));
+    this.writeSnapshotFrame(res, managed);
 
     // Live tee off the bridge. This is a SECOND, independent listener — it does
     // not disturb the GUI's SessionPipe. maxListeners is relaxed because each
@@ -2504,15 +2499,42 @@ export class WebTerminalServer {
         /* ignore */
       }
     };
+    // An applied resize invalidates the client's grid: every absolute-positioned
+    // frame that follows was computed for the new size. `meta` alone is not
+    // enough — the Electron mirror client holds a meta until a snapshot follows
+    // it and never dispatches a lone one — so the answer is a fresh PAIR.
+    // Trailing-debounced because a drag-resize applies many geometries in a
+    // second and each pair costs a full window.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = (): void => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        const current = this.deps.sessionManager.getSession(sessionId);
+        if (!current) return;
+        try {
+          this.writeSnapshotFrame(res, current);
+        } catch {
+          /* client stream broken — the 'close' handler cleans up */
+        }
+      }, RESIZE_RESEND_DEBOUNCE_MS);
+    };
+
     bridge.on('data', onData);
     bridge.on('exit', onExit);
+    bridge.on('resize', onResize);
 
     const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
       stopHeartbeat();
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+        resizeTimer = null;
+      }
       bridge.removeListener('data', onData);
       bridge.removeListener('exit', onExit);
+      bridge.removeListener('resize', onResize);
     };
     const client: SseClient = { res, sessionId, detach, principal };
     this.clients.add(client);
@@ -2521,6 +2543,39 @@ export class WebTerminalServer {
       detach();
       this.clients.delete(client);
     });
+  }
+
+  /**
+   * One `meta` + `snapshot` pair: the initial paint, and the repaint after an
+   * applied resize. Always both events, in that order — every client resets its
+   * terminal on the pair, and the Electron mirror only delivers a `meta` that a
+   * `snapshot` follows.
+   *
+   * The snapshot payload is the capped window PREFIXED by a synthetic
+   * mode preamble (see util/outputModeTracker.ts). The prefix rides the
+   * existing `snapshot` event rather than a new event name, so a cached
+   * frontend that predates it replays it as ordinary bytes — which is exactly
+   * what it is. `omittedBytes` still counts only the ring bytes dropped from
+   * the front; the preamble was never in the ring.
+   */
+  private writeSnapshotFrame(res: http.ServerResponse, managed: ManagedSession): void {
+    // Capped to a window — the ring is 8 MB by default and up to 64 MB, and
+    // base64 inflates it by a third, which a phone reconnecting at every tunnel
+    // would pull each time. The truncation rides `meta` rather than a new event
+    // name, so a cached frontend that predates it is unaffected.
+    const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    const meta = {
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      truncated: snapshot.truncated,
+      omittedBytes: snapshot.omittedBytes,
+    };
+    const preamble = managed.bridge.outputModes?.preamble() ?? '';
+    const payload = preamble
+      ? Buffer.concat([Buffer.from(preamble, 'utf8'), snapshot.bytes])
+      : snapshot.bytes;
+    writeSse(res, 'meta', JSON.stringify(meta));
+    writeSse(res, 'snapshot', payload.toString('base64'));
   }
 
   // --- input (opt-in) -----------------------------------------------------
