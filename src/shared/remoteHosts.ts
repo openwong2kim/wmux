@@ -33,6 +33,20 @@ export interface RemoteWorkspacesResponse {
   workspaces: RemoteWorkspaceSummary[];
 }
 
+/** A persisted "this remote workspace was attached" record.
+ *
+ * Deliberately carries NO pane list: panes are a live property of the remote
+ * daemon, so a restored attachment always re-fetches them (a stale pane list
+ * on disk would mirror sessions that died while the app was closed). Carries
+ * no credential either — the token lives only in RemoteHost. */
+export interface RemoteAttachmentDescriptor {
+  key: string;           // `${hostId}:${workspaceId}` — same key the renderer slice uses
+  hostId: string;
+  hostLabel: string;     // label snapshot, so a sidebar row can render before the host list loads
+  workspaceId: string;
+  name: string;          // remote workspace name snapshot ('' possible)
+}
+
 /** Machine-readable reason for a REMOTE_HOSTS_PAIR failure — i18n happens
  *  renderer-side (AttachRemoteModal maps each reason to a translated
  *  string), so main never returns a human-facing message here. */
