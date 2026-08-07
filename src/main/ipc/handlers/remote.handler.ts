@@ -22,7 +22,7 @@ import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
-import { parseWebUrl } from '../../../shared/remoteHosts';
+import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey } from '../../../shared/remoteHosts';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
@@ -417,8 +417,13 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       if (!removed) return false;
 
       // A descriptor pointing at an unregistered host can never be restored
-      // (no token to reach it with), so it must not outlive the host.
-      attachments.removeByHost(hostId);
+      // (no token to reach it with), so it must not outlive the host. The
+      // write is best-effort ON PURPOSE: the host is already gone from the
+      // store by now, and letting a disk failure escape here would report a
+      // removal that actually happened as a failure.
+      try {
+        attachments.removeByHost(hostId);
+      } catch { /* see above — an orphan descriptor restores as a stale row */ }
       allowInputCache.delete(hostId);
       const client = clients.get(hostId);
       if (client) {
@@ -479,6 +484,11 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         workspaceId: assertString(d.workspaceId, 'workspaceId'),
         name: typeof d.name === 'string' ? d.name : '',
       };
+      // The key is what every later lookup addresses this record by, so it
+      // must actually derive from the pair it claims to describe — a record
+      // filed under someone else's key would be unremovable by its owner and
+      // would restore as a row pointing at the wrong workspace.
+      if (entry.key !== remoteAttachmentKey(entry.hostId, entry.workspaceId)) return false;
       // Refuse to record an attachment for a host we do not have — it could
       // never be restored, and would leak a row into the sidebar forever.
       if (!store.get(entry.hostId)) return false;
@@ -497,7 +507,12 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   ipcMain.handle(IPC.REMOTE_ATTACHMENTS_REMOVE, wrapHandler(IPC.REMOTE_ATTACHMENTS_REMOVE,
     async (_e: IpcMainInvokeEvent, key: unknown): Promise<boolean> => {
       try {
-        return attachments.remove(assertString(key, 'key'));
+        const k = assertString(key, 'key');
+        // Same derivation gate as add: only a well-formed
+        // `<hostId>:<workspaceId>` addresses a record, so a key that cannot
+        // have been minted by the attach path deletes nothing.
+        if (!parseRemoteAttachmentKey(k)) return false;
+        return attachments.remove(k);
       } catch {
         return false;
       }

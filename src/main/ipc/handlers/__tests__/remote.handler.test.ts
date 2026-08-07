@@ -844,6 +844,45 @@ describe('remote.handler — attachment descriptors', () => {
     await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([]);
   });
 
+  // Finding 9 — `key` is what every later lookup addresses the record by.
+  it('refuses a descriptor whose key does not derive from its own ids', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, key: 'h9:ws-9' })).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, key: 'ws-1' })).resolves.toBe(false);
+    expect(attachments.add).not.toHaveBeenCalled();
+  });
+
+  it('refuses a remove for a key nothing could have minted', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'no-separator')).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, ':ws-1')).resolves.toBe(false);
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_REMOVE)({}, 'h1:')).resolves.toBe(false);
+    expect(attachments.remove).not.toHaveBeenCalled();
+    await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([descriptor]);
+  });
+
+  // Finding 5 — the cascade runs AFTER the host is already gone from the
+  // store, so letting it throw would report a completed removal as a failure.
+  it('hostsRemove still reports success when the descriptor cascade fails', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments([descriptor]);
+    attachments.removeByHost.mockImplementation(() => { throw new Error('EACCES'); });
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never, clientFactory: () => client });
+    // Clients are lazy — attach once so there is something left to tear down.
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender: fakeSender(202) }, 'h1', 's1');
+
+    await expect(getHandler(IPC.REMOTE_HOSTS_REMOVE)({}, 'h1')).resolves.toBe(true);
+    // The rest of the teardown still ran.
+    expect(client.detachAll).toHaveBeenCalledTimes(1);
+  });
+
   it('hostsRemove cascades into the descriptors of that host', async () => {
     const store = fakeStore([host]);
     const attachments = fakeAttachments([descriptor, { ...descriptor, key: 'h2:ws-1', hostId: 'h2' }]);
