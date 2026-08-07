@@ -13,6 +13,8 @@ import { dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../s
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
+  DESKTOP_PRESENCE_STALE_CAP_MS,
+  failOpenPresenceConfig,
   type PushPresenceSuppressionConfig,
 } from './push/presence';
 
@@ -155,10 +157,20 @@ export function createDefaultConfig(): DaemonConfig {
  * `browser.cdp`). `validateConfig` ignores the slice, so a garbage value here
  * can never trigger the whole-file reset.
  *
- * The asymmetry that matters: a malformed `staleAfterMs` falls back to the
- * default rather than to "infinite", because a huge freshness window would
- * suppress pushes forever off one ancient focus report. A non-positive value
- * is left as-is and read by `isDesktopPresent` as "never fresh", which sends.
+ * Exactly what happens, so the doc and the code cannot drift:
+ *
+ * - An ABSENT slice, or an absent `enabled`, takes `defaults.enabled` — which
+ *   is `true` for a config file that merely predates the feature, and `false`
+ *   for the error paths that pass `failOpenPresenceConfig()`. Absence in a
+ *   readable file is a preference; absence because nothing could be read is
+ *   not, and only the caller can tell those apart.
+ * - A non-boolean `enabled` is garbage rather than a preference, and garbage
+ *   resolves toward SENDING: suppression goes off.
+ * - `staleAfterMs` is clamped to `(0, DESKTOP_PRESENCE_STALE_CAP_MS]`. A huge
+ *   finite value is not a preference either — it is permanent suppression off
+ *   one ancient focus report. Absent/non-numeric takes the default; `0` or
+ *   negative is preserved and read by `isDesktopPresent` as "never fresh",
+ *   which sends.
  */
 function coercePushPresenceSuppression(
   raw: unknown,
@@ -169,13 +181,50 @@ function coercePushPresenceSuppression(
     : {});
   const enabledRaw = slice['enabled'];
   const staleRaw = slice['staleAfterMs'];
+  const stale =
+    typeof staleRaw === 'number' && Number.isFinite(staleRaw)
+      ? Math.floor(staleRaw)
+      : defaults.staleAfterMs;
   return {
-    enabled: typeof enabledRaw === 'boolean' ? enabledRaw : defaults.enabled,
-    staleAfterMs:
-      typeof staleRaw === 'number' && Number.isFinite(staleRaw)
-        ? Math.floor(staleRaw)
-        : defaults.staleAfterMs,
+    enabled:
+      enabledRaw === undefined
+        ? defaults.enabled
+        : typeof enabledRaw === 'boolean'
+          ? enabledRaw
+          : false,
+    staleAfterMs: Math.min(stale, DESKTOP_PRESENCE_STALE_CAP_MS),
   };
+}
+
+/**
+ * Read `pushPresenceSuppression` WITHOUT the repair behaviour of `loadConfig`.
+ *
+ * `loadConfig` rewrites config.json with defaults when it cannot parse the
+ * file. That is right for boot — a daemon needs a config — and wrong for a
+ * per-approval read on the push path, where an unlucky moment (a half-written
+ * file, a transient EIO) would silently discard the user's whole config to
+ * answer a question about one notification. This reads, never writes, and
+ * resolves every failure to `failOpenPresenceConfig()`, i.e. send the push.
+ */
+export function readPushPresenceSuppression(): PushPresenceSuppressionConfig {
+  const failOpen = failOpenPresenceConfig();
+  try {
+    const raw = fs.readFileSync(getConfigPath(), 'utf-8');
+    const parsed: unknown = JSON.parse(raw, (key, value) => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    });
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return failOpen;
+    const slice = (parsed as Record<string, unknown>)['pushPresenceSuppression'];
+    // A file that simply predates the feature is not an error — it gets the
+    // shipped default (ON). Only unreadable/unparseable lands on fail-open.
+    return coercePushPresenceSuppression(slice, {
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    });
+  } catch {
+    return failOpen;
+  }
 }
 
 /**

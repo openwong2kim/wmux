@@ -2,7 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createDefaultConfig, loadConfig, saveConfig, getWmuxDir } from '../config';
+import {
+  createDefaultConfig,
+  loadConfig,
+  readPushPresenceSuppression,
+  saveConfig,
+  getWmuxDir,
+} from '../config';
+import {
+  DESKTOP_PRESENCE_STALE_AFTER_MS,
+  DESKTOP_PRESENCE_STALE_CAP_MS,
+} from '../push/presence';
 import type { DaemonConfig } from '../types';
 
 /** Use a temp directory instead of the real ~/.wmux */
@@ -455,5 +465,79 @@ describe('loadConfig — browser.cdp backfill (#613, non-destructive)', () => {
     const c0 = createDefaultConfig();
     writeRawConfig({ ...c0, browser: { cdp: { enabled: false } } });
     expect(loadConfig().browser).toEqual({ cdp: { enabled: false } });
+  });
+});
+
+describe('pushPresenceSuppression — per-field backfill', () => {
+  it('ships ON with the default freshness window', () => {
+    expect(createDefaultConfig().pushPresenceSuppression).toEqual({
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    });
+  });
+
+  it('backfills an absent slice (old config.json) to ON without touching siblings', () => {
+    const c0 = createDefaultConfig();
+    const withoutSlice = { ...c0 };
+    delete withoutSlice.pushPresenceSuppression;
+    writeRawConfig(withoutSlice);
+    const loaded = loadConfig();
+    expect(loaded.pushPresenceSuppression?.enabled).toBe(true);
+    expect(loaded.daemon.pipeName).toBe(c0.daemon.pipeName);
+  });
+
+  it('honours enabled:false verbatim (the opt-out path)', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, pushPresenceSuppression: { enabled: false } });
+    expect(loadConfig().pushPresenceSuppression?.enabled).toBe(false);
+  });
+
+  it('resolves a non-boolean enabled toward SENDING, not toward the ON default', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, pushPresenceSuppression: { enabled: 'yes' } });
+    expect(loadConfig().pushPresenceSuppression?.enabled).toBe(false);
+  });
+
+  it('clamps a huge staleAfterMs — permanent suppression is not a preference', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({
+      ...c0,
+      pushPresenceSuppression: { enabled: true, staleAfterMs: 24 * 60 * 60_000 },
+    });
+    expect(loadConfig().pushPresenceSuppression?.staleAfterMs).toBe(DESKTOP_PRESENCE_STALE_CAP_MS);
+  });
+});
+
+describe('readPushPresenceSuppression', () => {
+  it('reads the slice without rewriting the file', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, pushPresenceSuppression: { enabled: true, staleAfterMs: 1234 } });
+    const configPath = path.join(getWmuxDir(), 'config.json');
+    const before = fs.readFileSync(configPath, 'utf-8');
+    expect(readPushPresenceSuppression()).toEqual({ enabled: true, staleAfterMs: 1234 });
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  it('falls back to SENDING when the file is missing', () => {
+    expect(readPushPresenceSuppression().enabled).toBe(false);
+  });
+
+  it('falls back to SENDING on malformed JSON, and does NOT repair the file', () => {
+    const wmuxDir = getWmuxDir();
+    fs.mkdirSync(wmuxDir, { recursive: true });
+    const configPath = path.join(wmuxDir, 'config.json');
+    fs.writeFileSync(configPath, '{ not json', 'utf-8');
+
+    expect(readPushPresenceSuppression().enabled).toBe(false);
+    // loadConfig would have overwritten the user's file with defaults here.
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe('{ not json');
+  });
+
+  it('treats a readable file that predates the feature as ON', () => {
+    const c0 = createDefaultConfig();
+    const withoutSlice = { ...c0 };
+    delete withoutSlice.pushPresenceSuppression;
+    writeRawConfig(withoutSlice);
+    expect(readPushPresenceSuppression().enabled).toBe(true);
   });
 });
