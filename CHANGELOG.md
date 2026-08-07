@@ -1,3 +1,43 @@
+## [3.39.1] — 2026-08-07
+
+### Fixed
+
+- **Detach on an attached remote workspace now works.** Right-clicking the
+  sidebar row opened its menu, but pressing "Detach" did nothing at all. The
+  menu dismissed itself on `mousedown`, which arrives before `click`, so the
+  button unmounted under the pointer before its own handler could ever run —
+  the action was unreachable rather than broken.
+
+- **Mirrored remote panes use your terminal font, theme and contrast floor.**
+  An attached remote workspace built its terminal without any of the app's
+  visual settings, so it fell back to xterm's own defaults — `monospace` at
+  15px on black, outside the theme's ANSI palette. Next to a local pane it read
+  as slightly bolder and slightly larger, because it was. Changing the settings
+  now updates the mirror without dropping what the remote has already sent.
+
+  One difference remains: local panes render through WebGL and mirrors use
+  xterm's DOM renderer, whose text antialiasing differs. Matching size, family
+  and palette removes most of the mismatch, not all of it.
+
+- **Mirrored panes no longer tear on Korean and other wide text.** The mirror
+  re-renders a grid the remote daemon computed, but it was the one terminal in
+  the app that skipped the shared Unicode width model — so every double-width
+  character put the two grids one cell further apart, and rows arrived
+  interleaved and torn.
+
+- **Mirrored panes stay inside their box.** A remote pane with more rows than
+  the local cell can show rendered taller than its container, and nothing in
+  the chain clipped it, so terminal output painted over the composer bar and
+  the sidebar. Typing made it obvious because that is when the overflowing rows
+  got repainted.
+
+  This clips rather than scales: geometry belongs to the remote daemon and the
+  mirror never resizes it, so a remote grid taller than the local cell now has
+  its lower rows cut off instead of drawn over the app. That is the better of
+  two bad outcomes, not a good one — the cropped region is where the cursor and
+  live output are. Fitting the mirror to the cell needs a geometry negotiation
+  that does not exist yet.
+
 ## [3.39.0] — 2026-08-06
 
 ### Added
