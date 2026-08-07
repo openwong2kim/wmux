@@ -434,6 +434,76 @@ function applyRestrictiveWindowsAclForFreshFile(filePath: string): void {
   }
 }
 
+/**
+ * Replace a token file that is written REPEATEDLY, without paying the
+ * overwrite penalty and without opening a deferred-hardening window.
+ *
+ * `secureWriteTokenFile` writes in place, and an in-place overwrite is exactly
+ * what forces the expensive branch: `writeFileSync` preserves the existing
+ * file's ACL, so any broad EXPLICIT ACE already on it survives, and only the
+ * PowerShell DACL rebuild removes one. That rebuild measures 1.8-3.8s under AV,
+ * which is fine once at first creation and not fine on every mutation — a
+ * registry the user edits from a modal would stall the process for seconds per
+ * click.
+ *
+ * The way out is to stop overwriting. Writing a NEW inode and renaming it over
+ * the target sidesteps the reason the slow path exists: a freshly created file
+ * carries only INHERITED ACEs, which is precisely the case
+ * `applyRestrictiveWindowsAclForFreshFile` is documented as security-equivalent
+ * for. The DACL travels with the file through the rename, so the replacement is
+ * already hardened the moment it becomes visible under the real name.
+ *
+ * Deliberately NOT the deferred re-harden `DeviceStore` uses. That store can
+ * afford a window between rename and hardening because its file holds no
+ * secret — salts and scrypt outputs are useless without a secret that is never
+ * written down. A token file cannot afford it: the bytes on disk ARE the
+ * credential, so the hardening happens synchronously, BEFORE the rename
+ * publishes them.
+ *
+ * Fail-closed, and the failure cannot damage what is already there: everything
+ * happens on the temp file, and any error deletes it and throws with the
+ * previous file untouched. The rename is atomic, so a crash mid-write can no
+ * longer leave a half-written registry — which plain `writeFileSync` could.
+ */
+export function secureReplaceTokenFile(filePath: string, contents: string): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // First write ever: there is nothing to replace, and `secureWriteTokenFile`
+  // already takes the fresh-file fast path. Delegating keeps one definition of
+  // what a freshly created token file must look like.
+  if (!fs.existsSync(filePath)) {
+    secureWriteTokenFile(filePath, contents);
+    return;
+  }
+
+  // Same directory: rename is only atomic within a volume, and the temp file
+  // must inherit the SAME ACEs the real file would, or hardening it would be
+  // measuring the wrong parent.
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents, { encoding: 'utf8', mode: 0o600 });
+    if (process.platform === 'win32') {
+      applyRestrictiveWindowsAclForFreshFile(tmp);
+    } else {
+      // `mode` covers the new inode, but honour the same explicit-repair
+      // discipline the in-place path uses rather than trusting the umask.
+      fs.chmodSync(tmp, 0o600);
+    }
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // Best-effort cleanup; the temp file may never have been created.
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to securely replace ${filePath}: ${message}`);
+  }
+}
+
 export function secureWriteTokenFile(filePath: string, token: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {

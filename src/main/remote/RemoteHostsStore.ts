@@ -2,15 +2,16 @@
 //
 // Each record carries a long-term bearer token that grants scrollback read +
 // keystroke injection on another machine, so it is persisted exclusively via
-// secureWriteTokenFile (owner-only perms/DACL, fail-closed) and re-hardened on
-// every load with reHardenTokenFileAcl — mirroring the daemon/lanlink/peers.ts
-// precedent. Plain fs.writeFileSync is forbidden for this file.
+// secureReplaceTokenFile (owner-only perms/DACL, fail-closed, hardened before
+// the rename publishes it) and re-hardened on every load with
+// reHardenTokenFileAcl — mirroring the daemon/lanlink/peers.ts precedent.
+// Plain fs.writeFileSync is forbidden for this file.
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import type { RemoteHost, RemoteHostPublic } from '../../shared/remoteHosts';
 import { parseWebUrl } from '../../shared/remoteHosts';
-import { reHardenTokenFileAcl, secureWriteTokenFile } from '../../shared/security';
+import { reHardenTokenFileAcl, secureReplaceTokenFile } from '../../shared/security';
 
 function toPublic(host: RemoteHost): RemoteHostPublic {
   const { token: _token, ...rest } = host;
@@ -122,7 +123,13 @@ export class RemoteHostsStore {
   }
 
   private persist(hosts: RemoteHost[]): void {
-    secureWriteTokenFile(this.filePath, JSON.stringify(hosts));
+    // `secureReplaceTokenFile`, not `secureWriteTokenFile`: this file is
+    // rewritten on every add and every remove, and the in-place write forces
+    // the PowerShell DACL rebuild (1.8-3.8s under AV) on all but the first
+    // one. That landed on the operator's × button — removing a host froze the
+    // app for seconds on Windows. The replacement path hardens a fresh inode
+    // and renames it in, so it stays fail-closed with no deferred window.
+    secureReplaceTokenFile(this.filePath, JSON.stringify(hosts));
   }
 
   private load(): void {

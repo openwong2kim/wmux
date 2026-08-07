@@ -4,19 +4,24 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemoteHostsStore } from '../RemoteHostsStore';
 
-const { secureWriteTokenFileMock } = vi.hoisted(() => ({
-  secureWriteTokenFileMock: vi.fn(),
+const { securePersistMock } = vi.hoisted(() => ({
+  securePersistMock: vi.fn(),
 }));
 
 vi.mock('../../../shared/security', async () => {
   const actual = await vi.importActual<typeof import('../../../shared/security')>('../../../shared/security');
   // Defaults to the real implementation so every pre-existing test in this
   // file (persistence, permissions, corrupt-file tolerance) is unaffected —
-  // only the M4 test below overrides it to simulate a persist failure.
-  secureWriteTokenFileMock.mockImplementation(actual.secureWriteTokenFile);
+  // only the M4 tests below override it to simulate a persist failure.
+  //
+  // Targets `secureReplaceTokenFile`: the store writes through the replace
+  // path so a rewrite never pays the in-place overwrite's PowerShell DACL
+  // rebuild. What these tests assert (a throw leaves memory untouched) is
+  // unchanged — only which function throws it.
+  securePersistMock.mockImplementation(actual.secureReplaceTokenFile);
   return {
     ...actual,
-    secureWriteTokenFile: secureWriteTokenFileMock,
+    secureReplaceTokenFile: securePersistMock,
   };
 });
 
@@ -139,7 +144,7 @@ describe('RemoteHostsStore', () => {
   // actually saved. Build-then-persist-then-assign fixes that.
   it('a persist failure during add() leaves list() unchanged', () => {
     const store = new RemoteHostsStore(filePath);
-    secureWriteTokenFileMock.mockImplementationOnce(() => {
+    securePersistMock.mockImplementationOnce(() => {
       throw new Error('EACCES: chmod failed');
     });
 
@@ -153,7 +158,7 @@ describe('RemoteHostsStore', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    secureWriteTokenFileMock.mockImplementationOnce(() => {
+    securePersistMock.mockImplementationOnce(() => {
       throw new Error('EACCES: chmod failed');
     });
 
@@ -206,7 +211,7 @@ describe('RemoteHostsStore', () => {
 
   it('a persist failure during addDirect() leaves list() unchanged', () => {
     const store = new RemoteHostsStore(filePath);
-    secureWriteTokenFileMock.mockImplementationOnce(() => {
+    securePersistMock.mockImplementationOnce(() => {
       throw new Error('EACCES: chmod failed');
     });
 

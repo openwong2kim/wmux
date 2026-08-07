@@ -7,6 +7,7 @@ const fsMock = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
   chmodSync: vi.fn(),
+  renameSync: vi.fn(),
   promises: { chmod: vi.fn() },
 }));
 
@@ -20,6 +21,7 @@ vi.mock('fs', () => ({
   writeFileSync: fsMock.writeFileSync,
   unlinkSync: fsMock.unlinkSync,
   chmodSync: fsMock.chmodSync,
+  renameSync: fsMock.renameSync,
   promises: fsMock.promises,
 }));
 
@@ -806,5 +808,110 @@ describe('scheduleTokenFileReHarden (S-A deferred re-harden)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+/**
+ * `secureReplaceTokenFile` — the repeated-write path.
+ *
+ * The property under test is not "it writes the file". It is that replacing a
+ * token file never takes the PowerShell rebuild (the 1.8-3.8s stall that made
+ * removing a remote host freeze the app on Windows) AND never publishes the
+ * new bytes before they are hardened. Those two pull in opposite directions,
+ * which is why this is not just a call to the existing writer.
+ */
+describe('secureReplaceTokenFile', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    execFileSyncMock.mockReset();
+    fsMock.existsSync.mockReset();
+    fsMock.renameSync.mockReset();
+  });
+
+  it('hardens the temp file and renames it in — never PowerShell, never a plain overwrite', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubPowershellPresent(true);
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+
+    const target = path.join('C:', 'Users', 'tester', '.wmux', 'remoteHosts.json');
+    // Directory and target both already exist — the overwrite case.
+    fsMock.existsSync.mockReturnValue(true);
+
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target, '[{"id":"h1"}]');
+
+    // Written to a temp path, not over the target.
+    const written = fsMock.writeFileSync.mock.calls.at(-1);
+    expect(written?.[0]).not.toBe(target);
+    expect(String(written?.[0])).toContain('.tmp');
+
+    // Hardened via the fast icacls primitive on that temp path...
+    const icacls = execFileSyncMock.mock.calls.find((c) => String(c[0]).includes('icacls.exe'));
+    expect(icacls).toBeTruthy();
+    expect(String(icacls?.[1]?.[0])).toContain('.tmp');
+
+    // ...and NOT via the PowerShell DACL rebuild, which is the whole point.
+    const ps = execFileSyncMock.mock.calls.find((c) => String(c[0]).includes('powershell.exe'));
+    expect(ps).toBeFalsy();
+
+    // Published by rename only after hardening.
+    expect(fsMock.renameSync).toHaveBeenCalledWith(written?.[0], target);
+    const renameOrder = fsMock.renameSync.mock.invocationCallOrder[0]!;
+    const icaclsOrder = execFileSyncMock.mock.invocationCallOrder.at(-1)!;
+    expect(icaclsOrder).toBeLessThan(renameOrder);
+  });
+
+  it('leaves the previous file untouched when hardening fails, and drops the temp', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubPowershellPresent(false);
+    execFileSyncMock.mockImplementation(() => { throw new Error('icacls denied'); });
+
+    const target = path.join('C:', 'Users', 'tester', '.wmux', 'remoteHosts.json');
+    fsMock.existsSync.mockReturnValue(true);
+
+    const { secureReplaceTokenFile } = await import('../security');
+    expect(() => secureReplaceTokenFile(target, '[]')).toThrow(/Failed to securely replace/);
+
+    // The credential never became visible under the real name...
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+    // ...and the temp copy of it was removed.
+    const unlinked = fsMock.unlinkSync.mock.calls.at(-1);
+    expect(String(unlinked?.[0])).toContain('.tmp');
+    expect(unlinked?.[0]).not.toBe(target);
+  });
+
+  it('delegates the very first write to the fresh-file path', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const target = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
+    // Directory exists, target does not.
+    fsMock.existsSync.mockImplementation((p: unknown) => String(p) !== target);
+
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target, '[]');
+
+    // Straight to the target, no temp dance — there is nothing to replace.
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(target, '[]', { encoding: 'utf8', mode: 0o600 });
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+  });
+
+  it('chmods the temp file on POSIX before publishing it', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const target = path.join('/home', 'u', '.wmux', 'remoteHosts.json');
+    fsMock.existsSync.mockReturnValue(true);
+
+    const { secureReplaceTokenFile } = await import('../security');
+    secureReplaceTokenFile(target, '[]');
+
+    const chmodded = fsMock.chmodSync.mock.calls.at(-1);
+    expect(String(chmodded?.[0])).toContain('.tmp');
+    expect(chmodded?.[1]).toBe(0o600);
+    const chmodOrder = fsMock.chmodSync.mock.invocationCallOrder.at(-1)!;
+    const renameOrder = fsMock.renameSync.mock.invocationCallOrder.at(-1)!;
+    expect(chmodOrder).toBeLessThan(renameOrder);
   });
 });
