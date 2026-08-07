@@ -60,6 +60,13 @@ export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX = 3600;
 export const PROJECT_FANOUT_PORT_MIN = 1024;
 /** Highest port a `fanout.portRange` may claim. */
 export const PROJECT_FANOUT_PORT_MAX = 65535;
+/**
+ * Widest window accepted. Assignment probes the window serially by binding, so
+ * `"1024-65535"` would mean tens of thousands of binds before the first task
+ * spawns. A fan-out is capped at 8 tasks; 512 is already two orders of
+ * magnitude of headroom, and a wider window is a typo, not an intent.
+ */
+export const PROJECT_FANOUT_MAX_RANGE_WIDTH = 512;
 
 export interface WmuxProjectCommand {
   id: string;
@@ -68,10 +75,11 @@ export interface WmuxProjectCommand {
 }
 
 /**
- * Per-repo fan-out settings (T2). Both fields are optional; an invalid value
- * drops the whole `fanout` section (the rest of the file still applies), which
- * fails closed for `setup` — nothing runs — and merely returns port assignment
- * to its pre-feature state.
+ * Per-repo fan-out settings (T2). Both fields are optional and normalize
+ * INDEPENDENTLY: a typo'd `portRange` must not throw away a `setup` hook the
+ * user already reviewed and trusted. A rejected field is dropped (failing
+ * closed — nothing malformed ever runs) and named in `invalidFields` so the
+ * fan-out can report "declared but malformed" instead of "not declared".
  */
 export interface WmuxProjectFanout {
   /**
@@ -86,6 +94,8 @@ export interface WmuxProjectFanout {
    * has trusted THESE wmux.json bytes — see ProjectConfigStore.
    */
   setup?: string;
+  /** Fields the author wrote that failed validation and were dropped. */
+  invalidFields?: ('portRange' | 'setup')[];
 }
 
 export interface WmuxProjectLayoutLeaf {
@@ -511,50 +521,68 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
 
 // ── fanout ───────────────────────────────────────────────────────────────────
 
+/** Why a `portRange` string was rejected — surfaced so a typo is diagnosable
+ *  instead of silently behaving like "no range declared". */
+export type FanoutPortRangeError =
+  | 'not-a-string'
+  | 'not-a-range'
+  | 'out-of-bounds'
+  | 'inverted'
+  | 'too-wide';
+
+export type FanoutPortRangeResult =
+  | { ok: true; range: { min: number; max: number } }
+  | { ok: false; reason: FanoutPortRangeError };
+
 /**
- * Parse a `"min-max"` port window. Returns null for anything that isn't two
- * plain decimal numbers inside the allowed range with min <= max — a typo must
- * not resolve to a half-window that silently collides.
+ * Parse a `"min-max"` port window. Anything that isn't two plain decimal
+ * numbers inside the allowed bounds, ascending, and no wider than
+ * PROJECT_FANOUT_MAX_RANGE_WIDTH is rejected with a reason — a typo must not
+ * resolve to a half-window that silently collides, and an enormous window must
+ * not turn task spawning into tens of thousands of serial bind probes.
  */
-export function parseFanoutPortRange(input: unknown): { min: number; max: number } | null {
-  if (typeof input !== 'string') return null;
+export function parseFanoutPortRange(input: unknown): FanoutPortRangeResult {
+  if (typeof input !== 'string') return { ok: false, reason: 'not-a-string' };
   const match = /^\s*(\d{1,5})\s*-\s*(\d{1,5})\s*$/.exec(input);
-  if (!match) return null;
+  if (!match) return { ok: false, reason: 'not-a-range' };
   const min = Number(match[1]);
   const max = Number(match[2]);
-  if (!Number.isInteger(min) || !Number.isInteger(max)) return null;
-  if (min < PROJECT_FANOUT_PORT_MIN || max > PROJECT_FANOUT_PORT_MAX) return null;
-  if (min > max) return null;
-  return { min, max };
+  if (min < PROJECT_FANOUT_PORT_MIN || max > PROJECT_FANOUT_PORT_MAX) return { ok: false, reason: 'out-of-bounds' };
+  if (min > max) return { ok: false, reason: 'inverted' };
+  if (max - min + 1 > PROJECT_FANOUT_MAX_RANGE_WIDTH) return { ok: false, reason: 'too-wide' };
+  return { ok: true, range: { min, max } };
 }
 
 /**
- * Normalize the `fanout` section. Returns undefined when nothing usable
- * remains — including when a field is present but malformed, so a bad `setup`
- * string can never partially survive into an executable position.
+ * Normalize the `fanout` section. The two fields are INDEPENDENT: a malformed
+ * `portRange` drops only the range, never the `setup` hook the user already
+ * approved (and vice versa). Dropped fields are named in `invalidFields` so the
+ * fan-out reports "declared but malformed" rather than staying silent.
  */
 function normalizeFanout(input: unknown): WmuxProjectFanout | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const src = input as { portRange?: unknown; setup?: unknown };
+  const invalidFields: ('portRange' | 'setup')[] = [];
 
   let portRange: { min: number; max: number } | undefined;
   if (src.portRange !== undefined) {
     const parsed = parseFanoutPortRange(src.portRange);
-    if (parsed === null) return undefined;
-    portRange = parsed;
+    if (parsed.ok) portRange = parsed.range;
+    else invalidFields.push('portRange');
   }
 
   let setup: string | undefined;
   if (src.setup !== undefined) {
     const cmd = normCommand(src.setup);
-    if (cmd === undefined) return undefined;
-    setup = cmd;
+    if (cmd === undefined) invalidFields.push('setup');
+    else setup = cmd;
   }
 
-  if (portRange === undefined && setup === undefined) return undefined;
+  if (portRange === undefined && setup === undefined && invalidFields.length === 0) return undefined;
   const out: WmuxProjectFanout = {};
   if (portRange !== undefined) out.portRange = portRange;
   if (setup !== undefined) out.setup = setup;
+  if (invalidFields.length > 0) out.invalidFields = invalidFields;
   return out;
 }
 

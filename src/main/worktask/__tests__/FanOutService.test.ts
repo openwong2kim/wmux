@@ -12,6 +12,7 @@ import { FanOutService, buildInitialCommand, WORKER_DELIVERY_PREAMBLE } from '..
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
+import { clearFanoutPortReservationsForTest } from '../fanoutEnvironment';
 
 let metaRoot: string;
 beforeEach(() => {
@@ -557,6 +558,12 @@ describe('T2 per-repo fan-out environment (ports + setup hook)', () => {
     return { getState: vi.fn(async () => state) };
   }
 
+  // Port reservations are module state shared by every fan-out in the process,
+  // so each case starts from an empty ledger.
+  beforeEach(() => {
+    clearFanoutPortReservationsForTest();
+  });
+
   it('hands each task a distinct WMUX_TASK_PORT from the declared range', async () => {
     const daemon = makeDaemonFake();
     const renderer = makeRendererFake();
@@ -608,5 +615,91 @@ describe('T2 per-repo fan-out environment (ports + setup hook)', () => {
     expect(fs.existsSync(marker)).toBe(false);
     // The tasks themselves still spawn — an ungated hook is skipped, not fatal.
     expect(res.tasks.every((t) => t.ok)).toBe(true);
+  });
+
+  it('reports a malformed portRange instead of silently handing out no ports', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      // The schema rejected the range but KEPT the trusted setup declaration —
+      // one typo must not disarm the other field.
+      project: makeProjectFake({
+        found: true,
+        root: '/repo',
+        trust: 'trusted',
+        config: { version: 1, fanout: { invalidFields: ['portRange'] } },
+      }),
+    });
+
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    expect(res.portRangeInvalid).toBe(true);
+    expect(res.tasks.every((t) => t.port === undefined)).toBe(true);
+    expect(renderer.spawned.every((s) => s.env === undefined)).toBe(true);
+  });
+
+  it('fails ONLY the task whose setup hook failed, and gives it no port', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    // A hook that fails the first time it runs and succeeds afterwards, so one
+    // task's failure can be observed not to take the other one down.
+    const sentinel = path.join(metaRoot, 'first-run');
+    const hookScript = path.join(metaRoot, 'hook.js');
+    fs.writeFileSync(
+      hookScript,
+      `const fs = require('fs');\n` +
+        `if (!fs.existsSync(${JSON.stringify(sentinel)})) {\n` +
+        `  fs.writeFileSync(${JSON.stringify(sentinel)}, '1');\n` +
+        `  console.error('setup exploded');\n` +
+        `  process.exit(1);\n` +
+        `}\n`,
+      'utf8',
+    );
+    // The hook runs IN the worktree, so this fake has to materialize the
+    // directory git would have created.
+    const worktrees = makeWorktreesFake();
+    const create = worktrees.createWorktree;
+    worktrees.createWorktree = vi.fn(async (plan: TaskWorktreePlan) => {
+      fs.mkdirSync(plan.worktreePath, { recursive: true });
+      return create(plan);
+    });
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees,
+      project: makeProjectFake({
+        found: true,
+        root: '/repo',
+        trust: 'trusted',
+        config: {
+          version: 1,
+          fanout: { portRange: { min: 39200, max: 39220 }, setup: `node ${JSON.stringify(hookScript)}` },
+        },
+      }),
+    });
+
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+
+    const [first, second] = res.tasks;
+    expect(first.ok).toBe(false);
+    expect(first.setupFailed).toBe(true);
+    expect(first.error).toMatch(/setup exploded/);
+    expect(first.preservedWorktree).toBeTruthy();
+    // No pane was ever opened for it, so it owns no port.
+    expect(first.port).toBeUndefined();
+    expect(renderer.spawned.some((s) => s.env?.WMUX_TASK_PORT === '39200')).toBe(false);
+
+    // The next task ran its (now-succeeding) hook and spawned normally.
+    expect(second.ok).toBe(true);
+    expect(typeof second.port).toBe('number');
+    expect(renderer.spawned).toHaveLength(1);
+    // Compensation was scoped to the failed task only.
+    const closed = daemon.calls.filter((c) => c.method === 'task.mission.close');
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.params.taskId).toBe(first.taskId);
   });
 });

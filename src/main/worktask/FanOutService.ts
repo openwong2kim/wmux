@@ -40,6 +40,7 @@ import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
 import {
   FANOUT_TASK_PORT_ENV,
   assignFanoutPorts,
+  releaseFanoutPorts,
   resolveFanoutSetup,
   runFanoutSetup,
   type FanoutSetupSkipReason,
@@ -164,6 +165,10 @@ export interface FanOutResult {
    *  fan-out. Absent when it ran. Reported rather than silent: "trusted the
    *  file, still nothing installed" is otherwise invisible. */
   setupSkipped?: FanoutSetupSkipReason;
+  /** T2 — the repo declared a `fanout.portRange` the schema rejected (typo,
+   *  privileged/inverted bounds, or wider than the cap), so no task got a
+   *  WMUX_TASK_PORT. Distinct from "no range declared", which reports nothing. */
+  portRangeInvalid?: true;
 }
 
 export interface FanOutServiceOptions {
@@ -340,8 +345,16 @@ export class FanOutService {
       tasks.push(r);
     }
 
+    // 배정됐지만 태스크가 뜨지 못한 포트는 창에 돌려준다(예약 TTL을 기다리지 않게).
+    releaseFanoutPorts(tasks.filter((t) => !t.ok).map((t) => env.ports[t.index]));
+
     const allOk = tasks.every((t) => t.ok);
-    return { ok: allOk, tasks, ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}) };
+    return {
+      ok: allOk,
+      tasks,
+      ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}),
+      ...(env.portRangeInvalid ? { portRangeInvalid: true as const } : {}),
+    };
   }
 
   /**
@@ -353,7 +366,12 @@ export class FanOutService {
   private async resolveEnvironment(
     repoPath: string,
     count: number,
-  ): Promise<{ ports: (number | undefined)[]; setupCommand?: string; setupSkipped?: FanoutSetupSkipReason }> {
+  ): Promise<{
+    ports: (number | undefined)[];
+    setupCommand?: string;
+    setupSkipped?: FanoutSetupSkipReason;
+    portRangeInvalid?: true;
+  }> {
     const empty = { ports: new Array<number | undefined>(count).fill(undefined) };
     if (!this.project) return empty;
 
@@ -364,7 +382,8 @@ export class FanOutService {
       return empty;
     }
 
-    const range = state.config?.fanout?.portRange;
+    const fanout = state.config?.fanout;
+    const range = fanout?.portRange;
     // 포트 배정은 실행이 아니라 값 주입이라 신뢰 게이트를 요구하지 않는다 —
     // wmux.json이 고를 수 있는 것은 숫자 하나이고, 그 숫자는 `WMUX_TASK_PORT`
     // 안에 머문다(setup 훅과 달리 셸에 닿지 않는다).
@@ -376,12 +395,19 @@ export class FanOutService {
         ports = empty.ports;
       }
     }
+    // 스키마가 거부한 portRange는 "선언 없음"과 구분해 보고한다(오타 진단 가능).
+    const portRangeInvalid = fanout?.invalidFields?.includes('portRange') === true;
 
     const setup = resolveFanoutSetup(state);
-    if (setup.run) return { ports, setupCommand: setup.command };
+    const rangeReport = portRangeInvalid ? { portRangeInvalid: true as const } : {};
+    if (setup.run) return { ports, setupCommand: setup.command, ...rangeReport };
     // 'none-declared'는 보고할 게 없다(선언 자체가 없음). 나머지는 "선언은 됐는데
-    // 신뢰가 없어서 안 돌았다"라 반드시 노출된다.
-    return { ports, ...(setup.reason === 'none-declared' ? {} : { setupSkipped: setup.reason }) };
+    // (신뢰 부재·형식 오류로) 안 돌았다"라 반드시 노출된다.
+    return {
+      ports,
+      ...rangeReport,
+      ...(setup.reason === 'none-declared' ? {} : { setupSkipped: setup.reason }),
+    };
   }
 
   /** 태스크 1개 스폰(①~⑤). 실패 시 태스크 단위 보상. */
@@ -472,9 +498,14 @@ export class FanOutService {
     if (ctx.setupCommand !== undefined) {
       const setupRun = await runFanoutSetup(ctx.setupCommand, plan.worktreePath, taskEnv);
       if (!setupRun.ok) {
+        // 이 태스크만 보상한다 — 훅 타임아웃/실패는 fan-out 전체를 접지 않고,
+        // 호출부 루프가 다음 태스크를 그대로 이어간다.
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
+        // 페인이 뜨지 않았으니 포트는 이 태스크의 것이 아니다 — 결과에서 뺀다
+        // (run()이 예약도 함께 반납한다).
+        const { port: _unusedPort, ...withoutPort } = base;
         return {
-          ...base,
+          ...withoutPort,
           setupFailed: true,
           error: `worktree setup hook failed: ${setupRun.error}`,
           preservedWorktree: plan.worktreePath,
