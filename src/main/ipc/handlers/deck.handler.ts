@@ -32,7 +32,13 @@ import {
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
 import { evaluateStopGate } from '../../deck/stopGate';
-import { noteGateVerdict, clearGateVerdict } from '../../deck/stopGateState';
+import {
+  noteGateVerdict,
+  clearGateVerdict,
+  noteGateCapOut,
+  suppressedGateFingerprint,
+  clearGateCapOut,
+} from '../../deck/stopGateState';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
@@ -93,6 +99,7 @@ import {
   loadLiveDeckWorks,
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
+  renderActiveDeckWorkReminderLine,
   renderStrandedDeckWorkBlock,
   setDeckWorkBootId,
   unparkDeckWork,
@@ -276,6 +283,12 @@ export function registerDeckHandler(
     }
   };
 
+  // The fingerprint of each workspace's LAST refused Stop (rule 5). A cap-out
+  // is recorded for suppression only when it names this same state — the gate
+  // must never silence a hold no refusal was ever issued for. In-memory and
+  // per-registration, cleared with the commander (retireManager).
+  const lastBlockedFingerprints = new Map<string, string>();
+
   const createAdapter =
     opts.createAdapter ??
     ((adapterOpts: {
@@ -315,6 +328,15 @@ export function registerDeckHandler(
                 snapshot,
                 activeWork: loadActiveDeckWork(workspaceId),
                 consecutiveBlocks,
+                // A pending decision means the brain is legitimately waiting
+                // on a human (gate rule 4) — the same signal that already
+                // suppresses every auto-wake releases the Stop gate. Read
+                // fresh per Stop, so resolve/clear re-arms with no state.
+                pendingDecision: hasPendingDecision(workspaceId),
+                // Cap-out hysteresis (rule 5): once the gate has given up on
+                // this exact state, re-blocking on it next turn only re-buys
+                // the same refusal run.
+                suppressedFingerprint: suppressedGateFingerprint(workspaceId),
               });
               // Record which panes are holding the gate so input.rpc can refuse
               // session-terminating input aimed at them (#733). The list comes
@@ -326,6 +348,18 @@ export function registerDeckHandler(
                 workspaceId,
                 verdict.block ? verdict.outstandingPtyIds : null,
               );
+              if (verdict.block) {
+                lastBlockedFingerprints.set(workspaceId, verdict.fingerprint);
+              } else if (
+                verdict.cappedOutFingerprint &&
+                // Suppress only a state the gate actually REFUSED at least
+                // once. The capping Stop sees the fleet as it is NOW — a
+                // worker dispatched mid-refusal-run would otherwise be
+                // silenced by a cap-out no refusal ever named.
+                lastBlockedFingerprints.get(workspaceId) === verdict.cappedOutFingerprint
+              ) {
+                noteGateCapOut(workspaceId, verdict.cappedOutFingerprint);
+              }
               return verdict;
             },
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
@@ -385,6 +419,10 @@ export function registerDeckHandler(
   const retireManager = (workspaceId: string): void => {
     managers.delete(workspaceId);
     clearGateVerdict(workspaceId);
+    // The cap-out suppression dies with the commander too — a new commander in
+    // the same workspace starts with a fully-armed gate.
+    clearGateCapOut(workspaceId);
+    lastBlockedFingerprints.delete(workspaceId);
   };
 
   // Fleet-wide ceiling on CONCURRENT autonomous turns. Each workspace's manager
@@ -561,6 +599,10 @@ export function registerDeckHandler(
   const beginTrackedWork = (workspaceId: string, text: string): void => {
     const humanText = text.trim();
     try {
+      // A human turn re-arms a capped-out Stop gate (rule 5): whatever state
+      // the gate went quiet on, the human has now spoken, and the brain owes
+      // the fleet a fresh look even if nothing else changed.
+      clearGateCapOut(workspaceId);
       // The placeholder stands in for a prompt main never saw — the terminal
       // brain's UserPromptSubmit can carry an empty body. It is a fine objective
       // for a workspace that owns nothing yet, and it is NOT allowed to be
@@ -689,7 +731,18 @@ export function registerDeckHandler(
           coalescer?.notifyHumanSend(workspaceId);
         },
         onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
-        onForeignSessionId: (sessionId) => managerRef?.notifyForeignSessionId(sessionId),
+        onForeignSessionId: (sessionId) => {
+          // A CHANGED session id means the TUI conversation was reset (e.g.
+          // /clear typed into the terminal) — the new conversation has never
+          // seen the ambient rules or the full [active-work] block, so the
+          // changed-only memory must forget or the reminder line would point
+          // at a contract that no longer exists anywhere on screen. The first
+          // announcement of a session is not a reset and keeps the memory.
+          const prev = lastForeignSessionIds.get(workspaceId);
+          lastForeignSessionIds.set(workspaceId, sessionId);
+          if (prev !== undefined && prev !== sessionId) forgetAmbient(workspaceId);
+          managerRef?.notifyForeignSessionId(sessionId);
+        },
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -754,21 +807,42 @@ export function registerDeckHandler(
   // anything, so marking at build time permanently skipped those blocks for the
   // retry. Promoted to `shown` only by a CLEAN turn (settleAmbient).
   const pendingAmbientBlocks = new Map<string, string>();
-  /** Resolve the ambient blocks this workspace's just-finished turn carried.
-   *  `code:'errored'` covers both a thrown adapter and one that merely YIELDED
-   *  an error event (the TUI-dialog case) — either way the brain did not see
-   *  the blocks, so the next turn must re-send them. */
+  // Same changed-only memory for the [active-work] block, for the same reason:
+  // the full block (objective + every follow-up + every A2A row + the ownership
+  // imperatives) re-typed on screen every wake was the largest recurring
+  // injection in a supervision loop. An UNCHANGED block collapses to a one-line
+  // reminder (renderActiveDeckWorkReminderLine) rather than to nothing — unlike
+  // autonomy/policy, the ownership contract must stay in every turn's face.
+  const shownActiveWorkBlocks = new Map<string, string>();
+  const pendingActiveWorkBlocks = new Map<string, string>();
+  // The last session id each workspace's TUI brain announced. A CHANGE means
+  // the on-screen conversation was reset, which invalidates everything the
+  // changed-only memory believes the brain has already seen.
+  const lastForeignSessionIds = new Map<string, string>();
+  /** Resolve the changed-only blocks this workspace's just-finished turn
+   *  carried. `code:'errored'` covers both a thrown adapter and one that merely
+   *  YIELDED an error event (the TUI-dialog case) — either way the brain did
+   *  not see the blocks, so the next turn must re-send them. */
   const settleAmbient = (workspaceId: string, verdict: CommanderSendResult): void => {
+    const delivered = verdict.ok && verdict.code !== 'errored';
     const pending = pendingAmbientBlocks.get(workspaceId);
-    if (pending === undefined) return;
-    pendingAmbientBlocks.delete(workspaceId);
-    if (verdict.ok && verdict.code !== 'errored') shownAmbientBlocks.set(workspaceId, pending);
+    if (pending !== undefined) {
+      pendingAmbientBlocks.delete(workspaceId);
+      if (delivered) shownAmbientBlocks.set(workspaceId, pending);
+    }
+    const pendingWork = pendingActiveWorkBlocks.get(workspaceId);
+    if (pendingWork !== undefined) {
+      pendingActiveWorkBlocks.delete(workspaceId);
+      if (delivered) shownActiveWorkBlocks.set(workspaceId, pendingWork);
+    }
   };
-  /** Drop both halves of the ambient memory — a retired conversation must be
-   *  told the rules again. */
+  /** Drop the changed-only memory — a retired conversation must be told the
+   *  rules (and the full active-work contract) again. */
   const forgetAmbient = (workspaceId: string): void => {
     shownAmbientBlocks.delete(workspaceId);
     pendingAmbientBlocks.delete(workspaceId);
+    shownActiveWorkBlocks.delete(workspaceId);
+    pendingActiveWorkBlocks.delete(workspaceId);
   };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
@@ -816,7 +890,25 @@ export function registerDeckHandler(
     // urgent trusted context. Both decision + loop survive a reboot as atomic
     // JSON, so a resumed brain re-reads exactly where it paused.
     if (decision) blocks.push(renderDecisionBlock(decision));
-    if (activeWork) blocks.push(renderActiveDeckWorkBlock(activeWork));
+    if (activeWork) {
+      // Changed-only injection for the visible TUI brain, same vendor gate as
+      // the ambient blocks above. An unchanged block collapses to a one-line
+      // reminder instead of vanishing — the ownership contract must survive in
+      // some form on every turn. PARKED records are exempt: parking changes
+      // what the block means (a prohibition, not ownership), and the reminder
+      // line speaks ownership language, so a parked record always goes in full.
+      const workBlock = renderActiveDeckWorkBlock(activeWork);
+      if (vendorForWorkspace(workspaceId) === 'claude-pty' && !isDeckWorkParked(activeWork)) {
+        if (shownActiveWorkBlocks.get(workspaceId) === workBlock) {
+          blocks.push(renderActiveDeckWorkReminderLine(activeWork));
+        } else {
+          pendingActiveWorkBlocks.set(workspaceId, workBlock);
+          blocks.push(workBlock);
+        }
+      } else {
+        blocks.push(workBlock);
+      }
+    }
     if (loop) blocks.push(renderLoopStateBlock(loop));
     if (blocks.length === 0) return text;
     return `${blocks.join('\n\n')}\n\n${text}`;
@@ -1295,6 +1387,9 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // A pressed Wake button is a human acting: the turn it kicks must meet
+      // an ARMED stop gate, whatever state a cap-out went quiet on (rule 5).
+      clearGateCapOut(workspaceId);
       // Non-queued on purpose: a button press wants an immediate verdict — a
       // busy reject (this workspace mid-turn, or the fleet gate full) returns
       // right away and the human just presses again later. runTurnForWorkspace
@@ -2159,6 +2254,11 @@ export function registerDeckHandler(
       // itself rides the prompt, so a "drop it" answer is the brain's to act on;
       // un-parking grants permission to act, not a decision about what to do.
       unparkDeckWork(workspaceId);
+      // A human answering IS a human turn for the stop gate's purposes (rule
+      // 5): the resume turn that carries this answer must meet an ARMED gate,
+      // or a model that no-ops the answer and stops slips through a cap-out
+      // suppression recorded before the decision was even raised.
+      clearGateCapOut(workspaceId);
       // Un-blocked now (hasPendingDecision is false). Kick a resume turn; a busy
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the

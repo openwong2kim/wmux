@@ -124,6 +124,129 @@ describe('evaluateStopGate', () => {
   });
 });
 
+// Rule 4: deck_ask_decision is the brain saying "only a human can move this
+// forward", and the decision block orders it NOT to proceed. Refusing the Stop
+// on top of that left the model exactly one move — re-printing its question —
+// which is the transcript pathology (2026-08-07) this rule removes.
+describe('a pending decision releases the gate (rule 4)', () => {
+  it('allows even with outstanding panes AND active work', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([pane({ agentStatus: 'running' })]),
+      activeWork: { id: 'work-1' },
+      pendingDecision: true,
+      consecutiveBlocks: 0,
+    });
+    expect(verdict.block).toBe(false);
+  });
+
+  it('does not mark the pending-decision allow as a cap-out', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([pane({ agentStatus: 'running' })]),
+      activeWork: { id: 'work-1' },
+      pendingDecision: true,
+      consecutiveBlocks: 99,
+    });
+    expect(verdict).toEqual({ block: false });
+  });
+
+  it('an explicit false keeps the gate armed', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([pane({ agentStatus: 'running' })]),
+      pendingDecision: false,
+      consecutiveBlocks: 0,
+    });
+    expect(verdict.block).toBe(true);
+  });
+});
+
+// Rule 5: the consecutive-block counter is per turn, so a wake loop over
+// unchanged fleet state re-bought the same three refusals every cycle. The
+// cap-out allow carries a fingerprint; passing it back keeps the gate quiet
+// until the state actually changes.
+describe('cap-out hysteresis (rule 5)', () => {
+  const busy = () => snapshot([pane({ ptyId: 'pty-a', agentStatus: 'running' })]);
+
+  it('every refusal names the state it is holding on', () => {
+    const verdict = evaluateStopGate({
+      snapshot: busy(),
+      activeWork: { id: 'work-1', updatedAt: 500 },
+      consecutiveBlocks: 0,
+    });
+    if (!verdict.block) throw new Error('expected a block');
+    expect(verdict.fingerprint).toBe('work-1@500|pty-a:running');
+  });
+
+  it('the allow that ends a refusal run at the cap carries the fingerprint', () => {
+    const verdict = evaluateStopGate({
+      snapshot: busy(),
+      activeWork: { id: 'work-1', updatedAt: 500 },
+      consecutiveBlocks: 3,
+    });
+    expect(verdict.block).toBe(false);
+    if (verdict.block) throw new Error('expected an allow');
+    expect(verdict.cappedOutFingerprint).toBe('work-1@500|pty-a:running');
+  });
+
+  it('an allow with nothing held carries no fingerprint', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([pane({ agentStatus: 'idle' })]),
+      consecutiveBlocks: 3,
+    });
+    expect(verdict).toEqual({ block: false });
+  });
+
+  it('stays quiet while the suppressed fingerprint matches the current state', () => {
+    const capped = evaluateStopGate({
+      snapshot: busy(),
+      activeWork: { id: 'work-1', updatedAt: 500 },
+      consecutiveBlocks: 3,
+    });
+    if (capped.block) throw new Error('expected a cap-out allow');
+    const next = evaluateStopGate({
+      snapshot: busy(),
+      activeWork: { id: 'work-1', updatedAt: 500 },
+      consecutiveBlocks: 0,
+      suppressedFingerprint: capped.cappedOutFingerprint,
+    });
+    expect(next).toEqual({ block: false });
+  });
+
+  it('re-arms when the outstanding pane set changes', () => {
+    const suppressed = 'work-1@500|pty-a:running';
+    const flipped = evaluateStopGate({
+      snapshot: snapshot([pane({ ptyId: 'pty-a', agentStatus: 'awaiting_input' })]),
+      activeWork: { id: 'work-1', updatedAt: 500 },
+      consecutiveBlocks: 0,
+      suppressedFingerprint: suppressed,
+    });
+    expect(flipped.block).toBe(true);
+  });
+
+  it('re-arms when the active-work revision advances (a follow-up or A2A touch)', () => {
+    const suppressed = 'work-1@500|pty-a:running';
+    const touched = evaluateStopGate({
+      snapshot: busy(),
+      activeWork: { id: 'work-1', updatedAt: 501 },
+      consecutiveBlocks: 0,
+      suppressedFingerprint: suppressed,
+    });
+    expect(touched.block).toBe(true);
+  });
+
+  it('pane ordering cannot fake a state change', () => {
+    const a = pane({ ptyId: 'a', agentStatus: 'running' });
+    const b = pane({ ptyId: 'b', agentStatus: 'awaiting_input' });
+    const capped = evaluateStopGate({ snapshot: snapshot([a, b]), consecutiveBlocks: 3 });
+    if (capped.block) throw new Error('expected a cap-out allow');
+    const reordered = evaluateStopGate({
+      snapshot: snapshot([b, a]),
+      consecutiveBlocks: 0,
+      suppressedFingerprint: capped.cappedOutFingerprint,
+    });
+    expect(reordered).toEqual({ block: false });
+  });
+});
+
 // Regression: #733 — the brain read "resolve these panes" as "end these panes"
 // and ran `exit`, then Ctrl+D, in a live user shell. This string is the only
 // thing it reads about a block, so the prohibition has to be in it. Asserted on
@@ -193,4 +316,37 @@ describe('stop gate refusal names what not to do (#733)', () => {
     const reason = verdict.block ? verdict.reason : '';
     expect(reason.match(/Do NOT close or kill a pane/g)).toHaveLength(1);
   });
+});
+
+// The observed stall (transcript, 2026-08-07): a refused model's cheapest move
+// is re-printing its previous message, so every refusal must forbid exactly
+// that — and name the legitimate way to wait (deck_ask_decision releases the
+// gate, rule 4). Asserted on both block shapes, once each.
+describe('stop gate refusal forbids repeating and names the wait state', () => {
+  const cases: Array<[string, Parameters<typeof evaluateStopGate>[0]]> = [
+    [
+      'pane block',
+      {
+        snapshot: {
+          ts: Date.now(),
+          panes: [{ ptyId: 'pty-a', agentStatus: 'running' }],
+        } as unknown as FleetSnapshot,
+        consecutiveBlocks: 0,
+      },
+    ],
+    [
+      'active-work-only block',
+      { snapshot: null, activeWork: { id: 'work-1' }, consecutiveBlocks: 0 },
+    ],
+  ];
+
+  for (const [label, input] of cases) {
+    it(`names both on a ${label}`, () => {
+      const verdict = evaluateStopGate(input);
+      expect(verdict.block).toBe(true);
+      const reason = verdict.block ? verdict.reason : '';
+      expect(reason.match(/Do NOT re-send or restate your previous message/g)).toHaveLength(1);
+      expect(reason).toMatch(/a pending decision releases this gate/);
+    });
+  }
 });
