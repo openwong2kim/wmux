@@ -18,6 +18,7 @@ import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
+import { getProjectConfigStore } from '../project/ProjectConfigStore';
 import { FanOutService } from './FanOutService';
 
 type GetWindow = () => BrowserWindow | null;
@@ -48,6 +49,12 @@ export function createFanOutService(
         }
         return { error: 'fanout.spawnWorkspace: renderer returned no workspaceId' };
       },
+    },
+    // T2 — the per-project wmux.json reader. The SAME store instance the
+    // supervised-pane funnel uses, so a fan-out setup hook is gated by exactly
+    // the trust decision the user already made for this repo.
+    project: {
+      getState: (cwd: string) => getProjectConfigStore().getState(cwd),
     },
   });
 }

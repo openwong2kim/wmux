@@ -636,6 +636,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const name = typeof params.name === 'string' && params.name.length > 0 ? params.name : undefined;
     const cwd = typeof params.cwd === 'string' ? params.cwd : '';
     const initialCommand = typeof params.initialCommand === 'string' ? params.initialCommand : '';
+    // T2 — per-task env from main (WMUX_TASK_PORT). String values only; the
+    // workspace profile's own env still applies underneath (withWorkspaceProfile).
+    const taskEnv: Record<string, string> = {};
+    if (params.env !== null && typeof params.env === 'object' && !Array.isArray(params.env)) {
+      for (const [k, v] of Object.entries(params.env as Record<string, unknown>)) {
+        if (typeof v === 'string') taskEnv[k] = v;
+      }
+    }
 
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
@@ -655,6 +663,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
               workspaceId: newWsId,
               cwd: cwd || undefined,
               ...(initialCommand ? { initialCommand } : {}),
+              ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
             },
             useStore.getState().defaultShell,
           ),

@@ -50,10 +50,52 @@ export const PROJECT_SUPERVISION_BURST_MAX = 20;
 export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN = 30;
 export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX = 3600;
 
+// ── T2 fan-out caps ──────────────────────────────────────────────────────────
+// A fan-out spawns up to FANOUT_MAX_TASKS worktrees at once; each one may want
+// its own dev-server port, and each one may need a repo-specific preparation
+// step (copy `.env`, `npm install`) before its agent starts. Both are declared
+// here, in the SAME trust-gated file the supervised panes use — `setup` is a
+// shell command and therefore only ever runs from a 'trusted' wmux.json.
+/** Lowest port a `fanout.portRange` may claim (privileged ports are refused). */
+export const PROJECT_FANOUT_PORT_MIN = 1024;
+/** Highest port a `fanout.portRange` may claim. */
+export const PROJECT_FANOUT_PORT_MAX = 65535;
+/**
+ * Widest window accepted. Assignment probes the window serially by binding, so
+ * `"1024-65535"` would mean tens of thousands of binds before the first task
+ * spawns. A fan-out is capped at 8 tasks; 512 is already two orders of
+ * magnitude of headroom, and a wider window is a typo, not an intent.
+ */
+export const PROJECT_FANOUT_MAX_RANGE_WIDTH = 512;
+
 export interface WmuxProjectCommand {
   id: string;
   title: string;
   command: string;
+}
+
+/**
+ * Per-repo fan-out settings (T2). Both fields are optional and normalize
+ * INDEPENDENTLY: a typo'd `portRange` must not throw away a `setup` hook the
+ * user already reviewed and trusted. A rejected field is dropped (failing
+ * closed — nothing malformed ever runs) and named in `invalidFields` so the
+ * fan-out can report "declared but malformed" instead of "not declared".
+ */
+export interface WmuxProjectFanout {
+  /**
+   * Inclusive port window, authored as `"3000-3010"`. Each fan-out task is
+   * assigned one free port from it, exported as `WMUX_TASK_PORT` in the task
+   * pane's environment, so N parallel dev servers don't collide.
+   */
+  portRange?: { min: number; max: number };
+  /**
+   * Shell command run inside a freshly created fan-out worktree BEFORE the
+   * agent starts (e.g. `cp ../../.env . && npm ci`). Runs only when the user
+   * has trusted THESE wmux.json bytes — see ProjectConfigStore.
+   */
+  setup?: string;
+  /** Fields the author wrote that failed validation and were dropped. */
+  invalidFields?: ('portRange' | 'setup')[];
 }
 
 export interface WmuxProjectLayoutLeaf {
@@ -124,6 +166,7 @@ export interface WmuxProjectConfig {
   version: 1;
   commands?: WmuxProjectCommand[];
   layout?: WmuxProjectLayoutNode;
+  fanout?: WmuxProjectFanout;
 }
 
 /**
@@ -476,6 +519,73 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   return leaf;
 }
 
+// ── fanout ───────────────────────────────────────────────────────────────────
+
+/** Why a `portRange` string was rejected — surfaced so a typo is diagnosable
+ *  instead of silently behaving like "no range declared". */
+export type FanoutPortRangeError =
+  | 'not-a-string'
+  | 'not-a-range'
+  | 'out-of-bounds'
+  | 'inverted'
+  | 'too-wide';
+
+export type FanoutPortRangeResult =
+  | { ok: true; range: { min: number; max: number } }
+  | { ok: false; reason: FanoutPortRangeError };
+
+/**
+ * Parse a `"min-max"` port window. Anything that isn't two plain decimal
+ * numbers inside the allowed bounds, ascending, and no wider than
+ * PROJECT_FANOUT_MAX_RANGE_WIDTH is rejected with a reason — a typo must not
+ * resolve to a half-window that silently collides, and an enormous window must
+ * not turn task spawning into tens of thousands of serial bind probes.
+ */
+export function parseFanoutPortRange(input: unknown): FanoutPortRangeResult {
+  if (typeof input !== 'string') return { ok: false, reason: 'not-a-string' };
+  const match = /^\s*(\d{1,5})\s*-\s*(\d{1,5})\s*$/.exec(input);
+  if (!match) return { ok: false, reason: 'not-a-range' };
+  const min = Number(match[1]);
+  const max = Number(match[2]);
+  if (min < PROJECT_FANOUT_PORT_MIN || max > PROJECT_FANOUT_PORT_MAX) return { ok: false, reason: 'out-of-bounds' };
+  if (min > max) return { ok: false, reason: 'inverted' };
+  if (max - min + 1 > PROJECT_FANOUT_MAX_RANGE_WIDTH) return { ok: false, reason: 'too-wide' };
+  return { ok: true, range: { min, max } };
+}
+
+/**
+ * Normalize the `fanout` section. The two fields are INDEPENDENT: a malformed
+ * `portRange` drops only the range, never the `setup` hook the user already
+ * approved (and vice versa). Dropped fields are named in `invalidFields` so the
+ * fan-out reports "declared but malformed" rather than staying silent.
+ */
+function normalizeFanout(input: unknown): WmuxProjectFanout | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const src = input as { portRange?: unknown; setup?: unknown };
+  const invalidFields: ('portRange' | 'setup')[] = [];
+
+  let portRange: { min: number; max: number } | undefined;
+  if (src.portRange !== undefined) {
+    const parsed = parseFanoutPortRange(src.portRange);
+    if (parsed.ok) portRange = parsed.range;
+    else invalidFields.push('portRange');
+  }
+
+  let setup: string | undefined;
+  if (src.setup !== undefined) {
+    const cmd = normCommand(src.setup);
+    if (cmd === undefined) invalidFields.push('setup');
+    else setup = cmd;
+  }
+
+  if (portRange === undefined && setup === undefined && invalidFields.length === 0) return undefined;
+  const out: WmuxProjectFanout = {};
+  if (portRange !== undefined) out.portRange = portRange;
+  if (setup !== undefined) out.setup = setup;
+  if (invalidFields.length > 0) out.invalidFields = invalidFields;
+  return out;
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 /**
@@ -487,7 +597,7 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
  */
 export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { version?: unknown; commands?: unknown; layout?: unknown };
+  const src = input as { version?: unknown; commands?: unknown; layout?: unknown; fanout?: unknown };
 
   if (src.version !== undefined && src.version !== 1) return undefined;
 
@@ -499,17 +609,22 @@ export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | 
     layout = normalizeLayoutNode(src.layout, 1, { leaves: 0 }) ?? undefined;
   }
 
-  if (commands.length === 0 && layout === undefined) return undefined;
+  const fanout = normalizeFanout(src.fanout);
+
+  if (commands.length === 0 && layout === undefined && fanout === undefined) return undefined;
   const config: WmuxProjectConfig = { version: 1 };
   if (commands.length > 0) config.commands = commands;
   if (layout !== undefined) config.layout = layout;
+  if (fanout !== undefined) config.fanout = fanout;
   return config;
 }
 
 /**
  * Every shell command the config can run — what the trust dialog must show
  * verbatim before the user approves. Order: custom commands first, then
- * layout startup commands (depth-first, matching visual order).
+ * layout startup commands (depth-first, matching visual order), then the
+ * fan-out worktree setup hook (T2) — it executes on the same grant, so it has
+ * to be visible in the same list.
  */
 export function collectConfigCommands(config: WmuxProjectConfig): string[] {
   const out: string[] = [];
@@ -522,6 +637,7 @@ export function collectConfigCommands(config: WmuxProjectConfig): string[] {
     node.children.forEach(walk);
   };
   if (config.layout !== undefined) walk(config.layout);
+  if (config.fanout?.setup !== undefined) out.push(config.fanout.setup);
   return out;
 }
 

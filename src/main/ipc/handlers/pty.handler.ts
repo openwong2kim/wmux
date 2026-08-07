@@ -39,6 +39,7 @@ import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
+import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -410,6 +411,22 @@ export function registerPTYHandlers(
         }
       }
       if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      // T2 — the fan-out task port has to be FORCED here rather than ride the
+      // caller's env overlay. `resolveSpawnEnv` clears the whole reserved
+      // WMUX_* namespace and `applyOverlay` skips WMUX_* keys outright, which
+      // is what makes "a profile can never spoof pane identity" unconditional.
+      // A port handed in as `options.env` therefore never reached the child at
+      // all: measured on a live fan-out, both task panes spawned with the port
+      // assigned in the result payload and absent from their environment.
+      //
+      // Forcing it keeps the documented `WMUX_TASK_PORT` name and is the honest
+      // description of what it is — something the app stamps, not something a
+      // caller supplies. Digits only, so this narrow exception to the reserved
+      // prefix cannot be used to smuggle an arbitrary value through.
+      const requestedTaskPort = options?.env?.[FANOUT_TASK_PORT_ENV];
+      if (typeof requestedTaskPort === 'string' && /^\d{1,5}$/.test(requestedTaskPort)) {
+        identity[FANOUT_TASK_PORT_ENV] = requestedTaskPort;
+      }
       // 1d: default channel member id = the pane's session id (mirrors the
       // daemon's WMUX_PTY_ID stamp). Forced identity, so a profile cannot
       // spoof another pane's member id.

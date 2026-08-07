@@ -36,6 +36,15 @@ import {
 } from '../../shared/workTask';
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
+import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
+import {
+  FANOUT_TASK_PORT_ENV,
+  assignFanoutPorts,
+  releaseFanoutPorts,
+  resolveFanoutSetup,
+  runFanoutSetup,
+  type FanoutSetupSkipReason,
+} from './fanoutEnvironment';
 
 /**
  * A3 (delegation contract, worker side) — appended to every fan-out prompt.md.
@@ -78,7 +87,17 @@ export interface FanOutRendererPort {
     name: string;
     cwd: string;
     initialCommand: string;
+    /** T2 — extra env for the task pane (currently WMUX_TASK_PORT). */
+    env?: Record<string, string>;
   }): Promise<{ workspaceId: string; ptyId?: string } | { error: string }>;
+}
+
+/**
+ * T2 — per-project `wmux.json` state + trust verdict (ProjectConfigStore.getState).
+ * Injected as a port so the fan-out tests don't need a trust DB on disk.
+ */
+export interface FanOutProjectPort {
+  getState(cwd: string): Promise<ProjectConfigState>;
 }
 
 /** fan-out 호출 입력(렌더러 다이얼로그 → IPC). */
@@ -129,6 +148,12 @@ export interface FanOutTaskResult {
   channelDisconnected?: boolean;
   /** 보상 시 보존된 worktree 경로(삭제 안 함 — J3 회수 몫). */
   preservedWorktree?: string;
+  /** T2 — port handed to this task as WMUX_TASK_PORT (absent when the repo
+   *  declares no `fanout.portRange`, or the window ran out of free ports). */
+  port?: number;
+  /** T2 — the worktree setup hook failed; the agent was NOT started (a task
+   *  whose dependencies never installed would burn a turn discovering that). */
+  setupFailed?: boolean;
 }
 
 export interface FanOutResult {
@@ -136,12 +161,22 @@ export interface FanOutResult {
   /** 프리플라이트 부적격 등 fan-out 전체 거부 사유(태스크 생성 0). */
   error?: string;
   tasks: FanOutTaskResult[];
+  /** T2 — why the repo's declared `fanout.setup` hook did not run for this
+   *  fan-out. Absent when it ran. Reported rather than silent: "trusted the
+   *  file, still nothing installed" is otherwise invisible. */
+  setupSkipped?: FanoutSetupSkipReason;
+  /** T2 — the repo declared a `fanout.portRange` the schema rejected (typo,
+   *  privileged/inverted bounds, or wider than the cap), so no task got a
+   *  WMUX_TASK_PORT. Distinct from "no range declared", which reports nothing. */
+  portRangeInvalid?: true;
 }
 
 export interface FanOutServiceOptions {
   daemon: FanOutDaemonPort;
   renderer: FanOutRendererPort;
   worktrees?: TaskWorktreeManager;
+  /** T2 — trust-gated `wmux.json` reader. Omitted → no ports, no setup hook. */
+  project?: FanOutProjectPort;
 }
 
 /**
@@ -160,6 +195,8 @@ export class FanOutService {
   private readonly daemon: FanOutDaemonPort;
   private readonly renderer: FanOutRendererPort;
   private readonly worktrees: TaskWorktreeManager;
+  /** T2 — per-project wmux.json reader (absent = feature off). */
+  private readonly project?: FanOutProjectPort;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -170,6 +207,7 @@ export class FanOutService {
     this.daemon = opts.daemon;
     this.renderer = opts.renderer;
     this.worktrees = opts.worktrees ?? new TaskWorktreeManager();
+    this.project = opts.project;
   }
 
   /**
@@ -282,6 +320,12 @@ export class FanOutService {
       }
     }
 
+    // ── T2 per-repo fan-out environment(포트 창·setup 훅) ──
+    // 신뢰 게이트를 한 번만 통과하고 N개 태스크가 그 결과를 공유한다. 포트는 스폰
+    // 전에 전부 확정한다 — 태스크 k가 뜬 뒤 k+1이 같은 창을 다시 스캔하면 아직
+    // 바인드되지 않은 포트를 중복 배정할 수 있기 때문이다.
+    const env = await this.resolveEnvironment(req.repoPath, n);
+
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
     const tasks: FanOutTaskResult[] = [];
     for (const [k, title] of titles.entries()) {
@@ -295,12 +339,75 @@ export class FanOutService {
         verifiedWorkspaceId,
         memberId,
         missionIdemKey,
+        port: env.ports[k],
+        setupCommand: env.setupCommand,
       });
       tasks.push(r);
     }
 
+    // 배정됐지만 태스크가 뜨지 못한 포트는 창에 돌려준다(예약 TTL을 기다리지 않게).
+    releaseFanoutPorts(tasks.filter((t) => !t.ok).map((t) => env.ports[t.index]));
+
     const allOk = tasks.every((t) => t.ok);
-    return { ok: allOk, tasks };
+    return {
+      ok: allOk,
+      tasks,
+      ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}),
+      ...(env.portRangeInvalid ? { portRangeInvalid: true as const } : {}),
+    };
+  }
+
+  /**
+   * T2 — read the repo's `wmux.json` once and derive the per-task environment:
+   * a distinct port per task from `fanout.portRange`, and the trust-gated
+   * `fanout.setup` hook. Any failure here is non-fatal: a fan-out that can't
+   * read its project config still spawns, it just spawns the pre-T2 way.
+   */
+  private async resolveEnvironment(
+    repoPath: string,
+    count: number,
+  ): Promise<{
+    ports: (number | undefined)[];
+    setupCommand?: string;
+    setupSkipped?: FanoutSetupSkipReason;
+    portRangeInvalid?: true;
+  }> {
+    const empty = { ports: new Array<number | undefined>(count).fill(undefined) };
+    if (!this.project) return empty;
+
+    let state: ProjectConfigState;
+    try {
+      state = await this.project.getState(repoPath);
+    } catch {
+      return empty;
+    }
+
+    const fanout = state.config?.fanout;
+    const range = fanout?.portRange;
+    // 포트 배정은 실행이 아니라 값 주입이라 신뢰 게이트를 요구하지 않는다 —
+    // wmux.json이 고를 수 있는 것은 숫자 하나이고, 그 숫자는 `WMUX_TASK_PORT`
+    // 안에 머문다(setup 훅과 달리 셸에 닿지 않는다).
+    let ports: (number | undefined)[] = empty.ports;
+    if (range) {
+      try {
+        ports = await assignFanoutPorts(range, count);
+      } catch {
+        ports = empty.ports;
+      }
+    }
+    // 스키마가 거부한 portRange는 "선언 없음"과 구분해 보고한다(오타 진단 가능).
+    const portRangeInvalid = fanout?.invalidFields?.includes('portRange') === true;
+
+    const setup = resolveFanoutSetup(state);
+    const rangeReport = portRangeInvalid ? { portRangeInvalid: true as const } : {};
+    if (setup.run) return { ports, setupCommand: setup.command, ...rangeReport };
+    // 'none-declared'는 보고할 게 없다(선언 자체가 없음). 나머지는 "선언은 됐는데
+    // (신뢰 부재·형식 오류로) 안 돌았다"라 반드시 노출된다.
+    return {
+      ports,
+      ...rangeReport,
+      ...(setup.reason === 'none-declared' ? {} : { setupSkipped: setup.reason }),
+    };
   }
 
   /** 태스크 1개 스폰(①~⑤). 실패 시 태스크 단위 보상. */
@@ -313,6 +420,10 @@ export class FanOutService {
     verifiedWorkspaceId: string;
     memberId: string;
     missionIdemKey: string;
+    /** T2 — WMUX_TASK_PORT for this task (absent = no range / window empty). */
+    port?: number;
+    /** T2 — trust-gated worktree setup hook (absent = nothing to run). */
+    setupCommand?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -374,6 +485,34 @@ export class FanOutService {
       return { ...base, error: `prompt file write failed: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };
     }
 
+    // T2 — 태스크 환경 변수(포트). 훅과 에이전트 페인이 같은 값을 본다.
+    const taskEnv: Record<string, string> = {};
+    if (ctx.port !== undefined) {
+      taskEnv[FANOUT_TASK_PORT_ENV] = String(ctx.port);
+      base.port = ctx.port;
+    }
+
+    // T2 — worktree setup 훅(신뢰된 wmux.json에서만 도달). 에이전트 기동 **전**에
+    // 돌린다. 실패는 태스크 실패로 취급하고 페인을 열지 않는다 — 의존성이 안 깔린
+    // worktree에서 에이전트를 띄우면 그 사실을 발견하는 데 한 턴을 태운다.
+    if (ctx.setupCommand !== undefined) {
+      const setupRun = await runFanoutSetup(ctx.setupCommand, plan.worktreePath, taskEnv);
+      if (!setupRun.ok) {
+        // 이 태스크만 보상한다 — 훅 타임아웃/실패는 fan-out 전체를 접지 않고,
+        // 호출부 루프가 다음 태스크를 그대로 이어간다.
+        await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
+        // 페인이 뜨지 않았으니 포트는 이 태스크의 것이 아니다 — 결과에서 뺀다
+        // (run()이 예약도 함께 반납한다).
+        const { port: _unusedPort, ...withoutPort } = base;
+        return {
+          ...withoutPort,
+          setupFailed: true,
+          error: `worktree setup hook failed: ${setupRun.error}`,
+          preservedWorktree: plan.worktreePath,
+        };
+      }
+    }
+
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
     //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅) — 프롬프트가
     //    없으면 인자 없이 agentCmd만(사람이 페인에서 직접 입력). 실제 workspaceId 회수.
@@ -386,6 +525,7 @@ export class FanOutService {
         name: wsName,
         cwd: plan.worktreePath,
         initialCommand,
+        ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
