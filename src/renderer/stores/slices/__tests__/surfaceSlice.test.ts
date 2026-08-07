@@ -182,12 +182,62 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     const paneId = state.workspaces[0].rootPane.id;
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
 
-    slice.updateSurfaceCwd('', 'D:\\nope');
-    slice.updateSurfaceCwd('ghost', 'D:\\nope');
+    // POSIX shapes on purpose: a Windows path would also be dropped by the
+    // cwdShape guard on a POSIX runner, so this would pass without the ptyId
+    // check doing any work at all.
+    slice.updateSurfaceCwd('', '/nope');
+    slice.updateSurfaceCwd('ghost', '/nope');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     expect(pane.surfaces[0].cwd).toBe('C:\\a');
+  });
+
+  // Issue #833 — on a Windows host the per-surface cwd never followed a `cd`.
+  // updateSurfaceCwd guards with isPlausibleCwd() and passed no platform; the
+  // renderer has no `process` (contextIsolation), so the default resolved to
+  // 'linux' and rejected every `C:\…`. The workspace-level cwd has a second,
+  // unguarded feeder (the metadata route), which is why only the surface value
+  // looked frozen — and why `surface.list`/`pane.list` reported the spawn
+  // directory forever, breaking task.fanout.start's repo precondition.
+  //
+  // The suite runs on POSIX in CI, so the host platform is stubbed through the
+  // preload bridge — the same channel the renderer really reads.
+  it('follows a cd on a Windows host (#833)', () => {
+    const host = globalThis as { electronAPI?: { platform?: string } };
+    host.electronAPI = { platform: 'win32' };
+    try {
+      const { state, slice } = createHarness();
+      const paneId = state.workspaces[0].rootPane.id;
+      slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\Users\\rizz');
+
+      slice.updateSurfaceCwd('pty-1', 'D:\\AI_Projects\\wmux-fork');
+
+      const pane = state.workspaces[0].rootPane;
+      if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+      expect(pane.surfaces[0].cwd).toBe('D:\\AI_Projects\\wmux-fork');
+    } finally {
+      delete host.electronAPI;
+    }
+  });
+
+  it('still rejects an implausible shape for the host (prompt-scrape guard)', () => {
+    const host = globalThis as { electronAPI?: { platform?: string } };
+    host.electronAPI = { platform: 'darwin' };
+    try {
+      const { state, slice } = createHarness();
+      const paneId = state.workspaces[0].rootPane.id;
+      slice.addSurface(paneId, 'zsh-1', 'zsh', '/Users/me');
+
+      // The 2026-07-20 incident: "PS C:\…>" scraped off screen text on a mac.
+      slice.updateSurfaceCwd('zsh-1', 'C:\\Users\\me');
+
+      const pane = state.workspaces[0].rootPane;
+      if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+      expect(pane.surfaces[0].cwd).toBe('/Users/me');
+    } finally {
+      delete host.electronAPI;
+    }
   });
 });
 
