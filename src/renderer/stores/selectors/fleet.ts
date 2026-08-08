@@ -65,9 +65,6 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  stale stamp decays without a new event (bumped by useAgentActivityClock). */
   surfaceActivityAt?: StoreState['surfaceActivityAt'];
   agentClockMs?: StoreState['agentClockMs'];
-  /** OSC 133 shell state per ptyId (#837). Optional so existing fixtures keep
-   *  the pre-existing behavior; the live store always provides it. */
-  commandRunningByPtyId?: StoreState['commandRunningByPtyId'];
 };
 
 /**
@@ -202,7 +199,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // Resolution order (most → least authoritative):
       //   1. a retained ATTENTION status on any surface (waiting/complete/…)
       //   2. the active pane's workspace-level status, when it's a live non-idle
-      //      state (e.g. detector/byte 'running')
+      //      state OTHER than 'running' (error) — see the #837 note below
       //   3. hook-driven 'running' — a PostToolUse fired within the TTL, so the
       //      agent is working even if the terminal is quiet (fixes "thinking
       //      mid-turn read as idle"; also lights BACKGROUND running panes, which
@@ -210,19 +207,25 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       //      decays on its own. Absent inputs → skipped (legacy behavior).
       //   4. idle.
       // #837: `ws.metadata.agentStatus` is ONE slot per workspace, written by
-      // whichever pty last broadcast, while `surfaceAgentStatus` retains only
-      // the ATTENTION statuses — so a background worker's 'running' survives
-      // nowhere but that shared slot, and tier 2 then paints it onto whichever
-      // pane happens to be active. A hand-opened shell that never ran an agent
-      // read 'running' that way and blocked deck_complete_work.
-      // The daemon already knows better per-pty: OSC 133 says the shell is back
-      // at a prompt. Rank it exactly as `isPaneAgentBusy` tier 1 does — `false`
-      // is authoritative, `undefined` (no shell integration) changes nothing.
-      // Only the borrowed workspace-level status is vetoed; an attention status
-      // the pane holds in its own right still outranks everything.
-      const commandRunning = ptyId ? state.commandRunningByPtyId?.[ptyId] : undefined;
+      // whichever pty last broadcast. For 'running' that made tier 2 a source of
+      // MISATTRIBUTION rather than of signal: a background worker's 'running'
+      // lands in the shared slot, `surfaceAgentStatus` drops it (attention-only),
+      // and tier 2 then paints it onto whichever pane happens to be active. A
+      // hand-opened shell that never ran an agent read 'running' that way and
+      // was counted as an outstanding worker by deck_complete_work.
+      //
+      // Tier 2's 'running' was also redundant. Both emitters of that broadcast
+      // (PTYBridge / DaemonNotificationRouter) carry a ptyId, so every one of
+      // them stamps `markSurfaceRunning(ptyId)` — the per-pty clock tier 3
+      // already reads. Dropping 'running' here costs no coverage and does not
+      // shorten it: the shared slot is cleared back to 'idle' after ~5s of
+      // silence, while the tier 3 stamp holds for HOOK_RUNNING_TTL_MS.
+      //
+      // Only 'running' is dropped. `error` in particular has nowhere else to
+      // live — it is not an ATTENTION status, so the workspace slot is its only
+      // carrier for the active pane, and vetoing it would lose it silently.
       const metaStatus =
-        isActivePane && commandRunning !== false ? wsMeta?.agentStatus : undefined;
+        isActivePane && wsMeta?.agentStatus !== 'running' ? wsMeta?.agentStatus : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
       const hookRunning =
         activityAt !== undefined &&

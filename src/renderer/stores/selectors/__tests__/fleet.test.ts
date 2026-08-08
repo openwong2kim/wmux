@@ -141,9 +141,24 @@ describe('selectFleetPanes', () => {
   });
 
   it('falls back to workspace metadata.agentStatus only for the active pane', () => {
-    // p2a is active, has no per-pty entry → inherits ws-2 metadata 'running'.
-    const p2a = byPane(selectFleetPanes(fixture()), 'p2a');
-    expect(p2a.agentStatus).toBe('running');
+    // p2a is active and has no per-pty entry, so it inherits ws-2's metadata —
+    // but NOT 'running' (#837: that slot is workspace-wide and would be a
+    // borrowed status; the per-pty stamp in tier 3 carries running instead).
+    // 'error' has no other carrier for the active pane, so it must come through.
+    const wsErr = workspace(
+      'ws-2', 'beta',
+      branch('b', [
+        leaf('p2a', [surface('s2a-first', 'pty-2a-first'), surface('s2a', 'pty-2a')], 's2a'),
+        leaf('p2b', [surface('s2b', 'pty-2b', { surfaceType: 'browser' })]),
+      ]),
+      'p2a',
+      { agentName: 'Codex', agentStatus: 'error' },
+    );
+    const p2a = byPane(
+      selectFleetPanes({ workspaces: [wsErr], surfaceAgentStatus: {}, surfaceActivity: {} }),
+      'p2a',
+    );
+    expect(p2a.agentStatus).toBe('error');
     expect(p2a.isActivePane).toBe(true);
   });
 
@@ -692,15 +707,15 @@ describe('isPaneAgentBusy — agentProcessAlive', () => {
   });
 });
 
-// ─── #837: workspace-level 'running' must not land on a pane that is provably
-// at a shell prompt ────────────────────────────────────────────────────────────
-describe('selectFleetPanes — commandRunning veto on borrowed workspace status', () => {
+// ─── #837: a workspace-wide 'running' must not be attributed to the active pane
+describe("selectFleetPanes — workspace 'running' is not borrowed by the active pane", () => {
   // One workspace, two leaves. `ws.metadata.agentStatus` is a single
   // workspace-wide slot written by whichever PTY last broadcast, and
   // `surfaceAgentStatus` retains only ATTENTION statuses — so a background
-  // worker's 'running' is invisible per-pty and only survives in that shared
-  // slot. The selector then attributes it to the ACTIVE pane, which in the
-  // reported case was a hand-opened pwsh shell that never ran an agent.
+  // worker's 'running' is invisible per-pty and survives only in that shared
+  // slot. Attributing it to the ACTIVE pane painted 'running' onto a
+  // hand-opened pwsh shell that never ran an agent, which then blocked
+  // deck_complete_work as an outstanding worker.
   const wsBorrowed = workspace(
     'ws-837', 'delta',
     branch('b837', [
@@ -710,34 +725,42 @@ describe('selectFleetPanes — commandRunning veto on borrowed workspace status'
     'p-shell',
     { agentName: 'Claude Code', agentStatus: 'running' },
   );
+  const NOW_837 = 1_000_000;
 
-  it('reads idle when the daemon says no foreground command is running', () => {
+  it('reads idle on the active pane that produced no running of its own', () => {
     const panes = selectFleetPanes({
       workspaces: [wsBorrowed],
       surfaceAgentStatus: {},
       surfaceActivity: {},
-      commandRunningByPtyId: { 'daemon-587eb539': false },
+      // The background worker is the one that stamped a per-pty running.
+      surfaceActivityAt: { 'pty-worker': NOW_837 },
+      agentClockMs: NOW_837,
     });
     expect(byPane(panes, 'p-shell').agentStatus).toBe('idle');
   });
 
-  it('keeps running when the shell says a foreground command owns the pty', () => {
+  it('still reads running on the pane whose own pty stamped it', () => {
     const panes = selectFleetPanes({
       workspaces: [wsBorrowed],
       surfaceAgentStatus: {},
       surfaceActivity: {},
-      commandRunningByPtyId: { 'daemon-587eb539': true },
+      surfaceActivityAt: { 'pty-worker': NOW_837 },
+      agentClockMs: NOW_837,
     });
-    expect(byPane(panes, 'p-shell').agentStatus).toBe('running');
+    expect(byPane(panes, 'p-worker').agentStatus).toBe('running');
   });
 
-  it('keeps running when no shell integration reports on that pty (legacy)', () => {
+  it("does not veto 'error', whose only carrier for the active pane is that slot", () => {
+    const wsError = workspace(
+      'ws-837e', 'delta',
+      leaf('p-shell', [surface('s-shell', 'daemon-587eb539')]),
+      'p-shell',
+      { agentName: 'Claude Code', agentStatus: 'error' },
+    );
     const panes = selectFleetPanes({
-      workspaces: [wsBorrowed],
-      surfaceAgentStatus: {},
-      surfaceActivity: {},
+      workspaces: [wsError], surfaceAgentStatus: {}, surfaceActivity: {},
     });
-    expect(byPane(panes, 'p-shell').agentStatus).toBe('running');
+    expect(byPane(panes, 'p-shell').agentStatus).toBe('error');
   });
 
   it('never vetoes an attention status the pane holds in its own right', () => {
@@ -745,7 +768,6 @@ describe('selectFleetPanes — commandRunning veto on borrowed workspace status'
       workspaces: [wsBorrowed],
       surfaceAgentStatus: { 'daemon-587eb539': 'awaiting_input' },
       surfaceActivity: {},
-      commandRunningByPtyId: { 'daemon-587eb539': false },
     });
     expect(byPane(panes, 'p-shell').agentStatus).toBe('awaiting_input');
   });
