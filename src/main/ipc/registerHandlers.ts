@@ -31,7 +31,7 @@ import { registerPaneResourcesHandlers } from './handlers/paneResources.handler'
 import { registerWebHandlers } from './handlers/web.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
-import { applyUiZoom } from '../window/uiZoom';
+import { applyUiZoom, winOverlayHeight } from '../window/uiZoom';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
@@ -309,7 +309,17 @@ export function registerAllHandlers(
     const win = getWindow();
     if (!win || win.isDestroyed()) return;
     try {
-      win.setTitleBarOverlay({ color, symbolColor, height: 36 });
+      // Height tracks the live zoom (#822): the UI-scale handler and this
+      // theme handler both restyle the same overlay, and a renderer zoom makes
+      // the 36px chrome render `36 * zoom` points tall. Hard-coding 36 here
+      // would let a theme change race ahead of the zoom handler and reset the
+      // overlay height out from under it, so read the current factor. Zoom
+      // defaults to 1, so with no UI scale applied this is still 36.
+      win.setTitleBarOverlay({
+        color,
+        symbolColor,
+        height: winOverlayHeight(win.webContents.getZoomFactor()),
+      });
     } catch {
       // Window created without titleBarOverlay (e.g. future flag/rollback) —
       // restyling is cosmetic, never let it crash main.

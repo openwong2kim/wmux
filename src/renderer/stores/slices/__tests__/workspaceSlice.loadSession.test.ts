@@ -604,6 +604,16 @@ describe('loadSession — UI scale (#822)', () => {
     store.getState().loadSession(sessionWith('wide'));
     expect(store.getState().uiScale).toBe(1);
   });
+
+  it('clamps an out-of-range factor so the readout tracks the applied zoom', () => {
+    // main's applyUiZoom clamps the real zoom; the store must too, else a
+    // hand-edited uiScale: 5 shows "500%" and re-saves as 5 (drift).
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith(5));
+    expect(store.getState().uiScale).toBe(1.6);
+    store.getState().loadSession(sessionWith(-3));
+    expect(store.getState().uiScale).toBe(0.8);
+  });
 });
 
 // Forward-compat config merge: a session saved by an older build must not strip
