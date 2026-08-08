@@ -3363,6 +3363,10 @@ function TabAppearance() {
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
 
+  // UI scale (#822) — whole-interface zoom, applied to main via window:setUiScale.
+  const uiScale = useStore((s) => s.uiScale);
+  const setUiScale = useStore((s) => s.setUiScale);
+
   const currentTheme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   // Live custom-theme colors drive the `custom` card's thumbnail so it always
@@ -3497,6 +3501,23 @@ function TabAppearance() {
             onChange={setPaneActionsVisible}
             label={t('settings.paneActionsVisible')}
           />
+        </SettingRow>
+        <SettingRow label={t('settings.uiScale')} description={t('settings.uiScaleDesc')}>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={0.8}
+              max={1.6}
+              step={0.05}
+              value={uiScale}
+              onChange={(e) => setUiScale(Number(e.target.value))}
+              aria-label={t('settings.uiScale')}
+              className="w-24 accent-[color:var(--accent-blue)]"
+            />
+            <span className="text-xs font-mono tabular-nums text-[color:var(--text-sub)] w-8 text-right">
+              {Math.round(uiScale * 100)}%
+            </span>
+          </div>
         </SettingRow>
       </div>
     </div>

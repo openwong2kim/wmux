@@ -141,6 +141,8 @@ export const hi = {
   'settings.fontFamily': 'फ़ॉन्ट परिवार',
   'settings.fontFamilyDesc': 'टर्मिनल के लिए मोनोस्पेस फ़ॉन्ट',
   'settings.layout': 'लेआउट',
+  'settings.uiScale': 'UI स्केल',
+  'settings.uiScaleDesc': 'पूरे इंटरफ़ेस को स्केल करें — उच्च-DPI डिस्प्ले पर उपयोगी। पुनरारंभ की आवश्यकता नहीं।',
   'settings.sidebarPosition': 'साइडबार स्थिति',
   'settings.sidebarPositionDesc': 'टर्मिनल क्षेत्र के बाएँ या दाएँ',
   'settings.sidebarLeft': 'बाएँ',

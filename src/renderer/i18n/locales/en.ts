@@ -589,6 +589,8 @@ export const en = {
   'settings.fontApply': 'Apply',
   'settings.fontCancel': 'Cancel',
   'settings.layout': 'Layout',
+  'settings.uiScale': 'UI scale',
+  'settings.uiScaleDesc': 'Scale the whole interface — useful on high-DPI displays. Restart not required.',
   'settings.sidebarPosition': 'Sidebar position',
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarLeft': 'Left',

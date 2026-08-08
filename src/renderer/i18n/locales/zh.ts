@@ -143,6 +143,8 @@ export const zh = {
   'settings.fontFamily': '字体族',
   'settings.fontFamilyDesc': '终端等宽字体',
   'settings.layout': '布局',
+  'settings.uiScale': '界面缩放',
+  'settings.uiScaleDesc': '缩放整个界面 — 在高 DPI 显示器上很有用。无需重启。',
   'settings.sidebarPosition': '侧边栏位置',
   'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
   'settings.sidebarLeft': '左',

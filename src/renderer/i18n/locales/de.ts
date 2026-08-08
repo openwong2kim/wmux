@@ -141,6 +141,8 @@ export const de = {
   'settings.fontFamily': 'Schriftart',
   'settings.fontFamilyDesc': 'Monospace-Schrift für Terminal',
   'settings.layout': 'Layout',
+  'settings.uiScale': 'UI-Skalierung',
+  'settings.uiScaleDesc': 'Skaliert die gesamte Oberfläche — nützlich auf High-DPI-Displays. Neustart nicht erforderlich.',
   'settings.sidebarPosition': 'Position der Seitenleiste',
   'settings.sidebarPositionDesc': 'Links oder rechts vom Terminalbereich',
   'settings.sidebarLeft': 'Links',

@@ -141,6 +141,8 @@ export const fr = {
   'settings.fontFamily': 'Famille de police',
   'settings.fontFamilyDesc': 'Police à chasse fixe pour le terminal',
   'settings.layout': 'Disposition',
+  'settings.uiScale': 'Échelle de l\'interface',
+  'settings.uiScaleDesc': 'Mettre à l\'échelle toute l\'interface — utile sur les écrans haute DPI. Redémarrage non requis.',
   'settings.sidebarPosition': 'Position de la barre latérale',
   'settings.sidebarPositionDesc': 'Gauche ou droite de la zone du terminal',
   'settings.sidebarLeft': 'Gauche',

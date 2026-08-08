@@ -141,6 +141,8 @@ export const th = {
   'settings.fontFamily': 'ตระกูลฟอนต์',
   'settings.fontFamilyDesc': 'ฟอนต์ความกว้างคงที่สำหรับเทอร์มินัล',
   'settings.layout': 'เลย์เอาต์',
+  'settings.uiScale': 'สเกล UI',
+  'settings.uiScaleDesc': 'ปรับสเกลทั้งอินเทอร์เฟซ — มีประโยชน์สำหรับจอ DPI สูง ไม่ต้องรีสตาร์ท',
   'settings.sidebarPosition': 'ตำแหน่งแถบด้านข้าง',
   'settings.sidebarPositionDesc': 'ซ้ายหรือขวาของพื้นที่เทอร์มินัล',
   'settings.sidebarLeft': 'ซ้าย',

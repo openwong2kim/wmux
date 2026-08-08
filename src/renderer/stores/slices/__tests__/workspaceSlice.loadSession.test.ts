@@ -17,6 +17,7 @@ type TestState = WorkspaceSlice & {
   theme: string;
   locale: string;
   terminalFontSize: number;
+  uiScale: number;
   terminalFontFamily: string;
   defaultShell: string;
   scrollbackLines: number;
@@ -66,6 +67,7 @@ function createTestStore() {
       theme: 'catppuccin-mocha',
       locale: 'en',
       terminalFontSize: 14,
+      uiScale: 1,
       terminalFontFamily: 'Cascadia Code',
       defaultShell: 'powershell',
       scrollbackLines: 10000,
@@ -567,6 +569,50 @@ describe('loadSession — multiview arrangement (#746)', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWith('masonry'));
     expect(store.getState().multiviewArrangement).toBe('auto');
+  });
+});
+
+describe('loadSession — UI scale (#822)', () => {
+  function sessionWith(uiScale: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-zoom',
+      name: 'Zoom',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      uiScale,
+    } as unknown as SessionData;
+  }
+
+  it('restores a saved factor', () => {
+    // The save side (AppLayout.buildSessionData) and this read-back are
+    // separate edits; without both the pref silently resets to 1 on restart.
+    const store = createTestStore();
+    expect(store.getState().uiScale).toBe(1);
+    store.getState().loadSession(sessionWith(1.4));
+    expect(store.getState().uiScale).toBe(1.4);
+  });
+
+  it('ignores a non-finite value and keeps the default', () => {
+    // session.json is hand-editable/untrusted — a garbage value must not
+    // round-trip into the store and onward to setZoomFactor.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith('wide'));
+    expect(store.getState().uiScale).toBe(1);
+  });
+
+  it('clamps an out-of-range factor so the readout tracks the applied zoom', () => {
+    // main's applyUiZoom clamps the real zoom; the store must too, else a
+    // hand-edited uiScale: 5 shows "500%" and re-saves as 5 (drift).
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith(5));
+    expect(store.getState().uiScale).toBe(1.6);
+    store.getState().loadSession(sessionWith(-3));
+    expect(store.getState().uiScale).toBe(0.8);
   });
 });
 

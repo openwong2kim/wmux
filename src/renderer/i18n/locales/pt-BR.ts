@@ -141,6 +141,8 @@ export const ptBR = {
   'settings.fontFamily': 'Família de fonte',
   'settings.fontFamilyDesc': 'Fonte monoespaçada para o terminal',
   'settings.layout': 'Layout',
+  'settings.uiScale': 'Escala da interface',
+  'settings.uiScaleDesc': 'Dimensione toda a interface — útil em monitores de alta DPI. Não requer reinício.',
   'settings.sidebarPosition': 'Posição da barra lateral',
   'settings.sidebarPositionDesc': 'Esquerda ou direita da área do terminal',
   'settings.sidebarLeft': 'Esquerda',

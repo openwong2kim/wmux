@@ -141,6 +141,8 @@ export const zhTW = {
   'settings.fontFamily': '字型',
   'settings.fontFamilyDesc': '終端機使用的等寬字型',
   'settings.layout': '版面',
+  'settings.uiScale': '介面縮放',
+  'settings.uiScaleDesc': '縮放整個介面 — 在高 DPI 顯示器上很實用。不需重新啟動。',
   'settings.sidebarPosition': '側邊欄位置',
   'settings.sidebarPositionDesc': '終端機區域的左側或右側',
   'settings.sidebarLeft': '左側',

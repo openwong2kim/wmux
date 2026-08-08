@@ -141,6 +141,8 @@ export const es = {
   'settings.fontFamily': 'Familia de fuente',
   'settings.fontFamilyDesc': 'Fuente monoespaciada para el terminal',
   'settings.layout': 'Diseño',
+  'settings.uiScale': 'Escala de interfaz',
+  'settings.uiScaleDesc': 'Escala toda la interfaz — útil en pantallas de alto DPI. No requiere reiniciar.',
   'settings.sidebarPosition': 'Posición de la barra lateral',
   'settings.sidebarPositionDesc': 'Izquierda o derecha del área del terminal',
   'settings.sidebarLeft': 'Izquierda',

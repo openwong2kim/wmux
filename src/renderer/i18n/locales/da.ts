@@ -141,6 +141,8 @@ export const da = {
   'settings.fontFamily': 'Skriftfamilie',
   'settings.fontFamilyDesc': 'Monospace-skrift til terminalen',
   'settings.layout': 'Layout',
+  'settings.uiScale': 'UI-skalering',
+  'settings.uiScaleDesc': 'Skalér hele grænsefladen — nyttigt på skærme med høj DPI. Genstart ikke påkrævet.',
   'settings.sidebarPosition': 'Sidepanelposition',
   'settings.sidebarPositionDesc': 'Venstre eller højre for terminalområdet',
   'settings.sidebarLeft': 'Venstre',

@@ -615,6 +615,8 @@ export interface SessionData {
   theme?: string;
   locale?: string;
   terminalFontSize?: number;
+  /** Whole-interface zoom multiplier (1 = 100%). Absent = no zoom. */
+  uiScale?: number;
   terminalFontFamily?: string;
   defaultShell?: string;
   /** Orchestrator (deck brain) model override — '' / absent = the

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   clampUiZoom,
   macTrafficLightPosition,
   winOverlayHeight,
+  applyUiZoom,
   UI_ZOOM_MIN,
   UI_ZOOM_MAX,
 } from '../uiZoom';
@@ -56,5 +57,36 @@ describe('winOverlayHeight', () => {
   it('tracks the scaled chrome row', () => {
     expect(winOverlayHeight(1)).toBe(36);
     expect(winOverlayHeight(1.4)).toBe(50);
+  });
+});
+
+describe('applyUiZoom', () => {
+  // Minimal BrowserWindow stub — applyUiZoom touches only these three calls
+  // plus isDestroyed(). The IPC handler (registerHandlers) forwards the
+  // renderer's {factor, color, symbolColor} payload here; this guards the
+  // contract that zoom is always applied (clamped) while the chrome resync
+  // rides the platform guards inside applyUiZoom.
+  function makeWin() {
+    return {
+      isDestroyed: () => false,
+      webContents: { setZoomFactor: vi.fn() },
+      setWindowButtonPosition: vi.fn(),
+      setTitleBarOverlay: vi.fn(),
+    };
+  }
+
+  it('applies the clamped factor to setZoomFactor and returns it', () => {
+    const win = makeWin();
+    const applied = applyUiZoom(win as never, 9, undefined);
+    expect(applied).toBe(UI_ZOOM_MAX);
+    expect(win.webContents.setZoomFactor).toHaveBeenCalledWith(UI_ZOOM_MAX);
+  });
+
+  it('no-ops on a destroyed window without throwing', () => {
+    const win = makeWin();
+    win.isDestroyed = () => true;
+    const applied = applyUiZoom(win as never, 1.4, undefined);
+    expect(applied).toBe(1.4);
+    expect(win.webContents.setZoomFactor).not.toHaveBeenCalled();
   });
 });

@@ -141,6 +141,8 @@ export const ru = {
   'settings.fontFamily': 'Семейство шрифтов',
   'settings.fontFamilyDesc': 'Моноширинный шрифт для терминала',
   'settings.layout': 'Макет',
+  'settings.uiScale': 'Масштаб интерфейса',
+  'settings.uiScaleDesc': 'Масштабируйте весь интерфейс — полезно для дисплеев с высоким DPI. Перезапуск не требуется.',
   'settings.sidebarPosition': 'Положение боковой панели',
   'settings.sidebarPositionDesc': 'Слева или справа от области терминала',
   'settings.sidebarLeft': 'Слева',
