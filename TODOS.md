@@ -459,3 +459,24 @@
 - **Why:** The natural follow-up question after in-workspace move ships: "why can't I drag it to the other workspace?" Scoped out of #645 because it is an identity problem, not a layout one.
 - **Context:** Three constraints make this an epic rather than an extension. (1) `panePrincipalId(wsId, paneId)` is the channel-membership coordinate (`paneSlice.ts:518`, purged on close via `purgeMembershipDaemon`), so a moved pane changes principal and its channel rows must migrate rather than be dropped. (2) Workspace env profiles (`WorkspaceProfile.env` / `startupCwd`) differ, so the PTY arrives under the wrong environment. (3) The auto-name `w<wsOrdinal>-<ordinal>` embeds the workspace, so the pane must be reissued an ordinal from the destination's `nextPaneOrdinal` — which breaks the "a pane's name is stable for its lifetime" property that `paneSlice.ts:411` calls critical.
 - **Depends on:** #645. **Effort:** L. **Priority:** P3.
+
+## User-authored JSON agent profiles (P3, deferred by eng review 2026-08-08)
+- **What:** A `~/.wmux/agent-profiles/*.json` overlay so an operator can add or fix agent detection without waiting for a release. Schema, fail-closed reader, regex guard, runtime budget, hot reload.
+- **Why:** Deferred, not rejected. Once the detector's built-in profiles are restructured (evidence gates, `extends`, `gateHint`), JSON is only the serialization of a structure that already exists — but that is exactly why the constraints below must survive the wait. Re-deriving them cost a full eng review.
+- **Constraints established 2026-08-08 (do not re-litigate, verify then apply):**
+  - Custom profiles are DETECTION-ONLY. `isAgentSignal` (`signal-types.ts:223`) is a closed set and stays closed; a custom agent has no hook bridge to admit anyway. No resume binding (`daemon/index.ts:431`), no approval keystrokes (`approvalKeystrokes.ts:74`).
+  - Reserve BOTH slugs and DISPLAY names. `agentDisplayToSlug` (`AgentDetector.ts:85-97`) switches on the display name, so a profile naming itself `Claude Code` inherits `claude` and reaches HookSignalRouter dedup/authority. Slug reservation alone is not enough.
+  - Slugs must not contain `:`. `HookSignalRouter.key()` (`:264`) builds `${slug}:${ptyId}:${kind}` and `dropPty` scans `:${ptyId}:`; the invariant is stated at `:233-236`. A `custom:` namespace prefix would break it. Validate `/^[a-z0-9][a-z0-9-]{0,31}$/`.
+  - `fs.watch` needs the polling fallback the real precedent has (`daemon/transcript/types.ts:49`), plus read-retry: on Windows it fires mid-write, so a debounce alone does not make a half-written file complete.
+  - Invalidation must reach BOTH processes. `AgentDetector` is constructed in `PTYBridge.ts:258` (Electron main) and `DaemonPTYBridge.ts:182` (daemon); a daemon-only watcher leaves local-mode panes on a stale profile set.
+  - A user-visible failure toast from the daemon is not free: it rides DaemonClient → DaemonNotificationRouter, and a new event type forces `node scripts/gen-api-reference.mjs` under the CI drift guard.
+  - Reader reads, the setter authorizes. Copy the split from `firstPartyConfig.ts:10-15` so no future caller can route around the gate.
+  - RE2 is not an option: it has no lookbehind, and the Claude gate at `AgentDetector.ts:155` uses `(?<!Open)`.
+- **Depends on:** the built-in restructure (evidence gates + `extends` + `gateHint`) — those decide the public contract. **Effort:** M-L. **Priority:** P3 until someone actually asks for it.
+
+## Grow the built-in agent profile set past 8 (P3, from eng review 2026-08-08)
+- **What:** Add detection profiles for agent CLIs wmux does not recognize today. Content work, not engine work.
+- **Why:** The detector restructure ships zero new agents by itself — a user still sees the same 8. If supported-agent count is a competitive number, this is the work that moves it.
+- **Rule (non-negotiable):** every pattern must be captured from a live TUI, never guessed. `AgentDetector.ts:7-9`: *"Only use patterns that are UNIQUE to each agent's output ... False positives are worse than missed detections."* A false agent identity lies to the pane badge and the orchestrator reads that badge.
+- **Context:** PR unit is one agent + its tests. Forks of an existing agent should be 3 lines via `extends` rather than a copied pattern block. Candidates are unverified until someone installs and runs them.
+- **Depends on:** evidence gates + `extends` (so forks stay cheap). **Effort:** S per agent. **Priority:** P3, always open — a good external-contribution surface.

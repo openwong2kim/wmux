@@ -61,10 +61,16 @@ type CriticalEventCallback = (event: CriticalEvent) => void;
 // SLUG-form agent identifier. Lowercase, no whitespace. Used as the
 // canonical key shared with hook-based signals (integrations/<agent>/).
 // HookSignalRouter dedup matches AgentDetector emissions against bridge
-// signals on this slug, so the two MUST stay in lock-step. New agents
-// added here must also be added to integrations/shared/signal-types.ts
-// (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
+// signals on this slug.
+//
+// The union and both slug<->display lookups now live in
+// src/shared/agentIdentity.ts, so a new agent is one row there rather than
+// eight hand-synced lists. Re-exported here because callers have long imported
+// the identity helpers from the detector.
+export type { AgentSlug } from '../../shared/agentIdentity';
+export { agentDisplayToSlug } from '../../shared/agentIdentity';
+
+import type { AgentSlug } from '../../shared/agentIdentity';
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
@@ -75,25 +81,6 @@ interface AgentPattern {
   // previously matched in this session, confirming the agent is active.
   gate?: RegExp;
   patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
-}
-
-/**
- * Map display name → slug. Used by consumers that have an AgentEvent in
- * hand (which carries the display name) and need to derive the canonical
- * slug for dedup against hook signals.
- */
-export function agentDisplayToSlug(display: string): AgentSlug | undefined {
-  switch (display) {
-    case 'Claude Code': return 'claude';
-    case 'Codex CLI': return 'codex';
-    case 'Gemini CLI': return 'gemini';
-    case 'Aider': return 'aider';
-    case 'OpenCode': return 'opencode';
-    case 'GitHub Copilot CLI': return 'copilot';
-    case 'OpenClaude': return 'openclaude';
-    case 'Kiro CLI': return 'kiro';
-    default: return undefined;
-  }
 }
 
 /**

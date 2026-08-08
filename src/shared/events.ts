@@ -30,17 +30,13 @@ import type { PaneMetadata, WorkspaceMetadata, TaskState } from './types';
 /**
  * Canonical agent slug for the `agent.lifecycle` event payload.
  *
- * Kept in lock-step with two other declaration sites:
- *   - `integrations/shared/signal-types.ts` (bridge envelope, canonical)
- *   - `src/main/pty/AgentDetector.ts` (regex detector)
- *
- * Duplicated here because src/shared is the only directory the daemon's
- * tsconfig.daemon.json includes (rootDir: src), and `integrations/` is
- * outside that root. Importing from main/ would invert the layering
- * (shared depends on main). New agents added to the union MUST be added
- * to all three locations.
+ * Re-exported from `./agentIdentity`, which owns the one table every consumer
+ * derives from. This alias stays because a large number of modules already
+ * import `AgentSlug` from here and the indirection costs nothing.
  */
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
+export type { AgentSlug } from './agentIdentity';
+
+import type { AgentSlug } from './agentIdentity';
 
 export type WmuxEventType =
   | 'pane.created'

@@ -64,41 +64,25 @@ export type AgentSignalKind =
   | 'agent.tool_started';
 
 /**
- * SLUG-form agent identifiers. Matches AgentPattern.slug in AgentDetector.ts.
+ * SLUG-form agent identifiers, and the slug → display name lookup.
  *
- * New agents added here MUST also be added to:
- *   1. AgentDetector.AGENT_PATTERNS  (with matching slug)
- *   2. HookSignalRouter dedup key derivation
+ * Both are re-exported from `src/shared/agentIdentity.ts`, which owns the
+ * single table. They stay exported from here because bridge-boundary callers
+ * (and the `integrations/shared/signal-types.ts` shim) import them from this
+ * module, and the envelope contract is what this file documents.
  *
- * Display names (e.g. "Claude Code") are derived from this slug at the
- * renderer layer, NOT carried in the envelope. This keeps envelopes
- * lowercase + whitespace-free for safe routing key construction.
+ * Display names are NOT carried in the envelope — envelopes stay lowercase and
+ * whitespace-free so routing keys are safe to build. The daemon still needs
+ * `agentSlugToDisplay` because a hook-sourced signal is broadcast on the SAME
+ * `agent.event` wire family the detector uses, and that payload's `agent` field
+ * IS a display name: main reads it straight into the sidebar label and back
+ * through `agentDisplayToSlug`. Emitting the raw slug there would show "claude"
+ * in the UI and break the reverse lookup.
  */
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
+export type { AgentSlug } from '../agentIdentity';
+export { agentSlugToDisplay } from '../agentIdentity';
 
-/**
- * slug → display name. The exact inverse of `agentDisplayToSlug` in
- * src/main/pty/AgentDetector.ts; the two MUST stay in lock-step.
- *
- * Normally display names are derived at the renderer layer (see the note
- * above). The daemon needs the mapping because a hook-sourced signal is
- * broadcast on the SAME `agent.event` wire family the detector uses, and that
- * payload's `agent` field is a DISPLAY name — main reads it straight into the
- * sidebar label and back through `agentDisplayToSlug`. Emitting the raw slug
- * there would show "claude" in the UI and break the reverse lookup.
- */
-export function agentSlugToDisplay(slug: AgentSlug): string {
-  switch (slug) {
-    case 'claude': return 'Claude Code';
-    case 'codex': return 'Codex CLI';
-    case 'gemini': return 'Gemini CLI';
-    case 'aider': return 'Aider';
-    case 'opencode': return 'OpenCode';
-    case 'copilot': return 'GitHub Copilot CLI';
-    case 'openclaude': return 'OpenClaude';
-    case 'kiro': return 'Kiro CLI';
-  }
-}
+import { AGENT_SLUG_SET, type AgentSlug } from '../agentIdentity';
 
 /**
  * Canonical envelope. All fields are required UNLESS marked optional.
@@ -200,10 +184,9 @@ export interface HookSignalResponse {
  */
 /** Closed set of allowed agent slugs. Used by isAgentSignal to reject
  *  unknown agent values rather than accepting any string (codex round-2
- *  review P2 #9). Keep this in sync with the AgentSlug union above. */
-const ALLOWED_AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude', 'kiro',
-]);
+ *  review P2 #9). Derived from the identity table, so it cannot drift from
+ *  the union. */
+const ALLOWED_AGENT_SLUGS: ReadonlySet<string> = AGENT_SLUG_SET;
 
 export function isAgentSignal(value: unknown): value is AgentSignal {
   if (!value || typeof value !== 'object') return false;

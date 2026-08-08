@@ -19,31 +19,23 @@
 // authorDisplay) so the seeding rules are unit-testable without mounting
 // AppLayout.
 
-import type { AgentSlug } from '../../shared/events';
-// Pure display→slug table owned by the detector (renderer main-imports are
-// established practice for pure modules — methodCapabilityMap precedent; the
-// daemon cross-imports this same module).
-import { agentDisplayToSlug } from '../../main/pty/AgentDetector';
-
-const AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude',
-  'codex',
-  'gemini',
-  'aider',
-  'opencode',
-  'copilot',
-  'kiro',
-] satisfies AgentSlug[]);
+import { agentDisplayToSlug, isAgentSlug, type AgentSlug } from '../../shared/agentIdentity';
 
 /** Narrow a daemon-reported agent identity to a known slug. The daemon's
  *  `getAgentName` returns the DISPLAY name ('Claude Code'), not the slug —
  *  Codex review #1: treating it as a slug seeded candidates whose auto-name
  *  lost the '(claude)' suffix. Accept both shapes: slug passthrough for
- *  slug-shaped inputs, the detector's canonical display→slug table for
- *  display-shaped ones. Unknown values seed the name without a slug (the
- *  auto-name suffix stays generic instead of lying). */
+ *  slug-shaped inputs, the canonical display→slug table for display-shaped
+ *  ones. Unknown values seed the name without a slug (the auto-name suffix
+ *  stays generic instead of lying).
+ *
+ *  Both lookups now come from the shared identity table. The hand-written set
+ *  this used to carry was missing `openclaude`, so a slug-shaped 'openclaude'
+ *  fell through to the display→slug map — which only knows 'OpenClaude' — and
+ *  returned undefined, reintroducing exactly the suffix loss described above
+ *  for one agent. */
 export function asAgentSlug(name: string): AgentSlug | undefined {
-  if (AGENT_SLUGS.has(name)) return name as AgentSlug;
+  if (isAgentSlug(name)) return name;
   return agentDisplayToSlug(name);
 }
 

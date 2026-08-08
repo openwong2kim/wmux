@@ -71,7 +71,7 @@ import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
-import { agentDisplayToSlug } from '../main/pty/AgentDetector';
+import { agentDisplayToSlug, AGENT_SLUG_SET } from '../shared/agentIdentity';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
@@ -446,12 +446,9 @@ const recoveredAgentShellIds = new Map<string, AgentSlug>();
 const recoveredResumeBindings = new Map<string, ResumeBinding>();
 
 // X6 ③: closed set of resumable agent slugs, used to validate a hook-supplied
-// binding agent before it is written to `lastDetectedAgent` (an AgentSlug). Keep
-// in sync with AgentSlug in src/shared/events.ts and ALLOWED_AGENT_SLUGS in
-// integrations/shared/signal-types.ts.
-const KNOWN_AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude', 'kiro',
-]);
+// binding agent before it is written to `lastDetectedAgent` (an AgentSlug).
+// Derived from the shared identity table, so it cannot drift.
+const KNOWN_AGENT_SLUGS: ReadonlySet<string> = AGENT_SLUG_SET;
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
