@@ -108,6 +108,7 @@ import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { loadConfig, getWmuxDir } from '../daemon/config';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
+import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
@@ -1091,6 +1092,14 @@ app.on('ready', async () => {
   }
   registerPluginProtocolHandler(() => pluginHostLoader);
   markBoot('plugins-loaded');
+
+  // #818: own the accelerator table before any window exists. Skipping this
+  // left Electron's default menu in charge, and on macOS its NSMenu key
+  // equivalents fire before the renderer — Cmd+Shift+R force-reloaded (wiping
+  // every attached remote workspace) instead of renaming, and Cmd+W closed the
+  // window instead of the surface. App-global, so this one call covers the
+  // windows created later by the macOS `activate` path too.
+  installApplicationMenu();
 
   mainWindow = createWindow({ deferLoad: true });
   markBoot('window-created');
