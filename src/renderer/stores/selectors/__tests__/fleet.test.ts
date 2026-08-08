@@ -691,3 +691,62 @@ describe('isPaneAgentBusy — agentProcessAlive', () => {
     })).toBe(false);
   });
 });
+
+// ─── #837: workspace-level 'running' must not land on a pane that is provably
+// at a shell prompt ────────────────────────────────────────────────────────────
+describe('selectFleetPanes — commandRunning veto on borrowed workspace status', () => {
+  // One workspace, two leaves. `ws.metadata.agentStatus` is a single
+  // workspace-wide slot written by whichever PTY last broadcast, and
+  // `surfaceAgentStatus` retains only ATTENTION statuses — so a background
+  // worker's 'running' is invisible per-pty and only survives in that shared
+  // slot. The selector then attributes it to the ACTIVE pane, which in the
+  // reported case was a hand-opened pwsh shell that never ran an agent.
+  const wsBorrowed = workspace(
+    'ws-837', 'delta',
+    branch('b837', [
+      leaf('p-shell', [surface('s-shell', 'daemon-587eb539')]),
+      leaf('p-worker', [surface('s-worker', 'pty-worker')]),
+    ]),
+    'p-shell',
+    { agentName: 'Claude Code', agentStatus: 'running' },
+  );
+
+  it('reads idle when the daemon says no foreground command is running', () => {
+    const panes = selectFleetPanes({
+      workspaces: [wsBorrowed],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      commandRunningByPtyId: { 'daemon-587eb539': false },
+    });
+    expect(byPane(panes, 'p-shell').agentStatus).toBe('idle');
+  });
+
+  it('keeps running when the shell says a foreground command owns the pty', () => {
+    const panes = selectFleetPanes({
+      workspaces: [wsBorrowed],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      commandRunningByPtyId: { 'daemon-587eb539': true },
+    });
+    expect(byPane(panes, 'p-shell').agentStatus).toBe('running');
+  });
+
+  it('keeps running when no shell integration reports on that pty (legacy)', () => {
+    const panes = selectFleetPanes({
+      workspaces: [wsBorrowed],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+    });
+    expect(byPane(panes, 'p-shell').agentStatus).toBe('running');
+  });
+
+  it('never vetoes an attention status the pane holds in its own right', () => {
+    const panes = selectFleetPanes({
+      workspaces: [wsBorrowed],
+      surfaceAgentStatus: { 'daemon-587eb539': 'awaiting_input' },
+      surfaceActivity: {},
+      commandRunningByPtyId: { 'daemon-587eb539': false },
+    });
+    expect(byPane(panes, 'p-shell').agentStatus).toBe('awaiting_input');
+  });
+});

@@ -109,6 +109,7 @@ export default function StatusBar() {
         workspaces: s.workspaces,
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
+        commandRunningByPtyId: s.commandRunningByPtyId,
       }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal');
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
@@ -124,6 +125,7 @@ export default function StatusBar() {
         workspaces: s.workspaces,
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
+        commandRunningByPtyId: s.commandRunningByPtyId,
       }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal'),
       'attention',
     );

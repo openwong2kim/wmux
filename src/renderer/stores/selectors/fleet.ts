@@ -65,6 +65,9 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  stale stamp decays without a new event (bumped by useAgentActivityClock). */
   surfaceActivityAt?: StoreState['surfaceActivityAt'];
   agentClockMs?: StoreState['agentClockMs'];
+  /** OSC 133 shell state per ptyId (#837). Optional so existing fixtures keep
+   *  the pre-existing behavior; the live store always provides it. */
+  commandRunningByPtyId?: StoreState['commandRunningByPtyId'];
 };
 
 /**
@@ -206,7 +209,20 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       //      never reached workspace metadata). Uses the in-state clock so it
       //      decays on its own. Absent inputs → skipped (legacy behavior).
       //   4. idle.
-      const metaStatus = isActivePane ? wsMeta?.agentStatus : undefined;
+      // #837: `ws.metadata.agentStatus` is ONE slot per workspace, written by
+      // whichever pty last broadcast, while `surfaceAgentStatus` retains only
+      // the ATTENTION statuses — so a background worker's 'running' survives
+      // nowhere but that shared slot, and tier 2 then paints it onto whichever
+      // pane happens to be active. A hand-opened shell that never ran an agent
+      // read 'running' that way and blocked deck_complete_work.
+      // The daemon already knows better per-pty: OSC 133 says the shell is back
+      // at a prompt. Rank it exactly as `isPaneAgentBusy` tier 1 does — `false`
+      // is authoritative, `undefined` (no shell integration) changes nothing.
+      // Only the borrowed workspace-level status is vetoed; an attention status
+      // the pane holds in its own right still outranks everything.
+      const commandRunning = ptyId ? state.commandRunningByPtyId?.[ptyId] : undefined;
+      const metaStatus =
+        isActivePane && commandRunning !== false ? wsMeta?.agentStatus : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
       const hookRunning =
         activityAt !== undefined &&

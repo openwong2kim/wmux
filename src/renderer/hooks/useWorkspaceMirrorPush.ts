@@ -97,7 +97,11 @@ export function useWorkspaceMirrorPush(): void {
         s.surfaceActivity !== prev.surfaceActivity ||
         s.surfaceActivityAt !== prev.surfaceActivityAt ||
         s.paneLabel !== prev.paneLabel ||
-        s.supervisionByPtyId !== prev.supervisionByPtyId;
+        s.supervisionByPtyId !== prev.supervisionByPtyId ||
+        // #837: the OSC 133 veto on a borrowed workspace 'running'. Refreshed by
+        // a 15s pty.list poll; without it here the veto would wait on the 30s
+        // periodic push, which is the window the completion gate reads.
+        s.commandRunningByPtyId !== prev.commandRunningByPtyId;
       if (statusChurn) scheduleTrailing();
     };
 

@@ -50,6 +50,7 @@ export default function FleetView() {
   // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
   // here so the selector re-runs when an agent's PostToolUse activity changes.
   const surfaceActivity = useStore((s) => s.surfaceActivity);
+  const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
   const paneLabel = useStore((s) => s.paneLabel);
   // X8 supervision mirror — subscribed here so the selector re-runs when a
   // supervised pane arms/stops or its restart count changes.
@@ -86,8 +87,8 @@ export default function FleetView() {
   // trees or the per-pty attention map change (the two inputs the selector
   // reads), not on every unrelated store mutation.
   const panes = useMemo(
-    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId }), fleetSortMode),
-    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, fleetSortMode],
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, commandRunningByPtyId }), fleetSortMode),
+    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, commandRunningByPtyId, fleetSortMode],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
   // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
