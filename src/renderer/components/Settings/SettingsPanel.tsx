@@ -24,6 +24,7 @@ import {
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
+import { ADVERTISED_SHORTCUTS, WMUX_BUILTIN_COMBOS, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
@@ -3918,12 +3919,11 @@ function keyCodeToDisplay(code: string): string {
  * tmux-convention combos (Ctrl+B prefix, Ctrl+M / Ctrl+Shift+M bookmark family)
  * stay on literal Ctrl across every OS, so we never substitute ⌘ for those.
  */
-function shortcutLabel(combo: string): string {
+function shortcutLabel(entry: KeymapEntry): string {
   const isMac = window.electronAPI.platform === 'darwin';
-  if (!isMac) return combo;
-  // Preserve tmux/bookmark conventions (must match useKeyboard.ts literalCtrl branches).
-  if (combo === 'Ctrl+B' || combo === 'Ctrl+M' || combo === 'Ctrl+Shift+M') return combo;
-  return combo.replace(/Ctrl/g, '⌘');
+  // literalCtrl entries (tmux prefix, bookmark family) stay literal on macOS —
+  // the flag lives in WMUX_KEYMAP so this and useKeyboard.ts can't drift.
+  return isMac ? macDisplayCombo(entry) : entry.combo;
 }
 
 const PREFIX_ACTION_IDS = [
@@ -3959,13 +3959,11 @@ function TabShortcuts() {
   const [capturingBindingKey, setCapturingBindingKey] = useState<string | null>(null);
   const [addingBinding, setAddingBinding] = useState(false);
 
-  const BUILTIN_KEYS = new Set([
-    'Ctrl+B', 'Ctrl+N', 'Ctrl+D', 'Ctrl+T', 'Ctrl+W', 'Ctrl+F',
-    'Ctrl+K', 'Ctrl+I', 'Ctrl+,',
-    'Ctrl+Shift+W', 'Ctrl+Shift+D', 'Ctrl+Shift+L', 'Ctrl+Shift+X',
-    'Ctrl+Shift+H', 'Ctrl+Shift+R', 'Ctrl+Shift+U', 'Ctrl+Shift+O',
-    'Ctrl+Shift+]', 'Ctrl+Shift+[', 'Ctrl+Shift+M', 'Ctrl+Shift+Q',
-  ]);
+  // Was a hand-copied subset that had drifted — Ctrl+Shift+A / Ctrl+Shift+G /
+  // Ctrl+M / Ctrl+Tab and the zoom keys are all bound but were missing, so a
+  // custom keybinding on one of them got no conflict warning and then silently
+  // never fired. Derived from WMUX_KEYMAP now (#818).
+  const BUILTIN_KEYS = WMUX_BUILTIN_COMBOS;
 
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
   const bindingEntries = Object.entries(prefixConfig.bindings);
@@ -3974,19 +3972,11 @@ function TabShortcuts() {
   // tmux/bookmark family. prefixKeyDisplay always renders as literal Ctrl
   // because the prefix combo stays on Ctrl across every OS.
   const shortcuts = [
-    { keys: prefixKeyDisplay,                description: t('settings.prefixMode') },
-    { keys: shortcutLabel('Ctrl+D'),         description: t('settings.sc.splitHorizontal') },
-    { keys: shortcutLabel('Ctrl+Shift+D'),   description: t('settings.sc.splitVertical') },
-    { keys: shortcutLabel('Ctrl+T'),         description: t('settings.sc.newWorkspace') },
-    { keys: shortcutLabel('Ctrl+W'),         description: t('settings.sc.closeSurface') },
-    { keys: shortcutLabel('Ctrl+Shift+Q'),   description: t('settings.sc.closePane') },
-    { keys: shortcutLabel('Ctrl+F'),         description: t('settings.sc.searchTerminal') },
-    { keys: shortcutLabel('Ctrl+K'),         description: t('settings.sc.commandPalette') },
-    { keys: shortcutLabel('Ctrl+I'),         description: t('settings.sc.toggleNotifications') },
-    { keys: shortcutLabel('Ctrl+Shift+X'),   description: t('settings.sc.viCopyMode') },
-    { keys: shortcutLabel('Ctrl+Shift+R'),   description: t('settings.sc.renameWorkspace') },
-    { keys: shortcutLabel('Ctrl+Shift+H'),   description: t('settings.sc.highlightPane') },
-    { keys: shortcutLabel('Ctrl+`'),         description: t('settings.sc.floatingPane') },
+    { keys: prefixKeyDisplay, description: t('settings.prefixMode') },
+    ...ADVERTISED_SHORTCUTS.map((entry) => ({
+      keys: shortcutLabel(entry),
+      description: t(entry.descriptionKey as Parameters<typeof t>[0]),
+    })),
   ];
 
   return (
