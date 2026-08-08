@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
-import { computeMirrorFontSize, MAX_FIT_PASSES } from './mirrorFit';
+import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
@@ -172,15 +172,18 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   const fitStateRef = useRef({ boxKey: '', settled: undefined as number | undefined, passes: 0 });
   const fitFrameRef = useRef<number | null>(null);
   const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the pending timer is due. A later request never postpones it. */
+  const fitDueAtRef = useRef(0);
   /** The user's terminal font size is the fit's UPPER BOUND, not its output —
    *  read through a ref so the fit callback can stay identity-stable. */
   const maxFontSizeRef = useRef(terminalFontSize);
   maxFontSizeRef.current = terminalFontSize;
 
   /**
-   * One measure→decide→apply pass. Reads layout, so it runs inside rAF: six
-   * mirrors observing the same divider drag would otherwise force six separate
-   * reflows per frame.
+   * One measure→decide→apply pass, run from an animation frame so it lands
+   * after layout rather than in the middle of an observer callback. It is NOT
+   * a read/write batcher: each mirror still reads its own box and then writes
+   * its own font. The debounce below is what keeps that cost off the drag path.
    */
   const runFit = useCallback(() => {
     const term = termRef.current;
@@ -196,7 +199,14 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     const boxWidth = box.clientWidth;
     const boxHeight = box.clientHeight;
     const state = fitStateRef.current;
-    const boxKey = `${boxWidth}x${boxHeight}x${term.cols}x${term.rows}x${maxFontSizeRef.current}`;
+    const boxKey = mirrorFitKey({
+      boxWidth,
+      boxHeight,
+      cols: term.cols,
+      rows: term.rows,
+      maxFontSize: maxFontSizeRef.current,
+      fontFamily: terminalFontFamilyRef.current,
+    });
     if (boxKey !== state.boxKey) {
       state.boxKey = boxKey;
       state.settled = undefined;
@@ -218,7 +228,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       maxFontSize: maxFontSizeRef.current,
       settledFontSize: state.settled,
     });
-    if (fontSize === null || fontSize === currentFontSize) return;
+    if (fontSize === null) return;
+    // Answer accepted even when it changes nothing: recording it is what arms
+    // the shrink-only guard for the next pass. Without this the "already the
+    // right size" pass leaves the guard unset, and the staircase is free to
+    // walk back up on the pass after it.
+    if (fontSize === currentFontSize) {
+      state.settled = fontSize;
+      return;
+    }
 
     state.settled = fontSize;
     term.options.fontSize = fontSize;
@@ -227,14 +245,31 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     scheduleFit();
   }, []);
 
-  /** Coalesce to one pass per frame. `delayMs` debounces the continuous case
-   *  (a divider drag) so the font — and with it xterm's char measurement and
-   *  width cache — is not restyled on every frame of the drag. */
+  /**
+   * Coalesce to one pass per frame. `delayMs` debounces the continuous case (a
+   * divider drag) so the font — and with it xterm's char measurement and width
+   * cache — is not restyled on every frame of the drag.
+   *
+   * A pending request is never pushed BACK: a discrete event asking for an
+   * immediate fit (a remote resize, a settings change) would otherwise be
+   * delayed to the tail of whatever stream of observer callbacks happens to be
+   * running, leaving the cropped frame on screen for the whole of it.
+   */
   const scheduleFit = useCallback((delayMs = 0) => {
-    if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
+    const dueAt = Date.now() + delayMs;
+    if (fitTimerRef.current !== null) {
+      if (dueAt >= fitDueAtRef.current) return; // already scheduled at least this soon
+      clearTimeout(fitTimerRef.current);
+    }
+    // A frame already queued by an earlier request would fire outside this
+    // debounce window and run an extra pass.
+    if (fitFrameRef.current !== null) {
+      cancelAnimationFrame(fitFrameRef.current);
+      fitFrameRef.current = null;
+    }
+    fitDueAtRef.current = dueAt;
     fitTimerRef.current = setTimeout(() => {
       fitTimerRef.current = null;
-      if (fitFrameRef.current !== null) cancelAnimationFrame(fitFrameRef.current);
       fitFrameRef.current = requestAnimationFrame(() => {
         fitFrameRef.current = null;
         runFit();
@@ -261,6 +296,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
     if (fitFrameRef.current !== null) cancelAnimationFrame(fitFrameRef.current);
   }, []);
+
+  // Reached through a ref by the attach lifecycle below. That effect is keyed
+  // on `attachId` alone on purpose — listing a callback in its deps means the
+  // day that callback stops being identity-stable, every render tears down the
+  // SSE stream and re-attaches it. Same discipline as `readOnlyRef`.
+  const scheduleFitRef = useRef(scheduleFit);
+  scheduleFitRef.current = scheduleFit;
 
   // Mount the xterm instance once, for the lifetime of this component.
   //
@@ -306,12 +348,14 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     // and the letterbox margin would show `--bg-base` next to the terminal's
     // own background — two backgrounds in one pane.
     if (boxRef.current) boxRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
-    scheduleFit();
+    // Through the ref, so this effect can stay `[]`-keyed: re-running it would
+    // dispose the terminal and drop everything the remote has already sent.
+    scheduleFitRef.current();
     return () => {
       term.dispose();
       termRef.current = null;
     };
-  }, [scheduleFit]);
+  }, []);
 
   // Apply visual settings at runtime without recreating the terminal, so
   // tweaking the font does not wipe what the remote has already sent. Mirrors
@@ -367,7 +411,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       }
       // New grid, new natural size. No debounce — a meta is a discrete event,
       // and waiting would leave the pre-fit (cropped) frame on screen.
-      scheduleFit();
+      scheduleFitRef.current();
     });
     // A resize on the machine that owns the pane. Geometry only: no reset and
     // no repaint, so the mirrored scrollback and the user's scroll position
@@ -376,7 +420,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     const offResize = remote.onPaneResize((e) => {
       if (e.attachId !== attachId) return;
       termRef.current?.resize(e.cols, e.rows);
-      scheduleFit();
+      scheduleFitRef.current();
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -411,7 +455,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       dataDisposable?.dispose();
       remote.paneDetach(attachId).catch(() => { /* best-effort teardown — nothing for the caller to act on */ });
     };
-  }, [attachId, scheduleFit]);
+  }, [attachId]);
 
   return (
     // `overflow-hidden` is the last line of defence, NOT the fit. Geometry has a

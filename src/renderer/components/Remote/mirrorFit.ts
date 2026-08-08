@@ -24,7 +24,9 @@
  * cannot check the numbers.
  */
 
-/** Below this the glyphs stop being glyphs; we crop instead of shrinking on. */
+/** Below this the glyphs stop being glyphs; we crop instead of shrinking on.
+ *  A grid that still overflows here keeps being clipped — the same outcome as
+ *  before the fit existed, and the user's remedy is a wider window. */
 export const MIN_MIRROR_FONT_SIZE = 6;
 
 /** Font sizes are quantised to this, so a 1px box jitter cannot restyle the
@@ -62,10 +64,27 @@ export interface MirrorFitResult {
    *  a degenerate grid, or a later pass that did not want to shrink further.
    *  The caller leaves the terminal alone and waits for the next measurement. */
   fontSize: number | null;
-  /** True when the grid still overflows at {@link MIN_MIRROR_FONT_SIZE} — the
-   *  caller keeps cropping, and this is the flag a "widen the window" hint
-   *  would hang off. */
-  clamped: boolean;
+}
+
+/**
+ * Everything the answer depends on, as one comparable string.
+ *
+ * The caller restarts its fit whenever this changes and forbids growing while
+ * it does not, so anything left out here is an input whose change the fit will
+ * ignore. `fontFamily` is in it because a different face has different cell
+ * metrics: leave it out and switching to a wider font re-overflows the box
+ * with the shrink guard still holding the old, now-wrong, answer.
+ */
+export function mirrorFitKey(parts: {
+  boxWidth: number;
+  boxHeight: number;
+  cols: number;
+  rows: number;
+  maxFontSize: number;
+  fontFamily: string;
+}): string {
+  const { boxWidth, boxHeight, cols, rows, maxFontSize, fontFamily } = parts;
+  return `${boxWidth}x${boxHeight}x${cols}x${rows}x${maxFontSize}x${fontFamily}`;
 }
 
 /**
@@ -97,11 +116,20 @@ export function computeMirrorFontSize(input: MirrorFitInput): MirrorFitResult {
   // Hidden, not yet laid out, or a grid that cannot be divided by. All of these
   // are "ask again later", NOT "shrink to nothing" — a `display:none` mirror
   // measures 0×0, and 0/0 would otherwise come back as NaN and be assigned.
+  // Non-finite inputs land here too: NaN fails every comparison.
   const measurable =
     boxWidth > 0 && boxHeight > 0 &&
     renderedWidth > 0 && renderedHeight > 0 &&
-    cols > 0 && rows > 0 && currentFontSize > 0 && maxFontSize > 0;
-  if (!measurable) return { fontSize: null, clamped: false };
+    cols > 0 && rows > 0 && currentFontSize > 0 &&
+    Number.isFinite(boxWidth) && Number.isFinite(boxHeight) &&
+    Number.isFinite(renderedWidth) && Number.isFinite(renderedHeight);
+  if (!measurable) return { fontSize: null };
+
+  // A settings value restored from disk is not validated on its way into the
+  // store, so a corrupt session can hand us a zero or negative ceiling. Taking
+  // it literally would put the fit permanently below its own floor and silently
+  // disable it; the floor wins instead.
+  const ceiling = Math.max(MIN_MIRROR_FONT_SIZE, Number.isFinite(maxFontSize) ? maxFontSize : 0);
 
   // px of rendered grid per unit of font size, measured rather than assumed.
   const widthPerFontUnit = renderedWidth / currentFontSize;
@@ -110,16 +138,15 @@ export function computeMirrorFontSize(input: MirrorFitInput): MirrorFitResult {
   const wanted = quantise(Math.min(
     boxWidth / widthPerFontUnit,
     boxHeight / heightPerFontUnit,
-    maxFontSize,
+    ceiling,
   ));
-  const clamped = wanted < MIN_MIRROR_FONT_SIZE;
   const fontSize = Math.max(MIN_MIRROR_FONT_SIZE, wanted);
 
   // Later pass on an unchanged box: shrink or stay put, never grow.
   if (settledFontSize !== undefined && fontSize >= settledFontSize) {
-    return { fontSize: null, clamped };
+    return { fontSize: null };
   }
-  return { fontSize, clamped };
+  return { fontSize };
 }
 
 /** Round DOWN to a FONT_STEP multiple — rounding up would re-overflow the box. */

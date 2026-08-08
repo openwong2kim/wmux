@@ -8,7 +8,7 @@
 // prompt. Every case below is one of the ways that fit can go wrong.
 
 import { describe, it, expect } from 'vitest';
-import { computeMirrorFontSize, MIN_MIRROR_FONT_SIZE, type MirrorFitInput } from '../mirrorFit';
+import { computeMirrorFontSize, mirrorFitKey, MIN_MIRROR_FONT_SIZE, type MirrorFitInput } from '../mirrorFit';
 
 /** A 80×24 remote grid rendered at 14px into a box that comfortably holds it. */
 function fitting(over: Partial<MirrorFitInput> = {}): MirrorFitInput {
@@ -38,10 +38,9 @@ describe('computeMirrorFontSize', () => {
   // The reported symptom: a wide remote pane in a narrower local cell. Before
   // the fit this cropped the right-hand columns.
   it('shrinks to fit a grid that is too wide', () => {
-    const { fontSize, clamped } = computeMirrorFontSize(fitting({ boxWidth: 350 }));
+    const { fontSize } = computeMirrorFontSize(fitting({ boxWidth: 350 }));
     // 350/700 of 14px = 7px, and the result must not exceed that.
     expect(fontSize).toBe(7);
-    expect(clamped).toBe(false);
     // The predicted render at the new size fits the box.
     expect((700 / 14) * fontSize!).toBeLessThanOrEqual(350);
   });
@@ -59,10 +58,22 @@ describe('computeMirrorFontSize', () => {
     expect(fontSize).toBe(MIN_MIRROR_FONT_SIZE);
   });
 
-  it('floors at MIN_MIRROR_FONT_SIZE and reports the overflow as clamped', () => {
-    const { fontSize, clamped } = computeMirrorFontSize(fitting({ boxWidth: 70 }));
+  it('floors at MIN_MIRROR_FONT_SIZE rather than shrinking into illegibility', () => {
+    const { fontSize } = computeMirrorFontSize(fitting({ boxWidth: 70 }));
     expect(fontSize).toBe(MIN_MIRROR_FONT_SIZE);
-    expect(clamped).toBe(true);
+  });
+
+  // A settings value restored from a corrupt session is not validated on its
+  // way into the store. Taking a zero ceiling literally would pin the fit below
+  // its own floor and disable it for good, with no symptom but the old crop.
+  it('treats a nonsense maxFontSize as the floor, not as a disabled fit', () => {
+    const { fontSize } = computeMirrorFontSize(fitting({ boxWidth: 350, maxFontSize: 0 }));
+    expect(fontSize).toBe(MIN_MIRROR_FONT_SIZE);
+  });
+
+  it('declines on non-finite measurements instead of assigning NaN', () => {
+    expect(computeMirrorFontSize(fitting({ boxWidth: NaN })).fontSize).toBeNull();
+    expect(computeMirrorFontSize(fitting({ renderedWidth: Infinity })).fontSize).toBeNull();
   });
 
   it('quantises DOWN — rounding up would put the overflow back', () => {
@@ -102,6 +113,19 @@ describe('computeMirrorFontSize', () => {
     expect(second.fontSize).toBeNull();
   });
 
+  // The "nothing to change" pass still has to arm the guard. If the caller only
+  // recorded a settled size when it actually assigned one, the pass that agrees
+  // with the current size would leave the next one unguarded and free to grow.
+  it('returns the current size (not null) when it is already correct, so the caller can settle it', () => {
+    const { fontSize } = computeMirrorFontSize(fitting({
+      boxWidth: 700,
+      renderedWidth: 700,
+      renderedHeight: 400,
+      boxHeight: 400,
+    }));
+    expect(fontSize).toBe(14);
+  });
+
   it('still shrinks further on a later pass when the grid overflows', () => {
     const second = computeMirrorFontSize(fitting({
       boxWidth: 350,
@@ -111,5 +135,29 @@ describe('computeMirrorFontSize', () => {
       settledFontSize: 7,
     }));
     expect(second.fontSize).toBeLessThan(7);
+  });
+});
+
+// The key is the fit's restart signal: while it holds, growing is forbidden.
+// Anything missing from it is an input whose change the fit silently ignores.
+describe('mirrorFitKey', () => {
+  const base = { boxWidth: 800, boxHeight: 400, cols: 80, rows: 24, maxFontSize: 14, fontFamily: 'Cascadia Code' };
+
+  it.each([
+    ['box width', { boxWidth: 801 }],
+    ['box height', { boxHeight: 401 }],
+    ['remote cols', { cols: 120 }],
+    ['remote rows', { rows: 40 }],
+    ['the user font size', { maxFontSize: 16 }],
+    // The regression this exists for: a different face has different cell
+    // metrics, so without it a switch to a wider font keeps the shrink guard
+    // holding the old answer and the grid overflows its box again.
+    ['the user font family', { fontFamily: 'IBM Plex Mono' }],
+  ] as Array<[string, Partial<typeof base>]>)('changes when %s changes', (_label, over) => {
+    expect(mirrorFitKey({ ...base, ...over })).not.toBe(mirrorFitKey(base));
+  });
+
+  it('is stable for identical inputs', () => {
+    expect(mirrorFitKey({ ...base })).toBe(mirrorFitKey({ ...base }));
   });
 });
