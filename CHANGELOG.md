@@ -1,3 +1,39 @@
+## [3.40.1] — 2026-08-08
+
+### Added
+
+- **The whole interface is now scalable from Settings.** A new **UI scale** slider in Settings → Appearance → Layout scales the sidebar, titlebar, and every chrome surface together — not just the terminal panes — so the previously hard-coded 8–12px sidebar text can be enlarged for high-DPI displays, large monitors, and accessibility. The factor persists across restarts, applies live, and keeps the native window controls (macOS traffic lights / Windows buttons) centred in the titlebar at any size. This completes the groundwork PR #824 shipped, which added the zoom plumbing behind a prototype env var with no user-facing control. (#822)
+
+### Fixed
+
+- **A pane you opened by hand no longer counts as an agent that is still
+  working.** Agent status is stored once per workspace, so a busy agent in a
+  background pane made whichever pane you had focused look busy too — including
+  a plain shell that had never run an agent. The orchestrator then refused to
+  close out its work, and the only way past it was to answer a question about
+  clearing a status that was never true. A pane now shows as running only when
+  its own terminal produced the activity. (#838)
+
+- **A mirrored remote pane now fits its cell instead of being cropped.** The
+  mirror renders the grid the remote daemon owns, but it draws with your local
+  font, so a remote pane wider or taller than the cell it sits in simply ran off
+  the edge and was clipped from the top-left corner. Long lines lost their right
+  half, and — because a terminal app keeps its input box on the bottom rows —
+  the prompt you were typing into was cut off entirely, reappearing as a sliver
+  only while you typed. The mirror now shrinks its own font until the remote's
+  grid fits, and grows back when the window widens.
+
+- **A pane running OpenClaude could lose its `(openclaude)` name suffix.** One of
+  the six hand-maintained agent lists was missing that one agent, so anything
+  handing wmux the slug form got back "unknown" and the pane fell back to a
+  generic name. Every list now derives from a single table, so an agent cannot be
+  present in five places and absent from the sixth. (#841)
+
+- **Kiro panes went undetected when the composer shared its line with other
+  text.** The fallback that reads a cursor-drawn composer — one whose spaces are
+  gone by the time wmux sees it — searched from the wrong end of the line and
+  could never match. Kiro is now recognised in that case too. (#841)
+
 ## [3.40.0] — 2026-08-08
 
 ### Added
