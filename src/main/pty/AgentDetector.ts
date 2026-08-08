@@ -133,6 +133,12 @@ interface EvidenceClause {
  */
 type AgentGate = RegExp | { allOf: readonly EvidenceClause[] };
 
+interface StatusPattern {
+  regex: RegExp;
+  status: AgentEvent['status'];
+  message: string;
+}
+
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
   agent: string;
@@ -141,7 +147,57 @@ interface AgentPattern {
   // An optional "gate": patterns are only checked once it has matched in this
   // session, confirming the agent is active.
   gate?: AgentGate;
-  patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
+  /**
+   * Inherit another profile's status patterns.
+   *
+   * Forks are the normal case, not an exotic one: OpenClaude is Claude Code's
+   * TUI, so its approval prompts are the same prompts. Those four patterns used
+   * to be written out twice, 200+ characters each, box-glyph classes and all,
+   * and every review round that tightened them had to tighten both copies by
+   * hand. The cost of missing one is on record — a worker pane sat on an
+   * unmatched approval prompt for 100 minutes (see the note on the edit-approval
+   * patterns below).
+   *
+   * Inherited patterns are appended AFTER the profile's own, so a fork's
+   * distinctive chrome is matched first.
+   */
+  extends?: AgentSlug;
+  /**
+   * Parent patterns to drop, identified by regex source. A fork that removed a
+   * prompt, or renders it in a way that would misfire, says so here.
+   */
+  omit?: readonly RegExp[];
+  patterns: StatusPattern[];
+}
+
+/**
+ * Flatten `extends` into concrete pattern lists.
+ *
+ * Runs once at module load over a static table, so it throws rather than
+ * degrading: an unknown parent or a cycle is a programming error that should
+ * fail the process at startup, not silently leave an agent undetectable.
+ */
+function resolveInheritance(profiles: AgentPattern[]): AgentPattern[] {
+  const bySlug = new Map(profiles.map((p) => [p.slug, p]));
+
+  const resolve = (p: AgentPattern, seen: Set<AgentSlug>): StatusPattern[] => {
+    if (!p.extends) return p.patterns;
+    if (seen.has(p.extends)) {
+      throw new Error(`AgentDetector: profile inheritance cycle at '${p.slug}'`);
+    }
+    const parent = bySlug.get(p.extends);
+    if (!parent) {
+      throw new Error(`AgentDetector: '${p.slug}' extends unknown profile '${p.extends}'`);
+    }
+    seen.add(p.extends);
+    const omitted = new Set((p.omit ?? []).map((r) => r.source));
+    const inherited = resolve(parent, seen).filter((sp) => !omitted.has(sp.regex.source));
+    return [...p.patterns, ...inherited];
+  };
+
+  return profiles.map((p) =>
+    p.extends ? { ...p, patterns: resolve(p, new Set([p.slug])) } : p,
+  );
 }
 
 /**
@@ -188,7 +244,7 @@ export function agentStatusToSignalKind(
 const KIRO_CHROME_LINE = /^(?:Kiro\s*CLI(?:\s+v?\d[\w.-]*)?|Trust\s*All\s*Tools\s*active,\s*confirmations\s*are\s*off(?:\s*·.*)?)$/i;
 const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s*task\s*↵?\s*$/i;
 
-const AGENT_PATTERNS: AgentPattern[] = [
+const AGENT_PROFILES: AgentPattern[] = [
   // ── Claude Code ────────────────────────────────────────────────────────────
   // Gate: Claude Code startup banner (matches once to activate detection)
   {
@@ -276,27 +332,26 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 
   // ── OpenClaude ───────────────────────────────────────────────────────────
-  // Gate: OpenClaude startup banner — same fork-derived TUI as Claude Code
-  // but draws its own banner.
-  // NOTE: "bypass permissions on" is NOT used for waiting because OpenClaude
-  // re-renders its status bar every frame, flooding notifications (confirmed
-  // via debug capture 2026-07-22 — the line reaches the detector as a single
-  // concatenated token "…bypassPermissions modeisactive…" every ~16ms).
-  // "shift+tab to cycle" does NOT appear in OpenClaude's TUI at all (unlike
-  // Claude Code). The actual prompt after ANSI strip + trim is just ">" or
-  // "> ○" (with spinner), so we match those directly.
+  // A Claude Code fork, so it inherits Claude approval prompts verbatim rather
+  // than restating them. It keeps its own gate and its own idle prompt, and
+  // drops the two Claude waiting patterns:
+  //   - "bypass permissions on" floods: OpenClaude repaints its status bar
+  //     every frame, so the line arrives as a concatenated
+  //     "…bypassPermissions modeisactive…" token roughly every 16ms
+  //     (debug capture 2026-07-22).
+  //   - "shift+tab to cycle" does not appear in its TUI at all.
+  // What is left after ANSI strip + trim is a bare ">", optionally with a
+  // spinner glyph, which is matched directly below.
   {
     agent: 'OpenClaude',
     slug: 'openclaude',
     gate: /Open\s*Claude|openclaude|╭.*OpenClaude/,
+    extends: 'claude',
+    omit: [/bypass permissions on/, /shift\+tab to cycle/],
     patterns: [
       // Waiting — the bare ">" prompt after trim, optionally followed by a
       // spinner character (○) when the TUI is waiting for input.
-      { regex: /^>[\s○◌●]*$/,                                                                               status: 'waiting',          message: 'Ready for input' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                              status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
-      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
-      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: /^>[\s○◌●]*$/, status: 'waiting', message: 'Ready for input' },
     ],
   },
 
@@ -413,6 +468,13 @@ const AGENT_PATTERNS: AgentPattern[] = [
     ],
   },
 ];
+
+/**
+ * The profiles the detector actually matches against: authored profiles with
+ * `extends` flattened. Resolved once at module load and shared by every
+ * detector, so a 30-pane workspace does not re-resolve per PTY.
+ */
+const AGENT_PATTERNS: AgentPattern[] = resolveInheritance(AGENT_PROFILES);
 
 const MAX_BUFFER = 16 * 1024;
 
@@ -615,6 +677,27 @@ export class AgentDetector {
    * gate 매칭 → 에이전트 활성화 + 'running' 시작 이벤트 1회 emit + lastAgent
    * 설정. 라인 완성 여부와 무관하게 호출할 수 있도록 분리(feed의 미완성 라인
    * 검사와 processLine 양쪽에서 사용). activeAgents 가드로 세션당 1회만 발화.
+   */
+  /**
+   * Runs twice per completed line (raw, then cleaned) plus twice per feed chunk
+   * on the still-incomplete tail. The `activeAgents` skip means an identified
+   * pane costs nothing, so the load-bearing case is a pane running a plain
+   * shell: its gates never open, so every regex gate runs forever.
+   *
+   * That invites a cheap literal prefilter — screen the line with
+   * `String.includes` and only then run the regex. Measured before adding one,
+   * over 20k build-log lines:
+   *
+   *     profiles   plain regex sweep   with literal prefilter
+   *      7 (today)      9.6ms                11.3ms   0.84x  SLOWER
+   *     16            26.5ms                20.9ms   1.27x
+   *     48            75.0ms                52.7ms   1.42x
+   *
+   * One `toLowerCase()` per line costs more than the seven regex tests it would
+   * skip, so at today's count the prefilter is a net loss. It starts paying
+   * around sixteen profiles. Revisit if the built-in set roughly doubles; until
+   * then the compound gates carry hints (they screen their own, more expensive
+   * matchers) and the plain regex gates do not.
    */
   private checkGates(candidate: string): void {
     let probe: GateProbe | null = null;

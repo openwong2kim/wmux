@@ -466,6 +466,72 @@ describe('AgentDetector', () => {
   // A product-name mention is NOT enough: agents routinely print logs and docs
   // that name other agents. The gate requires an anchored chrome line AND the
   // anchored composer placeholder from the SAME detector (i.e. the same PTY).
+  // OpenClaude is a Claude Code fork and inherits Claude's approval patterns
+  // via `extends`. These pin the inherited behaviour so the indirection cannot
+  // quietly drop a prompt — the failure mode is a pane sitting on an unanswered
+  // approval, which cost 100 minutes once already.
+  describe('OpenClaude inherits Claude approval prompts', () => {
+    const open = () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('OpenClaude v0.9.0\n');
+      cb.mockClear();
+      return { det, cb };
+    };
+
+    it('fires awaiting_input for the plain proceed prompt', () => {
+      const { det, cb } = open();
+      det.feed('Do you want to proceed?\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', status: 'awaiting_input', message: 'Approval requested' }),
+      );
+    });
+
+    it('fires awaiting_input for the tool-approval prompt', () => {
+      const { det, cb } = open();
+      det.feed('│ Allow tool use for Bash? │\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Tool approval requested' }),
+      );
+    });
+
+    it('fires awaiting_input for both edit-approval shapes', () => {
+      const withFile = open();
+      withFile.det.feed('Do you want to overwrite calculator.html?\n');
+      expect(withFile.cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
+      );
+
+      // Narrow pane: the prompt wraps and the verb ends the line alone.
+      const wrapped = open();
+      wrapped.det.feed('│ Do you want to overwrite │\n');
+      expect(wrapped.cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
+      );
+    });
+
+    it('keeps its own bare ">" idle prompt', () => {
+      const { det, cb } = open();
+      det.feed('> ○\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', status: 'waiting', message: 'Ready for input' }),
+      );
+    });
+
+    it('does NOT inherit the two Claude waiting patterns it omits', () => {
+      // "bypass permissions on" repaints every frame in OpenClaude and would
+      // flood; "shift+tab to cycle" is not in its TUI at all.
+      const a = open();
+      a.det.feed('  bypass permissions on\n');
+      expect(a.cb).not.toHaveBeenCalled();
+
+      const b = open();
+      b.det.feed('  shift+tab to cycle\n');
+      expect(b.cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Kiro CLI compound gate', () => {
     const KIRO_BANNER = 'Kiro CLI v0.9.3\n';
     const KIRO_DOCS = 'https://kiro.dev/docs/cli/\n';
