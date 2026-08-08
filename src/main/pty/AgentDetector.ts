@@ -72,14 +72,75 @@ export { agentDisplayToSlug } from '../../shared/agentIdentity';
 
 import type { AgentSlug } from '../../shared/agentIdentity';
 
+/**
+ * One way to recognise a piece of an agent's chrome on a line.
+ *
+ *   line       regex against the ANSI-stripped, trimmed text. Use `^...$` when
+ *              the chrome owns its whole line — that is what stops a quoted
+ *              mention in someone else's log from counting as evidence.
+ *   contains   case-insensitive substring. For chrome with no stable line
+ *              shape, e.g. a docs URL printed inside a longer banner.
+ *   normalized whitespace-stripped, lowercased substring. TUIs that paint with
+ *              cursor moves lose their spaces in the PTY stream, so
+ *              "ask a question" can arrive as "askaquestion" and no
+ *              space-bearing pattern can ever match it.
+ */
+type EvidenceMatcher =
+  | { line: RegExp }
+  | { contains: string }
+  | { normalized: string };
+
+/**
+ * One piece of evidence a compound gate requires. Satisfied when ANY matcher
+ * hits; the gate opens when EVERY clause is satisfied, in any order and across
+ * any number of PTY chunks.
+ */
+interface EvidenceClause {
+  /** Stable id. Keys the per-detector evidence ledger. */
+  id: string;
+  /**
+   * Cheap lowercase literals. The matchers run only when the candidate line
+   * contains one of these, so an inactive compound gate costs a substring scan
+   * per line rather than a regex sweep. Required — an evidence clause with no
+   * hint would run its regexes on every line of every plain shell forever.
+   */
+  hints: readonly string[];
+  any: readonly EvidenceMatcher[];
+  /**
+   * Emit this status once, at the moment the gate opens, using the text this
+   * clause actually captured.
+   *
+   * Needed because evidence can arrive in any order: if the composer prompt is
+   * painted BEFORE the banner, its ordinary pattern pass already happened while
+   * the gate was still shut, so without a replay the pane sits at 'running'
+   * while it is really idle. The captured text becomes the dedup value, so the
+   * next ordinary pass over the same prompt suppresses instead of double-firing.
+   *
+   * `evidence` is the canonical text to fall back on when the matcher that hit
+   * was not a regex (a `normalized` hit has no meaningful capture).
+   */
+  emitOnGateOpen?: { status: AgentEventStatus; message: string; evidence: string };
+}
+
+/**
+ * A gate is either a single regex (the agent's banner is enough to identify it)
+ * or a set of clauses that must ALL be satisfied.
+ *
+ * The compound form exists because a product-name mention is not proof: agents
+ * routinely print logs and docs naming other agents. Requiring two independent
+ * pieces of chrome from the same PTY is what separates "Kiro is running here"
+ * from "something printed the word Kiro".
+ */
+type AgentGate = RegExp | { allOf: readonly EvidenceClause[] };
+
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
   agent: string;
   /** Canonical slug. Stable, lowercase, no whitespace. Matches hook signals. */
   slug: AgentSlug;
-  // An optional "gate" regex: patterns are only checked if the gate has
-  // previously matched in this session, confirming the agent is active.
-  gate?: RegExp;
+  // An optional "gate": patterns are only checked once it has matched in this
+  // session, confirming the agent is active.
+  gate?: AgentGate;
   patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
 }
 
@@ -293,12 +354,40 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 
   // ── Kiro CLI ──────────────────────────────────────────────────────────────
-  // The generic gate loop below special-cases this slug and opens it only
-  // after BOTH KIRO_CHROME_LINE and KIRO_PROMPT_LINE have been observed.
+  // Kiro has no hook bridge, so its identity comes entirely from the screen —
+  // which is exactly when a compound gate is worth its cost. Two independent
+  // pieces of chrome from the SAME PTY are required, in either order.
   {
     agent: 'Kiro CLI',
     slug: 'kiro',
-    gate: KIRO_CHROME_LINE,
+    gate: {
+      allOf: [
+        {
+          id: 'chrome',
+          hints: ['kiro', 'trust all tools'],
+          any: [
+            // Newer v3 builds print the docs URL instead of a version banner.
+            { contains: 'kiro.dev/docs/cli/' },
+            { line: KIRO_CHROME_LINE },
+          ],
+        },
+        {
+          id: 'prompt',
+          hints: ['ask'],
+          any: [
+            { line: KIRO_PROMPT_LINE },
+            // Cursor-drawn composer: the spaces are gone by the time this
+            // reaches us, so no space-bearing pattern can match it.
+            { normalized: 'askaquestionordescribeatask' },
+          ],
+          emitOnGateOpen: {
+            status: 'waiting',
+            message: 'Ready for input',
+            evidence: 'ask a question or describe a task',
+          },
+        },
+      ],
+    },
     patterns: [
       { regex: KIRO_PROMPT_LINE, status: 'waiting', message: 'Ready for input' },
     ],
@@ -340,6 +429,84 @@ const MAX_BUFFER = 16 * 1024;
 // eslint-disable-next-line no-control-regex
 const ANSI_STRIP = /\x1b(?:\[[0-9;?<=>]*[a-zA-Z@]|\][^\x07]*\x07|\([A-Z])/g;
 
+// Written as an escape so the source stays pure-ASCII, same reason as
+// CONTROL_CHARS_RE above. Used to skip the strip on already-clean candidates.
+const ESC = '\x1b';
+
+/** How much of a candidate an evidence clause is allowed to look at. */
+const MAX_EVIDENCE_PROBE = 4096;
+
+/**
+ * How many leading characters of a `normalized` needle anchor its search
+ * window. Long enough to be selective, short enough to survive a needle whose
+ * first word is tiny.
+ */
+const NORMALIZED_ANCHOR_LEN = 3;
+
+/**
+ * A candidate line prepared once for every evidence clause that examines it.
+ *
+ * `text` is ANSI-stripped and trimmed, because `checkGates` is deliberately
+ * called with the RAW line too (Claude Code carries its name only inside the
+ * OSC window-title escape, which the strip would otherwise remove wholesale).
+ * `lower` backs both the cheap hint screen and `contains` matchers.
+ */
+interface GateProbe {
+  readonly text: string;
+  readonly lower: string;
+}
+
+function makeGateProbe(candidate: string): GateProbe {
+  const bounded =
+    candidate.length > MAX_EVIDENCE_PROBE
+      ? candidate.slice(-MAX_EVIDENCE_PROBE)
+      : candidate;
+  // Callers pass both raw and already-cleaned candidates; skip the replacement
+  // when there is nothing to strip.
+  const stripped = bounded.includes(ESC) ? bounded.replace(ANSI_STRIP, '') : bounded;
+  const text = stripped.trim();
+  return { text, lower: text.toLowerCase() };
+}
+
+/**
+ * Try each matcher in order; return the text the first hit captured, or null.
+ *
+ * The captured text matters beyond "did it match": a clause with
+ * `emitOnGateOpen` replays it as the dedup value, so a regex hit must return
+ * exactly what the ordinary pattern pass will later see.
+ */
+function matchEvidence(
+  matchers: readonly EvidenceMatcher[],
+  probe: GateProbe,
+): string | null {
+  for (const m of matchers) {
+    if ('line' in m) {
+      const hit = probe.text.match(m.line);
+      if (hit) return hit[0];
+    } else if ('contains' in m) {
+      if (probe.lower.includes(m.contains)) return m.contains;
+    } else {
+      // Whitespace-stripped compare, windowed around the needle's own opening
+      // literal so a long repaint does not pay for a full-probe replacement.
+      // The window is generous: the raw text carries spaces the needle does not.
+      //
+      // FIRST occurrence, not last. The code this replaced used lastIndexOf and
+      // could therefore never match: needles like
+      // "askaquestionordescribeatask" contain their own anchor again near the
+      // end ("...a task"), so lastIndexOf always landed on the trailing copy and
+      // opened the window past the text it was looking for. That made the whole
+      // space-collapsed path dead — the case it exists for (cursor-drawn
+      // composers, where no space-bearing regex can match) was never covered.
+      const anchor = m.normalized.slice(0, NORMALIZED_ANCHOR_LEN);
+      const start = probe.lower.indexOf(anchor);
+      if (start < 0) continue;
+      const window = probe.lower.slice(start, start + m.normalized.length * 3 + 32);
+      if (window.replace(/\s+/g, '').includes(m.normalized)) return m.normalized;
+    }
+  }
+  return null;
+}
+
 export class AgentDetector {
   private callbacks: AgentEventCallback[] = [];
   private criticalCallbacks: CriticalEventCallback[] = [];
@@ -355,11 +522,11 @@ export class AgentDetector {
   // ActivityMonitor 'active' transitions to label the running status with the
   // agent that owns this PTY.
   private lastAgent: string | null = null;
-  // Kiro uses a compound gate so another agent merely mentioning "Kiro CLI"
-  // cannot steal this PTY's identity. Evidence is scoped to this detector/PTy.
-  private kiroChromeSeen = false;
-  private kiroPromptSeen = false;
-  private kiroPromptEvidence: string | null = null;
+  // Satisfied evidence clauses for compound gates, keyed `${slug}:${clauseId}`,
+  // holding the text that satisfied them. Scoped to this detector — that is
+  // what makes evidence per-PTY, so another agent merely printing "Kiro CLI"
+  // in a log cannot hand this pane's identity away.
+  private evidenceSeen = new Map<string, string>();
 
   /**
    * Register a callback for agent status events.
@@ -449,90 +616,89 @@ export class AgentDetector {
    * 설정. 라인 완성 여부와 무관하게 호출할 수 있도록 분리(feed의 미완성 라인
    * 검사와 processLine 양쪽에서 사용). activeAgents 가드로 세션당 1회만 발화.
    */
-  private checkGates(clean: string): void {
-    // Kiro has no hook fallback, so identify its live TUI from two independent
-    // pieces of chrome. Newer v3 builds show the docs URL instead of a "Kiro
-    // CLI" banner; their cursor-drawn composer can also collapse whitespace in
-    // the raw PTY stream. Probe only a bounded tail and only when a cheap
-    // literal hint is present. Once Kiro is active this entire path is skipped.
-    const kiroIsActive = this.activeAgents.has('Kiro CLI');
-    if (!kiroIsActive && (!this.kiroChromeSeen || !this.kiroPromptSeen)) {
-      const probe = clean.length > 4096 ? clean.slice(-4096) : clean;
-      const mayContainChrome = !this.kiroChromeSeen && (
-        probe.includes('kiro') ||
-        probe.includes('Kiro') ||
-        probe.includes('KIRO') ||
-        probe.includes('Trust All Tools')
-      );
-      const mayContainPrompt = !this.kiroPromptSeen && (
-        probe.includes('ask') || probe.includes('Ask')
-      );
-
-      if (mayContainChrome || mayContainPrompt) {
-        // feed/processLine also call this with an ANSI-stripped candidate. Avoid
-        // doing the regex replacement twice when this candidate is already clean.
-        const evidenceLine = probe.includes('\u001b')
-          ? probe.replace(ANSI_STRIP, '')
-          : probe;
-        const normalized = evidenceLine.trim();
-        const lower = normalized.toLowerCase();
-
-        if (
-          mayContainChrome &&
-          (lower.includes('kiro.dev/docs/cli/') || KIRO_CHROME_LINE.test(normalized))
-        ) {
-          this.kiroChromeSeen = true;
-        }
-
-        if (mayContainPrompt) {
-          const promptStart = lower.lastIndexOf('ask');
-          const compactPrompt = promptStart >= 0
-            ? lower.slice(promptStart, promptStart + 96).replace(/\s+/g, '')
-            : '';
-          const promptMatch = normalized.match(KIRO_PROMPT_LINE);
-          if (
-            promptMatch ||
-            compactPrompt.includes('askaquestionordescribeatask')
-          ) {
-            this.kiroPromptSeen = true;
-            // When this is a normal complete line, retain the exact value the
-            // ordinary pattern pass will see so its same-frame dedup hits. The
-            // canonical fallback is only for cursor-concatenated evidence that
-            // cannot match the line pattern later in processLine.
-            this.kiroPromptEvidence = promptMatch?.[0]
-              ?? 'ask a question or describe a task';
-          }
-        }
-      }
-    }
+  private checkGates(candidate: string): void {
+    let probe: GateProbe | null = null;
 
     for (const ap of AGENT_PATTERNS) {
-      // Gate checks run on every PTY output chunk. Never re-run regexes for an
-      // already-active agent; this keeps full-screen repaint traffic O(inactive
-      // agents) and makes the Kiro additions cheaper than the previous loop.
+      // Gate checks run on every PTY output chunk. Never re-run anything for an
+      // already-active agent; this keeps full-screen repaint traffic
+      // O(inactive agents).
       if (!ap.gate || this.activeAgents.has(ap.agent)) continue;
-      const gateMatched = ap.slug === 'kiro'
-        ? this.kiroChromeSeen && this.kiroPromptSeen
-        : ap.gate.test(clean);
-      if (!gateMatched) continue;
 
-      this.activeAgents.add(ap.agent);
-      this.lastAgent = ap.agent;
-      for (const cb of this.callbacks) {
-        cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+      let opened: boolean;
+      if (ap.gate instanceof RegExp) {
+        opened = ap.gate.test(candidate);
+      } else {
+        // Building the probe costs an ANSI strip and a lowercase, so defer it
+        // until a compound gate actually asks. A session whose agents all use
+        // plain regex gates never pays for it.
+        probe ??= makeGateProbe(candidate);
+        opened = this.accumulateEvidence(ap, ap.gate.allOf, probe);
       }
-      // The two Kiro evidence lines may arrive in either order. If the
-      // composer prompt arrived first, its normal pattern pass happened while
-      // the gate was still closed. Replay the saved evidence once.
-      if (ap.slug === 'kiro' && this.kiroPromptEvidence) {
-        const key = `${ap.agent}:waiting`;
-        const value = this.kiroPromptEvidence;
-        if (this.lastEmittedFor.get(key) !== value) {
-          this.lastEmittedFor.set(key, value);
-          for (const cb of this.callbacks) {
-            cb({ agent: ap.agent, status: 'waiting', message: 'Ready for input' });
-          }
-        }
+      if (!opened) continue;
+
+      this.openGate(ap);
+    }
+  }
+
+  /**
+   * Record whichever clauses this candidate satisfies, and report whether that
+   * completes the gate. Clauses persist for the life of the detector, so the
+   * two halves of a compound gate may arrive in either order and any number of
+   * PTY chunks apart. The ledger is per-detector, i.e. per PTY: one pane can
+   * never satisfy another pane's gate.
+   */
+  private accumulateEvidence(
+    ap: AgentPattern,
+    clauses: readonly EvidenceClause[],
+    probe: GateProbe,
+  ): boolean {
+    let satisfied = 0;
+    for (const clause of clauses) {
+      const key = `${ap.slug}:${clause.id}`;
+      if (this.evidenceSeen.has(key)) {
+        satisfied++;
+        continue;
+      }
+      // Cheap literal screen first: an unsatisfied clause on a pane that is not
+      // running this agent costs a substring scan, never a regex sweep.
+      if (!clause.hints.some((h) => probe.lower.includes(h))) continue;
+
+      const captured = matchEvidence(clause.any, probe);
+      if (captured === null) continue;
+      this.evidenceSeen.set(key, captured);
+      satisfied++;
+    }
+    return satisfied === clauses.length;
+  }
+
+  /** Activate an agent: emit 'running' once, then replay any gate-open status. */
+  private openGate(ap: AgentPattern): void {
+    this.activeAgents.add(ap.agent);
+    this.lastAgent = ap.agent;
+    for (const cb of this.callbacks) {
+      cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+    }
+
+    if (ap.gate === undefined || ap.gate instanceof RegExp) return;
+
+    // If a clause carrying `emitOnGateOpen` was satisfied BEFORE the gate
+    // opened, its ordinary pattern pass already ran and was ignored, so replay
+    // it now — otherwise the pane sits at 'running' while it is really idle and
+    // waiting for input.
+    for (const clause of ap.gate.allOf) {
+      const replay = clause.emitOnGateOpen;
+      if (!replay) continue;
+      const captured = this.evidenceSeen.get(`${ap.slug}:${clause.id}`);
+      if (captured === undefined) continue;
+
+      const key = `${ap.agent}:${replay.status}`;
+      // Seed the dedup with the text the ordinary pass will see, so the same
+      // prompt in the same frame suppresses instead of firing twice.
+      if (this.lastEmittedFor.get(key) === captured) continue;
+      this.lastEmittedFor.set(key, captured);
+      for (const cb of this.callbacks) {
+        cb({ agent: ap.agent, status: replay.status, message: replay.message });
       }
     }
   }

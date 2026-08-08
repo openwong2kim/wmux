@@ -521,6 +521,32 @@ describe('AgentDetector', () => {
       expect(det.getLastAgent()).toBe('Kiro CLI');
     });
 
+    it('accepts a space-collapsed composer (cursor-drawn repaint)', () => {
+      // A TUI that paints its composer with cursor moves loses the spaces
+      // before the bytes reach us. KIRO_PROMPT_LINE survives that on its own —
+      // every separator in it is `\s*` — so this is a behaviour guard, not
+      // a test of the whitespace-stripped matcher. That one is below.
+      const det = new AgentDetector();
+      det.feed(KIRO_BANNER);
+      det.feed('\x1b[2K\x1b[G▸askaquestionordescribeatask↵\n');
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
+    it('accepts a composer that does not own its line (whitespace-stripped matcher)', () => {
+      // The case the anchored pattern structurally cannot cover: a repaint
+      // frame leaves other visible text on the same line, so `^...$` fails and
+      // only the whitespace-stripped substring can still find the composer.
+      //
+      // REGRESSION: that matcher was dead code. It opened its search window
+      // with lastIndexOf('ask'), but the needle ends in '...a task' — so the
+      // window always latched onto that trailing copy and began past the text
+      // it was looking for. It could not match any input, ever.
+      const det = new AgentDetector();
+      det.feed(KIRO_BANNER);
+      det.feed('esc to cancel   ▸ ask a question or describe a task ↵\n');
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
     it('does NOT activate from a product mention alone (no prompt evidence)', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
