@@ -537,6 +537,40 @@ export class AgentDetector {
     }
   }
 
+  /**
+   * ONE LINE PRODUCES AT MOST ONE EMISSION. Every `return` below is that rule,
+   * not an oversight — read this before "fixing" one into a `continue`.
+   *
+   *   line
+   *    │
+   *    ├─ checkGates(raw)         gates only; never returns (OSC-title case)
+   *    ├─ clean === '' ──────────────────────────────────► return
+   *    │
+   *    ├─ CRITICAL_PATTERNS ─ match? ─┬─ new value  ─► emit ─► return
+   *    │                              └─ deduped    ────────► return
+   *    │        no match
+   *    ├─ checkGates(clean)
+   *    │
+   *    └─ AGENT_PATTERNS ──── match? ─┬─ new value  ─► emit ─► return
+   *                                   └─ deduped    ────────► return
+   *
+   * Why a deduped match still consumes the line:
+   *
+   *   - Critical vs agent patterns cannot co-match. Critical patterns are
+   *     unanchored shell-command shapes (`git push --force`, `rm -rf`); agent
+   *     status patterns are whole-line-anchored TUI chrome (`^codex>$`, the
+   *     boxed `Do you want to proceed?`). Falling through on a deduped critical
+   *     would therefore buy nothing.
+   *   - Across agents it is load-bearing. Claude Code and OpenClaude are the
+   *     same forked TUI and share their approval patterns outright, so the
+   *     FIRST profile whose regex matches owns the line. Continuing to the next
+   *     profile after a deduped match would let the second turn of a repeated
+   *     prompt emit again under the other agent's name — a duplicate
+   *     notification for a single on-screen event.
+   *
+   * So the rule is deliberately not "emit once per profile" but "the first
+   * matching profile decides, and a suppressed match is still a decision".
+   */
   private processLine(line: string): void {
     // RAW-line gate check BEFORE the empty-clean bail. Live incident
     // 2026-07-17 (Fable-era Claude Code): the TUI renders no visible

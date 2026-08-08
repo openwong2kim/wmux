@@ -2,6 +2,53 @@ import { describe, it, expect, vi } from 'vitest';
 import { AgentDetector } from '../AgentDetector';
 
 describe('AgentDetector', () => {
+  describe('one line, at most one emission (first-match-wins)', () => {
+    // Pins the invariant documented above processLine. A plan review read the
+    // dedup `return`s as a swallowed-detection bug and proposed turning them
+    // into `continue`; these tests are what that change breaks.
+
+    it('a repeated prompt does NOT re-emit under a second agent that shares the pattern', () => {
+      // Claude Code and OpenClaude are the same forked TUI and share their
+      // approval patterns byte-for-byte. With both gates open, turn 2 of an
+      // identical prompt must stay silent rather than firing as OpenClaude.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+
+      det.feed('Claude Code v2.1.172\n');
+      det.feed('OpenClaude v0.9.0\n');
+      expect(det.getActiveAgents()).toEqual(
+        expect.arrayContaining(['Claude Code', 'OpenClaude']),
+      );
+      cb.mockClear();
+
+      det.feed('Do you want to proceed?\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Claude Code',
+        status: 'awaiting_input',
+      });
+
+      cb.mockClear();
+      det.feed('Do you want to proceed?\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('a critical hit consumes the line, deduped or not', () => {
+      const det = new AgentDetector();
+      const onCritical = vi.fn();
+      det.onCritical(onCritical);
+      det.feed('Claude Code v2.1.172\n');
+
+      det.feed('git push --force origin main\n');
+      expect(onCritical).toHaveBeenCalledTimes(1);
+
+      // Same line again: suppressed, and still no second critical emission.
+      det.feed('git push --force origin main\n');
+      expect(onCritical).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('agent status emission', () => {
     it('gate 매칭 시 "running" 시작 이벤트를 1회 emit한다 (배너만으로 agentName 확정)', () => {
       // Claude Code v2.1.x처럼 idle prompt hint가 "❯"만 남아 patterns가
