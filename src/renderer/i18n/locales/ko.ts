@@ -424,6 +424,8 @@ export const ko = {
   'settings.fontApply': '적용',
   'settings.fontCancel': '취소',
   'settings.layout': '레이아웃',
+  'settings.uiScale': 'UI 배율',
+  'settings.uiScaleDesc': '전체 인터페이스를 확대/축소합니다 — 고해상도 디스플레이에서 유용합니다. 재시작이 필요 없습니다.',
   'settings.sidebarPosition': '사이드바 위치',
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarLeft': '왼쪽',

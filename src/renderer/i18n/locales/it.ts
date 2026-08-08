@@ -141,6 +141,8 @@ export const it = {
   'settings.fontFamily': 'Famiglia di caratteri',
   'settings.fontFamilyDesc': 'Carattere monospazio per il terminale',
   'settings.layout': 'Layout',
+  'settings.uiScale': 'Scala interfaccia',
+  'settings.uiScaleDesc': 'Ridimensiona l\'intera interfaccia — utile sui display ad alto DPI. Riavvio non richiesto.',
   'settings.sidebarPosition': 'Posizione barra laterale',
   'settings.sidebarPositionDesc': 'Sinistra o destra dell\'area del terminale',
   'settings.sidebarLeft': 'Sinistra',

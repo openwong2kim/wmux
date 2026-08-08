@@ -141,6 +141,8 @@ export const tr = {
   'settings.fontFamily': 'Yazı tipi ailesi',
   'settings.fontFamilyDesc': 'Terminal için sabit genişlikli yazı tipi',
   'settings.layout': 'Düzen',
+  'settings.uiScale': 'Arayüz ölçeği',
+  'settings.uiScaleDesc': 'Tüm arayüzü ölçeklendirin — yüksek DPI ekranlarda kullanışlıdır. Yeniden başlatma gerekmez.',
   'settings.sidebarPosition': 'Kenar çubuğu konumu',
   'settings.sidebarPositionDesc': 'Terminal alanının solu veya sağı',
   'settings.sidebarLeft': 'Sol',

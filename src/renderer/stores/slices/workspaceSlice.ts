@@ -781,6 +781,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         i18nSetLocale(data.locale as Locale);
       }
       if (data.terminalFontSize != null) state.terminalFontSize = data.terminalFontSize;
+      // UI scale: a finite number re-hydrates; the main-process apply path
+      // clamps to UI_ZOOM_MIN/MAX, so only type-guard here (session.json is
+      // hand-editable). Absent/invalid leaves the store default of 1.
+      if (typeof data.uiScale === 'number' && Number.isFinite(data.uiScale)) {
+        state.uiScale = data.uiScale;
+      }
       // Sanitize on load too — session.json is untrusted (hand-editable), and
       // this path bypasses setTerminalFontFamily's write-time sanitize. Keeps
       // the "stored value is always clean" invariant (terminalFont.ts) intact

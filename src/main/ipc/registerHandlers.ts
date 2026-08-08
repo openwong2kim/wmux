@@ -31,6 +31,7 @@ import { registerPaneResourcesHandlers } from './handlers/paneResources.handler'
 import { registerWebHandlers } from './handlers/web.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
+import { applyUiZoom } from '../window/uiZoom';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
@@ -316,6 +317,42 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.WINDOW_SET_TITLEBAR_OVERLAY);
   ipcMain.on(IPC.WINDOW_SET_TITLEBAR_OVERLAY, onSetTitleBarOverlay);
+
+  // Whole-interface zoom (#822). The renderer owns the persisted factor and
+  // pushes it here whenever it changes (Settings slider, session hydration).
+  // applyUiZoom clamps to UI_ZOOM_MIN/MAX, scales the renderer with
+  // setZoomFactor, and re-places the native chrome (macOS traffic lights /
+  // Windows overlay height). The overlay color pair is the same one the
+  // renderer sends to WINDOW_SET_TITLEBAR_OVERLAY, re-applied here because the
+  // overlay height changes with zoom on Windows. Cosmetic — guarded like the
+  // titleBarOverlay handler so a bad payload or missing API never crashes main.
+  const HEX_COLOR_ZOOM = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  const onSetUiScale = (_event: Electron.IpcMainEvent, opts: unknown): void => {
+    if (!opts || typeof opts !== 'object') return;
+    const { factor, color, symbolColor } = opts as {
+      factor?: unknown;
+      color?: unknown;
+      symbolColor?: unknown;
+    };
+    if (typeof factor !== 'number' || !Number.isFinite(factor)) return;
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return;
+    // Only forward overlay colors when both are valid hex; applyUiZoom no-ops
+    // the Windows branch when they are absent/invalid.
+    const overlay =
+      typeof color === 'string' && HEX_COLOR_ZOOM.test(color) &&
+      typeof symbolColor === 'string' && HEX_COLOR_ZOOM.test(symbolColor)
+        ? { color, symbolColor }
+        : undefined;
+    try {
+      applyUiZoom(win, factor, overlay);
+    } catch {
+      // setZoomFactor / setWindowButtonPosition can throw on a torn-down
+      // window — never let a cosmetic resync crash main.
+    }
+  };
+  ipcMain.removeAllListeners(IPC.WINDOW_SET_UI_SCALE);
+  ipcMain.on(IPC.WINDOW_SET_UI_SCALE, onSetUiScale);
 
   // macOS fullscreen ↔ traffic-light reserve (Titlebar.tsx paddingLeft).
   // Pull for mount-time state; the push lives in createWindow (the window

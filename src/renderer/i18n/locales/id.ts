@@ -141,6 +141,8 @@ export const id = {
   'settings.fontFamily': 'Keluarga font',
   'settings.fontFamilyDesc': 'Font monospace untuk terminal',
   'settings.layout': 'Tata letak',
+  'settings.uiScale': 'Skala UI',
+  'settings.uiScaleDesc': 'Skalakan seluruh antarmuka — berguna pada layar DPI tinggi. Tidak perlu mulai ulang.',
   'settings.sidebarPosition': 'Posisi bilah sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan area terminal',
   'settings.sidebarLeft': 'Kiri',

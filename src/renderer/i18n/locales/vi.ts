@@ -141,6 +141,8 @@ export const vi = {
   'settings.fontFamily': 'Họ phông chữ',
   'settings.fontFamilyDesc': 'Phông chữ đều cho terminal',
   'settings.layout': 'Bố cục',
+  'settings.uiScale': 'Tỉ lệ UI',
+  'settings.uiScaleDesc': 'Thu phóng toàn bộ giao diện — hữu ích trên màn hình DPI cao. Không cần khởi động lại.',
   'settings.sidebarPosition': 'Vị trí thanh bên',
   'settings.sidebarPositionDesc': 'Trái hoặc phải vùng terminal',
   'settings.sidebarLeft': 'Trái',

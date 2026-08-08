@@ -444,6 +444,10 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // Whole-interface zoom (#822): the renderer asks main to scale the
+  // BrowserWindow with setZoomFactor and re-place the native chrome to match.
+  // One-way send — the persisted factor lives in the renderer store.
+  WINDOW_SET_UI_SCALE: 'window:setUiScale',
   // macOS: native fullscreen hides the traffic lights, so the renderer's
   // 72px titlebar reserve must collapse (and come back on exit) — the same
   // enter/leave-full-screen → class toggle pattern VS Code/Hyper use. Push

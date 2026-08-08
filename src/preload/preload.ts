@@ -1029,6 +1029,12 @@ const electronAPI = {
     setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
       ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
     },
+    // Whole-interface zoom (#822): push the persisted factor to main, which
+    // scales the renderer and re-places the native chrome. The overlay color
+    // pair is the same theme colors sent to setTitleBarOverlay (Windows only).
+    setUiScale: (opts: { factor: number; color?: string; symbolColor?: string }) => {
+      ipcRenderer.send(IPC.WINDOW_SET_UI_SCALE, opts);
+    },
     /** macOS titlebar reserve: mount-time fullscreen state (pull). */
     isFullScreen: () => ipcRenderer.invoke(IPC.WINDOW_IS_FULLSCREEN) as Promise<boolean>,
     /** macOS titlebar reserve: live fullscreen transitions (push). */

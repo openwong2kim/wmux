@@ -141,6 +141,8 @@ export const uk = {
   'settings.fontFamily': 'Сімейство шрифтів',
   'settings.fontFamilyDesc': 'Моноширинний шрифт для термінала',
   'settings.layout': 'Макет',
+  'settings.uiScale': 'Масштаб інтерфейсу',
+  'settings.uiScaleDesc': 'Масштабуйте весь інтерфейс — корисно для дисплеїв із високим DPI. Перезапуск не потрібен.',
   'settings.sidebarPosition': 'Положення бічної панелі',
   'settings.sidebarPositionDesc': 'Зліва або справа від області термінала',
   'settings.sidebarLeft': 'Ліворуч',

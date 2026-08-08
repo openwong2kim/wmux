@@ -141,6 +141,8 @@ export const ms = {
   'settings.fontFamily': 'Keluarga fon',
   'settings.fontFamilyDesc': 'Fon monoruang untuk terminal',
   'settings.layout': 'Susun atur',
+  'settings.uiScale': 'Skala UI',
+  'settings.uiScaleDesc': 'Skalakan keseluruhan antara muka — berguna pada paparan DPI tinggi. Tidak perlu mulakan semula.',
   'settings.sidebarPosition': 'Kedudukan bar sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan kawasan terminal',
   'settings.sidebarLeft': 'Kiri',

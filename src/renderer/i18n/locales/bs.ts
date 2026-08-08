@@ -141,6 +141,8 @@ export const bs = {
   'settings.fontFamily': 'Familija fonta',
   'settings.fontFamilyDesc': 'Monospace font za terminal',
   'settings.layout': 'Izgled',
+  'settings.uiScale': 'Razmjer sučelja',
+  'settings.uiScaleDesc': 'Povećajte ili smanjite cijelo sučelje — korisno na zaslonima visoke rezolucije. Ponovno pokretanje nije potrebno.',
   'settings.sidebarPosition': 'Pozicija bočne trake',
   'settings.sidebarPositionDesc': 'Lijevo ili desno od područja terminala',
   'settings.sidebarLeft': 'Lijevo',
