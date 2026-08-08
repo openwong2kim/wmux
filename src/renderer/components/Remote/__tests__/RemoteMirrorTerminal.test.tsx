@@ -499,20 +499,44 @@ describe('RemoteMirrorTerminal', () => {
       unmount();
     });
 
-    it('applies a font-size change without recreating the terminal', async () => {
+    it('applies a font-family change without recreating the terminal', async () => {
       const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
       const term = termInstances[0]!;
       const before = termInstances.length;
 
       await act(async () => {
-        useStore.setState({ terminalFontSize: 22 });
+        useStore.setState({ terminalFontFamily: 'IBM Plex Mono' });
       });
 
       // Same instance, new option — recreating would drop everything the
       // remote has already sent, and the remote only repaints on re-attach.
       expect(termInstances).toHaveLength(before);
       expect(term.disposed).toBe(false);
-      expect(term.options['fontSize']).toBe(22);
+      expect(String(term.options['fontFamily'])).toContain('IBM Plex Mono');
+
+      unmount();
+    });
+
+    // fontSize has exactly ONE writer, the fit (see mirrorFit.ts) — the user's
+    // setting is its upper bound, not a value assigned straight through. Two
+    // writers is how the fit gets undone: this effect re-runs on any settings
+    // change and would put the full-size font back, re-overflowing the box and
+    // cropping the remote TUI's input row again.
+    //
+    // jsdom reports every layout as 0×0, so the fit correctly declines to
+    // decide here and the constructed size stands. The arithmetic itself is
+    // covered by mirrorFit.test.ts, which needs no DOM.
+    it('does not let the settings effect write fontSize behind the fit', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      const constructed = term.ctorOptions['fontSize'];
+
+      await act(async () => {
+        useStore.setState({ terminalFontSize: 22 });
+      });
+
+      expect(term.options['fontSize']).not.toBe(22);
+      expect(term.options['fontSize'] ?? constructed).toBe(constructed);
 
       unmount();
     });
