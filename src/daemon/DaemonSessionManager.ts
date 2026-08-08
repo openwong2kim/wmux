@@ -492,7 +492,14 @@ export class DaemonSessionManager extends EventEmitter {
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize);
 
-    // Pre-fill ring buffer with saved scrollback (session recovery)
+    // Pre-fill ring buffer with saved scrollback (session recovery).
+    //
+    // MUST stay ahead of the `bridge.setupDataForwarding` call below: that is
+    // where the OutputModeTracker is built, and it primes itself by reading
+    // whatever the ring already holds. Filling the ring afterwards would leave
+    // the tracker blind to the restored bytes, and a session recovered mid-vim
+    // would replay its alt-screen frames onto a client still on the normal
+    // buffer — the exact garbling util/outputModeTracker.ts exists to prevent.
     if (params.scrollbackData && params.scrollbackData.length > 0) {
       ringBuffer.write(params.scrollbackData);
     }

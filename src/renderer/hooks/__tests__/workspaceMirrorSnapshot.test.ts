@@ -130,6 +130,12 @@ describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
       workspaces: [ws],
       surfaceAgentStatus: { 'pty-b': 'waiting' },
       surfaceActivity: {},
+      // #837: the workspace-level 'running' is no longer borrowed by the active
+      // pane — running now comes from the pane's OWN per-pty stamp, which is
+      // what the live path always writes (markSurfaceRunning on every 'running'
+      // broadcast). Stamp pty-a so this pin keeps asserting the same row.
+      surfaceActivityAt: { 'pty-a': 1_000 },
+      agentClockMs: 1_000,
     };
     const [fleet] = buildFleetSnapshots(st, 42);
     expect(fleet).toEqual({
@@ -167,6 +173,11 @@ describe('buildFleetSnapshots — surface-accurate multi-surface panes', () => {
       workspaces: [w2],
       surfaceAgentStatus: { 'pty-2a-first': 'awaiting_input' },
       surfaceActivity: {},
+      // #837: the active surface's 'running' is its OWN per-pty stamp now, not
+      // the borrowed workspace slot. Same base status, sourced the way the live
+      // path sources it.
+      surfaceActivityAt: { 'pty-2a': 1_000 },
+      agentClockMs: 1_000,
     };
   }
 

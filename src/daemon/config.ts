@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { BrowserCdpConfig, ChannelRetentionConfig, DaemonConfig } from './types';
 import { coerceGate, createDefaultGateConfig } from './approvals/gateConfig';
+import { coerceNotifySinks, type NotifySinkConfig } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
@@ -11,6 +12,12 @@ import {
 import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
+import {
+  DESKTOP_PRESENCE_STALE_AFTER_MS,
+  DESKTOP_PRESENCE_STALE_CAP_MS,
+  failOpenPresenceConfig,
+  type PushPresenceSuppressionConfig,
+} from './push/presence';
 
 /** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
@@ -136,7 +143,92 @@ export function createDefaultConfig(): DaemonConfig {
     browser: { cdp: { enabled: true } },
     // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
     gate: createDefaultGateConfig(),
+    // Outbound webhook/ntfy notifications. Empty = off; written out so a fresh
+    // config.json shows operators the key exists without turning anything on.
+    notifySinks: [],
+    // Presence-based push suppression. ON by default: a phone buzz while the
+    // user is looking at the desktop inbox is noise. Every uncertainty still
+    // sends — see `daemon/push/presence.ts`.
+    pushPresenceSuppression: {
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    },
   };
+}
+
+/**
+ * Per-field backfill for `pushPresenceSuppression` (same discipline as
+ * `browser.cdp`). `validateConfig` ignores the slice, so a garbage value here
+ * can never trigger the whole-file reset.
+ *
+ * Exactly what happens, so the doc and the code cannot drift:
+ *
+ * - An ABSENT slice, or an absent `enabled`, takes `defaults.enabled` — which
+ *   is `true` for a config file that merely predates the feature, and `false`
+ *   for the error paths that pass `failOpenPresenceConfig()`. Absence in a
+ *   readable file is a preference; absence because nothing could be read is
+ *   not, and only the caller can tell those apart.
+ * - A non-boolean `enabled` is garbage rather than a preference, and garbage
+ *   resolves toward SENDING: suppression goes off.
+ * - `staleAfterMs` is clamped to `(0, DESKTOP_PRESENCE_STALE_CAP_MS]`. A huge
+ *   finite value is not a preference either — it is permanent suppression off
+ *   one ancient focus report. Absent/non-numeric takes the default; `0` or
+ *   negative is preserved and read by `isDesktopPresent` as "never fresh",
+ *   which sends.
+ */
+function coercePushPresenceSuppression(
+  raw: unknown,
+  defaults: PushPresenceSuppressionConfig,
+): PushPresenceSuppressionConfig {
+  const slice = (raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {});
+  const enabledRaw = slice['enabled'];
+  const staleRaw = slice['staleAfterMs'];
+  const stale =
+    typeof staleRaw === 'number' && Number.isFinite(staleRaw)
+      ? Math.floor(staleRaw)
+      : defaults.staleAfterMs;
+  return {
+    enabled:
+      enabledRaw === undefined
+        ? defaults.enabled
+        : typeof enabledRaw === 'boolean'
+          ? enabledRaw
+          : false,
+    staleAfterMs: Math.min(stale, DESKTOP_PRESENCE_STALE_CAP_MS),
+  };
+}
+
+/**
+ * Read `pushPresenceSuppression` WITHOUT the repair behaviour of `loadConfig`.
+ *
+ * `loadConfig` rewrites config.json with defaults when it cannot parse the
+ * file. That is right for boot — a daemon needs a config — and wrong for a
+ * per-approval read on the push path, where an unlucky moment (a half-written
+ * file, a transient EIO) would silently discard the user's whole config to
+ * answer a question about one notification. This reads, never writes, and
+ * resolves every failure to `failOpenPresenceConfig()`, i.e. send the push.
+ */
+export function readPushPresenceSuppression(): PushPresenceSuppressionConfig {
+  const failOpen = failOpenPresenceConfig();
+  try {
+    const raw = fs.readFileSync(getConfigPath(), 'utf-8');
+    const parsed: unknown = JSON.parse(raw, (key, value) => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    });
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return failOpen;
+    const slice = (parsed as Record<string, unknown>)['pushPresenceSuppression'];
+    // A file that simply predates the feature is not an error — it gets the
+    // shipped default (ON). Only unreadable/unparseable lands on fail-open.
+    return coercePushPresenceSuppression(slice, {
+      enabled: true,
+      staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+    });
+  } catch {
+    return failOpen;
+  }
 }
 
 /**
@@ -194,6 +286,66 @@ function coerceBrowserCdp(raw: unknown, defaults: BrowserCdpConfig): BrowserCdpC
       enabled: typeof enabledRaw === 'boolean' ? enabledRaw : defaults.cdp.enabled,
     },
   };
+}
+
+/**
+ * The notify path's READ-ONLY view of `notifySinks`.
+ *
+ * Deliberately not `loadConfig()`. That function is a boot-time repair tool: a
+ * read error or a parse failure makes it REWRITE config.json with defaults,
+ * which is right when the daemon is starting and needs a usable file, and
+ * catastrophic on a per-notification hot path — one transient `EMFILE` while an
+ * approval fires would silently replace the operator's whole config with
+ * defaults. Nothing here writes, creates a directory, or mutates anything.
+ *
+ * Cached on (mtimeMs, size) so the steady state is one `stat` per notification
+ * rather than a full read+parse, while a `wmux` config edit still takes effect
+ * on the next event without a daemon restart.
+ *
+ * A failure degrades to "no sinks" — the same OFF that an absent key means.
+ */
+let notifySinksCache: { mtimeMs: number; size: number; sinks: NotifySinkConfig[] } | null = null;
+
+export function readNotifySinks(
+  log?: (level: 'warn', message: string) => void,
+): NotifySinkConfig[] {
+  const configPath = getConfigPath();
+  try {
+    const stat = fs.statSync(configPath);
+    if (
+      notifySinksCache &&
+      notifySinksCache.mtimeMs === stat.mtimeMs &&
+      notifySinksCache.size === stat.size
+    ) {
+      return notifySinksCache.sinks;
+    }
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw, (key, value) => {
+      // Same prototype-pollution guard loadConfig uses.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    });
+    const slice =
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)['notifySinks']
+        : undefined;
+    // Coercion warnings ride the caller's logger, and the cache means they are
+    // emitted once per config EDIT rather than once per notification.
+    const sinks = coerceNotifySinks(slice, log);
+    notifySinksCache = { mtimeMs: stat.mtimeMs, size: stat.size, sinks };
+    return sinks;
+  } catch {
+    // No file, unreadable, or unparseable — all mean "no sinks" here, and none
+    // of them means "rewrite the operator's config". The cache is cleared so a
+    // repaired file is picked up rather than shadowed by a stale entry.
+    notifySinksCache = null;
+    return [];
+  }
+}
+
+/** Test seam: forget the mtime cache so a rewritten temp config is re-read. */
+export function resetNotifySinksCache(): void {
+  notifySinksCache = null;
 }
 
 /**
@@ -336,6 +488,26 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → DEFAULT_GATED_TOOLS. A malformed slice
     // degrades to the defaults too, never silently disabling the gate.
     config.gate = coerceGate(config.gate);
+
+    // ── Outbound notification sinks: per-field backfill ──
+    // Absent slice (every config.json written before this existed) → an empty
+    // list, i.e. no outbound traffic. Degrading to "off" rather than to a
+    // default is the point: a sink the operator did not configure would be a
+    // connection they did not ask for. validateConfig ignores the field, so a
+    // malformed entry drops on its own without resetting the file.
+    config.notifySinks = coerceNotifySinks(config.notifySinks, (level, message) => {
+      console.warn(`[daemon/config] ${level}: ${message}`);
+    });
+
+    // ── Presence-based push suppression: per-field backfill ──
+    // Absent slice (old config.json) → ON with the default freshness window.
+    config.pushPresenceSuppression = coercePushPresenceSuppression(
+      config.pushPresenceSuppression,
+      defaults.pushPresenceSuppression ?? {
+        enabled: true,
+        staleAfterMs: DESKTOP_PRESENCE_STALE_AFTER_MS,
+      },
+    );
 
     return config;
   } catch (err) {

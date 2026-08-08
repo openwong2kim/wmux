@@ -713,6 +713,34 @@ describe('DaemonSessionManager', () => {
       );
     });
 
+    it('★ the mode tracker sees pre-filled scrollback, in the ring\'s offsets', () => {
+      // A pane that was inside vim when the daemon went down: the alt-screen
+      // switch lives in the RESTORED bytes, which are written to the ring
+      // before the bridge exists. If the tracker misses them, `/api/stream`
+      // sends no preamble and the replayed frames land on the client's normal
+      // buffer — the exact garbling outputModeTracker.ts exists to prevent.
+      const restored = '\x1b[?1049h\x1b[2J\x1b[H' + 'frame line\r\n'.repeat(50);
+      manager.createSession({
+        id: 'rec-modes',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        scrollbackData: Buffer.from(restored, 'utf8'),
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-modes');
+      const modes = managed?.bridge.outputModes;
+      expect(modes?.altScreen).toBe(true);
+
+      const total = managed?.ringBuffer.totalBytesWritten ?? 0;
+      const alt = '\x1b[?1049h\x1b[2J\x1b[H';
+      // A window that still reaches the restored switch must NOT re-assert it
+      // (that would paint the scrollback ahead of it into the alt buffer)…
+      expect(modes?.preamble(0)).toBe('');
+      // …and one that starts after it must.
+      expect(modes?.preamble(1)).toBe(alt);
+      expect(modes?.preamble(total - 16)).toBe(alt);
+    });
+
     it('unmutes after first resize plus the drain delay', () => {
       vi.useFakeTimers();
       try {

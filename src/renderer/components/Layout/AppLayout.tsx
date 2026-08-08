@@ -46,6 +46,7 @@ import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
+import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
@@ -232,6 +233,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     theme: state.theme,
     locale: state.locale,
     terminalFontSize: state.terminalFontSize,
+    uiScale: state.uiScale,
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
@@ -286,9 +288,51 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
   };
 }
 
+/**
+ * Push the persisted UI-scale factor (#822) to main so it can scale the whole
+ * renderer (setZoomFactor) and re-place the native chrome. Fires on mount, on
+ * every uiScale change (the Settings slider + session hydration), and whenever
+ * the theme CSS vars flip — the Windows overlay height is zoom-dependent, so a
+ * theme restyle must re-apply the scaled height, not the titleBarOverlay
+ * handler's fixed 36. Mirrors useTitleBarOverlaySync's color read. Safe under
+ * jsdom: bails when electronAPI is absent.
+ */
+function useUiScaleSync(uiScale: number): void {
+  useEffect(() => {
+    const send = window.electronAPI?.window?.setUiScale;
+    if (!send) return; // tests / non-electron
+    const push = () => {
+      const cs = getComputedStyle(document.documentElement);
+      const color = cs.getPropertyValue('--bg-base').trim();
+      const symbolColor = cs.getPropertyValue('--text-sub').trim();
+      // Factor is always sent (zoom applies on every platform); the overlay
+      // color pair only matters on Windows and is skipped when unread, which
+      // main treats as "leave the overlay height untouched this round".
+      send({
+        factor: uiScale,
+        ...(color && symbolColor ? { color, symbolColor } : {}),
+      });
+    };
+    push();
+    // Re-push on theme change so the Windows overlay keeps the scaled height.
+    const mo = new MutationObserver(push);
+    mo.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'style'],
+    });
+    return () => mo.disconnect();
+  }, [uiScale]);
+}
+
 export default function AppLayout() {
+  // UI scale (#822): the persisted factor. The sync effect below forwards it
+  // to main, which scales the whole renderer and re-places the native chrome.
+  const uiScale = useStore((s) => s.uiScale);
   // Global guard: blocks webview pointer capture during panel separator drag
   useResizeGuard();
+  // Forward the persisted UI-scale factor to main whenever it changes or the
+  // theme (overlay colors) does — see useUiScaleSync below.
+  useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
@@ -386,6 +430,10 @@ export default function AppLayout() {
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
+  // Remote workspace attach — restore persisted attachments on boot (the slice
+  // is memory-only, so a reload wipes it) and keep each mirror's pane set in
+  // sync with the remote (exit events + a 10s safety-net poll).
+  useRemoteAttachmentsLifecycle();
   // Command Deck Phase 2 — own the Commander brain stream subscription
   // (always-on, mounted once) so orchestrator turn events land in deckSlice even
   // when the dock or the Commander tab is not visible.

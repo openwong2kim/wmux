@@ -149,6 +149,13 @@ export interface UISlice {
   terminalFontSize: number;
   setTerminalFontSize: (size: number) => void;
 
+  // ─── UI scale ─────────────────────────────────────────────────────────────
+  // Whole-interface zoom multiplier (1 = 100%). Drives the main-process
+  // setZoomFactor via the window:setUiScale IPC; range is pinned by
+  // UI_ZOOM_MIN/MAX in src/main/window/uiZoom.ts.
+  uiScale: number;
+  setUiScale: (scale: number) => void;
+
   terminalFontFamily: string;
   setTerminalFontFamily: (family: string) => void;
 
@@ -884,6 +891,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setTerminalFontSize: (size) => set((state) => {
     state.terminalFontSize = size;
+  }),
+
+  // ─── UI scale ─────────────────────────────────────────────────────────────
+  // 1 = no zoom; the apply effect (AppLayout) forwards this to main, which
+  // clamps it to the supported range before calling setZoomFactor.
+  uiScale: 1,
+
+  setUiScale: (scale) => set((state) => {
+    state.uiScale = scale;
   }),
 
   terminalFontFamily: 'Cascadia Code',

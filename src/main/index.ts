@@ -37,6 +37,7 @@ import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
+import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -72,6 +73,7 @@ import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.hand
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
+import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -526,6 +528,16 @@ const mcpHandlerOptions = {
 // variable (no closure snapshot).
 registerSessionHandlers(() => daemonClient?.isConnected === true);
 
+// Presence reporting for push suppression. Registered once on `app` (not on a
+// BrowserWindow) so it survives window recreation; the getter closes over the
+// live `daemonClient` for the same reason as above. powerMonitor is wired too:
+// a lock screen does not blur the window, so without it the daemon would keep
+// holding notifications after the user locked up and left.
+attachDesktopPresenceReporter(app, () => daemonClient, {
+  powerMonitor,
+  isFocused: () => BrowserWindow.getFocusedWindow() !== null,
+});
+
 // Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
 // (installed in `src/renderer/hooks/useRpcBridge.ts`) into the live pipe
 // `RpcRouter`. A request id is synthesized per call because the
@@ -672,7 +684,10 @@ registerChannelLocalHandlers(() => daemonClient);
 // channelLocal above). Registered once, outside the daemon-swap cycle: the
 // registered hosts/tokens live on disk in main, independent of the local
 // daemon connection. See remote.handler.ts for the push-routing contract.
-registerRemoteHandlers({ store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')) });
+registerRemoteHandlers({
+  store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')),
+  attachments: new RemoteAttachmentsStore(path.join(getWmuxDir(), 'remote-attachments.json')),
+});
 // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
 // invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
 // 동일 renderer-trusted 신원).
@@ -1136,6 +1151,27 @@ app.on('ready', async () => {
     onInstall: async (client) => {
       daemonClient = client;
       console.log('[Main] Connected to wmux-daemon (auth verified)');
+      // Claim the first-party role, then report presence. The daemon refuses
+      // `daemon.presence.desktop` from a client it cannot place — a report
+      // that withholds a notification must not be sendable by the MCP server,
+      // the CLI, or an agent talked into it — so the handshake has to land
+      // first. Both are best-effort: an old daemon without either method
+      // simply never learns the user is present and keeps sending pushes.
+      //
+      // The presence report is a one-shot because a fresh daemon has never
+      // heard a focus transition, and the user may have been sitting in a
+      // focused window the whole time. Without it the app looks absent until
+      // the next alt-tab. A new connection is a new pipe client id, so the
+      // daemon starts from empty presence and this is the only thing that
+      // fills it in.
+      void client
+        .rpc('daemon.client.identify', { role: 'main' })
+        .then(() => {
+          reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+        })
+        .catch(() => {
+          // Old daemon: no identify, therefore no presence, therefore pushes.
+        });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

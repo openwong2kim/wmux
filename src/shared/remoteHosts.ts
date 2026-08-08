@@ -33,6 +33,39 @@ export interface RemoteWorkspacesResponse {
   workspaces: RemoteWorkspaceSummary[];
 }
 
+/** A persisted "this remote workspace was attached" record.
+ *
+ * Deliberately carries NO pane list: panes are a live property of the remote
+ * daemon, so a restored attachment always re-fetches them (a stale pane list
+ * on disk would mirror sessions that died while the app was closed). Carries
+ * no credential either — the token lives only in RemoteHost. */
+export interface RemoteAttachmentDescriptor {
+  key: string;           // `${hostId}:${workspaceId}` — same key the renderer slice uses
+  hostId: string;
+  hostLabel: string;     // label snapshot, so a sidebar row can render before the host list loads
+  workspaceId: string;
+  name: string;          // remote workspace name snapshot ('' possible)
+}
+
+/** The ONE place the descriptor key is spelled out. Both the renderer (which
+ *  mints it on attach) and main (which refuses a descriptor whose key does not
+ *  derive from its own hostId/workspaceId) go through here, so the two can
+ *  never drift into main accepting a key nothing could have produced. */
+export function remoteAttachmentKey(hostId: string, workspaceId: string): string {
+  return `${hostId}:${workspaceId}`;
+}
+
+/** Inverse of remoteAttachmentKey. Returns null for anything that is not a
+ *  `<hostId>:<workspaceId>` pair with both halves non-empty. hostId is a local
+ *  uuid, so the FIRST colon is the separator. */
+export function parseRemoteAttachmentKey(
+  key: string,
+): { hostId: string; workspaceId: string } | null {
+  const sep = key.indexOf(':');
+  if (sep <= 0 || sep === key.length - 1) return null;
+  return { hostId: key.slice(0, sep), workspaceId: key.slice(sep + 1) };
+}
+
 /** Machine-readable reason for a REMOTE_HOSTS_PAIR failure — i18n happens
  *  renderer-side (AttachRemoteModal maps each reason to a translated
  *  string), so main never returns a human-facing message here. */

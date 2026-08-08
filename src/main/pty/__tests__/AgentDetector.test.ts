@@ -2,6 +2,53 @@ import { describe, it, expect, vi } from 'vitest';
 import { AgentDetector } from '../AgentDetector';
 
 describe('AgentDetector', () => {
+  describe('one line, at most one emission (first-match-wins)', () => {
+    // Pins the invariant documented above processLine. A plan review read the
+    // dedup `return`s as a swallowed-detection bug and proposed turning them
+    // into `continue`; these tests are what that change breaks.
+
+    it('a repeated prompt does NOT re-emit under a second agent that shares the pattern', () => {
+      // Claude Code and OpenClaude are the same forked TUI and share their
+      // approval patterns byte-for-byte. With both gates open, turn 2 of an
+      // identical prompt must stay silent rather than firing as OpenClaude.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+
+      det.feed('Claude Code v2.1.172\n');
+      det.feed('OpenClaude v0.9.0\n');
+      expect(det.getActiveAgents()).toEqual(
+        expect.arrayContaining(['Claude Code', 'OpenClaude']),
+      );
+      cb.mockClear();
+
+      det.feed('Do you want to proceed?\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Claude Code',
+        status: 'awaiting_input',
+      });
+
+      cb.mockClear();
+      det.feed('Do you want to proceed?\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('a critical hit consumes the line, deduped or not', () => {
+      const det = new AgentDetector();
+      const onCritical = vi.fn();
+      det.onCritical(onCritical);
+      det.feed('Claude Code v2.1.172\n');
+
+      det.feed('git push --force origin main\n');
+      expect(onCritical).toHaveBeenCalledTimes(1);
+
+      // Same line again: suppressed, and still no second critical emission.
+      det.feed('git push --force origin main\n');
+      expect(onCritical).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('agent status emission', () => {
     it('gate 매칭 시 "running" 시작 이벤트를 1회 emit한다 (배너만으로 agentName 확정)', () => {
       // Claude Code v2.1.x처럼 idle prompt hint가 "❯"만 남아 patterns가
@@ -419,6 +466,72 @@ describe('AgentDetector', () => {
   // A product-name mention is NOT enough: agents routinely print logs and docs
   // that name other agents. The gate requires an anchored chrome line AND the
   // anchored composer placeholder from the SAME detector (i.e. the same PTY).
+  // OpenClaude is a Claude Code fork and inherits Claude's approval patterns
+  // via `extends`. These pin the inherited behaviour so the indirection cannot
+  // quietly drop a prompt — the failure mode is a pane sitting on an unanswered
+  // approval, which cost 100 minutes once already.
+  describe('OpenClaude inherits Claude approval prompts', () => {
+    const open = () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('OpenClaude v0.9.0\n');
+      cb.mockClear();
+      return { det, cb };
+    };
+
+    it('fires awaiting_input for the plain proceed prompt', () => {
+      const { det, cb } = open();
+      det.feed('Do you want to proceed?\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', status: 'awaiting_input', message: 'Approval requested' }),
+      );
+    });
+
+    it('fires awaiting_input for the tool-approval prompt', () => {
+      const { det, cb } = open();
+      det.feed('│ Allow tool use for Bash? │\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Tool approval requested' }),
+      );
+    });
+
+    it('fires awaiting_input for both edit-approval shapes', () => {
+      const withFile = open();
+      withFile.det.feed('Do you want to overwrite calculator.html?\n');
+      expect(withFile.cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
+      );
+
+      // Narrow pane: the prompt wraps and the verb ends the line alone.
+      const wrapped = open();
+      wrapped.det.feed('│ Do you want to overwrite │\n');
+      expect(wrapped.cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
+      );
+    });
+
+    it('keeps its own bare ">" idle prompt', () => {
+      const { det, cb } = open();
+      det.feed('> ○\n');
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'OpenClaude', status: 'waiting', message: 'Ready for input' }),
+      );
+    });
+
+    it('does NOT inherit the two Claude waiting patterns it omits', () => {
+      // "bypass permissions on" repaints every frame in OpenClaude and would
+      // flood; "shift+tab to cycle" is not in its TUI at all.
+      const a = open();
+      a.det.feed('  bypass permissions on\n');
+      expect(a.cb).not.toHaveBeenCalled();
+
+      const b = open();
+      b.det.feed('  shift+tab to cycle\n');
+      expect(b.cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Kiro CLI compound gate', () => {
     const KIRO_BANNER = 'Kiro CLI v0.9.3\n';
     const KIRO_DOCS = 'https://kiro.dev/docs/cli/\n';
@@ -471,6 +584,32 @@ describe('AgentDetector', () => {
       const det = new AgentDetector();
       det.feed(KIRO_TRUST);
       det.feed(KIRO_PROMPT);
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
+    it('accepts a space-collapsed composer (cursor-drawn repaint)', () => {
+      // A TUI that paints its composer with cursor moves loses the spaces
+      // before the bytes reach us. KIRO_PROMPT_LINE survives that on its own —
+      // every separator in it is `\s*` — so this is a behaviour guard, not
+      // a test of the whitespace-stripped matcher. That one is below.
+      const det = new AgentDetector();
+      det.feed(KIRO_BANNER);
+      det.feed('\x1b[2K\x1b[G▸askaquestionordescribeatask↵\n');
+      expect(det.getLastAgent()).toBe('Kiro CLI');
+    });
+
+    it('accepts a composer that does not own its line (whitespace-stripped matcher)', () => {
+      // The case the anchored pattern structurally cannot cover: a repaint
+      // frame leaves other visible text on the same line, so `^...$` fails and
+      // only the whitespace-stripped substring can still find the composer.
+      //
+      // REGRESSION: that matcher was dead code. It opened its search window
+      // with lastIndexOf('ask'), but the needle ends in '...a task' — so the
+      // window always latched onto that trailing copy and began past the text
+      // it was looking for. It could not match any input, ever.
+      const det = new AgentDetector();
+      det.feed(KIRO_BANNER);
+      det.feed('esc to cancel   ▸ ask a question or describe a task ↵\n');
       expect(det.getLastAgent()).toBe('Kiro CLI');
     });
 

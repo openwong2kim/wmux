@@ -29,7 +29,7 @@ import type {
   WebStartArgs,
   WebTerminalInfo,
 } from '../shared/web';
-import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1029,6 +1029,12 @@ const electronAPI = {
     setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
       ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
     },
+    // Whole-interface zoom (#822): push the persisted factor to main, which
+    // scales the renderer and re-places the native chrome. The overlay color
+    // pair is the same theme colors sent to setTitleBarOverlay (Windows only).
+    setUiScale: (opts: { factor: number; color?: string; symbolColor?: string }) => {
+      ipcRenderer.send(IPC.WINDOW_SET_UI_SCALE, opts);
+    },
     /** macOS titlebar reserve: mount-time fullscreen state (pull). */
     isFullScreen: () => ipcRenderer.invoke(IPC.WINDOW_IS_FULLSCREEN) as Promise<boolean>,
     /** macOS titlebar reserve: live fullscreen transitions (push). */
@@ -1240,6 +1246,12 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
       { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
     >,
+  attachmentsList: () =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
+  attachmentsAdd: (descriptor: RemoteAttachmentDescriptor) =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_ADD, descriptor) as Promise<boolean>,
+  attachmentsRemove: (key: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_REMOVE, key) as Promise<boolean>,
   paneAttach: (hostId: string, sessionId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_PANE_ATTACH, hostId, sessionId) as Promise<
       { ok: true; attachId: string } | { ok: false; error: string }
@@ -1252,6 +1264,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const listener = (_event: unknown, payload: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_META, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_META, listener); };
+  },
+  onPaneResize: (callback: (e: { attachId: string; cols: number; rows: number }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; cols: number; rows: number }) => callback(payload);
+    ipcRenderer.on(IPC.REMOTE_PANE_RESIZE, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_RESIZE, listener); };
   },
   onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => {
     const listener = (_event: unknown, payload: { attachId: string; dataB64: string }) => callback(payload);

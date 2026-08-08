@@ -1,3 +1,232 @@
+## [3.40.0] — 2026-08-08
+
+### Added
+
+- **The native window controls now follow a renderer zoom.** Scaling the UI used
+  to leave the macOS traffic lights and the Windows window buttons behind — they
+  are drawn by the OS and do not move with the renderer, so the custom titlebar
+  grew while the controls stayed put. They are now re-placed whenever the zoom
+  changes, which keeps them centred in the titlebar at any scale. Nothing in the
+  app zooms yet; this is the groundwork for a configurable UI size.
+
+- **Fan-out tasks can each get their own port.** Declare `fanout.portRange`
+  (e.g. `"3000-3010"`) in your repo's `wmux.json` and every task a fan-out
+  spawns is assigned one free port from that window, exported to its pane as
+  `WMUX_TASK_PORT`. Before this, eight tasks that all ran `npm run dev` fought
+  over one port and seven of them died on startup. Ports are probed and assigned
+  before any task spawns, so no two tasks in a fan-out collide — and a port just
+  handed out stays claimed for ten minutes, so a second fan-out started while
+  the first one's servers are still booting doesn't reuse it either. Windows are
+  capped at 512 ports; if one runs out, the remaining tasks simply start without
+  the variable.
+
+- **Worktree setup hook for fan-out.** `fanout.setup` in `wmux.json` is a shell
+  command run inside each freshly created worktree *before* its agent starts —
+  the `cp ../../.env .` and `npm ci` you used to type into every agent's first
+  turn. It is trust-gated exactly like supervised panes: the command is shown
+  verbatim in the trust dialog and runs only against `wmux.json` bytes you have
+  explicitly approved, so a hook arriving via a pull request is inert until you
+  review it. An edit demotes the file to stale and the hook stops running. When
+  a declared hook is skipped for lack of trust the fan-out says so instead of
+  quietly doing nothing, and a hook that fails leaves its task unspawned with
+  the worktree preserved rather than starting an agent in a half-prepared tree —
+  only that task; the rest of the fan-out continues. Output is never capped (a
+  chatty `npm ci` won't be killed), and a hook that hits its five-minute ceiling
+  has its whole process tree killed, so a background install can't outlive it
+  and keep writing into the preserved worktree.
+  See `docs/how-to/fan-out-task-environment.md`.
+
+- **Webhook and ntfy notifications, no phone app required.** Point
+  `notifySinks` in `~/.wmux/config.json` at a webhook URL or an ntfy topic and
+  the daemon pings it when an agent asks for an approval or finishes a turn.
+  Until now the only way to hear about a blocked agent from away from the
+  keyboard was the iOS app and its push relay; this is the plain-HTTP path for
+  everyone else. Off unless you configure it, outbound only — the daemon opens
+  no new port — and `WMUX_NOTIFY_SINKS=0` turns it off without editing config.
+
+  ```json
+  "notifySinks": [
+    { "type": "ntfy", "url": "https://ntfy.sh/my-topic", "events": ["approval"] },
+    { "type": "webhook", "url": "https://hooks.example/wmux" }
+  ]
+  ```
+
+  The ping is deliberately thin: the event kind, a fixed title, the agent name,
+  short pane and workspace id prefixes, a derived risk tier and a timestamp. It
+  never carries the agent's question, tool input, terminal output, file paths or
+  any id that can address a pane — the destination is a server you chose but the
+  body travels in the clear, and a shared ntfy topic is not the place for your
+  terminal. On ntfy the priority follows the stakes — an approval that names a
+  destructive action goes out at max, an ordinary approval at high, a
+  turn-completion at default — so the two never arrive looking equally urgent.
+  Approvals also get their own queue, so a busy afternoon of turn-completions
+  can never push out the one notification somebody is actually blocked on.
+
+- **Your phone stops buzzing for approvals you are already looking at.** When
+  the desktop app is connected and its window was focused within the last 90
+  seconds, the push notification for a new approval is held back — the request
+  still lands in the in-app inbox, which is the thing you were reading anyway.
+  Before this, sitting at the desk answering prompts also meant a phone
+  lighting up for every one of them.
+
+  Held, not dropped. The moment you leave — the window blurs, you lock the
+  screen, the machine sleeps, the app quits, or the focus report simply ages
+  out because you walked away — any still-pending approval's push is delivered.
+  It carries the same collapse id as the original, so the phone replaces that
+  pane's banner rather than stacking a second one. An approval you answered
+  while parked is dropped instead of sent.
+
+  Every uncertainty still sends: a daemon with no desktop attached, a version
+  of the app too old to report focus, an unreadable config, or a focus report
+  that has gone stale all fall back to notifying. A `critical`-risk approval is
+  pushed even when you are present — a destructive action is worth the second
+  channel. Only the app's own process can report presence; the CLI, the MCP
+  server, and anything an agent can reach are refused, so nothing can silence
+  its own approval prompts.
+
+  Configurable via `pushPresenceSuppression` in `~/.wmux/config.json`
+  (`enabled`, default `true`; `staleAfterMs`, default `90000`, capped at ten
+  minutes).
+
+### Changed
+
+- **The terminal brain's [active-work] block goes on a diet.** An unchanged block
+  collapses to a one-line reminder (id + the finish-via-deck_complete_work contract)
+  instead of re-typing the full objective, follow-ups, and task list onto the
+  terminal every turn. Any change to the record — or a conversation reset in the
+  TUI — re-sends the block in full. (#832)
+
+### Fixed
+
+- **A bypass-mode session no longer stops at the permission gate.** An agent
+  launched with `--dangerously-skip-permissions` has already declared that it
+  should never be asked, but the remote permission gate opened an approval
+  record for it anyway — on every `Bash`, `Write`, `Edit`, `MultiEdit`,
+  `NotebookEdit`, `Task`, and `KillShell` call. With no phone attached, each of
+  those calls paused for the full gate deadline and then fell back to exactly
+  the local prompt the user had opted out of, which read as "bypass mode asks
+  for approval on every tool call". The gate now reads the session's live
+  permission mode and lets a bypass session straight through, while the pane's
+  liveness header keeps updating as before. Sessions that do still prompt —
+  `acceptEdits`, `plan`, and the default mode — keep their gates unchanged.
+  (#829)
+
+- **Mirrored remote panes running a fullscreen app no longer paint a garbled
+  screen.** Attaching to a pane that had been running vim, htop or an agent CLI
+  for a while showed rows interleaved over old scrollback, with fragments of
+  earlier frames stuck along the left edge, and the app never took over the
+  screen. The initial paint is capped to a window of recent output, and a
+  fullscreen app announces itself exactly once, at startup — so hours later that
+  announcement was outside the window and the terminal was still on the ordinary
+  buffer while the bytes assumed the fullscreen one. The daemon now tracks which
+  modes a pane's output has switched on and restores them ahead of the paint,
+  including for panes restored after a restart. This affects phones and tablets
+  opening the web terminal too, not only mirrored workspaces.
+
+- **Resizing a pane no longer breaks every viewer watching it.** Geometry was
+  sent once when a viewer connected, so after a resize on the machine that owns
+  the pane, everything drawn afterwards was positioned for a grid the viewer no
+  longer had. Viewers now follow the new size once the resize settles — and only
+  the size: a viewer's scrollback and scroll position survive someone resizing
+  the pane on the other machine.
+
+- **A mirrored pane no longer types into the remote shell by itself.** Terminals
+  answer certain queries automatically, and a mirror was sending its answers on
+  to the remote pane's input — so a live app, or replayed scrollback containing
+  such a query, injected stray characters into a shell on the other machine. A
+  mirror no longer sends those answers; the machine that owns the pane is the
+  one that responds. The same injection is fixed in the phone and tablet web
+  terminal.
+
+- **Attached remote workspaces survive a reload and a restart.** Pressing Cmd+R,
+  or quitting and reopening wmux, silently emptied the Remote section of the
+  sidebar and every mirror with it — re-attaching meant walking back through the
+  picker each time. Attachments are now remembered, and are restored on launch
+  with a fresh pane list fetched from the host. Every row appears immediately,
+  even when a host takes its time answering. A host that is asleep or
+  unreachable keeps its row, marked as stale, rather than being deleted, and
+  its mirrors reconnect on their own once it comes back; detaching is still
+  yours to decide.
+
+- **Mirrors follow panes opened and closed on the remote machine.** The pane
+  layout was frozen at the moment you attached: a pane closed on the other
+  machine left a dead tile in the grid forever, and a pane opened there was
+  invisible until you detached and attached again. The grid now follows the
+  remote workspace, with surviving panes staying in place instead of shuffling
+  when one comes or goes.
+
+- **Removing a remote host clears its mirrors.** The host disappeared from the
+  picker but its mirrored workspaces stayed in the sidebar for the rest of the
+  session, quietly failing to refresh against a machine wmux no longer knew
+  about. They now go with it.
+
+- **The orchestrator no longer re-prints the same message while waiting on you.** A
+  pending decision (deck_ask_decision) now releases the Stop gate — previously the
+  gate kept refusing the turn while the decision block forbade acting, leaving the
+  brain nothing to do but restate its question, up to four times per wake cycle. (#832)
+
+- **A wake loop over unchanged fleet state no longer re-buys the same refusals every
+  cycle.** When the Stop gate caps out, it remembers exactly what it was holding on
+  and stays quiet until that state actually changes, you act (a message, the Wake
+  button, answering a decision), or a 15-minute reminder interval passes. Only a
+  state the gate actually refused can be suppressed. (#832)
+
+- **Re-sent instructions no longer pile up in the active-work record.** Follow-up
+  dedupe now checks the objective and every retained follow-up with
+  whitespace-insensitive comparison, instead of only the most recent entry. (#832)
+
+- **A pane's working directory follows `cd` again on Windows.** The per-surface
+  cwd was frozen at whatever directory the pane started in, so `surface.list`
+  and `pane.list` reported a stale path no matter how many times you changed
+  directory — and `task.fanout.start`, which derives the repository from that
+  value, refused to start with "the calling terminal's directory is not inside a
+  git repository" even when the pane was sitting inside one. The shape guard on
+  the cwd write resolved the host platform from `process.platform`, which does
+  not exist in the renderer under context isolation; it therefore assumed a
+  POSIX host and discarded every `C:\…` as impossible. It now reads the platform
+  from the preload bridge. The workspace-level directory was never affected,
+  which is why only agents and MCP callers saw the stale value. (#834)
+
+## [3.39.1] — 2026-08-07
+
+### Fixed
+
+- **Detach on an attached remote workspace now works.** Right-clicking the
+  sidebar row opened its menu, but pressing "Detach" did nothing at all. The
+  menu dismissed itself on `mousedown`, which arrives before `click`, so the
+  button unmounted under the pointer before its own handler could ever run —
+  the action was unreachable rather than broken.
+
+- **Mirrored remote panes use your terminal font, theme and contrast floor.**
+  An attached remote workspace built its terminal without any of the app's
+  visual settings, so it fell back to xterm's own defaults — `monospace` at
+  15px on black, outside the theme's ANSI palette. Next to a local pane it read
+  as slightly bolder and slightly larger, because it was. Changing the settings
+  now updates the mirror without dropping what the remote has already sent.
+
+  One difference remains: local panes render through WebGL and mirrors use
+  xterm's DOM renderer, whose text antialiasing differs. Matching size, family
+  and palette removes most of the mismatch, not all of it.
+
+- **Mirrored panes no longer tear on Korean and other wide text.** The mirror
+  re-renders a grid the remote daemon computed, but it was the one terminal in
+  the app that skipped the shared Unicode width model — so every double-width
+  character put the two grids one cell further apart, and rows arrived
+  interleaved and torn.
+
+- **Mirrored panes stay inside their box.** A remote pane with more rows than
+  the local cell can show rendered taller than its container, and nothing in
+  the chain clipped it, so terminal output painted over the composer bar and
+  the sidebar. Typing made it obvious because that is when the overflowing rows
+  got repainted.
+
+  This clips rather than scales: geometry belongs to the remote daemon and the
+  mirror never resizes it, so a remote grid taller than the local cell now has
+  its lower rows cut off instead of drawn over the app. That is the better of
+  two bad outcomes, not a good one — the cropped region is where the cursor and
+  live output are. Fitting the mirror to the cell needs a geometry negotiation
+  that does not exist yet.
+
 ## [3.39.0] — 2026-08-06
 
 ### Added

@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { isPlausibleCwd } from '../cwdShape';
+
+type BridgeHost = { electronAPI?: { platform?: string } };
+
+/** Stand in for the preload bridge — the renderer's only host-platform source. */
+function setBridgedPlatform(platform: string | undefined): void {
+  const host = globalThis as BridgeHost;
+  if (platform === undefined) delete host.electronAPI;
+  else host.electronAPI = { platform };
+}
 
 // Regression (2026-07-21): a pane's cwd was stored as the literal string "path"
 // — a prompt-scrape false positive that the old win32 rule ("any non-empty
@@ -47,5 +56,45 @@ describe('isPlausibleCwd — absolute-shape guard', () => {
 
   it('rejects a ~-prefixed non-anchor token (e.g. "~foo" is a username ref, not a cwd we track)', () => {
     expect(isPlausibleCwd('~foo/bar', 'linux')).toBe(false);
+  });
+});
+
+// Issue #833: the renderer has no `process` (contextIsolation), so the omitted-
+// platform default resolved to 'linux' there and rejected every Windows path.
+// That is the write path for the per-surface cwd, so on a Windows host the cwd
+// froze at the spawn directory. These lock the default's resolution order —
+// they are the tests that would have caught it, since every existing case above
+// passes the platform explicitly and so never exercises the default at all.
+describe('isPlausibleCwd — default platform resolution', () => {
+  afterEach(() => setBridgedPlatform(undefined));
+
+  it('uses the preload bridge platform when there is no process (renderer)', () => {
+    setBridgedPlatform('win32');
+    // No explicit platform — exactly how surfaceSlice.updateSurfaceCwd calls it.
+    expect(isPlausibleCwd('C:\\Users\\me\\repo')).toBe(true);
+    expect(isPlausibleCwd('D:\\')).toBe(true);
+    expect(isPlausibleCwd('\\\\server\\share')).toBe(true);
+  });
+
+  it('still rejects an impossible shape when the bridge reports a POSIX host', () => {
+    setBridgedPlatform('darwin');
+    expect(isPlausibleCwd('C:\\Users\\me')).toBe(false);
+    expect(isPlausibleCwd('/Users/me')).toBe(true);
+  });
+
+  it('prefers the bridge over process.platform when both exist', () => {
+    setBridgedPlatform('win32');
+    // The suite runs on POSIX in CI, where process.platform would reject this.
+    expect(isPlausibleCwd('C:\\Users\\me')).toBe(true);
+  });
+
+  it('falls back to process.platform when no bridge is present (main/daemon)', () => {
+    setBridgedPlatform(undefined);
+    // POSIX-absolute passes on every platform, so this holds on any runner.
+    expect(isPlausibleCwd('/home/me')).toBe(true);
+    // A Windows shape tracks the real host: accepted on win32, rejected on POSIX.
+    expect(isPlausibleCwd('C:\\Users\\me')).toBe(process.platform === 'win32');
+    // A relative token is rejected regardless of which source answered.
+    expect(isPlausibleCwd('path')).toBe(false);
   });
 });

@@ -781,6 +781,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         i18nSetLocale(data.locale as Locale);
       }
       if (data.terminalFontSize != null) state.terminalFontSize = data.terminalFontSize;
+      // UI scale: clamp on load so a hand-edited session.json (e.g. uiScale: 5)
+      // can't leave the store, the Settings readout (Math.round(x*100)%), and
+      // the next save diverging from what main actually applies — main's
+      // applyUiZoom clamps the real zoom, but without this the stored/displayed
+      // value drifts (5 → "500%" readout, re-saved as 5). Bounds mirror
+      // UI_ZOOM_MIN/MAX in src/main/window/uiZoom.ts. Absent/invalid → default 1.
+      if (typeof data.uiScale === 'number' && Number.isFinite(data.uiScale)) {
+        state.uiScale = Math.min(1.6, Math.max(0.8, data.uiScale));
+      }
       // Sanitize on load too — session.json is untrusted (hand-editable), and
       // this path bypasses setTerminalFontFamily's write-time sanitize. Keeps
       // the "stored value is always clean" invariant (terminalFont.ts) intact

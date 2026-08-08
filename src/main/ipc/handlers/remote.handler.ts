@@ -21,9 +21,11 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
-import { parseWebUrl } from '../../../shared/remoteHosts';
+import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
+import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey } from '../../../shared/remoteHosts';
 import type {
   PairFailureReason,
+  RemoteAttachmentDescriptor,
   RemoteHost,
   RemoteHostPublic,
   RemoteWorkspaceSummary,
@@ -53,6 +55,9 @@ type ProbeResult =
 
 export interface RegisterRemoteHandlersDeps {
   store: RemoteHostsStore;
+  /** Persisted attach descriptors — what makes an attachment survive a
+   *  renderer reload and an app restart. */
+  attachments: RemoteAttachmentsStore;
   /** Test seam: how a RemoteHostClient is built for a host record. Defaults
    *  to `new RemoteHostClient(host, fetchImpl)`. */
   clientFactory?: (host: RemoteHost) => RemoteHostClient;
@@ -201,7 +206,7 @@ async function exchangePairCode(
 }
 
 export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => void {
-  const { store } = deps;
+  const { store, attachments } = deps;
   const fetchImpl: typeof fetch = deps.fetchImpl ?? fetch;
   const makeClient = deps.clientFactory ?? ((host: RemoteHost) => new RemoteHostClient(host, fetchImpl));
 
@@ -236,6 +241,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     // callbacks; the attachId on each event is how a shared callback fans a
     // single client's events back out to the RIGHT sender.
     client.onMeta((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_META, e));
+    client.onResize((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_RESIZE, e));
     client.onData((e) => pushToOwner(e.attachId, IPC.REMOTE_PANE_DATA, e));
     client.onExit((e) => {
       pushToOwner(e.attachId, IPC.REMOTE_PANE_EXIT, e);
@@ -411,6 +417,14 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const removed = store.remove(hostId);
       if (!removed) return false;
 
+      // A descriptor pointing at an unregistered host can never be restored
+      // (no token to reach it with), so it must not outlive the host. The
+      // write is best-effort ON PURPOSE: the host is already gone from the
+      // store by now, and letting a disk failure escape here would report a
+      // removal that actually happened as a failure.
+      try {
+        attachments.removeByHost(hostId);
+      } catch { /* see above — an orphan descriptor restores as a stale row */ }
       allowInputCache.delete(hostId);
       const client = clients.get(hostId);
       if (client) {
@@ -445,6 +459,63 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         return { ok: true, workspaces: res.workspaces };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+
+  // Attach descriptors — the persistence half of "attachments survive a
+  // reload". Deliberately independent of the SSE attach lifecycle below: the
+  // reload teardown in installSenderCleanup still kills every live stream (a
+  // stale SSE connection must die), and these records are what lets the
+  // renderer rebuild the attachments from scratch afterwards.
+  ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_LIST);
+  ipcMain.handle(IPC.REMOTE_ATTACHMENTS_LIST, wrapHandler(IPC.REMOTE_ATTACHMENTS_LIST,
+    async (): Promise<RemoteAttachmentDescriptor[]> => attachments.list()));
+
+  ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_ADD);
+  ipcMain.handle(IPC.REMOTE_ATTACHMENTS_ADD, wrapHandler(IPC.REMOTE_ATTACHMENTS_ADD,
+    async (_e: IpcMainInvokeEvent, descriptor: unknown): Promise<boolean> => {
+      if (typeof descriptor !== 'object' || descriptor === null) {
+        throw new Error('descriptor is required');
+      }
+      const d = descriptor as Record<string, unknown>;
+      const entry: RemoteAttachmentDescriptor = {
+        key: assertString(d.key, 'key'),
+        hostId: assertString(d.hostId, 'hostId'),
+        hostLabel: typeof d.hostLabel === 'string' ? d.hostLabel : '',
+        workspaceId: assertString(d.workspaceId, 'workspaceId'),
+        name: typeof d.name === 'string' ? d.name : '',
+      };
+      // The key is what every later lookup addresses this record by, so it
+      // must actually derive from the pair it claims to describe — a record
+      // filed under someone else's key would be unremovable by its owner and
+      // would restore as a row pointing at the wrong workspace.
+      if (entry.key !== remoteAttachmentKey(entry.hostId, entry.workspaceId)) return false;
+      // Refuse to record an attachment for a host we do not have — it could
+      // never be restored, and would leak a row into the sidebar forever.
+      if (!store.get(entry.hostId)) return false;
+      // A write failure must not reject: the attach itself already succeeded
+      // in the renderer, and losing persistence only costs this attachment
+      // its restore-after-reload.
+      try {
+        attachments.add(entry);
+      } catch {
+        return false;
+      }
+      return true;
+    }));
+
+  ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_REMOVE);
+  ipcMain.handle(IPC.REMOTE_ATTACHMENTS_REMOVE, wrapHandler(IPC.REMOTE_ATTACHMENTS_REMOVE,
+    async (_e: IpcMainInvokeEvent, key: unknown): Promise<boolean> => {
+      try {
+        const k = assertString(key, 'key');
+        // Same derivation gate as add: only a well-formed
+        // `<hostId>:<workspaceId>` addresses a record, so a key that cannot
+        // have been minted by the attach path deletes nothing.
+        if (!parseRemoteAttachmentKey(k)) return false;
+        return attachments.remove(k);
+      } catch {
+        return false;
       }
     }));
 
@@ -506,6 +577,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
+    ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_LIST);
+    ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_ADD);
+    ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_PANE_ATTACH);
     ipcMain.removeHandler(IPC.REMOTE_PANE_DETACH);
     ipcMain.removeAllListeners(IPC.REMOTE_PANE_WRITE);

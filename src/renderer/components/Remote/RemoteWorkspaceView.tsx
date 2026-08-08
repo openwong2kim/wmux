@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useT } from '../../hooks/useT';
 import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import type { RemotePaneSummary } from '../../../shared/remoteHosts';
@@ -18,28 +18,63 @@ function gridStyle(count: number): CSSProperties {
 
 /** One pane cell: owns the paneAttach call (and its resulting attachId), the
  *  shell/cwd caption, and the mirror terminal itself. Attach is idempotent in
- *  main, so a StrictMode double-effect here is harmless. */
-function PaneCell({ hostId, pane, readOnly }: { hostId: string; pane: RemotePaneSummary; readOnly: boolean }) {
+ *  main, so a StrictMode double-effect here is harmless.
+ *
+ *  `attachEpoch` re-runs the attach without changing the cell's React key. A
+ *  host that slept past RemoteHostClient's reconnect budget comes back with
+ *  the SAME remote sessionIds, so nothing in the pane list changes and this
+ *  effect would never fire again — the mirror would sit blank forever with no
+ *  visible error. The epoch is bumped by the store whenever `stale` clears. */
+function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
+  hostId: string;
+  pane: RemotePaneSummary;
+  readOnly: boolean;
+  attachEpoch: number | undefined;
+}) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
+  /** The previous run's detach. Main keys attach idempotency on
+   *  (sender, host, session), so the old and the new attach are the SAME
+   *  record: if the re-attach reached main first it would be handed the dying
+   *  attachId, and the detach behind it would then kill the stream we had just
+   *  asked for. Waiting on this makes the order teardown-then-attach. */
+  const teardown = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     let cancelled = false;
     const remote = window.electronAPI?.remote;
     if (!remote) return;
-    remote.paneAttach(hostId, pane.sessionId).then((res) => {
-      if (cancelled) return;
-      if (res.ok) setAttachId(res.attachId);
-      else setError(res.error);
-    }).catch((err: unknown) => {
-      // Unexpected IPC rejection (not the {ok:false} result path) — surface
-      // it the same way a rejected attach result does, rather than leaving
-      // this cell silently stuck with attachId: null forever.
-      if (cancelled) return;
-      setError(err instanceof Error ? err.message : String(err));
-    });
-    return () => { cancelled = true; };
-  }, [hostId, pane.sessionId]);
+    setAttachId(null);
+    setError(undefined);
+    let openedId: string | null = null;
+
+    const attaching = teardown.current
+      .then(() => remote.paneAttach(hostId, pane.sessionId))
+      .then((res) => {
+        if (res.ok) {
+          openedId = res.attachId;
+          if (!cancelled) setAttachId(res.attachId);
+        } else if (!cancelled) {
+          setError(res.error);
+        }
+      })
+      .catch((err: unknown) => {
+        // Unexpected IPC rejection (not the {ok:false} result path) — surface
+        // it the same way a rejected attach result does, rather than leaving
+        // this cell silently stuck with attachId: null forever.
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+
+    return () => {
+      cancelled = true;
+      // Panes now come and go with the poll, so a cell can unmount while its
+      // attach is still in flight. Chaining the detach onto the attach is what
+      // stops that from leaving a live SSE stream behind in main.
+      teardown.current = attaching
+        .then(() => (openedId ? remote.paneDetach(openedId) : undefined))
+        .catch(() => { /* teardown is best effort — main drops it on reload anyway */ });
+    };
+  }, [hostId, pane.sessionId, attachEpoch]);
 
   return (
     <div className="flex flex-col min-h-0 min-w-0" style={{ background: 'var(--bg-base)' }}>
@@ -64,6 +99,13 @@ function PaneCell({ hostId, pane, readOnly }: { hostId: string; pane: RemotePane
  * technique WorkspaceViewport uses for local workspaces. Unmounting on every
  * sidebar switch would re-attach every SSE stream and repaint the full
  * snapshot each time.
+ *
+ * Known cost of that rule now that attachments are restored on boot: launching
+ * the app alone opens up to MAX_MIRRORS authenticated streams per restored
+ * workspace, before the user has selected any of them. Attaching lazily on
+ * first selection would fix it, but it is a change to the mount contract this
+ * view shares with WorkspaceCenter, not a tweak here — deliberately left out
+ * of the lifecycle fix.
  */
 export default function RemoteWorkspaceView({ workspace }: { workspace: AttachedRemoteWorkspace }) {
   const t = useT();
@@ -103,7 +145,13 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
         style={{ display: 'grid', ...gridStyle(visiblePanes.length), gap: '2px', background: 'var(--bg-surface)' }}
       >
         {visiblePanes.map((pane) => (
-          <PaneCell key={pane.sessionId} hostId={workspace.hostId} pane={pane} readOnly={allowInput === false} />
+          <PaneCell
+            key={pane.sessionId}
+            hostId={workspace.hostId}
+            pane={pane}
+            readOnly={allowInput === false}
+            attachEpoch={workspace.attachEpoch}
+          />
         ))}
       </div>
       {hiddenCount > 0 && (

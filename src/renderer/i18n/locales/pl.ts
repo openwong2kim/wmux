@@ -141,6 +141,8 @@ export const pl = {
   'settings.fontFamily': 'Rodzina czcionek',
   'settings.fontFamilyDesc': 'Czcionka o stałej szerokości dla terminala',
   'settings.layout': 'Układ',
+  'settings.uiScale': 'Skala interfejsu',
+  'settings.uiScaleDesc': 'Skaluj cały interfejs — przydatne na ekranach o wysokiej DPI. Restart nie jest wymagany.',
   'settings.sidebarPosition': 'Pozycja paska bocznego',
   'settings.sidebarPositionDesc': 'Po lewej lub po prawej stronie obszaru terminala',
   'settings.sidebarLeft': 'Lewo',

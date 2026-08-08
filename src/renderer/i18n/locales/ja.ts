@@ -143,6 +143,8 @@ export const ja = {
   'settings.fontFamily': 'フォントファミリー',
   'settings.fontFamilyDesc': 'ターミナル用等幅フォント',
   'settings.layout': 'レイアウト',
+  'settings.uiScale': 'UI 拡大率',
+  'settings.uiScaleDesc': 'インターフェース全体を拡大・縮小します — 高 DPI ディスプレイで便利です。再起動は不要です。',
   'settings.sidebarPosition': 'サイドバー位置',
   'settings.sidebarPositionDesc': 'ターミナルエリアの左右',
   'settings.sidebarLeft': '左',

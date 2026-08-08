@@ -444,6 +444,10 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // Whole-interface zoom (#822): the renderer asks main to scale the
+  // BrowserWindow with setZoomFactor and re-place the native chrome to match.
+  // One-way send — the persisted factor lives in the renderer store.
+  WINDOW_SET_UI_SCALE: 'window:setUiScale',
   // macOS: native fullscreen hides the traffic lights, so the renderer's
   // 72px titlebar reserve must collapse (and come back on exit) — the same
   // enter/leave-full-screen → class toggle pattern VS Code/Hyper use. Push
@@ -522,11 +526,21 @@ export const IPC = {
   REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
+  // Persisted attach descriptors (see RemoteAttachmentsStore). The renderer's
+  // remote-workspace slice is memory-only, so these are what survive a reload
+  // and an app restart; panes are never stored, only re-fetched.
+  REMOTE_ATTACHMENTS_LIST: 'remote:attachments:list',
+  REMOTE_ATTACHMENTS_ADD: 'remote:attachments:add',
+  REMOTE_ATTACHMENTS_REMOVE: 'remote:attachments:remove',
   REMOTE_PANE_ATTACH: 'remote:pane:attach',
   REMOTE_PANE_DETACH: 'remote:pane:detach',
   REMOTE_PANE_WRITE: 'remote:pane:write',
   REMOTE_PANE_DATA: 'remote:pane:data',      // main → renderer push
   REMOTE_PANE_META: 'remote:pane:meta',      // main → renderer push (cols/rows/snapshot)
+  // main → renderer push (cols/rows only). A resize on the machine that owns
+  // the pane: the mirror re-grids and KEEPS what it has, where META means
+  // "reset and repaint".
+  REMOTE_PANE_RESIZE: 'remote:pane:resize',
   REMOTE_PANE_EXIT: 'remote:pane:exit',      // main → renderer push
   REMOTE_PANE_ERROR: 'remote:pane:error',    // main → renderer push (reconnect gave up)
 } as const;

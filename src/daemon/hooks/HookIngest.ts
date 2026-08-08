@@ -511,10 +511,22 @@ export class HookIngest {
       ? signal.payload.tool_name
       : null;
     const gatedTools = this.deps.gateConfig?.().gatedTools ?? [];
-    const isGated = toolName !== null && gatedTools.includes(toolName);
+    // A `bypassPermissions` session has already declared "never ask me" — the
+    // user launched it with `--dangerously-skip-permissions` (or set
+    // `permissions.defaultMode`). Gating it anyway re-asks the exact question
+    // they opted out of, and when no phone is attached EVERY gated tool call
+    // stalls until the gate deadline before falling back to a local prompt.
+    // Claude Code stamps the live mode on every PreToolUse payload, so honour
+    // it. Only `bypassPermissions` passes through: `acceptEdits` still prompts
+    // for Bash and `plan`/`default` prompt for everything, so their gates stay
+    // meaningful.
+    const bypassing = typeof signal.payload?.permission_mode === 'string'
+      && signal.payload.permission_mode === 'bypassPermissions';
+    const isGated = !bypassing && toolName !== null && gatedTools.includes(toolName);
 
     if (!isGated) {
-      // Non-gated tool — emit tool_started for phone liveness header, allow.
+      // Non-gated tool (or a bypass session) — emit tool_started for the phone
+      // liveness header, allow.
       this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',

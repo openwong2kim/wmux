@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
+import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
+import { useStore } from '../../stores';
+import { terminalFontFamilyCss } from '../../utils/terminalFont';
+import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
+import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -22,11 +27,53 @@ function decodeBase64Bytes(b64: string): Uint8Array {
 }
 
 /**
+ * Answers xterm generates BY ITSELF in response to a device query, which it
+ * delivers through the same `onData` a user's keystrokes come out of.
+ *
+ * A mirror must never answer: the machine that owns the pane has its own
+ * terminal, that one is the authoritative responder, and a second answer is a
+ * line of garbage typed into a live remote shell. (HeadlessSnapshot avoids the
+ * whole problem by never wiring `onData` at all — a mirror cannot, because it
+ * also has to carry real typing.)
+ *
+ * Matching by SHAPE is what makes this safe to apply to the live stream and not
+ * just to a replay: no key or key combination xterm encodes produces any of
+ * these. Arrows and function keys end in `A`–`H`, `~`, or an uppercase letter;
+ * a reply ends in lowercase `c`, `n`, `y`, `t`, or the specific `R` of a cursor
+ * report, and the DCS/OSC forms have no keyboard analogue at all.
+ *
+ * The stronger fix is upstream: neutralise the QUERIES so no reply is ever
+ * generated (xterm's `parser.registerCsiHandler` can swallow DA/DSR/DECRQM
+ * before the default handler answers), or have the daemon strip them from the
+ * bytes it fans out. Both are larger than this pane and out of scope here.
+ */
+// eslint-disable-next-line no-control-regex
+const DEVICE_REPLY_RE = new RegExp(
+  '^(?:' +
+    // Device attributes (DA1/DA2/DA3) and device status / cursor position.
+    '\\x1b\\[[?>=]?[0-9;]*[cnR]' +
+    // DECRPM — "mode Ps is currently Pm".
+    '|\\x1b\\[\\?[0-9;]*\\$y' +
+    // Window / text-area reports (CSI 8 ; rows ; cols t and friends).
+    '|\\x1b\\[[0-9;]+t' +
+    // DCS replies: DECRQSS, XTVERSION, DA3.
+    '|\\x1bP[^\\x1b]*\\x1b\\\\' +
+    // OSC colour reports (`rgb:....` under BEL or ST).
+    '|\\x1b\\][0-9;]*;?rgb:[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)' +
+    ')$',
+);
+
+export function isDeviceReply(data: string): boolean {
+  return DEVICE_REPLY_RE.test(data);
+}
+
+/**
  * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
- * meta event (cols/rows) is the ONLY thing that drives `term.resize()` — this
- * component never calls a resize API back toward the remote (geometry has a
- * single owner, the remote daemon). A container/remote aspect mismatch is
- * letterboxed by the parent's CSS, not by resizing the terminal.
+ * own geometry events (meta on attach, resize afterwards) are the ONLY thing
+ * that drives `term.resize()` — this component never calls a resize API back
+ * toward the remote (geometry has a single owner, the remote daemon). A
+ * container/remote aspect mismatch is letterboxed by the parent's CSS, not by
+ * resizing the terminal.
  */
 export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
   const t = useT();
@@ -40,21 +87,135 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
+  /**
+   * How many snapshot repaints are currently being fed to the parser. Second
+   * line of defence behind {@link isDeviceReply}: a reply shape that list does
+   * not know about still cannot escape during a replay, which is where a
+   * snapshot's worth of queries arrives at once.
+   *
+   * A COUNT, not a flag. xterm parses a large write in ~12 ms slices, so a
+   * second repaint can start while the first is still being consumed — and with
+   * a boolean the first callback would open the gate while the second snapshot
+   * was still parsing.
+   *
+   * A repaint cannot distinguish a reply from a keystroke the user raced into
+   * the same window, so the gate suppresses `paneWrite` outright. Repaint
+   * windows are milliseconds; losing a keystroke to one is far cheaper than
+   * injecting query answers into a live remote shell.
+   */
+  const repaintDepthRef = useRef(0);
+
+  /**
+   * The same visual settings a local pane gets.
+   *
+   * A mirror is still one of this app's terminals, and it sits in the sidebar
+   * next to local ones. Constructing it bare left it on xterm's own defaults —
+   * `monospace` at 15px against a black background — so it rendered in a
+   * different face, one pixel larger, and outside the theme's ANSI palette
+   * (DESIGN.md: terminal content owns that palette). Visible as "why is this
+   * pane slightly bolder and bigger", which is exactly what it was.
+   */
+  const terminalFontSize = useStore((s) => s.terminalFontSize);
+  const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const theme = useStore((s) => s.theme) as ThemeId;
+  const customThemeColors = useStore((s) => s.customThemeColors);
+  // Memoised on identity, not just value. `extractXtermColors` builds a new
+  // object every call, so a custom theme would hand the settings effect below a
+  // dep that never compares equal — re-assigning `options.theme` on every
+  // parent render, and with it an xterm ColorSet rebuild, a glyph-atlas clear
+  // and a full refresh. Builtin themes come from a module constant and were
+  // already stable; this makes custom ones behave the same.
+  const xtermTheme = useMemo(
+    () => (theme === 'custom' && customThemeColors
+      ? extractXtermColors(customThemeColors)
+      : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha']),
+    [theme, customThemeColors],
+  );
+  // True-colour foregrounds from remote TUIs land here the same way they do
+  // locally, so the same contrast floor applies — see useTerminal.ts for why
+  // dark themes get a lower one.
+  const minimumContrastRatio = useMemo(
+    () => resolveMinimumContrastRatio(xtermTheme.background),
+    [xtermTheme],
+  );
+
+  // Read inside the mount effect without joining its deps — same discipline as
+  // `readOnlyRef` above. The effect must stay `[]`-keyed (see below), but it
+  // still needs the CURRENT settings at construction so the first paint is
+  // already correct rather than flashing xterm's defaults.
+  const terminalFontSizeRef = useRef(terminalFontSize);
+  terminalFontSizeRef.current = terminalFontSize;
+  const terminalFontFamilyRef = useRef(terminalFontFamily);
+  terminalFontFamilyRef.current = terminalFontFamily;
+  const xtermThemeRef = useRef(xtermTheme);
+  xtermThemeRef.current = xtermTheme;
+  const minimumContrastRatioRef = useRef(minimumContrastRatio);
+  minimumContrastRatioRef.current = minimumContrastRatio;
+
   // Mount the xterm instance once, for the lifetime of this component.
+  //
+  // Settings are passed at construction AND kept in sync by the effect below,
+  // rather than listed in this effect's deps: re-creating the terminal on a
+  // font change would drop the mirrored scrollback, and the remote only
+  // repaints on a fresh attach.
   useEffect(() => {
     if (!containerRef.current) return;
-    const term = new Terminal({ convertEol: false, scrollback: 2000, disableStdin: false });
-    term.open(containerRef.current);
+    const term = new Terminal({
+      convertEol: false,
+      scrollback: 2000,
+      disableStdin: false,
+      fontSize: terminalFontSizeRef.current,
+      fontFamily: terminalFontFamilyCss(terminalFontFamilyRef.current),
+      theme: xtermThemeRef.current,
+      minimumContrastRatio: minimumContrastRatioRef.current,
+      // REQUIRED by the width model below. `Unicode11Addon.activate` reads
+      // `term.unicode`, which xterm gates behind this flag and throws without
+      // it — synchronously, inside a mount effect, where the nearest boundary
+      // is the one wrapping the whole main area. One attached remote workspace
+      // would take the entire local pane grid down with it.
+      allowProposedApi: true,
+    });
+    // The width model, BEFORE open() — same order as the local pane.
+    //
+    // `terminalUnicode.ts` exists because two grids that must agree will drift
+    // silently if each names its own addon: "the daemon wraps a row at a
+    // different column than the screen does, and everything after it sits one
+    // or more cells off." A mirror is exactly that situation — the remote
+    // daemon computed the grid, this terminal re-renders it — and it was the
+    // one terminal not going through the helper. On CJK text, where every
+    // character is double-width, the drift is visible as torn, interleaved
+    // rows rather than a subtle offset.
+    // Registered BEFORE the addon and open(). If either throws, the cleanup
+    // below still runs against a terminal this ref knows about, instead of
+    // leaking the instance (DOM, listeners, buffers) on every mount attempt.
     termRef.current = term;
+    applyUnicodeWidthModel(term);
+    term.open(containerRef.current);
+    containerRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
     return () => {
       term.dispose();
       termRef.current = null;
     };
   }, []);
 
-  // Subscribe/attach lifecycle keyed on attachId. Geometry arrives once per
-  // connection — every onPaneMeta (fresh attach OR reconnect) means "reset
-  // terminal, resize, repaint", never a delta.
+  // Apply visual settings at runtime without recreating the terminal, so
+  // tweaking the font does not wipe what the remote has already sent. Mirrors
+  // the local pane's own settings effect.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = terminalFontSize;
+    term.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
+    term.options.theme = xtermTheme;
+    term.options.minimumContrastRatio = minimumContrastRatio;
+    if (containerRef.current) {
+      containerRef.current.style.backgroundColor = xtermTheme.background ?? '';
+    }
+  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio]);
+
+  // Subscribe/attach lifecycle keyed on attachId. Every onPaneMeta (fresh
+  // attach OR reconnect) means "reset terminal, resize, repaint", never a
+  // delta; a later geometry change comes through onPaneResize instead.
   useEffect(() => {
     if (!attachId) return;
     setExited(false);
@@ -68,7 +229,27 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       if (!term) return;
       term.reset();
       term.resize(e.cols, e.rows);
-      term.write(decodeBase64Bytes(e.snapshotB64));
+      repaintDepthRef.current += 1;
+      try {
+        term.write(decodeBase64Bytes(e.snapshotB64), () => {
+          repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+        });
+      } catch {
+        // `write` can throw before it ever queues the callback (xterm's
+        // WriteBuffer refuses past DISCARD_WATERMARK). Not decrementing here
+        // would latch the gate for the rest of the pane's life and silently
+        // swallow every keystroke — a far worse outcome than a lost repaint,
+        // which the next attach or reconnect replaces anyway.
+        repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
+      }
+    });
+    // A resize on the machine that owns the pane. Geometry only: no reset and
+    // no repaint, so the mirrored scrollback and the user's scroll position
+    // survive someone dragging a divider on the other machine. The remote app
+    // repaints itself on SIGWINCH; those bytes arrive through onPaneData.
+    const offResize = remote.onPaneResize((e) => {
+      if (e.attachId !== attachId) return;
+      termRef.current?.resize(e.cols, e.rows);
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -86,11 +267,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
+      // A query answer xterm produced on its own, from a replayed snapshot OR
+      // from live output — the remote app sends `ESC[6n` mid-session too, and
+      // gating only the repaint left that path answering. See isDeviceReply.
+      if (isDeviceReply(data)) return;
+      if (repaintDepthRef.current > 0) return;
       remote.paneWrite(attachId, data);
     });
 
     return () => {
       offMeta();
+      offResize();
       offData();
       offExit();
       offError();
@@ -100,8 +287,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   }, [attachId]);
 
   return (
-    <div className="relative w-full h-full min-h-0 min-w-0">
-      <div ref={containerRef} className="absolute inset-0" />
+    // `overflow-hidden` is the letterboxing this component's header describes
+    // ("letterboxed by the parent's CSS, not by resizing the terminal") and
+    // that nothing in the chain actually applied — not here, not PaneCell, not
+    // WorkspaceCenter. Geometry has a single owner, the remote daemon, so a
+    // remote pane with more rows than this cell can show renders an element
+    // TALLER than its box; with nothing clipping it, the overflow painted over
+    // the composer and the sidebar.
+    <div className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
+      <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
       {error && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[11px] font-mono px-2 text-center"

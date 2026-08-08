@@ -141,6 +141,8 @@ export const ar = {
   'settings.fontFamily': 'عائلة الخط',
   'settings.fontFamilyDesc': 'خط ثابت العرض للطرفية',
   'settings.layout': 'التخطيط',
+  'settings.uiScale': 'مقياس الواجهة',
+  'settings.uiScaleDesc': 'تكبير أو تصغير الواجهة بالكامل — مفيد للشاشات عالية الدقة. لا حاجة لإعادة التشغيل.',
   'settings.sidebarPosition': 'موضع الشريط الجانبي',
   'settings.sidebarPositionDesc': 'يسار أو يمين منطقة الطرفية',
   'settings.sidebarLeft': 'يسار',

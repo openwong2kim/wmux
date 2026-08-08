@@ -10,6 +10,8 @@ import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
+import { OutputModeTracker } from '../../util/outputModeTracker';
+import { capSnapshot } from '../snapshotWindow';
 
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
@@ -40,7 +42,14 @@ function makeDeps() {
     // #766 — the desk is showing the pane unless a test flips this; the
     // resize route only honors 'attached' when this is also true.
     viewerVisible: true,
-    ringBuffer: { readAll: () => Buffer.from('screen-bytes') },
+    ringBuffer: {
+      readAll: () => Buffer.from('screen-bytes'),
+      // The real ring's monotonic lifetime counter. A fake ring never wraps,
+      // so "everything ever written" is exactly what readAll returns — and
+      // keeping it a getter means a test that restages readAll gets a
+      // consistent counter for free.
+      get totalBytesWritten(): number { return this.readAll().length; },
+    },
     bridge,
     ptyProcess: { write },
   };
@@ -368,7 +377,14 @@ describe('WebTerminalServer', () => {
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
-  let managed: { meta: Record<string, unknown>; deferred: boolean; viewerVisible: boolean };
+  let managed: {
+    meta: Record<string, unknown>;
+    deferred: boolean;
+    viewerVisible: boolean;
+    // Reassigned by the snapshot-preamble tests to stage a ring larger than the
+    // 256 KB window.
+    ringBuffer: { readAll: () => Buffer; readonly totalBytesWritten: number };
+  };
   let live: ReturnType<typeof makeDeps>['live'];
   let uploadsDir: string;
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
@@ -4208,6 +4224,275 @@ describe('WebTerminalServer', () => {
       } finally {
         live.length = 3;
       }
+    });
+  });
+
+  // ── mode-safe snapshot window + resize propagation ────────────────────────
+  //
+  // `/api/stream` paints the LAST 256 KB of the ring. A fullscreen TUI switched
+  // to the alternate screen once, long before that window, so the window's
+  // absolute-positioned frames used to land on the client's normal buffer and
+  // interleave with scrollback. The daemon reconstructs the mode state instead
+  // (OutputModeTracker) and prepends a preamble to the snapshot payload.
+  describe('stream snapshot mode preamble', () => {
+    /** Read the SSE body until `until` holds (or 2s), then return the text. */
+    const readStream = async (
+      url: string,
+      ac: AbortController,
+      until: (text: string) => boolean,
+    ): Promise<string> => {
+      const res = await fetch(url, { signal: ac.signal });
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let text = '';
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !until(text)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) text += Buffer.from(value).toString('utf8');
+      }
+      return text;
+    };
+
+    /** Every `snapshot` event payload, decoded from base64. */
+    const snapshots = (text: string): string[] =>
+      [...text.matchAll(/event: snapshot\ndata: ([^\n]*)\n/g)].map((m) =>
+        Buffer.from(m[1], 'base64').toString('utf8'),
+      );
+
+    /** Every `meta` event payload, parsed. */
+    const metas = (text: string): Array<Record<string, unknown>> =>
+      [...text.matchAll(/event: meta\ndata: ([^\n]*)\n/g)].map(
+        (m) => JSON.parse(m[1]) as Record<string, unknown>,
+      );
+
+    /** 400 KB of output — comfortably more than the 256 KB snapshot window. */
+    const FILLER = 'x'.repeat(400 * 1024) + '\n';
+
+    /**
+     * Stage the fake session's ring on `text` and feed the SAME bytes, with the
+     * same offsets, to a real tracker hung off the fake bridge — which is what
+     * DaemonPTYBridge does at ring-write time.
+     */
+    const stageRing = (text: string): void => {
+      managed.ringBuffer.readAll = () => Buffer.from(text, 'utf8');
+      const tracker = new OutputModeTracker();
+      tracker.feed(text, Buffer.byteLength(text, 'utf8'));
+      Object.assign(bridge, { outputModes: tracker });
+    };
+
+    /** `head` far enough back that it has scrolled out of the window. */
+    const primeRing = (head: string): void => stageRing(head + FILLER);
+
+    /** Exactly what the client SHOULD receive when nothing is prepended. */
+    const bareWindow = (): string =>
+      capSnapshot(managed.ringBuffer.readAll()).bytes.toString('utf8');
+
+    /** Open the stream and return the first snapshot payload. */
+    const firstSnapshot = async (): Promise<string> => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      const [first] = snapshots(text);
+      expect(first).toBeDefined();
+      return first;
+    };
+
+    it('★ prepends an alt-screen preamble when ?1049h scrolled out of the window', async () => {
+      // The exact field shape: the app entered the alternate screen at startup
+      // and has been painting ever since, so the switch is 400 KB back.
+      primeRing('\x1b[?1049h\x1b[2J\x1b[H');
+      const first = await firstSnapshot();
+      // The window itself no longer contains the switch…
+      expect(bareWindow()).not.toContain('\x1b[?1049h');
+      // …so the payload has to open with it, plus an erase + home so the
+      // absolute-positioned frames that follow start from a blank grid.
+      expect(first).toBe('\x1b[?1049h\x1b[2J\x1b[H' + bareWindow());
+    });
+
+    it('★ sends NO alt preamble when the window still contains the entry', async () => {
+      // The common case: an app launched a moment ago, so its own `?1049h` is
+      // inside the window. Asserting the switch first would paint the shell
+      // scrollback ahead of it into the ALTERNATE buffer; the window's own
+      // switch then no-ops, and the app's eventual `?1049l` would drop the user
+      // on an empty normal buffer with the scrollback gone.
+      stageRing(FILLER + 'line1\r\nline2\r\n\x1b[?1049h\x1b[2J\x1b[HVIM FRAME');
+      const first = await firstSnapshot();
+      expect(bareWindow()).toContain('\x1b[?1049h');
+      expect(first).toBe(bareWindow());
+    });
+
+    it('sends no preamble at all for a plain normal-buffer session', async () => {
+      // Deliberately full of escape sequences — colours, and an alt screen the
+      // app entered AND left — so "the payload happens not to start with ESC"
+      // cannot pass for a real assertion. The only acceptable answer is the
+      // window, byte for byte.
+      primeRing('\x1b[32m$ vim\x1b[0m\n\x1b[?1049h\x1b[2Jediting\x1b[?1049l\x1b[?1002l\n');
+      const first = await firstSnapshot();
+      expect(first).toBe(bareWindow());
+    });
+
+    it('carries non-default modes other than alt screen (bracketed paste, mouse SGR)', async () => {
+      primeRing('\x1b[?2004h\x1b[?1002;1006h');
+      const first = await firstSnapshot();
+      expect(first).toContain('\x1b[?1002h');
+      expect(first).toContain('\x1b[?1006h');
+      expect(first).toContain('\x1b[?2004h');
+      // No alt-screen switch was sent, so none is asserted.
+      expect(first).not.toContain('\x1b[?1049h');
+    });
+
+    it('ends just this stream when the initial frame cannot be built', async () => {
+      // `readAll()` copies the whole ring — up to 64 MB — and `Buffer.concat`
+      // allocates again on top. The headers are already out by then, so there
+      // is no error status left to send; what matters is that the throw does
+      // NOT escape the request handler, because an uncaught exception in a
+      // daemon request handler ends the daemon, not the request.
+      managed.ringBuffer.readAll = () => { throw new Error('Array buffer allocation failed'); };
+      const info = await startRO();
+      const ac = new AbortController();
+      const res = await fetch(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        { signal: ac.signal },
+      );
+      expect(res.status).toBe(200);
+      // The stream closes rather than hanging, and carries no frames.
+      const body = await res.text();
+      expect(snapshots(body)).toHaveLength(0);
+
+      // The daemon is still serving — the failure was scoped to one client.
+      managed.ringBuffer.readAll = () => Buffer.from('recovered');
+      const after = await fetch(`${base()}/api/sessions`, {
+        headers: { Authorization: `Bearer ${info.token as string}` },
+      });
+      expect(after.status).toBe(200);
+    });
+
+    // ── resize propagation ──────────────────────────────────────────────
+    //
+    // An applied resize invalidates the viewer's grid, so it has to hear about
+    // it. What it must NOT get is a fresh snapshot: that is a full ring copy
+    // and ~341 KB of base64 per viewer per resize, and every client resets its
+    // terminal before replaying one — so a viewer scrolled up reading would be
+    // wiped and dragged to the bottom each time someone resized the pane on
+    // the machine that owns it.
+    describe('applied resize', () => {
+      /** Open a stream and keep pumping its body into a growing string. */
+      const openPumped = async (): Promise<{
+        ac: AbortController;
+        body: () => string;
+        pump: (budgetMs: number) => Promise<void>;
+      }> => {
+        const info = await startRO();
+        const ac = new AbortController();
+        const res = await fetch(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          { signal: ac.signal },
+        );
+        expect(res.status).toBe(200);
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        let text = '';
+        // `reader.read()` on an idle SSE stream never settles, so every read is
+        // raced against the remaining budget. The losing read is CARRIED to the
+        // next pump rather than dropped — an orphaned read still consumes the
+        // next chunk, which is how a resize frame goes missing without anyone
+        // noticing the test never saw it.
+        let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+        const pump = async (budgetMs: number): Promise<void> => {
+          const deadline = Date.now() + budgetMs;
+          for (;;) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) return;
+            if (!pending) pending = reader.read();
+            const settled = await Promise.race([
+              pending.then((v) => ({ v })),
+              new Promise<null>((r) => setTimeout(() => r(null), remaining)),
+            ]);
+            if (!settled) return; // budget spent; `pending` survives for next time
+            pending = null;
+            if (settled.v.done) return;
+            if (settled.v.value) text += Buffer.from(settled.v.value).toString('utf8');
+          }
+        };
+        await pump(500);
+        return { ac, body: () => text, pump };
+      };
+
+      it('★ answers with meta ONLY — never a second snapshot', async () => {
+        primeRing('\x1b[?1049h');
+        const s = await openPumped();
+        expect(snapshots(s.body())).toHaveLength(1);
+
+        managed.meta.cols = 100;
+        managed.meta.rows = 40;
+        bridge.emit('resize');
+        await s.pump(1200);
+        s.ac.abort();
+
+        // The new geometry arrived…
+        const metaEvents = metas(s.body());
+        expect(metaEvents).toHaveLength(2);
+        expect(metaEvents[1]).toMatchObject({ cols: 100, rows: 40, resize: true });
+        // …and the viewer's scrollback was not re-sent under it.
+        expect(snapshots(s.body())).toHaveLength(1);
+      }, 15000);
+
+      it('★ collapses a storm into one, and still answers the next one', async () => {
+        // The debounce has to outlast MIN_RESIZE_INTERVAL_MS (250) or every
+        // resize the rate limiter lets through is already spaced far enough
+        // apart to defeat it — which is exactly what a 150 ms window did.
+        primeRing('hello\n');
+        const s = await openPumped();
+        expect(metas(s.body())).toHaveLength(1);
+
+        // Two accepted resizes one limiter-interval apart still merge…
+        bridge.emit('resize');
+        await new Promise((r) => setTimeout(r, 260));
+        bridge.emit('resize');
+        await s.pump(1200);
+        expect(metas(s.body())).toHaveLength(2);
+
+        // …while one that lands after the window has closed is its own message.
+        managed.meta.cols = 132;
+        bridge.emit('resize');
+        await s.pump(1200);
+        s.ac.abort();
+        const metaEvents = metas(s.body());
+        expect(metaEvents).toHaveLength(3);
+        expect(metaEvents[2]).toMatchObject({ cols: 132, resize: true });
+      }, 20000);
+
+      it('drops the pending resize when the client disconnects', async () => {
+        primeRing('hello\n');
+        // The debounce callback re-reads the session, so counting that read is
+        // a direct signal for "the timer fired" — an assertion that a leftover
+        // `clearTimeout` deletion cannot pass, unlike a listener count.
+        const mgr = sessionManager as unknown as { getSession: (id: string) => unknown };
+        const inner = mgr.getSession.bind(mgr);
+        let reads = 0;
+        mgr.getSession = (id: string) => { reads += 1; return inner(id); };
+
+        const info = await startRO();
+        const ac = new AbortController();
+        await readStream(
+          `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+          ac,
+          (t) => snapshots(t).length >= 1,
+        );
+        bridge.emit('resize');
+        ac.abort();
+        const atAbort = reads;
+        // Long enough for the debounce to have fired twice over.
+        await new Promise((r) => setTimeout(r, 1200));
+
+        expect(reads).toBe(atAbort); // nothing woke up behind the closed stream
+        expect(bridge.listenerCount('resize')).toBe(0);
+      }, 15000);
     });
   });
 });

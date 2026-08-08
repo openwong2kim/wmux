@@ -1,5 +1,5 @@
+import { isAgentSlug, type AgentSlug } from './agentIdentity';
 import type { ResumeBinding } from './agentResume';
-import type { AgentSlug } from './events';
 
 /**
  * Minimal metadata carried while a renderer surface replaces a known-dead
@@ -25,20 +25,8 @@ function nonBlank(value: string | undefined): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
 }
 
-const RECOVERY_AGENT_SLUG_VALUES = [
-  'claude',
-  'codex',
-  'gemini',
-  'aider',
-  'opencode',
-  'copilot',
-  'openclaude',
-  'kiro',
-] as const satisfies readonly AgentSlug[];
-const RECOVERY_AGENT_SLUGS: ReadonlySet<string> = new Set(RECOVERY_AGENT_SLUG_VALUES);
-
 export function asRecoveryAgentSlug(value: string | undefined): AgentSlug | undefined {
-  return value && RECOVERY_AGENT_SLUGS.has(value) ? value as AgentSlug : undefined;
+  return value !== undefined && isAgentSlug(value) ? value : undefined;
 }
 
 /**

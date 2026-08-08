@@ -136,6 +136,10 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   mainWindow.on('enter-full-screen', () => pushFullscreen(true));
   mainWindow.on('leave-full-screen', () => pushFullscreen(false));
 
+  // UI zoom (#822) is now renderer-driven: the persisted factor lives in the
+  // renderer store and is pushed via the window:setUiScale IPC on hydration
+  // and on Settings changes. See src/renderer/components/Layout/AppLayout.tsx.
+
   if (!opts.deferLoad) {
     loadMainRenderer(mainWindow);
   }
