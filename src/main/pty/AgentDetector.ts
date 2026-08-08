@@ -61,39 +61,143 @@ type CriticalEventCallback = (event: CriticalEvent) => void;
 // SLUG-form agent identifier. Lowercase, no whitespace. Used as the
 // canonical key shared with hook-based signals (integrations/<agent>/).
 // HookSignalRouter dedup matches AgentDetector emissions against bridge
-// signals on this slug, so the two MUST stay in lock-step. New agents
-// added here must also be added to integrations/shared/signal-types.ts
-// (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
+// signals on this slug.
+//
+// The union and both slug<->display lookups now live in
+// src/shared/agentIdentity.ts, so a new agent is one row there rather than
+// eight hand-synced lists. Re-exported here because callers have long imported
+// the identity helpers from the detector.
+export type { AgentSlug } from '../../shared/agentIdentity';
+export { agentDisplayToSlug } from '../../shared/agentIdentity';
+
+import type { AgentSlug } from '../../shared/agentIdentity';
+
+/**
+ * One way to recognise a piece of an agent's chrome on a line.
+ *
+ *   line       regex against the ANSI-stripped, trimmed text. Use `^...$` when
+ *              the chrome owns its whole line — that is what stops a quoted
+ *              mention in someone else's log from counting as evidence.
+ *   contains   case-insensitive substring. For chrome with no stable line
+ *              shape, e.g. a docs URL printed inside a longer banner.
+ *   normalized whitespace-stripped, lowercased substring. TUIs that paint with
+ *              cursor moves lose their spaces in the PTY stream, so
+ *              "ask a question" can arrive as "askaquestion" and no
+ *              space-bearing pattern can ever match it.
+ */
+type EvidenceMatcher =
+  | { line: RegExp }
+  | { contains: string }
+  | { normalized: string };
+
+/**
+ * One piece of evidence a compound gate requires. Satisfied when ANY matcher
+ * hits; the gate opens when EVERY clause is satisfied, in any order and across
+ * any number of PTY chunks.
+ */
+interface EvidenceClause {
+  /** Stable id. Keys the per-detector evidence ledger. */
+  id: string;
+  /**
+   * Cheap lowercase literals. The matchers run only when the candidate line
+   * contains one of these, so an inactive compound gate costs a substring scan
+   * per line rather than a regex sweep. Required — an evidence clause with no
+   * hint would run its regexes on every line of every plain shell forever.
+   */
+  hints: readonly string[];
+  any: readonly EvidenceMatcher[];
+  /**
+   * Emit this status once, at the moment the gate opens, using the text this
+   * clause actually captured.
+   *
+   * Needed because evidence can arrive in any order: if the composer prompt is
+   * painted BEFORE the banner, its ordinary pattern pass already happened while
+   * the gate was still shut, so without a replay the pane sits at 'running'
+   * while it is really idle. The captured text becomes the dedup value, so the
+   * next ordinary pass over the same prompt suppresses instead of double-firing.
+   *
+   * `evidence` is the canonical text to fall back on when the matcher that hit
+   * was not a regex (a `normalized` hit has no meaningful capture).
+   */
+  emitOnGateOpen?: { status: AgentEventStatus; message: string; evidence: string };
+}
+
+/**
+ * A gate is either a single regex (the agent's banner is enough to identify it)
+ * or a set of clauses that must ALL be satisfied.
+ *
+ * The compound form exists because a product-name mention is not proof: agents
+ * routinely print logs and docs naming other agents. Requiring two independent
+ * pieces of chrome from the same PTY is what separates "Kiro is running here"
+ * from "something printed the word Kiro".
+ */
+type AgentGate = RegExp | { allOf: readonly EvidenceClause[] };
+
+interface StatusPattern {
+  regex: RegExp;
+  status: AgentEvent['status'];
+  message: string;
+}
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
   agent: string;
   /** Canonical slug. Stable, lowercase, no whitespace. Matches hook signals. */
   slug: AgentSlug;
-  // An optional "gate" regex: patterns are only checked if the gate has
-  // previously matched in this session, confirming the agent is active.
-  gate?: RegExp;
-  patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
+  // An optional "gate": patterns are only checked once it has matched in this
+  // session, confirming the agent is active.
+  gate?: AgentGate;
+  /**
+   * Inherit another profile's status patterns.
+   *
+   * Forks are the normal case, not an exotic one: OpenClaude is Claude Code's
+   * TUI, so its approval prompts are the same prompts. Those four patterns used
+   * to be written out twice, 200+ characters each, box-glyph classes and all,
+   * and every review round that tightened them had to tighten both copies by
+   * hand. The cost of missing one is on record — a worker pane sat on an
+   * unmatched approval prompt for 100 minutes (see the note on the edit-approval
+   * patterns below).
+   *
+   * Inherited patterns are appended AFTER the profile's own, so a fork's
+   * distinctive chrome is matched first.
+   */
+  extends?: AgentSlug;
+  /**
+   * Parent patterns to drop, identified by regex source. A fork that removed a
+   * prompt, or renders it in a way that would misfire, says so here.
+   */
+  omit?: readonly RegExp[];
+  patterns: StatusPattern[];
 }
 
 /**
- * Map display name → slug. Used by consumers that have an AgentEvent in
- * hand (which carries the display name) and need to derive the canonical
- * slug for dedup against hook signals.
+ * Flatten `extends` into concrete pattern lists.
+ *
+ * Runs once at module load over a static table, so it throws rather than
+ * degrading: an unknown parent or a cycle is a programming error that should
+ * fail the process at startup, not silently leave an agent undetectable.
  */
-export function agentDisplayToSlug(display: string): AgentSlug | undefined {
-  switch (display) {
-    case 'Claude Code': return 'claude';
-    case 'Codex CLI': return 'codex';
-    case 'Gemini CLI': return 'gemini';
-    case 'Aider': return 'aider';
-    case 'OpenCode': return 'opencode';
-    case 'GitHub Copilot CLI': return 'copilot';
-    case 'OpenClaude': return 'openclaude';
-    case 'Kiro CLI': return 'kiro';
-    default: return undefined;
-  }
+function resolveInheritance(profiles: AgentPattern[]): AgentPattern[] {
+  const bySlug = new Map(profiles.map((p) => [p.slug, p]));
+
+  const resolve = (p: AgentPattern, seen: Set<AgentSlug>): StatusPattern[] => {
+    if (!p.extends) return p.patterns;
+    if (seen.has(p.extends)) {
+      throw new Error(`AgentDetector: profile inheritance cycle at '${p.slug}'`);
+    }
+    const parent = bySlug.get(p.extends);
+    if (!parent) {
+      throw new Error(`AgentDetector: '${p.slug}' extends unknown profile '${p.extends}'`);
+    }
+    seen.add(p.extends);
+    const omitted = new Set((p.omit ?? []).map((r) => r.source));
+    const inherited = resolve(parent, seen).filter((sp) => !omitted.has(sp.regex.source));
+    return [...p.patterns, ...inherited];
+  };
+
+  return profiles.map((p) =>
+    p.extends ? { ...p, patterns: resolve(p, new Set([p.slug])) } : p,
+  );
 }
 
 /**
@@ -140,7 +244,7 @@ export function agentStatusToSignalKind(
 const KIRO_CHROME_LINE = /^(?:Kiro\s*CLI(?:\s+v?\d[\w.-]*)?|Trust\s*All\s*Tools\s*active,\s*confirmations\s*are\s*off(?:\s*·.*)?)$/i;
 const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s*task\s*↵?\s*$/i;
 
-const AGENT_PATTERNS: AgentPattern[] = [
+const AGENT_PROFILES: AgentPattern[] = [
   // ── Claude Code ────────────────────────────────────────────────────────────
   // Gate: Claude Code startup banner (matches once to activate detection)
   {
@@ -228,27 +332,26 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 
   // ── OpenClaude ───────────────────────────────────────────────────────────
-  // Gate: OpenClaude startup banner — same fork-derived TUI as Claude Code
-  // but draws its own banner.
-  // NOTE: "bypass permissions on" is NOT used for waiting because OpenClaude
-  // re-renders its status bar every frame, flooding notifications (confirmed
-  // via debug capture 2026-07-22 — the line reaches the detector as a single
-  // concatenated token "…bypassPermissions modeisactive…" every ~16ms).
-  // "shift+tab to cycle" does NOT appear in OpenClaude's TUI at all (unlike
-  // Claude Code). The actual prompt after ANSI strip + trim is just ">" or
-  // "> ○" (with spinner), so we match those directly.
+  // A Claude Code fork, so it inherits Claude approval prompts verbatim rather
+  // than restating them. It keeps its own gate and its own idle prompt, and
+  // drops the two Claude waiting patterns:
+  //   - "bypass permissions on" floods: OpenClaude repaints its status bar
+  //     every frame, so the line arrives as a concatenated
+  //     "…bypassPermissions modeisactive…" token roughly every 16ms
+  //     (debug capture 2026-07-22).
+  //   - "shift+tab to cycle" does not appear in its TUI at all.
+  // What is left after ANSI strip + trim is a bare ">", optionally with a
+  // spinner glyph, which is matched directly below.
   {
     agent: 'OpenClaude',
     slug: 'openclaude',
     gate: /Open\s*Claude|openclaude|╭.*OpenClaude/,
+    extends: 'claude',
+    omit: [/bypass permissions on/, /shift\+tab to cycle/],
     patterns: [
       // Waiting — the bare ">" prompt after trim, optionally followed by a
       // spinner character (○) when the TUI is waiting for input.
-      { regex: /^>[\s○◌●]*$/,                                                                               status: 'waiting',          message: 'Ready for input' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                              status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
-      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
-      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: /^>[\s○◌●]*$/, status: 'waiting', message: 'Ready for input' },
     ],
   },
 
@@ -306,12 +409,40 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 
   // ── Kiro CLI ──────────────────────────────────────────────────────────────
-  // The generic gate loop below special-cases this slug and opens it only
-  // after BOTH KIRO_CHROME_LINE and KIRO_PROMPT_LINE have been observed.
+  // Kiro has no hook bridge, so its identity comes entirely from the screen —
+  // which is exactly when a compound gate is worth its cost. Two independent
+  // pieces of chrome from the SAME PTY are required, in either order.
   {
     agent: 'Kiro CLI',
     slug: 'kiro',
-    gate: KIRO_CHROME_LINE,
+    gate: {
+      allOf: [
+        {
+          id: 'chrome',
+          hints: ['kiro', 'trust all tools'],
+          any: [
+            // Newer v3 builds print the docs URL instead of a version banner.
+            { contains: 'kiro.dev/docs/cli/' },
+            { line: KIRO_CHROME_LINE },
+          ],
+        },
+        {
+          id: 'prompt',
+          hints: ['ask'],
+          any: [
+            { line: KIRO_PROMPT_LINE },
+            // Cursor-drawn composer: the spaces are gone by the time this
+            // reaches us, so no space-bearing pattern can match it.
+            { normalized: 'askaquestionordescribeatask' },
+          ],
+          emitOnGateOpen: {
+            status: 'waiting',
+            message: 'Ready for input',
+            evidence: 'ask a question or describe a task',
+          },
+        },
+      ],
+    },
     patterns: [
       { regex: KIRO_PROMPT_LINE, status: 'waiting', message: 'Ready for input' },
     ],
@@ -338,6 +469,13 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 ];
 
+/**
+ * The profiles the detector actually matches against: authored profiles with
+ * `extends` flattened. Resolved once at module load and shared by every
+ * detector, so a 30-pane workspace does not re-resolve per PTY.
+ */
+const AGENT_PATTERNS: AgentPattern[] = resolveInheritance(AGENT_PROFILES);
+
 const MAX_BUFFER = 16 * 1024;
 
 // ANSI escape strip regex. Covers:
@@ -352,6 +490,84 @@ const MAX_BUFFER = 16 * 1024;
 // occasionally breaking pattern matching.
 // eslint-disable-next-line no-control-regex
 const ANSI_STRIP = /\x1b(?:\[[0-9;?<=>]*[a-zA-Z@]|\][^\x07]*\x07|\([A-Z])/g;
+
+// Written as an escape so the source stays pure-ASCII, same reason as
+// CONTROL_CHARS_RE above. Used to skip the strip on already-clean candidates.
+const ESC = '\x1b';
+
+/** How much of a candidate an evidence clause is allowed to look at. */
+const MAX_EVIDENCE_PROBE = 4096;
+
+/**
+ * How many leading characters of a `normalized` needle anchor its search
+ * window. Long enough to be selective, short enough to survive a needle whose
+ * first word is tiny.
+ */
+const NORMALIZED_ANCHOR_LEN = 3;
+
+/**
+ * A candidate line prepared once for every evidence clause that examines it.
+ *
+ * `text` is ANSI-stripped and trimmed, because `checkGates` is deliberately
+ * called with the RAW line too (Claude Code carries its name only inside the
+ * OSC window-title escape, which the strip would otherwise remove wholesale).
+ * `lower` backs both the cheap hint screen and `contains` matchers.
+ */
+interface GateProbe {
+  readonly text: string;
+  readonly lower: string;
+}
+
+function makeGateProbe(candidate: string): GateProbe {
+  const bounded =
+    candidate.length > MAX_EVIDENCE_PROBE
+      ? candidate.slice(-MAX_EVIDENCE_PROBE)
+      : candidate;
+  // Callers pass both raw and already-cleaned candidates; skip the replacement
+  // when there is nothing to strip.
+  const stripped = bounded.includes(ESC) ? bounded.replace(ANSI_STRIP, '') : bounded;
+  const text = stripped.trim();
+  return { text, lower: text.toLowerCase() };
+}
+
+/**
+ * Try each matcher in order; return the text the first hit captured, or null.
+ *
+ * The captured text matters beyond "did it match": a clause with
+ * `emitOnGateOpen` replays it as the dedup value, so a regex hit must return
+ * exactly what the ordinary pattern pass will later see.
+ */
+function matchEvidence(
+  matchers: readonly EvidenceMatcher[],
+  probe: GateProbe,
+): string | null {
+  for (const m of matchers) {
+    if ('line' in m) {
+      const hit = probe.text.match(m.line);
+      if (hit) return hit[0];
+    } else if ('contains' in m) {
+      if (probe.lower.includes(m.contains)) return m.contains;
+    } else {
+      // Whitespace-stripped compare, windowed around the needle's own opening
+      // literal so a long repaint does not pay for a full-probe replacement.
+      // The window is generous: the raw text carries spaces the needle does not.
+      //
+      // FIRST occurrence, not last. The code this replaced used lastIndexOf and
+      // could therefore never match: needles like
+      // "askaquestionordescribeatask" contain their own anchor again near the
+      // end ("...a task"), so lastIndexOf always landed on the trailing copy and
+      // opened the window past the text it was looking for. That made the whole
+      // space-collapsed path dead — the case it exists for (cursor-drawn
+      // composers, where no space-bearing regex can match) was never covered.
+      const anchor = m.normalized.slice(0, NORMALIZED_ANCHOR_LEN);
+      const start = probe.lower.indexOf(anchor);
+      if (start < 0) continue;
+      const window = probe.lower.slice(start, start + m.normalized.length * 3 + 32);
+      if (window.replace(/\s+/g, '').includes(m.normalized)) return m.normalized;
+    }
+  }
+  return null;
+}
 
 export class AgentDetector {
   private callbacks: AgentEventCallback[] = [];
@@ -368,11 +584,11 @@ export class AgentDetector {
   // ActivityMonitor 'active' transitions to label the running status with the
   // agent that owns this PTY.
   private lastAgent: string | null = null;
-  // Kiro uses a compound gate so another agent merely mentioning "Kiro CLI"
-  // cannot steal this PTY's identity. Evidence is scoped to this detector/PTy.
-  private kiroChromeSeen = false;
-  private kiroPromptSeen = false;
-  private kiroPromptEvidence: string | null = null;
+  // Satisfied evidence clauses for compound gates, keyed `${slug}:${clauseId}`,
+  // holding the text that satisfied them. Scoped to this detector — that is
+  // what makes evidence per-PTY, so another agent merely printing "Kiro CLI"
+  // in a log cannot hand this pane's identity away.
+  private evidenceSeen = new Map<string, string>();
 
   /**
    * Register a callback for agent status events.
@@ -462,94 +678,148 @@ export class AgentDetector {
    * 설정. 라인 완성 여부와 무관하게 호출할 수 있도록 분리(feed의 미완성 라인
    * 검사와 processLine 양쪽에서 사용). activeAgents 가드로 세션당 1회만 발화.
    */
-  private checkGates(clean: string): void {
-    // Kiro has no hook fallback, so identify its live TUI from two independent
-    // pieces of chrome. Newer v3 builds show the docs URL instead of a "Kiro
-    // CLI" banner; their cursor-drawn composer can also collapse whitespace in
-    // the raw PTY stream. Probe only a bounded tail and only when a cheap
-    // literal hint is present. Once Kiro is active this entire path is skipped.
-    const kiroIsActive = this.activeAgents.has('Kiro CLI');
-    if (!kiroIsActive && (!this.kiroChromeSeen || !this.kiroPromptSeen)) {
-      const probe = clean.length > 4096 ? clean.slice(-4096) : clean;
-      const mayContainChrome = !this.kiroChromeSeen && (
-        probe.includes('kiro') ||
-        probe.includes('Kiro') ||
-        probe.includes('KIRO') ||
-        probe.includes('Trust All Tools')
-      );
-      const mayContainPrompt = !this.kiroPromptSeen && (
-        probe.includes('ask') || probe.includes('Ask')
-      );
-
-      if (mayContainChrome || mayContainPrompt) {
-        // feed/processLine also call this with an ANSI-stripped candidate. Avoid
-        // doing the regex replacement twice when this candidate is already clean.
-        const evidenceLine = probe.includes('\u001b')
-          ? probe.replace(ANSI_STRIP, '')
-          : probe;
-        const normalized = evidenceLine.trim();
-        const lower = normalized.toLowerCase();
-
-        if (
-          mayContainChrome &&
-          (lower.includes('kiro.dev/docs/cli/') || KIRO_CHROME_LINE.test(normalized))
-        ) {
-          this.kiroChromeSeen = true;
-        }
-
-        if (mayContainPrompt) {
-          const promptStart = lower.lastIndexOf('ask');
-          const compactPrompt = promptStart >= 0
-            ? lower.slice(promptStart, promptStart + 96).replace(/\s+/g, '')
-            : '';
-          const promptMatch = normalized.match(KIRO_PROMPT_LINE);
-          if (
-            promptMatch ||
-            compactPrompt.includes('askaquestionordescribeatask')
-          ) {
-            this.kiroPromptSeen = true;
-            // When this is a normal complete line, retain the exact value the
-            // ordinary pattern pass will see so its same-frame dedup hits. The
-            // canonical fallback is only for cursor-concatenated evidence that
-            // cannot match the line pattern later in processLine.
-            this.kiroPromptEvidence = promptMatch?.[0]
-              ?? 'ask a question or describe a task';
-          }
-        }
-      }
-    }
+  /**
+   * Runs twice per completed line (raw, then cleaned) plus twice per feed chunk
+   * on the still-incomplete tail. The `activeAgents` skip means an identified
+   * pane costs nothing, so the load-bearing case is a pane running a plain
+   * shell: its gates never open, so every regex gate runs forever.
+   *
+   * That invites a cheap literal prefilter — screen the line with
+   * `String.includes` and only then run the regex. Measured before adding one,
+   * over 20k build-log lines:
+   *
+   *     profiles   plain regex sweep   with literal prefilter
+   *      7 (today)      9.6ms                11.3ms   0.84x  SLOWER
+   *     16            26.5ms                20.9ms   1.27x
+   *     48            75.0ms                52.7ms   1.42x
+   *
+   * One `toLowerCase()` per line costs more than the seven regex tests it would
+   * skip, so at today's count the prefilter is a net loss. It starts paying
+   * around sixteen profiles. Revisit if the built-in set roughly doubles; until
+   * then the compound gates carry hints (they screen their own, more expensive
+   * matchers) and the plain regex gates do not.
+   */
+  private checkGates(candidate: string): void {
+    let probe: GateProbe | null = null;
 
     for (const ap of AGENT_PATTERNS) {
-      // Gate checks run on every PTY output chunk. Never re-run regexes for an
-      // already-active agent; this keeps full-screen repaint traffic O(inactive
-      // agents) and makes the Kiro additions cheaper than the previous loop.
+      // Gate checks run on every PTY output chunk. Never re-run anything for an
+      // already-active agent; this keeps full-screen repaint traffic
+      // O(inactive agents).
       if (!ap.gate || this.activeAgents.has(ap.agent)) continue;
-      const gateMatched = ap.slug === 'kiro'
-        ? this.kiroChromeSeen && this.kiroPromptSeen
-        : ap.gate.test(clean);
-      if (!gateMatched) continue;
 
-      this.activeAgents.add(ap.agent);
-      this.lastAgent = ap.agent;
-      for (const cb of this.callbacks) {
-        cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+      let opened: boolean;
+      if (ap.gate instanceof RegExp) {
+        opened = ap.gate.test(candidate);
+      } else {
+        // Building the probe costs an ANSI strip and a lowercase, so defer it
+        // until a compound gate actually asks. A session whose agents all use
+        // plain regex gates never pays for it.
+        probe ??= makeGateProbe(candidate);
+        opened = this.accumulateEvidence(ap, ap.gate.allOf, probe);
       }
-      // The two Kiro evidence lines may arrive in either order. If the
-      // composer prompt arrived first, its normal pattern pass happened while
-      // the gate was still closed. Replay the saved evidence once.
-      if (ap.slug === 'kiro' && this.kiroPromptEvidence) {
-        const key = `${ap.agent}:waiting`;
-        const value = this.kiroPromptEvidence;
-        if (this.lastEmittedFor.get(key) !== value) {
-          this.lastEmittedFor.set(key, value);
-          for (const cb of this.callbacks) {
-            cb({ agent: ap.agent, status: 'waiting', message: 'Ready for input' });
-          }
-        }
+      if (!opened) continue;
+
+      this.openGate(ap);
+    }
+  }
+
+  /**
+   * Record whichever clauses this candidate satisfies, and report whether that
+   * completes the gate. Clauses persist for the life of the detector, so the
+   * two halves of a compound gate may arrive in either order and any number of
+   * PTY chunks apart. The ledger is per-detector, i.e. per PTY: one pane can
+   * never satisfy another pane's gate.
+   */
+  private accumulateEvidence(
+    ap: AgentPattern,
+    clauses: readonly EvidenceClause[],
+    probe: GateProbe,
+  ): boolean {
+    let satisfied = 0;
+    for (const clause of clauses) {
+      const key = `${ap.slug}:${clause.id}`;
+      if (this.evidenceSeen.has(key)) {
+        satisfied++;
+        continue;
+      }
+      // Cheap literal screen first: an unsatisfied clause on a pane that is not
+      // running this agent costs a substring scan, never a regex sweep.
+      if (!clause.hints.some((h) => probe.lower.includes(h))) continue;
+
+      const captured = matchEvidence(clause.any, probe);
+      if (captured === null) continue;
+      this.evidenceSeen.set(key, captured);
+      satisfied++;
+    }
+    return satisfied === clauses.length;
+  }
+
+  /** Activate an agent: emit 'running' once, then replay any gate-open status. */
+  private openGate(ap: AgentPattern): void {
+    this.activeAgents.add(ap.agent);
+    this.lastAgent = ap.agent;
+    for (const cb of this.callbacks) {
+      cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+    }
+
+    if (ap.gate === undefined || ap.gate instanceof RegExp) return;
+
+    // If a clause carrying `emitOnGateOpen` was satisfied BEFORE the gate
+    // opened, its ordinary pattern pass already ran and was ignored, so replay
+    // it now — otherwise the pane sits at 'running' while it is really idle and
+    // waiting for input.
+    for (const clause of ap.gate.allOf) {
+      const replay = clause.emitOnGateOpen;
+      if (!replay) continue;
+      const captured = this.evidenceSeen.get(`${ap.slug}:${clause.id}`);
+      if (captured === undefined) continue;
+
+      const key = `${ap.agent}:${replay.status}`;
+      // Seed the dedup with the text the ordinary pass will see, so the same
+      // prompt in the same frame suppresses instead of firing twice.
+      if (this.lastEmittedFor.get(key) === captured) continue;
+      this.lastEmittedFor.set(key, captured);
+      for (const cb of this.callbacks) {
+        cb({ agent: ap.agent, status: replay.status, message: replay.message });
       }
     }
   }
 
+  /**
+   * ONE LINE PRODUCES AT MOST ONE EMISSION. Every `return` below is that rule,
+   * not an oversight — read this before "fixing" one into a `continue`.
+   *
+   *   line
+   *    │
+   *    ├─ checkGates(raw)         gates only; never returns (OSC-title case)
+   *    ├─ clean === '' ──────────────────────────────────► return
+   *    │
+   *    ├─ CRITICAL_PATTERNS ─ match? ─┬─ new value  ─► emit ─► return
+   *    │                              └─ deduped    ────────► return
+   *    │        no match
+   *    ├─ checkGates(clean)
+   *    │
+   *    └─ AGENT_PATTERNS ──── match? ─┬─ new value  ─► emit ─► return
+   *                                   └─ deduped    ────────► return
+   *
+   * Why a deduped match still consumes the line:
+   *
+   *   - Critical vs agent patterns cannot co-match. Critical patterns are
+   *     unanchored shell-command shapes (`git push --force`, `rm -rf`); agent
+   *     status patterns are whole-line-anchored TUI chrome (`^codex>$`, the
+   *     boxed `Do you want to proceed?`). Falling through on a deduped critical
+   *     would therefore buy nothing.
+   *   - Across agents it is load-bearing. Claude Code and OpenClaude are the
+   *     same forked TUI and share their approval patterns outright, so the
+   *     FIRST profile whose regex matches owns the line. Continuing to the next
+   *     profile after a deduped match would let the second turn of a repeated
+   *     prompt emit again under the other agent's name — a duplicate
+   *     notification for a single on-screen event.
+   *
+   * So the rule is deliberately not "emit once per profile" but "the first
+   * matching profile decides, and a suppressed match is still a decision".
+   */
   private processLine(line: string): void {
     // RAW-line gate check BEFORE the empty-clean bail. Live incident
     // 2026-07-17 (Fable-era Claude Code): the TUI renders no visible
