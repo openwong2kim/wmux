@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
+import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
@@ -67,6 +68,11 @@ export function isDeviceReply(data: string): boolean {
   return DEVICE_REPLY_RE.test(data);
 }
 
+/** Trailing debounce for box-size-driven fits. A divider drag emits a resize
+ *  every frame; restyling the font that often re-measures the character and
+ *  clears xterm's width cache, once per mirror, six mirrors deep. */
+const FIT_DEBOUNCE_MS = 150;
+
 /**
  * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
  * own geometry events (meta on attach, resize afterwards) are the ONLY thing
@@ -77,6 +83,8 @@ export function isDeviceReply(data: string): boolean {
  */
 export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
   const t = useT();
+  /** The clipping box. Its content size is what the remote grid must fit in. */
+  const boxRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [exited, setExited] = useState(false);
@@ -152,6 +160,150 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   const minimumContrastRatioRef = useRef(minimumContrastRatio);
   minimumContrastRatioRef.current = minimumContrastRatio;
 
+  /**
+   * Fit bookkeeping, per box size.
+   *
+   * `boxKey` is every input the answer depends on. When it changes the fit
+   * starts over — that is how a mirror that shrank for a narrow window grows
+   * back when the window widens. While it is unchanged, `settled` forbids
+   * growing (see mirrorFit.ts: the cell-metric staircase oscillates without
+   * that rule) and `passes` caps the measure→apply loop.
+   */
+  const fitStateRef = useRef({ boxKey: '', settled: undefined as number | undefined, passes: 0 });
+  const fitFrameRef = useRef<number | null>(null);
+  const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the pending timer is due. A later request never postpones it. */
+  const fitDueAtRef = useRef(0);
+  /** The user's terminal font size is the fit's UPPER BOUND, not its output —
+   *  read through a ref so the fit callback can stay identity-stable. */
+  const maxFontSizeRef = useRef(terminalFontSize);
+  maxFontSizeRef.current = terminalFontSize;
+
+  /**
+   * One measure→decide→apply pass, run from an animation frame so it lands
+   * after layout rather than in the middle of an observer callback. It is NOT
+   * a read/write batcher: each mirror still reads its own box and then writes
+   * its own font. The debounce below is what keeps that cost off the drag path.
+   */
+  const runFit = useCallback(() => {
+    const term = termRef.current;
+    const box = boxRef.current;
+    if (!term || !box) return;
+    // `.xterm-screen` is the only element carrying the grid's natural size —
+    // xterm gives it explicit px dimensions, while `.xterm` is a block and
+    // simply takes the container's width. offsetWidth/Height are LAYOUT values,
+    // so unlike getBoundingClientRect they cannot feed back into themselves.
+    const screen = term.element?.querySelector('.xterm-screen') as HTMLElement | null;
+    if (!screen) return;
+
+    const boxWidth = box.clientWidth;
+    const boxHeight = box.clientHeight;
+    const state = fitStateRef.current;
+    const boxKey = mirrorFitKey({
+      boxWidth,
+      boxHeight,
+      cols: term.cols,
+      rows: term.rows,
+      maxFontSize: maxFontSizeRef.current,
+      fontFamily: terminalFontFamilyRef.current,
+    });
+    if (boxKey !== state.boxKey) {
+      state.boxKey = boxKey;
+      state.settled = undefined;
+      state.passes = 0;
+    } else if (state.passes >= MAX_FIT_PASSES) {
+      return;
+    }
+    state.passes += 1;
+
+    const currentFontSize = term.options.fontSize ?? maxFontSizeRef.current;
+    const { fontSize } = computeMirrorFontSize({
+      boxWidth,
+      boxHeight,
+      cols: term.cols,
+      rows: term.rows,
+      renderedWidth: screen.offsetWidth,
+      renderedHeight: screen.offsetHeight,
+      currentFontSize,
+      maxFontSize: maxFontSizeRef.current,
+      settledFontSize: state.settled,
+    });
+    if (fontSize === null) return;
+    // Answer accepted even when it changes nothing: recording it is what arms
+    // the shrink-only guard for the next pass. Without this the "already the
+    // right size" pass leaves the guard unset, and the staircase is free to
+    // walk back up on the pass after it.
+    if (fontSize === currentFontSize) {
+      state.settled = fontSize;
+      return;
+    }
+
+    state.settled = fontSize;
+    term.options.fontSize = fontSize;
+    // xterm re-measures the character on the next render, so the number this
+    // pass predicted is only confirmed by the NEXT measurement. Schedule it.
+    scheduleFit();
+  }, []);
+
+  /**
+   * Coalesce to one pass per frame. `delayMs` debounces the continuous case (a
+   * divider drag) so the font — and with it xterm's char measurement and width
+   * cache — is not restyled on every frame of the drag.
+   *
+   * A pending request is never pushed BACK: a discrete event asking for an
+   * immediate fit (a remote resize, a settings change) would otherwise be
+   * delayed to the tail of whatever stream of observer callbacks happens to be
+   * running, leaving the cropped frame on screen for the whole of it.
+   */
+  const scheduleFit = useCallback((delayMs = 0) => {
+    const dueAt = Date.now() + delayMs;
+    if (fitTimerRef.current !== null) {
+      if (dueAt >= fitDueAtRef.current) return; // already scheduled at least this soon
+      clearTimeout(fitTimerRef.current);
+    }
+    // A frame already queued by an earlier request would fire outside this
+    // debounce window and run an extra pass.
+    if (fitFrameRef.current !== null) {
+      cancelAnimationFrame(fitFrameRef.current);
+      fitFrameRef.current = null;
+    }
+    fitDueAtRef.current = dueAt;
+    fitTimerRef.current = setTimeout(() => {
+      fitTimerRef.current = null;
+      fitFrameRef.current = requestAnimationFrame(() => {
+        fitFrameRef.current = null;
+        runFit();
+      });
+    }, delayMs);
+  }, [runFit]);
+
+  // Re-fit when the box changes size. A mirror in a non-active workspace lives
+  // inside `display:none` (WorkspaceCenter's hidden-but-alive rule), where every
+  // measurement is 0 and computeMirrorFontSize declines to decide — this
+  // observer's 0 → real transition when the workspace is selected is what makes
+  // the deferred fit happen.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => scheduleFit(FIT_DEBOUNCE_MS));
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [scheduleFit]);
+
+  // Cancel in-flight fit work on unmount — a timer or frame firing against a
+  // disposed terminal would throw inside a callback with no boundary above it.
+  useEffect(() => () => {
+    if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
+    if (fitFrameRef.current !== null) cancelAnimationFrame(fitFrameRef.current);
+  }, []);
+
+  // Reached through a ref by the attach lifecycle below. That effect is keyed
+  // on `attachId` alone on purpose — listing a callback in its deps means the
+  // day that callback stops being identity-stable, every render tears down the
+  // SSE stream and re-attaches it. Same discipline as `readOnlyRef`.
+  const scheduleFitRef = useRef(scheduleFit);
+  scheduleFitRef.current = scheduleFit;
+
   // Mount the xterm instance once, for the lifetime of this component.
   //
   // Settings are passed at construction AND kept in sync by the effect below,
@@ -191,7 +343,14 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     termRef.current = term;
     applyUnicodeWidthModel(term);
     term.open(containerRef.current);
-    containerRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
+    // Painted on the BOX, not on the container xterm opened into. Once the fit
+    // shrinks the grid below its cell, the container no longer covers the cell
+    // and the letterbox margin would show `--bg-base` next to the terminal's
+    // own background — two backgrounds in one pane.
+    if (boxRef.current) boxRef.current.style.backgroundColor = xtermThemeRef.current.background ?? '';
+    // Through the ref, so this effect can stay `[]`-keyed: re-running it would
+    // dispose the terminal and drop everything the remote has already sent.
+    scheduleFitRef.current();
     return () => {
       term.dispose();
       termRef.current = null;
@@ -201,17 +360,25 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   // Apply visual settings at runtime without recreating the terminal, so
   // tweaking the font does not wipe what the remote has already sent. Mirrors
   // the local pane's own settings effect.
+  //
+  // `fontSize` is deliberately NOT assigned here. It has exactly one writer,
+  // `runFit` — the user's setting reaches the terminal as the fit's upper
+  // bound (`maxFontSizeRef`), not as a direct assignment. Two writers on one
+  // field is how the fit would be undone: this effect re-runs on any settings
+  // change and would put the full-size font back, re-overflowing the box.
+  // Changing the setting still takes effect immediately, via the re-fit below.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.fontSize = terminalFontSize;
     term.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
     term.options.theme = xtermTheme;
     term.options.minimumContrastRatio = minimumContrastRatio;
-    if (containerRef.current) {
-      containerRef.current.style.backgroundColor = xtermTheme.background ?? '';
+    if (boxRef.current) {
+      boxRef.current.style.backgroundColor = xtermTheme.background ?? '';
     }
-  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio]);
+    // The font FAMILY changes cell metrics too, so this covers both inputs.
+    scheduleFit();
+  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio, scheduleFit]);
 
   // Subscribe/attach lifecycle keyed on attachId. Every onPaneMeta (fresh
   // attach OR reconnect) means "reset terminal, resize, repaint", never a
@@ -242,6 +409,9 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
         // which the next attach or reconnect replaces anyway.
         repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
       }
+      // New grid, new natural size. No debounce — a meta is a discrete event,
+      // and waiting would leave the pre-fit (cropped) frame on screen.
+      scheduleFitRef.current();
     });
     // A resize on the machine that owns the pane. Geometry only: no reset and
     // no repaint, so the mirrored scrollback and the user's scroll position
@@ -250,6 +420,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     const offResize = remote.onPaneResize((e) => {
       if (e.attachId !== attachId) return;
       termRef.current?.resize(e.cols, e.rows);
+      scheduleFitRef.current();
     });
     const offData = remote.onPaneData((e) => {
       if (e.attachId !== attachId) return;
@@ -287,14 +458,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   }, [attachId]);
 
   return (
-    // `overflow-hidden` is the letterboxing this component's header describes
-    // ("letterboxed by the parent's CSS, not by resizing the terminal") and
-    // that nothing in the chain actually applied — not here, not PaneCell, not
-    // WorkspaceCenter. Geometry has a single owner, the remote daemon, so a
-    // remote pane with more rows than this cell can show renders an element
-    // TALLER than its box; with nothing clipping it, the overflow painted over
-    // the composer and the sidebar.
-    <div className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
+    // `overflow-hidden` is the last line of defence, NOT the fit. Geometry has a
+    // single owner, the remote daemon, so a remote pane with more rows than this
+    // cell can show renders an element taller than its box; with nothing
+    // clipping it, the overflow painted over the composer and the sidebar.
+    //
+    // Clipping alone was still wrong — it turned the overflow into a top-left
+    // crop, and a TUI keeps its input box on the last rows, so the crop removed
+    // exactly the prompt the user was typing into. `runFit` shrinks the font
+    // until the grid fits; what remains here absorbs the sub-cell residue and
+    // the single frame between a remote resize and the fit that answers it.
+    <div ref={boxRef} className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
       <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
       {error && (
         <div
