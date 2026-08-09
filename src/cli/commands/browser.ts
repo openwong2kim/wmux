@@ -47,7 +47,7 @@ USAGE
   wmux browser <subcommand> [args]
 
 SUBCOMMANDS
-  navigate <url>                  Navigate the active browser surface to a URL
+  navigate <url>                  Navigate your workspace's browser surface
   close [--workspace <id>]        Close the browser panel (defaults to your own
                                   workspace when run inside a wmux pane)
   session start [--profile <name>]  Start a browser session
@@ -85,7 +85,21 @@ export async function handleBrowser(
         console.error('Error: browser navigate requires <url>');
         process.exit(1);
       }
-      response = await sendRequest('browser.navigate', { url });
+      // Resolve the caller exactly like `wmux open` / `wmux browser close`.
+      // Inside a wmux pane this prevents a background workspace from
+      // navigating whichever browser target happened to register first.
+      // Outside wmux, no workspace resolves and active-target compatibility is
+      // preserved by omitting the field.
+      const ctx = await resolveSelfContext({
+        sendRequest,
+        env: process.env,
+        ppid: process.ppid,
+        getParentPid: getParentPidDefault,
+      });
+      const params: Record<string, unknown> = { url };
+      if (ctx.workspaceId) params.workspaceId = ctx.workspaceId;
+
+      response = await sendRequest('browser.navigate', params);
       if (jsonMode) {
         printResult(response);
       } else {

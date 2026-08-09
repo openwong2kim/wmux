@@ -123,7 +123,7 @@ DIAGNOSTICS
                                     counters) from the running app.
 
 BROWSER COMMANDS
-  browser navigate <url>            Navigate the browser surface to a URL
+  browser navigate <url>            Navigate your workspace's browser surface
   browser close                     Close the browser panel
   browser session start [--profile <name>]  Start a browser session
   browser session stop              Stop the active browser session
