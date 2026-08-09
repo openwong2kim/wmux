@@ -216,8 +216,15 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
     expect(sessions[0].detach).toHaveBeenCalledTimes(1);
   });
 
-  it('fails clearly without retrying when cdp.info does not disclose an attach endpoint', async () => {
-    mockSendRpc.mockResolvedValue({ targets: [] });
+  it.each([
+    ['omitted', undefined],
+    ['zero', 0],
+    ['above the maximum TCP port', 65_536],
+    ['fractional', 9222.5],
+  ])('fails clearly without retrying when cdpPort is %s', async (_label, cdpPort) => {
+    mockSendRpc.mockResolvedValue(
+      cdpPort === undefined ? { targets: [] } : { cdpPort, targets: [] },
+    );
 
     const engine = PlaywrightEngine.getInstance();
 
@@ -227,6 +234,39 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
     expect(mockSendRpc).toHaveBeenCalledTimes(1);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller' });
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('propagates unavailable attach info without entering a second page-discovery retry', async () => {
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+    mockSendRpc
+      .mockResolvedValueOnce({ cdpPort: 9222, targets: [] })
+      .mockResolvedValueOnce({ targets: [] });
+
+    const engine = PlaywrightEngine.getInstance();
+    const internals = engine as unknown as {
+      _getPageImpl(ctx: {
+        key: string;
+        surfaceId: string;
+        callerHasNoSurface: boolean;
+        workspaceId: string;
+      }): Promise<unknown>;
+      findViaTargetDomain(): Promise<unknown>;
+      findViaJsonEndpoint(): Promise<unknown>;
+    };
+    vi.spyOn(internals, 'findViaTargetDomain').mockResolvedValue(null);
+    vi.spyOn(internals, 'findViaJsonEndpoint').mockResolvedValue(null);
+
+    await expect(internals._getPageImpl({
+      key: 'ws:ws-caller:surf:surface-caller',
+      surfaceId: 'surface-caller',
+      callerHasNoSurface: false,
+      workspaceId: 'ws-caller',
+    })).rejects.toThrow(
+      'browser.cdp.info did not disclose a usable CDP endpoint to this caller',
+    );
+    expect(mockSendRpc).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
   });
 });
 
