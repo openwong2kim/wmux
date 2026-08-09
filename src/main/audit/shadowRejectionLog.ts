@@ -35,17 +35,22 @@ import type { RpcMethod, RpcRejection } from '../../shared/rpc';
 
 /**
  * Discriminated union of audit entries written to the shadow log. v3.0
- * starts with two kinds:
+ * starts with three kinds:
  *
  *   - 'rejection'       — would-be permission rejection (shadow mode)
  *   - 'legacy-traffic'  — per-method legacy (envelope-less) call counts,
  *                          emitted at threshold milestones (1, 10, 100, ...)
+ *   - 'browser-scope'    — a browser target lookup the future caller-scope
+ *                          enforcement would refuse (#810)
  *
  * Read-back of pre-2.2-pre-commit-4 entries (no `entryKind` field) is not
  * needed because this log is only meaningful inside a single dogfood
  * window; rotation eats older entries. New entries always carry `entryKind`.
  */
-export type ShadowAuditEntry = ShadowRejectionEntry | LegacyTrafficEntry;
+export type ShadowAuditEntry =
+  | ShadowRejectionEntry
+  | LegacyTrafficEntry
+  | BrowserScopeShadowEntry;
 
 export interface ShadowRejectionEntry {
   entryKind: 'rejection';
@@ -70,6 +75,29 @@ export interface LegacyTrafficEntry {
   method: RpcMethod;
   count: number;
 }
+
+export type BrowserScopeShadowReason =
+  | 'caller-context-unavailable'
+  | 'caller-origin-unsupported'
+  | 'pinned-source-unqualified'
+  | 'pinned-workspace-mismatch'
+  | 'workspace-unresolved';
+
+/**
+ * A browser target lookup that callerScope would refuse once #810 flips from
+ * observation to enforcement. This entry never changes the current response.
+ */
+export interface BrowserScopeShadowEntry {
+  entryKind: 'browser-scope';
+  ts: number;
+  clientName: string | undefined;
+  method: RpcMethod;
+  reason: BrowserScopeShadowReason;
+  requestedWorkspaceId?: string;
+  pinnedWorkspaceId?: string;
+}
+
+export type BrowserScopeShadowInput = Omit<BrowserScopeShadowEntry, 'entryKind' | 'ts'>;
 
 export interface ShadowRejectionLoggerOptions {
   /** Override the log file path (tests). Default: `~/.wmux/shadow-rejections.log`. */
@@ -127,6 +155,18 @@ export class ShadowRejectionLogger {
       ts: this.now(),
       method: input.method,
       count: input.count,
+    });
+  }
+
+  /**
+   * Record a future browser caller-scope refusal. Best-effort and bounded by
+   * the same rotation policy as permission and legacy audit evidence.
+   */
+  appendBrowserScope(input: BrowserScopeShadowInput): void {
+    this.writeEntry({
+      entryKind: 'browser-scope',
+      ts: this.now(),
+      ...input,
     });
   }
 

@@ -419,6 +419,17 @@ It originally composed with a sibling in `browser.close`, which resolved an expl
 
 This remains **confinement of approved plugins, not containment of hostile same-user code.** A same-user process holding the daemon token can impersonate a recognised wire client under the existing #113 trust ceiling. What #810 removes is the accidental implication that granting an honest plugin `browser.read` also grants direct attachment to every page in the Electron process.
 
+**Caller-derived target scope is shadow-only (#810).** The target-resolving
+`browser.*` handlers now compute a `callerScope` decision with explicit
+operator, server-pinned, legacy, declared, and rejected lanes. They still use
+the old request-derived `workspaceId` for every lookup, so this stage changes no
+target, response, or error. A future refusal is appended as an
+`entryKind: "browser-scope"` row in `~/.wmux/shadow-rejections.log`; logging is
+best-effort and cannot fail the call. Enforcement waits for those logs to be
+quiet and for a separate review. Envelope-less legacy traffic remains open and
+continues through its existing per-method milestone audit rather than starting
+a second deprecation clock here.
+
 Both legs predated #565 and neither was introduced by it. `browser_tabs` never consulted `browser.cdp.info` and never left the caller's workspace, so its own contract was always unaffected. The exposure was already bounded: no URL, title, or page content, and a discarded surface is absent because it holds no registered target.
 
 ### 8.3 Other non-goals

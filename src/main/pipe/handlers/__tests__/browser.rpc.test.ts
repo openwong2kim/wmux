@@ -7,7 +7,11 @@ import {
   setConfiguredFirstPartyClients,
 } from '../../../mcp/firstParty';
 import { RpcRouter } from '../../RpcRouter';
-import { canDiscloseBrowserAttachInfo, registerBrowserRpc } from '../browser.rpc';
+import {
+  callerScope,
+  canDiscloseBrowserAttachInfo,
+  registerBrowserRpc,
+} from '../browser.rpc';
 
 const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
   validateResolvedNavigationUrlMock: vi.fn(),
@@ -97,6 +101,108 @@ describe('canDiscloseBrowserAttachInfo (#810)', () => {
   });
 });
 
+describe('callerScope shadow decision (#810)', () => {
+  it.each([
+    [
+      'operator without a request scope',
+      { origin: 'local', operator: true, firstParty: true },
+      {},
+      { kind: 'allowed', lane: 'operator' },
+    ],
+    [
+      'operator preserving an explicit narrow scope',
+      { origin: 'local', operator: true, firstParty: true },
+      { workspaceId: 'ws-requested' },
+      { kind: 'allowed', lane: 'operator', workspaceId: 'ws-requested' },
+    ],
+    [
+      'validated pin supplying an omitted scope',
+      { origin: 'local', externalWire: true, commanderWorkspace: 'ws-pinned' },
+      {},
+      { kind: 'scoped', lane: 'pinned', workspaceId: 'ws-pinned' },
+    ],
+    [
+      'validated pin accepting its matching body scope',
+      { origin: 'local', externalWire: true, commanderWorkspace: 'ws-pinned' },
+      { workspaceId: 'ws-pinned' },
+      { kind: 'scoped', lane: 'pinned', workspaceId: 'ws-pinned' },
+    ],
+    [
+      'validated pin refusing a mismatched body scope',
+      { origin: 'local', externalWire: true, commanderWorkspace: 'ws-pinned' },
+      { workspaceId: 'ws-other' },
+      {
+        kind: 'rejected',
+        lane: 'pinned',
+        reason: 'pinned-workspace-mismatch',
+        requestedWorkspaceId: 'ws-other',
+        pinnedWorkspaceId: 'ws-pinned',
+      },
+    ],
+    [
+      'iframe unable to forge a server pin',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'plugin',
+        commanderWorkspace: 'ws-forged',
+      },
+      {},
+      {
+        kind: 'rejected',
+        lane: 'pinned',
+        reason: 'pinned-source-unqualified',
+        pinnedWorkspaceId: 'ws-forged',
+      },
+    ],
+    [
+      'identified caller declaring a scope',
+      { origin: 'local', externalWire: true, clientName: 'approved-plugin' },
+      { workspaceId: 'ws-declared' },
+      { kind: 'scoped', lane: 'declared', workspaceId: 'ws-declared' },
+    ],
+    [
+      'identified caller omitting its scope',
+      { origin: 'local', externalWire: true, clientName: 'approved-plugin' },
+      {},
+      { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
+    ],
+    [
+      'legacy caller remaining unscoped',
+      { origin: 'local', externalWire: true },
+      {},
+      { kind: 'allowed', lane: 'legacy' },
+    ],
+    [
+      'legacy caller retaining an explicit narrow scope',
+      { origin: 'local', externalWire: true },
+      { workspaceId: 'ws-legacy' },
+      { kind: 'allowed', lane: 'legacy', workspaceId: 'ws-legacy' },
+    ],
+    [
+      'remote caller failing closed',
+      { origin: 'remote', clientName: 'approved-plugin' },
+      { workspaceId: 'ws-remote' },
+      {
+        kind: 'rejected',
+        lane: 'context',
+        reason: 'caller-origin-unsupported',
+        requestedWorkspaceId: 'ws-remote',
+      },
+    ],
+  ] as const)('%s', (_label, ctx, params, expected) => {
+    expect(callerScope(ctx as RpcContext, params)).toEqual(expected);
+  });
+
+  it('fails closed when a handler is invoked without router context', () => {
+    expect(callerScope(undefined, {})).toEqual({
+      kind: 'rejected',
+      lane: 'context',
+      reason: 'caller-context-unavailable',
+    });
+  });
+});
+
 describe('registerBrowserRpc', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -106,7 +212,10 @@ describe('registerBrowserRpc', () => {
     sendToRendererMock.mockResolvedValue({ ok: true });
   });
 
-  function register(getWindow: () => BrowserWindow | null = () => null): RpcRouter {
+  function register(
+    getWindow: () => BrowserWindow | null = () => null,
+    browserScopeShadowSink?: Parameters<typeof registerBrowserRpc>[4],
+  ): RpcRouter {
     const router = new RpcRouter();
     const webviewCdpManager = {
       getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
@@ -122,7 +231,13 @@ describe('registerBrowserRpc', () => {
       releaseRpcLease: vi.fn(() => true),
     };
 
-    registerBrowserRpc(router, getWindow, webviewCdpManager as never);
+    registerBrowserRpc(
+      router,
+      getWindow,
+      webviewCdpManager as never,
+      undefined,
+      browserScopeShadowSink,
+    );
     return router;
   }
 
@@ -404,6 +519,72 @@ describe('registerBrowserRpc', () => {
       });
     }
     expect(getUrl).not.toHaveBeenCalled();
+  });
+
+  it('shadow-logs an identified unscoped cdp.info call without changing its target response', async () => {
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink);
+
+    const response = await router.dispatch({
+      id: 'scope-shadow-info',
+      method: 'browser.cdp.info',
+      params: {},
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toMatchObject({
+        targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
+      });
+    }
+    expect(shadowSink).toHaveBeenCalledOnce();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'approved-plugin',
+      method: 'browser.cdp.info',
+      reason: 'workspace-unresolved',
+    });
+  });
+
+  it('does not shadow-log a declared scope or a trusted operator lane', async () => {
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink);
+
+    await router.dispatch({
+      id: 'scope-shadow-declared',
+      method: 'browser.cdp.info',
+      params: { workspaceId: 'ws-declared' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+    await router.dispatch({
+      id: 'scope-shadow-operator',
+      method: 'browser.cdp.info',
+      params: {},
+    }, { operator: true });
+
+    expect(shadowSink).not.toHaveBeenCalled();
+  });
+
+  it('observes leased target handlers and swallows a failing shadow sink', async () => {
+    const shadowSink = vi.fn(() => {
+      throw new Error('audit disk unavailable');
+    });
+    const router = register(() => null, shadowSink);
+
+    const response = await router.dispatch({
+      id: 'scope-shadow-evaluate',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'approved-plugin',
+      method: 'browser.evaluate',
+      reason: 'workspace-unresolved',
+    });
+    expect(mockWebContents.debugger.sendCommand).toHaveBeenCalled();
   });
 
   it('browser.navigate rejects URLs whose resolved targets are blocked', async () => {

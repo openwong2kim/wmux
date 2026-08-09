@@ -167,6 +167,44 @@ describe('ShadowRejectionLogger.append', () => {
     }
   });
 
+  it('writes browser caller-scope shadow decisions without treating them as permission rejections', () => {
+    const log = new ShadowRejectionLogger({ path: logPath, now: () => 1234 });
+
+    log.appendBrowserScope({
+      clientName: 'approved-plugin',
+      method: 'browser.evaluate',
+      reason: 'workspace-unresolved',
+    });
+    log.appendBrowserScope({
+      clientName: 'commander-host',
+      method: 'browser.screenshot',
+      reason: 'pinned-workspace-mismatch',
+      requestedWorkspaceId: 'ws-other',
+      pinnedWorkspaceId: 'ws-pinned',
+    });
+
+    const entries = log.readAll();
+    expect(entries).toEqual([
+      {
+        entryKind: 'browser-scope',
+        ts: 1234,
+        clientName: 'approved-plugin',
+        method: 'browser.evaluate',
+        reason: 'workspace-unresolved',
+      },
+      {
+        entryKind: 'browser-scope',
+        ts: 1234,
+        clientName: 'commander-host',
+        method: 'browser.screenshot',
+        reason: 'pinned-workspace-mismatch',
+        requestedWorkspaceId: 'ws-other',
+        pinnedWorkspaceId: 'ws-pinned',
+      },
+    ]);
+    expect(rejectionEntries(entries)).toHaveLength(0);
+  });
+
   it('swallows fs errors so shadow logging never breaks RPC dispatch', () => {
     // Point the logger at a path that can't possibly be created (a file
     // appearing where a directory would need to go).
