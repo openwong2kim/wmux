@@ -764,6 +764,7 @@ export class PlaywrightEngine {
         }
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
+        if (err instanceof CdpAttachInfoUnavailableError) throw err;
         console.error(
           `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
           err instanceof Error ? err.message : String(err),
