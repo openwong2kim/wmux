@@ -215,6 +215,19 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
     await expect(engine.disconnect()).resolves.toBeUndefined();
     expect(sessions[0].detach).toHaveBeenCalledTimes(1);
   });
+
+  it('fails clearly without retrying when cdp.info does not disclose an attach endpoint', async () => {
+    mockSendRpc.mockResolvedValue({ targets: [] });
+
+    const engine = PlaywrightEngine.getInstance();
+
+    await expect(engine.ensureConnected('ws-caller')).rejects.toThrow(
+      'browser.cdp.info did not disclose a usable CDP endpoint to this caller',
+    );
+    expect(mockSendRpc).toHaveBeenCalledTimes(1);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller' });
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
 });
 
 /*

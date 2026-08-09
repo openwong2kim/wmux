@@ -129,18 +129,26 @@ export interface RpcContext {
    */
   origin: 'local' | 'remote';
   /**
+   * True only for the trusted in-process renderer bridge: the human operator
+   * surface that may intentionally act across local workspaces. Set by
+   * `RpcRouter.dispatch(request, { operator: true })`, never from request JSON.
+   *
+   * The iframe plugin host is also in-process but is NOT the operator, so it
+   * uses the separate `firstParty` dispatch option without this marker. An
+   * operator context also carries `firstParty: true` for existing handlers
+   * that only need to distinguish trusted in-process dispatch from the wire.
+   */
+  operator?: true;
+  /**
    * True when the request entered through a TRUSTED in-process first-party
-   * surface (the renderer IPC bridge / plugin host), NOT the external local
-   * wire (named pipe + loopback TCP). Set ONLY by the in-process dispatch
-   * callers via `RpcRouter.dispatch(request, { firstParty: true })`; PipeServer
-   * dispatches the wire request WITHOUT this option, so a wire client can never
-   * obtain it (the flag is a function argument, not a forgeable request field —
-   * PipeServer forwards the parsed JSON verbatim, so a request-body marker would
-   * be spoofable). Mutually exclusive with `externalWire`. This qualifies an
-   * in-process dispatch source, not operator identity: both the renderer bridge
-   * and the approved plugin host set it. Handlers use it to distinguish those
-   * sources from a same-user agent transport whose workspace must be
-   * server-resolved (audit B3 — events.poll).
+   * surface (renderer operator or plugin host), NOT the external local wire
+   * (named pipe + loopback TCP). The router derives it from either the explicit
+   * `operator` lane or `RpcRouter.dispatch(request, { firstParty: true })`.
+   * PipeServer supplies neither, so a wire client can never obtain it (these
+   * flags are function arguments, not forgeable request fields). Mutually
+   * exclusive with `externalWire`. This qualifies an in-process dispatch
+   * source; handlers that specifically need human-operator authority must use
+   * `operator`, not this broader marker.
    */
   firstParty?: boolean;
   /**

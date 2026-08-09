@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
+import type { RpcContext } from '../../../../shared/rpc';
+import {
+  __resetConfiguredFirstPartyClientsForTests,
+  FIRST_PARTY_CLIENT_NAMES,
+  setConfiguredFirstPartyClients,
+} from '../../../mcp/firstParty';
 import { RpcRouter } from '../../RpcRouter';
-import { registerBrowserRpc } from '../browser.rpc';
+import { canDiscloseBrowserAttachInfo, registerBrowserRpc } from '../browser.rpc';
 
 const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
   validateResolvedNavigationUrlMock: vi.fn(),
@@ -52,6 +58,44 @@ vi.mock('../../../security/navigationPolicy', () => ({
 vi.mock('../_bridge', () => ({
   sendToRenderer: sendToRendererMock,
 }));
+
+describe('canDiscloseBrowserAttachInfo (#810)', () => {
+  it.each([
+    ['renderer operator', { origin: 'local', operator: true, firstParty: true }, true],
+    ['server-pinned caller', { origin: 'local', externalWire: true, commanderWorkspace: 'ws-pinned' }, true],
+    ['remote server-pinned caller', { origin: 'remote', externalWire: true, commanderWorkspace: 'ws-pinned' }, false],
+    ['in-process caller carrying a pin', { origin: 'local', firstParty: true, commanderWorkspace: 'ws-pinned' }, false],
+    ['recognised external-wire client', { origin: 'local', externalWire: true, clientName: 'claude-code' }, true],
+    ['iframe with a colliding client name', { origin: 'local', firstParty: true, clientName: 'claude-code' }, false],
+    ['unrecognised external-wire client', { origin: 'local', externalWire: true, clientName: 'browser-plugin' }, false],
+    ['legacy envelope-less wire caller', { origin: 'local', externalWire: true }, false],
+    ['remote caller with a recognised name', { origin: 'remote', externalWire: true, clientName: 'claude-code' }, false],
+  ] as const)('%s', (_label, ctx, expected) => {
+    expect(canDiscloseBrowserAttachInfo(ctx as RpcContext)).toBe(expected);
+  });
+
+  it('fails closed without a router-provided context', () => {
+    expect(canDiscloseBrowserAttachInfo(undefined)).toBe(false);
+  });
+
+  it('honors an operator-configured first-party host only on the qualified wire', () => {
+    try {
+      setConfiguredFirstPartyClients(['hermes-agent']);
+      expect(canDiscloseBrowserAttachInfo({
+        origin: 'local',
+        externalWire: true,
+        clientName: 'hermes-agent',
+      })).toBe(true);
+      expect(canDiscloseBrowserAttachInfo({
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hermes-agent',
+      })).toBe(false);
+    } finally {
+      __resetConfiguredFirstPartyClientsForTests();
+    }
+  });
+});
 
 describe('registerBrowserRpc', () => {
   beforeEach(() => {
@@ -117,25 +161,29 @@ describe('registerBrowserRpc', () => {
     expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
   });
 
-  it('browser.cdp.info only returns minimal target metadata', async () => {
-    const router = register();
+  it.each([...FIRST_PARTY_CLIENT_NAMES])(
+    'browser.cdp.info returns attach metadata to supported wire client %s',
+    async (clientName) => {
+      const router = register();
 
-    const response = await router.dispatch({
-      id: '3',
-      method: 'browser.cdp.info',
-      params: {},
-    });
+      const response = await router.dispatch({
+        id: '3',
+        method: 'browser.cdp.info',
+        params: {},
+        clientName,
+      }, { externalWire: true });
 
-    expect(response.ok).toBe(true);
-    if (response.ok) {
-      // No window (getWindow → null): shellUrl is omitted, not null.
-      expect(response.result).toEqual({
-        cdpPort: 18800,
-        workspaceBackend: 'builtin',
-        targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
-      });
-    }
-  });
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        // No window (getWindow → null): shellUrl is omitted, not null.
+        expect(response.result).toEqual({
+          cdpPort: 18800,
+          workspaceBackend: 'builtin',
+          targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
+        });
+      }
+    },
+  );
 
   it('browser.cdp.info exposes the main-window URL as shellUrl', async () => {
     const router = register(
@@ -146,7 +194,7 @@ describe('registerBrowserRpc', () => {
       id: '3b',
       method: 'browser.cdp.info',
       params: {},
-    });
+    }, { operator: true });
 
     expect(response.ok).toBe(true);
     if (response.ok) {
@@ -165,7 +213,7 @@ describe('registerBrowserRpc', () => {
       id: '3c',
       method: 'browser.cdp.info',
       params: {},
-    });
+    }, { operator: true });
 
     expect(response.ok).toBe(true);
     if (response.ok) {
@@ -180,7 +228,7 @@ describe('registerBrowserRpc', () => {
       id: '3d',
       method: 'browser.cdp.info',
       params: {},
-    });
+    }, { operator: true });
 
     expect(response.ok).toBe(true);
     if (response.ok) {
@@ -191,7 +239,7 @@ describe('registerBrowserRpc', () => {
   // #580 Option 1: browser.cdp.info filters its target list to the caller's
   // workspace server-side when a workspaceId is supplied, so the RPC never
   // volunteers another workspace's live targets to a caller that identifies
-  // itself. cdpPort/shellUrl stay unscoped (workspace-agnostic).
+  // itself. #810 independently gates cdpPort/shellUrl by caller provenance.
   describe('browser.cdp.info workspace scoping (#580)', () => {
     const multiWorkspaceTargets = [
       { surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' },
@@ -226,7 +274,8 @@ describe('registerBrowserRpc', () => {
         id: 'ws1',
         method: 'browser.cdp.info',
         params: { workspaceId: 'ws-a' },
-      });
+        clientName: 'claude-code',
+      }, { externalWire: true });
 
       expect(response.ok).toBe(true);
       if (response.ok) {
@@ -251,7 +300,8 @@ describe('registerBrowserRpc', () => {
           id: 'ws2',
           method: 'browser.cdp.info',
           params: { workspaceId: 'ws-none' },
-        });
+          clientName: 'claude-code',
+        }, { externalWire: true });
         await vi.advanceTimersByTimeAsync(1500);
         const response = await responsePromise;
 
@@ -308,7 +358,7 @@ describe('registerBrowserRpc', () => {
       }
     });
 
-    it('returns every target and no scoped flag when no workspaceId is supplied (legacy)', async () => {
+    it('keeps legacy target metadata but withholds attach metadata', async () => {
       const { router } = registerMultiWs();
 
       const response = await router.dispatch({
@@ -319,11 +369,41 @@ describe('registerBrowserRpc', () => {
 
       expect(response.ok).toBe(true);
       if (response.ok) {
-        const result = response.result as { targetsScoped?: boolean; targets: unknown[] };
+        const result = response.result as {
+          cdpPort?: number;
+          shellUrl?: string;
+          targetsScoped?: boolean;
+          targets: unknown[];
+        };
+        expect(result.cdpPort).toBeUndefined();
+        expect(result.shellUrl).toBeUndefined();
         expect(result.targetsScoped).toBeUndefined();
         expect(result.targets).toHaveLength(3);
       }
     });
+  });
+
+  it('does not disclose attach metadata to an iframe with a privileged-name collision', async () => {
+    const getUrl = vi.fn(() => 'file:///private/app-shell.html');
+    const router = register(windowWithUrl(getUrl));
+
+    const response = await router.dispatch({
+      id: 'collision',
+      method: 'browser.cdp.info',
+      params: {},
+      clientName: 'claude-code',
+    }, { firstParty: true });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).not.toHaveProperty('cdpPort');
+      expect(response.result).not.toHaveProperty('shellUrl');
+      expect(response.result).toMatchObject({
+        workspaceBackend: 'builtin',
+        targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
+      });
+    }
+    expect(getUrl).not.toHaveBeenCalled();
   });
 
   it('browser.navigate rejects URLs whose resolved targets are blocked', async () => {

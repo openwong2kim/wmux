@@ -60,6 +60,27 @@ afterEach(() => {
 });
 
 describe('RpcRouter dispatch provenance', () => {
+  it('marks the renderer operator distinctly while preserving firstParty semantics', async () => {
+    let seen: RpcContext | undefined;
+    router.register('system.identify', async (_params, ctx) => {
+      seen = ctx;
+      return { name: 'wmux' };
+    });
+
+    const response = await router.dispatch(
+      { id: 'operator', method: 'system.identify', params: {} },
+      { operator: true },
+    );
+
+    expect(response.ok).toBe(true);
+    expect(seen).toMatchObject({
+      origin: 'local',
+      operator: true,
+      firstParty: true,
+    });
+    expect(seen?.externalWire).toBeUndefined();
+  });
+
   it.each([
     ['compiled first-party', 'claude-code', 'surface.new', false],
     ['configured first-party', 'hermes-agent', 'surface.new', true],
@@ -138,6 +159,26 @@ describe('RpcRouter dispatch provenance', () => {
     expect(surfaceNewHandler).not.toHaveBeenCalled();
   });
 
+  it('ignores a forged operator marker in the raw request body', async () => {
+    let seen: RpcContext | undefined;
+    router.register('system.identify', async (_params, ctx) => {
+      seen = ctx;
+      return { name: 'wmux' };
+    });
+    const forged = {
+      id: 'raw-operator-forgery',
+      method: 'system.identify',
+      params: {},
+      operator: true,
+    } as unknown as RpcRequest;
+
+    const response = await router.dispatch(forged);
+
+    expect(response.ok).toBe(true);
+    expect(seen?.operator).toBeUndefined();
+    expect(seen?.firstParty).toBe(false);
+  });
+
   it('ignores raw firstParty/externalWire fields on a legitimate wire call', async () => {
     const request = {
       id: 'raw-fields-on-wire',
@@ -154,14 +195,15 @@ describe('RpcRouter dispatch provenance', () => {
     expect(surfaceNewHandler).toHaveBeenCalledOnce();
   });
 
-  it('hard-rejects conflicting dispatch options even in shadow mode for an ungated method', async () => {
+  it.each([
+    { firstParty: true, externalWire: true },
+    { operator: true, externalWire: true },
+    { operator: true, firstParty: true },
+  ])('hard-rejects conflicting dispatch options even in shadow mode: %o', async (conflictingShape) => {
     const trustLookup = vi.fn(async () => approved('claude-code'));
     router.setTrustLookup(trustLookup);
     router.setEnforcementMode('shadow');
-    const conflicting = {
-      firstParty: true,
-      externalWire: true,
-    } as unknown as DispatchOptions;
+    const conflicting = conflictingShape as unknown as DispatchOptions;
 
     const response = await router.dispatch(
       {

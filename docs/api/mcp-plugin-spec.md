@@ -100,6 +100,7 @@ The compiled set covers the agent hosts wmux ships against. An operator can reco
 - **Read once at boot**, the same posture as `mcp.mode` — a config edit needs an app restart to take effect.
 - **Fail-closed.** A missing file, unreadable file, invalid JSON, wrong shape, or non-string entry all resolve to "no additions"; a malformed config can never widen recognition and never blocks boot.
 - **Config changes *who* is recognised, never *what* they may call.** `FIRST_PARTY_METHODS` stays compiled. A configured name gets exactly the same curated method set, and the same four guards (positive local external-wire provenance, explicit `denied` wins, failed trust read declines, method outside the set falls through).
+- **Recognition also grants browser attachment metadata.** A configured first-party name that reaches `browser.cdp.info` over the qualified local wire receives `cdpPort` and `shellUrl`, just like a compiled first-party host. That is intentionally the same trust tier, but it means `mcp.firstPartyClients` should contain only hosts the operator trusts with raw CDP attachment across the local Electron process; ordinary plugins should remain on declared `browser.*` capabilities instead.
 
 **Non-identifying names are refused** (`NON_IDENTIFYING_CLIENT_NAMES`, `src/shared/rpc.ts`), and the refusal is not overridable from config. Recognition is only meaningful if a name identifies *one* host, and two classes of name break that — both of which an operator reaches in good faith:
 
@@ -167,6 +168,7 @@ ui.commands
 Notes:
 
 - `notifications.read` opts in to `notification.received` events on `events.poll`. A plugin with a declared capability set that lacks it has notification events filtered out of poll results (they carry terminal-program-controlled text). Callers without a declaration are grandfathered.
+- `browser.read` permits the ordinary browser read RPCs, including scoped target metadata from `browser.cdp.info`; it does **not** grant the raw `cdpPort` or app `shellUrl`. Those attach fields are reserved for the renderer operator, locally source-qualified server-pinned callers, and source-qualified first-party wire clients. This keeps a read grant from bypassing the browser tool layer and its automation lease.
 - `ui.*` capabilities gate the plugin-host UI contribution points (sandboxed sidebar panels, status-bar widgets, pane decorations, palette commands). They are enforced at contribution mount time by the host — the iframe/widget is refused for non-trusted plugins — rather than per-RPC. See `docs/internal/fable-window-schema-freeze.md` §4.
 
 Reserved prefixes (declaring these is always rejected):

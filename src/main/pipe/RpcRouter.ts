@@ -72,11 +72,14 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
 
 /**
  * Positive, mutually-exclusive provenance supplied by the trusted caller of
- * dispatch(). Neither marker is accepted from the RpcRequest envelope.
+ * dispatch(). No marker is accepted from the RpcRequest envelope. `operator`
+ * is the renderer bridge; `firstParty` is the in-process plugin host;
+ * `externalWire` is the authenticated PipeServer boundary.
  */
 type RpcDispatchOptions =
-  | { firstParty: true; externalWire?: never }
-  | { externalWire: true; firstParty?: never };
+  | { operator: true; firstParty?: never; externalWire?: never }
+  | { firstParty: true; operator?: never; externalWire?: never }
+  | { externalWire: true; operator?: never; firstParty?: never };
 
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
@@ -179,11 +182,11 @@ export class RpcRouter {
   }
 
   /**
-   * @param opts Positive dispatch provenance, supplied only by trusted
-   * in-process call sites. The renderer bridge / plugin host sets `firstParty`;
-   * PipeServer sets `externalWire` after authentication and rate limiting.
-   * These markers are function arguments, never fields read from the
-   * verbatim-forwarded wire request, and are threaded onto RpcContext.
+   * @param opts Positive dispatch provenance, supplied only by trusted call
+   * sites. The renderer bridge sets `operator`, the plugin host sets
+   * `firstParty`, and PipeServer sets `externalWire` after authentication and
+   * rate limiting. These markers are function arguments, never fields read
+   * from the verbatim-forwarded wire request, and are threaded onto RpcContext.
    */
   async dispatch(request: RpcRequest, opts?: RpcDispatchOptions): Promise<RpcResponse> {
     if (!request || typeof request.id !== 'string' || typeof request.method !== 'string') {
@@ -197,15 +200,19 @@ export class RpcRouter {
     // runtime guard for JavaScript and casted call sites. A conflict is an
     // internal provenance failure, so it hard-rejects before handler lookup,
     // trust lookup, or enforcement regardless of shadow/enforce mode.
-    const firstParty = opts?.firstParty === true;
+    const operator = opts?.operator === true;
+    const inProcessFirstParty = opts?.firstParty === true;
     const externalWire = opts?.externalWire === true;
-    if (firstParty && externalWire) {
+    const positiveProvenanceCount =
+      Number(operator) + Number(inProcessFirstParty) + Number(externalWire);
+    if (positiveProvenanceCount > 1) {
       return {
         id: request.id,
         ok: false,
         error: 'Invalid RPC dispatch provenance',
       };
     }
+    const firstParty = operator || inProcessFirstParty;
 
     const handler = this.handlers.get(request.method);
 
@@ -225,8 +232,11 @@ export class RpcRouter {
       // listener is a SEPARATE router that sets origin:'remote' (future PR), and
       // origin is REQUIRED on RpcContext so that listener can't forget to.
       origin: 'local',
-      // Trusted in-process surface (renderer bridge / plugin host) — opt-in only;
-      // mutually exclusive with the external-wire marker below.
+      // Human operator surface — the renderer bridge is the sole production
+      // writer. Kept distinct from the approved iframe plugin host.
+      ...(operator && { operator: true as const }),
+      // Trusted in-process surface (renderer operator / plugin host), derived
+      // from their distinct options and mutually exclusive with external wire.
       firstParty,
       // Positive local-wire provenance. Never inferred from request JSON,
       // origin, or the absence of firstParty; only PipeServer supplies it.

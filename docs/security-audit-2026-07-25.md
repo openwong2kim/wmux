@@ -121,6 +121,13 @@ runs through the same IPC surface that CDP exposes for free.
 >    `src/main/pipe/handlers/browser.rpc.ts:587` returns `cdpPort` to callers.
 >    External MCP consumers attach to that port by contract. Removing it is a
 >    breaking change and forces a `gen-api-reference.mjs` regeneration.
+>
+> **2026-08-10 follow-up (#810):** the supported bundled MCP consumers still
+> receive a usable `cdpPort`, but ordinary approved plugins and envelope-less
+> legacy callers no longer do. The handler source-qualifies recognised clients
+> with PipeServer provenance so an iframe manifest-name collision cannot enter
+> the attach lane. This narrows disclosure without changing the underlying CDP
+> transport decision evaluated in this dated audit.
 
 | Option | Effort (CC) | Trade-off |
 |--------|-------------|-----------|
@@ -429,7 +436,7 @@ for completeness.
       opt-in is present, and with the flag set Playwright still attaches
       (`src/mcp/playwright/PlaywrightEngine.ts:283`). The `browser.cdp.*` RPCs
       in `docs/api/reference.md:135-144` must keep returning a usable
-      `cdpPort` whenever CDP is enabled.
+      `cdpPort` to supported first-party attach callers whenever CDP is enabled.
 - [ ] F2: Existing `worktree`/`diff` handler tests pass; add rejection cases
       for arbitrary paths (`~/.ssh/`, `/etc/`, etc.).
 - [ ] F4: Open a PR with the SHA pinning change and observe that the CI
