@@ -376,8 +376,26 @@ jobs:
           FILE=$(basename "$ZIP")
           # The manifest must reference an asset that actually made it onto the
           # release — never publish a pointer to a missing download.
-          if ! gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' | grep -qxF "$FILE"; then
-            echo "ERROR: $FILE is not on release $RELEASE_TAG — refusing to publish a manifest for it"
+          #
+          # Poll rather than ask once: the release asset listing is eventually
+          # consistent, so the upload step above can succeed and this read still
+          # not see the file. That is not hypothetical — it happened on v3.40.2,
+          # where the zip was on the release the whole time, this check missed
+          # it, and the darwin manifest never shipped. macOS auto-updates were
+          # cut for that release until the manifest was uploaded by hand.
+          # Retrying keeps the guard honest about a genuinely missing upload
+          # while no longer failing on a listing that is merely slow.
+          FOUND=
+          for attempt in $(seq 1 10); do
+            if gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' | grep -qxF "$FILE"; then
+              FOUND=1
+              break
+            fi
+            echo "$FILE not listed on $RELEASE_TAG yet (attempt $attempt/10) — retrying in 6s"
+            sleep 6
+          done
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: $FILE is not on release $RELEASE_TAG after 10 attempts — refusing to publish a manifest for it"
             exit 1
           fi
           SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
