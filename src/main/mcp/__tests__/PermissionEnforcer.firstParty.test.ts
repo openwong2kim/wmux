@@ -20,8 +20,13 @@ function trust(
 ): PluginIdentityRecord {
   return { firstSeen: 1000, lastSeen: 2000, ...overrides };
 }
-function ctx(clientName?: string): RpcContext {
-  return clientName ? { origin: 'local', clientName } : { origin: 'local' };
+function ctx(clientName?: string, overrides: Partial<RpcContext> = {}): RpcContext {
+  return {
+    origin: 'local',
+    externalWire: true,
+    ...(clientName ? { clientName } : {}),
+    ...overrides,
+  };
 }
 
 const FP = 'claude-code';
@@ -81,6 +86,25 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     }
   });
 
+  it.each([
+    ['missing marker', ctx(FP, { externalWire: undefined })],
+    ['trusted in-process source', ctx(FP, { externalWire: undefined, firstParty: true })],
+    ['remote source', ctx(FP, { origin: 'remote' })],
+    ['conflicting markers', ctx(FP, { firstParty: true })],
+  ] satisfies [string, RpcContext][])('%s cannot enter the privileged name lane', (_label, sourceCtx) => {
+    const out = check({
+      method: 'surface.new',
+      params: {},
+      ctx: sourceCtx,
+      trust: trust({
+        name: FP,
+        status: 'trusted',
+        declaredCapabilities: ['ui.sidebar'],
+      }),
+    });
+    expect(out.kind).toBe('reject');
+  });
+
   it('allows the issue #285 pane/surface lifecycle methods (incl. reserved surface.new/close)', () => {
     // pane.split/close/focus are pane.create / pane.read; surface.new/close are
     // wmux.internal (reserved) and reachable ONLY via this first-party path (see
@@ -135,9 +159,10 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
   });
 
   it('SECURITY: a non-first-party clientName does NOT get the bypass for the same method', () => {
-    // The bypass keys on the exact first-party clientName. An external plugin
-    // reporting some other name hits the normal unconfirmed rejection — it
-    // cannot reach the allowlist by calling an allowlisted method.
+    // Once positive wire provenance is established, the bypass keys on the
+    // exact first-party clientName. A wire client reporting some other name
+    // hits the normal unconfirmed rejection — it cannot reach the allowlist by
+    // calling an allowlisted method.
     for (const method of SAMPLE_ALLOWED) {
       const out = check({
         method,
@@ -230,6 +255,21 @@ describe('PermissionEnforcer.check — config-configured first-party names (#636
       });
       expect(out.kind, `${method} must NOT be granted by config`).toBe('reject');
     }
+  });
+
+  it('does not grant a configured-name collision from the trusted iframe source', () => {
+    setConfiguredFirstPartyClients(['hermes-agent']);
+    const out = check({
+      method: 'surface.new',
+      params: {},
+      ctx: ctx('hermes-agent', { externalWire: undefined, firstParty: true }),
+      trust: trust({
+        name: 'hermes-agent',
+        status: 'trusted',
+        declaredCapabilities: ['ui.sidebar'],
+      }),
+    });
+    expect(out.kind).toBe('reject');
   });
 
   it('keeps the three original guards for configured names', () => {

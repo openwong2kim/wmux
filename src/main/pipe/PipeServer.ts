@@ -361,7 +361,7 @@ export class PipeServer {
     }
 
     this.router
-      .dispatch(request)
+      .dispatch(request, { externalWire: true })
       .then((response) => {
         if (!socket.destroyed) {
           socket.write(JSON.stringify(response) + '\n');

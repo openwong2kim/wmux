@@ -113,9 +113,10 @@ export function sanitizeClientDisplayName(value: string, maxLen = 64): string {
 }
 
 /**
- * Per-request context surfaced to RPC handlers — populated by PipeServer
- * from RpcRequest fields. Handlers receive this as an optional second
- * argument so legacy handlers `(params) => ...` keep compiling.
+ * Per-request context surfaced to RPC handlers — populated by RpcRouter from
+ * RpcRequest identity fields plus non-envelope dispatch provenance. Handlers
+ * receive this as an optional second argument so legacy handlers `(params) =>
+ * ...` keep compiling.
  */
 export interface RpcContext {
   /**
@@ -135,11 +136,25 @@ export interface RpcContext {
    * dispatches the wire request WITHOUT this option, so a wire client can never
    * obtain it (the flag is a function argument, not a forgeable request field —
    * PipeServer forwards the parsed JSON verbatim, so a request-body marker would
-   * be spoofable). Handlers use it to distinguish the human operator (who
-   * legitimately scopes across all local workspaces) from a same-user agent
-   * transport whose workspace must be server-resolved (audit B3 — events.poll).
+   * be spoofable). Mutually exclusive with `externalWire`. This qualifies an
+   * in-process dispatch source, not operator identity: both the renderer bridge
+   * and the approved plugin host set it. Handlers use it to distinguish those
+   * sources from a same-user agent transport whose workspace must be
+   * server-resolved (audit B3 — events.poll).
    */
   firstParty?: boolean;
+  /**
+   * Positive provenance for a request received on wmux's external local wire
+   * (named pipe or loopback TCP). Set ONLY by PipeServer through the
+   * non-envelope `RpcRouter.dispatch` options, after token authentication and
+   * rate limiting. Raw request fields never populate it, and callers must not
+   * infer it from `origin === 'local'` or from an absent `firstParty` marker.
+   *
+   * This qualifies the dispatch source; it is not cryptographic identity
+   * against arbitrary same-user processes that already hold the pipe token.
+   * Mutually exclusive with `firstParty`.
+   */
+  externalWire?: true;
   clientName?: string;
   clientVersion?: string;
   /**

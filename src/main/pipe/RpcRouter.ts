@@ -70,6 +70,14 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'mcp.declarePermissions',
 ]);
 
+/**
+ * Positive, mutually-exclusive provenance supplied by the trusted caller of
+ * dispatch(). Neither marker is accepted from the RpcRequest envelope.
+ */
+type RpcDispatchOptions =
+  | { firstParty: true; externalWire?: never }
+  | { externalWire: true; firstParty?: never };
+
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
   private legacyRecorder: LegacyContactRecorder | undefined;
@@ -171,18 +179,32 @@ export class RpcRouter {
   }
 
   /**
-   * @param opts.firstParty — set ONLY by trusted in-process dispatch callers
-   * (the renderer IPC bridge in main/index.ts, the plugin host). PipeServer,
-   * the sole wire entry, never passes it, so a wire client cannot forge the
-   * flag: it is a function argument here, not a field of the (verbatim-forwarded)
-   * wire request. Threaded onto RpcContext.firstParty for handlers.
+   * @param opts Positive dispatch provenance, supplied only by trusted
+   * in-process call sites. The renderer bridge / plugin host sets `firstParty`;
+   * PipeServer sets `externalWire` after authentication and rate limiting.
+   * These markers are function arguments, never fields read from the
+   * verbatim-forwarded wire request, and are threaded onto RpcContext.
    */
-  async dispatch(request: RpcRequest, opts?: { firstParty?: boolean }): Promise<RpcResponse> {
+  async dispatch(request: RpcRequest, opts?: RpcDispatchOptions): Promise<RpcResponse> {
     if (!request || typeof request.id !== 'string' || typeof request.method !== 'string') {
       return { id: (request as RpcRequest)?.id || '', ok: false, error: 'Invalid RPC request: missing id or method' };
     }
     if (request.params !== undefined && (typeof request.params !== 'object' || request.params === null)) {
       return { id: request.id, ok: false, error: 'Invalid RPC request: params must be an object' };
+    }
+
+    // The type makes this unrepresentable for TypeScript callers; retain the
+    // runtime guard for JavaScript and casted call sites. A conflict is an
+    // internal provenance failure, so it hard-rejects before handler lookup,
+    // trust lookup, or enforcement regardless of shadow/enforce mode.
+    const firstParty = opts?.firstParty === true;
+    const externalWire = opts?.externalWire === true;
+    if (firstParty && externalWire) {
+      return {
+        id: request.id,
+        ok: false,
+        error: 'Invalid RPC dispatch provenance',
+      };
     }
 
     const handler = this.handlers.get(request.method);
@@ -204,8 +226,11 @@ export class RpcRouter {
       // origin is REQUIRED on RpcContext so that listener can't forget to.
       origin: 'local',
       // Trusted in-process surface (renderer bridge / plugin host) — opt-in only;
-      // the wire (PipeServer) never sets it. See the dispatch() doc + RpcContext.
-      firstParty: opts?.firstParty === true,
+      // mutually exclusive with the external-wire marker below.
+      firstParty,
+      // Positive local-wire provenance. Never inferred from request JSON,
+      // origin, or the absence of firstParty; only PipeServer supplies it.
+      externalWire: externalWire ? true : undefined,
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

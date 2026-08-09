@@ -60,6 +60,10 @@ afterEach(() => {
 
 const CLAUDE = 'claude-code';
 
+function dispatchWire(request: Parameters<RpcRouter['dispatch']>[0]) {
+  return router.dispatch(request, { externalWire: true });
+}
+
 describe('enforce-mode dispatch — first-party bundled server (the lockout fix)', () => {
   it('allows browser.open / surface.list / company.a2a.whoami for claude-code recorded unconfirmed', async () => {
     // Mirror the live trust DB: mcp.identify recorded claude-code unconfirmed,
@@ -68,7 +72,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
     expect((await store.get(CLAUDE))?.status).toBe('unconfirmed');
 
     for (const method of ['browser.open', 'surface.list', 'company.a2a.whoami'] as const) {
-      const res = await router.dispatch({
+      const res = await dispatchWire({
         id: `fp-${method}`,
         method,
         params: {},
@@ -80,7 +84,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
   });
 
   it('allows even with NO trust record at all (tool call racing ahead of identify)', async () => {
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'fp-norecord',
       method: 'surface.list',
       params: {},
@@ -92,7 +96,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
   it('REGRESSION GUARD: an external unconfirmed plugin is still rejected for the same methods', async () => {
     await store.upsertContact('evil-plugin');
     for (const method of ['browser.open', 'surface.list', 'company.a2a.whoami'] as const) {
-      const res = await router.dispatch({
+      const res = await dispatchWire({
         id: `evil-${method}`,
         method,
         params: {},
@@ -107,7 +111,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
 
   it('does NOT widen scope: claude-code is still rejected for a non-allowlisted method', async () => {
     await store.upsertContact(CLAUDE);
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'fp-widen',
       method: 'workspace.new', // wmux.internal, NOT in FIRST_PARTY_METHODS
       params: {},
@@ -119,7 +123,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
   it('honors an explicit denied for claude-code (operator escape hatch)', async () => {
     await store.upsertContact(CLAUDE);
     await store.setUserDecision(CLAUDE, 'denied');
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'fp-denied',
       method: 'browser.open',
       params: {},
@@ -133,7 +137,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
     // Prove enforce mode is actually ON: a path-scoped method NOT in the
     // allowlist, from an unconfirmed external plugin, must hard-fail here.
     await store.upsertContact('some-plugin');
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'enforce-on',
       method: 'pane.setMetadata',
       params: { custom: { 'x.y': 'z' } },
@@ -153,7 +157,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
     router.setTrustLookup(async () => {
       throw new Error('simulated corrupt plugin-trust.json');
     });
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'fp-lookup-fail',
       method: 'browser.open',
       params: {},
@@ -170,7 +174,7 @@ describe('enforce-mode dispatch — rejection names the observed client (#636)',
   // proposed an allowlist entry that would never have matched.
   it('echoes the observed clientName in an unconfirmed rejection', async () => {
     await store.upsertContact('mcp', '0.1.0');
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'obs-1',
       method: 'surface.list',
       params: {},
@@ -191,7 +195,7 @@ describe('enforce-mode dispatch — rejection names the observed client (#636)',
     // that the message never silently omits the identity field.
     await store.upsertContact('evil-plugin');
     await store.setUserDecision('evil-plugin', 'denied');
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'obs-2',
       method: 'browser.open',
       params: {},
@@ -206,7 +210,7 @@ describe('enforce-mode dispatch — rejection names the observed client (#636)',
     // terminal-rendered agent output.
     const nasty = 'ev\u001b[31mil';
     await store.upsertContact(nasty);
-    const res = await router.dispatch({
+    const res = await dispatchWire({
       id: 'obs-3',
       method: 'surface.list',
       params: {},

@@ -58,6 +58,7 @@ import {
 import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
 import { COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
+import { isLocalExternalWireContext } from './rpcProvenance';
 
 export type EnforcerOutcome =
   | { kind: 'allow' }
@@ -206,7 +207,10 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // that the permission grammar forbids from any declaration. Grant exactly
   // the method set it calls (firstParty.ts), nothing more, regardless of the
   // trust-DB `unconfirmed` status that the bundled server is otherwise stuck
-  // in. Three guards keep this from becoming a blanket bypass:
+  // in. Four guards keep this from becoming a blanket bypass:
+  //   - The request must carry positive local external-wire provenance from
+  //     PipeServer. A trusted iframe plugin shares the identity namespace but
+  //     enters through the mutually-exclusive in-process `firstParty` source.
   //   - An explicit user `denied` still wins (operator escape hatch): fall
   //     through to the `denied` branch below.
   //   - A failed trust lookup (corrupt DB / I/O error, signalled by
@@ -219,6 +223,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   //     silently widening first-party scope.
   // See plans/first-party-mcp-trust.md and docs/api/mcp-plugin-spec.md.
   if (
+    isLocalExternalWireContext(input.ctx) &&
     isFirstPartyClient(input.ctx.clientName) &&
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
@@ -232,11 +237,13 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // Stage 2 of the grandfather deprecation gives it a stable clientName so the
   // legacy grandfather can later be closed without breaking it. Grant exactly
   // its curated method set (internalCli.ts), nothing more — a separate, narrower
-  // allowlist than FIRST_PARTY_METHODS. Same three guards as the first-party
-  // tier above: an explicit user `denied` wins, a failed trust lookup declines
-  // (fall through to fail-closed), and a method outside the curated set falls
-  // through to normal enforcement rather than silently widening CLI scope.
+  // allowlist than FIRST_PARTY_METHODS. Same four guards as the first-party
+  // tier above: positive local external-wire provenance is required, an
+  // explicit user `denied` wins, a failed trust lookup declines (fall through
+  // to fail-closed), and a method outside the curated set falls through to
+  // normal enforcement rather than silently widening CLI scope.
   if (
+    isLocalExternalWireContext(input.ctx) &&
     isInternalCliClient(input.ctx.clientName) &&
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&

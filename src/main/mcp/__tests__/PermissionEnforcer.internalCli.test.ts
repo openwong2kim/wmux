@@ -16,14 +16,20 @@ function trust(
 ): PluginIdentityRecord {
   return { firstSeen: 1000, lastSeen: 2000, ...overrides };
 }
-function ctx(clientName?: string): RpcContext {
-  return clientName ? { origin: 'local', clientName } : { origin: 'local' };
+function ctx(clientName?: string, overrides: Partial<RpcContext> = {}): RpcContext {
+  return {
+    origin: 'local',
+    externalWire: true,
+    ...(clientName ? { clientName } : {}),
+    ...overrides,
+  };
 }
 
 const CLI = WMUX_CLI_CLIENT_NAME;
 // A representative spread of the CLI allowlist: a normal capability method, and
 // three reserved `wmux.internal` ones (lifecycle + notify) that can never be
-// granted via declaration — name-recognition is the only path that reaches them.
+// granted via declaration — the source-qualified CLI lane is the only path that
+// reaches them.
 const SAMPLE_ALLOWED: RpcMethod[] = ['input.send', 'workspace.new', 'surface.list', 'notify'];
 
 describe('PermissionEnforcer.check — wmux-cli allowlist', () => {
@@ -54,6 +60,25 @@ describe('PermissionEnforcer.check — wmux-cli allowlist', () => {
       });
       expect(out, `${method}`).toEqual({ kind: 'allow' });
     }
+  });
+
+  it.each([
+    ['missing marker', ctx(CLI, { externalWire: undefined })],
+    ['trusted in-process source', ctx(CLI, { externalWire: undefined, firstParty: true })],
+    ['remote source', ctx(CLI, { origin: 'remote' })],
+    ['conflicting markers', ctx(CLI, { firstParty: true })],
+  ] satisfies [string, RpcContext][])('%s cannot enter the privileged CLI lane', (_label, sourceCtx) => {
+    const out = check({
+      method: 'workspace.new',
+      params: {},
+      ctx: sourceCtx,
+      trust: trust({
+        name: CLI,
+        status: 'trusted',
+        declaredCapabilities: ['ui.sidebar'],
+      }),
+    });
+    expect(out.kind).toBe('reject');
   });
 
   it('honors an explicit denied as an operator escape hatch (denied wins over wmux-cli)', () => {

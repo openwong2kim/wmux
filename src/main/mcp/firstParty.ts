@@ -16,19 +16,22 @@
 // it exposes map to `wmux.internal` methods (surface.list, surface.new/close
 // [issue #285], company.a2a.*) which `permissionGrammar` deliberately forbids
 // from ever appearing in a declaration (RESERVED_PREFIXES = ['wmux.']). No
-// amount of user approval can grant those — name-recognition is the only path.
+// amount of user approval can grant those — the source-qualified,
+// name-recognised wire lane is the only path.
 //
-// The fix: recognise the bundled server by the host clientName it reports and
-// allow exactly the method set it actually calls — nothing more. This is a
-// scoped allowlist, NOT a blanket "first party can do anything" bypass: a
-// method outside the set falls through to normal enforcement, and an explicit
-// user `denied` still wins (see PermissionEnforcer.check).
+// The fix: first require positive local external-wire provenance from
+// PipeServer, then recognise the bundled server by the host clientName it
+// reports and allow exactly the method set it actually calls — nothing more.
+// This is a scoped allowlist, NOT a blanket "first party can do anything"
+// bypass: a method outside the set falls through to normal enforcement, and an
+// explicit user `denied` still wins (see PermissionEnforcer.check).
 //
 // Threat model (matches the spec's "declared, not verified" stance, rpc.ts):
-// recognition is by self-asserted clientName. THIS IS BEST-EFFORT ATTRIBUTION,
-// NOT A SECURITY BOUNDARY AGAINST SAME-USER CODE. On a single-user OS it is no
-// weaker than any local secret — a same-user process that wanted to impersonate
-// the host already holds the daemon auth token and could call the pipe directly.
+// once the source is qualified, recognition is by self-asserted clientName.
+// THIS IS BEST-EFFORT ATTRIBUTION, NOT A SECURITY BOUNDARY AGAINST SAME-USER
+// CODE. On a single-user OS it is no weaker than any local secret — a same-user
+// process that wanted to impersonate the host already holds the daemon auth
+// token and could call the pipe directly.
 // What the scoped allowlist buys over a blanket bypass is that even an
 // impersonator only reaches the curated method set, never daemon.*,
 // workspace.new, company mutation, or other reserved surface. Cryptographic

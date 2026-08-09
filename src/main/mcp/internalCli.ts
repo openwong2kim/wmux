@@ -12,7 +12,8 @@
 // than the bundled-MCP `FIRST_PARTY_METHODS` (this deliberately does NOT widen
 // that set).
 //
-// Threat model (identical to firstParty.ts): recognition is by self-asserted
+// Threat model (identical to firstParty.ts): the enforcer first requires
+// positive local external-wire provenance, then recognises the self-asserted
 // `clientName` — best-effort same-user attribution, NOT a security boundary
 // against same-user code (a same-user process already holds the auth token and
 // can hit the pipe directly). What the scoped allowlist buys over the blanket
