@@ -660,7 +660,16 @@ registerPerfRpc(rpcRouter);
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
-registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager, browserBackendStore);
+// Shared bounded audit sink for permission rejections, legacy milestones, and
+// #810's shadow-only browser caller-scope decisions.
+const shadowRejectionLogger = new ShadowRejectionLogger();
+registerBrowserRpc(
+  rpcRouter,
+  () => mainWindow,
+  webviewCdpManager,
+  browserBackendStore,
+  (entry) => shadowRejectionLogger.appendBrowserScope(entry),
+);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
@@ -812,7 +821,6 @@ rpcRouter.setLegacyContactRecorder(() => {
 // existing plugin-trust.json store; would-be rejections are appended to
 // `~/.wmux/shadow-rejections.log` for the v3.0 dogfood window before the
 // pre-commit-6 flip turns rejections into hard RPC failures.
-const shadowRejectionLogger = new ShadowRejectionLogger();
 rpcRouter.setTrustLookup((clientName) =>
   getPluginTrustStore().get(clientName),
 );

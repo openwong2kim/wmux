@@ -22,7 +22,11 @@ import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
   type ExternalOpenResult,
 } from '../../../shared/browserBackend';
-import type { RpcContext } from '../../../shared/rpc';
+import type { RpcContext, RpcMethod } from '../../../shared/rpc';
+import type {
+  BrowserScopeShadowInput,
+  BrowserScopeShadowReason,
+} from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -57,6 +61,110 @@ export function canDiscloseBrowserAttachInfo(ctx: RpcContext | undefined): boole
   return isLocalExternalWireContext(ctx) && isFirstPartyClient(ctx.clientName);
 }
 
+export type BrowserCallerScopeDecision =
+  | {
+      kind: 'allowed';
+      lane: 'operator' | 'legacy';
+      workspaceId?: string;
+    }
+  | {
+      kind: 'scoped';
+      lane: 'pinned' | 'declared';
+      workspaceId: string;
+    }
+  | {
+      kind: 'rejected';
+      lane: 'context' | 'pinned' | 'declared';
+      reason: BrowserScopeShadowReason;
+      requestedWorkspaceId?: string;
+      pinnedWorkspaceId?: string;
+    };
+
+function requestedWorkspaceId(params: Record<string, unknown>): string | undefined {
+  return typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
+    ? params['workspaceId']
+    : undefined;
+}
+
+/**
+ * Compute the future caller-derived browser scope without enforcing it.
+ *
+ * PR #810 lands this decision table in shadow first: handlers continue using
+ * the request-derived scope below, while rejected decisions are audit-logged.
+ * A later, separately reviewed change can switch target lookup to this result.
+ */
+export function callerScope(
+  ctx: RpcContext | undefined,
+  params: Record<string, unknown>,
+): BrowserCallerScopeDecision {
+  const requested = requestedWorkspaceId(params);
+  if (!ctx) {
+    return {
+      kind: 'rejected',
+      lane: 'context',
+      reason: 'caller-context-unavailable',
+      ...(requested && { requestedWorkspaceId: requested }),
+    };
+  }
+  if (ctx.origin !== 'local') {
+    return {
+      kind: 'rejected',
+      lane: 'context',
+      reason: 'caller-origin-unsupported',
+      ...(requested && { requestedWorkspaceId: requested }),
+    };
+  }
+  if (ctx.operator === true) {
+    return {
+      kind: 'allowed',
+      lane: 'operator',
+      ...(requested && { workspaceId: requested }),
+    };
+  }
+
+  const pinnedWorkspaceId =
+    typeof ctx.commanderWorkspace === 'string' && ctx.commanderWorkspace.length > 0
+      ? ctx.commanderWorkspace
+      : undefined;
+  if (pinnedWorkspaceId) {
+    if (!isLocalExternalWireContext(ctx)) {
+      return {
+        kind: 'rejected',
+        lane: 'pinned',
+        reason: 'pinned-source-unqualified',
+        ...(requested && { requestedWorkspaceId: requested }),
+        pinnedWorkspaceId,
+      };
+    }
+    if (requested && requested !== pinnedWorkspaceId) {
+      return {
+        kind: 'rejected',
+        lane: 'pinned',
+        reason: 'pinned-workspace-mismatch',
+        requestedWorkspaceId: requested,
+        pinnedWorkspaceId,
+      };
+    }
+    return { kind: 'scoped', lane: 'pinned', workspaceId: pinnedWorkspaceId };
+  }
+
+  if (!ctx.clientName) {
+    return {
+      kind: 'allowed',
+      lane: 'legacy',
+      ...(requested && { workspaceId: requested }),
+    };
+  }
+  if (requested) {
+    return { kind: 'scoped', lane: 'declared', workspaceId: requested };
+  }
+  return {
+    kind: 'rejected',
+    lane: 'declared',
+    reason: 'workspace-unresolved',
+  };
+}
+
 /**
  * Registers browser.* RPC handlers.
  *
@@ -84,6 +192,7 @@ export function registerBrowserRpc(
   getWindow: GetWindow,
   webviewCdpManager: WebviewCdpManager,
   backendStore?: BrowserBackendStore,
+  browserScopeShadowSink?: (input: BrowserScopeShadowInput) => void,
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -130,19 +239,47 @@ export function registerBrowserRpc(
   };
 
   /**
-   * The caller's own workspace, when it sent one (#695).
+   * The request-derived workspace used by the current lookup behavior (#695).
    *
-   * Passing it to getTarget/ensureAwake is what stops a target lookup from
-   * landing on another workspace's guest. A caller that sends nothing is
-   * unscoped exactly as before — the pipe is same-trust for first-party CLI
-   * callers, and single-workspace setups would otherwise break for no gain.
-   * Every scoped lookup below reads it from params here rather than through a
-   * wrapper, so the scope is visible at each site it is meant to protect.
+   * This intentionally remains authoritative while callerScope is shadow-only:
+   * passing it to getTarget/ensureAwake preserves every pre-#810 response,
+   * including the unscoped fallback when the field is absent. Do not extend
+   * this into a caller-identity decision; the pure callerScope table above is
+   * the reviewed replacement that a later enforcement PR will switch to after
+   * the audit log is quiet.
    */
-  const scopeOf = (params: Record<string, unknown>): string | undefined =>
-    typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
-      ? params['workspaceId']
-      : undefined;
+  const scopeOf = requestedWorkspaceId;
+
+  /**
+   * Observe future caller-scope refusals without changing target selection.
+   * The old request-derived `scopeOf` remains authoritative in this PR. The
+   * sink is best-effort for the same reason as the permission shadow logger:
+   * telemetry must never break a browser call.
+   */
+  const observeCallerScope = (
+    method: RpcMethod,
+    params: Record<string, unknown>,
+    ctx: RpcContext | undefined,
+  ): void => {
+    if (!browserScopeShadowSink) return;
+    const decision = callerScope(ctx, params);
+    if (decision.kind !== 'rejected') return;
+    try {
+      browserScopeShadowSink({
+        clientName: ctx?.clientName,
+        method,
+        reason: decision.reason,
+        ...(decision.requestedWorkspaceId && {
+          requestedWorkspaceId: decision.requestedWorkspaceId,
+        }),
+        ...(decision.pinnedWorkspaceId && {
+          pinnedWorkspaceId: decision.pinnedWorkspaceId,
+        }),
+      });
+    } catch {
+      /* browser scope shadow logging must never affect dispatch */
+    }
+  };
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
   // method-tagged error if no target is registered or the WebContents is gone.
@@ -210,13 +347,14 @@ export function registerBrowserRpc(
   // "no webview target" error as before.
   const registerLeased = (
     method: Parameters<RpcRouter['register']>[0],
-    handler: (params: Record<string, unknown>) => Promise<unknown>,
+    handler: (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>,
     // #517 backend fork: what to do when no builtin target resolves while the
     // backend is 'external'. Default is the fail-closed contract error; the
     // open-shaped handlers (navigate) pass a delegate instead.
     externalFallback?: (params: Record<string, unknown>) => Promise<unknown>,
   ): void => {
-    router.register(method, async (params) => {
+    router.register(method, async (params, ctx) => {
+      observeCallerScope(method, params, ctx);
       const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
       // Memory relief (#517 slice C): automation targeting a discarded guest
       // wakes it (renderer remounts + page reloads) before taking the lease,
@@ -232,9 +370,9 @@ export function registerBrowserRpc(
           if (externalFallback) return externalFallback(params);
           throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
         }
-        return handler(params);
+        return handler(params, ctx);
       }
-      return webviewCdpManager.withAutomationLease(resolved, () => handler(params));
+      return webviewCdpManager.withAutomationLease(resolved, () => handler(params, ctx));
     });
   };
 
@@ -243,7 +381,8 @@ export function registerBrowserRpc(
   // directly over CDP, bypassing the browser.* handlers above — it takes a
   // TTL-bounded lease around each tool invocation instead, renewing during
   // long waits.
-  router.register('browser.lease.acquire', async (params) => {
+  router.register('browser.lease.acquire', async (params, ctx) => {
+    observeCallerScope('browser.lease.acquire', params, ctx);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     // Wake a discarded guest so out-of-process (Playwright) automation gets a
     // live target under its lease (#517 slice C). Without surfaceId this
@@ -704,6 +843,7 @@ export function registerBrowserRpc(
    * not the primitive that bypasses the tool-layer capability and lease checks.
    */
   router.register('browser.cdp.info', async (params, ctx) => {
+    observeCallerScope('browser.cdp.info', params, ctx);
     const cdpPort = webviewCdpManager.getCdpPort();
     if (cdpPort <= 0) {
       throw new Error(
@@ -1064,7 +1204,8 @@ export function registerBrowserRpc(
    * Returns the CDP WebSocket URL for the active browser webview.
    * params: { surfaceId?: string }
    */
-  router.register('browser.cdp.target', async (params) => {
+  router.register('browser.cdp.target', async (params, ctx) => {
+    observeCallerScope('browser.cdp.target', params, ctx);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     if (surfaceId) {
