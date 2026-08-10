@@ -73,6 +73,10 @@ export class DaemonPipeServer {
   private authToken: string = '';
   private readonly handlers = new Map<string, RpcHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
+  // Clients that asked for pushed events via `daemon.events.subscribe`. Empty
+  // by default — see `broadcast`. Dies with the socket, so a reconnecting
+  // client must re-subscribe.
+  private readonly eventSubscribers = new Set<net.Socket>();
   // Per-client identity for unicast delivery. Both directions are kept because
   // `sendTo` resolves an id → socket while the RPC path needs socket → id.
   private readonly clientIds = new Map<net.Socket, string>();
@@ -306,6 +310,7 @@ export class DaemonPipeServer {
         this.socketsByClientId.set(clientId, socket);
         socket.on('close', () => {
           this.connectedSockets.delete(socket);
+          this.eventSubscribers.delete(socket);
           this.rateLimits.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
@@ -363,6 +368,7 @@ export class DaemonPipeServer {
       socket.destroy();
     }
     this.connectedSockets.clear();
+    this.eventSubscribers.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
     this.firstPartyClients.clear();
@@ -414,6 +420,7 @@ export class DaemonPipeServer {
       socket.destroy();
     }
     this.connectedSockets.clear();
+    this.eventSubscribers.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
     this.firstPartyClients.clear();
@@ -423,10 +430,24 @@ export class DaemonPipeServer {
     return newToken;
   }
 
-  /** Broadcast an event to all connected clients as a newline-delimited JSON message. */
+  /**
+   * Push an event to every client that subscribed, as a newline-delimited JSON
+   * message.
+   *
+   * Events are OPT-IN (`daemon.events.subscribe`). They used to go to every
+   * connected socket the moment it connected, which made the obvious client —
+   * write a request, read one line back — intermittently read a pushed event
+   * instead of its reply. An event frame carries no `ok`/`error`, so such a
+   * client reported a failure with an EMPTY error message and then discarded
+   * the real reply when it arrived: a fabricated failure that looks like the
+   * daemon misbehaving rather than a client bug (issue #659). Correlating on
+   * `id` is still required of subscribers (docs/PROTOCOL.md §2.9) — but a
+   * client that never asks for events can no longer be hit by this at all,
+   * which is the safer default.
+   */
   broadcast(event: unknown): void {
     const msg = JSON.stringify(event) + '\n';
-    this.connectedSockets.forEach((socket) => {
+    this.eventSubscribers.forEach((socket) => {
       if (!socket.destroyed) {
         try {
           socket.write(msg);
@@ -594,6 +615,34 @@ export class DaemonPipeServer {
   /** Did this client claim the first-party role? See `markFirstParty`. */
   isFirstParty(clientId: string): boolean {
     return this.firstPartyClients.has(clientId);
+  }
+
+  /**
+   * Start delivering pushed events to this client. Returns false when the
+   * client is already gone.
+   *
+   * This is a delivery switch, not a permission check: every control-pipe
+   * client presents the same credential, and the events carried here are the
+   * same ones every client used to receive unconditionally. What it buys is a
+   * safe default for clients that never ask — see `broadcast`.
+   */
+  subscribeEvents(clientId: string): boolean {
+    const socket = this.socketsByClientId.get(clientId);
+    if (!socket || socket.destroyed) return false;
+    this.eventSubscribers.add(socket);
+    return true;
+  }
+
+  /** Stop delivering pushed events to this client. Idempotent. */
+  unsubscribeEvents(clientId: string): void {
+    const socket = this.socketsByClientId.get(clientId);
+    if (socket) this.eventSubscribers.delete(socket);
+  }
+
+  /** Is this client receiving pushed events? */
+  isEventSubscriber(clientId: string): boolean {
+    const socket = this.socketsByClientId.get(clientId);
+    return socket !== undefined && this.eventSubscribers.has(socket);
   }
 
   /**

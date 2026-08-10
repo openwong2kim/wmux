@@ -2812,6 +2812,19 @@ function registerRpcHandlers(
     return { ok: true };
   });
 
+  // Pushed events are opt-in (issue #659). A client that never calls this reads
+  // nothing but replies to its own requests, so "write a request, read one line
+  // back" — the obvious client — can no longer read an event by mistake and
+  // report it as a failure with an empty error message.
+  pipeServer.onRpc('daemon.events.subscribe', async (_params, ctx) => {
+    return { ok: pipeServer.subscribeEvents(ctx.clientId) };
+  });
+
+  pipeServer.onRpc('daemon.events.unsubscribe', async (_params, ctx) => {
+    pipeServer.unsubscribeEvents(ctx.clientId);
+    return { ok: true };
+  });
+
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {
       return { available: false, reason: 'not-authorized' };

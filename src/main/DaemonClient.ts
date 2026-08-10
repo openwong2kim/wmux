@@ -106,6 +106,15 @@ export class DaemonClient extends EventEmitter {
         this.controlPipe = socket;
         this.connected = true;
         this.setupControlPipe(socket);
+        // Pushed events are opt-in on the daemon side (issue #659), and this
+        // client is the one consumer that needs them. Sent here rather than
+        // from the connect callers so the request is the FIRST line on the
+        // socket: the daemon processes lines in order, so every event it
+        // generates after reading this one is delivered. Deliberately not
+        // awaited — waiting for the reply would only widen the gap, and an
+        // older daemon that has no such method just answers `Unknown method`
+        // while still pushing events to everyone, as it always did.
+        this.subscribeToEvents();
         finish({ ok: true });
       });
 
@@ -118,6 +127,18 @@ export class DaemonClient extends EventEmitter {
         console.warn(`[lifecycle] DaemonClient.connect error code=${err?.code ?? '?'} pipe=${this.pipeName} msg=${err?.message ?? String(err)}`);
         finish({ ok: false, code: err?.code });
       });
+    });
+  }
+
+  /**
+   * Ask the daemon to push events down this control pipe. Best-effort: the
+   * only failures are a daemon too old to know the method and a socket that
+   * died between connect and this write, and neither is actionable here — the
+   * respawn controller owns reconnection.
+   */
+  private subscribeToEvents(): void {
+    this.rpc('daemon.events.subscribe').catch(() => {
+      // Old daemon (no such method) or a socket that just went away.
     });
   }
 
