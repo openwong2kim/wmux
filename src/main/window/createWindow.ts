@@ -3,6 +3,7 @@ import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { attachFlashFrameAutoClear } from './flashFrame';
+import { buildProductionCsp, ownsResponseCsp } from './csp';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
@@ -147,9 +148,9 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   // CSP header — production only.
   // In development, Vite serves scripts from localhost with inline module
   // loaders and eval-based HMR, which are incompatible with strict CSP.
-  // We only enforce CSP in production builds.
-  // 'unsafe-inline' in style-src is required because Tailwind CSS and xterm.js
-  // inject inline styles at runtime; removing it breaks UI rendering.
+  // We only enforce CSP in production builds. The policy itself lives in
+  // ./csp so it can be asserted in tests — a missing directive here is
+  // invisible until a production build runs (#848).
   //
   // #582: The dev-only "Insecure Content-Security-Policy" warning is suppressed
   // via ELECTRON_DISABLE_SECURITY_WARNINGS — but that is now set at the very
@@ -159,9 +160,13 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   // the production CSP below is strict (no unsafe-eval), so this is dev-only
   // noise reduction, not a security trade-off.
   if (!MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    const cspPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https: http:";
+    const cspPolicy = buildProductionCsp();
 
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      if (!ownsResponseCsp(details.url)) {
+        callback({ responseHeaders: details.responseHeaders });
+        return;
+      }
       callback({
         responseHeaders: {
           ...details.responseHeaders,
