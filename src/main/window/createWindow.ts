@@ -106,8 +106,12 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     //   - macOS: 'hidden' keeps the traffic lights, nudged to center in 36px.
     //   - Linux: keep the native frame (titleBarStyle is ignored there; a
     //     frameless window would lose drag/resize with no replacement).
-    // The menu itself is NOT removed — autoHideMenuBar keeps every
-    // accelerator working and Alt still reveals the menu on demand.
+    // The menu bar is hidden, not removed — Alt still reveals it on demand and
+    // the accelerators keep working. Which accelerators those are is no longer
+    // Electron's call: main/menu/appMenu.ts installs wmux's own menu before the
+    // first window (#818). Before that, the default menu's roles owned
+    // Cmd+Shift+R, Cmd+W, and the zoom keys, and silently beat the renderer to
+    // them on macOS.
     autoHideMenuBar: true,
     ...platformChoice<Partial<Electron.BrowserWindowConstructorOptions>>({
       win: {
