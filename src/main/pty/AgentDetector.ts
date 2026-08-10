@@ -144,10 +144,10 @@ const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s
 // Signal A (banner): the startup banner or OSC window-title mention.
 // Signal B (prompt): a Claude-specific prompt fragment proving the TUI is live.
 const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/;
-// Any Claude-specific TUI text that a process monitor would never display.
-// Includes waiting prompts AND approval keywords (a pane might show an
-// approval before any waiting footer if the first turn requests file edits).
-const CLAUDE_PROMPT_RE = /bypass permissions on|shift\+tab to cycle|Do you want to proceed|Allow tool use for|Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)/;
+// Claude-specific TUI footer text that a process monitor would never display.
+// Only the idle-prompt fragments — approval keywords are excluded because they
+// appear in conversational text and would false-positive the gate (#850 CI).
+const CLAUDE_PROMPT_RE = /bypass permissions on|shift\+tab to cycle/;
 
 const AGENT_PATTERNS: AgentPattern[] = [
   // ── Claude Code ────────────────────────────────────────────────────────────
@@ -547,14 +547,13 @@ export class AgentDetector {
         const m = clean.match(CLAUDE_PROMPT_RE);
         if (m) {
           this.claudePromptSeen = true;
-          // Preserve the status that matches the evidence pattern so the
-          // replay emits the correct lifecycle event — waiting prompts
-          // replay as 'waiting', approval prompts replay as 'awaiting_input'.
-          const isApproval = /Do you want to proceed|Allow tool use for|Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)/.test(m[0]);
+          // CLAUDE_PROMPT_RE only matches waiting-prompt fragments, so the
+          // replay is always 'waiting'. Approval patterns are excluded from
+          // the gate evidence to avoid conversational false positives.
           this.claudePromptEvidence = {
             text: m[0],
-            status: isApproval ? 'awaiting_input' : 'waiting',
-            message: isApproval ? 'Approval requested' : 'Ready for input',
+            status: 'waiting',
+            message: 'Ready for input',
           };
         }
       }

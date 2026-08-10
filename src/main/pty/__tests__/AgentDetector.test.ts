@@ -75,17 +75,16 @@ describe('AgentDetector', () => {
     it('OSC title serves as banner evidence; gate opens on first Claude-specific prompt', () => {
       // The current TUI renders no visible "Claude Code" text — the name only
       // appears in the window title escape. The OSC title is banner evidence;
-      // the approval prompt provides prompt evidence, opening the compound gate.
+      // the waiting prompt provides prompt evidence, opening the compound gate.
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('\x1b]0;✳ Claude Code\x07\n');
       expect(cb).not.toHaveBeenCalled(); // banner only — no prompt yet
-      det.feed('│ Do you want to overwrite calculator.html? │\n');
-      // gate opens (running) + approval fires (awaiting_input)
+      det.feed('  bypass permissions on\n');
       const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
       expect(statuses).toContain('running');
-      expect(statuses).toContain('awaiting_input');
+      expect(statuses).toContain('waiting');
     });
 
     it('OSC title in an incomplete line (no newline) collects banner evidence', () => {
@@ -558,13 +557,15 @@ describe('AgentDetector', () => {
       expect(waiting).toHaveLength(1);
     });
 
-    it('approval prompt counts as prompt evidence (OSC title + approval)', () => {
+    it('approval prompt alone is NOT gate evidence (avoids conversational false positives)', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
-      det.feed('\x1b]0;✳ Claude Code\x07\n');
-      expect(cb).not.toHaveBeenCalled();
-      det.feed('│ Do you want to proceed? │\n');
+      det.feed('\x1b]0;✳ Claude Code\x07\n');     // banner only
+      det.feed('│ Do you want to proceed? │\n');   // approval — not a gate signal
+      expect(det.getLastAgent()).toBeNull();        // gate still closed
+      // A waiting prompt opens it
+      det.feed('  shift+tab to cycle\n');
       expect(det.getLastAgent()).toBe('Claude Code');
     });
 
