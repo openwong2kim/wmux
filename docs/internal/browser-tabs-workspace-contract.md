@@ -395,13 +395,20 @@ only the intended surface through the full sequence.
 
 ## 8. Adjacent findings and explicit non-goals
 
-### 8.1 Omitted-`surfaceId` navigation remains a separate audit
+### 8.1 Omitted-`surfaceId` navigation is caller-workspace scoped
 
-Static inspection found that `browser_navigate` and `browser_navigate_back` send `browser.navigate` / `browser.goBack` without a workspace ID when their optional `surfaceId` is omitted. Main then calls `WebviewCdpManager.getTarget(undefined)`, whose documented fallback is the first globally registered target.
+Bundled MCP `browser_navigate` and `browser_navigate_back` already resolve the
+connection's workspace and route `browser.navigate` / `browser.goBack` through
+`sendScopedBrowserRpc`, even when their optional `surfaceId` is omitted. The
+remaining gap was the standalone `wmux browser navigate` command: it sent only
+the URL, so main could fall back to the first globally registered target.
 
-That path is not fixed merely by making `browser_tabs select` workspace-scoped. Until a separate audit resolves the default-target contract, callers should pass the `surfaceId` returned by `browser_tabs` to subsequent browser operations.
-
-This should be confirmed with a focused two-workspace test and, if reproduced, tracked separately rather than silently expanding the #565 implementation.
+The CLI now resolves its verified parent-process context in the same way as
+`wmux open` and `wmux browser close`. When invoked from a wmux pane it sends the
+caller's `workspaceId`; outside wmux it omits that field and preserves the
+existing active-target compatibility behavior. Supplying the `surfaceId`
+returned by `browser_tabs` remains the strongest way to pin a subsequent
+browser operation to one exact surface.
 
 ### 8.2 `browser.cdp.info` cross-workspace target metadata (now scoped, defense-in-depth)
 
