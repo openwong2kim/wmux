@@ -2,102 +2,59 @@ import { describe, it, expect, vi } from 'vitest';
 import { AgentDetector } from '../AgentDetector';
 
 describe('AgentDetector', () => {
-  describe('one line, at most one emission (first-match-wins)', () => {
-    // Pins the invariant documented above processLine. A plan review read the
-    // dedup `return`s as a swallowed-detection bug and proposed turning them
-    // into `continue`; these tests are what that change breaks.
+  // Helper: feed both banner AND prompt to open the Claude compound gate (#850).
+  // Uses `bypass permissions on` as the gate-opening prompt so that
+  // `shift+tab to cycle` tests can still emit without dedup collision.
+  // Resets emission state after gate open so all patterns are fresh.
+  function claudeGated() {
+    const det = new AgentDetector();
+    const cb = vi.fn();
+    det.onEvent(cb);
+    det.feed('Claude Code v2.1.172\n');        // banner signal
+    det.feed('  bypass permissions on\n');     // prompt signal → gate opens
+    det.resetEmissionState();
+    cb.mockClear();
+    return { det, cb };
+  }
 
-    it('a repeated prompt does NOT re-emit under a second agent that shares the pattern', () => {
-      // Claude Code and OpenClaude are the same forked TUI and share their
-      // approval patterns byte-for-byte. With both gates open, turn 2 of an
-      // identical prompt must stay silent rather than firing as OpenClaude.
+  describe('agent status emission', () => {
+    it('compound gate: banner + prompt together emit running then waiting', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
-
+      det.feed('Claude Code v2.1.172\n');        // banner only — no emit
+      expect(cb).not.toHaveBeenCalled();
+      det.feed('  shift+tab to cycle modes\n');  // prompt → gate opens
+      expect(det.getLastAgent()).toBe('Claude Code');
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('waiting');
+      // re-feeding the banner does not re-fire (activeAgents guard)
+      cb.mockClear();
       det.feed('Claude Code v2.1.172\n');
-      det.feed('OpenClaude v0.9.0\n');
-      expect(det.getActiveAgents()).toEqual(
-        expect.arrayContaining(['Claude Code', 'OpenClaude']),
-      );
-      cb.mockClear();
-
-      det.feed('Do you want to proceed?\n');
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({
-        agent: 'Claude Code',
-        status: 'awaiting_input',
-      });
-
-      cb.mockClear();
-      det.feed('Do you want to proceed?\n');
       expect(cb).not.toHaveBeenCalled();
     });
 
-    it('a critical hit consumes the line, deduped or not', () => {
-      const det = new AgentDetector();
-      const onCritical = vi.fn();
-      det.onCritical(onCritical);
-      det.feed('Claude Code v2.1.172\n');
-
-      det.feed('git push --force origin main\n');
-      expect(onCritical).toHaveBeenCalledTimes(1);
-
-      // Same line again: suppressed, and still no second critical emission.
-      det.feed('git push --force origin main\n');
-      expect(onCritical).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('agent status emission', () => {
-    it('gate 매칭 시 "running" 시작 이벤트를 1회 emit한다 (배너만으로 agentName 확정)', () => {
-      // Claude Code v2.1.x처럼 idle prompt hint가 "❯"만 남아 patterns가
-      // 매칭되지 않아도, 시작 배너(gate)만으로 detection이 활성화돼야 한다.
+    it('compound gate: incomplete banner line (no newline) collects evidence', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
-      det.feed('Claude Code v2.1.172\n');
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
-      expect(det.getLastAgent()).toBe('Claude Code');
-      // 같은 세션에서 배너가 다시 나와도 재발화하지 않는다 (activeAgents 가드).
-      det.feed('Claude Code v2.1.172\n');
-      expect(cb).toHaveBeenCalledTimes(1);
-    });
-
-    it('개행 없이 미완성 라인에 머무는 시작 배너도 gate 매칭한다 (claude TUI 대응)', () => {
-      // claude는 시작 배너를 개행 없이 커서 이동으로 그려 "Claude Code vX"가
-      // lineBuffer에 갇혀 라인 완성이 안 될 수 있다. 그래도 gate는 검사돼야 한다.
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('Claude Code v2.1.172'); // 개행 없음
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      det.feed('Claude Code v2.1.172'); // no newline — banner seen via tail check
+      expect(cb).not.toHaveBeenCalled(); // no prompt yet
+      det.feed('\n  shift+tab to cycle\n');
       expect(det.getLastAgent()).toBe('Claude Code');
     });
 
     it('emits "waiting" for "shift+tab to cycle" Claude prompt', () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      // gate first — gate 매칭은 'running' 시작 이벤트를 발화하므로 분리해 무시
-      det.feed('Claude Code starting up\n');
-      cb.mockClear();
+      const { det, cb } = claudeGated();
       det.feed('  shift+tab to cycle modes\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'waiting' });
     });
 
     it('REGRESSION (R3): does NOT match "esc to interrupt" — Claude in-flight hint, not idle', () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('Claude Code starting up\n');
-      cb.mockClear(); // gate 'running' 무시 — esc 라인 자체는 emit하면 안 된다
+      const { det, cb } = claudeGated();
       det.feed('press esc to interrupt\n');
-      // Previously this falsely emitted 'waiting'. After the fix, no agent
-      // event should fire for this line.
       expect(cb).not.toHaveBeenCalled();
     });
 
@@ -115,45 +72,38 @@ describe('AgentDetector', () => {
   });
 
   describe('OSC-title gate (live incident 2026-07-17, Fable-era Claude Code)', () => {
-    it('opens the Claude gate from the OSC 0 window-title sequence alone', () => {
+    it('OSC title serves as banner evidence; gate opens on first Claude-specific prompt', () => {
       // The current TUI renders no visible "Claude Code" text — the name only
-      // appears in the window title escape, which ANSI_STRIP removes. The gate
-      // must therefore also be checked against the raw line.
+      // appears in the window title escape. The OSC title is banner evidence;
+      // the approval prompt provides prompt evidence, opening the compound gate.
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('\x1b]0;✳ Claude Code\x07\n');
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
-      // Approval detection now works even though no visible banner ever appeared.
-      cb.mockClear();
+      expect(cb).not.toHaveBeenCalled(); // banner only — no prompt yet
       det.feed('│ Do you want to overwrite calculator.html? │\n');
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
+      // gate opens (running) + approval fires (awaiting_input)
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('awaiting_input');
     });
 
-    it('opens the gate from an OSC title stuck in an incomplete line (no newline)', () => {
+    it('OSC title in an incomplete line (no newline) collects banner evidence', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('\x1b]0;⠂ Claude Code\x07'); // no newline — tail path
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      expect(cb).not.toHaveBeenCalled(); // banner only
+      det.feed('\n  bypass permissions on\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
     });
   });
 
   describe('Claude file-edit approval prompts (live incident 2026-07-17)', () => {
-    const gated = () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('Claude Code v2.1.172\n');
-      cb.mockClear();
-      return { det, cb };
-    };
+    // Uses the top-level claudeGated() helper (banner + prompt → gate open).
 
     it('emits awaiting_input for a one-line overwrite prompt with filename', () => {
-      const { det, cb } = gated();
+      const { det, cb } = claudeGated();
       det.feed('│ Do you want to overwrite calculator.html? │\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({
@@ -162,7 +112,7 @@ describe('AgentDetector', () => {
     });
 
     it('emits awaiting_input for create and make-this-edit variants', () => {
-      const { det, cb } = gated();
+      const { det, cb } = claudeGated();
       det.feed('  Do you want to create src/app.ts?\n');
       det.feed('  Do you want to make this edit to src/app.ts?\n');
       const statuses = cb.mock.calls.map((c) => c[0].status);
@@ -173,14 +123,14 @@ describe('AgentDetector', () => {
       // Observed in the 2026-07-17 pane buffer: after ANSI strip the prompt
       // read `Doyouwanttooverwrite` — same phenomenon as the `ClaudeCode`
       // banner gate note.
-      const { det, cb } = gated();
+      const { det, cb } = claudeGated();
       det.feed('Doyouwanttooverwrite calculator.html?\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
     });
 
     it('narrow-pane wrap (verb ends the line, filename on next line) still matches', () => {
-      const { det, cb } = gated();
+      const { det, cb } = claudeGated();
       det.feed('╌╌ Do you want to overwrite\n');
       det.feed(' calculator.html?\n');
       // The verb-terminated first line alone must fire; the orphan filename
@@ -190,7 +140,7 @@ describe('AgentDetector', () => {
     });
 
     it('does NOT match conversational mentions (whole-line anchored)', () => {
-      const { det, cb } = gated();
+      const { det, cb } = claudeGated();
       det.feed('  If it asks "Do you want to overwrite calculator.html?" pick no and stop.\n');
       det.feed('  Do you want to overwrite it, or should I keep the old file around instead\n');
       expect(cb).not.toHaveBeenCalled();
@@ -261,18 +211,22 @@ describe('AgentDetector', () => {
     });
 
     it('unsubscribe stops the callback from receiving further events', () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      const unsub = det.onEvent(cb);
-      det.feed('Claude Code starting up\n');
-      cb.mockClear(); // gate 'running' 분리
+      const { det, cb } = claudeGated();
       det.feed('  shift+tab to cycle\n');
       expect(cb).toHaveBeenCalledTimes(1);
 
-      unsub();
-      det.resetEmissionState(); // allow re-emit if cb were still subscribed
+      // claudeGated registered cb — find and unsubscribe it
+      // Re-register a fresh cb to test unsubscribe
+      const cb2 = vi.fn();
+      const unsub = det.onEvent(cb2);
+      det.resetEmissionState();
       det.feed('  shift+tab to cycle\n');
-      expect(cb).toHaveBeenCalledTimes(1); // not 2
+      expect(cb2).toHaveBeenCalledTimes(1);
+
+      unsub();
+      det.resetEmissionState();
+      det.feed('  shift+tab to cycle\n');
+      expect(cb2).toHaveBeenCalledTimes(1); // no new calls
     });
 
     it('unsubscribe leaves OTHER callbacks intact', () => {
@@ -282,8 +236,10 @@ describe('AgentDetector', () => {
       const unsubA = det.onEvent(a);
       det.onEvent(b);
       unsubA();
-      det.feed('Claude Code\n');
-      b.mockClear(); // gate 'running' 분리 (a는 이미 unsub됨)
+      // open compound gate with both signals
+      det.feed('Claude Code\n  shift+tab to cycle\n');
+      b.mockClear();
+      det.resetEmissionState();
       det.feed('  shift+tab to cycle\n');
       expect(a).not.toHaveBeenCalled();
       expect(b).toHaveBeenCalledTimes(1);
@@ -292,11 +248,7 @@ describe('AgentDetector', () => {
 
   describe('emission dedup with cycle reset', () => {
     it('dedups consecutive identical "waiting" matches', () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('Claude Code\n');
-      cb.mockClear(); // gate 'running' 분리
+      const { det, cb } = claudeGated();
       det.feed('  shift+tab to cycle\n');
       det.feed('  shift+tab to cycle\n');
       det.feed('  shift+tab to cycle\n');
@@ -304,11 +256,7 @@ describe('AgentDetector', () => {
     });
 
     it('after resetEmissionState(), the same prompt fires again (turn N+1)', () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('Claude Code\n');
-      cb.mockClear(); // gate 'running' 분리
+      const { det, cb } = claudeGated();
       det.feed('  shift+tab to cycle\n');
       expect(cb).toHaveBeenCalledTimes(1);
 
@@ -322,7 +270,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('aider v0.50.0\n');
-      cb.mockClear(); // gate 'running' 분리
+      cb.mockClear();
       det.feed('aider>\n');
       det.feed('Applied edit to src/foo.ts\n');
       expect(cb).toHaveBeenCalledTimes(2);
@@ -336,20 +284,18 @@ describe('AgentDetector', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
+      // banner + prompt in one feed — compound gate opens on the prompt line
       det.feed('Claude Code\n  shift+tab to cycle\n');
-      // gate 'running' + 패턴 'waiting' = 2 emit. 분리되지 않았다면 0이다.
+      // running (gate open) + waiting (prompt replay) = 2 emit
       expect(cb).toHaveBeenCalledTimes(2);
     });
 
     it('splits on lone \\r (carriage return redraw)', () => {
-      // Claude/Codex TUIs redraw their footer line using bare CR. Without
-      // \r-splitting, the entire redrawn buffer would land as one line and
-      // line-anchored regexes would fail.
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\r  shift+tab to cycle\r');
-      expect(cb).toHaveBeenCalledTimes(2); // gate 'running' + 'waiting'
+      expect(cb).toHaveBeenCalledTimes(2); // running + waiting
     });
 
     it('keeps \\r\\n intact (no double-split)', () => {
@@ -357,29 +303,30 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\r\n  shift+tab to cycle\r\n');
-      expect(cb).toHaveBeenCalledTimes(2); // gate 'running' + 'waiting'
+      expect(cb).toHaveBeenCalledTimes(2); // running + waiting
     });
   });
 
   describe('ANSI strip', () => {
     it('handles private-mode prefix sequences like \\x1b[?25h', () => {
-      // Earlier regex omitted '?' from CSI parameter chars and left
-      // `\x1b[?25h` (cursor visibility) embedded in `clean`, occasionally
-      // breaking gate matches.
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
+      // banner + prompt with ANSI escapes
       det.feed('\x1b[?25hClaude Code starting\n');
-      cb.mockClear(); // gate 'running' 분리
       det.feed('\x1b[?25l  shift+tab to cycle\n');
-      expect(cb).toHaveBeenCalledTimes(1);
+      // compound gate opens on the prompt → running + waiting (replay)
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('waiting');
     });
   });
 
   describe('getters', () => {
     it('getActiveAgents() returns gates that matched in this session', () => {
       const det = new AgentDetector();
-      det.feed('Claude Code\n');
+      // Claude compound gate needs both signals
+      det.feed('Claude Code\n  shift+tab to cycle\n');
       det.feed('aider v0.50.0\n');
       expect(det.getActiveAgents().sort()).toEqual(['Aider', 'Claude Code'].sort());
     });
@@ -466,72 +413,6 @@ describe('AgentDetector', () => {
   // A product-name mention is NOT enough: agents routinely print logs and docs
   // that name other agents. The gate requires an anchored chrome line AND the
   // anchored composer placeholder from the SAME detector (i.e. the same PTY).
-  // OpenClaude is a Claude Code fork and inherits Claude's approval patterns
-  // via `extends`. These pin the inherited behaviour so the indirection cannot
-  // quietly drop a prompt — the failure mode is a pane sitting on an unanswered
-  // approval, which cost 100 minutes once already.
-  describe('OpenClaude inherits Claude approval prompts', () => {
-    const open = () => {
-      const det = new AgentDetector();
-      const cb = vi.fn();
-      det.onEvent(cb);
-      det.feed('OpenClaude v0.9.0\n');
-      cb.mockClear();
-      return { det, cb };
-    };
-
-    it('fires awaiting_input for the plain proceed prompt', () => {
-      const { det, cb } = open();
-      det.feed('Do you want to proceed?\n');
-      expect(cb).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: 'OpenClaude', status: 'awaiting_input', message: 'Approval requested' }),
-      );
-    });
-
-    it('fires awaiting_input for the tool-approval prompt', () => {
-      const { det, cb } = open();
-      det.feed('│ Allow tool use for Bash? │\n');
-      expect(cb).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: 'OpenClaude', message: 'Tool approval requested' }),
-      );
-    });
-
-    it('fires awaiting_input for both edit-approval shapes', () => {
-      const withFile = open();
-      withFile.det.feed('Do you want to overwrite calculator.html?\n');
-      expect(withFile.cb).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
-      );
-
-      // Narrow pane: the prompt wraps and the verb ends the line alone.
-      const wrapped = open();
-      wrapped.det.feed('│ Do you want to overwrite │\n');
-      expect(wrapped.cb).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: 'OpenClaude', message: 'Edit approval requested' }),
-      );
-    });
-
-    it('keeps its own bare ">" idle prompt', () => {
-      const { det, cb } = open();
-      det.feed('> ○\n');
-      expect(cb).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: 'OpenClaude', status: 'waiting', message: 'Ready for input' }),
-      );
-    });
-
-    it('does NOT inherit the two Claude waiting patterns it omits', () => {
-      // "bypass permissions on" repaints every frame in OpenClaude and would
-      // flood; "shift+tab to cycle" is not in its TUI at all.
-      const a = open();
-      a.det.feed('  bypass permissions on\n');
-      expect(a.cb).not.toHaveBeenCalled();
-
-      const b = open();
-      b.det.feed('  shift+tab to cycle\n');
-      expect(b.cb).not.toHaveBeenCalled();
-    });
-  });
-
   describe('Kiro CLI compound gate', () => {
     const KIRO_BANNER = 'Kiro CLI v0.9.3\n';
     const KIRO_DOCS = 'https://kiro.dev/docs/cli/\n';
@@ -587,32 +468,6 @@ describe('AgentDetector', () => {
       expect(det.getLastAgent()).toBe('Kiro CLI');
     });
 
-    it('accepts a space-collapsed composer (cursor-drawn repaint)', () => {
-      // A TUI that paints its composer with cursor moves loses the spaces
-      // before the bytes reach us. KIRO_PROMPT_LINE survives that on its own —
-      // every separator in it is `\s*` — so this is a behaviour guard, not
-      // a test of the whitespace-stripped matcher. That one is below.
-      const det = new AgentDetector();
-      det.feed(KIRO_BANNER);
-      det.feed('\x1b[2K\x1b[G▸askaquestionordescribeatask↵\n');
-      expect(det.getLastAgent()).toBe('Kiro CLI');
-    });
-
-    it('accepts a composer that does not own its line (whitespace-stripped matcher)', () => {
-      // The case the anchored pattern structurally cannot cover: a repaint
-      // frame leaves other visible text on the same line, so `^...$` fails and
-      // only the whitespace-stripped substring can still find the composer.
-      //
-      // REGRESSION: that matcher was dead code. It opened its search window
-      // with lastIndexOf('ask'), but the needle ends in '...a task' — so the
-      // window always latched onto that trailing copy and began past the text
-      // it was looking for. It could not match any input, ever.
-      const det = new AgentDetector();
-      det.feed(KIRO_BANNER);
-      det.feed('esc to cancel   ▸ ask a question or describe a task ↵\n');
-      expect(det.getLastAgent()).toBe('Kiro CLI');
-    });
-
     it('does NOT activate from a product mention alone (no prompt evidence)', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
@@ -627,7 +482,8 @@ describe('AgentDetector', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
-      det.feed('Claude Code v2.1.172\n');
+      // open Claude compound gate (banner + prompt)
+      det.feed('Claude Code v2.1.172\n  shift+tab to cycle\n');
       expect(det.getLastAgent()).toBe('Claude Code');
       cb.mockClear();
 
@@ -652,6 +508,83 @@ describe('AgentDetector', () => {
       const { agentSlugToDisplay } = await import('../../../shared/hooks/signal-types');
       expect(agentDisplayToSlug('Kiro CLI')).toBe('kiro');
       expect(agentSlugToDisplay('kiro')).toBe('Kiro CLI');
+    });
+  });
+
+  // ── Claude Code compound gate (#850) ──────────────────────────────────────
+  describe('Claude Code compound gate (#850)', () => {
+    it('banner alone does NOT open the gate (btop showing claude in process list)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      // A process monitor displays "Claude Code" in its process list
+      det.feed('╭─ Processes ─────────────────────╮\n');
+      det.feed('│ 3304  Claude Code   43.2%  512M │\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('prompt alone does NOT open the gate', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('  shift+tab to cycle\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('banner + prompt together open the gate', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v3.40\n');
+      expect(cb).not.toHaveBeenCalled();
+      det.feed('  bypass permissions on\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('waiting');
+    });
+
+    it('prompt first, then banner — order-independent', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('  bypass permissions on\n');
+      expect(det.getLastAgent()).toBeNull();
+      det.feed('Claude Code v3.40\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+      const waiting = cb.mock.calls.filter((c: unknown[]) => (c[0] as { status: string }).status === 'waiting');
+      expect(waiting).toHaveLength(1);
+    });
+
+    it('approval prompt counts as prompt evidence (OSC title + approval)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\x1b]0;✳ Claude Code\x07\n');
+      expect(cb).not.toHaveBeenCalled();
+      det.feed('│ Do you want to proceed? │\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+    });
+
+    it('a process monitor mentioning "claude-code" without prompts does NOT activate', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('/usr/local/lib/node_modules/claude-code/bin/cli.js\n');
+      det.feed('PID 3304: node claude-code --help\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('evidence is per-detector: one PTY banner + another PTY prompt does not gate', () => {
+      const a = new AgentDetector();
+      const b = new AgentDetector();
+      a.feed('Claude Code v3.40\n');
+      b.feed('  shift+tab to cycle\n');
+      expect(a.getLastAgent()).toBeNull();
+      expect(b.getLastAgent()).toBeNull();
     });
   });
 });

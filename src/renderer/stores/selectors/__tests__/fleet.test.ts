@@ -70,8 +70,15 @@ const surfaceActivity: Record<string, string> = {
   'pty-2a': '✎ fleet.ts',
 };
 
+// Per-PTY agent identity — only panes with an entry here are confirmed agents.
+// pty-1 runs Claude Code (ws-1 active), pty-2a runs Codex (ws-2 active).
+const surfaceAgent: Record<string, { name: string; status: AgentStatus }> = {
+  'pty-1': { name: 'Claude Code', status: 'awaiting_input' },
+  'pty-2a': { name: 'Codex', status: 'running' },
+};
+
 function fixture() {
-  return { workspaces: [w1, w2, w3], surfaceAgentStatus, surfaceActivity };
+  return { workspaces: [w1, w2, w3], surfaceAgentStatus, surfaceActivity, surfaceAgent };
 }
 
 function byPane(panes: FleetPane[], paneId: string): FleetPane {
@@ -155,7 +162,7 @@ describe('selectFleetPanes', () => {
       { agentName: 'Codex', agentStatus: 'error' },
     );
     const p2a = byPane(
-      selectFleetPanes({ workspaces: [wsErr], surfaceAgentStatus: {}, surfaceActivity: {} }),
+      selectFleetPanes({ workspaces: [wsErr], surfaceAgentStatus: {}, surfaceActivity: {}, surfaceAgent: { 'pty-2a': { name: 'Codex', status: 'error' } } }),
       'p2a',
     );
     expect(p2a.agentStatus).toBe('error');
@@ -178,6 +185,7 @@ describe('selectFleetPanes', () => {
       workspaces: [tui],
       surfaceAgentStatus: { 'pty-tui': 'complete' },
       surfaceActivity: {},
+      surfaceAgent: { 'pty-tui': { name: 'OpenCode', status: 'running' } },
     });
     expect(card.isActivePane).toBe(true);
     expect(card.agentStatus).toBe('complete');
@@ -189,6 +197,31 @@ describe('selectFleetPanes', () => {
     expect(p2b.isActivePane).toBe(false);
     expect(p2b.agentName).toBeUndefined();     // workspace name not borrowed
     expect(p2b.surfaceType).toBe('browser');
+  });
+
+  it('non-agent active pane does NOT inherit workspace agentName or agentStatus (#850)', () => {
+    // Ctrl+D split: left pane runs Claude (real agent), right pane runs btop.
+    // When btop is the active pane, it must NOT borrow Claude's name/status.
+    const split = workspace(
+      'ws-split', 'split',
+      branch('b', [
+        leaf('agent-pane', [surface('sa', 'pty-agent')]),
+        leaf('btop-pane', [surface('sb', 'pty-btop')]),
+      ]),
+      'btop-pane', // btop is the ACTIVE pane
+      { agentName: 'Claude Code', agentStatus: 'waiting' },
+    );
+    const panes = selectFleetPanes({
+      workspaces: [split],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      // only the agent pane has a surfaceAgent entry — btop does not
+      surfaceAgent: { 'pty-agent': { name: 'Claude Code', status: 'waiting' } },
+    });
+    const btop = byPane(panes, 'btop-pane');
+    expect(btop.isActivePane).toBe(true);
+    expect(btop.agentName).toBeUndefined();  // must NOT show "Claude Code"
+    expect(btop.agentStatus).toBe('idle');    // must NOT show "waiting"
   });
 
   it('defaults to idle for an unspawned surface (ptyId === "") with no metadata', () => {
@@ -759,6 +792,7 @@ describe("selectFleetPanes — workspace 'running' is not borrowed by the active
     );
     const panes = selectFleetPanes({
       workspaces: [wsError], surfaceAgentStatus: {}, surfaceActivity: {},
+      surfaceAgent: { 'daemon-587eb539': { name: 'Claude Code', status: 'error' } },
     });
     expect(byPane(panes, 'p-shell').agentStatus).toBe('error');
   });
