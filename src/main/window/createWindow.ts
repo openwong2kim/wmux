@@ -2,12 +2,23 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
+import { PLUGIN_PROTOCOL_SCHEME } from '../../shared/pluginHost';
 import { attachFlashFrameAutoClear } from './flashFrame';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
 const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
 const iconFile = `icon.${iconExt}`;
+
+export const MAIN_WINDOW_PRODUCTION_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "font-src 'self'",
+  `frame-src 'self' https: http: ${PLUGIN_PROTOCOL_SCHEME}:`,
+].join('; ');
 
 /**
  * Load the main renderer (Vite dev server in development, packaged HTML file
@@ -159,13 +170,11 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   // the production CSP below is strict (no unsafe-eval), so this is dev-only
   // noise reduction, not a security trade-off.
   if (!MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    const cspPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https: http:";
-
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
       callback({
         responseHeaders: {
           ...details.responseHeaders,
-          'Content-Security-Policy': [cspPolicy],
+          'Content-Security-Policy': [MAIN_WINDOW_PRODUCTION_CSP],
         },
       });
     });
