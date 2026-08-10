@@ -68,6 +68,12 @@ const PAGE_FIND_DELAY_MS = 500;
 const CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE =
   '[PlaywrightEngine] browser.cdp.info did not disclose a usable CDP endpoint to this caller';
 
+/**
+ * Non-retryable inside the engine. Tools with a scoped RPC equivalent
+ * deliberately convert this refusal into fallback via allowScopedRpcFallback;
+ * tools that require a Playwright Page surface it because no equivalent
+ * main-process operation exists.
+ */
 class CdpAttachInfoUnavailableError extends Error {
   constructor() {
     super(CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE);

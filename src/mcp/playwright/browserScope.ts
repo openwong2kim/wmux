@@ -23,9 +23,15 @@ export function isWorkspaceScopeUnresolvedError(error: unknown): boolean {
 }
 
 /**
- * Page discovery failures may fall back to a scoped main-process RPC. A scope
- * refusal may not: on an older main that ignores workspaceId, doing so would
- * recreate the cross-workspace path the refusal was meant to close.
+ * Page discovery failures may fall back to a scoped main-process RPC. A
+ * withheld raw CDP endpoint is intentionally in this class: tools with an RPC
+ * equivalent stay in the workspace-scoped, lease-covered lane, while tools
+ * that require a Playwright Page omit this helper and surface the attachment
+ * refusal.
+ *
+ * A scope refusal may not fall back: on an older main that ignores workspaceId,
+ * doing so would recreate the cross-workspace path the refusal was meant to
+ * close.
  */
 export function allowScopedRpcFallback(error: unknown): null {
   if (isWorkspaceScopeUnresolvedError(error)) throw error;
