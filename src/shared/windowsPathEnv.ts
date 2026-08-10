@@ -1,4 +1,7 @@
 import { execFileSync } from 'child_process';
+import { randomBytes } from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 /**
@@ -48,33 +51,138 @@ export function resetFreshPathCacheForTests(): void {
 }
 
 /**
+ * Ceiling on the exported `.reg` file. `query /v Path` was implicitly bounded by
+ * being one value; exporting the whole key is not, and this read is synchronous
+ * on the pty-create path. A user PATH is tens of KB at the outside.
+ */
+const MAX_EXPORT_BYTES = 1024 * 1024;
+
+/** Decode the two escapes `.reg` string values use. NOT JSON unescaping — a
+ *  literal `\n` in a path must survive as backslash-n, not become a newline. */
+function unescapeRegString(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && (s[i + 1] === '\\' || s[i + 1] === '"')) {
+      out += s[i + 1];
+      i++;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+/**
+ * Pull one value out of a `reg export` file.
+ *
+ * ```
+ * Windows Registry Editor Version 5.00
+ *
+ * [HKEY_CURRENT_USER\Environment]     ← root section: the only one we read
+ * "Path"=hex(2):44,00,3a,00,…,\       ← REG_EXPAND_SZ, UTF-16LE, \-continued
+ *   5c,00,61,00,00,00
+ * "TEMP"="C:\\Users\\me\\Temp"        ← REG_SZ, \\ and \" escaped
+ *
+ * [HKEY_CURRENT_USER\Environment\Sub] ← a subkey's "Path" is NOT our value
+ * "Path"="C:\\decoy"
+ * ```
+ *
+ * Returns null for anything it cannot decode with certainty — a malformed
+ * export must fail open to the caller's existing PATH, never yield a partial
+ * one that would silently drop entries.
+ */
+export function parseRegExportValue(text: string, name: string): string | null {
+  const lines = text.split(/\r?\n/);
+  const open = lines.findIndex((l) => l.trimStart().startsWith('['));
+  if (open === -1) return null;
+  let close = lines.length;
+  for (let i = open + 1; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith('[')) {
+      close = i;
+      break;
+    }
+  }
+  const section = lines.slice(open + 1, close);
+
+  const prefix = `"${name.toLowerCase()}"=`;
+  const head = section.findIndex((l) => l.toLowerCase().startsWith(prefix));
+  if (head === -1) return null;
+
+  let body = section[head].slice(prefix.length);
+  for (let i = head; body.endsWith('\\'); ) {
+    i++;
+    if (i >= section.length) return null; // continuation runs off the section
+    const next = section[i].trim();
+    if (!next) return null; // a trailing `\` must be followed by more tokens
+    body = body.slice(0, -1) + next;
+  }
+
+  if (body.startsWith('"')) {
+    if (body.length < 2 || !body.endsWith('"')) return null;
+    return unescapeRegString(body.slice(1, -1));
+  }
+
+  const hex = body.match(/^hex\(([0-9a-f]+)\):(.*)$/i);
+  if (!hex) return null;
+  // 1 = REG_SZ, 2 = REG_EXPAND_SZ. Anything else (REG_MULTI_SZ, REG_BINARY…)
+  // is not a PATH and must not be decoded as one.
+  const type = parseInt(hex[1], 16);
+  if (type !== 1 && type !== 2) return null;
+
+  const tokens = hex[2].split(',').map((t) => t.trim()).filter(Boolean);
+  if (tokens.length === 0 || tokens.length % 2 !== 0) return null; // UTF-16 pairs
+  const bytes = Buffer.alloc(tokens.length);
+  for (let i = 0; i < tokens.length; i++) {
+    if (!/^[0-9a-f]{1,2}$/i.test(tokens[i])) return null;
+    bytes[i] = parseInt(tokens[i], 16);
+  }
+  return bytes.toString('ucs2').replace(/\0+$/, '');
+}
+
+/**
  * Read the raw `Path` value from a registry Environment key via `reg.exe`.
  * `reg.exe` is used (not a cmdlet/.NET call) because it is immune to PowerShell
  * language-mode lockdown and returns the value WITHOUT expanding `%VAR%` — we do
  * the expansion ourselves against the caller's env. Returns null on any failure
  * or when the key has no `Path` value (e.g. a user with no user-scoped PATH).
+ *
+ * `export` to a file, NOT `query` to a pipe (#849). `reg.exe` encodes piped text
+ * in the console/ANSI code page, so a PATH entry like `D:\软件\Python312` comes
+ * back with the characters that page cannot represent already replaced by `?`,
+ * and the rest as invalid UTF-8 → U+FFFD. That loss happens in reg.exe before
+ * Node sees a byte, so no choice of decoding recovers it. A `.reg` file is
+ * UTF-16LE, so no code page is involved at all.
+ *
+ * Exported so a test can drive the real reader against a sandbox key: the
+ * `deps.readRegistryPath` seam below means every existing test stubs this
+ * function out, which is precisely why the encoding bug shipped green.
  */
-function readRegistryEnvPath(root: string): string | null {
+export function readRegistryEnvPath(root: string): string | null {
+  const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+  const tmp = path.join(os.tmpdir(), `wmux-regpath-${randomBytes(8).toString('hex')}.reg`);
   try {
-    const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
-    // The read is synchronous because both callers sit on the synchronous
-    // pty-create path (PTYManager.create). A normal `reg query` returns in tens
-    // of ms; the timeout only bounds the pathological case (AV hooking child
-    // spawns), capping the worst-case main-process stall at 2×800ms per cache
-    // miss instead of hanging. On timeout we fail open to the existing PATH.
-    const out = execFileSync(reg, ['query', root, '/v', 'Path'], {
-      encoding: 'utf8',
+    // Synchronous because both callers sit on the synchronous pty-create path
+    // (PTYManager.create). The timeout bounds the pathological case (AV hooking
+    // child spawns), capping the worst-case main-process stall at 2×800ms per
+    // cache miss. `/y` so a leftover file from a crashed run can never turn
+    // this into an overwrite prompt that blocks until that timeout.
+    execFileSync(reg, ['export', root, tmp, '/y'], {
+      stdio: 'ignore',
       timeout: 800,
       windowsHide: true,
     });
-    for (const line of out.split(/\r?\n/)) {
-      // reg output row:  "    Path    REG_EXPAND_SZ    C:\a;C:\b"
-      const m = line.match(/^\s*Path\s+REG(?:_EXPAND)?_SZ\s+(.*\S)\s*$/i);
-      if (m) return m[1];
-    }
-    return null;
+    if (fs.statSync(tmp).size > MAX_EXPORT_BYTES) return null;
+    return parseRegExportValue(fs.readFileSync(tmp, 'ucs2'), 'Path');
   } catch {
     return null;
+  } finally {
+    // Best-effort and swallowed: a failed unlink must not mask a good result
+    // nor turn a caught failure into a throw.
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* already gone, or locked by a scanner — the OS reaps %TEMP% */
+    }
   }
 }
 
