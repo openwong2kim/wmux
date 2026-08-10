@@ -49,8 +49,16 @@ function createMockDaemonServer(
             continue;
           }
 
-          const result = handler(req.params || {});
-          socket.write(JSON.stringify({ id: req.id, ok: true, result }) + '\n');
+          // A throwing handler answers `{id, ok:false, error}` the way the real
+          // dispatch does. Replying with `id: null` here would leave the client's
+          // pending request unmatched and turn a plain error into a timeout.
+          try {
+            const result = handler(req.params || {});
+            socket.write(JSON.stringify({ id: req.id, ok: true, result }) + '\n');
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            socket.write(JSON.stringify({ id: req.id, ok: false, error: message }) + '\n');
+          }
         } catch (err) {
           socket.write(JSON.stringify({ id: null, ok: false, error: 'Invalid JSON' }) + '\n');
         }
@@ -766,5 +774,106 @@ describe('DaemonClient — LanLink PR-5 pairing/peer bridge', () => {
 
     expect(await client.lanlinkPeersRemove('u')).toEqual({ ok: true });
     expect(calls['remove']).toEqual({ peerUuid: 'u' });
+  });
+});
+
+// Issue #659 — the daemon only pushes events to clients that subscribed, and
+// this client is the app's only source of them. A silently-dropped subscribe
+// would leave the whole app event-blind for the life of the connection with
+// nothing in the logs, so the handshake is pinned here rather than assumed.
+describe('DaemonClient — event subscription (#659)', () => {
+  const AUTH_TOKEN = 'test-token-events';
+  let mockServer: ReturnType<typeof createMockDaemonServer>;
+  let client: DaemonClient;
+
+  afterEach(async () => {
+    try { await client?.disconnect(); } catch { /* ignore */ }
+    try { await mockServer?.stop(); } catch { /* ignore */ }
+  });
+
+  it('subscribes to events as the first RPC on a fresh control pipe', async () => {
+    const pipeName = testPipeName('evsub');
+    const methods: string[] = [];
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      'daemon.events.subscribe': () => { methods.push('daemon.events.subscribe'); return { ok: true }; },
+      'daemon.ping': () => { methods.push('daemon.ping'); return { status: 'ok' }; },
+    });
+    await mockServer.start();
+
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    expect(await client.connect()).toBe(true);
+    await client.rpc('daemon.ping');
+
+    // Ordering is the point: events generated before the daemon reads the
+    // subscribe are lost, so it has to lead — not trail the first real call.
+    expect(methods[0]).toBe('daemon.events.subscribe');
+  });
+
+  it('re-emits a pushed event frame once subscribed', async () => {
+    const pipeName = testPipeName('evemit');
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      'daemon.events.subscribe': () => ({ ok: true }),
+    });
+    await mockServer.start();
+
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    const seen: unknown[] = [];
+    client.on('event', (e) => seen.push(e));
+    await client.connect();
+
+    // Push an id-less frame the way the daemon's broadcast does.
+    await new Promise((r) => setTimeout(r, 50));
+    mockServer.sockets.forEach((s) => s.write(JSON.stringify({ type: 'title.changed', sessionId: 's1' }) + '\n'));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(seen).toContainEqual(expect.objectContaining({ type: 'title.changed' }));
+  });
+
+  it('retries a subscribe the daemon rejected, instead of going event-blind', async () => {
+    const pipeName = testPipeName('evretry');
+    let attempts = 0;
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      // First answer mirrors a rate-limited boot: transient, and previously
+      // swallowed — the connection would then never receive a single event.
+      'daemon.events.subscribe': () => {
+        attempts++;
+        if (attempts === 1) throw new Error('rate limited');
+        return { ok: true };
+      },
+    });
+    await mockServer.start();
+
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    const seen: unknown[] = [];
+    client.on('event', (e) => seen.push(e));
+    await client.connect();
+
+    // First attempt fails, backoff is 250ms, second succeeds.
+    await new Promise((r) => setTimeout(r, 600));
+    expect(attempts).toBeGreaterThanOrEqual(2);
+
+    mockServer.sockets.forEach((s) => s.write(JSON.stringify({ type: 'title.changed', sessionId: 's1' }) + '\n'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen).toContainEqual(expect.objectContaining({ type: 'title.changed' }));
+  });
+
+  it('stops asking a daemon that predates opt-in events', async () => {
+    const pipeName = testPipeName('evold');
+    let attempts = 0;
+    // No handler registered — the mock answers `Unknown method`, exactly as a
+    // pre-#659 daemon would. That daemon already pushes to everyone, so
+    // re-asking would just spend the rate limit.
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      'daemon.ping': () => { attempts++; return { status: 'ok' }; },
+    });
+    await mockServer.start();
+
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    await client.connect();
+    await new Promise((r) => setTimeout(r, 600));
+
+    // Nothing threw, connect still succeeded, and no retry storm followed.
+    expect(await client.rpc('daemon.ping')).toEqual({ status: 'ok' });
+    expect(attempts).toBe(1);
   });
 });

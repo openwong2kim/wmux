@@ -97,7 +97,12 @@ function broadcastListener() {
   const frames = [];
   const s = net.createConnection(readPipeName());
   let buf = '';
-  s.on('connect', () => s.write(`${JSON.stringify({ id: `sub-${TAG}`, token: readToken(), method: 'daemon.listSessions', params: {} })}\n`));
+  // Events are opt-in on the daemon side — without the subscribe this listener
+  // collects nothing and every waitFor below burns its full timeout.
+  s.on('connect', () => {
+    s.write(`${JSON.stringify({ id: `sub-${TAG}`, token: readToken(), method: 'daemon.events.subscribe', params: {} })}\n`);
+    s.write(`${JSON.stringify({ id: `ping-${TAG}`, token: readToken(), method: 'daemon.listSessions', params: {} })}\n`);
+  });
   s.on('data', (d) => {
     buf += d.toString();
     let nl;

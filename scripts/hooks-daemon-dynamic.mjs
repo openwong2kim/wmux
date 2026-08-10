@@ -184,7 +184,11 @@ class PipeClient {
       s.once('connect', () => { clearTimeout(t); resolve(s); });
       s.once('error', (e) => { clearTimeout(t); reject(e); });
     });
-    return new PipeClient(socket, opts);
+    const client = new PipeClient(socket, opts);
+    // Events are opt-in on the daemon side, so a caller that passes onEvent has
+    // to ask for them or it waits forever on frames that are never sent.
+    if (opts?.onEvent) await client.rpc('daemon.events.subscribe');
+    return client;
   }
 
   rpc(method, params = {}, timeoutMs = 10_000) {

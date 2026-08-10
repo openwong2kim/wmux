@@ -135,6 +135,10 @@ try {
     }
   });
 
+  // Events are opt-in on the daemon side — without this the notification.event
+  // frames this probe exists to assert on are never sent.
+  await rpc(control, 'daemon.events.subscribe', {});
+
   const SESSION_ID = 'd1-osc-test';
   await rpc(control, 'daemon.createSession', {
     id: SESSION_ID,
