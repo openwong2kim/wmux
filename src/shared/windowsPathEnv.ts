@@ -172,7 +172,15 @@ export function readRegistryEnvPath(root: string): string | null {
       windowsHide: true,
     });
     if (fs.statSync(tmp).size > MAX_EXPORT_BYTES) return null;
-    return parseRegExportValue(fs.readFileSync(tmp, 'ucs2'), 'Path');
+    const raw = fs.readFileSync(tmp);
+    // `reg export` writes UTF-16LE with a BOM. Check it rather than decoding
+    // blind: without this the parser only skips a stray U+FEFF because it
+    // happens to scan for `[`, and a file that is not UTF-16 would decode to
+    // garbage that the parser might still find a `Path=` line in. Wrong
+    // encoding is exactly the failure this whole change is about, so it fails
+    // open instead of guessing.
+    if (raw.length < 2 || raw[0] !== 0xff || raw[1] !== 0xfe) return null;
+    return parseRegExportValue(raw.subarray(2).toString('ucs2'), 'Path');
   } catch {
     return null;
   } finally {

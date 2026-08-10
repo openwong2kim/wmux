@@ -122,16 +122,24 @@ describe.runIf(process.platform === 'win32')('readRegistryEnvPath (live reg.exe)
   });
 
   it('leaves no temp file behind', () => {
-    const before = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('wmux-regpath-'));
+    // Point os.tmpdir() at a private directory for the duration. Counting
+    // `wmux-regpath-*` in the shared temp dir instead would go flaky the moment
+    // a real wmux is running alongside the suite — it writes the same prefix.
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-849-tmp-'));
+    const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+    process.env.TEMP = sandbox;
+    process.env.TMP = sandbox;
     drop();
     execFileSync(reg, ['add', KEY, '/v', 'Path', '/t', 'REG_SZ', '/d', 'C:\\a', '/f'], {
       stdio: 'ignore',
     });
     try {
-      readRegistryEnvPath(KEY);
-      const after = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('wmux-regpath-'));
-      expect(after.length).toBe(before.length);
+      expect(readRegistryEnvPath(KEY)).toBe('C:\\a'); // it really ran
+      expect(fs.readdirSync(sandbox)).toEqual([]);
     } finally {
+      process.env.TEMP = saved.TEMP;
+      process.env.TMP = saved.TMP;
+      fs.rmSync(sandbox, { recursive: true, force: true });
       drop();
     }
   });
