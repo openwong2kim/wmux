@@ -106,6 +106,15 @@ export class DaemonClient extends EventEmitter {
         this.controlPipe = socket;
         this.connected = true;
         this.setupControlPipe(socket);
+        // Pushed events are opt-in on the daemon side (issue #659), and this
+        // client is the one consumer that needs them. Sent here rather than
+        // from the connect callers so the request is the FIRST line on the
+        // socket: the daemon processes lines in order, so every event it
+        // generates after reading this one is delivered. Deliberately not
+        // awaited — waiting for the reply would only widen the gap, and an
+        // older daemon that has no such method just answers `Unknown method`
+        // while still pushing events to everyone, as it always did.
+        this.subscribeToEvents();
         finish({ ok: true });
       });
 
@@ -119,6 +128,54 @@ export class DaemonClient extends EventEmitter {
         finish({ ok: false, code: err?.code });
       });
     });
+  }
+
+  /**
+   * Ask the daemon to push events down this control pipe.
+   *
+   * Retried, because a swallowed failure here is silent and total: the app
+   * would keep running with no session, title, cwd, or notification events for
+   * the life of the connection, and nothing would ever ask again. The realistic
+   * failure is transient — the subscribe shares the daemon's RPC rate limit
+   * with every other client, so a boot-time burst can bounce it once.
+   *
+   * `Unknown method` is the one terminal answer worth recognizing: that daemon
+   * predates opt-in events and is already pushing to everyone, so retrying
+   * would only spend the rate limit re-asking a question already answered.
+   */
+  private static readonly SUBSCRIBE_MAX_ATTEMPTS = 5;
+
+  // Bumped on every connect so a retry loop left over from a previous socket
+  // cannot resurrect itself and subscribe on behalf of a connection that is
+  // already gone.
+  private subscribeGeneration = 0;
+
+  private subscribeToEvents(): void {
+    const generation = ++this.subscribeGeneration;
+    void this.runSubscribeWithRetry(generation);
+  }
+
+  private async runSubscribeWithRetry(generation: number): Promise<void> {
+    for (let attempt = 1; attempt <= DaemonClient.SUBSCRIBE_MAX_ATTEMPTS; attempt++) {
+      if (generation !== this.subscribeGeneration || !this.connected) return;
+      try {
+        // The handler's own answer rides in `result`; the envelope's `ok` only
+        // says the RPC was dispatched, so checking it alone would read a
+        // refusal as a success.
+        const result = (await this.rpc('daemon.events.subscribe')) as { ok?: boolean } | null;
+        if (result?.ok === true) return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes('Unknown method')) return;
+        console.warn(`[lifecycle] DaemonClient events subscribe attempt ${attempt} failed: ${message}`);
+      }
+      if (attempt < DaemonClient.SUBSCRIBE_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
+      }
+    }
+    console.error(
+      '[lifecycle] DaemonClient could not subscribe to daemon events — this connection will receive none',
+    );
   }
 
   /** Disconnect from daemon, cleaning up all pipes. */

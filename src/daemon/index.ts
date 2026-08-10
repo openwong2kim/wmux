@@ -2809,6 +2809,34 @@ function registerRpcHandlers(
     const role = typeof params['role'] === 'string' ? params['role'] : '';
     if (role !== 'main') return { ok: false };
     pipeServer.markFirstParty(ctx.clientId);
+    // The app is the one client that must subscribe to events (#659). If it
+    // identified but never did, it is an older build talking to this daemon and
+    // it is about to sit there receiving nothing — the same silent, undiagnosable
+    // failure #659 was about, pointing the other way. Say so in the log, because
+    // a subscriber count of zero looks perfectly normal from in here. Only the
+    // app identifies as 'main', so this cannot fire for the CLI or MCP server.
+    const idleCheck = setTimeout(() => {
+      if (pipeServer.isFirstParty(ctx.clientId) && !pipeServer.isEventSubscriber(ctx.clientId)) {
+        log(
+          'warn',
+          `[events] first-party client ${ctx.clientId} identified but never subscribed — it will receive no events (pre-#659 app build?)`,
+        );
+      }
+    }, 5_000);
+    idleCheck.unref();
+    return { ok: true };
+  });
+
+  // Pushed events are opt-in (issue #659). A client that never calls this reads
+  // nothing but replies to its own requests, so "write a request, read one line
+  // back" — the obvious client — can no longer read an event by mistake and
+  // report it as a failure with an empty error message.
+  pipeServer.onRpc('daemon.events.subscribe', async (_params, ctx) => {
+    return { ok: pipeServer.subscribeEvents(ctx.clientId) };
+  });
+
+  pipeServer.onRpc('daemon.events.unsubscribe', async (_params, ctx) => {
+    pipeServer.unsubscribeEvents(ctx.clientId);
     return { ok: true };
   });
 

@@ -252,21 +252,25 @@ Wire shape: `channelId`, `seq` (per-channel monotonic), `senderWorkspaceId`, `re
 
 ### 2.9 The control connection is multiplexed — correlate on `id`
 
-A control connection carries **two kinds of frame in the same newline-delimited JSON stream**: replies to requests you sent, and unsolicited events the daemon pushes to every connected client. There is no subscription step — a client receives pushed events from the moment it connects, whether or not it ever asked for any. See `DaemonPipeServer.broadcast` in `src/daemon/DaemonPipeServer.ts`.
+A control connection can carry **two kinds of frame in the same newline-delimited JSON stream**: replies to requests you sent, and events the daemon pushes. See `DaemonPipeServer.broadcast` in `src/daemon/DaemonPipeServer.ts`.
 
-The two are told apart by `id`:
+**Events are opt-in.** A connection receives replies and nothing else until it calls `daemon.events.subscribe`; `daemon.events.unsubscribe` turns them off again. The subscription is per-connection and dies with the socket, so a client that reconnects MUST subscribe again. A client that only makes requests — the CLI and the MCP server are both in this category — never needs to touch either method, and its stream is then a plain request/reply stream.
+
+Once subscribed, the two frame kinds are told apart by `id`:
 
 - **Replies always echo the `id` of the request they answer**, and always carry `ok`. This holds on every path, including `unauthorized`, `rate limited`, and `Invalid RPC request`. A reply to a request that could not be parsed at all carries `"id": null`.
 - **Pushed events never carry an `id`.** They carry a `type` (e.g. `title.changed`, `lanlink.remote.received`) and their own payload fields.
 
-Therefore a client **MUST**:
+Therefore a **subscribed** client **MUST**:
 
 1. Read frames until it sees one whose `id` matches the `id` it sent — that frame, and only that frame, is its response.
 2. Ignore (or route to an event handler) any frame with no `id`. Never treat one as a response.
 
-**Writing one request and reading exactly one line back is incorrect**, even though it appears to work: it succeeds until an event happens to be pushed between the request and its reply, at which point the client reads the event instead. An event frame has no `ok` and no `error`, so a client that assumes otherwise typically reports a failure with an empty error message and then discards the real reply when it arrives.
+**Once subscribed, writing one request and reading exactly one line back is incorrect**, even though it appears to work: it succeeds until an event happens to be pushed between the request and its reply, at which point the client reads the event instead. An event frame has no `ok` and no `error`, so a client that assumes otherwise typically reports a failure with an empty error message and then discards the real reply when it arrives.
 
 Note the asymmetry when debugging: this mistake can **fabricate failures but never successes**. A phantom failure with an empty error message, on an operation that appears not to have happened, is a symptom of reading the wrong frame — not of the daemon failing the request.
+
+Historical note, because it changes how you read an old bug report: before events were opt-in, every connection was pushed events from the moment it connected, so the failure above could hit a client that had never asked for an event at all. Two teams lost pairing windows to it and published root-cause analyses they had to retract (#659). If you are debugging against a daemon older than this section, assume every connection is subscribed.
 
 ## 3. Snapshot envelope (`pane.list`)
 
