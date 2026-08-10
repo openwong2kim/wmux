@@ -224,6 +224,32 @@ describe('selectFleetPanes', () => {
     expect(btop.agentStatus).toBe('idle');    // must NOT show "waiting"
   });
 
+  it("a confirmed agent pane still does NOT borrow workspace 'running' from a same-named sibling (#837 + #850)", () => {
+    // The shape #850's name match cannot distinguish: orchestrator and worker
+    // are both "Claude Code", so the name matches on BOTH panes. The worker's
+    // 'running' lands in the one workspace-wide slot; without the running veto
+    // the active orchestrator pane repaints it as its own.
+    const ws = workspace(
+      'ws-pair', 'pair',
+      branch('b', [
+        leaf('orch-pane', [surface('so', 'pty-orch')]),
+        leaf('worker-pane', [surface('sw', 'pty-worker')]),
+      ]),
+      'orch-pane', // the orchestrator is active and IS a confirmed agent
+      { agentName: 'Claude Code', agentStatus: 'running' }, // written by the worker
+    );
+    const panes = selectFleetPanes({
+      workspaces: [ws],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfaceAgent: {
+        'pty-orch': { name: 'Claude Code', status: 'waiting' },
+        'pty-worker': { name: 'Claude Code', status: 'running' },
+      },
+    });
+    expect(byPane(panes, 'orch-pane').agentStatus).toBe('idle');
+  });
+
   it('defaults to idle for an unspawned surface (ptyId === "") with no metadata', () => {
     const p3 = byPane(selectFleetPanes(fixture()), 'p3');
     expect(p3.agentStatus).toBe('idle');

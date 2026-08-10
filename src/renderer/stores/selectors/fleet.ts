@@ -221,7 +221,20 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // set that status — prevents multi-agent workspaces from cross-polluting
       // (#837: one pane's 'running' bleeding into another agent's card).
       const metaMatchesPane = paneIsAgent && wsMeta?.agentName === paneAgentName;
-      const metaStatus = isActivePane && metaMatchesPane ? wsMeta?.agentStatus : undefined;
+      // #837's 'running' veto stays in force, and the name match above does NOT
+      // replace it. `agentStatus` is ONE slot per workspace, so a name match
+      // cannot prove the value came from THIS pane whenever two panes run the
+      // same agent — an orchestrator and its worker are both "Claude Code",
+      // which is the normal shape here, not an exotic one. The worker's
+      // 'running' would land in the shared slot and get painted onto the active
+      // pane, which is exactly the misattribution #837 fixed. Tier 3's per-pty
+      // clock is what carries running, so vetoing it here costs no coverage.
+      // `error` is still inherited: it is not an ATTENTION status, so the
+      // workspace slot is its only carrier for the active pane.
+      const metaStatus =
+        isActivePane && metaMatchesPane && wsMeta?.agentStatus !== 'running'
+          ? wsMeta?.agentStatus
+          : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
       const hookRunning =
         activityAt !== undefined &&
