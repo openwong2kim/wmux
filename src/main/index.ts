@@ -975,6 +975,21 @@ app.on('ready', async () => {
   logLine('info', 'main', 'app.on(ready) fired');
   console.log('[Main] App ready, creating window...');
 
+  // #818: own the accelerator table before any window can exist. Skipping this
+  // left Electron's default menu in charge, and on macOS its NSMenu key
+  // equivalents fire before the renderer — Cmd+Shift+R force-reloaded (wiping
+  // every attached remote workspace) instead of renaming, and Cmd+W closed the
+  // window instead of the surface.
+  //
+  // Must stay BEFORE this callback's first `await` (Codex review on #854).
+  // `app.on('activate')` is registered at module scope, so once `ready` has
+  // fired macOS can dispatch an activate while this callback is parked on a
+  // pending promise; that handler sees zero windows and calls createWindow()
+  // itself. A window built during that gap would be governed by the default
+  // menu — the exact startup path this change exists to close. App-global and
+  // idempotent, so this one call covers those windows too.
+  installApplicationMenu();
+
   // P3 — macOS CLI shim: DMG/ZIP 설치엔 Squirrel 훅이 없으므로 첫 실행 시 1회만
   // `/usr/local/bin/wmux`(폴백 `~/.local/bin/wmux`) 심링크 설치를 시도한다.
   // 마커 파일로 1회 게이트하되, 마커가 있어도 "우리 소유 심링크가 현재 번들을
@@ -1092,14 +1107,6 @@ app.on('ready', async () => {
   }
   registerPluginProtocolHandler(() => pluginHostLoader);
   markBoot('plugins-loaded');
-
-  // #818: own the accelerator table before any window exists. Skipping this
-  // left Electron's default menu in charge, and on macOS its NSMenu key
-  // equivalents fire before the renderer — Cmd+Shift+R force-reloaded (wiping
-  // every attached remote workspace) instead of renaming, and Cmd+W closed the
-  // window instead of the surface. App-global, so this one call covers the
-  // windows created later by the macOS `activate` path too.
-  installApplicationMenu();
 
   mainWindow = createWindow({ deferLoad: true });
   markBoot('window-created');
