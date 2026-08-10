@@ -1,7 +1,6 @@
-// The external-wire marker is a main-process capability: production code may
-// mint it only at the authenticated/rate-limited PipeServer boundary. Pin the
-// sole positive writer so a future transport or nested call cannot widen the
-// trust boundary without an explicit security-review test change.
+// Dispatch markers are main-process capabilities. Pin each positive production
+// writer so a future transport or nested call cannot widen a trust boundary
+// without an explicit security-review test change.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -30,7 +29,7 @@ function propertyName(node: ts.PropertyName): string | undefined {
 }
 
 describe('RPC dispatch provenance source invariant', () => {
-  it('keeps PipeServer as the sole production writer of externalWire: true', () => {
+  function markerWriters(marker: string): string[] {
     const writers: string[] = [];
 
     for (const file of collectProductionTsFiles(MAIN_DIR)) {
@@ -41,13 +40,15 @@ describe('RPC dispatch provenance source invariant', () => {
         true,
       );
       const visit = (node: ts.Node): void => {
-        const writesPositiveMarker =
+        // Record every object-literal write, not just a literal `true`. A
+        // transport must not evade this boundary with `true as const`, a
+        // shorthand, ternary, or computed boolean.
+        const writesMarker =
           ts.isPropertyAssignment(node) &&
-          propertyName(node.name) === 'externalWire' &&
-          node.initializer.kind === ts.SyntaxKind.TrueKeyword;
-        const forwardsPositiveMarker =
-          ts.isShorthandPropertyAssignment(node) && node.name.text === 'externalWire';
-        if (writesPositiveMarker || forwardsPositiveMarker) {
+          propertyName(node.name) === marker;
+        const forwardsMarker =
+          ts.isShorthandPropertyAssignment(node) && node.name.text === marker;
+        if (writesMarker || forwardsMarker) {
           writers.push(path.relative(MAIN_DIR, file).replaceAll('\\', '/'));
         }
         ts.forEachChild(node, visit);
@@ -55,6 +56,20 @@ describe('RPC dispatch provenance source invariant', () => {
       visit(source);
     }
 
-    expect(writers).toEqual(['pipe/PipeServer.ts']);
+    return writers.sort();
+  }
+
+  it('keeps externalWire writes inside PipeServer and the router context constructor', () => {
+    expect(markerWriters('externalWire')).toEqual([
+      'pipe/PipeServer.ts',
+      'pipe/RpcRouter.ts',
+    ]);
+  });
+
+  it('keeps operator writes inside the renderer bridge and router context constructor', () => {
+    expect(markerWriters('operator')).toEqual([
+      'index.ts',
+      'pipe/RpcRouter.ts',
+    ]);
   });
 });

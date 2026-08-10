@@ -29,7 +29,11 @@ interface CdpTargetInfo {
 }
 
 interface CdpInfoResponse {
-  cdpPort: number;
+  /**
+   * Present only when the main process authorizes this caller to attach to
+   * Electron's CDP endpoint. Target metadata can still be returned without it.
+   */
+  cdpPort?: number;
   /**
    * The actual runtime URL of the main-window webContents (the app shell),
    * as reported by the main process. Optional: absent on older mains or when
@@ -61,6 +65,21 @@ const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 800;
 const PAGE_FIND_RETRIES = 3;
 const PAGE_FIND_DELAY_MS = 500;
+const CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE =
+  '[PlaywrightEngine] browser.cdp.info did not disclose a usable CDP endpoint to this caller';
+
+/**
+ * Non-retryable inside the engine. Tools with a scoped RPC equivalent
+ * deliberately convert this refusal into fallback via allowScopedRpcFallback;
+ * tools that require a Playwright Page surface it because no equivalent
+ * main-process operation exists.
+ */
+class CdpAttachInfoUnavailableError extends Error {
+  constructor() {
+    super(CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE);
+    this.name = 'CdpAttachInfoUnavailableError';
+  }
+}
 
 /**
  * The contract error for "page selection cannot be scoped to the caller".
@@ -368,9 +387,21 @@ export class PlaywrightEngine {
           workspaceId ? { workspaceId } : {},
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
+        if (
+          typeof info.cdpPort !== 'number'
+          || !Number.isInteger(info.cdpPort)
+          || info.cdpPort <= 0
+          || info.cdpPort > 65_535
+        ) {
+          // Absence is an authorization/configuration decision, not a transient
+          // connection failure. Retrying cannot make this response disclose the
+          // endpoint and would hide the useful cause behind retry exhaustion.
+          throw new CdpAttachInfoUnavailableError();
+        }
         await this.connect(info.cdpPort);
         return;
       } catch (err) {
+        if (err instanceof CdpAttachInfoUnavailableError) throw err;
         lastError = err;
         console.error(
           `[PlaywrightEngine] Connection attempt ${attempt}/${MAX_CONNECT_RETRIES} failed:`,
@@ -739,6 +770,7 @@ export class PlaywrightEngine {
         }
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
+        if (err instanceof CdpAttachInfoUnavailableError) throw err;
         console.error(
           `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
           err instanceof Error ? err.message : String(err),

@@ -552,10 +552,10 @@ const invokeRendererRpc = (method: string, params: Record<string, unknown>): Pro
       method: method as RpcMethod,
       params,
     },
-    // The renderer IPC bridge is the trusted first-party operator surface —
-    // unreachable from the external wire. events.poll uses this to honor the
-    // operator's cross-workspace scope (audit B3) instead of server-resolving it.
-    { firstParty: true },
+    // The renderer IPC bridge is the trusted operator surface — unreachable
+    // from the external wire and distinct from the in-process iframe plugin
+    // host. The router also derives firstParty:true for existing handlers.
+    { operator: true },
   );
 
 let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {

@@ -49,7 +49,7 @@
 - **회귀 커버리지:** `PlaywrightEngine.test.ts`의 *"strict surface targeting rejects a legacy main that returns a foreign or untagged explicit target"*, `WebviewCdpManager.test.ts`의 `getTarget('b-surface', 'ws-A') === null`.
 - **닫히지 않은 것 — 이 항목을 "구멍 없음"으로 읽지 마라:**
   - **무스코프 호출 경로.** 파이프에 workspaceId를 **아예 안 보내면** `ownedBy(owner, undefined)`가 무조건 통과시키고 `getTarget`이 등록 맵 첫 세션을 반환한다. 도달 가능한 주체는 "손으로 만든 소켓 클라이언트"만이 아니다: `browser.evaluate`·`browser.read`·`browser.screenshot`은 `methodCapabilityMap`에서 **선언 가능한** capability이고(`RESERVED_PREFIXES`는 `wmux.`뿐), `PermissionEnforcer.check()`에는 **워크스페이스 차원이 아예 없다**(메서드 단위 capability만 본다). 즉 사용자가 승인한 **서드파티 MCP 플러그인**이 workspaceId를 생략하면 남의 워크스페이스 페이지에서 임의 JS 실행·스크린샷이 된다. 사용자는 "브라우저 평가"를 승인한 것이지 "모든 워크스페이스의 브라우저"를 승인한 게 아니다.
-  - **전송 계층.** `browser.cdp.info`는 scoped 응답에서도 `cdpPort`를 항상 반환한다(핸들러 주석이 이미 "NOT a hard seal"이라고 인정). `browser.read` 하나면 `connectOverCDP`로 전 워크스페이스 페이지를 직접 열거·조작할 수 있다. 위 툴 계층 검사는 **통제이지 경계가 아니다**.
+  - **Transport layer — #810 narrowing in progress.** `browser.cdp.info` previously returned `cdpPort` even on scoped responses, so `browser.read` alone supplied a direct `connectOverCDP` path around tool-layer checks. The first #810 change withholds `cdpPort` and `shellUrl` from approved third-party and legacy callers while preserving supported first-party attachment. This is approved-plugin confinement, not a same-user security boundary.
   - 이 둘은 #113 same-user 천장으로 뭉뚱그리기엔 주체 집합이 넓다. **#810**에서 추적한다.
 
 ## ✅ 스코핑 조사 U4·U8·U3 검증 완료 (2026-07-30)

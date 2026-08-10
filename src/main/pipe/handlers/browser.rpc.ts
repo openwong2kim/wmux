@@ -22,7 +22,10 @@ import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
   type ExternalOpenResult,
 } from '../../../shared/browserBackend';
+import type { RpcContext } from '../../../shared/rpc';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
+import { isFirstPartyClient } from '../../mcp/firstParty';
+import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -31,6 +34,27 @@ async function validateUrl(url: string, method: string): Promise<void> {
   if (!result.valid) {
     throw new Error(`${method}: ${result.reason}`);
   }
+}
+
+/**
+ * Whether a caller may receive the raw CDP attach primitive and app-shell URL.
+ *
+ * A recognised client name is insufficient by itself: an approved iframe UI
+ * plugin can use the same manifest name. The name lane therefore also requires
+ * the positive external-wire marker supplied only by PipeServer (#810). The
+ * renderer operator and locally source-qualified server-pinned callers are
+ * trusted directly.
+ */
+export function canDiscloseBrowserAttachInfo(ctx: RpcContext | undefined): boolean {
+  if (!ctx) return false;
+  if (ctx.origin !== 'local') return false;
+  if (ctx.operator === true) return true;
+  if (typeof ctx.commanderWorkspace === 'string' && ctx.commanderWorkspace.length > 0) {
+    // Commander browser methods are currently absent from COMMANDER_RPC_METHODS,
+    // but keep the accepted pinned lane source-qualified if that surface grows.
+    return isLocalExternalWireContext(ctx);
+  }
+  return isLocalExternalWireContext(ctx) && isFirstPartyClient(ctx.clientName);
 }
 
 /**
@@ -673,22 +697,22 @@ export function registerBrowserRpc(
    *
    * When a caller passes its resolved `workspaceId`, `targets` is filtered to
    * that workspace server-side and `targetsScoped: true` is set (#580, Option
-   * 1). This stops the RPC from volunteering other workspaces' live targets to
-   * a caller that identifies itself — defense-in-depth within the same-OS-user
-   * trust ceiling, NOT a hard seal: `cdpPort` is still returned, so a holder of
-   * it can enumerate every target via the CDP `/json` endpoint directly.
-   * `cdpPort` and `shellUrl` are workspace-agnostic and always returned in full.
-   * A param-less call keeps the legacy unscoped shape (no flag) for callers that
-   * only need the port/shell URL.
+   * 1). `cdpPort` and `shellUrl` are more powerful: together they expose the raw
+   * browser attach path, so #810 returns them only to the renderer operator,
+   * server-pinned callers, and source-qualified first-party wire clients.
+   * Approved third-party and legacy callers still receive target metadata, but
+   * not the primitive that bypasses the tool-layer capability and lease checks.
    */
-  router.register('browser.cdp.info', async (params) => {
-    if (webviewCdpManager.getCdpPort() <= 0) {
+  router.register('browser.cdp.info', async (params, ctx) => {
+    const cdpPort = webviewCdpManager.getCdpPort();
+    if (cdpPort <= 0) {
       throw new Error(
         'CDP remote debugging is disabled — browser automation is unavailable. ' +
           'Enable it via ~/.wmux/config.json (browser.cdp.enabled = true) and restart wmux, ' +
           'or unset the WMUX_DISABLE_CDP environment variable.',
       );
     }
+    const discloseAttachInfo = canDiscloseBrowserAttachInfo(ctx);
     const callerWorkspaceId =
       typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
         ? params['workspaceId']
@@ -723,8 +747,6 @@ export function registerBrowserRpc(
     // value's to make; the reported value is the current one.
     const workspaceBackend = backend();
 
-    const cdpPort: number = webviewCdpManager.getCdpPort();
-
     // Expose the actual runtime URL of the main-window webContents (the app
     // shell) so the Playwright engine can recognize the shell by exact-match
     // instead of guessing from build-path shape. dev → http://localhost:..,
@@ -732,14 +754,16 @@ export function registerBrowserRpc(
     // <webview> is a separate webContents and never appears here. Suppress an
     // empty URL (window still mid-load) so the engine keeps any prior value.
     let shellUrl: string | undefined;
-    try {
-      const url = getWindow()?.webContents.getURL();
-      if (url && url.length > 0) shellUrl = url;
-    } catch { /* window destroyed — omit shellUrl */ }
+    if (discloseAttachInfo) {
+      try {
+        const url = getWindow()?.webContents.getURL();
+        if (url && url.length > 0) shellUrl = url;
+      } catch { /* window destroyed — omit shellUrl */ }
+    }
 
     return {
-      cdpPort,
-      ...(shellUrl && { shellUrl }),
+      ...(discloseAttachInfo && { cdpPort }),
+      ...(discloseAttachInfo && shellUrl && { shellUrl }),
       // Lets a scoped caller tell "I own no live targets" (empty + scoped) from
       // "legacy main that can't scope" (empty + unscoped). The engine gates its
       // leniency fallback on this.

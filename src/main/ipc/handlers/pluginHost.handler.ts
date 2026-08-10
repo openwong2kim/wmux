@@ -62,11 +62,13 @@ export function registerPluginHostHandlers(
     // Unknown methods fall through to RpcRouter's own "Unknown method"
     // response — no separate allowlist here, the router IS the method space.
     // firstParty: the plugin host is an in-process, human-approved (trust-gated
-    // iframe) dispatch entry point, not the external wire — so it keeps the
-    // operator scope for private events.poll types (audit B3). Without this a
-    // plugin polling channel.*/a2a.task with a workspaceId would hit the
-    // agent-transport branch, resolve no senderPtyId, and drop every private
-    // event. Not forgeable from the wire: firstParty is a dispatch argument.
+    // iframe) dispatch entry point, not the external wire. events.poll keeps
+    // using that broader in-process distinction for private event types (audit
+    // B3), but operator-only handlers use the separate renderer marker (#810).
+    // Without firstParty here, a plugin polling channel.*/a2a.task with a
+    // workspaceId would hit the agent-transport branch, resolve no senderPtyId,
+    // and drop every private event. Not forgeable from the wire: firstParty is
+    // a dispatch argument.
     return rpcRouter.dispatch({
       id: `plugin-${pluginName}-${++rpcSeq}`,
       method: method as RpcMethod,
