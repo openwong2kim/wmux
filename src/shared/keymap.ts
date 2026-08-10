@@ -83,9 +83,22 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   // Terminal font zoom. These are the combos Electron's default View menu
   // owned as resetZoom / zoomIn / zoomOut, so on macOS they hit webFrame zoom
   // instead of the terminal font — the reason the menu must not declare them.
+  //
+  // The zoom-in/out handlers accept the shifted and numpad spellings of the
+  // same physical key and do NOT require `!shift`, so every alias below is
+  // swallowed before a custom binding could see it. Listing only the plain
+  // forms let a user bind e.g. Ctrl+Shift++ with no conflict warning and then
+  // watch it never fire (Codex review on #854). Reset (Ctrl+0) does require
+  // `!shift`, so it has no shifted alias.
   { combo: 'Ctrl+0', descriptionKey: null },
   { combo: 'Ctrl+=', descriptionKey: null },
+  { combo: 'Ctrl++', descriptionKey: null },
+  { combo: 'Ctrl+Shift+=', descriptionKey: null },
+  { combo: 'Ctrl+Shift++', descriptionKey: null },
   { combo: 'Ctrl+-', descriptionKey: null },
+  { combo: 'Ctrl+_', descriptionKey: null },
+  { combo: 'Ctrl+Shift+-', descriptionKey: null },
+  { combo: 'Ctrl+Shift+_', descriptionKey: null },
   // Workspace jump: Ctrl+1 … Ctrl+9.
   { combo: 'Ctrl+1', descriptionKey: null },
   { combo: 'Ctrl+2', descriptionKey: null },
@@ -98,16 +111,23 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+9', descriptionKey: null },
   // Directional movement. Ctrl+Shift+Arrow moves focus; Ctrl+Alt+Arrow is the
   // alternate (⌘+Alt+Arrow on mac) focus combo; Alt+Arrow cycles workspaces.
-  { combo: 'Ctrl+Shift+Up', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+Down', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+Left', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+Right', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Alt+Up', descriptionKey: null },
-  { combo: 'Ctrl+Alt+Down', descriptionKey: null },
-  { combo: 'Ctrl+Alt+Left', descriptionKey: null },
-  { combo: 'Ctrl+Alt+Right', descriptionKey: null },
-  { combo: 'Alt+Up', descriptionKey: null },
-  { combo: 'Alt+Down', descriptionKey: null },
+  //
+  // Spelled `ArrowUp`, not `Up`: `combo` is the STORAGE form, and storage is
+  // whatever `formatKeyCombo()` produces from `KeyboardEvent.key` — which is
+  // `ArrowUp`. Writing `Up` here made the Settings conflict check (an exact
+  // Set lookup) miss every directional binding (Codex review on #854). The
+  // accelerator side is unaffected: `normalizeAcceleratorKey` already folds
+  // `arrowup` onto Electron's `Up`.
+  { combo: 'Ctrl+Shift+ArrowUp', literalCtrl: true, descriptionKey: null },
+  { combo: 'Ctrl+Shift+ArrowDown', literalCtrl: true, descriptionKey: null },
+  { combo: 'Ctrl+Shift+ArrowLeft', literalCtrl: true, descriptionKey: null },
+  { combo: 'Ctrl+Shift+ArrowRight', literalCtrl: true, descriptionKey: null },
+  { combo: 'Ctrl+Alt+ArrowUp', descriptionKey: null },
+  { combo: 'Ctrl+Alt+ArrowDown', descriptionKey: null },
+  { combo: 'Ctrl+Alt+ArrowLeft', descriptionKey: null },
+  { combo: 'Ctrl+Alt+ArrowRight', descriptionKey: null },
+  { combo: 'Alt+ArrowUp', descriptionKey: null },
+  { combo: 'Alt+ArrowDown', descriptionKey: null },
 ];
 
 /**
@@ -118,8 +138,25 @@ export const ADVERTISED_SHORTCUTS: readonly Required<KeymapEntry>[] =
   WMUX_KEYMAP.filter((e): e is KeymapEntry & { descriptionKey: string } => e.descriptionKey !== null)
     .map((e) => ({ literalCtrl: false, ...e }));
 
-/** Every combo wmux binds, as a Set of the literal storage form. */
-export const WMUX_BUILTIN_COMBOS: ReadonlySet<string> = new Set(WMUX_KEYMAP.map((e) => e.combo));
+/**
+ * The combos a CUSTOM keybinding can actually lose to on `platform`.
+ *
+ * Not simply every row: custom bindings are matched with literal `e.ctrlKey`
+ * on every OS (see the `formatKeyCombo(literalCtrl, …)` call in useKeyboard),
+ * while a non-`literalCtrl` row is dispatched on `e.metaKey` under macOS. So on
+ * macOS a custom `Ctrl+Shift+A` never meets the built-in, which fires on
+ * `⌘+Shift+A` — warning about it is a false conflict (Codex review on #854).
+ * Rows that are `literalCtrl`, or that carry no Ctrl at all (`Alt+ArrowUp`),
+ * stay reachable there and do collide.
+ *
+ * On Windows and Linux `cmdOrCtrl === literalCtrl`, so every row collides.
+ */
+export function builtinCombosFor(platform: NodeJS.Platform): ReadonlySet<string> {
+  const rows = platform === 'darwin'
+    ? WMUX_KEYMAP.filter((e) => e.literalCtrl || !e.combo.startsWith('Ctrl'))
+    : WMUX_KEYMAP;
+  return new Set(rows.map((e) => e.combo));
+}
 
 /**
  * Render a stored combo for display on macOS: `Ctrl` becomes `⌘` unless the

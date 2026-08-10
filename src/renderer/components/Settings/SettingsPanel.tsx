@@ -24,7 +24,7 @@ import {
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
-import { ADVERTISED_SHORTCUTS, WMUX_BUILTIN_COMBOS, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
+import { ADVERTISED_SHORTCUTS, builtinCombosFor, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
@@ -3962,8 +3962,12 @@ function TabShortcuts() {
   // Was a hand-copied subset that had drifted — Ctrl+Shift+A / Ctrl+Shift+G /
   // Ctrl+M / Ctrl+Tab and the zoom keys are all bound but were missing, so a
   // custom keybinding on one of them got no conflict warning and then silently
-  // never fired. Derived from WMUX_KEYMAP now (#818).
-  const BUILTIN_KEYS = WMUX_BUILTIN_COMBOS;
+  // never fired. Derived from WMUX_KEYMAP now (#818), and resolved for the
+  // running platform — on macOS a built-in that fires on ⌘ cannot collide with
+  // a custom binding, which is matched on literal Ctrl.
+  const BUILTIN_KEYS = builtinCombosFor(
+    window.electronAPI?.platform === 'darwin' ? 'darwin' : 'win32',
+  );
 
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
   const bindingEntries = Object.entries(prefixConfig.bindings);
