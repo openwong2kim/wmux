@@ -3,6 +3,7 @@
 // build), and output parsing. The effectful end-to-end run against real .lnk
 // files lives in shortcutHygiene.runtime.test.ts.
 import { describe, it, expect } from 'vitest';
+import * as path from 'node:path';
 import {
   isSafePsPathLiteral,
   buildRepairScript,
@@ -53,7 +54,7 @@ describe('buildRepairScript', () => {
   });
 
   it('only ever repairs toward the root stub and app.ico', () => {
-    const s = buildRepairScript('C:\\Users\\u\\AppData\\Local\\wmux', LOC)!;
+    const s = buildRepairScript('C:\\Users\\u\\AppData\\Local\\wmux', LOC) ?? '';
     expect(s).toContain("Join-Path $root 'wmux.exe'");
     expect(s).toContain("Join-Path $root 'app.ico'");
     // Deletion is reserved for the legacy list; pins are never removed.
@@ -85,17 +86,20 @@ describe('parseRepairOutput', () => {
 });
 
 describe('defaultRepairLocations', () => {
+  // Expectations are composed with path.join, not literal backslashes: the
+  // helper joins with the HOST separator, so hardcoding '\' fails the
+  // cross-platform CI leg even though the code is Windows-only at runtime.
   it('derives every location from %APPDATA%', () => {
-    const loc = defaultRepairLocations('C:\\Users\\u\\AppData\\Roaming');
-    expect(loc.legacyLnks).toEqual([
-      'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\wmux.lnk',
-    ]);
+    const appData = path.join('C:\\Users', 'u', 'AppData', 'Roaming');
+    const programs = path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    const pinned = path.join(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned');
+    const loc = defaultRepairLocations(appData);
+
+    expect(loc.legacyLnks).toEqual([path.join(programs, 'wmux.lnk')]);
     expect(loc.pinDirs).toEqual([
-      'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar',
-      'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\StartMenu',
+      path.join(pinned, 'TaskBar'),
+      path.join(pinned, 'StartMenu'),
     ]);
-    expect(loc.publisherLnk).toBe(
-      'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\*\\wmux.lnk',
-    );
+    expect(loc.publisherLnk).toBe(path.join(programs, '*', 'wmux.lnk'));
   });
 });

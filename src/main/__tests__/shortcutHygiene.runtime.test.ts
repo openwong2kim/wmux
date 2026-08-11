@@ -58,7 +58,10 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
   let loc: RepairLocations;
 
   beforeEach(() => {
-    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hygiene-'));
+    // realpathSync.native expands 8.3 short components: CI runners hand back
+    // `C:\Users\RUNNER~1\...` from os.tmpdir() while the shell/COM layer
+    // resolves the long form, so raw mkdtemp paths fail every string compare.
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hygiene-')));
     // Fake install root: <root>\wmux.exe stub + <root>\app-1.0.0\wmux.exe (the
     // "current version" the hook process runs from) + resources\icon.ico.
     root = path.join(sandbox, 'wmux');
@@ -89,7 +92,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe')); // dir never existed → dead
     const iconPath = stageRootIcon(execPath);
     expect(iconPath).toBe(path.join(root, 'app.ico'));
-    expect(fs.existsSync(iconPath!)).toBe(true);
+    expect(fs.existsSync(iconPath ?? '')).toBe(true);
 
     const actions = repairInstalledShortcuts(execPath, loc);
     expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
