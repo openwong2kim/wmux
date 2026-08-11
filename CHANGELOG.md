@@ -1,3 +1,113 @@
+## [3.41.0] — 2026-08-12
+
+### Known issues
+
+- **Windows: consider installing this release manually rather than through the
+  in-app updater.** Squirrel's `Setup.exe` deletes the whole install directory as
+  its first step, and the in-app updater starts it without waiting for wmux to
+  finish exiting. If anything still holds that directory open when the delete
+  runs, the install stops half-finished, leaving blank shortcut icons and no
+  launcher to retry from. We have reproduced that failure and are fixing it, but
+  we do not yet know how often the normal update path actually hits it — the
+  update path has looked like this for many releases. If you would rather not
+  find out, download the installer from the release page and run it with wmux
+  closed. Note that the fix cannot help *this* upgrade either way: the step at
+  fault belongs to the version you are upgrading from. (#866)
+
+### Added
+
+- **Added browser caller-scope shadow telemetry.** Target-resolving browser RPCs now record identified calls that future caller-derived workspace enforcement would refuse, without changing current routing, parameters, responses, or enforcement behavior. (#846)
+
+- **One-shot interface visibility presets.** Apply Minimal to hide optional chrome at once, or restore the shipped Standard visibility without entering a persistent mode. (#860)
+
+### Changed
+
+- **The daemon control pipe no longer pushes events at clients that never asked for
+  them.** Events used to reach every connection from the moment it opened, so a tool
+  that wrote a request and read one line back could read an event instead of its
+  reply — and since an event frame carries no error text, report a failure with an
+  empty message while quietly dropping the real answer. Events are now opt-in:
+  a connection gets replies and nothing else until it calls
+  `daemon.events.subscribe`. Tools that only make requests, including the wmux CLI
+  and the MCP server, need no change and can no longer hit that failure. A tool that
+  did rely on unsolicited events must now subscribe. See `docs/PROTOCOL.md` §2.9.
+  (#856)
+
+- **Daemon cold start is roughly two seconds faster on Windows.** The LanLink
+  HMAC key was the one hardening call still running synchronously on the daemon
+  boot path, and the first `powershell.exe` spawn inside an Electron process
+  measured 1.8–2.3 s — 75–78 % of the entire daemon startup. The replacement
+  measures around 42 ms.
+
+### Fixed
+
+- **Scoped CLI browser navigation to its calling workspace.** `wmux browser navigate` now uses verified pane identity inside wmux instead of potentially navigating the first globally registered browser; invocations outside wmux retain the existing active-target behavior. (#845)
+
+- **Non-agent panes (btop, vim, plain shell) no longer misidentified as AI agents in the sidebar and Fleet View.** Two independent fixes: (1) the Fleet View selector now requires per-PTY agent identity (`surfaceAgent`) before inheriting workspace-level agent name and status for the active pane — a non-agent pane in a split can no longer borrow the real agent's "Claude Code · Needs you" badge; (2) the Claude Code agent detector now uses a compound gate (banner **and** prompt evidence, matching the Kiro CLI pattern) instead of a single banner regex, so a process monitor displaying "claude" in its process list cannot falsely open the detection gate. (#850)
+
+- **Restored approved plugin panels in packaged builds.** The production main-window CSP now permits registered `wmux-plugin:` iframe sources without broadening script or network access, preventing the panel restore loop that followed plugin approval. (#852)
+
+- wmux now defines its own application menu instead of inheriting Electron's default one, which had been quietly owning shortcuts wmux binds. On macOS `Cmd+Shift+R` triggered Force Reload rather than renaming a workspace, and the reload dropped every attached remote workspace; `Cmd+W` closed the window instead of the active surface, and the zoom keys resized the UI instead of the terminal font. On Windows and Linux `Ctrl+R` no longer reloads when focus sits outside a terminal.
+
+- Settings → Shortcuts lists the built-in key bindings from one shared table, so a custom keybinding that collides with `Ctrl+Shift+A`, `Ctrl+Shift+G`, `Ctrl+M`, `Ctrl+Tab` or the zoom keys is now flagged as a conflict instead of being accepted and silently never firing.
+
+- Directories with non-ASCII names in `PATH` now resolve in wmux terminals. A path such as `D:\软件\Python312` was being read from the registry through a code-page-encoded pipe, which replaced characters the code page could not represent and left the rest as `U+FFFD`, so the directory matched nothing on disk and commands from it resolved to a later `PATH` entry instead — for Python, the Microsoft Store stub. Accented Latin characters were affected the same way.
+
+- **Windows token files are now hardened without PowerShell — and stay hardened
+  on managed machines.** The owner-only DACL on wmux's auth tokens, the LanLink
+  HMAC key and the web state file used to be rebuilt by spawning
+  `powershell.exe -ExecutionPolicy Bypass -EncodedCommand`. On any machine
+  running PowerShell in Constrained Language Mode — the AppLocker/WDAC default
+  on managed corporate fleets — that call could not run at all, and wmux quietly
+  fell back to a plain `icacls` strip. The fallback removes only four well-known
+  broad groups, so an explicit entry for any other principal survived: those
+  machines have been running with looser token permissions than the docs promise,
+  with nothing but a console warning to show for it. Hardening now writes the
+  file through a fresh, pre-locked inode instead, which drops every non-owner
+  entry — inherited, well-known or custom — with no PowerShell involved.
+
+- **Norton no longer flags wmux at startup.** Norton Behavioral Protection
+  detected the `-ExecutionPolicy Bypass -EncodedCommand` shape as
+  `IDP.HELU.PSE85` and blocked `powershell.exe`, in some cases quarantining
+  `wmux.exe` itself. wmux no longer spawns PowerShell for this, so the detection
+  has nothing to fire on. Thanks to @TarJae for the report and the diagnosis.
+
+- **A rename collision can no longer wipe your paired phones.** Token hardening
+  reported success as a single boolean, which meant "could not tighten the
+  permissions" and "nothing changed, and nothing got weaker" looked identical to
+  callers. The LanLink peer store treats that signal as fail-closed: it deletes
+  the peer file and regenerates the machine HMAC key, which invalidates the peer
+  file's MAC and drops every pairing. The two states are now distinguished — and
+  the safe one is verified, not assumed: a failed swap is retried, then the
+  file's actual DACL is read back (`icacls /save`) and only a confirmed
+  owner-only ACL avoids the fail-closed branch. A concurrent token rotation can
+  no longer be overwritten by a stale hardening snapshot either — the swap
+  compares content before committing and stands down if a newer write landed.
+
+- **A stalled event subscriber can no longer grow the daemon's write buffer
+  without bound.** Broadcast delivery now drops only that client's event
+  subscription after its buffered output crosses the existing safety cap. The
+  RPC connection stays open, and healthy subscribers continue receiving events.
+  (#862)
+
+- **A dead shortcut can no longer blank the taskbar icon after an update.**
+  Windows resolves the taskbar button's icon through the shortcut carrying the
+  app's AppUserModelID, so one stale link — a pre-3.4 top-level Start Menu
+  entry, or a taskbar pin recorded against a deleted `app-X.Y.Z` directory —
+  blanked the icon of a perfectly healthy install. The installer hooks now
+  repair such links (retargeting them to the version-stable root launcher)
+  instead of leaving them behind. (#863, #865)
+
+- **Shortcut icons no longer depend on a download at install time.** The
+  installer previously fetched the shortcut icon from raw.githubusercontent.com,
+  which fails on networks where that host is unreachable and left shortcuts
+  with no icon at all. The icon that already ships inside the package is used
+  instead. (#863, #865)
+
+### Security
+
+- **Restricted raw browser attachment metadata.** `browser.cdp.info` now returns `cdpPort` and `shellUrl` only to operator, validated pinned, or recognized first-party wire callers; approved third-party and legacy callers retain target metadata without the raw attach primitive. Fallback-enabled browser operations continue through the workspace-scoped, lease-covered RPC lane, while operations requiring a direct Playwright page report that attachment is unavailable. (#844)
+
 ## [3.40.2] — 2026-08-10
 
 ### Security
