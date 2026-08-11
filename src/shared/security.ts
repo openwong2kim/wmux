@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -93,15 +94,25 @@ function sleepSync(ms: number): void {
 
 let stagingSeq = 0;
 
+/** Trailing shape of a generated staging name after HARDEN_TMP_SUFFIX:
+ *  `.<pid>.<seq>.<12 hex>`. The sweep matches this EXACTLY so a user file that
+ *  merely starts with `<name>.harden-tmp` (e.g. a manual `...harden-tmp.backup`)
+ *  is never treated as a crash artifact and deleted (codex round-3 P2). */
+const STAGING_NAME_RE = /^\.\d+\.\d+\.[0-9a-f]{12}$/;
+
 /**
  * Per-operation unique staging path. A FIXED staging name let a deferred
  * async harden and a synchronous token rotation of the same file delete,
  * rewrite, or rename each other's staging inode — installing the wrong
- * payload in the worst interleaving (3-reviewer consensus finding).
+ * payload in the worst interleaving (3-reviewer consensus finding). The
+ * random suffix additionally makes the name unguessable, so a principal with
+ * create rights in the parent directory cannot pre-create the staging area
+ * at a predicted name (codex round-3 P1).
  */
 function stagingPathFor(filePath: string): string {
   stagingSeq += 1;
-  return `${filePath}${HARDEN_TMP_SUFFIX}.${process.pid}.${stagingSeq}`;
+  const rand = crypto.randomBytes(6).toString('hex');
+  return `${filePath}${HARDEN_TMP_SUFFIX}.${process.pid}.${stagingSeq}.${rand}`;
 }
 
 /**
@@ -126,6 +137,8 @@ function sweepStaleStaging(filePath: string): void {
   const cutoff = Date.now() - STALE_STAGING_MS;
   for (const name of names) {
     if (!name.startsWith(prefix)) continue;
+    // Only names WE generate — never a user's `<name>.harden-tmp.backup`.
+    if (!STAGING_NAME_RE.test(name.slice(prefix.length))) continue;
     const p = path.join(dir, name);
     try {
       if (fs.statSync(p).mtimeMs > cutoff) continue;
@@ -141,20 +154,23 @@ function sweepStaleStaging(filePath: string): void {
  * very different states and wired all of them to destructive fail-closed
  * branches.
  *
- *   'hardened'  — the DACL is now owner-only.
- *   'unchanged' — the rebuilt copy could not be swapped in, AND one of two
- *                 verified conditions holds: (a) the original file's DACL was
- *                 READ BACK and confirmed owner-only (icacls /save SDDL), or
- *                 (b) a newer write superseded this harden mid-flight — that
- *                 writer hardens its own output (secureWriteTokenFile) or has
- *                 re-armed its own deferred harden (DeviceStore). Either way
- *                 the file on disk is NOT weaker than documented. This is
- *                 never claimed on faith: an unverifiable swap failure is
- *                 'failed', not 'unchanged' (review finding — an upgrade boot
- *                 is exactly when the original ACL is the weak one).
- *   'failed'    — no locked-down file could be produced AND the original
- *                 could not be verified owner-only. THIS is the state
- *                 fail-closed callers must react to (discard the secret).
+ *   'hardened'  — the file on disk now carries the owner-only DACL. Either the
+ *                 rebuilt copy was swapped in, or — after a swap collision —
+ *                 the IN-PLACE strip repaired the original and the DACL was
+ *                 read back and verified owner-only. (ACL edits need only
+ *                 WRITE_DAC, not exclusive access, so the in-place strip
+ *                 succeeds even while an AV/backup tool still holds the file —
+ *                 which is why the pre-rewrite implementation never collided.
+ *                 The strip cannot remove a CUSTOM explicit ACE; verification
+ *                 decides whether it was enough.)
+ *   'unchanged' — a newer write superseded this harden mid-flight AND the
+ *                 file's current DACL was read back and verified owner-only.
+ *                 Never claimed on faith: an unverifiable superseding write
+ *                 reports 'failed' (codex round-3 — an external writer could
+ *                 otherwise smuggle a broad-ACL replacement past fail-closed).
+ *   'failed'    — no owner-only file could be produced or verified. THIS is
+ *                 the state fail-closed callers must react to (discard the
+ *                 secret).
  */
 export type HardenOutcome = 'hardened' | 'unchanged' | 'failed';
 
@@ -473,10 +489,13 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
   const { dir, file } = createHardenedStagingSync(filePath, principal);
 
   try {
-    // Born owner-only via the staging dir's (OI)(CI) grant; the explicit
-    // per-file harden then makes the final DACL identical to the documented
-    // shape (protected, one explicit owner ACE) with no exposure window.
-    fs.writeFileSync(file, content, { mode: 0o600 });
+    // Born owner-only via the staging dir's (OI)(CI) grant; `wx` (exclusive
+    // create) makes an attacker-pre-created file or planted hardlink at this
+    // name an immediate failure instead of a write into a hostile inode
+    // (codex round-3 P1). The explicit per-file harden then makes the final
+    // DACL identical to the documented shape (protected, one explicit owner
+    // ACE) with no exposure window.
+    fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
     applyRestrictiveAclViaIcacls(file, principal);
   } catch (err) {
     discardStagingInode(dir);
@@ -492,10 +511,12 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
     try {
       if (!fs.readFileSync(filePath).equals(content)) {
         // A newer write superseded this harden. That writer owns the file
-        // now and hardens its own output — installing our stale snapshot
-        // would be the bug, not the fix.
+        // now — installing our stale snapshot would be the bug, not the
+        // fix. But "a newer write exists" is not proof it is SAFE: an
+        // in-process writer hardens its own output, an external one may
+        // not. Verify before reporting 'unchanged' (codex round-3 P1).
         discardStagingInode(dir);
-        return 'unchanged';
+        return verifyOwnerOnlyDaclSync(filePath, sid) ? 'unchanged' : 'failed';
       }
       fs.renameSync(file, filePath);
       discardStagingInode(dir);
@@ -510,16 +531,30 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
   }
 
   discardStagingInode(dir);
+  // LAST RESORT (GLM round-3): repair the DACL IN PLACE. ACL edits need only
+  // WRITE_DAC, not exclusive access, so this succeeds even while the reader
+  // that defeated the rename still holds the file. For the dominant collision
+  // case — an AV scanning the fresh inode atomicWriteJSONSync just renamed in,
+  // which carries ONLY inherited ACEs — the in-place strip is
+  // security-equivalent to the rewrite, turning what used to be a destructive
+  // 'failed' (PeerStore unlinks the store / regenerates the machine key) into
+  // an honest 'hardened'. It cannot remove a CUSTOM explicit ACE (#124), so
+  // the read-back below decides whether it was enough.
+  try {
+    applyRestrictiveAclViaIcacls(filePath, principal);
+  } catch {
+    /* verification decides */
+  }
   if (verifyOwnerOnlyDaclSync(filePath, sid)) {
     console.warn(
-      `[applyRestrictiveWindowsAcl] could not swap in the hardened copy of ${filePath}, ` +
-        `but its current DACL was read back and verified owner-only.`,
+      `[applyRestrictiveWindowsAcl] swap collided on ${filePath}; DACL repaired in place ` +
+        `and read back owner-only.`,
     );
-    return 'unchanged';
+    return 'hardened';
   }
   console.warn(
-    `[applyRestrictiveWindowsAcl] could not swap in the hardened copy of ${filePath} ` +
-      `and its current DACL could NOT be verified owner-only — reporting failure.`,
+    `[applyRestrictiveWindowsAcl] could not swap in or repair ${filePath}, and its current ` +
+      `DACL could NOT be verified owner-only — reporting failure.`,
   );
   return 'failed';
 }
@@ -549,7 +584,7 @@ async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOu
   const { dir, file } = await createHardenedStagingAsync(filePath, principal);
 
   try {
-    await fs.promises.writeFile(file, content, { mode: 0o600 });
+    await fs.promises.writeFile(file, content, { mode: 0o600, flag: 'wx' });
     await applyRestrictiveAclViaIcaclsAsync(file, principal);
   } catch (err) {
     await discardStagingInodeAsync(dir);
@@ -563,8 +598,9 @@ async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOu
     // our stale snapshot.
     try {
       if (!fs.readFileSync(filePath).equals(content)) {
+        // Superseded by a newer write — verify before trusting (sync twin).
         await discardStagingInodeAsync(dir);
-        return 'unchanged'; // superseded by a newer write — see sync twin
+        return (await verifyOwnerOnlyDaclAsync(filePath, sid)) ? 'unchanged' : 'failed';
       }
       fs.renameSync(file, filePath);
       await discardStagingInodeAsync(dir);
@@ -572,23 +608,29 @@ async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOu
     } catch {
       /* transient EPERM/EBUSY — back off and retry */
     }
-    // Never sleep after the final attempt — verification follows immediately.
+    // Never sleep after the final attempt — the in-place repair follows.
     if (attempt < SWAP_RETRY_ATTEMPTS - 1) {
       await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
     }
   }
 
   await discardStagingInodeAsync(dir);
+  // Last-resort in-place repair — see the sync twin for the full rationale.
+  try {
+    await applyRestrictiveAclViaIcaclsAsync(filePath, principal);
+  } catch {
+    /* verification decides */
+  }
   if (await verifyOwnerOnlyDaclAsync(filePath, sid)) {
     console.warn(
-      `[scheduleTokenFileReHarden] could not swap in the hardened copy of ${filePath}, ` +
-        `but its current DACL was read back and verified owner-only.`,
+      `[scheduleTokenFileReHarden] swap collided on ${filePath}; DACL repaired in place ` +
+        `and read back owner-only.`,
     );
-    return 'unchanged';
+    return 'hardened';
   }
   console.warn(
-    `[scheduleTokenFileReHarden] could not swap in the hardened copy of ${filePath} ` +
-      `and its current DACL could NOT be verified owner-only — reporting failure.`,
+    `[scheduleTokenFileReHarden] could not swap in or repair ${filePath}, and its current ` +
+      `DACL could NOT be verified owner-only — reporting failure.`,
   );
   return 'failed';
 }
@@ -640,33 +682,63 @@ function applyRestrictiveAclViaIcaclsAsync(
  */
 function writeThroughHardenedFreshInode(filePath: string, content: string): void {
   const aclStart = Date.now();
+  // The fail-closed decision on failure needs the owner SID; capture whatever
+  // identity resolution produced so the decision never re-shells to whoami —
+  // a re-query can transiently fail and delete a perfectly safe previous
+  // token (GLM round-3 P2).
+  let sid: string | null = null;
   try {
-    const { sid, username } = resolveOwnerIdentity(filePath);
-    const principal = sid ? `*${sid}` : (username as string);
-    const { dir, file } = createHardenedStagingSync(filePath, principal);
     try {
-      fs.writeFileSync(file, content, { encoding: 'utf8', mode: 0o600 });
-      applyRestrictiveAclViaIcacls(file, principal);
-    } catch (err) {
+      const identity = resolveOwnerIdentity(filePath);
+      sid = identity.sid;
+      const principal = sid ? `*${sid}` : (identity.username as string);
+      const { dir, file } = createHardenedStagingSync(filePath, principal);
+      try {
+        fs.writeFileSync(file, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        applyRestrictiveAclViaIcacls(file, principal);
+      } catch (err) {
+        discardStagingInode(dir);
+        throw err;
+      }
+      // Intentional replace — no content compare (unlike the re-harden path).
+      // Bounded retries with backoff because the common failure is a transient
+      // EPERM/EBUSY from an AV or backup tool briefly holding the target open.
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < SWAP_RETRY_ATTEMPTS; attempt++) {
+        try {
+          fs.renameSync(file, filePath);
+          discardStagingInode(dir);
+          return;
+        } catch (err) {
+          lastErr = err;
+        }
+        if (attempt < SWAP_RETRY_ATTEMPTS - 1) sleepSync(30 * (attempt + 1));
+      }
       discardStagingInode(dir);
+      throw lastErr;
+    } catch (err) {
+      // The target only ever receives new content via the atomic rename, so
+      // on failure it holds the PREVIOUS token — untouched by us. Keep it
+      // ONLY when its DACL verifies owner-only: deleting a verified-safe
+      // token over a transient collision locks the user out for nothing
+      // (round-1 review), while silently keeping an UNVERIFIED one would let
+      // a broad-readable leftover (backup restore, pre-#124 build) survive
+      // the very write path that used to fail closed on it (GLM round-2 P2).
+      let previousVerified = false;
+      try {
+        previousVerified = fs.existsSync(filePath) && verifyOwnerOnlyDaclSync(filePath, sid);
+      } catch {
+        /* unverifiable → fail closed below */
+      }
+      if (!previousVerified) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          // Best effort cleanup of an unverifiable token file.
+        }
+      }
       throw err;
     }
-    // Intentional replace — no content compare (unlike the re-harden path).
-    // Bounded retries with backoff because the common failure is a transient
-    // EPERM/EBUSY from an AV or backup tool briefly holding the target open.
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < SWAP_RETRY_ATTEMPTS; attempt++) {
-      try {
-        fs.renameSync(file, filePath);
-        discardStagingInode(dir);
-        return;
-      } catch (err) {
-        lastErr = err;
-      }
-      if (attempt < SWAP_RETRY_ATTEMPTS - 1) sleepSync(30 * (attempt + 1));
-    }
-    discardStagingInode(dir);
-    throw lastErr;
   } finally {
     console.log(`[security] fresh token ACL harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`);
   }
@@ -682,28 +754,9 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
     try {
       writeThroughHardenedFreshInode(filePath, token);
     } catch (aclErr) {
+      // The fail-closed keep-or-unlink decision already ran inside
+      // writeThroughHardenedFreshInode, with the identity it resolved.
       console.warn('[secureWriteTokenFile] Could not set file ACL:', aclErr);
-      // The target only ever receives new content via the atomic rename, so on
-      // failure it holds the PREVIOUS token — untouched by us. Keep it ONLY
-      // when its DACL verifies owner-only: deleting a verified-safe token over
-      // a transient collision locks the user out for nothing (round-1 review),
-      // while silently keeping an UNVERIFIED one would let a broad-readable
-      // leftover (backup restore, pre-#124 build) survive the very write path
-      // that used to fail closed on it (GLM round-2 P2).
-      let previousVerified = false;
-      try {
-        previousVerified =
-          fs.existsSync(filePath) && verifyOwnerOnlyDaclSync(filePath, getCurrentUserSid());
-      } catch {
-        /* unverifiable → fail closed below */
-      }
-      if (!previousVerified) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch {
-          // Best effort cleanup of an unverifiable token file.
-        }
-      }
       const message = aclErr instanceof Error ? aclErr.message : String(aclErr);
       throw new Error(`Failed to set secure ACL on ${filePath}: ${message}`);
     }
@@ -755,7 +808,11 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
  * NOTE (contract change): on win32 this now rewrites the file through a fresh
  * inode, so the file's identity changes even though its VALUE does not. Readers
  * see either the old or the new inode — the rename is atomic — and both hold
- * identical bytes.
+ * identical bytes. Inode-identity side effects (GLM round-3): an fs.watch on
+ * the file sees a rename event; a hardlink or cached fd keeps pointing at the
+ * OLD inode. No wmux consumer does either today — token/key readers are
+ * open-read-close and the only fs.watch users target .git/HEAD and transcript
+ * dirs — but a future watcher on a token file must account for this.
  */
 export function reHardenTokenFileAcl(filePath: string): HardenOutcome {
   try {

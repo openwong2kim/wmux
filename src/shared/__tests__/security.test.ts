@@ -228,7 +228,7 @@ describe('secureWriteTokenFile', () => {
       );
       // ...staging area is a per-operation-unique DIRECTORY...
       const dir = stagingDir();
-      expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
+      expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+\.[0-9a-f]{12}$/);
       const grants = icaclsGrants();
       expect(grants.length).toBe(2);
       // ...hardened with an INHERITABLE owner-only grant while still empty
@@ -314,9 +314,10 @@ describe('secureWriteTokenFile', () => {
       stubWhoamiSid('S-1-5-21-1-2-3-1001');
       const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
       const dir = path.dirname(tokenPath);
-      const stale = `.wmux-auth-token${HARDEN_TMP}.999.1`;
-      const fresh = `.wmux-auth-token${HARDEN_TMP}.998.7`;
-      fsMock.readdirSync.mockReturnValue([stale, fresh, 'unrelated-file']);
+      const stale = `.wmux-auth-token${HARDEN_TMP}.999.1.aabbccddeeff`;
+      const fresh = `.wmux-auth-token${HARDEN_TMP}.998.7.aabbccddeeff`;
+      const userBackup = `.wmux-auth-token${HARDEN_TMP}.backup`;
+      fsMock.readdirSync.mockReturnValue([stale, fresh, userBackup, 'unrelated-file']);
       fsMock.statSync.mockImplementation((p: unknown) => ({
         mtimeMs: String(p).endsWith(stale) ? Date.now() - 3_600_000 : Date.now(),
       }));
@@ -329,9 +330,14 @@ describe('secureWriteTokenFile', () => {
         force: true,
         recursive: true,
       });
-      // ...the seconds-old one (a live concurrent harden) is left alone.
+      // ...the seconds-old one (a live concurrent harden) is left alone...
       expect(
         fsMock.rmSync.mock.calls.filter(([p]) => String(p).endsWith(fresh)),
+      ).toEqual([]);
+      // ...and a user file that merely STARTS with the staging prefix is never
+      // mistaken for a crash artifact (codex round-3 P2).
+      expect(
+        fsMock.rmSync.mock.calls.filter(([p]) => String(p).endsWith(userBackup)),
       ).toEqual([]);
     });
 
@@ -508,6 +514,7 @@ describe('reHardenTokenFileAcl', () => {
     expect(fsMock.readFileSync).toHaveBeenCalledWith(tokenPath);
     expect(fsMock.writeFileSync).toHaveBeenCalledWith(stagedFile(), Buffer.from('existing-token'), {
       mode: 0o600,
+      flag: 'wx', // exclusive create: a pre-planted file/hardlink at this name must fail
     });
     expect(icaclsGrants()[0]?.[0]).toBe(stagingDir());
     expect(icaclsGrants()[1]?.[0]).toBe(stagedFile());
@@ -531,13 +538,20 @@ describe('reHardenTokenFileAcl', () => {
   // against the snapshot this harden staged FROM, inside one synchronous
   // block. A newer write (e.g. PipeServer.rotateToken) must never be clobbered
   // by a stale snapshot.
-  it('aborts as "unchanged" when a newer write supersedes the harden mid-flight', async () => {
+  it('aborts as "unchanged" when a newer write supersedes the harden AND its DACL verifies', async () => {
     stubWin32();
     stubWhoamiSid('S-1-5-21-1-2-3-1001');
-    // Snapshot read sees the old token; the commit-time compare sees newer bytes.
-    fsMock.readFileSync
-      .mockReturnValueOnce(Buffer.from('existing-token')) // snapshot
-      .mockReturnValue(Buffer.from('rotated-token')); // commit compare
+    // Snapshot read sees the old token; the commit-time compare sees newer
+    // bytes; the DACL read-back confirms the superseding writer's output is
+    // owner-only (an in-process secureWriteTokenFile hardens its own output).
+    let tokenReads = 0;
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001');
+      }
+      tokenReads += 1;
+      return Buffer.from(tokenReads === 1 ? 'existing-token' : 'rotated-token');
+    });
 
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
@@ -548,9 +562,34 @@ describe('reHardenTokenFileAcl', () => {
     expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
   });
 
-  // 'unchanged' is a VERIFIED claim (review consensus): a swap failure may only
-  // report it after reading the original's DACL back and confirming owner-only.
-  it('reports "unchanged" on a rename collision ONLY after verifying the original is owner-only', async () => {
+  // codex round-3 P1: "a newer write exists" is not proof it is SAFE. An
+  // EXTERNAL writer replacing the file mid-harden must not ride 'unchanged'
+  // past the fail-closed callers.
+  it('reports "failed" when a superseding write cannot be verified owner-only', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    let tokenReads = 0;
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return BROAD_SDDL('S-1-5-21-1-2-3-1001'); // replacement is broad-readable
+      }
+      tokenReads += 1;
+      return Buffer.from(tokenReads === 1 ? 'existing-token' : 'planted-token');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+
+    expect(reHardenTokenFileAcl(path.join('C:', 'Users', 'tester', '.wmux-auth-token'))).toBe(
+      'failed',
+    );
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+  });
+
+  // A swap collision now falls back to an IN-PLACE DACL repair: ACL edits need
+  // only WRITE_DAC, not exclusive access, so they succeed even while the reader
+  // that defeated the rename still holds the file (GLM round-3). The read-back
+  // then decides honestly.
+  it('repairs the DACL in place on a rename collision and reports "hardened" once verified', async () => {
     stubWin32();
     stubWhoamiSid('S-1-5-21-1-2-3-1001');
     fsMock.renameSync.mockImplementation(() => {
@@ -566,8 +605,11 @@ describe('reHardenTokenFileAcl', () => {
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
-    expect(reHardenTokenFileAcl(tokenPath)).toBe('unchanged');
-    expect(fsMock.renameSync.mock.calls.length).toBe(3); // retried before verifying
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
+    expect(fsMock.renameSync.mock.calls.length).toBe(3); // retried before repairing
+    // The last-resort grant targets the ORIGINAL file, in place.
+    const inPlace = icaclsGrants().find((args) => args[0] === tokenPath);
+    expect(inPlace?.slice(1, 4)).toEqual(['/grant:r', '*S-1-5-21-1-2-3-1001:F', '/inheritance:r']);
     const save = icaclsSaveCall();
     expect(save?.[1]?.[0]).toBe(path.basename(tokenPath));
     expect(save?.[2]?.cwd).toBe(path.dirname(tokenPath));
@@ -714,7 +756,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
       String(p).includes(`${HARDEN_TMP}.`),
     );
     const dir = dirCall?.[0] as string;
-    expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
+    expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+\.[0-9a-f]{12}$/);
     const grants = callsMatching(execFileMock, 'icacls').filter(
       ([, args]) => args?.[1] === '/grant:r',
     );
@@ -724,7 +766,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     expect(fsMock.promises.writeFile).toHaveBeenCalledWith(
       path.join(dir, 'staged'),
       Buffer.from('existing-token'),
-      { mode: 0o600 },
+      { mode: 0o600, flag: 'wx' },
     );
     // ...but the COMMIT is the synchronous pair, so no in-process writer can
     // interleave between the compare and the rename. promises.rename would
