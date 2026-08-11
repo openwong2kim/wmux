@@ -641,44 +641,29 @@ function repairInPlaceAndVerifySync(
  * path never uses it — a failed swap there falls through to the in-place
  * repair, which needs no rename at all and therefore no gap.
  *
- * EPERM/EACCES are ambiguous on Windows: they are equally what a scanner
- * holding the STAGING SOURCE produces — and the staging file, just created and
- * written, is the likelier scan target of the two. Unlinking the destination
- * on that error would delete the live token and then STILL fail to install the
- * replacement, because the source is what is locked. So the destination is
- * only removed once the source is provably readable, which leaves the
- * destination as the remaining explanation for the refusal.
+ * ONLY `EEXIST` authorises the unlink, because only `EEXIST` is specific to
+ * the destination. `EPERM`/`EACCES` are ambiguous on Windows — they are
+ * equally what a scanner holding the STAGING SOURCE produces, and the staging
+ * file, just created and written, is the likelier scan target. Unlinking on
+ * those would delete the live token and then still fail to install the
+ * replacement.
+ *
+ * An earlier revision tried to disambiguate by probing whether the source was
+ * readable. That is not a proof: `rename` needs DELETE access on the source to
+ * remove its directory entry, so a scanner can hold the source with
+ * FILE_SHARE_READ — the probe succeeds, the rename still fails, and the live
+ * token is gone. There is no reliable probe, so the ambiguous codes simply do
+ * not get the fallback. They fall to the caller's retry loop, and for the
+ * re-harden path to the in-place repair, neither of which can destroy anything.
  */
 function swapIntoPlaceAllowingUnlink(from: string, to: string): void {
   try {
     fs.renameSync(from, to);
     return;
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'EEXIST' && code !== 'EPERM' && code !== 'EACCES') throw err;
-    if (!isReadableSync(from)) throw err; // source-side lock — never unlink
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     fs.unlinkSync(to);
     fs.renameSync(from, to);
-  }
-}
-
-/** Can this path be opened for reading right now? Used to tell a source-side
- *  lock apart from a destination-side rename refusal. */
-function isReadableSync(p: string): boolean {
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(p, 'r');
-    return true;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* best effort */
-      }
-    }
   }
 }
 
