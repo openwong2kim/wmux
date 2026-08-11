@@ -65,6 +65,10 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  stale stamp decays without a new event (bumped by useAgentActivityClock). */
   surfaceActivityAt?: StoreState['surfaceActivityAt'];
   agentClockMs?: StoreState['agentClockMs'];
+  /** Per-PTY agent identity — gates workspace-level metadata inheritance so a
+   *  non-agent active pane (e.g. btop) never borrows the agent's name/status.
+   *  Optional so existing fixtures stay terse. */
+  surfaceAgent?: StoreState['surfaceAgent'];
 };
 
 /**
@@ -199,33 +203,38 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // Resolution order (most → least authoritative):
       //   1. a retained ATTENTION status on any surface (waiting/complete/…)
       //   2. the active pane's workspace-level status, when it's a live non-idle
-      //      state OTHER than 'running' (error) — see the #837 note below
+      //      state (e.g. detector/byte 'running')
       //   3. hook-driven 'running' — a PostToolUse fired within the TTL, so the
       //      agent is working even if the terminal is quiet (fixes "thinking
       //      mid-turn read as idle"; also lights BACKGROUND running panes, which
       //      never reached workspace metadata). Uses the in-state clock so it
       //      decays on its own. Absent inputs → skipped (legacy behavior).
       //   4. idle.
-      // #837: `ws.metadata.agentStatus` is ONE slot per workspace, written by
-      // whichever pty last broadcast. For 'running' that made tier 2 a source of
-      // MISATTRIBUTION rather than of signal: a background worker's 'running'
-      // lands in the shared slot, `surfaceAgentStatus` drops it (attention-only),
-      // and tier 2 then paints it onto whichever pane happens to be active. A
-      // hand-opened shell that never ran an agent read 'running' that way and
-      // was counted as an outstanding worker by deck_complete_work.
-      //
-      // Tier 2's 'running' was also redundant. Both emitters of that broadcast
-      // (PTYBridge / DaemonNotificationRouter) carry a ptyId, so every one of
-      // them stamps `markSurfaceRunning(ptyId)` — the per-pty clock tier 3
-      // already reads. Dropping 'running' here costs no coverage and does not
-      // shorten it: the shared slot is cleared back to 'idle' after ~5s of
-      // silence, while the tier 3 stamp holds for HOOK_RUNNING_TTL_MS.
-      //
-      // Only 'running' is dropped. `error` in particular has nowhere else to
-      // live — it is not an ATTENTION status, so the workspace slot is its only
-      // carrier for the active pane, and vetoing it would lose it silently.
+      // #850: only inherit workspace-level agent metadata when the active
+      // pane's PTY has been independently confirmed as an agent (surfaceAgent
+      // identity exists). Without this guard a non-agent active pane (btop,
+      // vim, a plain shell) inherits the name and status of the workspace's
+      // real agent, producing a false "Claude Code · Needs you" card.
+      const paneAgentName = ptyId ? state.surfaceAgent?.[ptyId]?.name : undefined;
+      const paneIsAgent = !!paneAgentName;
+      // Only inherit workspace-level status when this pane IS the agent that
+      // set that status — prevents multi-agent workspaces from cross-polluting
+      // (#837: one pane's 'running' bleeding into another agent's card).
+      const metaMatchesPane = paneIsAgent && wsMeta?.agentName === paneAgentName;
+      // #837's 'running' veto stays in force, and the name match above does NOT
+      // replace it. `agentStatus` is ONE slot per workspace, so a name match
+      // cannot prove the value came from THIS pane whenever two panes run the
+      // same agent — an orchestrator and its worker are both "Claude Code",
+      // which is the normal shape here, not an exotic one. The worker's
+      // 'running' would land in the shared slot and get painted onto the active
+      // pane, which is exactly the misattribution #837 fixed. Tier 3's per-pty
+      // clock is what carries running, so vetoing it here costs no coverage.
+      // `error` is still inherited: it is not an ATTENTION status, so the
+      // workspace slot is its only carrier for the active pane.
       const metaStatus =
-        isActivePane && wsMeta?.agentStatus !== 'running' ? wsMeta?.agentStatus : undefined;
+        isActivePane && metaMatchesPane && wsMeta?.agentStatus !== 'running'
+          ? wsMeta?.agentStatus
+          : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
       const hookRunning =
         activityAt !== undefined &&
@@ -243,7 +252,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         surfaceId: surf?.id ?? '',
         ptyId,
         agentStatus: status,
-        agentName: isActivePane ? wsMeta?.agentName : undefined,
+        agentName: isActivePane && metaMatchesPane ? wsMeta?.agentName : undefined,
         paneLabel: state.paneLabel?.[leaf.id],
         cwd: surf?.cwd,
         title: surf?.title ?? '',

@@ -175,6 +175,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
@@ -198,6 +199,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
@@ -224,10 +226,20 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
     proc.emitData('Do you want to proceed?\n');
     flush();
 
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    // The point of this test is that awaiting_input is NOT vetoed by hook
+    // governance. Asserting only that SOMETHING notified would pass even when
+    // it IS vetoed, because opening the gate emits 'running' on its own — so
+    // assert the approval notification specifically. `category: 'approval'` is
+    // what PTYBridge tags an awaiting_input notification with; every other
+    // status uses 'agent-turn'.
+    const approvals = mocks.sendNotification.mock.calls.filter(
+      ([, , payload]) => payload?.category === 'approval',
+    );
+    expect(approvals.length).toBeGreaterThan(0);
     const events = pollLifecycle();
     const awaiting = events.find((e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input');
     expect(awaiting).toBeDefined();
@@ -237,11 +249,14 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
   it('resize-redraw guard: a burst within 3s of a resize does not reset emission dedup (no stale re-fire)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
-    // Turn 1: gate + waiting prompt → one notification.
+    // Turn 1: gate + waiting prompt → notifications fire.
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    // Reset count after gate-opening notifications to test resize dedup from here.
+    const baseCount = mocks.sendNotification.mock.calls.length;
+    expect(baseCount).toBeGreaterThanOrEqual(1);
 
     // Workspace switch refits xterm → pty:resize → multi-KB TUI repaint.
     // The repaint burst trips ActivityMonitor.onActive, but within the
@@ -252,7 +267,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     flush();
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(baseCount); // unchanged
 
     // Control: a burst well past the guard window resets dedup as before,
     // so the next genuine turn's identical footer CAN notify again.
@@ -261,7 +276,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     flush();
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(2);
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(baseCount + 1);
 
     clearSuppression('pty-1');
   });
@@ -281,9 +296,11 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    const baseCount2 = mocks.sendNotification.mock.calls.length;
+    expect(baseCount2).toBeGreaterThanOrEqual(1);
 
     // Resize → repaint burst → the ONE onActive call for this whole cycle.
     markResize('pty-1');
@@ -294,7 +311,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     // (this is the resize repaint itself, not a real new turn).
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(baseCount2);
 
     // The guard window elapses. Deliberately do NOT feed another
     // >2000-byte burst here — the point is that no second onActive call
@@ -306,7 +323,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     // reset already ran. This MUST notify: it's a genuinely new turn.
     proc.emitData('  shift+tab to cycle\n');
     flush();
-    expect(mocks.sendNotification).toHaveBeenCalledTimes(2);
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(baseCount2 + 1);
 
     clearSuppression('pty-1');
   });
@@ -320,6 +337,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
@@ -338,6 +356,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
@@ -350,6 +369,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Do you want to proceed?\n');
     flush();
 
@@ -375,6 +395,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('If the CLI asks "Do you want to proceed?", choose no\n');
     flush();
 
@@ -389,6 +410,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('│ Do you want to proceed?   │\n');
     flush();
 
@@ -402,6 +424,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('click Allow tool use for Bash to enable git push\n');
     flush();
 
@@ -418,6 +441,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('│ Do you want to proceed? ╮\n');
     flush();
 
@@ -435,6 +459,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Allow tool use for mcp__github__create_issue?\n');
     flush();
 
@@ -451,6 +476,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('╭─ Do you want to proceed? ─╮\n');
     flush();
 
@@ -469,6 +495,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Please click Allow tool use for Bash_command │\n');
     flush();
 
@@ -486,6 +513,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Please click Allow tool use for Bash\n');
     flush();
 
@@ -499,6 +527,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Answer Do you want to proceed?\n');
     flush();
 
@@ -514,6 +543,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Allow tool use for mcp__context7__get-library-docs?\n');
     flush();
 
@@ -530,6 +560,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Allow tool use for mcp__github_create_issue?\n');
     flush();
 
@@ -543,6 +574,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('Allow tool use for TodoWrite?\n');
     flush();
 
@@ -629,6 +661,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {
 
     // Gate the Claude Code detector first so getLastAgent() returns 'Claude Code'.
     proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
     // Drain the detector-source lifecycle event so the next poll sees only osc133.

@@ -57,6 +57,10 @@ function state(): FleetSelectorState {
     workspaces: [w1, w2],
     surfaceAgentStatus,
     surfaceActivity: {},
+    surfaceAgent: {
+      'pty-1': { name: 'Claude Code', status: 'awaiting_input' },
+      'pty-2a': { name: 'Codex', status: 'running' },
+    },
   };
 }
 
@@ -130,6 +134,8 @@ describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
       workspaces: [ws],
       surfaceAgentStatus: { 'pty-b': 'waiting' },
       surfaceActivity: {},
+      // #850: surfaceAgent gates workspace metadata inheritance for the active pane.
+      surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'running' } },
       // #837: the workspace-level 'running' is no longer borrowed by the active
       // pane — running now comes from the pane's OWN per-pty stamp, which is
       // what the live path always writes (markSurfaceRunning on every 'running'
@@ -173,6 +179,8 @@ describe('buildFleetSnapshots — surface-accurate multi-surface panes', () => {
       workspaces: [w2],
       surfaceAgentStatus: { 'pty-2a-first': 'awaiting_input' },
       surfaceActivity: {},
+      // #850: surfaceAgent gates workspace metadata inheritance for the active pane.
+      surfaceAgent: { 'pty-2a': { name: 'Codex', status: 'running' } },
       // #837: the active surface's 'running' is its OWN per-pty stamp now, not
       // the borrowed workspace slot. Same base status, sourced the way the live
       // path sources it.
