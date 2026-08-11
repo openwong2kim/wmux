@@ -5,9 +5,9 @@ import path from 'node:path';
 import { PeerStore, isPeerFile, PEER_BURN_THRESHOLD, PEER_CAP, type PeerStoreOptions } from '../peers';
 import type { PairResult } from '../pairing';
 
-// Test seam: skip the slow win32 PowerShell ACL shell-out.
+// Test seam: skip the win32 owner-DACL rewrite.
 const seam: PeerStoreOptions = {
-  reHarden: () => true,
+  reHarden: () => 'hardened',
   secureWrite: (p, d) => fs.writeFileSync(p, d),
 };
 
@@ -78,7 +78,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         hardenOk = false; // now persist() unlinks the file and throws (C12)
@@ -116,7 +116,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         s.upsertPaired(mkResult('u1'));
@@ -226,7 +226,7 @@ describe('peers — per-peer store', () => {
         ...seam,
         reHarden: () => {
           writes += 1;
-          return true;
+          return 'hardened';
         },
         ...over,
       });
@@ -291,7 +291,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         s.upsertPaired(mkResult('u1'));
@@ -321,7 +321,7 @@ describe('peers — per-peer store', () => {
         const s = new PeerStore(dir, {
           reHarden: () => {
             writes += 1;
-            return hardenOk;
+            return hardenOk ? 'hardened' : 'failed';
           },
           secureWrite: (p, d) => fs.writeFileSync(p, d),
           seenFlushMs: 5,

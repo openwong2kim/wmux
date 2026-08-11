@@ -221,7 +221,7 @@ async function main() {
       assertOwnerOnly('(a)', p);
       // and the re-harden path on the now-hardened file is idempotent + no throw
       const ok = reHardenTokenFileAcl(p);
-      check('(a) reHardenTokenFileAcl returned true (idempotent re-harden)', ok === true);
+      check("(a) reHardenTokenFileAcl returned 'hardened' (idempotent re-harden)", ok === 'hardened', `got=${ok}`);
       assertOwnerOnly('(a) after re-harden', p);
     }
     fs.rmSync(p, { force: true });
@@ -246,7 +246,7 @@ async function main() {
       threw = e;
     }
     check('(b) reHardenTokenFileAcl did NOT throw (no SeSecurityPrivilege)', threw === null, threw ? String(threw.message) : '');
-    check('(b) reHardenTokenFileAcl returned true (success, not fail-soft)', ret === true);
+    check("(b) reHardenTokenFileAcl returned 'hardened' (success, not fail-soft)", ret === 'hardened', `got=${ret}`);
     assertOwnerOnly('(b)', p);
     fs.rmSync(p, { force: true });
   }
@@ -274,8 +274,50 @@ async function main() {
       threw = e;
     }
     check('(c) reHardenTokenFileAcl did NOT throw', threw === null, threw ? String(threw.message) : '');
-    check('(c) reHardenTokenFileAcl returned true', ret === true);
+    check("(c) reHardenTokenFileAcl returned 'hardened'", ret === 'hardened', `got=${ret}`);
     assertOwnerOnly('(c) — Everyone:(R) removed', p);
+    fs.rmSync(p, { force: true });
+  }
+
+  // ---- (c2) explicit CUSTOM principal — the gap the icacls strip cannot close ----
+  // WELL_KNOWN_BROAD_SIDS only names Everyone / Users / Authenticated Users /
+  // INTERACTIVE. An explicit ACE for ANY other principal (here BUILTIN\
+  // Administrators, S-1-5-32-544 — present on every Windows install and NOT in
+  // that list) survives `/grant:r + /inheritance:r + /remove:g <broad>` entirely.
+  // This is the case that shipped silently on every machine where the PowerShell
+  // rebuild could not run (Constrained Language Mode, blocked by AV), and it is
+  // exactly what the fresh-inode rewrite makes unreachable.
+  console.log('\nCASE (c2) explicit CUSTOM ACE — the gap plain icacls leaves behind');
+  {
+    const CUSTOM_SID = 'S-1-5-32-544'; // BUILTIN\Administrators — not a "broad" SID we strip by name
+    const leakProbe = makeTempToken();
+    execFileSync(ICACLS, [leakProbe, '/grant', `*${CUSTOM_SID}:(R)`], { windowsHide: true });
+    seedShippedIcaclsState(leakProbe); // old flow: grant owner + /inheritance:r
+    for (const broad of ['S-1-1-0', 'S-1-5-32-545', 'S-1-5-11', 'S-1-5-4']) {
+      execFileSync(ICACLS, [leakProbe, '/remove:g', `*${broad}`], { windowsHide: true });
+    }
+    const afterOldFlow = readDacl(leakProbe);
+    const customSurvivesOld = afterOldFlow.some((a) => a.sid === CUSTOM_SID);
+    check(
+      '(c2) LEAK CONFIRMED: the plain icacls strip leaves an explicit custom ACE',
+      customSurvivesOld,
+      `dacl=${JSON.stringify(afterOldFlow)}`,
+    );
+    fs.rmSync(leakProbe, { force: true });
+
+    const p = makeTempToken();
+    execFileSync(ICACLS, [p, '/grant', `*${CUSTOM_SID}:(R)`], { windowsHide: true });
+    let threw = null;
+    let ret;
+    try {
+      ret = reHardenTokenFileAcl(p);
+    } catch (e) {
+      threw = e;
+    }
+    check('(c2) reHardenTokenFileAcl did NOT throw', threw === null, threw ? String(threw.message) : '');
+    check("(c2) reHardenTokenFileAcl returned 'hardened'", ret === 'hardened', `got=${ret}`);
+    assertOwnerOnly('(c2) — custom explicit ACE removed', p);
+    check('(c2) content preserved across the fresh-inode rewrite', ownerCanRead(p));
     fs.rmSync(p, { force: true });
   }
 

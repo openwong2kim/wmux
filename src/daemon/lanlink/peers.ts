@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../util/atomicWrite';
-import { reHardenTokenFileAcl, secureWriteTokenFile } from '../../shared/security';
+import { reHardenTokenFileAcl, secureWriteTokenFile, type HardenOutcome } from '../../shared/security';
 import type { PairResult } from './pairing';
 
 export const PEER_CAP = 64;
@@ -114,8 +114,8 @@ export function isPeerFile(v: unknown): v is PeerFile {
 export interface PeerStoreOptions {
   /** Lets the server protect a peer with a live connection from LRU eviction. */
   isLive?: (peerUuid: string) => boolean;
-  /** Test seam: override the (slow, win32 PowerShell) owner-DACL re-harden. */
-  reHarden?: (filePath: string) => boolean;
+  /** Test seam: override the win32 owner-DACL re-harden. */
+  reHarden?: (filePath: string) => HardenOutcome;
   /** Test seam: override the secure (owner-DACL) machine-key write. */
   secureWrite?: (filePath: string, data: string) => void;
   /** How long a `lastSeenAt` refresh may sit in memory before it is written (#665). */
@@ -133,7 +133,7 @@ export class PeerStore {
   private readonly keyPath: string;
   private readonly machineKey: Buffer;
   private readonly isLive: (peerUuid: string) => boolean;
-  private readonly reHarden: (filePath: string) => boolean;
+  private readonly reHarden: (filePath: string) => HardenOutcome;
   private readonly secureWrite: (filePath: string, data: string) => void;
   private readonly seenFlushMs: number;
   /** Map-backed (C20): lookups can never traverse the prototype chain. */
@@ -413,8 +413,13 @@ export class PeerStore {
     const peers = [...this.map.values()];
     const file: PeerFile = { version: 1, mac: this.computeMac(peers), peers };
     atomicWriteJSONSync(this.filePath, file, { validate: isPeerFile, rotationEnabled: true });
-    const ok = this.reHarden(this.filePath);
-    if (process.platform === 'win32' && !ok) {
+    const outcome = this.reHarden(this.filePath);
+    // 'unchanged' means the harden could not swap its rebuilt copy in (a
+    // concurrent reader holding the file open makes rename fail with
+    // EPERM/EBUSY on win32) — the file we just wrote keeps the ACL it already
+    // had and is no weaker for it. Destroying the peer store over that would
+    // trade a transient rename collision for every pairing the user has.
+    if (process.platform === 'win32' && outcome === 'failed') {
       // Fail closed: never leave the long-term secrets broad-readable.
       try {
         fs.unlinkSync(this.filePath);
@@ -460,12 +465,18 @@ export class PeerStore {
       // Require exactly 32 bytes of hex — a malformed/truncated key would silently
       // weaken every peer-file HMAC, so a bad value is discarded + regenerated.
       if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
-        const ok = this.reHarden(this.keyPath);
+        const outcome = this.reHarden(this.keyPath);
         // Fail closed (codex P2): if the integrity key cannot be locked to owner-only
         // ACLs on win32, do NOT trust a broad-readable key (an attacker who reads it
         // could forge a planted peer file's HMAC). Discard it and fall through to
         // regenerate a fresh key with a clean owner-DACL via secureWrite.
-        if (process.platform !== 'win32' || ok) {
+        //
+        // ONLY on 'failed'. A 'unchanged' outcome means the rebuilt copy could not
+        // be swapped in while the key's own ACL stayed exactly as it was — not a
+        // security failure. Regenerating here would change the machine key, which
+        // invalidates lanlink-peers.json's MAC (verifyMac) and silently drops every
+        // paired peer on the load() that follows in this same constructor.
+        if (process.platform !== 'win32' || outcome !== 'failed') {
           return Buffer.from(existing, 'hex');
         }
         try {

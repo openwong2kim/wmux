@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile, execFileSync, spawn } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 
 /**
  * Resolve the current user's SID (e.g. `S-1-5-21-...-1001`) so the ACL grant can
@@ -49,70 +49,38 @@ function getCurrentUserSidAsync(): Promise<string | null> {
 }
 
 /**
- * Well-known broad principals the icacls FALLBACK explicitly strips by SID.
- * These are the realistic "world-readable" vectors a redirected/roamed/MDM
- * profile can stamp as an EXPLICIT ACE on the token file:
+ * Well-known broad principals stripped by SID on top of `/inheritance:r`.
  *   S-1-1-0      Everyone
  *   S-1-5-32-545 BUILTIN\Users
  *   S-1-5-11     Authenticated Users
  *   S-1-5-4      INTERACTIVE
- * (icacls cannot enumerate-and-remove a DACL generically, and a blind
- * remove-every-ACE loop locks the owner out — see issue #124 dynamic probes.
- * The PRIMARY .NET path strips ALL non-owner ACEs including custom SIDs; this
- * list only bounds the fallback used when PowerShell is unavailable.)
+ *
+ * On a FRESH inode these are redundant — the file carries only inherited ACEs
+ * and `/inheritance:r` drops all of them. They are kept as belt-and-braces for
+ * the case where a parent directory somehow yields an explicit ACE at creation,
+ * and they cost nothing: they ride along in the same single icacls invocation.
  */
 const WELL_KNOWN_BROAD_SIDS = ['S-1-1-0', 'S-1-5-32-545', 'S-1-5-11', 'S-1-5-4'];
 
+/** Suffix for the staging inode used by the fresh-inode rewrite. */
+const HARDEN_TMP_SUFFIX = '.harden-tmp';
+
 /**
- * PowerShell snippet executed via `-EncodedCommand` to rebuild the file DACL
- * using the .NET `FileInfo.SetAccessControl(FileSecurity)` overload.
+ * Outcome of a hardening attempt. Replaces the old boolean, which conflated two
+ * very different states and wired both to destructive fail-closed branches.
  *
- * Why this overload and NOT `icacls /grant:r` or the `Set-Acl` cmdlet:
- *   - `icacls /grant:r *<sid>:F /inheritance:r` only REPLACES the named
- *     principal's ACE and only strips INHERITED ACEs; a pre-existing EXPLICIT
- *     broad ACE (e.g. Everyone:(R) from a redirected profile) SURVIVES, leaving
- *     the token world-readable. This is the original leak (issue #124).
- *   - The `Set-Acl` cmdlet reads Owner+Group+DACL via `Get-Acl` and tries to
- *     write back ALL of those sections; re-stamping the Owner/Group on the
- *     already-`/inheritance:r`-protected on-disk state requires
- *     SeSecurityPrivilege/SeRestorePrivilege that a normal user process does
- *     NOT hold — it throws PrivilegeNotHeldException 10/10 on the real
- *     upgrade-from-icacls token (the v2.14.0+ installed base). Verified in
- *     scripts/issue-124-acl-dynamic.mjs.
- *   - `FileInfo.SetAccessControl($fs)` with a FRESH FileSecurity object writes
- *     ONLY the sections that object has modified — the DACL — never Owner/Group/
- *     SACL. So it needs no privilege, succeeds 10/10 on the upgrade state, and
- *     `SetAccessRuleProtection($true,$false)` discards inheritance while the
- *     single owner FullControl ACE is the ONLY surviving DACL entry. Every other
- *     ACE — inherited or explicit, well-known or custom — is dropped.
- *
- * Reads a JSON `{ sid?, username? }` payload from stdin (so the identity never
- * lands in argv where the console OEM codepage could mangle a non-ASCII name).
+ *   'hardened'  — the DACL is now owner-only.
+ *   'unchanged' — we could not swap the rebuilt file in, but the ORIGINAL file
+ *                 and its ACL are untouched and NOT weakened. Callers must not
+ *                 treat this as a security failure: on win32 a rename over a
+ *                 file another process holds open fails with EPERM/EBUSY, and
+ *                 deleting the user's peer store or regenerating the machine
+ *                 HMAC key over that would destroy every pairing (see
+ *                 PeerStore.persist / loadOrCreateMachineKey).
+ *   'failed'    — we could not produce a locked-down file at all. THIS is the
+ *                 state fail-closed callers must react to.
  */
-const DACL_ONLY_REBUILD_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-$p = $env:WMUX_ACL_TARGET
-$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-if ($payload.sid) {
-  $id = New-Object System.Security.Principal.SecurityIdentifier([string]$payload.sid)
-} elseif ($payload.username) {
-  $id = New-Object System.Security.Principal.NTAccount([string]$payload.username)
-} else {
-  throw 'No owner identity supplied for ACL hardening.'
-}
-$fi = Get-Item -LiteralPath $p -Force
-# Fresh FileSecurity => Set-AccessControl writes ONLY the DACL, never Owner/Group/SACL.
-$fs = New-Object System.Security.AccessControl.FileSecurity
-$fs.SetAccessRuleProtection($true, $false)
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-  $id,
-  [System.Security.AccessControl.FileSystemRights]::FullControl,
-  [System.Security.AccessControl.AccessControlType]::Allow
-)
-$fs.AddAccessRule($rule)
-$fi.SetAccessControl($fs)
-`;
+export type HardenOutcome = 'hardened' | 'unchanged' | 'failed';
 
 /**
  * Resolve the owner principal for the ACL, applying the #90 codepage-safety
@@ -213,169 +181,145 @@ function applyRestrictiveAclViaIcacls(filePath: string, principal: string): void
  * Backs the docs/SECURITY.md §1.2 + PROTOCOL.md §5 token-file ACL guarantee —
  * keep the behavior in sync with them.
  *
- * Primitive choice (issue #124): a DACL-only rebuild via .NET
- * `FileInfo.SetAccessControl`, invoked through `powershell.exe -EncodedCommand`.
- * See DACL_ONLY_REBUILD_SCRIPT for why this is correct where `icacls /grant:r`
- * (leaks explicit ACEs) and the `Set-Acl` cmdlet (PrivilegeNotHeldException on
- * the upgrade-from-icacls state) are not. icacls is the fallback for any SKU
- * where the PRIMARY path is unavailable — powershell.exe absent, OR present but
- * blocked (AppLocker / Constrained Language Mode can fail the .NET ACL calls).
- * The fallback still strips the common broad ACEs, so a hardened endpoint is
- * left strictly better off than the un-hardened token (see
- * applyRestrictiveAclViaIcacls). We only fail (and let the caller delete the
- * token) when BOTH primitives fail.
+ * Primitive choice (issue #124, revisited): the DACL is rebuilt by writing the
+ * content through a FRESH inode rather than editing the live file's ACL.
+ * `writeFileSync` PRESERVES an existing file's DACL — that is exactly why an
+ * in-place write can never drop a pre-existing EXPLICIT broad ACE. A file that
+ * did not exist before we created it carries only INHERITED ACEs, so
+ * `/inheritance:r` on that fresh inode is sufficient and the custom-explicit-ACE
+ * case becomes unreachable by construction.
+ *
+ * Why NOT the previous `powershell.exe -EncodedCommand` .NET rebuild:
+ *   - Constrained Language Mode (AppLocker/WDAC, standard on managed fleets)
+ *     blocks arbitrary .NET method invocation, so the script died on its FIRST
+ *     call — `[Console]::In.ReadToEnd()` — with
+ *     MethodInvocationNotSupportedInConstrainedLanguage. Measured 22/22 failures
+ *     on a real corporate box, every one silently falling back to plain icacls,
+ *     which leaves custom explicit ACEs in place. The whole installed base
+ *     behind such a policy ran with weaker ACLs than SECURITY.md documents.
+ *   - Norton Behavioral Protection flags the
+ *     `-ExecutionPolicy Bypass -EncodedCommand` shape as IDP.HELU.PSE85 and
+ *     blocks powershell.exe outright (GHSA-8fj2-47w9-jxq3).
+ *   - The FIRST powershell.exe spawn inside an Electron process measured
+ *     1.8-2.3 s (75-78 % of daemon cold start); this path measures ~42 ms.
+ *
+ * Why NOT `icacls /restore` with a hand-built DACL-only SDDL: it fails with
+ * "Not all privileges or groups referenced are assigned to the caller" and
+ * processes 0 files — the same privilege wall that rules out `Set-Acl`.
  *
  * Owner identity rule (issue #90): prefer the SID (pure ASCII, codepage-proof);
  * fall back to %USERNAME% ONLY when it is pure ASCII; refuse a non-ASCII/empty
  * name rather than re-introduce the icacls codepage mangle.
  */
-function applyRestrictiveWindowsAcl(filePath: string): void {
-  // Boot-phase diagnostics (S-A): this function shells out synchronously to
-  // whoami.exe + powershell.exe (or icacls) and runs on EVERY cold start in
-  // both the main process (PipeServer ctor → loadOrCreateToken) and the
-  // daemon (DaemonPipeServer.start → loadOrCreateToken). PowerShell process
-  // start under AV is a known multi-second tax — log the duration so boot
-  // traces can attribute it.
+function applyRestrictiveWindowsAcl(filePath: string): HardenOutcome {
+  // Boot-phase diagnostics (S-A): this runs on EVERY cold start in both the
+  // main process (PipeServer ctor → loadOrCreateToken) and the daemon
+  // (DaemonPipeServer.start → loadOrCreateToken). Keep the timing log — it is
+  // what attributed the old multi-second PowerShell tax in the boot traces.
   const aclStart = Date.now();
   try {
-    applyRestrictiveWindowsAclInner(filePath);
+    return rewriteThroughFreshInode(filePath);
   } finally {
     console.log(`[security] token ACL harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`);
   }
 }
 
-function applyRestrictiveWindowsAclInner(filePath: string): void {
-  const { sid, username } = resolveOwnerIdentity(filePath);
-
-  // PRIMARY: DACL-only rebuild via .NET FileInfo.SetAccessControl. The target
-  // path goes through an environment variable (not argv) so a non-ASCII path is
-  // not subject to console OEM-codepage mangling, and the identity goes through
-  // stdin for the same reason.
-  //
-  // If powershell.exe is missing, OR present but throws (AppLocker / Constrained
-  // Language Mode blocking the .NET calls), fall through to the icacls fallback
-  // rather than abort — on a hardened endpoint the previous main implementation
-  // used icacls directly, and stripping the common broad ACEs there beats
-  // deleting the freshly-written token. Only when icacls ALSO fails do we throw.
-  if (tryPowershellDaclRebuildSync(filePath, sid, username)) {
-    return;
-  }
-
-  // FALLBACK: icacls is always present in %SystemRoot%\System32. It accepts a
-  // SID principal when prefixed with `*` (ASCII, codepage-proof);
-  // resolveOwnerIdentity already guaranteed any username fallback is pure ASCII.
-  // If this throws too, it propagates — the caller fails closed.
-  const principal = sid ? `*${sid}` : (username as string);
-  applyRestrictiveAclViaIcacls(filePath, principal);
-}
-
-function powershellPath(): string {
-  return `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-}
-
-function powershellDaclArgs(): string[] {
-  const encoded = Buffer.from(DACL_ONLY_REBUILD_SCRIPT, 'utf16le').toString('base64');
-  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded];
-}
-
 /**
- * Environment for the Windows PowerShell 5.1 child. PSModulePath is STRIPPED:
- * when wmux is launched from a PowerShell 7 shell (Store install), the
- * inherited PSModulePath leads with pwsh 7's Core-edition Modules directory —
- * the 5.1 child then auto-loads the CORE Microsoft.PowerShell.Management/
- * Security modules for cmdlets like Get-Item, fails
- * (CommandNotFoundException: "module could not be loaded"), and the DACL
- * rebuild silently degrades to the icacls fallback, weakening the #124
- * explicit-ACE protection. With the variable absent, 5.1 reconstructs its own
- * default module path and the .NET rebuild works regardless of which shell
- * spawned us. (Found via the S-A boot traces: the measured "harden" time on a
- * pwsh7-launched dev box was actually a failing PowerShell + icacls fallback.)
+ * Stage a locked-down replacement beside the target, then swap it in.
+ *
+ *   discard stale tmp ─▶ create empty tmp ─▶ icacls owner-only ─▶ write payload ─▶ rename
+ *                                                 │                    │
+ *                                                 └── harden BEFORE ───┘
+ *                                                     the secret lands, so a
+ *                                                     crash mid-write never
+ *                                                     leaves it readable
+ *
+ * Throws when no locked-down file could be produced ('failed' territory).
+ * Returns 'unchanged' when only the final swap failed — the original file and
+ * its ACL are untouched, which is NOT a security failure. See HardenOutcome.
  */
-function childPsEnv(filePath: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, WMUX_ACL_TARGET: filePath };
-  // Case-insensitive strip: Windows env vars are case-insensitive, and the
-  // spread above copies whichever single casing the parent happened to set
-  // (PSModulePath / psmodulepath / ...). A cased `delete` would miss variants.
-  for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === 'psmodulepath') delete env[key];
-  }
-  return env;
-}
+function rewriteThroughFreshInode(filePath: string): HardenOutcome {
+  const { sid, username } = resolveOwnerIdentity(filePath);
+  const principal = sid ? `*${sid}` : (username as string);
+  const tmp = `${filePath}${HARDEN_TMP_SUFFIX}`;
+  const content = fs.readFileSync(filePath);
 
-/** Synchronous PowerShell DACL rebuild. Returns true on success, false when
- *  PowerShell is absent or failed (caller decides on the fallback). */
-function tryPowershellDaclRebuildSync(
-  filePath: string,
-  sid: string | null,
-  username?: string,
-): boolean {
-  const powershell = powershellPath();
-  if (!fs.existsSync(powershell)) return false;
   try {
-    execFileSync(powershell, powershellDaclArgs(), {
-      input: JSON.stringify({ sid, username }),
-      env: childPsEnv(filePath),
-      windowsHide: true,
-      // stdin carries the identity payload; stdout is ignored so the child's
-      // CLIXML progress stream never leaks into the daemon's own stdout;
-      // stderr is captured so a real failure message rides the thrown error.
-      stdio: ['pipe', 'ignore', 'pipe'],
-    });
-    return true;
-  } catch (psErr) {
-    // PowerShell present but unusable — degrade to icacls.
+    // A staging inode left by an earlier crash holds STALE content under an
+    // owner-only DACL. Drop it rather than write into it.
+    discardStagingInode(tmp);
+    fs.writeFileSync(tmp, '', { mode: 0o600 });
+    applyRestrictiveAclViaIcacls(tmp, principal);
+    fs.writeFileSync(tmp, content);
+  } catch (err) {
+    discardStagingInode(tmp);
+    throw err;
+  }
+
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (renameErr) {
+    discardStagingInode(tmp);
     console.warn(
-      `[applyRestrictiveWindowsAcl] PowerShell DACL rebuild failed for ${filePath}; ` +
-        `falling back to icacls:`,
-      psErr,
+      `[applyRestrictiveWindowsAcl] could not swap in the hardened copy of ${filePath}; ` +
+        `the existing ACL is left as-is (not weakened):`,
+      renameErr,
     );
-    return false;
+    return 'unchanged';
+  }
+  return 'hardened';
+}
+
+/** Remove a staging inode. Best effort: it is already owner-only, so a leftover
+ *  is not an exposure — the next harden discards it. */
+function discardStagingInode(tmp: string): void {
+  try {
+    fs.rmSync(tmp, { force: true });
+  } catch {
+    /* best effort */
   }
 }
 
-/** Async twin of tryPowershellDaclRebuildSync for the deferred re-harden path.
- *  spawn (not execFile) because the identity payload goes over stdin. */
-function tryPowershellDaclRebuildAsync(
-  filePath: string,
-  sid: string | null,
-  username?: string,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    const powershell = powershellPath();
-    if (!fs.existsSync(powershell)) { resolve(false); return; }
-    let settled = false;
-    const settle = (ok: boolean, why?: unknown) => {
-      if (settled) return;
-      settled = true;
-      if (!ok && why !== undefined) {
-        console.warn(
-          `[applyRestrictiveWindowsAcl] async PowerShell DACL rebuild failed for ${filePath}; ` +
-            `falling back to icacls:`,
-          why,
-        );
-      }
-      resolve(ok);
-    };
-    try {
-      const child = spawn(powershell, powershellDaclArgs(), {
-        env: childPsEnv(filePath),
-        windowsHide: true,
-        stdio: ['pipe', 'ignore', 'pipe'],
-      });
-      let stderr = '';
-      child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-      child.on('error', (err) => settle(false, err));
-      child.on('close', (code) => {
-        if (code === 0) settle(true);
-        else settle(false, new Error(`powershell exited ${code}: ${stderr.slice(0, 500)}`));
-      });
-      child.stdin?.on('error', () => { /* surfaced via 'close' with non-zero code */ });
-      child.stdin?.write(JSON.stringify({ sid, username }));
-      child.stdin?.end();
-    } catch (err) {
-      settle(false, err);
-    }
-  });
+/** Async twin of rewriteThroughFreshInode for the deferred re-harden path.
+ *  Never *Sync: a harden that ran on the event loop would stall the daemon's
+ *  freshly-opened control pipe. Same staging order as the sync twin — the
+ *  staging inode is locked down BEFORE the payload lands in it. */
+async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOutcome> {
+  const { sid, username } = await resolveOwnerIdentityAsync(filePath);
+  const principal = sid ? `*${sid}` : (username as string);
+  const tmp = `${filePath}${HARDEN_TMP_SUFFIX}`;
+  const content = await fs.promises.readFile(filePath);
+
+  try {
+    await discardStagingInodeAsync(tmp);
+    await fs.promises.writeFile(tmp, '', { mode: 0o600 });
+    await applyRestrictiveAclViaIcaclsAsync(tmp, principal);
+    await fs.promises.writeFile(tmp, content);
+  } catch (err) {
+    await discardStagingInodeAsync(tmp);
+    throw err;
+  }
+
+  try {
+    await fs.promises.rename(tmp, filePath);
+  } catch (renameErr) {
+    await discardStagingInodeAsync(tmp);
+    console.warn(
+      `[scheduleTokenFileReHarden] could not swap in the hardened copy of ${filePath}; ` +
+        `the existing ACL is left as-is (not weakened):`,
+      renameErr,
+    );
+    return 'unchanged';
+  }
+  return 'hardened';
+}
+
+async function discardStagingInodeAsync(tmp: string): Promise<void> {
+  try {
+    await fs.promises.rm(tmp, { force: true });
+  } catch {
+    /* best effort — see discardStagingInode */
+  }
 }
 
 /** Async icacls fallback for the deferred re-harden path. */
@@ -394,40 +338,37 @@ function applyRestrictiveAclViaIcaclsAsync(filePath: string, principal: string):
 }
 
 /**
- * Fast hardening for a token file that did NOT exist before we wrote it
- * (cold-start S-A optimization). icacls-FIRST, PowerShell fallback —
- * deliberately inverted from applyRestrictiveWindowsAclInner.
+ * Write `content` through a FRESH inode that is locked down BEFORE the payload
+ * lands in it.
  *
- * Why icacls is sufficient here and only here: the issue #124 leak is that
- * `icacls /grant:r /inheritance:r` cannot remove a PRE-EXISTING EXPLICIT broad
- * ACE (e.g. Everyone:(R) stamped by a redirected profile). A file we just
- * created carries only INHERITED ACEs — `/inheritance:r` strips all of those,
- * leaving exactly the owner FullControl grant. The explicit-ACE failure mode
- * is unreachable on a just-created file, so the fast primitive (~50-100ms
- * process start) is security-equivalent to the PowerShell rebuild (~1-2s under
- * AV) on this path. Overwrites of an EXISTING file (token rotation, empty-file
- * repair) must keep the PowerShell-first path — see secureWriteTokenFile.
+ * This replaces the old fresh-vs-overwrite split. `writeFileSync` PRESERVES an
+ * existing file's DACL, so overwriting in place could carry a pre-existing
+ * EXPLICIT broad ACE straight through the write — the #124 leak. Staging a new
+ * inode makes that unreachable: a file that did not exist before we created it
+ * has only INHERITED ACEs, which `/inheritance:r` strips completely.
  *
- * Fail-closed contract preserved: if icacls fails AND the PowerShell rebuild
- * fails, this throws and the caller deletes the token.
+ * Ordering is load-bearing: the staging inode is hardened while it is still
+ * EMPTY, so a crash between the harden and the payload write can never leave a
+ * readable secret behind.
+ *
+ * Fail-closed: the target is never touched until the rename, so a failure here
+ * leaves no half-written, unhardened token on disk.
  */
-function applyRestrictiveWindowsAclForFreshFile(filePath: string): void {
+function writeThroughHardenedFreshInode(filePath: string, content: string): void {
   const aclStart = Date.now();
+  const tmp = `${filePath}${HARDEN_TMP_SUFFIX}`;
   try {
     const { sid, username } = resolveOwnerIdentity(filePath);
     const principal = sid ? `*${sid}` : (username as string);
     try {
-      applyRestrictiveAclViaIcacls(filePath, principal);
-      return;
-    } catch (icaclsErr) {
-      console.warn(
-        `[applyRestrictiveWindowsAcl] icacls fast path failed for fresh ${filePath}; ` +
-          `falling back to PowerShell DACL rebuild:`,
-        icaclsErr,
-      );
-    }
-    if (!tryPowershellDaclRebuildSync(filePath, sid, username)) {
-      throw new Error(`both icacls and PowerShell ACL hardening failed for ${filePath}`);
+      discardStagingInode(tmp);
+      fs.writeFileSync(tmp, '', { mode: 0o600 });
+      applyRestrictiveAclViaIcacls(tmp, principal);
+      fs.writeFileSync(tmp, content, { encoding: 'utf8' });
+      fs.renameSync(tmp, filePath);
+    } catch (err) {
+      discardStagingInode(tmp);
+      throw err;
     }
   } finally {
     console.log(`[security] fresh token ACL harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`);
@@ -440,25 +381,14 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // The fresh-vs-overwrite distinction is security-relevant (S-A cold-start):
-  // writeFileSync PRESERVES the ACL of an existing file, so an overwrite
-  // (token rotation, empty-file repair) may carry pre-existing EXPLICIT broad
-  // ACEs that only the PowerShell DACL rebuild removes (#124). A file that
-  // did not exist before this write has only inherited ACEs, where the fast
-  // icacls primitive is security-equivalent.
-  const existedBefore = fs.existsSync(filePath);
-
-  fs.writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600 });
-
   if (process.platform === 'win32') {
     try {
-      if (existedBefore) {
-        applyRestrictiveWindowsAcl(filePath);
-      } else {
-        applyRestrictiveWindowsAclForFreshFile(filePath);
-      }
+      writeThroughHardenedFreshInode(filePath, token);
     } catch (aclErr) {
       console.warn('[secureWriteTokenFile] Could not set file ACL:', aclErr);
+      // The staging inode is already discarded and the target was never
+      // rewritten, but an EARLIER build may have left a loose file at this
+      // path — drop it rather than leave a token we could not lock down.
       try {
         fs.unlinkSync(filePath);
       } catch {
@@ -467,7 +397,12 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
       const message = aclErr instanceof Error ? aclErr.message : String(aclErr);
       throw new Error(`Failed to set secure ACL on ${filePath}: ${message}`);
     }
-  } else {
+    return;
+  }
+
+  fs.writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600 });
+
+  {
     // `mode` only affects a newly-created inode. An overwrite of a file that
     // was restored or externally loosened to 0644 must repair it too.
     try {
@@ -498,48 +433,56 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
  * RPC surface (spawn PTYs, read sessions, navigate the browser).
  *
  * Best-effort by design: a live daemon/app must NOT fail to start just because
- * it couldn't tighten an existing file's permissions. Logs and returns false on
- * failure so callers can surface it without aborting. Returns true when the
- * restrictive ACL/mode was successfully (re)applied.
+ * it couldn't tighten an existing file's permissions. Logs and reports the
+ * outcome so callers can surface it without aborting.
+ *
+ * Returns a HardenOutcome, NOT a boolean. The distinction matters because the
+ * fail-closed callers (PeerStore.persist unlinks the peer store;
+ * loadOrCreateMachineKey regenerates the HMAC key, which invalidates the peer
+ * file's MAC and drops every pairing) must fire on a real security failure and
+ * NOT on "the swap didn't happen but nothing got weaker".
+ *
+ * NOTE (contract change): on win32 this now rewrites the file through a fresh
+ * inode, so the file's identity changes even though its VALUE does not. Readers
+ * see either the old or the new inode — the rename is atomic — and both hold
+ * identical bytes.
  */
-export function reHardenTokenFileAcl(filePath: string): boolean {
+export function reHardenTokenFileAcl(filePath: string): HardenOutcome {
   try {
     if (process.platform === 'win32') {
-      applyRestrictiveWindowsAcl(filePath);
-    } else {
-      // POSIX: ensure owner-only read/write on the existing file.
-      fs.chmodSync(filePath, 0o600);
+      return applyRestrictiveWindowsAcl(filePath);
     }
-    return true;
+    // POSIX: ensure owner-only read/write on the existing file.
+    fs.chmodSync(filePath, 0o600);
+    return 'hardened';
   } catch (err) {
     console.warn(`[reHardenTokenFileAcl] could not re-harden ${filePath}:`, err);
-    return false;
+    return 'failed';
   }
 }
 
 /**
  * Deferred, fully-async variant of reHardenTokenFileAcl (cold-start S-A).
  *
- * Why this exists: the synchronous re-harden shells out to whoami.exe +
- * powershell.exe with execFileSync — measured 1.8-3.8s per process under AV
- * (main PipeServer ctor + daemon pipe start), ~70% of the entire cold start.
- * The re-harden target is an EXISTING token whose VALUE does not change: an
- * attacker able to read it during a deferred-harden window could equally have
- * read it at any point of its prior on-disk lifetime under the very ACL state
- * the re-harden exists to repair. Deferring the tightening by a second adds
- * nothing material to an exposure window that was already unbounded — while
- * the RPC surface itself stays protected by the token VALUE (timing-safe
- * compare), not by the file ACL.
+ * Why this exists: the re-harden target is an EXISTING token whose VALUE does
+ * not change. An attacker able to read it during a deferred-harden window could
+ * equally have read it at any point of its prior on-disk lifetime under the very
+ * ACL state the re-harden exists to repair. Deferring the tightening adds
+ * nothing material to an exposure window that was already unbounded — while the
+ * RPC surface itself stays protected by the token VALUE (timing-safe compare),
+ * not by the file ACL.
  *
- * Fully async (execFile/spawn, never *Sync): merely scheduling a sync harden
- * with setImmediate would still freeze the event loop for seconds when it
- * runs — in the daemon that would stall the just-opened control pipe and time
- * out the launcher's first ping.
+ * The deferral mattered far more when this shelled out to powershell.exe
+ * (1.8-3.8 s per call, ~70 % of cold start). The fresh-inode rewrite costs
+ * ~42 ms, so the async path is now cheap insurance rather than a necessity —
+ * see the TODO about collapsing the sync/async split.
  *
- * Same best-effort contract as reHardenTokenFileAcl: failures are logged,
- * never thrown. Same primitive order as the sync path: PowerShell DACL
- * rebuild first (#124 — only it removes pre-existing explicit broad ACEs),
- * icacls fallback.
+ * Fully async (never *Sync): a sync harden merely deferred with setImmediate
+ * would still freeze the event loop when it runs — in the daemon that would
+ * stall the just-opened control pipe and time out the launcher's first ping.
+ *
+ * Same best-effort contract as reHardenTokenFileAcl: failures are logged, never
+ * thrown.
  */
 export function scheduleTokenFileReHarden(filePath: string): void {
   setImmediate(() => {
@@ -550,12 +493,7 @@ export function scheduleTokenFileReHarden(filePath: string): void {
           await fs.promises.chmod(filePath, 0o600);
           return;
         }
-        const { sid, username } = await resolveOwnerIdentityAsync(filePath);
-        if (await tryPowershellDaclRebuildAsync(filePath, sid, username)) {
-          return;
-        }
-        const principal = sid ? `*${sid}` : (username as string);
-        await applyRestrictiveAclViaIcaclsAsync(filePath, principal);
+        await rewriteThroughFreshInodeAsync(filePath);
       } catch (err) {
         console.warn(`[scheduleTokenFileReHarden] could not re-harden ${filePath}:`, err);
       } finally {

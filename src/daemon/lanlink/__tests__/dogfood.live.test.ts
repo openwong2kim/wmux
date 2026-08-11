@@ -25,7 +25,10 @@ const suite = LAN_IP ? describe : describe.skip;
 const PORT = 45000 + Math.floor(Math.random() * 1000);
 const PIN = '314159';
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const seam = { reHarden: () => true, secureWrite: (p: string, d: string) => fs.writeFileSync(p, d) };
+const seam = {
+  reHarden: () => 'hardened' as const,
+  secureWrite: (p: string, d: string) => fs.writeFileSync(p, d),
+};
 
 function mockController(nic: { name: string; mac: string }) {
   return Object.assign(new EventEmitter(), {
