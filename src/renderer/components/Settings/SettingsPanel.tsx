@@ -22,6 +22,7 @@ import {
   type ContrastReport,
 } from '../../contrastSafety';
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
+import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
 import { ADVERTISED_SHORTCUTS, builtinCombosFor, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
@@ -3351,6 +3352,39 @@ function FontFamilyField() {
   );
 }
 
+export function ChromePresetActionsView({
+  onApply,
+}: {
+  onApply: (preset: ChromePreset) => void;
+}) {
+  const t = useT();
+
+  return (
+    <div
+      role="group"
+      aria-label={t('settings.chromePreset')}
+      className="flex shrink-0 items-center gap-2"
+    >
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => onApply('minimal')}
+        data-chrome-preset="minimal"
+      >
+        {t('settings.chromePresetMinimal')}
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => onApply('standard')}
+        data-chrome-preset="standard"
+      >
+        {t('settings.chromePresetStandard')}
+      </Button>
+    </div>
+  );
+}
+
 function TabAppearance() {
   const t = useT();
   const terminalFontSize    = useStore((s) => s.terminalFontSize);
@@ -3363,6 +3397,13 @@ function TabAppearance() {
 
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
+  const applyChromePreset = useStore((s) => s.applyChromePreset);
+  const pushToast = useStore((s) => s.pushToast);
+
+  const applyChromePresetWithFeedback = (preset: ChromePreset) => {
+    applyChromePreset(preset);
+    pushToast({ level: 'info', message: t('settings.chromePresetApplied') });
+  };
 
   // UI scale (#822) — whole-interface zoom, applied to main via window:setUiScale.
   const uiScale = useStore((s) => s.uiScale);
@@ -3447,6 +3488,9 @@ function TabAppearance() {
 
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.layout')} />
+        <SettingRow label={t('settings.chromePreset')} description={t('settings.chromePresetDesc')}>
+          <ChromePresetActionsView onApply={applyChromePresetWithFeedback} />
+        </SettingRow>
         <SettingRow label={t('settings.sidebarPosition')} description={t('settings.sidebarPositionDesc')}>
           <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
             {(['left', 'right'] as const).map((pos) => (

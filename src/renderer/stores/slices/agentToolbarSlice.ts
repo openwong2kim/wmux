@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { generateId } from '../../../shared/types';
+import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 
 export interface ToolbarSnippet {
   id: string;
@@ -41,7 +42,7 @@ export const createAgentToolbarSlice: StateCreator<
   [],
   AgentToolbarSlice
 > = (set) => ({
-  agentToolbarEnabled: true,
+  agentToolbarEnabled: CHROME_PRESET_VALUES.standard.agentToolbarEnabled,
   setAgentToolbarEnabled: (enabled) => set((draft: StoreState) => {
     draft.agentToolbarEnabled = enabled;
   }),

@@ -14,13 +14,14 @@ import { createProjectConfigSlice, type ProjectConfigSlice } from './slices/proj
 import { createSupervisionSlice, type SupervisionSlice } from './slices/supervisionSlice';
 import { createResumeSlice, type ResumeSlice } from './slices/resumeSlice';
 import { createAgentToolbarSlice, type AgentToolbarSlice } from './slices/agentToolbarSlice';
+import { createChromePresetSlice, type ChromePresetSlice } from './slices/chromePresetSlice';
 import { createRemoteInboxSlice, type RemoteInboxSlice } from './slices/remoteInboxSlice';
 import { createChannelsSlice, type ChannelsSlice } from './slices/channelsSlice';
 import { createWorkTaskSlice, type WorkTaskSlice } from './slices/workTaskSlice';
 import { createDeckSlice, type DeckSlice } from './slices/deckSlice';
 import { createRemoteWorkspacesSlice, type RemoteWorkspacesSlice } from './slices/remoteWorkspacesSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -38,6 +39,7 @@ export const useStore = create<StoreState>()(
     ...createSupervisionSlice(...args),
     ...createResumeSlice(...args),
     ...createAgentToolbarSlice(...args),
+    ...createChromePresetSlice(...args),
     ...createRemoteInboxSlice(...args),
     ...createChannelsSlice(...args),
     ...createWorkTaskSlice(...args),
