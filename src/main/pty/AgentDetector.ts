@@ -148,6 +148,11 @@ const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code|╭.*(?<
 // Only the idle-prompt fragments — approval keywords are excluded because they
 // appear in conversational text and would false-positive the gate (#850 CI).
 const CLAUDE_PROMPT_RE = /bypass permissions on|shift\+tab to cycle/;
+// The waiting patterns the ordinary pattern pass runs, in the SAME array order,
+// so the gate's replay can store the text that pass will produce. Derived below
+// from AGENT_PATTERNS rather than duplicated — a second hand-written copy is
+// exactly how the two drift apart again.
+let CLAUDE_WAITING_PATTERNS: RegExp[] = [];
 
 const AGENT_PATTERNS: AgentPattern[] = [
   // ── Claude Code ────────────────────────────────────────────────────────────
@@ -349,6 +354,14 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 ];
 
+// Derive the Claude waiting patterns from the table above so the gate replay
+// and the ordinary pattern pass can never disagree about which fragment a line
+// matched. Order is preserved: the pattern pass takes the first entry that
+// matches, so the replay must resolve the same way.
+CLAUDE_WAITING_PATTERNS = (AGENT_PATTERNS.find((ap) => ap.slug === 'claude')?.patterns ?? [])
+  .filter((p) => p.status === 'waiting')
+  .map((p) => p.regex);
+
 const MAX_BUFFER = 16 * 1024;
 
 // ANSI escape strip regex. Covers:
@@ -540,18 +553,46 @@ export class AgentDetector {
     // prompt evidence independently; gate opens only when both are present.
     const claudeIsActive = this.activeAgents.has('Claude Code');
     if (!claudeIsActive && (!this.claudeBannerSeen || !this.claudePromptSeen)) {
-      if (!this.claudeBannerSeen && CLAUDE_BANNER_RE.test(clean)) {
+      // Bound the probe and gate it behind a cheap literal, exactly like the
+      // Kiro block above. While the gate is closed these regexes would
+      // otherwise run over the FULL candidate on every checkGates call — and
+      // checkGates runs up to four times per chunk, one of them on the whole
+      // lineBuffer. For a non-Claude pane the gate never opens, so that cost
+      // repeats for the pane's entire lifetime. CLAUDE_BANNER_RE's
+      // `╭.*(?<!Open)Claude` alternative is the expensive part: on a
+      // box-drawing line with no "Claude" the `.*` backtracks the whole line,
+      // which is precisely the shape a full-screen TUI like btop emits —
+      // measured 10-57x the bounded form on 10-40 KB frames.
+      const probe = clean.length > 4096 ? clean.slice(-4096) : clean;
+      const mayContainBanner = !this.claudeBannerSeen && (
+        probe.includes('Claude') || probe.includes('claude')
+      );
+      const mayContainPrompt = !this.claudePromptSeen && (
+        probe.includes('bypass permissions') || probe.includes('shift+tab')
+      );
+
+      if (mayContainBanner && CLAUDE_BANNER_RE.test(probe)) {
         this.claudeBannerSeen = true;
       }
-      if (!this.claudePromptSeen) {
-        const m = clean.match(CLAUDE_PROMPT_RE);
+      if (mayContainPrompt) {
+        const m = probe.match(CLAUDE_PROMPT_RE);
         if (m) {
           this.claudePromptSeen = true;
+          // Store the value the ordinary pattern pass will produce, not this
+          // regex's — same requirement the Kiro replay documents above.
+          // CLAUDE_PROMPT_RE is an alternation and matches at the earliest
+          // POSITION, while the pattern pass tries CLAUDE_PATTERNS in ARRAY
+          // order. On a footer carrying both fragments with "shift+tab to
+          // cycle" first, the two disagree and the same prompt emits two
+          // 'waiting' events, because the dedup key is keyed on match text.
+          const replayText = CLAUDE_WAITING_PATTERNS
+            .map((re) => probe.match(re)?.[0])
+            .find((t): t is string => t !== undefined) ?? m[0];
           // CLAUDE_PROMPT_RE only matches waiting-prompt fragments, so the
           // replay is always 'waiting'. Approval patterns are excluded from
           // the gate evidence to avoid conversational false positives.
           this.claudePromptEvidence = {
-            text: m[0],
+            text: replayText,
             status: 'waiting',
             message: 'Ready for input',
           };

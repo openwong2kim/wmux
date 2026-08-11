@@ -289,6 +289,30 @@ describe('AgentDetector', () => {
       expect(cb).toHaveBeenCalledTimes(2);
     });
 
+    // The gate replay stores a match to dedup against the ordinary pattern
+    // pass. CLAUDE_PROMPT_RE is an alternation (earliest POSITION wins) while
+    // the pattern pass tries the waiting patterns in ARRAY order — so a footer
+    // carrying both fragments with "shift+tab to cycle" FIRST used to store a
+    // different text than the pass produced, and the same prompt emitted
+    // 'waiting' twice.
+    it('emits waiting exactly once when the footer carries BOTH prompt fragments', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code\n  shift+tab to cycle | bypass permissions on\n');
+      expect(cb).toHaveBeenCalledTimes(2); // running + waiting, not 3
+      expect(cb.mock.calls.filter(([e]) => e.status === 'waiting')).toHaveLength(1);
+    });
+
+    it('emits waiting exactly once for bypass permissions on alone', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code\n  bypass permissions on\n');
+      expect(cb).toHaveBeenCalledTimes(2); // running + waiting
+      expect(cb.mock.calls.filter(([e]) => e.status === 'waiting')).toHaveLength(1);
+    });
+
     it('splits on lone \\r (carriage return redraw)', () => {
       const det = new AgentDetector();
       const cb = vi.fn();

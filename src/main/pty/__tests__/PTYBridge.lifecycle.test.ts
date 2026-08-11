@@ -226,14 +226,20 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
     proc.emitData('Claude Code\n');
-    proc.emitData('  bypass permissions on\n');
     proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
     proc.emitData('Do you want to proceed?\n');
     flush();
 
-    // Gate running + waiting replay + awaiting_input = 3 notifications;
-    // the test cares that awaiting_input is NOT vetoed by hook governance.
-    expect(mocks.sendNotification).toHaveBeenCalled();
+    // The point of this test is that awaiting_input is NOT vetoed by hook
+    // governance. Asserting only that SOMETHING notified would pass even when
+    // it IS vetoed, because opening the gate emits 'running' on its own — so
+    // assert the approval notification specifically. `category: 'approval'` is
+    // what PTYBridge tags an awaiting_input notification with; every other
+    // status uses 'agent-turn'.
+    const approvals = mocks.sendNotification.mock.calls.filter(
+      ([, , payload]) => payload?.category === 'approval',
+    );
+    expect(approvals.length).toBeGreaterThan(0);
     const events = pollLifecycle();
     const awaiting = events.find((e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input');
     expect(awaiting).toBeDefined();
