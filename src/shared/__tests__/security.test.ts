@@ -4,20 +4,39 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fsMock = vi.hoisted(() => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
+  mkdtempSync: vi.fn(),
   writeFileSync: vi.fn(),
+  readFileSync: vi.fn(),
+  readdirSync: vi.fn(),
+  statSync: vi.fn(),
+  renameSync: vi.fn(),
+  rmSync: vi.fn(),
   unlinkSync: vi.fn(),
   chmodSync: vi.fn(),
-  promises: { chmod: vi.fn() },
+  promises: {
+    chmod: vi.fn(),
+    mkdir: vi.fn(),
+    mkdtemp: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    rename: vi.fn(),
+    rm: vi.fn(),
+  },
 }));
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const execFileMock = vi.hoisted(() => vi.fn());
-const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock('fs', () => ({
   existsSync: fsMock.existsSync,
   mkdirSync: fsMock.mkdirSync,
+  mkdtempSync: fsMock.mkdtempSync,
   writeFileSync: fsMock.writeFileSync,
+  readFileSync: fsMock.readFileSync,
+  readdirSync: fsMock.readdirSync,
+  statSync: fsMock.statSync,
+  renameSync: fsMock.renameSync,
+  rmSync: fsMock.rmSync,
   unlinkSync: fsMock.unlinkSync,
   chmodSync: fsMock.chmodSync,
   promises: fsMock.promises,
@@ -26,20 +45,22 @@ vi.mock('fs', () => ({
 vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,
   execFile: execFileMock,
-  spawn: spawnMock,
 }));
 
-// NOTE: these are STRUCTURAL tests — execFileSync is mocked, so they assert the
-// invocation shape (which tool, which args, which stdin payload) but never run
-// a real ACL operation. The decisive runtime behavior (the DACL-only rebuild
-// succeeding on the upgrade-from-icacls state WITHOUT SeSecurityPrivilege, where
-// the closed PR #124 `Set-Acl` rebuild threw 10/10) is covered by the
-// out-of-band dynamic harness scripts/issue-124-acl-dynamic.mjs, which drives
-// the genuine compiled function against seeded on-disk ACLs.
+// NOTE: these are STRUCTURAL tests — the child_process and fs surfaces are
+// mocked, so they assert the invocation shape (which tool, which args, which
+// order) but never run a real ACL operation. The decisive runtime behavior
+// (a custom EXPLICIT broad ACE actually disappearing; sddlIsOwnerOnly agreeing
+// with REAL `icacls /save` output) is covered out-of-band by
+// scripts/issue-124-acl-dynamic.mjs, which drives the genuine compiled function
+// against seeded on-disk ACLs.
 
-// Answer `whoami /user` with a fixed SID; every other invocation (powershell /
-// icacls) returns empty. Mirrors the real flow: applyRestrictiveWindowsAcl
-// resolves the SID first, then rebuilds the DACL.
+const HARDEN_TMP = '.harden-tmp';
+const OWNER_ONLY_SDDL = (sid: string) => `token\r\nD:PAI(A;;FA;;;${sid})\r\n`;
+const BROAD_SDDL = (sid: string) => `token\r\nD:PAI(A;;FR;;;S-1-1-0)(A;;FA;;;${sid})\r\n`;
+
+/** Answer `whoami /user` with a fixed SID; every other sync invocation
+ *  (icacls) returns empty. */
 function stubWhoamiSid(sid: string): void {
   execFileSyncMock.mockImplementation((cmd: unknown) =>
     typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
@@ -48,67 +69,96 @@ function stubWhoamiSid(sid: string): void {
   );
 }
 
-// The PRIMARY path shells out to powershell.exe; the FALLBACK to icacls.exe.
-// These helpers pull the relevant call out of the mock history (the whoami call
-// is bookkeeping).
-function powershellCall(): [string, unknown[], Record<string, unknown>] | undefined {
-  return execFileSyncMock.mock.calls.find(
-    ([cmd]) => typeof cmd === 'string' && cmd.toLowerCase().includes('powershell'),
-  ) as [string, unknown[], Record<string, unknown>] | undefined;
+function callsMatching(mock: typeof execFileSyncMock, needle: string) {
+  return mock.mock.calls.filter(
+    ([cmd]) => typeof cmd === 'string' && cmd.toLowerCase().includes(needle),
+  ) as Array<[string, unknown[], Record<string, unknown>]>;
 }
 
-function powershellArgs(): unknown[] | undefined {
-  return powershellCall()?.[1];
+/** All sync icacls /grant:r calls, in order (staging DIR first, then file). */
+function icaclsGrants(): unknown[][] {
+  return callsMatching(execFileSyncMock, 'icacls')
+    .filter(([, args]) => args?.[1] === '/grant:r')
+    .map(([, args]) => args);
 }
 
-// The JSON identity payload fed to the PowerShell child over stdin.
-function powershellPayload(): Record<string, unknown> | undefined {
-  const input = powershellCall()?.[2]?.input;
-  return typeof input === 'string' ? (JSON.parse(input) as Record<string, unknown>) : undefined;
+/** The icacls `/save` DACL read-back used by swap-failure verification. */
+function icaclsSaveCall(): [string, unknown[], Record<string, unknown>] | undefined {
+  return callsMatching(execFileSyncMock, 'icacls').find(([, args]) => args?.[1] === '/save');
 }
 
-// The decoded -EncodedCommand script body.
-function decodedPowershellScript(): string | undefined {
-  const args = powershellArgs();
-  const i = args?.indexOf('-EncodedCommand');
-  const encoded = i === undefined || i < 0 ? undefined : args?.[i + 1];
-  return typeof encoded === 'string' ? Buffer.from(encoded, 'base64').toString('utf16le') : undefined;
-}
-
-function icaclsCall(): [string, unknown[], Record<string, unknown>] | undefined {
-  return execFileSyncMock.mock.calls.find(
-    ([cmd]) => typeof cmd === 'string' && cmd.toLowerCase().includes('icacls'),
-  ) as [string, unknown[], Record<string, unknown>] | undefined;
-}
-
-function icaclsArgs(): unknown[] | undefined {
-  return icaclsCall()?.[1];
-}
-
-// existsSync(powershell) === true selects the PRIMARY .NET path; === false the
-// icacls FALLBACK. The default is true (the overwhelmingly common case).
-function stubPowershellPresent(present: boolean): void {
-  fsMock.existsSync.mockImplementation((p: unknown) =>
-    typeof p === 'string' && p.toLowerCase().includes('powershell') ? present : true,
+/** The per-operation-unique staging DIRECTORY (captured from mkdirSync). */
+function stagingDir(): string | undefined {
+  const call = fsMock.mkdirSync.mock.calls.find(
+    ([p]) => typeof p === 'string' && p.includes(`${HARDEN_TMP}.`),
   );
+  return call?.[0] as string | undefined;
+}
+
+/** The staged payload file inside the staging directory. */
+function stagedFile(): string | undefined {
+  const dir = stagingDir();
+  return dir === undefined ? undefined : path.join(dir, 'staged');
+}
+
+/**
+ * The load-bearing regression guard for GHSA-8fj2-47w9-jxq3 (Norton flags
+ * `-ExecutionPolicy Bypass -EncodedCommand` as IDP.HELU.PSE85) and for
+ * Constrained Language Mode fleets (the .NET rebuild died on its first method
+ * call there, 22/22, silently degrading every token to the weaker icacls strip).
+ * NO code path may spawn powershell.exe any more.
+ */
+function expectNoPowerShell(): void {
+  expect(callsMatching(execFileSyncMock, 'powershell')).toEqual([]);
+  expect(callsMatching(execFileMock, 'powershell')).toEqual([]);
+}
+
+/** Default async execFile: succeed by invoking the node-style callback. */
+function stubAsyncExecFile(sid: string | null, opts: { icaclsFails?: boolean } = {}): void {
+  execFileMock.mockImplementation((cmd: unknown, _args: unknown, _o: unknown, cb: unknown) => {
+    const done = cb as (e: Error | null, out?: string) => void;
+    const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+    if (c.includes('whoami')) {
+      if (sid === null) { done(new Error('whoami unavailable')); return; }
+      done(null, `User Name: machine\\user\nSID:       ${sid}\n`);
+      return;
+    }
+    if (c.includes('icacls') && opts.icaclsFails) { done(new Error('icacls denied')); return; }
+    done(null, '');
+  });
+}
+
+function resetAll(): void {
+  vi.resetModules();
+  vi.clearAllMocks();
+  execFileSyncMock.mockReset();
+  execFileMock.mockReset();
+  for (const fn of Object.values(fsMock)) {
+    if (typeof fn === 'function') (fn as ReturnType<typeof vi.fn>).mockReset();
+  }
+  for (const fn of Object.values(fsMock.promises)) fn.mockReset();
+  fsMock.existsSync.mockReturnValue(true);
+  fsMock.readdirSync.mockReturnValue([]);
+  fsMock.readFileSync.mockReturnValue(Buffer.from('existing-token'));
+  fsMock.mkdtempSync.mockImplementation((p: unknown) => `${p}RND`);
+  fsMock.promises.mkdtemp.mockImplementation((p: unknown) => Promise.resolve(`${p}RND`));
+  fsMock.promises.mkdir.mockResolvedValue(undefined);
+  fsMock.promises.readFile.mockResolvedValue(Buffer.from('existing-token'));
+  fsMock.promises.writeFile.mockResolvedValue(undefined);
+  fsMock.promises.rename.mockResolvedValue(undefined);
+  fsMock.promises.rm.mockResolvedValue(undefined);
+  fsMock.promises.chmod.mockResolvedValue(undefined);
 }
 
 describe('secureWriteTokenFile', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    execFileSyncMock.mockReset();
-    // existsSync=true pins every test in this block to the OVERWRITE branch
-    // (existedBefore=true → PowerShell-first). The fresh-create branch has its
-    // own dedicated describe below ("fresh-vs-overwrite primitive selection").
-    fsMock.existsSync.mockReturnValue(true);
-  });
+  beforeEach(resetAll);
 
-  it('creates the parent directory and writes the token file', async () => {
+  it('creates the parent directory before writing', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     fsMock.existsSync.mockReturnValue(false);
 
     const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux', 'daemon-auth-token');
+    const tokenPath = path.join('/home', 'tester', '.wmux', 'daemon-auth-token');
 
     secureWriteTokenFile(tokenPath, 'secret-token');
 
@@ -125,7 +175,6 @@ describe('secureWriteTokenFile', () => {
     try {
       const { secureWriteTokenFile } = await import('../security');
       const tokenPath = '/home/tester/.wmux-auth-token';
-      fsMock.existsSync.mockReturnValue(true);
 
       secureWriteTokenFile(tokenPath, 'secret-token');
 
@@ -147,364 +196,653 @@ describe('secureWriteTokenFile', () => {
       expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
         `Failed to set secure mode on ${tokenPath}: chmod denied`,
       );
+      // POSIX overwrite is in place: the target holds the NEW token under a
+      // possibly-wrong mode, so the fail-closed unlink is still correct there.
       expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
     } finally {
       platformSpy.mockRestore();
     }
   });
 
-  it('rebuilds the DACL via a DACL-only PowerShell primitive (SID payload over stdin, never Set-Acl) on Windows', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    // SID is resolved via whoami first...
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      'C:\\Windows\\System32\\whoami.exe',
-      ['/user', '/fo', 'list'],
-      { windowsHide: true },
-    );
-    // ...then powershell runs an encoded, non-interactive DACL rebuild.
-    const psCall = powershellCall();
-    expect(psCall?.[0]).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-    expect(powershellArgs()?.slice(0, 5)).toEqual([
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-EncodedCommand',
-    ]);
-    // Identity travels over stdin (NOT argv) so a non-ASCII path/name cannot be
-    // mangled by the console OEM codepage; the target path travels via env.
-    expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
-    expect((psCall?.[2]?.env as Record<string, string>)?.WMUX_ACL_TARGET).toBe(tokenPath);
-    // PSModulePath must be STRIPPED from the 5.1 child — case-insensitively,
-    // since Windows env keys are case-insensitive and the parent may have set
-    // any casing: an inherited pwsh 7 module path makes 5.1 auto-load the
-    // Core-edition module for Get-Item and fail, silently degrading the #124
-    // rebuild to the icacls fallback.
-    const syncEnvKeys = Object.keys((psCall?.[2]?.env as Record<string, string>) ?? {});
-    expect(syncEnvKeys.filter((k) => k.toLowerCase() === 'psmodulepath')).toEqual([]);
-    // The child's stdout is discarded (no CLIXML leak); stderr kept for errors.
-    expect(psCall?.[2]?.stdio).toEqual(['pipe', 'ignore', 'pipe']);
-    // Crucially the DACL-only primitive: protect (discard inheritance) + a fresh
-    // FileSecurity written via FileInfo.SetAccessControl (NOT the Set-Acl cmdlet,
-    // which would try to re-stamp Owner/Group and throw SeSecurityPrivilege on
-    // the upgrade-from-icacls state — issue #124).
-    const script = decodedPowershellScript() ?? '';
-    expect(script).toContain('SetAccessRuleProtection($true, $false)');
-    expect(script).toContain('.SetAccessControl(');
-    expect(script).toContain('FileSystemRights]::FullControl');
-    expect(script).not.toContain('Set-Acl');
-    // icacls is the fallback only; it must NOT run when PowerShell is present.
-    expect(icaclsCall()).toBeUndefined();
-  });
-
-  it('falls back to the icacls DACL strip (owner FC + /inheritance:r + remove broad SIDs) when PowerShell is absent', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(false); // Server Core / hardened SKU
-    stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    // PowerShell must NOT run; icacls carries the hardening instead.
-    expect(powershellCall()).toBeUndefined();
-    expect(icaclsArgs()).toEqual([
-      tokenPath,
-      '/grant:r',
-      '*S-1-5-21-1-2-3-1001:F',
-      '/inheritance:r',
-      // explicit removal of the well-known broad principals by SID
-      '/remove:g',
-      '*S-1-1-0', // Everyone
-      '/remove:g',
-      '*S-1-5-32-545', // BUILTIN\Users
-      '/remove:g',
-      '*S-1-5-11', // Authenticated Users
-      '/remove:g',
-      '*S-1-5-4', // INTERACTIVE
-    ]);
-  });
-
-  // Regression (codex PR #140): PowerShell EXISTS but is unusable — AppLocker /
-  // Constrained Language Mode blocks the .NET ACL calls, so the powershell.exe
-  // invocation throws. The write path must DEGRADE to the icacls fallback (which
-  // still strips the common broad ACEs) rather than abort and delete the token.
-  it('falls through to icacls when PowerShell is present but the .NET rebuild throws (AppLocker/CLM)', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true); // powershell.exe is on disk...
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
-      if (c.includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      if (c.includes('powershell')) {
-        throw new Error('AppLocker blocked this script'); // ...but blocked at runtime
-      }
-      return Buffer.from(''); // icacls succeeds
+  // ── win32: every write is staged inside a pre-hardened directory ───────────
+  describe('win32 hardened-staging write path', () => {
+    beforeEach(() => {
+      vi.stubEnv('USERNAME', 'tester');
+      vi.stubEnv('SystemRoot', 'C:\\Windows');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    it('hardens the staging DIRECTORY first, births the file owner-only, then renames it in', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
-    // Must NOT throw — the icacls fallback hardened the file.
-    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
-    // PowerShell was attempted, then icacls carried the hardening.
-    expect(powershellCall()).toBeDefined();
-    expect(icaclsArgs()).toEqual([
-      tokenPath,
-      '/grant:r',
-      '*S-1-5-21-1-2-3-1001:F',
-      '/inheritance:r',
-      '/remove:g',
-      '*S-1-1-0',
-      '/remove:g',
-      '*S-1-5-32-545',
-      '/remove:g',
-      '*S-1-5-11',
-      '/remove:g',
-      '*S-1-5-4',
-    ]);
-    // The token survives — fail-closed deletion must NOT fire when the fallback worked.
-    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
-  });
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
-  // When BOTH the PowerShell primary AND the icacls fallback fail, the write path
-  // must still fail closed: delete the un-hardenable token and throw.
-  it('fails closed (deletes + throws) when BOTH PowerShell and the icacls fallback throw', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
-      if (c.includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      throw new Error(c.includes('powershell') ? 'CLM blocked' : 'icacls denied');
+      secureWriteTokenFile(tokenPath, 'secret-token');
+
+      // SID resolved via whoami first...
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'C:\\Windows\\System32\\whoami.exe',
+        ['/user', '/fo', 'list'],
+        { windowsHide: true },
+      );
+      // ...staging area is a per-operation-unique DIRECTORY...
+      const dir = stagingDir();
+      expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+\.[0-9a-f]{12}$/);
+      const grants = icaclsGrants();
+      expect(grants.length).toBe(2);
+      // ...hardened with an INHERITABLE owner-only grant while still empty
+      // (a file hardened after creation would leave a handle-race window —
+      // Windows ACL changes do not revoke open handles)...
+      expect(grants[0]).toEqual([
+        dir,
+        '/grant:r',
+        '*S-1-5-21-1-2-3-1001:(OI)(CI)F',
+        '/inheritance:r',
+        '/remove:g',
+        '*S-1-1-0', // Everyone
+        '/remove:g',
+        '*S-1-5-32-545', // BUILTIN\Users
+        '/remove:g',
+        '*S-1-5-11', // Authenticated Users
+        '/remove:g',
+        '*S-1-5-4', // INTERACTIVE
+      ]);
+      // ...then the staged file gets the explicit, protected owner-only DACL.
+      expect(grants[1]?.slice(0, 4)).toEqual([
+        stagedFile(),
+        '/grant:r',
+        '*S-1-5-21-1-2-3-1001:F',
+        '/inheritance:r',
+      ]);
+      // The target is only ever reached by the atomic rename; the staging dir
+      // is discarded afterwards.
+      expect(fsMock.renameSync).toHaveBeenCalledWith(stagedFile(), tokenPath);
+      expect(fsMock.rmSync).toHaveBeenCalledWith(dir, { force: true, recursive: true });
+      expect(fsMock.writeFileSync.mock.calls.filter(([p]) => p === tokenPath)).toEqual([]);
+      expectNoPowerShell();
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    it('two writes use two DIFFERENT staging directories', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
-    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
-      `Failed to set secure ACL on ${tokenPath}: icacls denied`,
-    );
-    expect(powershellCall()).toBeDefined();
-    expect(icaclsCall()).toBeDefined();
-    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
-  });
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
-  it('parses the SID field instead of SID-like text in the account name', async () => {
-    vi.stubEnv('USERNAME', 'victim');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    execFileSyncMock.mockImplementation((cmd: unknown) =>
-      typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
-        ? Buffer.from(
-            '\nUSER INFORMATION\n----------------\n' +
-              'User Name: S-1-1-0\\victim\n' +
-              'SID:       S-1-5-21-1111111111-2222222222-3333333333-1001\n',
-          )
-        : Buffer.from(''),
-    );
+      secureWriteTokenFile(tokenPath, 'one');
+      const first = stagingDir();
+      fsMock.mkdirSync.mockClear();
+      secureWriteTokenFile(tokenPath, 'two');
+      const second = stagingDir();
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'victim', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    // The owner identity is the SID FIELD, never the SID-like account-name text.
-    expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1111111111-2222222222-3333333333-1001' });
-    expect(JSON.stringify(powershellPayload())).not.toContain('S-1-1-0');
-  });
-
-  // Regression: a non-ASCII (Korean) profile name passed verbatim to a native
-  // ACL tool is mangled into a ghost principal, granting Full control to a
-  // non-existent account while the real owner gets nothing — locking the owner
-  // out of their own token file. Identifying by SID (pure ASCII) avoids this.
-  it('never passes a non-ASCII username to native ACL tooling (Korean-account lock-out regression)', async () => {
-    vi.stubEnv('USERNAME', '홍길동');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    // The owner identity passed to native ACL tooling is the SID, never the raw
-    // username — the file PATH legitimately still contains the Korean name.
-    expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
-    expect(JSON.stringify(powershellPayload())).not.toContain('홍길동');
-  });
-
-  it('falls back to %USERNAME% (over stdin) when the SID cannot be resolved', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        throw new Error('whoami unavailable');
-      }
-      return Buffer.from('');
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      expect(second).not.toBe(first);
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
+    // Ordering is the whole point: the directory is hardened while EMPTY, and
+    // the payload lands on an inode that inherits owner-only at creation.
+    it('orders: mkdir → harden dir → write payload → harden file → rename', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      const order: string[] = [];
+      fsMock.mkdirSync.mockImplementation((p: unknown) => {
+        if (String(p).includes(HARDEN_TMP)) order.push('mkdir');
+      });
+      fsMock.writeFileSync.mockImplementation(() => {
+        order.push('write-payload');
+      });
+      execFileSyncMock.mockImplementation((cmd: unknown, args: unknown) => {
+        const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+        if (c.includes('whoami')) {
+          return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+        }
+        const grant = Array.isArray(args) ? String(args[2]) : '';
+        order.push(grant.includes('(OI)(CI)') ? 'icacls-dir' : 'icacls-file');
+        return Buffer.from('');
+      });
+      fsMock.renameSync.mockImplementation(() => {
+        order.push('rename');
+      });
 
-    expect(powershellPayload()).toEqual({ sid: null, username: 'tester' });
-  });
+      const { secureWriteTokenFile } = await import('../security');
+      secureWriteTokenFile(path.join('C:', 'Users', 'tester', '.wmux-auth-token'), 'secret-token');
 
-  it('falls back to the icacls strip with an ASCII *USERNAME* principal when SID unresolved AND PowerShell absent', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(false);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        throw new Error('whoami unavailable');
-      }
-      return Buffer.from('');
+      expect(order).toEqual(['mkdir', 'icacls-dir', 'write-payload', 'icacls-file', 'rename']);
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
+    it('sweeps STALE staging leftovers from an earlier crash, but never a fresh one', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+      const dir = path.dirname(tokenPath);
+      const stale = `.wmux-auth-token${HARDEN_TMP}.999.1.aabbccddeeff`;
+      const fresh = `.wmux-auth-token${HARDEN_TMP}.998.7.aabbccddeeff`;
+      const userBackup = `.wmux-auth-token${HARDEN_TMP}.backup`;
+      fsMock.readdirSync.mockReturnValue([stale, fresh, userBackup, 'unrelated-file']);
+      fsMock.statSync.mockImplementation((p: unknown) => ({
+        mtimeMs: String(p).endsWith(stale) ? Date.now() - 3_600_000 : Date.now(),
+      }));
 
-    // Username (pure ASCII) is the principal; no `*` SID prefix.
-    expect(icaclsArgs()?.slice(0, 4)).toEqual([
-      tokenPath,
-      '/grant:r',
-      'tester:F',
-      '/inheritance:r',
-    ]);
-  });
+      const { secureWriteTokenFile } = await import('../security');
+      secureWriteTokenFile(tokenPath, 'secret-token');
 
-  // Guard: when the SID can't be resolved, the %USERNAME% fallback must NOT be
-  // used for a non-ASCII account — that would re-create the very ghost-principal
-  // lock-out this code exists to prevent (and re-apply it on every load). The
-  // write path must refuse: never run any ACL tool with the mangling-prone name,
-  // and delete the just-written (now un-hardenable) token rather than leave it loose.
-  it('refuses (throws + deletes, no ACL tooling) when SID unresolved AND USERNAME is non-ASCII', async () => {
-    vi.stubEnv('USERNAME', '홍길동');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    // whoami fails → SID unresolved; the only fallback would be the Korean name.
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        throw new Error('whoami unavailable');
-      }
-      return Buffer.from('');
+      // The hour-old leftover is removed...
+      expect(fsMock.rmSync).toHaveBeenCalledWith(path.join(dir, stale), {
+        force: true,
+        recursive: true,
+      });
+      // ...the seconds-old one (a live concurrent harden) is left alone...
+      expect(
+        fsMock.rmSync.mock.calls.filter(([p]) => String(p).endsWith(fresh)),
+      ).toEqual([]);
+      // ...and a user file that merely STARTS with the staging prefix is never
+      // mistaken for a crash artifact (codex round-3 P2).
+      expect(
+        fsMock.rmSync.mock.calls.filter(([p]) => String(p).endsWith(userBackup)),
+      ).toEqual([]);
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
+    it('fails closed (drops staging, unlinks the UNVERIFIABLE previous token, throws) when icacls denies', async () => {
+      execFileSyncMock.mockImplementation((cmd: unknown) => {
+        const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+        if (c.includes('whoami')) {
+          return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+        }
+        throw new Error('icacls denied');
+      });
 
-    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
-      /refusing to apply a mangling-prone ACL/,
-    );
-    // Neither ACL tool may run with the mangling-prone principal...
-    expect(powershellCall()).toBeUndefined();
-    expect(icaclsCall()).toBeUndefined();
-    // ...and the un-hardenable token is removed (fail-closed, like any ACL fail).
-    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
-  });
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
-  it('deletes the token file and throws when Windows ACL hardening fails', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    // whoami resolves fine; the PowerShell DACL rebuild is the step that fails.
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      throw new Error('ACL rebuild failed');
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        `Failed to set secure ACL on ${tokenPath}: icacls denied`,
+      );
+      expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
+      // Every icacls is denied, so the previous token's DACL cannot be
+      // verified either → fail closed: it is removed.
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+      expect(fsMock.renameSync).not.toHaveBeenCalled();
     });
 
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    // Some Windows volumes refuse to rename ONTO an existing destination; the
+    // repo already works around that in atomicWrite/rotation.ts by unlinking
+    // the destination first. Without an equivalent here, every overwrite on
+    // such a volume fails and no token can ever be installed.
+    it('falls back to unlink-then-rename when the volume refuses to replace the destination', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      let renames = 0;
+      fsMock.renameSync.mockImplementation(() => {
+        renames += 1;
+        if (renames === 1) {
+          const e = new Error('EEXIST: destination exists') as NodeJS.ErrnoException;
+          e.code = 'EEXIST';
+          throw e;
+        }
+      });
 
-    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
-      `Failed to set secure ACL on ${tokenPath}: ACL rebuild failed`,
-    );
-    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+      expect(renames).toBe(2); // refused, destination removed, then installed
+    });
+
+    // The dangerous half of that fallback: EPERM/EACCES are ALSO what a scanner
+    // holding the staging SOURCE produces, and no probe can prove otherwise —
+    // rename needs DELETE access on the source, so a scanner can allow reads
+    // while still blocking the rename. Those codes therefore never authorise
+    // the unlink; only the destination-specific EEXIST does.
+    it('never unlinks the destination on EPERM, even when both renames fail', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        const e = new Error('EPERM: operation not permitted') as NodeJS.ErrnoException;
+        e.code = 'EPERM';
+        throw e;
+      });
+      // Verification of the previous token succeeds, so it must be preserved.
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      // THE assertion: the live token was never deleted.
+      expect(fsMock.unlinkSync).not.toHaveBeenCalledWith(tokenPath);
+      expect(fsMock.renameSync.mock.calls.length).toBe(3); // retried, never unlinked
+    });
+
+    it('never unlinks the destination on EACCES either', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        const e = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+        e.code = 'EACCES';
+        throw e;
+      });
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      expect(fsMock.unlinkSync).not.toHaveBeenCalledWith(tokenPath);
+    });
+
+    it('keeps the previous token on a rename collision when its DACL VERIFIES owner-only', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        throw new Error('EPERM: file is open');
+      });
+      // Verification reads real SDDL via icacls /save + mkdtemp'd save file.
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      expect(fsMock.renameSync.mock.calls.length).toBe(3); // bounded retries
+      // The previous token was READ BACK and confirmed owner-only → kept.
+      expect(icaclsSaveCall()).toBeDefined();
+      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('unlinks the previous token on a rename collision when its DACL does NOT verify', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        throw new Error('EPERM: file is open');
+      });
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? BROAD_SDDL('S-1-5-21-1-2-3-1001') // a broad leftover must not survive
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+    });
+
+    it('parses the SID field instead of SID-like text in the account name', async () => {
+      vi.stubEnv('USERNAME', 'victim');
+      execFileSyncMock.mockImplementation((cmd: unknown) =>
+        typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
+          ? Buffer.from(
+              '\nUSER INFORMATION\n----------------\n' +
+                'User Name: S-1-1-0\\victim\n' +
+                'SID:       S-1-5-21-1111111111-2222222222-3333333333-1001\n',
+            )
+          : Buffer.from(''),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      secureWriteTokenFile(path.join('C:', 'Users', 'victim', '.wmux-auth-token'), 'secret-token');
+
+      // The principal is the SID FIELD, never the SID-like account-name text.
+      expect(icaclsGrants()[0]?.[2]).toBe('*S-1-5-21-1111111111-2222222222-3333333333-1001:(OI)(CI)F');
+      expect(icaclsGrants()[1]?.[2]).toBe('*S-1-5-21-1111111111-2222222222-3333333333-1001:F');
+    });
+
+    // Regression (#90): a non-ASCII (Korean) profile name passed verbatim to a
+    // native ACL tool is mangled by the console OEM codepage into a ghost
+    // principal — Full control to an account that does not exist, while the real
+    // owner gets nothing. Identifying by SID (pure ASCII) avoids this.
+    it('never passes a non-ASCII username to native ACL tooling', async () => {
+      vi.stubEnv('USERNAME', '홍길동');
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+
+      const { secureWriteTokenFile } = await import('../security');
+      secureWriteTokenFile(path.join('C:', 'Users', '홍길동', '.wmux-auth-token'), 'secret-token');
+
+      // The PRINCIPAL is the SID; the file PATH legitimately keeps the name.
+      for (const grant of icaclsGrants()) {
+        expect(String(grant[2])).toContain('S-1-5-21-1-2-3-1001');
+        expect(grant.slice(1).join(' ')).not.toContain('홍길동');
+      }
+    });
+
+    it('falls back to an ASCII %USERNAME% principal when the SID cannot be resolved', async () => {
+      vi.stubEnv('USERNAME', 'tester');
+      execFileSyncMock.mockImplementation((cmd: unknown) => {
+        if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+          throw new Error('whoami unavailable');
+        }
+        return Buffer.from('');
+      });
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+      secureWriteTokenFile(tokenPath, 'secret-token');
+
+      // No `*` SID prefix on a plain username principal.
+      expect(icaclsGrants()[0]?.[2]).toBe('tester:(OI)(CI)F');
+      expect(icaclsGrants()[1]?.[2]).toBe('tester:F');
+    });
+
+    // When the SID can't be resolved, the %USERNAME% fallback must NOT be used
+    // for a non-ASCII account — that would re-create the ghost-principal lock-out
+    // and re-apply it on every load.
+    // On the username-fallback path `sid` is null, so the previous token can
+    // never be verified owner-only — a collision there must fail closed and
+    // remove it. Pins the asymmetry with the SID-resolved collision above.
+    it('unlinks the previous token on a collision when the SID is unresolved (verification impossible)', async () => {
+      vi.stubEnv('USERNAME', 'tester');
+      execFileSyncMock.mockImplementation((cmd: unknown) => {
+        if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+          throw new Error('whoami unavailable');
+        }
+        return Buffer.from('');
+      });
+      fsMock.renameSync.mockImplementation(() => {
+        throw new Error('EPERM: file is open');
+      });
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      // The ASCII username still drove the grant...
+      expect(icaclsGrants()[1]?.[2]).toBe('tester:F');
+      // ...but with no SID there is nothing to verify the old token against.
+      expect(icaclsSaveCall()).toBeUndefined();
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+    });
+
+    it('refuses (throws, no grant tooling, fail-closed unlink) when SID unresolved AND USERNAME is non-ASCII', async () => {
+      vi.stubEnv('USERNAME', '홍길동');
+      execFileSyncMock.mockImplementation((cmd: unknown) => {
+        if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+          throw new Error('whoami unavailable');
+        }
+        return Buffer.from('');
+      });
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /refusing to apply a mangling-prone ACL/,
+      );
+      // No GRANT may ever run with a mangling-prone principal.
+      expect(icaclsGrants()).toEqual([]);
+      expectNoPowerShell();
+      // With no SID the previous token cannot be verified owner-only either —
+      // fail closed, exactly like the pre-refactor contract for this case.
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+    });
   });
 });
 
-// RCA A12 — re-hardening an EXISTING token file's permissions without
-// rewriting its contents (the bug: tokens loaded from disk kept loose ACLs).
+// RCA A12 — re-hardening an EXISTING token file whose VALUE does not change.
 describe('reHardenTokenFileAcl', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    // clearAllMocks resets call history but NOT mockImplementation; the prior
-    // describe's failing-ACL test would otherwise leak its throw into here.
-    execFileSyncMock.mockReset();
-    fsMock.existsSync.mockReset();
-    fsMock.existsSync.mockReturnValue(true);
-    fsMock.chmodSync.mockReset();
-  });
+  beforeEach(resetAll);
 
-  it('re-applies the DACL-only rebuild on Windows and returns true', async () => {
+  function stubWin32(): void {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
+  }
+
+  it('rebuilds the DACL through hardened staging and reports "hardened" on win32', async () => {
+    stubWin32();
     stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
-    const ok = reHardenTokenFileAcl(tokenPath);
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
 
-    expect(ok).toBe(true);
-    expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
-    expect(decodedPowershellScript() ?? '').toContain('.SetAccessControl(');
-    // Must NOT rewrite the token contents — only the ACL.
-    expect(fsMock.writeFileSync).not.toHaveBeenCalled();
+    // The existing bytes are carried over verbatim — the VALUE never changes.
+    expect(fsMock.readFileSync).toHaveBeenCalledWith(tokenPath);
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(stagedFile(), Buffer.from('existing-token'), {
+      mode: 0o600,
+      flag: 'wx', // exclusive create: a pre-planted file/hardlink at this name must fail
+    });
+    expect(icaclsGrants()[0]?.[0]).toBe(stagingDir());
+    expect(icaclsGrants()[1]?.[0]).toBe(stagedFile());
+    expect(fsMock.renameSync).toHaveBeenCalledWith(stagedFile(), tokenPath);
+    expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
+    expectNoPowerShell();
   });
 
-  it('chmods to 0600 on POSIX and returns true', async () => {
+  it('chmods to 0600 on POSIX without rewriting anything', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
 
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = '/home/tester/.wmux-auth-token';
 
-    const ok = reHardenTokenFileAcl(tokenPath);
-
-    expect(ok).toBe(true);
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
     expect(fsMock.chmodSync).toHaveBeenCalledWith(tokenPath, 0o600);
     expect(fsMock.writeFileSync).not.toHaveBeenCalled();
   });
 
-  // Guard (re-harden side): SID unresolved + non-ASCII USERNAME must fail soft —
-  // never run an ACL tool with the mangling-prone name, never delete the working
-  // token. Re-locking the owner out on every load is worse than leaving the
-  // file's current ACL untouched.
-  it('returns false without running ACL tooling when SID unresolved AND USERNAME is non-ASCII', async () => {
+  // The lost-update guard (3-reviewer review): the commit compares the file
+  // against the snapshot this harden staged FROM, inside one synchronous
+  // block. A newer write (e.g. PipeServer.rotateToken) must never be clobbered
+  // by a stale snapshot.
+  it('aborts as "unchanged" when a newer write supersedes the harden AND its DACL verifies', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    // Snapshot read sees the old token; the commit-time compare sees newer
+    // bytes; the DACL read-back confirms the superseding writer's output is
+    // owner-only (an in-process secureWriteTokenFile hardens its own output).
+    let tokenReads = 0;
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001');
+      }
+      tokenReads += 1;
+      return Buffer.from(tokenReads === 1 ? 'existing-token' : 'rotated-token');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('unchanged');
+    // The stale snapshot must NOT be installed over the newer write.
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+    expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
+  });
+
+  // codex round-3 P1: "a newer write exists" is not proof it is SAFE. An
+  // EXTERNAL writer replacing the file mid-harden must not ride 'unchanged'
+  // past the fail-closed callers.
+  it('reports "failed" when a superseding write cannot be verified owner-only', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    let tokenReads = 0;
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return BROAD_SDDL('S-1-5-21-1-2-3-1001'); // replacement is broad-readable
+      }
+      tokenReads += 1;
+      return Buffer.from(tokenReads === 1 ? 'existing-token' : 'planted-token');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+
+    expect(reHardenTokenFileAcl(path.join('C:', 'Users', 'tester', '.wmux-auth-token'))).toBe(
+      'failed',
+    );
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+  });
+
+  // A swap collision now falls back to an IN-PLACE DACL repair: ACL edits need
+  // only WRITE_DAC, not exclusive access, so they succeed even while the reader
+  // that defeated the rename still holds the file (GLM round-3). The read-back
+  // then decides honestly.
+  it('repairs the DACL in place on a rename collision and reports "hardened" once verified', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.renameSync.mockImplementation(() => {
+      throw new Error('EPERM: another process has the file open');
+    });
+    // icacls /save writes an SDDL file into a mkdtemp'd dir; serve owner-only.
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+      enc === 'utf16le' && String(p).includes('wmux-dacl-')
+        ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+        : Buffer.from('existing-token'),
+    );
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
+    expect(fsMock.renameSync.mock.calls.length).toBe(3); // retried before repairing
+    // The last-resort grant targets the ORIGINAL file, in place.
+    const inPlace = icaclsGrants().find((args) => args[0] === tokenPath);
+    expect(inPlace?.slice(1, 4)).toEqual(['/grant:r', '*S-1-5-21-1-2-3-1001:F', '/inheritance:r']);
+    const save = icaclsSaveCall();
+    expect(save?.[1]?.[0]).toBe(path.basename(tokenPath));
+    expect(save?.[2]?.cwd).toBe(path.dirname(tokenPath));
+    // The save file lives in an UNPREDICTABLE mkdtemp'd directory (hardlink-
+    // plant defense) and is cleaned up with it.
+    expect(fsMock.mkdtempSync).toHaveBeenCalled();
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  // THE upgrade-boot case (GLM+Codex consensus): the original ACL is the WEAK
+  // one. A swap failure there must report 'failed' so the fail-closed callers
+  // (machine-key regeneration) actually fire.
+  it('reports "failed" on a rename collision when the original DACL is NOT owner-only', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.renameSync.mockImplementation(() => {
+      throw new Error('EPERM: another process has the file open');
+    });
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+      enc === 'utf16le' && String(p).includes('wmux-dacl-')
+        ? BROAD_SDDL('S-1-5-21-1-2-3-1001') // extra Everyone ACE survives
+        : Buffer.from('existing-token'),
+    );
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('failed');
+    // Best-effort contract: report, never delete the working token here —
+    // the CALLER decides (PeerStore discards its key; RemoteHostsStore ignores).
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('reports "failed" on a collision when the DACL read-back itself fails (never trusts blindly)', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.renameSync.mockImplementation(() => {
+      throw new Error('EPERM');
+    });
+    execFileSyncMock.mockImplementation((cmd: unknown, args: unknown) => {
+      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+      if (c.includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      if (Array.isArray(args) && args[1] === '/save') throw new Error('save denied');
+      return Buffer.from('');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+
+    expect(reHardenTokenFileAcl(path.join('C:', 'Users', 'tester', '.wmux-auth-token'))).toBe(
+      'failed',
+    );
+  });
+
+  // LIVE DOGFOOD REGRESSION: a file opened with FILE_SHARE_NONE (what several
+  // AV/backup products do while scanning) cannot be READ at all, so the
+  // snapshot read at the top of the rewrite threw EBUSY and the whole harden
+  // reported 'failed' — re-arming the exact self-DoS the collision handling
+  // exists to prevent. Mocks never showed this; the real daemon did.
+  it('falls back to the in-place repair when the file is LOCKED AGAINST READS', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001');
+      }
+      const err = new Error('EBUSY: resource busy or locked') as NodeJS.ErrnoException;
+      err.code = 'EBUSY';
+      throw err;
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    // Reading the security descriptor is not blocked by share modes and an ACL
+    // edit needs only WRITE_DAC, so the in-place path still works.
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
+    // No staging was attempted — there was nothing to copy.
+    expect(fsMock.mkdirSync).not.toHaveBeenCalled();
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+    // The repair targets the ORIGINAL file, in place.
+    const inPlace = icaclsGrants().find((args) => args[0] === tokenPath);
+    expect(inPlace?.slice(1, 4)).toEqual(['/grant:r', '*S-1-5-21-1-2-3-1001:F', '/inheritance:r']);
+  });
+
+  it('still reports "failed" when the file is read-locked AND the in-place repair is not enough', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return BROAD_SDDL('S-1-5-21-1-2-3-1001'); // a custom ACE the strip cannot remove
+      }
+      const err = new Error('EBUSY') as NodeJS.ErrnoException;
+      err.code = 'EBUSY';
+      throw err;
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+
+    expect(reHardenTokenFileAcl(path.join('C:', 'Users', 'tester', '.wmux-auth-token'))).toBe(
+      'failed',
+    );
+  });
+
+  it('reports "failed" when the staging area cannot be hardened at all', async () => {
+    stubWin32();
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      throw new Error('icacls denied');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    // Best-effort: a live daemon must not crash because it couldn't tighten perms.
+    expect(() => reHardenTokenFileAcl(tokenPath)).not.toThrow();
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('failed');
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  // Fail soft: never run an ACL tool with a mangling-prone name, never delete
+  // the working token.
+  it('reports "failed" without running ACL tooling when SID unresolved AND USERNAME is non-ASCII', async () => {
     vi.stubEnv('USERNAME', '홍길동');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
     execFileSyncMock.mockImplementation((cmd: unknown) => {
       if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
         throw new Error('whoami unavailable');
@@ -515,296 +853,121 @@ describe('reHardenTokenFileAcl', () => {
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
 
-    expect(reHardenTokenFileAcl(tokenPath)).toBe(false);
-    expect(powershellCall()).toBeUndefined();
-    expect(icaclsCall()).toBeUndefined();
-    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
-  });
-
-  it('returns false (does NOT throw) when hardening fails — best-effort', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubPowershellPresent(true);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      // whoami succeeds; the PowerShell DACL rebuild denies — must fail soft.
-      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      throw new Error('ACL rebuild denied');
-    });
-
-    const { reHardenTokenFileAcl } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-
-    // A live daemon must not crash because it couldn't tighten perms.
-    expect(() => reHardenTokenFileAcl(tokenPath)).not.toThrow();
-    expect(reHardenTokenFileAcl(tokenPath)).toBe(false);
-    // The existing (possibly-loose) token file is NOT deleted — unlike the
-    // write path, we keep the working token rather than break auth.
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('failed');
+    expect(callsMatching(execFileSyncMock, 'icacls')).toEqual([]);
+    expectNoPowerShell();
     expect(fsMock.unlinkSync).not.toHaveBeenCalled();
   });
 });
 
-// S-A cold-start: the write path picks its primitive by whether the file
-// existed BEFORE the write. A fresh file carries only inherited ACEs, so the
-// fast icacls strip is security-equivalent to the PowerShell DACL rebuild;
-// an OVERWRITE (rotation, empty-file repair) may carry pre-existing EXPLICIT
-// broad ACEs that only the PowerShell rebuild removes (#124) — it must keep
-// the PowerShell-first order.
-describe('secureWriteTokenFile — fresh-vs-overwrite primitive selection (S-A)', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    execFileSyncMock.mockReset();
-    fsMock.existsSync.mockReset();
-  });
+describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
+  beforeEach(resetAll);
 
-  function stubTokenFileExists(exists: boolean): void {
-    // Token file existence drives the fresh/overwrite branch; every other
-    // existsSync (parent dir, powershell.exe) stays true.
-    fsMock.existsSync.mockImplementation((p: unknown) =>
-      typeof p === 'string' && p.toLowerCase().includes('auth-token') ? exists : true,
-    );
-  }
-
-  it('fresh file (did not exist) → icacls FIRST, PowerShell never runs', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubTokenFileExists(false);
-    stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    expect(icaclsArgs()?.slice(0, 4)).toEqual([
-      tokenPath,
-      '/grant:r',
-      '*S-1-5-21-1-2-3-1001:F',
-      '/inheritance:r',
-    ]);
-    expect(powershellCall()).toBeUndefined();
-  });
-
-  it('overwrite (existed before) → PowerShell-first order is preserved (#124)', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubTokenFileExists(true);
-    stubWhoamiSid('S-1-5-21-1-2-3-1001');
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-    secureWriteTokenFile(tokenPath, 'secret-token');
-
-    expect(powershellCall()).toBeDefined();
-    expect(icaclsCall()).toBeUndefined();
-  });
-
-  it('fresh file: icacls failure falls back to PowerShell (fail-closed preserved when BOTH fail)', async () => {
-    vi.stubEnv('USERNAME', 'tester');
-    vi.stubEnv('SystemRoot', 'C:\\Windows');
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubTokenFileExists(false);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
-      if (c.includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      if (c.includes('icacls')) throw new Error('icacls denied');
-      return Buffer.from(''); // PowerShell succeeds
-    });
-
-    const { secureWriteTokenFile } = await import('../security');
-    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-
-    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
-    expect(icaclsCall()).toBeDefined();
-    expect(powershellCall()).toBeDefined();
-    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
-
-    // Now make PowerShell fail too — fail-closed (delete + throw) must fire.
-    vi.resetModules();
-    execFileSyncMock.mockReset();
-    fsMock.unlinkSync.mockReset();
-    stubTokenFileExists(false);
-    execFileSyncMock.mockImplementation((cmd: unknown) => {
-      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
-      if (c.includes('whoami')) {
-        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-      }
-      throw new Error(c.includes('icacls') ? 'icacls denied' : 'CLM blocked');
-    });
-    const fresh = await import('../security');
-    expect(() => fresh.secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
-      /Failed to set secure ACL/,
-    );
-    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
-  });
-});
-
-// S-A deferred re-harden: same best-effort contract and primitive order as the
-// sync reHardenTokenFileAcl, but fully async (execFile/spawn, never *Sync) so
-// the multi-second PowerShell shell-out can never stall the event loop of the
-// process that scheduled it (in the daemon that would time out the launcher's
-// first ping against the freshly-opened control pipe).
-describe('scheduleTokenFileReHarden (S-A deferred re-harden)', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    execFileSyncMock.mockReset();
-    execFileMock.mockReset();
-    spawnMock.mockReset();
-    fsMock.existsSync.mockReset();
-    fsMock.existsSync.mockReturnValue(true);
-    fsMock.promises.chmod.mockReset();
-    fsMock.promises.chmod.mockResolvedValue(undefined);
-  });
-
-  /** Fake spawn() child: stdin sink, stderr emitter, close with exitCode. */
-  function stubPowershellSpawn(exitCode: number): {
-    stdinWrites: string[];
-  } {
-    const stdinWrites: string[] = [];
-    spawnMock.mockImplementation(() => ({
-      stdin: {
-        write: (chunk: string) => { stdinWrites.push(chunk); return true; },
-        end: vi.fn(),
-        on: vi.fn(),
-      },
-      stderr: { on: vi.fn() },
-      on: (ev: string, cb: (arg?: unknown) => void) => {
-        if (ev === 'close') setImmediate(() => cb(exitCode));
-      },
-    }));
-    return { stdinWrites };
-  }
-
-  /** execFile mock: whoami answers with a SID; icacls succeeds/fails. */
-  function stubAsyncExecFile(opts: { icaclsError?: Error } = {}): void {
-    execFileMock.mockImplementation(
-      (cmd: unknown, _args: unknown, _opts: unknown, cb?: (err: Error | null, stdout?: string) => void) => {
-        const done = (typeof _opts === 'function' ? _opts : cb) as (
-          err: Error | null,
-          stdout?: string,
-        ) => void;
-        const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
-        setImmediate(() => {
-          if (c.includes('whoami')) {
-            done(null, 'User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
-          } else if (c.includes('icacls')) {
-            done(opts.icaclsError ?? null, '');
-          } else {
-            done(null, '');
-          }
-        });
-      },
-    );
-  }
-
-  async function flushScheduled(): Promise<void> {
-    // setImmediate chain: scheduler → whoami → spawn close → possible icacls.
-    for (let i = 0; i < 8; i++) {
-      await new Promise<void>((r) => setImmediate(r));
+  /**
+   * Drain macrotasks until `done()` holds, bounded so a genuine failure still
+   * fails instead of hanging. Polling the assertion target keeps these tests
+   * decoupled from how many awaits the deferred chain happens to contain —
+   * a fixed turn count turns "one more await" into flakiness.
+   */
+  async function drain(done: () => boolean = () => true, turns = 60): Promise<void> {
+    for (let i = 0; i < turns; i++) {
+      await new Promise((r) => setImmediate(r));
+      if (done()) return;
     }
   }
+
+  it('does not run synchronously — the caller returns before any ACL work', async () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubAsyncExecFile('S-1-5-21-1-2-3-1001');
+
+    const { scheduleTokenFileReHarden } = await import('../security');
+    scheduleTokenFileReHarden(path.join('C:', 'Users', 'tester', '.wmux-auth-token'));
+
+    // Nothing has happened yet — this is what keeps the boot path free.
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    await drain(() => execFileMock.mock.calls.length > 0);
+    expect(execFileMock).toHaveBeenCalled();
+  });
 
   it('POSIX: chmods 0600 asynchronously', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
 
     const { scheduleTokenFileReHarden } = await import('../security');
-    scheduleTokenFileReHarden('/home/tester/.wmux-auth-token');
-    await flushScheduled();
+    const tokenPath = '/home/tester/.wmux-auth-token';
+    scheduleTokenFileReHarden(tokenPath);
+    await drain(() => fsMock.promises.chmod.mock.calls.length > 0);
 
-    expect(fsMock.promises.chmod).toHaveBeenCalledWith('/home/tester/.wmux-auth-token', 0o600);
-    // No sync primitives on the deferred path — that is its entire point.
-    expect(execFileSyncMock).not.toHaveBeenCalled();
-    expect(fsMock.chmodSync).not.toHaveBeenCalled();
+    expect(fsMock.promises.chmod).toHaveBeenCalledWith(tokenPath, 0o600);
   });
 
-  it('win32: resolves the SID via async whoami and rebuilds the DACL via spawned PowerShell (stdin payload)', async () => {
+  it('win32: stages inside an async-hardened directory, commits via the SYNC compare+rename block', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubAsyncExecFile();
-    const ps = stubPowershellSpawn(0);
+    stubAsyncExecFile('S-1-5-21-1-2-3-1001');
 
     const { scheduleTokenFileReHarden } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
     scheduleTokenFileReHarden(tokenPath);
-    await flushScheduled();
+    await drain(() => fsMock.renameSync.mock.calls.length > 0);
 
-    // whoami went through ASYNC execFile…
-    expect(execFileMock).toHaveBeenCalledWith(
-      'C:\\Windows\\System32\\whoami.exe',
-      ['/user', '/fo', 'list'],
-      { windowsHide: true },
-      expect.any(Function),
+    // Staging (the slow part) is fully async: mkdir + dir grant + file grant.
+    const dirCall = fsMock.promises.mkdir.mock.calls.find(([p]) =>
+      String(p).includes(`${HARDEN_TMP}.`),
     );
-    // …PowerShell through spawn with the identity over stdin and the target via env.
-    const spawnCall = spawnMock.mock.calls[0];
-    expect(String(spawnCall[0]).toLowerCase()).toContain('powershell');
-    expect((spawnCall[2] as { env: Record<string, string> }).env.WMUX_ACL_TARGET).toBe(tokenPath);
-    // Same case-insensitive PSModulePath strip as the sync path
-    // (pwsh7-inherited module path breaks 5.1 cmdlet auto-loading).
-    const asyncEnvKeys = Object.keys((spawnCall[2] as { env: Record<string, string> }).env);
-    expect(asyncEnvKeys.filter((k) => k.toLowerCase() === 'psmodulepath')).toEqual([]);
-    expect(JSON.parse(ps.stdinWrites.join(''))).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
-    // Nothing synchronous ran.
-    expect(execFileSyncMock).not.toHaveBeenCalled();
-    // PowerShell succeeded → no icacls fallback.
-    const icaclsAsync = execFileMock.mock.calls.find(([cmd]) =>
-      String(cmd).toLowerCase().includes('icacls'),
+    const dir = dirCall?.[0] as string;
+    expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+\.[0-9a-f]{12}$/);
+    const grants = callsMatching(execFileMock, 'icacls').filter(
+      ([, args]) => args?.[1] === '/grant:r',
     );
-    expect(icaclsAsync).toBeUndefined();
+    expect(grants[0]?.[1]?.[0]).toBe(dir);
+    expect(grants[0]?.[1]?.[2]).toBe('*S-1-5-21-1-2-3-1001:(OI)(CI)F');
+    expect(grants[1]?.[1]?.[0]).toBe(path.join(dir, 'staged'));
+    expect(fsMock.promises.writeFile).toHaveBeenCalledWith(
+      path.join(dir, 'staged'),
+      Buffer.from('existing-token'),
+      { mode: 0o600, flag: 'wx' },
+    );
+    // ...but the COMMIT is the synchronous pair, so no in-process writer can
+    // interleave between the compare and the rename. promises.rename would
+    // reopen the lost-update window.
+    expect(fsMock.renameSync).toHaveBeenCalledWith(path.join(dir, 'staged'), tokenPath);
+    expect(fsMock.promises.rename).not.toHaveBeenCalled();
+    expectNoPowerShell();
   });
 
-  it('win32: falls back to async icacls when the spawned PowerShell exits non-zero', async () => {
+  it('win32: a superseding write aborts the deferred harden instead of being clobbered', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubAsyncExecFile();
-    stubPowershellSpawn(1);
+    stubAsyncExecFile('S-1-5-21-1-2-3-1001');
+    // Async snapshot reads the old token; the sync commit compare sees newer bytes.
+    fsMock.promises.readFile.mockResolvedValue(Buffer.from('existing-token'));
+    fsMock.readFileSync.mockReturnValue(Buffer.from('rotated-token'));
 
     const { scheduleTokenFileReHarden } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
     scheduleTokenFileReHarden(tokenPath);
-    await flushScheduled();
+    await drain(() => fsMock.promises.rm.mock.calls.length > 0);
 
-    const icaclsAsync = execFileMock.mock.calls.find(([cmd]) =>
-      String(cmd).toLowerCase().includes('icacls'),
-    );
-    expect(icaclsAsync).toBeDefined();
-    expect((icaclsAsync?.[1] as unknown[])?.slice(0, 4)).toEqual([
-      tokenPath,
-      '/grant:r',
-      '*S-1-5-21-1-2-3-1001:F',
-      '/inheritance:r',
-    ]);
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+    expect(fsMock.promises.rm).toHaveBeenCalled(); // staging discarded
   });
 
-  it('win32: never throws to the caller when every primitive fails (best-effort, like the sync path)', async () => {
+  it('win32: never throws to the caller when the harden fails (best-effort)', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    stubAsyncExecFile({ icaclsError: new Error('icacls denied') });
-    stubPowershellSpawn(1);
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
-    process.on('unhandledRejection', onUnhandled);
+    stubAsyncExecFile('S-1-5-21-1-2-3-1001', { icaclsFails: true });
 
-    try {
-      const { scheduleTokenFileReHarden } = await import('../security');
-      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
-      expect(() => scheduleTokenFileReHarden(tokenPath)).not.toThrow();
-      await flushScheduled();
-      expect(unhandled).toEqual([]);
-      // The existing token is never deleted on the re-harden path.
-      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
-    } finally {
-      process.off('unhandledRejection', onUnhandled);
-    }
+    const { scheduleTokenFileReHarden } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(() => scheduleTokenFileReHarden(tokenPath)).not.toThrow();
+    await expect(drain(() => fsMock.promises.rm.mock.calls.length > 0)).resolves.toBeUndefined();
+    // The staging area is cleaned up rather than left holding the secret.
+    expect(fsMock.promises.rm).toHaveBeenCalled();
   });
 });

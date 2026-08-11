@@ -5,9 +5,9 @@ import path from 'node:path';
 import { PeerStore, isPeerFile, PEER_BURN_THRESHOLD, PEER_CAP, type PeerStoreOptions } from '../peers';
 import type { PairResult } from '../pairing';
 
-// Test seam: skip the slow win32 PowerShell ACL shell-out.
+// Test seam: skip the win32 owner-DACL rewrite.
 const seam: PeerStoreOptions = {
-  reHarden: () => true,
+  reHarden: () => 'hardened',
   secureWrite: (p, d) => fs.writeFileSync(p, d),
 };
 
@@ -78,7 +78,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         hardenOk = false; // now persist() unlinks the file and throws (C12)
@@ -116,7 +116,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         s.upsertPaired(mkResult('u1'));
@@ -139,6 +139,89 @@ describe('peers — per-peer store', () => {
   it('get(__proto__) is null (Map-backed, C20)', () => {
     expect(store().get('__proto__')).toBeNull();
     expect(store().get('constructor')).toBeNull();
+  });
+
+  // ── HardenOutcome consumption in loadOrCreateMachineKey ─────────────────────
+  // 'unchanged' is a VERIFIED owner-only claim (or a superseding write) — the
+  // existing key must be TRUSTED, not regenerated. Regenerating invalidates
+  // lanlink-peers.json's MAC and silently drops every pairing (review P1).
+  describe('machine key vs HardenOutcome (win32)', () => {
+    function plantKey(): string {
+      const lanlinkDir = path.join(dir, 'lanlink');
+      fs.mkdirSync(lanlinkDir, { recursive: true });
+      const keyPath = path.join(lanlinkDir, 'peer-hmac-key');
+      fs.writeFileSync(keyPath, 'ab'.repeat(32)); // valid 64-hex key
+      return keyPath;
+    }
+
+    function onWin32(fn: () => void): void {
+      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        fn();
+      } finally {
+        if (orig) Object.defineProperty(process, 'platform', orig);
+      }
+    }
+
+    it("keeps the existing key on 'unchanged' (verified swap failure)", () => {
+      onWin32(() => {
+        plantKey();
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        new PeerStore(dir, { reHarden: () => 'unchanged', secureWrite });
+        // No regeneration: the planted key survives untouched.
+        expect(secureWrite).not.toHaveBeenCalled();
+        expect(fs.readFileSync(path.join(dir, 'lanlink', 'peer-hmac-key'), 'utf8')).toBe(
+          'ab'.repeat(32),
+        );
+      });
+    });
+
+    // 'unchanged' explicitly covers "a newer secureWrite superseded this
+    // harden". Returning the bytes captured BEFORE the harden would then hand
+    // out a STALE key: load() would verify lanlink-peers.json's MAC against the
+    // wrong key and drop every peer, and a later persist would write a MAC that
+    // does not match the key on disk.
+    it("re-reads the key after 'unchanged' instead of returning pre-harden bytes", () => {
+      onWin32(() => {
+        const keyPath = plantKey();
+        const replacement = 'cd'.repeat(32);
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        const s = new PeerStore(dir, {
+          reHarden: (p) => {
+            // A concurrent writer replaces the KEY while its harden runs. The
+            // same seam also fires for lanlink-peers.json on persist — only the
+            // key is superseded here.
+            if (p === keyPath) fs.writeFileSync(p, replacement);
+            return 'unchanged';
+          },
+          secureWrite,
+        });
+        // No regeneration — the superseding key is legitimate...
+        expect(secureWrite).not.toHaveBeenCalled();
+        expect(fs.readFileSync(keyPath, 'utf8')).toBe(replacement);
+        // ...and the store must be using THAT key, not the planted one. A
+        // round-trip through persist+reload proves it: a stale in-memory key
+        // would write a MAC the reloaded store rejects.
+        s.upsertPaired(mkResult('u1'));
+        const reloaded = new PeerStore(dir, { reHarden: () => 'hardened', secureWrite: (p, d) => fs.writeFileSync(p, d) });
+        expect(reloaded.get('u1')?.peerUuid).toBe('u1');
+      });
+    });
+
+    it("discards and regenerates the key on 'failed' (fail-closed)", () => {
+      onWin32(() => {
+        const keyPath = plantKey();
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        new PeerStore(dir, { reHarden: () => 'failed', secureWrite });
+        // The untrustworthy key is replaced through the fail-closed secure write.
+        expect(secureWrite).toHaveBeenCalledTimes(1);
+        expect(secureWrite.mock.calls[0][0]).toBe(keyPath);
+        const regenerated = fs.readFileSync(keyPath, 'utf8');
+        expect(regenerated).toMatch(/^[0-9a-f]{64}$/);
+        expect(regenerated).not.toBe('ab'.repeat(32));
+      });
+    });
   });
 
   it('isPeerFile is Array.isArray-first and rejects extra/missing keys', () => {
@@ -226,7 +309,7 @@ describe('peers — per-peer store', () => {
         ...seam,
         reHarden: () => {
           writes += 1;
-          return true;
+          return 'hardened';
         },
         ...over,
       });
@@ -291,7 +374,7 @@ describe('peers — per-peer store', () => {
       try {
         let hardenOk = true;
         const s = new PeerStore(dir, {
-          reHarden: () => hardenOk,
+          reHarden: () => (hardenOk ? 'hardened' : 'failed'),
           secureWrite: (p, d) => fs.writeFileSync(p, d),
         });
         s.upsertPaired(mkResult('u1'));
@@ -321,7 +404,7 @@ describe('peers — per-peer store', () => {
         const s = new PeerStore(dir, {
           reHarden: () => {
             writes += 1;
-            return hardenOk;
+            return hardenOk ? 'hardened' : 'failed';
           },
           secureWrite: (p, d) => fs.writeFileSync(p, d),
           seenFlushMs: 5,

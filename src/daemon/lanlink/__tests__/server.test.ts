@@ -79,13 +79,13 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let tmpRoot: string;
 function mkPeers(onPersist?: () => void): PeerStore {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'peers-'));
-  // Skip the slow win32 PowerShell owner-DACL shell-out so the handshake tests
-  // stay well under the default test timeout even under full-suite parallelism.
+  // Skip the win32 owner-DACL rewrite so the handshake tests stay well under the
+  // default test timeout even under full-suite parallelism.
   // The re-harden runs exactly once per persist, so it also counts store writes.
   return new PeerStore(dir, {
     reHarden: () => {
       onPersist?.();
-      return true;
+      return 'hardened';
     },
     secureWrite: (p, d) => fs.writeFileSync(p, d),
   });

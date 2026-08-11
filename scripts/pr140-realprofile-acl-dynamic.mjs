@@ -80,13 +80,25 @@ async function loadRealSecurityModule() {
 }
 
 function ps(script, targetPath) {
+  // PSModulePath MUST be stripped for the 5.1 child. Launched from a
+  // PowerShell 7 parent it otherwise leads with pwsh's Core-edition Modules
+  // directory, 5.1 fails to auto-load Microsoft.PowerShell.Security, and every
+  // Get-Acl/Set-Acl in this harness throws — the harness then dies on its own
+  // instrumentation rather than on the code under test. Same fix already in
+  // scripts/issue-124-acl-dynamic.mjs and in src/shared/security.ts's history.
+  const env = targetPath === undefined
+    ? { ...process.env }
+    : { ...process.env, WMUX_DT_PATH: targetPath };
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'psmodulepath') delete env[key];
+  }
   return execFileSync(
     POWERSHELL,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ProgressPreference='SilentlyContinue'; ${script}`],
     {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'ignore'],
-      env: targetPath === undefined ? process.env : { ...process.env, WMUX_DT_PATH: targetPath },
+      env,
     },
   ).toString('utf8').trim();
 }
@@ -205,7 +217,7 @@ async function main() {
     if (!threw) {
       assertOwnerOnly('(a)', p);
       const ok = reHardenTokenFileAcl(p);
-      check('(a) reHardenTokenFileAcl returned true (idempotent re-harden)', ok === true);
+      check("(a) reHardenTokenFileAcl returned 'hardened' (idempotent re-harden)", ok === 'hardened', `got=${ok}`);
       assertOwnerOnly('(a) after re-harden', p);
     }
   }
@@ -229,7 +241,7 @@ async function main() {
       threw = e;
     }
     check('(b) reHardenTokenFileAcl did NOT throw (no SeSecurityPrivilege)', threw === null, threw ? String(threw.message) : '');
-    check('(b) reHardenTokenFileAcl returned true (success, not fail-soft)', ret === true);
+    check("(b) reHardenTokenFileAcl returned 'hardened' (success, not fail-soft)", ret === 'hardened', `got=${ret}`);
     assertOwnerOnly('(b)', p);
   }
 
@@ -253,7 +265,7 @@ async function main() {
       threw = e;
     }
     check('(c) reHardenTokenFileAcl did NOT throw', threw === null, threw ? String(threw.message) : '');
-    check('(c) reHardenTokenFileAcl returned true', ret === true);
+    check("(c) reHardenTokenFileAcl returned 'hardened'", ret === 'hardened', `got=${ret}`);
     assertOwnerOnly('(c) — Everyone:(R) removed', p);
   }
 
