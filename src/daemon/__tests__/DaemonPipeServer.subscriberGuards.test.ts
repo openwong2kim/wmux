@@ -140,6 +140,7 @@ describe('DaemonPipeServer — subscriber backpressure (D6)', () => {
 
     expect(server.isEventSubscriber(stalled.clientId)).toBe(false);
     expect(server.isEventSubscriber(draining.clientId)).toBe(true);
+    expect(stalled.socket.destroyed).toBe(false);
     expect(server.getConnectionCount()).toBe(2);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropping stalled event subscriber'));
