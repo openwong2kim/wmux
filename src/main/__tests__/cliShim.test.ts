@@ -169,7 +169,23 @@ import { execFileSync } from 'child_process';
 // vitest's 5s default (observed 5.6s in CI while its siblings ran 1–2s), so it
 // flakes intermittently. Raise the per-test budget for the whole suite — these
 // are the slowest tests here anyway, and a genuinely hung reg.exe still fails.
-describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox key)', { timeout: 15_000 }, () => {
+
+// A spawn budget, not a performance target: warm spawns measure ~1s, and this
+// only has to be wide enough that anything hitting it is genuinely stuck. #860
+// saw one exceed 10s on a loaded runner with nothing wrong with the shim.
+const SPAWN_TIMEOUT_MS = 20_000;
+// The most spawn-heavy case ("add is idempotent") runs seed + add + add +
+// readRaw. The per-test budget has to clear all of them at their own ceiling,
+// or vitest kills the case first and the failure arrives as a bare "timed out
+// in Nms" — naming neither the spawn nor the reason, which is precisely what
+// SPAWN_TIMEOUT_MS exists to report. Derived rather than hand-tuned because
+// the previous pairing (10s spawn, 15s case) claimed that guarantee in a
+// comment while the arithmetic only delivered it when exactly ONE spawn was
+// slow. General runner slowness — the actual failure mode — broke it.
+const MAX_SPAWNS_PER_CASE = 4;
+const CASE_TIMEOUT_MS = SPAWN_TIMEOUT_MS * MAX_SPAWNS_PER_CASE + 10_000;
+
+describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox key)', { timeout: CASE_TIMEOUT_MS }, () => {
   const SUB = 'Software\\wmux-cliShim-test';
   const BAK = 'Software\\wmux-cliShim-test-bak';
   const BIN = 'C:\\Users\\u\\AppData\\Local\\wmux\\bin';
@@ -177,11 +193,6 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
   const SEED = '%USERPROFILE%\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs';
   const PS = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 
-  // Must stay below the suite's per-test budget above: a spawn that outlives it
-  // can only ever surface as a bare vitest timeout, which says nothing about
-  // which of the three or four spawns in a case actually hung. Warm spawns
-  // measure ~1s, so this is a wide margin over anything legitimate.
-  const SPAWN_TIMEOUT_MS = 10_000;
   // The first powershell.exe in a process pays a one-time cold start — its own
   // binaries and the .NET images are not in the OS file cache yet. #576
   // measured 5.6s for it; a run on this branch exceeded 10s. It is absorbed
@@ -258,6 +269,18 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
     return m ? m[1].trim() : null;
   };
 
+  /**
+   * Assert an exit code, carrying the spawn's own diagnosis into the failure
+   * message. Bare `expect(r.code).toBe(0)` renders "expected -1 to be +0" and
+   * drops `r.err` — which is where `ps` put "killed by SIGTERM after N ms", the
+   * one fact separating a hung spawn from a shim that genuinely failed. #860
+   * lost exactly that: a timeout on a loaded runner was read as a product
+   * regression, and the message that said otherwise had already been built.
+   */
+  const expectExit = (r: { code: number; err: string; out: string }, code: number) => {
+    expect(r.code, r.err || r.out || undefined).toBe(code);
+  };
+
   const run = (op: 'add' | 'remove', constrained: boolean) => {
     const prefix = constrained ? `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\n` : '';
     return ps(prefix + buildPathEditScript(BIN, op, SUB, BAK));
@@ -275,7 +298,10 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
     // damage lands on the *next* case — the failure would be attributed to
     // whichever test ran after the one that actually broke.
     dropKeys('teardown sandbox keys', SUB, BAK);
-  });
+    // Its own budget, for the same reason the cases have one: this hook spawns,
+    // and vitest's default 10s hookTimeout would fire before the spawn's, again
+    // trading a named failure for a bare timeout.
+  }, SPAWN_TIMEOUT_MS + 10_000);
 
   it('a failed fixture spawn reports itself instead of running the case', () => {
     // Guards the #690 fix itself: if psOk ever goes back to swallowing an exit
@@ -294,7 +320,7 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
       seed();
       const r = run('add', constrained);
       const after = readRaw();
-      expect(r.code).toBe(0);
+      expectExit(r, 0);
       // Every seeded entry survives, unexpanded, in order — and bin is appended.
       expect(after).toBe(`${SEED};${BIN}`);
       expect(after).toContain('%USERPROFILE%');
@@ -302,15 +328,15 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
 
     it(`${mode}: add is idempotent`, () => {
       seed();
-      expect(run('add', constrained).code).toBe(0);
-      expect(run('add', constrained).code).toBe(0);
+      expectExit(run('add', constrained), 0);
+      expectExit(run('add', constrained), 0);
       expect(readRaw()).toBe(`${SEED};${BIN}`);
     });
 
     it(`${mode}: remove strips only the bin entry`, () => {
       seed();
       run('add', constrained);
-      expect(run('remove', constrained).code).toBe(0);
+      expectExit(run('remove', constrained), 0);
       expect(readRaw()).toBe(SEED);
     });
 
@@ -321,7 +347,7 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
       // that still exists and pass for the wrong reason.
       dropKeys('drop sandbox key', SUB);
       const r = run('add', constrained);
-      expect(r.code).toBe(PATH_EDIT_EXIT.READ_FAILED);
+      expectExit(r, PATH_EDIT_EXIT.READ_FAILED);
       expect(explainPathEditExit(r.code, BIN)).toContain('ConstrainedLanguage');
       // Crucially: the key was NOT created as a side effect of the failed edit.
       expect(readRaw()).toBeNull();
@@ -329,7 +355,7 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
 
     it(`${mode}: backs the previous value up before writing`, () => {
       seed();
-      expect(run('add', constrained).code).toBe(0);
+      expectExit(run('add', constrained), 0);
       // Read back from the harness (always FullLanguage) — this asserts what the
       // script wrote, not how it read.
       const bak = ps(`(Get-ItemProperty -Path 'HKCU:\\${BAK}' -Name 'UserPathBackup').UserPathBackup`).out.trim();
