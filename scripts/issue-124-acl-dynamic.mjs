@@ -198,7 +198,7 @@ function assertOwnerOnly(label, p) {
 async function main() {
   console.log(`issue-124-acl-dynamic — owner SID ${OWNER_SID}`);
   console.log(`PowerShell present: ${fs.existsSync(POWERSHELL)} (primary .NET path)\n`);
-  const { reHardenTokenFileAcl, secureWriteTokenFile, scheduleTokenFileReHarden } =
+  const { reHardenTokenFileAcl, secureWriteTokenFile, scheduleTokenFileReHarden, verifyOwnerOnlyDaclSync } =
     await loadRealSecurityModule();
 
   // ---- (a) fresh-inherited: secureWriteTokenFile (the write path) ----
@@ -345,6 +345,33 @@ async function main() {
     }
     check('(d) deferred re-harden converged to owner-only within 15s', converged, converged ? '' : `dacl=${JSON.stringify(readDacl(p))}`);
     assertOwnerOnly('(d) — explicit Everyone:(R) removed by the deferred path', p);
+    fs.rmSync(p, { force: true });
+  }
+
+  // ---- (e) sddl verifier agrees with REAL `icacls /save` output ----
+  // The swap-failure path decides 'unchanged' vs 'failed' by parsing the SDDL
+  // icacls /save emits. That parser is only ever exercised against mock SDDL in
+  // the unit tests; this pins it against the actual tool output so a format
+  // variation cannot silently turn every transient collision destructive
+  // (GLM round-2 P2: a false-'failed' regenerates the machine key and drops
+  // every pairing).
+  console.log('\nCASE (e) verifyOwnerOnlyDaclSync agrees with real icacls /save output');
+  {
+    const p = makeTempToken();
+    check(
+      '(e) broad (fresh-inherited) file does NOT verify owner-only',
+      verifyOwnerOnlyDaclSync(p, OWNER_SID) === false,
+    );
+    const ret = reHardenTokenFileAcl(p);
+    check("(e) precondition: harden reported 'hardened'", ret === 'hardened', `got=${ret}`);
+    check(
+      '(e) hardened file VERIFIES owner-only against the real /save output',
+      verifyOwnerOnlyDaclSync(p, OWNER_SID) === true,
+    );
+    check(
+      '(e) wrong SID does NOT verify',
+      verifyOwnerOnlyDaclSync(p, 'S-1-5-21-0-0-0-999') === false,
+    );
     fs.rmSync(p, { force: true });
   }
 

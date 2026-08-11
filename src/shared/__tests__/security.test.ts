@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fsMock = vi.hoisted(() => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
+  mkdtempSync: vi.fn(),
   writeFileSync: vi.fn(),
   readFileSync: vi.fn(),
   readdirSync: vi.fn(),
@@ -14,6 +15,8 @@ const fsMock = vi.hoisted(() => ({
   chmodSync: vi.fn(),
   promises: {
     chmod: vi.fn(),
+    mkdir: vi.fn(),
+    mkdtemp: vi.fn(),
     readFile: vi.fn(),
     writeFile: vi.fn(),
     rename: vi.fn(),
@@ -27,6 +30,7 @@ const execFileMock = vi.hoisted(() => vi.fn());
 vi.mock('fs', () => ({
   existsSync: fsMock.existsSync,
   mkdirSync: fsMock.mkdirSync,
+  mkdtempSync: fsMock.mkdtempSync,
   writeFileSync: fsMock.writeFileSync,
   readFileSync: fsMock.readFileSync,
   readdirSync: fsMock.readdirSync,
@@ -46,8 +50,8 @@ vi.mock('child_process', () => ({
 // NOTE: these are STRUCTURAL tests — the child_process and fs surfaces are
 // mocked, so they assert the invocation shape (which tool, which args, which
 // order) but never run a real ACL operation. The decisive runtime behavior
-// (a custom EXPLICIT broad ACE actually disappearing, which the plain icacls
-// strip leaves in place) is covered out-of-band by
+// (a custom EXPLICIT broad ACE actually disappearing; sddlIsOwnerOnly agreeing
+// with REAL `icacls /save` output) is covered out-of-band by
 // scripts/issue-124-acl-dynamic.mjs, which drives the genuine compiled function
 // against seeded on-disk ACLs.
 
@@ -71,13 +75,11 @@ function callsMatching(mock: typeof execFileSyncMock, needle: string) {
   ) as Array<[string, unknown[], Record<string, unknown>]>;
 }
 
-/** The first icacls call that is a DACL GRANT (not a /save verification). */
-function icaclsGrantCall(): [string, unknown[], Record<string, unknown>] | undefined {
-  return callsMatching(execFileSyncMock, 'icacls').find(([, args]) => args?.[1] === '/grant:r');
-}
-
-function icaclsGrantArgs(): unknown[] | undefined {
-  return icaclsGrantCall()?.[1];
+/** All sync icacls /grant:r calls, in order (staging DIR first, then file). */
+function icaclsGrants(): unknown[][] {
+  return callsMatching(execFileSyncMock, 'icacls')
+    .filter(([, args]) => args?.[1] === '/grant:r')
+    .map(([, args]) => args);
 }
 
 /** The icacls `/save` DACL read-back used by swap-failure verification. */
@@ -85,13 +87,18 @@ function icaclsSaveCall(): [string, unknown[], Record<string, unknown>] | undefi
   return callsMatching(execFileSyncMock, 'icacls').find(([, args]) => args?.[1] === '/save');
 }
 
-/** The per-operation-unique staging path actually used (captured from the
- *  empty-create write). */
-function stagedPath(): string | undefined {
-  const call = fsMock.writeFileSync.mock.calls.find(
-    ([p, data]) => typeof p === 'string' && p.includes(HARDEN_TMP) && data === '',
+/** The per-operation-unique staging DIRECTORY (captured from mkdirSync). */
+function stagingDir(): string | undefined {
+  const call = fsMock.mkdirSync.mock.calls.find(
+    ([p]) => typeof p === 'string' && p.includes(`${HARDEN_TMP}.`),
   );
   return call?.[0] as string | undefined;
+}
+
+/** The staged payload file inside the staging directory. */
+function stagedFile(): string | undefined {
+  const dir = stagingDir();
+  return dir === undefined ? undefined : path.join(dir, 'staged');
 }
 
 /**
@@ -133,6 +140,9 @@ function resetAll(): void {
   fsMock.existsSync.mockReturnValue(true);
   fsMock.readdirSync.mockReturnValue([]);
   fsMock.readFileSync.mockReturnValue(Buffer.from('existing-token'));
+  fsMock.mkdtempSync.mockImplementation((p: unknown) => `${p}RND`);
+  fsMock.promises.mkdtemp.mockImplementation((p: unknown) => Promise.resolve(`${p}RND`));
+  fsMock.promises.mkdir.mockResolvedValue(undefined);
   fsMock.promises.readFile.mockResolvedValue(Buffer.from('existing-token'));
   fsMock.promises.writeFile.mockResolvedValue(undefined);
   fsMock.promises.rename.mockResolvedValue(undefined);
@@ -194,15 +204,15 @@ describe('secureWriteTokenFile', () => {
     }
   });
 
-  // ── win32: every write goes through a fresh, pre-hardened inode ────────────
-  describe('win32 fresh-inode write path', () => {
+  // ── win32: every write is staged inside a pre-hardened directory ───────────
+  describe('win32 hardened-staging write path', () => {
     beforeEach(() => {
       vi.stubEnv('USERNAME', 'tester');
       vi.stubEnv('SystemRoot', 'C:\\Windows');
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     });
 
-    it('hardens a per-operation-unique staging inode and renames it over the target', async () => {
+    it('hardens the staging DIRECTORY first, births the file owner-only, then renames it in', async () => {
       stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
       const { secureWriteTokenFile } = await import('../security');
@@ -216,15 +226,18 @@ describe('secureWriteTokenFile', () => {
         ['/user', '/fo', 'list'],
         { windowsHide: true },
       );
-      // ...then the DACL is built on a UNIQUE staging path, not the target and
-      // not a fixed name a concurrent operation could collide with.
-      const tmp = stagedPath();
-      expect(tmp).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
-      expect(icaclsGrantCall()?.[0]).toBe('C:\\Windows\\System32\\icacls.exe');
-      expect(icaclsGrantArgs()).toEqual([
-        tmp,
+      // ...staging area is a per-operation-unique DIRECTORY...
+      const dir = stagingDir();
+      expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
+      const grants = icaclsGrants();
+      expect(grants.length).toBe(2);
+      // ...hardened with an INHERITABLE owner-only grant while still empty
+      // (a file hardened after creation would leave a handle-race window —
+      // Windows ACL changes do not revoke open handles)...
+      expect(grants[0]).toEqual([
+        dir,
         '/grant:r',
-        '*S-1-5-21-1-2-3-1001:F',
+        '*S-1-5-21-1-2-3-1001:(OI)(CI)F',
         '/inheritance:r',
         '/remove:g',
         '*S-1-1-0', // Everyone
@@ -235,54 +248,66 @@ describe('secureWriteTokenFile', () => {
         '/remove:g',
         '*S-1-5-4', // INTERACTIVE
       ]);
-      // The target is only ever reached by the atomic rename.
-      expect(fsMock.renameSync).toHaveBeenCalledWith(tmp, tokenPath);
-      expect(
-        fsMock.writeFileSync.mock.calls.filter(([p]) => p === tokenPath),
-      ).toEqual([]);
+      // ...then the staged file gets the explicit, protected owner-only DACL.
+      expect(grants[1]?.slice(0, 4)).toEqual([
+        stagedFile(),
+        '/grant:r',
+        '*S-1-5-21-1-2-3-1001:F',
+        '/inheritance:r',
+      ]);
+      // The target is only ever reached by the atomic rename; the staging dir
+      // is discarded afterwards.
+      expect(fsMock.renameSync).toHaveBeenCalledWith(stagedFile(), tokenPath);
+      expect(fsMock.rmSync).toHaveBeenCalledWith(dir, { force: true, recursive: true });
+      expect(fsMock.writeFileSync.mock.calls.filter(([p]) => p === tokenPath)).toEqual([]);
       expectNoPowerShell();
     });
 
-    it('two writes use two DIFFERENT staging paths', async () => {
+    it('two writes use two DIFFERENT staging directories', async () => {
       stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
       const { secureWriteTokenFile } = await import('../security');
       const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
       secureWriteTokenFile(tokenPath, 'one');
-      const first = stagedPath();
-      fsMock.writeFileSync.mockClear();
+      const first = stagingDir();
+      fsMock.mkdirSync.mockClear();
       secureWriteTokenFile(tokenPath, 'two');
-      const second = stagedPath();
+      const second = stagingDir();
 
       expect(first).toBeDefined();
       expect(second).toBeDefined();
       expect(second).not.toBe(first);
     });
 
-    // Ordering is the whole point: if the payload landed first, a crash between
-    // the write and the harden would leave the secret readable in the staging
-    // inode under the directory's inherited ACEs.
-    it('locks the staging inode down while it is still EMPTY, before the secret lands', async () => {
+    // Ordering is the whole point: the directory is hardened while EMPTY, and
+    // the payload lands on an inode that inherits owner-only at creation.
+    it('orders: mkdir → harden dir → write payload → harden file → rename', async () => {
       stubWhoamiSid('S-1-5-21-1-2-3-1001');
       const order: string[] = [];
-      fsMock.writeFileSync.mockImplementation((_p: unknown, data: unknown) => {
-        order.push(data === '' ? 'write-empty' : 'write-payload');
+      fsMock.mkdirSync.mockImplementation((p: unknown) => {
+        if (String(p).includes(HARDEN_TMP)) order.push('mkdir');
       });
-      execFileSyncMock.mockImplementation((cmd: unknown) => {
+      fsMock.writeFileSync.mockImplementation(() => {
+        order.push('write-payload');
+      });
+      execFileSyncMock.mockImplementation((cmd: unknown, args: unknown) => {
         const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
         if (c.includes('whoami')) {
           return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
         }
-        order.push('icacls');
+        const grant = Array.isArray(args) ? String(args[2]) : '';
+        order.push(grant.includes('(OI)(CI)') ? 'icacls-dir' : 'icacls-file');
         return Buffer.from('');
       });
-      fsMock.renameSync.mockImplementation(() => { order.push('rename'); });
+      fsMock.renameSync.mockImplementation(() => {
+        order.push('rename');
+      });
 
       const { secureWriteTokenFile } = await import('../security');
       secureWriteTokenFile(path.join('C:', 'Users', 'tester', '.wmux-auth-token'), 'secret-token');
 
-      expect(order).toEqual(['write-empty', 'icacls', 'write-payload', 'rename']);
+      expect(order).toEqual(['mkdir', 'icacls-dir', 'write-payload', 'icacls-file', 'rename']);
     });
 
     it('sweeps STALE staging leftovers from an earlier crash, but never a fresh one', async () => {
@@ -299,19 +324,18 @@ describe('secureWriteTokenFile', () => {
       const { secureWriteTokenFile } = await import('../security');
       secureWriteTokenFile(tokenPath, 'secret-token');
 
-      // The hour-old leftover is removed (recursive: a directory squatting on
-      // the name must not wedge hardening forever)...
+      // The hour-old leftover is removed...
       expect(fsMock.rmSync).toHaveBeenCalledWith(path.join(dir, stale), {
         force: true,
         recursive: true,
       });
-      // ...the milliseconds-old one (a live concurrent harden) is left alone.
+      // ...the seconds-old one (a live concurrent harden) is left alone.
       expect(
         fsMock.rmSync.mock.calls.filter(([p]) => String(p).endsWith(fresh)),
       ).toEqual([]);
     });
 
-    it('fails closed (drops the staging inode, THROWS) when icacls denies — but never deletes the untouched target', async () => {
+    it('fails closed (drops staging, unlinks the UNVERIFIABLE previous token, throws) when icacls denies', async () => {
       execFileSyncMock.mockImplementation((cmd: unknown) => {
         const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
         if (c.includes('whoami')) {
@@ -326,19 +350,24 @@ describe('secureWriteTokenFile', () => {
       expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
         `Failed to set secure ACL on ${tokenPath}: icacls denied`,
       );
-      const tmp = stagedPath();
-      expect(fsMock.rmSync).toHaveBeenCalledWith(tmp, { force: true, recursive: true });
-      // The target never received the new secret, so it still holds the
-      // PREVIOUS token — deleting it would lock the user out for no gain.
-      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+      expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
+      // Every icacls is denied, so the previous token's DACL cannot be
+      // verified either → fail closed: it is removed.
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
       expect(fsMock.renameSync).not.toHaveBeenCalled();
     });
 
-    it('retries a colliding rename, then throws WITHOUT deleting the previous token', async () => {
+    it('keeps the previous token on a rename collision when its DACL VERIFIES owner-only', async () => {
       stubWhoamiSid('S-1-5-21-1-2-3-1001');
       fsMock.renameSync.mockImplementation(() => {
         throw new Error('EPERM: file is open');
       });
+      // Verification reads real SDDL via icacls /save + mkdtemp'd save file.
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+          : Buffer.from('existing-token'),
+      );
 
       const { secureWriteTokenFile } = await import('../security');
       const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
@@ -347,9 +376,29 @@ describe('secureWriteTokenFile', () => {
         /Failed to set secure ACL/,
       );
       expect(fsMock.renameSync.mock.calls.length).toBe(3); // bounded retries
+      // The previous token was READ BACK and confirmed owner-only → kept.
+      expect(icaclsSaveCall()).toBeDefined();
       expect(fsMock.unlinkSync).not.toHaveBeenCalled();
-      const tmp = stagedPath();
-      expect(fsMock.rmSync).toHaveBeenCalledWith(tmp, { force: true, recursive: true });
+    });
+
+    it('unlinks the previous token on a rename collision when its DACL does NOT verify', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        throw new Error('EPERM: file is open');
+      });
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? BROAD_SDDL('S-1-5-21-1-2-3-1001') // a broad leftover must not survive
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
     });
 
     it('parses the SID field instead of SID-like text in the account name', async () => {
@@ -368,7 +417,8 @@ describe('secureWriteTokenFile', () => {
       secureWriteTokenFile(path.join('C:', 'Users', 'victim', '.wmux-auth-token'), 'secret-token');
 
       // The principal is the SID FIELD, never the SID-like account-name text.
-      expect(icaclsGrantArgs()?.[2]).toBe('*S-1-5-21-1111111111-2222222222-3333333333-1001:F');
+      expect(icaclsGrants()[0]?.[2]).toBe('*S-1-5-21-1111111111-2222222222-3333333333-1001:(OI)(CI)F');
+      expect(icaclsGrants()[1]?.[2]).toBe('*S-1-5-21-1111111111-2222222222-3333333333-1001:F');
     });
 
     // Regression (#90): a non-ASCII (Korean) profile name passed verbatim to a
@@ -383,8 +433,10 @@ describe('secureWriteTokenFile', () => {
       secureWriteTokenFile(path.join('C:', 'Users', '홍길동', '.wmux-auth-token'), 'secret-token');
 
       // The PRINCIPAL is the SID; the file PATH legitimately keeps the name.
-      expect(icaclsGrantArgs()?.[2]).toBe('*S-1-5-21-1-2-3-1001:F');
-      expect(icaclsGrantArgs()?.slice(1).join(' ')).not.toContain('홍길동');
+      for (const grant of icaclsGrants()) {
+        expect(String(grant[2])).toContain('S-1-5-21-1-2-3-1001');
+        expect(grant.slice(1).join(' ')).not.toContain('홍길동');
+      }
     });
 
     it('falls back to an ASCII %USERNAME% principal when the SID cannot be resolved', async () => {
@@ -401,14 +453,14 @@ describe('secureWriteTokenFile', () => {
       secureWriteTokenFile(tokenPath, 'secret-token');
 
       // No `*` SID prefix on a plain username principal.
-      expect(icaclsGrantArgs()?.slice(1, 4)).toEqual(['/grant:r', 'tester:F', '/inheritance:r']);
-      expect(icaclsGrantArgs()?.[0]).toBe(stagedPath());
+      expect(icaclsGrants()[0]?.[2]).toBe('tester:(OI)(CI)F');
+      expect(icaclsGrants()[1]?.[2]).toBe('tester:F');
     });
 
     // When the SID can't be resolved, the %USERNAME% fallback must NOT be used
     // for a non-ASCII account — that would re-create the ghost-principal lock-out
     // and re-apply it on every load.
-    it('refuses (throws, no ACL tooling, target untouched) when SID unresolved AND USERNAME is non-ASCII', async () => {
+    it('refuses (throws, no grant tooling, fail-closed unlink) when SID unresolved AND USERNAME is non-ASCII', async () => {
       vi.stubEnv('USERNAME', '홍길동');
       execFileSyncMock.mockImplementation((cmd: unknown) => {
         if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
@@ -423,11 +475,12 @@ describe('secureWriteTokenFile', () => {
       expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
         /refusing to apply a mangling-prone ACL/,
       );
-      expect(callsMatching(execFileSyncMock, 'icacls')).toEqual([]);
+      // No GRANT may ever run with a mangling-prone principal.
+      expect(icaclsGrants()).toEqual([]);
       expectNoPowerShell();
-      // The refusal happens before anything is written — nothing to clean up,
-      // and the previous token (if any) is preserved.
-      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+      // With no SID the previous token cannot be verified owner-only either —
+      // fail closed, exactly like the pre-refactor contract for this case.
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
     });
   });
 });
@@ -442,7 +495,7 @@ describe('reHardenTokenFileAcl', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
   }
 
-  it('rebuilds the DACL through a fresh inode and reports "hardened" on win32', async () => {
+  it('rebuilds the DACL through hardened staging and reports "hardened" on win32', async () => {
     stubWin32();
     stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
@@ -452,11 +505,14 @@ describe('reHardenTokenFileAcl', () => {
     expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
 
     // The existing bytes are carried over verbatim — the VALUE never changes.
-    const tmp = stagedPath();
     expect(fsMock.readFileSync).toHaveBeenCalledWith(tokenPath);
-    expect(fsMock.writeFileSync).toHaveBeenCalledWith(tmp, Buffer.from('existing-token'));
-    expect(icaclsGrantArgs()?.[0]).toBe(tmp);
-    expect(fsMock.renameSync).toHaveBeenCalledWith(tmp, tokenPath);
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(stagedFile(), Buffer.from('existing-token'), {
+      mode: 0o600,
+    });
+    expect(icaclsGrants()[0]?.[0]).toBe(stagingDir());
+    expect(icaclsGrants()[1]?.[0]).toBe(stagedFile());
+    expect(fsMock.renameSync).toHaveBeenCalledWith(stagedFile(), tokenPath);
+    expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
     expectNoPowerShell();
   });
 
@@ -489,8 +545,7 @@ describe('reHardenTokenFileAcl', () => {
     expect(reHardenTokenFileAcl(tokenPath)).toBe('unchanged');
     // The stale snapshot must NOT be installed over the newer write.
     expect(fsMock.renameSync).not.toHaveBeenCalled();
-    const tmp = stagedPath();
-    expect(fsMock.rmSync).toHaveBeenCalledWith(tmp, { force: true, recursive: true });
+    expect(fsMock.rmSync).toHaveBeenCalledWith(stagingDir(), { force: true, recursive: true });
   });
 
   // 'unchanged' is a VERIFIED claim (review consensus): a swap failure may only
@@ -501,9 +556,9 @@ describe('reHardenTokenFileAcl', () => {
     fsMock.renameSync.mockImplementation(() => {
       throw new Error('EPERM: another process has the file open');
     });
-    // icacls /save writes an SDDL file; the mock serves owner-only SDDL for it.
+    // icacls /save writes an SDDL file into a mkdtemp'd dir; serve owner-only.
     fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
-      enc === 'utf16le' && String(p).includes('wmux-dacl-verify')
+      enc === 'utf16le' && String(p).includes('wmux-dacl-')
         ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
         : Buffer.from('existing-token'),
     );
@@ -516,6 +571,9 @@ describe('reHardenTokenFileAcl', () => {
     const save = icaclsSaveCall();
     expect(save?.[1]?.[0]).toBe(path.basename(tokenPath));
     expect(save?.[2]?.cwd).toBe(path.dirname(tokenPath));
+    // The save file lives in an UNPREDICTABLE mkdtemp'd directory (hardlink-
+    // plant defense) and is cleaned up with it.
+    expect(fsMock.mkdtempSync).toHaveBeenCalled();
     expect(fsMock.unlinkSync).not.toHaveBeenCalled();
   });
 
@@ -529,7 +587,7 @@ describe('reHardenTokenFileAcl', () => {
       throw new Error('EPERM: another process has the file open');
     });
     fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
-      enc === 'utf16le' && String(p).includes('wmux-dacl-verify')
+      enc === 'utf16le' && String(p).includes('wmux-dacl-')
         ? BROAD_SDDL('S-1-5-21-1-2-3-1001') // extra Everyone ACE survives
         : Buffer.from('existing-token'),
     );
@@ -565,7 +623,7 @@ describe('reHardenTokenFileAcl', () => {
     );
   });
 
-  it('reports "failed" when the staging inode cannot be hardened at all', async () => {
+  it('reports "failed" when the staging area cannot be hardened at all', async () => {
     stubWin32();
     execFileSyncMock.mockImplementation((cmd: unknown) => {
       if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
@@ -610,7 +668,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
   beforeEach(resetAll);
 
   /** setImmediate + the internal async chain need a few macrotask turns. */
-  async function drain(turns = 8): Promise<void> {
+  async function drain(turns = 10): Promise<void> {
     for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
   }
 
@@ -640,7 +698,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     expect(fsMock.promises.chmod).toHaveBeenCalledWith(tokenPath, 0o600);
   });
 
-  it('win32: stages via async fs + icacls, commits via the SYNCHRONOUS compare+rename block', async () => {
+  it('win32: stages inside an async-hardened directory, commits via the SYNC compare+rename block', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
@@ -651,22 +709,27 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     scheduleTokenFileReHarden(tokenPath);
     await drain();
 
-    // Staging (the slow part) is fully async...
-    const asyncIcacls = callsMatching(execFileMock, 'icacls').find(
+    // Staging (the slow part) is fully async: mkdir + dir grant + file grant.
+    const dirCall = fsMock.promises.mkdir.mock.calls.find(([p]) =>
+      String(p).includes(`${HARDEN_TMP}.`),
+    );
+    const dir = dirCall?.[0] as string;
+    expect(dir).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
+    const grants = callsMatching(execFileMock, 'icacls').filter(
       ([, args]) => args?.[1] === '/grant:r',
     );
-    const tmp = asyncIcacls?.[1]?.[0] as string;
-    expect(tmp).toMatch(/\.wmux-auth-token\.harden-tmp\.\d+\.\d+$/);
-    expect(asyncIcacls?.[1]?.slice(1, 4)).toEqual([
-      '/grant:r',
-      '*S-1-5-21-1-2-3-1001:F',
-      '/inheritance:r',
-    ]);
-    expect(fsMock.promises.writeFile).toHaveBeenCalledWith(tmp, '', { mode: 0o600 });
+    expect(grants[0]?.[1]?.[0]).toBe(dir);
+    expect(grants[0]?.[1]?.[2]).toBe('*S-1-5-21-1-2-3-1001:(OI)(CI)F');
+    expect(grants[1]?.[1]?.[0]).toBe(path.join(dir, 'staged'));
+    expect(fsMock.promises.writeFile).toHaveBeenCalledWith(
+      path.join(dir, 'staged'),
+      Buffer.from('existing-token'),
+      { mode: 0o600 },
+    );
     // ...but the COMMIT is the synchronous pair, so no in-process writer can
     // interleave between the compare and the rename. promises.rename would
     // reopen the lost-update window.
-    expect(fsMock.renameSync).toHaveBeenCalledWith(tmp, tokenPath);
+    expect(fsMock.renameSync).toHaveBeenCalledWith(path.join(dir, 'staged'), tokenPath);
     expect(fsMock.promises.rename).not.toHaveBeenCalled();
     expectNoPowerShell();
   });
@@ -700,7 +763,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
 
     expect(() => scheduleTokenFileReHarden(tokenPath)).not.toThrow();
     await expect(drain()).resolves.toBeUndefined();
-    // The staging inode is cleaned up rather than left holding the secret.
+    // The staging area is cleaned up rather than left holding the secret.
     expect(fsMock.promises.rm).toHaveBeenCalled();
   });
 });
