@@ -482,7 +482,18 @@ export class PeerStore {
         // MAC (verifyMac) and silently drop every paired peer on the load() that
         // follows in this same constructor.
         if (process.platform !== 'win32' || outcome !== 'failed') {
-          return Buffer.from(existing, 'hex');
+          // Re-read rather than trusting the bytes captured BEFORE the harden.
+          // 'unchanged' explicitly covers "a newer secureWrite superseded this
+          // harden", so `existing` can be a stale key by now — and returning it
+          // would verify lanlink-peers.json's MAC against the wrong key,
+          // dropping every peer, or write a MAC that does not match the key on
+          // disk. Normally identical (the harden preserves content byte for
+          // byte); only the supersede case differs, which is exactly the bug.
+          const current = fs.readFileSync(this.keyPath, 'utf8').trim();
+          if (/^[0-9a-fA-F]{64}$/.test(current)) {
+            return Buffer.from(current, 'hex');
+          }
+          // Unreadable/malformed after the harden — fall through and regenerate.
         }
         try {
           fs.unlinkSync(this.keyPath);

@@ -208,10 +208,11 @@ async function resolveOwnerIdentityAsync(
  * principal, granting Full control to a non-existent account while the real
  * owner's ACEs are stripped — the exact lock-out getCurrentUserSid exists to
  * prevent, re-applied on every token load. Refuse and throw instead so callers
- * fail safe: secureWriteTokenFile aborts without ever writing the new token
- * (the previous file stays untouched); reHardenTokenFileAcl reports 'failed'
- * without touching the existing ACL — both strictly better than silently
- * re-locking the owner out.
+ * fail safe: secureWriteTokenFile aborts without ever writing the new token,
+ * and — since an unresolved SID also makes the PREVIOUS token unverifiable —
+ * removes that previous token rather than leave a file it cannot vouch for;
+ * reHardenTokenFileAcl reports 'failed' without touching the existing ACL —
+ * both strictly better than silently re-locking the owner out.
  */
 function validateAsciiUsernameFallback(filePath: string): { sid: null; username: string } {
   const username = process.env.USERNAME;

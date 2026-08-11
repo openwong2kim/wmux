@@ -466,6 +466,34 @@ describe('secureWriteTokenFile', () => {
     // When the SID can't be resolved, the %USERNAME% fallback must NOT be used
     // for a non-ASCII account — that would re-create the ghost-principal lock-out
     // and re-apply it on every load.
+    // On the username-fallback path `sid` is null, so the previous token can
+    // never be verified owner-only — a collision there must fail closed and
+    // remove it. Pins the asymmetry with the SID-resolved collision above.
+    it('unlinks the previous token on a collision when the SID is unresolved (verification impossible)', async () => {
+      vi.stubEnv('USERNAME', 'tester');
+      execFileSyncMock.mockImplementation((cmd: unknown) => {
+        if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+          throw new Error('whoami unavailable');
+        }
+        return Buffer.from('');
+      });
+      fsMock.renameSync.mockImplementation(() => {
+        throw new Error('EPERM: file is open');
+      });
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      // The ASCII username still drove the grant...
+      expect(icaclsGrants()[1]?.[2]).toBe('tester:F');
+      // ...but with no SID there is nothing to verify the old token against.
+      expect(icaclsSaveCall()).toBeUndefined();
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+    });
+
     it('refuses (throws, no grant tooling, fail-closed unlink) when SID unresolved AND USERNAME is non-ASCII', async () => {
       vi.stubEnv('USERNAME', '홍길동');
       execFileSyncMock.mockImplementation((cmd: unknown) => {
@@ -759,9 +787,17 @@ describe('reHardenTokenFileAcl', () => {
 describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
   beforeEach(resetAll);
 
-  /** setImmediate + the internal async chain need a few macrotask turns. */
-  async function drain(turns = 10): Promise<void> {
-    for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
+  /**
+   * Drain macrotasks until `done()` holds, bounded so a genuine failure still
+   * fails instead of hanging. Polling the assertion target keeps these tests
+   * decoupled from how many awaits the deferred chain happens to contain —
+   * a fixed turn count turns "one more await" into flakiness.
+   */
+  async function drain(done: () => boolean = () => true, turns = 60): Promise<void> {
+    for (let i = 0; i < turns; i++) {
+      await new Promise((r) => setImmediate(r));
+      if (done()) return;
+    }
   }
 
   it('does not run synchronously — the caller returns before any ACL work', async () => {
@@ -775,7 +811,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     // Nothing has happened yet — this is what keeps the boot path free.
     expect(execFileMock).not.toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalled();
-    await drain();
+    await drain(() => execFileMock.mock.calls.length > 0);
     expect(execFileMock).toHaveBeenCalled();
   });
 
@@ -785,7 +821,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     const { scheduleTokenFileReHarden } = await import('../security');
     const tokenPath = '/home/tester/.wmux-auth-token';
     scheduleTokenFileReHarden(tokenPath);
-    await drain();
+    await drain(() => fsMock.promises.chmod.mock.calls.length > 0);
 
     expect(fsMock.promises.chmod).toHaveBeenCalledWith(tokenPath, 0o600);
   });
@@ -799,7 +835,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     const { scheduleTokenFileReHarden } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
     scheduleTokenFileReHarden(tokenPath);
-    await drain();
+    await drain(() => fsMock.renameSync.mock.calls.length > 0);
 
     // Staging (the slow part) is fully async: mkdir + dir grant + file grant.
     const dirCall = fsMock.promises.mkdir.mock.calls.find(([p]) =>
@@ -838,7 +874,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     const { scheduleTokenFileReHarden } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
     scheduleTokenFileReHarden(tokenPath);
-    await drain();
+    await drain(() => fsMock.promises.rm.mock.calls.length > 0);
 
     expect(fsMock.renameSync).not.toHaveBeenCalled();
     expect(fsMock.promises.rm).toHaveBeenCalled(); // staging discarded
@@ -854,7 +890,7 @@ describe('scheduleTokenFileReHarden (deferred re-harden)', () => {
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
 
     expect(() => scheduleTokenFileReHarden(tokenPath)).not.toThrow();
-    await expect(drain()).resolves.toBeUndefined();
+    await expect(drain(() => fsMock.promises.rm.mock.calls.length > 0)).resolves.toBeUndefined();
     // The staging area is cleaned up rather than left holding the secret.
     expect(fsMock.promises.rm).toHaveBeenCalled();
   });

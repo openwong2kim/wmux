@@ -177,6 +177,38 @@ describe('peers — per-peer store', () => {
       });
     });
 
+    // 'unchanged' explicitly covers "a newer secureWrite superseded this
+    // harden". Returning the bytes captured BEFORE the harden would then hand
+    // out a STALE key: load() would verify lanlink-peers.json's MAC against the
+    // wrong key and drop every peer, and a later persist would write a MAC that
+    // does not match the key on disk.
+    it("re-reads the key after 'unchanged' instead of returning pre-harden bytes", () => {
+      onWin32(() => {
+        const keyPath = plantKey();
+        const replacement = 'cd'.repeat(32);
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        const s = new PeerStore(dir, {
+          reHarden: (p) => {
+            // A concurrent writer replaces the KEY while its harden runs. The
+            // same seam also fires for lanlink-peers.json on persist — only the
+            // key is superseded here.
+            if (p === keyPath) fs.writeFileSync(p, replacement);
+            return 'unchanged';
+          },
+          secureWrite,
+        });
+        // No regeneration — the superseding key is legitimate...
+        expect(secureWrite).not.toHaveBeenCalled();
+        expect(fs.readFileSync(keyPath, 'utf8')).toBe(replacement);
+        // ...and the store must be using THAT key, not the planted one. A
+        // round-trip through persist+reload proves it: a stale in-memory key
+        // would write a MAC the reloaded store rejects.
+        s.upsertPaired(mkResult('u1'));
+        const reloaded = new PeerStore(dir, { reHarden: () => 'hardened', secureWrite: (p, d) => fs.writeFileSync(p, d) });
+        expect(reloaded.get('u1')?.peerUuid).toBe('u1');
+      });
+    });
+
     it("discards and regenerates the key on 'failed' (fail-closed)", () => {
       onWin32(() => {
         const keyPath = plantKey();
