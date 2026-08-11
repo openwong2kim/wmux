@@ -121,6 +121,7 @@ import { terminateRunningAppInstances } from './squirrelTeardown';
 // Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
+import * as shortcutHygiene from './shortcutHygiene';
 import {
   refreshStatuslineScript,
   defaultPaths as defaultStatuslinePaths,
@@ -203,7 +204,16 @@ if (process.platform === 'win32') {
       // user PATH. Internally best-effort — never blocks the install.
       try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true, windowsHide: true })
+      // #863: stage <root>\app.ico from the packaged icon (kills the iconUrl
+      // network dependency) and repair dead/versioned shortcuts carrying our
+      // AUMID before Update.exe writes the fresh ones. Both best-effort.
+      let installIcon: string | null = null;
+      try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
+      try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+
+      const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'];
+      if (installIcon) installShortcutArgs.push('--icon', installIcon);
+      spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true })
         .on('close', () => {
           // Auto-launch app after install
           spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
@@ -220,7 +230,15 @@ if (process.platform === 'win32') {
       // which changes on every update.
       try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
+      // #863: same shortcut hygiene as the install hook — an update is when
+      // versioned shortcut targets (old app-X.Y.Z paths) actually die.
+      let updateIcon: string | null = null;
+      try { updateIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
+      try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+
+      const updateShortcutArgs = ['--createShortcut', target];
+      if (updateIcon) updateShortcutArgs.push('--icon', updateIcon);
+      spawn(updateExe, updateShortcutArgs, { detached: true, windowsHide: true })
         .on('close', () => {
           // #502: relaunch the updated app — the pre-update instance was
           // taken down above (or quit itself in the in-app "Restart to
