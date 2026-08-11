@@ -141,6 +141,57 @@ describe('peers — per-peer store', () => {
     expect(store().get('constructor')).toBeNull();
   });
 
+  // ── HardenOutcome consumption in loadOrCreateMachineKey ─────────────────────
+  // 'unchanged' is a VERIFIED owner-only claim (or a superseding write) — the
+  // existing key must be TRUSTED, not regenerated. Regenerating invalidates
+  // lanlink-peers.json's MAC and silently drops every pairing (review P1).
+  describe('machine key vs HardenOutcome (win32)', () => {
+    function plantKey(): string {
+      const lanlinkDir = path.join(dir, 'lanlink');
+      fs.mkdirSync(lanlinkDir, { recursive: true });
+      const keyPath = path.join(lanlinkDir, 'peer-hmac-key');
+      fs.writeFileSync(keyPath, 'ab'.repeat(32)); // valid 64-hex key
+      return keyPath;
+    }
+
+    function onWin32(fn: () => void): void {
+      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        fn();
+      } finally {
+        if (orig) Object.defineProperty(process, 'platform', orig);
+      }
+    }
+
+    it("keeps the existing key on 'unchanged' (verified swap failure)", () => {
+      onWin32(() => {
+        plantKey();
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        new PeerStore(dir, { reHarden: () => 'unchanged', secureWrite });
+        // No regeneration: the planted key survives untouched.
+        expect(secureWrite).not.toHaveBeenCalled();
+        expect(fs.readFileSync(path.join(dir, 'lanlink', 'peer-hmac-key'), 'utf8')).toBe(
+          'ab'.repeat(32),
+        );
+      });
+    });
+
+    it("discards and regenerates the key on 'failed' (fail-closed)", () => {
+      onWin32(() => {
+        const keyPath = plantKey();
+        const secureWrite = vi.fn((p: string, d: string) => fs.writeFileSync(p, d));
+        new PeerStore(dir, { reHarden: () => 'failed', secureWrite });
+        // The untrustworthy key is replaced through the fail-closed secure write.
+        expect(secureWrite).toHaveBeenCalledTimes(1);
+        expect(secureWrite.mock.calls[0][0]).toBe(keyPath);
+        const regenerated = fs.readFileSync(keyPath, 'utf8');
+        expect(regenerated).toMatch(/^[0-9a-f]{64}$/);
+        expect(regenerated).not.toBe('ab'.repeat(32));
+      });
+    });
+  });
+
   it('isPeerFile is Array.isArray-first and rejects extra/missing keys', () => {
     expect(isPeerFile([])).toBe(false);
     expect(isPeerFile({ version: 1, mac: 'x', peers: 'no' })).toBe(false);

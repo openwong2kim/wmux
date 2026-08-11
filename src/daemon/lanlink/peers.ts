@@ -414,11 +414,13 @@ export class PeerStore {
     const file: PeerFile = { version: 1, mac: this.computeMac(peers), peers };
     atomicWriteJSONSync(this.filePath, file, { validate: isPeerFile, rotationEnabled: true });
     const outcome = this.reHarden(this.filePath);
-    // 'unchanged' means the harden could not swap its rebuilt copy in (a
-    // concurrent reader holding the file open makes rename fail with
-    // EPERM/EBUSY on win32) — the file we just wrote keeps the ACL it already
-    // had and is no weaker for it. Destroying the peer store over that would
-    // trade a transient rename collision for every pairing the user has.
+    // 'unchanged' is a VERIFIED claim (see HardenOutcome): the harden either
+    // read the file's DACL back and confirmed it owner-only, or was superseded
+    // by a newer write. A swap failure on a file that could NOT be verified
+    // owner-only — e.g. the fresh inode atomicWriteJSONSync just renamed in,
+    // which still carries inherited ACEs — reports 'failed' and takes this
+    // fail-closed branch. Destroying the peer store on a mere transient rename
+    // collision (retried, then verified) is what this distinction prevents.
     if (process.platform === 'win32' && outcome === 'failed') {
       // Fail closed: never leave the long-term secrets broad-readable.
       try {
@@ -471,11 +473,14 @@ export class PeerStore {
         // could forge a planted peer file's HMAC). Discard it and fall through to
         // regenerate a fresh key with a clean owner-DACL via secureWrite.
         //
-        // ONLY on 'failed'. A 'unchanged' outcome means the rebuilt copy could not
-        // be swapped in while the key's own ACL stayed exactly as it was — not a
-        // security failure. Regenerating here would change the machine key, which
-        // invalidates lanlink-peers.json's MAC (verifyMac) and silently drops every
-        // paired peer on the load() that follows in this same constructor.
+        // ONLY on 'failed'. An 'unchanged' outcome is VERIFIED, not assumed: the
+        // harden read the key's on-disk DACL back (icacls /save) and confirmed it
+        // owner-only, or a newer secureWrite superseded it. On an upgrade boot with
+        // a genuinely loose legacy ACL, a failed swap reports 'failed' — and this
+        // branch correctly discards the key. Regenerating on anything less than
+        // 'failed' would change the machine key, invalidate lanlink-peers.json's
+        // MAC (verifyMac) and silently drop every paired peer on the load() that
+        // follows in this same constructor.
         if (process.platform !== 'win32' || outcome !== 'failed') {
           return Buffer.from(existing, 'hex');
         }
