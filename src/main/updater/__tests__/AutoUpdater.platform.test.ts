@@ -33,7 +33,12 @@ const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/openwong2kim/wmux/da
  * so a construction that forgets to wire it must not compile.
  */
 function quitHooks() {
-  return { onBeforeInstallQuit: vi.fn(), onInstallQuitAborted: vi.fn() };
+  return {
+    onBeforeInstallQuit: vi.fn(),
+    onInstallQuitAborted: vi.fn(),
+    onInstallRequiresFullShutdown: vi.fn(),
+    getDaemonPid: vi.fn(() => null),
+  };
 }
 
 /** Platforms with no in-app updater: [platform, arch]. */
@@ -140,7 +145,7 @@ async function loadForPlatform(
 
   vi.doMock('electron', () => ({
     autoUpdater: nativeUpdater,
-    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit },
+    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged: false },
     ipcMain: {
       on: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcListeners.set(ch, cb); },
       handle: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcHandlers.set(ch, cb); },

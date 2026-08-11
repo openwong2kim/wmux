@@ -91,6 +91,7 @@ import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
+import { readDaemonPid } from './updater/installTeardown';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
@@ -404,6 +405,11 @@ const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRo
 const autoUpdater = new AutoUpdater(() => mainWindow, {
   onBeforeInstallQuit: () => prepareInstallQuit(),
   onInstallQuitAborted: () => abortInstallQuit(),
+  // #866: the Windows installer deletes the install root, and the daemon runs
+  // out of it. Flip the same flag the tray's "Shut down wmux" item uses so
+  // before-quit takes the daemon.shutdown branch instead of detaching.
+  onInstallRequiresFullShutdown: () => { fullShutdownRequested = true; },
+  getDaemonPid: () => readDaemonPid(getWmuxDir()),
 });
 
 const rpcRouter = new RpcRouter();

@@ -14,11 +14,18 @@
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
 import { createWriteStream } from 'node:fs';
 import { readdir, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
 import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
 import { LocalUpdateFeed } from './LocalUpdateFeed';
+import {
+  collectInstallRootPids,
+  freeSpaceShortfall,
+  probeVolume,
+  spawnInstallWaiter,
+  terminatePids,
+} from './installTeardown';
 
 const REPO = 'openwong2kim/wmux';
 // update.electronjs.org keys releases by platform-arch. Only the two arches we
@@ -40,6 +47,23 @@ const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 // waiting on a process that will never die — unwind instead of leaving the UI
 // silent forever (#update-hang).
 const INSTALL_HANDOFF_TIMEOUT_MS = 30_000;
+
+// #866 install-teardown budgets. The size figures come from a real 3.40.2
+// install: the expanded app directory is ~361 MB and Squirrel's package cache
+// holds a ~143 MB nupkg, so a clean install needs roughly 500 MB in the root.
+// Setup.exe additionally unpacks its embedded nupkg into SquirrelTemp on the
+// staging volume. Both are rounded up: refusing an update that would have just
+// fit costs the user a retry, while running out of room mid-install is the
+// half-deleted installation this whole change exists to prevent.
+const INSTALL_ROOT_HEADROOM_BYTES = 700 * 1024 * 1024;
+const INSTALL_STAGING_HEADROOM_BYTES = 200 * 1024 * 1024;
+// How long the waiter keeps re-checking the install root for locks before it
+// refuses. Generous on purpose: a daemon flushing large RingBuffers on shutdown
+// can hold files for a while, and waiting is free while refusing costs the user
+// their update.
+const INSTALL_LOCK_BUDGET_MS = 60_000;
+/** Written by the waiter when it refuses to launch; read on the next boot. */
+const INSTALL_ABORT_MARKER = 'update-install-aborted.txt';
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -98,6 +122,31 @@ export interface AutoUpdaterHooks {
    * that has not attached its listeners yet.
    */
   onInstallQuitAborted: () => void | Promise<void>;
+  /**
+   * Windows install path only (#866). Ask the main process to take the FULL
+   * shutdown branch on the coming quit — daemon.shutdown with the pid-kill
+   * backstop — instead of the default detach.
+   *
+   * Detaching is right for a normal quit and wrong here: the daemon runs out of
+   * `<root>\app-X.Y.Z\wmux.exe`, so leaving it alive means the installer can
+   * never delete the directory it has to replace. Sessions do not survive this
+   * install; that is the cost of the install completing at all.
+   */
+  onInstallRequiresFullShutdown: () => void;
+  /**
+   * The daemon's pid, or null when it cannot be determined.
+   *
+   * Injected rather than read here so this module stays free of the daemon
+   * config import: pulling `daemon/config` into the updater crashed the
+   * electron-mocked unit tests at module load, and the updater has no other
+   * reason to know where `~/.wmux` lives.
+   *
+   * Used only to EXCLUDE the daemon from the force-kill list — it gets the
+   * graceful shutdown so it can flush scrollback. A null therefore fails safe:
+   * the daemon is force-killed like anything else, costing a flush but not the
+   * install.
+   */
+  getDaemonPid: () => number | null;
 }
 
 export class AutoUpdater {
@@ -542,24 +591,107 @@ export class AutoUpdater {
       return;
     }
 
-    // Download + SHA-256 verify happened during detection (downloadUpdate); we
-    // never launch an unverified artifact.
-    const openErr = await shell.openPath(tempPath);
-    if (openErr) {
-      this.isInstalling = false; // launch failed — allow the user to retry
+    // #866 — Setup.exe is a first-INSTALL program, not an updater: its first
+    // action is a recursive delete of the whole install root. Launching it from
+    // here and quitting afterwards (what this function used to do) starts that
+    // delete while our own processes still hold the tree open, the delete
+    // throws, and the install aborts with the root already half-gone: no
+    // Update.exe, no stub, no launcher to retry from.
+    //
+    // That is not a race a faster quit could win. `app.quit()` takes the DETACH
+    // branch, which keeps the daemon alive by design, and the daemon's process
+    // image IS `<root>\app-X.Y.Z\wmux.exe`. A running image cannot be unlinked
+    // on Windows, so the delete is guaranteed to fail while it runs.
+    //
+    // So the installer is now started by a detached waiter that only proceeds
+    // once every process under the install root is confirmed gone AND the root
+    // is confirmed unlocked. See installTeardown.ts for why both checks are
+    // needed (the pid list cannot close the window in which an agent's MCP host
+    // spawns a fresh server into the directory we are about to delete).
+    // Packaged-only, and the guard is load-bearing rather than cosmetic. The
+    // teardown derives BOTH the image name and the install root from
+    // `process.execPath`; in an unpackaged run that is the node/electron binary,
+    // so the enumerate-and-kill would target unrelated processes that happen to
+    // live under the runtime's directory. (Caught by the unit suite, which lost
+    // its own worker to exactly that.) A dev build has no Squirrel install to
+    // update anyway.
+    if (!app.isPackaged) {
+      this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
-        message: `failed to launch verified installer: ${openErr}`,
+        message: 'In-app install is only available in an installed build. Download the latest release manually.',
       });
       return;
     }
-    // #502: Squirrel's installer crashes when it runs against a live instance
-    // (locked old-version files + a single-instance collision on the
-    // post-install relaunch). "Restart to install" means restart: quit NOW — a
-    // normal quit only detaches, so the daemon and every live session persist —
-    // and the --squirrel-updated/-install hook relaunches the updated app once
-    // the install completes.
-    console.log('[AutoUpdater] Installer launched — quitting so Squirrel can install (sessions persist in the daemon)');
+
+    const installRoot = resolve(dirname(process.execPath), '..');
+    const abortMarkerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
+
+    // Pre-flight: refuse BEFORE anything is written rather than dying halfway.
+    // Budgeted per volume — the staging download and the install root can live
+    // on different disks, so one aggregate number would be meaningless.
+    const shortfall = freeSpaceShortfall(
+      [
+        { dir: dirname(tempPath), neededBytes: INSTALL_STAGING_HEADROOM_BYTES },
+        { dir: installRoot, neededBytes: INSTALL_ROOT_HEADROOM_BYTES },
+      ],
+      probeVolume,
+    );
+    if (shortfall) {
+      this.isInstalling = false;
+      const needMb = Math.ceil(shortfall.neededBytes / 1024 / 1024);
+      const freeMb = Math.floor(shortfall.freeBytes / 1024 / 1024);
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: `Not enough free space on ${shortfall.volume} to install safely: ${needMb} MB needed, ${freeMb} MB free. Nothing was changed.`,
+      });
+      return;
+    }
+
+    // Everything running out of the install root, minus ourselves. The daemon
+    // is in here too: it is handed to the waiter so the installer waits for its
+    // graceful shutdown to finish, but it is NOT force-killed below — the full
+    // shutdown branch flushes its scrollback first.
+    const pids = collectInstallRootPids(installRoot);
+    const daemonPid = this.hooks.getDaemonPid();
+    const forceKillPids = pids.filter((p) => p !== daemonPid);
+
+    // Ask for the daemon to actually go down on this quit, then take down the
+    // processes nothing else owns (the MCP servers belong to agent hosts, not
+    // to us, so a quit leaves them holding the tree open forever).
+    this.hooks.onInstallRequiresFullShutdown();
+    const killed = terminatePids(forceKillPids);
+
+    const waiterPath = spawnInstallWaiter({
+      pids,
+      setupExePath: tempPath,
+      installRoot,
+      abortMarkerPath,
+      lockBudgetMs: INSTALL_LOCK_BUDGET_MS,
+    });
+    if (!waiterPath) {
+      // No waiter means no safe way to start the installer. Falling back to
+      // launching it directly is exactly the bug — refuse instead.
+      this.isInstalling = false;
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
+      });
+      return;
+    }
+
+    // Which path ran, and against what — the first question anyone asks when an
+    // update goes wrong, and the log is the only place to answer it from.
+    console.log(
+      `[AutoUpdater] install handoff: waiter=${waiterPath} watching ${pids.length} process(es) under ${installRoot}; ` +
+      `force-killed ${killed.length}/${forceKillPids.length}, daemon pid ${daemonPid ?? 'unknown'} left to the graceful shutdown`,
+    );
+
+    // Sessions do NOT survive this install. The daemon holds the install root
+    // open, so it has to go down before Setup.exe can run — the old
+    // "sessions persist in the daemon" line was false on this path and is the
+    // reason the failure looked so surprising.
+    console.log('[AutoUpdater] quitting for install — the daemon goes down with us so the installer runs against a dead tree');
     app.quit();
   }
 
