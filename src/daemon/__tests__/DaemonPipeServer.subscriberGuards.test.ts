@@ -1,13 +1,14 @@
 // The two guards the transcript subscription path leans on:
 //
-//   D6 — `sendTo` refuses once a client stops draining. Node's writable buffer
-//        has no ceiling, so "queue it anyway" is unbounded heap growth in the
-//        always-on process, one full append at a time.
+//   D6 — `sendTo` refuses and `broadcast` drops the event subscription once a
+//        client stops draining. Node's writable buffer has no ceiling, so
+//        "queue it anyway" is unbounded heap growth in the always-on process,
+//        one full event at a time.
 //   D7 — first-party CLASSIFICATION. The transcript RPCs return a pane's whole
 //        conversation, and the daemon previously handed that to any token-holding
 //        pipe client (CLI, MCP) despite the design note that says otherwise.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -25,6 +26,7 @@ const servers: DaemonPipeServer[] = [];
 const clients: net.Socket[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const c of clients.splice(0)) c.destroy();
   for (const s of servers.splice(0)) await s.stop();
 });
@@ -105,6 +107,46 @@ describe('DaemonPipeServer — subscriber backpressure (D6)', () => {
     socket.destroy();
     await waitFor(() => server.getConnectionCount() === 0);
     expect(server.sendTo(clientId, { type: 'transcript.appended' })).toBe(false);
+  });
+
+  it('drops only the stalled broadcast subscriber once its buffer passes the cap', async () => {
+    const { server, pipe, token } = await startServer('broadcast-backpressure');
+    const stalled = await connectClient(server, pipe, token);
+    const draining = await connectClient(server, pipe, token);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    stalled.socket.pause();
+    let received = '';
+    draining.socket.setEncoding('utf8');
+    draining.socket.on('data', (chunk: string) => {
+      received += chunk;
+    });
+
+    // Prime only the paused socket so the broadcast below tests subscriber
+    // isolation without temporarily making the healthy socket look stalled too.
+    const payload = { type: 'transcript.appended', blob: 'z'.repeat(SUBSCRIBER_BACKPRESSURE_BYTES) };
+    expect(server.sendTo(stalled.clientId, payload)).toBe(true);
+    let refused = false;
+    for (let i = 0; i < 5 && !refused; i++) {
+      refused = server.sendTo(stalled.clientId, payload) === false;
+    }
+    expect(refused).toBe(true);
+
+    expect(server.subscribeEvents(stalled.clientId)).toBe(true);
+    expect(server.subscribeEvents(draining.clientId)).toBe(true);
+
+    server.broadcast({ type: 'title.changed', n: 'first' });
+    await waitFor(() => received.includes('"n":"first"'));
+
+    expect(server.isEventSubscriber(stalled.clientId)).toBe(false);
+    expect(server.isEventSubscriber(draining.clientId)).toBe(true);
+    expect(server.getConnectionCount()).toBe(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropping stalled event subscriber'));
+
+    server.broadcast({ type: 'title.changed', n: 'after-drop' });
+    await waitFor(() => received.includes('"n":"after-drop"'));
+    expect(server.isEventSubscriber(draining.clientId)).toBe(true);
   });
 });
 

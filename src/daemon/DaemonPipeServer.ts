@@ -14,8 +14,8 @@ const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clie
  * and the writable buffer has no ceiling. A subscriber that stops reading (a
  * hung renderer, a paused process, a phone on a dead link) would therefore grow
  * the daemon's heap by one full payload per append, indefinitely. Above this cap
- * per-subscriber events are REFUSED — `sendTo` returns false, and the caller's
- * contract is to drop that client's subscription rather than keep buffering.
+ * per-subscriber events are REFUSED — `sendTo` returns false, and `broadcast`
+ * drops the stalled event subscription rather than keep buffering.
  */
 export const SUBSCRIBER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 
@@ -449,6 +449,15 @@ export class DaemonPipeServer {
     const msg = JSON.stringify(event) + '\n';
     this.eventSubscribers.forEach((socket) => {
       if (!socket.destroyed) {
+        if (socket.writableLength > SUBSCRIBER_BACKPRESSURE_BYTES) {
+          this.eventSubscribers.delete(socket);
+          const clientId = this.clientIds.get(socket) ?? 'unknown';
+          console.warn(
+            `[DaemonPipeServer] dropping stalled event subscriber ${clientId}: `
+            + `${socket.writableLength} buffered bytes exceeds ${SUBSCRIBER_BACKPRESSURE_BYTES}`,
+          );
+          return;
+        }
         try {
           socket.write(msg);
         } catch {
