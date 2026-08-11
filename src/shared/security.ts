@@ -264,11 +264,33 @@ function icaclsPath(): string {
  * comparison is codepage-proof (#90). Runs with cwd = the file's directory
  * because /save records the given (relative) name in its output header.
  */
+/**
+ * Resolve the current owner's SID for VERIFICATION ONLY, when the hardening
+ * path had to fall back to an ASCII account name (`getCurrentUserSid()`
+ * returned null, e.g. whoami was momentarily unavailable). Uses whoami again
+ * rather than %USERNAME%: a name cannot be compared against `icacls /save`
+ * output, which renders every principal as a raw SID.
+ *
+ * Verification-only, so it never widens the #90 codepage rule — the ACL that
+ * gets APPLIED still refuses a non-ASCII name. Failing to resolve here just
+ * means "unverifiable", which stays fail-closed.
+ */
+function resolveSidForVerification(): string | null {
+  return getCurrentUserSid();
+}
+
 /** Exported for scripts/issue-124-acl-dynamic.mjs, which asserts this parser
  *  against REAL `icacls /save` output on a live machine \u2014 the guard that keeps
  *  sddlIsOwnerOnly honest across icacls format variations. @internal */
 export function verifyOwnerOnlyDaclSync(filePath: string, sid: string | null): boolean {
-  if (!sid) return false;
+  // No SID: fall back to resolving the ASCII account name to one, purely for
+  // this comparison. `icacls /save` always renders principals as raw SIDs, so
+  // without a SID there is nothing to compare against and every verification
+  // would return false — which would delete a previous token we never touched
+  // and may well be correctly hardened (review finding). Resolution is a plain
+  // lookup; if it fails we are genuinely unable to verify and say so.
+  const owner = sid ?? resolveSidForVerification();
+  if (!owner) return false;
   let tmpDir: string | null = null;
   try {
     // mkdtemp: the save path must be unpredictable \u2014 a fixed/sequential name in
@@ -279,7 +301,7 @@ export function verifyOwnerOnlyDaclSync(filePath: string, sid: string | null): b
       cwd: path.dirname(filePath),
       windowsHide: true,
     });
-    return sddlIsOwnerOnly(fs.readFileSync(saveFile, 'utf16le'), sid);
+    return sddlIsOwnerOnly(fs.readFileSync(saveFile, 'utf16le'), owner);
   } catch {
     return false;
   } finally {
@@ -295,7 +317,8 @@ export function verifyOwnerOnlyDaclSync(filePath: string, sid: string | null): b
 
 /** Async twin of verifyOwnerOnlyDaclSync for the deferred re-harden path. */
 async function verifyOwnerOnlyDaclAsync(filePath: string, sid: string | null): Promise<boolean> {
-  if (!sid) return false;
+  const owner = sid ?? resolveSidForVerification(); // see the sync twin
+  if (!owner) return false;
   let tmpDir: string | null = null;
   try {
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wmux-dacl-'));
@@ -308,7 +331,7 @@ async function verifyOwnerOnlyDaclAsync(filePath: string, sid: string | null): P
         (err) => (err ? reject(err) : resolve()),
       );
     });
-    return sddlIsOwnerOnly(await fs.promises.readFile(saveFile, 'utf16le'), sid);
+    return sddlIsOwnerOnly(await fs.promises.readFile(saveFile, 'utf16le'), owner);
   } catch {
     return false;
   } finally {
@@ -539,6 +562,12 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
         discardStagingInode(dir);
         return verifyOwnerOnlyDaclSync(filePath, sid) ? 'unchanged' : 'failed';
       }
+      // Atomic rename ONLY here — deliberately not the unlink-then-rename
+      // compat path the write side uses. On a volume that refuses to rename
+      // onto an existing destination this simply never succeeds, and the
+      // in-place repair below produces the same owner-only DACL without ever
+      // leaving the token absent. Trading a crash window for a swap we do not
+      // need would be the wrong deal on a file whose content is unchanged.
       fs.renameSync(file, filePath);
       discardStagingInode(dir);
       return 'hardened';
@@ -593,6 +622,36 @@ function repairInPlaceAndVerifySync(
       `DACL could NOT be verified owner-only — reporting failure.`,
   );
   return 'failed';
+}
+
+/**
+ * Install `from` at `to`, overwriting an existing `to`.
+ *
+ * The atomic `rename` is tried FIRST and is the normal path — it leaves no
+ * instant in which the token is absent. Some Windows volumes refuse to rename
+ * onto an existing destination (the same quirk `daemon/util/atomicWrite/
+ * rotation.ts` documents and works around); only for that specific rejection
+ * do we take the non-atomic path of unlinking the destination first.
+ *
+ * That fallback is deliberately last-resort: it opens a window where the token
+ * does not exist, and a crash inside it loses the file. It is confined to the
+ * WRITE path, which has no other way to install new content. The re-harden
+ * path never uses it — a failed swap there falls through to the in-place
+ * repair, which needs no rename at all and therefore no gap.
+ *
+ * A lock-induced EPERM/EACCES reaches the unlink too, which then fails and
+ * propagates, so an AV hold cannot silently destroy the destination.
+ */
+function swapIntoPlaceAllowingUnlink(from: string, to: string): void {
+  try {
+    fs.renameSync(from, to);
+    return;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST' && code !== 'EPERM' && code !== 'EACCES') throw err;
+    fs.unlinkSync(to);
+    fs.renameSync(from, to);
+  }
 }
 
 /** Remove a staging inode. Best effort: it is already owner-only, so a leftover
@@ -763,7 +822,7 @@ function writeThroughHardenedFreshInode(filePath: string, content: string): void
       let lastErr: unknown;
       for (let attempt = 0; attempt < SWAP_RETRY_ATTEMPTS; attempt++) {
         try {
-          fs.renameSync(file, filePath);
+          swapIntoPlaceAllowingUnlink(file, filePath);
           discardStagingInode(dir);
           return;
         } catch (err) {
