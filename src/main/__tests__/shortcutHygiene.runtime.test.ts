@@ -23,19 +23,17 @@ function ps(script: string): string {
   );
 }
 
-function makeLnk(lnkPath: string, target: string, aumid?: string): void {
-  const aumidPart = aumid
-    ? `
-$bytes = [System.IO.File]::ReadAllBytes('${lnkPath}')
-# Set AUMID via Shell property store: re-open with Shell32 is heavyweight;
-# instead use the WshShortcut then stamp AUMID through the propsys COM route.
-`
-    : '';
-  void aumidPart;
+/** Single-quoted PS literal with the apostrophe doubled — same rule the module
+ *  under test uses, and required for the O'Connor sandbox below. */
+function q(p: string): string {
+  return `'${p.replace(/'/g, "''")}'`;
+}
+
+function makeLnk(lnkPath: string, target: string): void {
   ps([
     `$sh = New-Object -ComObject WScript.Shell`,
-    `$l = $sh.CreateShortcut('${lnkPath}')`,
-    `$l.TargetPath = '${target}'`,
+    `$l = $sh.CreateShortcut(${q(lnkPath)})`,
+    `$l.TargetPath = ${q(target)}`,
     `$l.Save()`,
   ].join('\n'));
 }
@@ -43,7 +41,7 @@ $bytes = [System.IO.File]::ReadAllBytes('${lnkPath}')
 function readLnk(lnkPath: string): { target: string; icon: string; workdir: string } {
   const out = ps([
     `$sh = New-Object -ComObject WScript.Shell`,
-    `$l = $sh.CreateShortcut('${lnkPath}')`,
+    `$l = $sh.CreateShortcut(${q(lnkPath)})`,
     `@{ target = $l.TargetPath; icon = $l.IconLocation; workdir = $l.WorkingDirectory } | ConvertTo-Json -Compress`,
   ].join('\n'));
   return JSON.parse(out.trim());
@@ -145,6 +143,78 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     expect(readLnk(foreign).target.toLowerCase()).toBe(foreignTarget.toLowerCase());
   });
 
+  it('leaves IconLocation empty when app.ico was never staged', () => {
+    // Regression guard: writing an IconLocation that resolves to nothing is
+    // exactly the #863 symptom. With no icon staged the link must fall back to
+    // the stub's embedded icon instead of pointing at a missing app.ico.
+    const pin = path.join(pinDir, 'wmux-pin.lnk');
+    makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe'));
+    expect(fs.existsSync(path.join(root, 'app.ico'))).toBe(false); // not staged
+
+    const actions = repairInstalledShortcuts(execPath, loc);
+    expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
+
+    const after = readLnk(pin);
+    expect(after.target.toLowerCase()).toBe(path.join(root, 'wmux.exe').toLowerCase());
+    expect(after.icon).toBe(',0'); // empty → shell resolves the target's icon
+  });
+
+  it('does not report a retarget it could not write to disk', () => {
+    // Save() on a read-only .lnk fails without flipping $?, so a naive
+    // implementation reports success for an edit that never landed. The caller
+    // (and the next person debugging a blank icon) would be misled.
+    const pin = path.join(pinDir, 'wmux-pin.lnk');
+    const deadTarget = path.join(root, 'app-0.9.0', 'wmux.exe');
+    makeLnk(pin, deadTarget);
+    fs.chmodSync(pin, 0o444);
+    ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $true`);
+    try {
+      expect(repairInstalledShortcuts(execPath, loc)).toEqual([]);
+      expect(readLnk(pin).target.toLowerCase()).toBe(deadTarget.toLowerCase());
+    } finally {
+      ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $false`);
+    }
+  });
+
+  it("repairs under a profile path containing an apostrophe and a dollar sign", () => {
+    // C:\Users\O'Connor and a folder named $app are legal Windows paths. An
+    // over-strict quoting guard would make the repair a silent no-op for those
+    // users — the same class of invisible failure this module removes.
+    const oddSandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hyg-odd-')));
+    try {
+      const oddRoot = path.join(oddSandbox, "O'Connor $app", 'wmux');
+      const oddAppDir = path.join(oddRoot, 'app-1.0.0');
+      fs.mkdirSync(path.join(oddAppDir, 'resources'), { recursive: true });
+      fs.writeFileSync(path.join(oddRoot, 'wmux.exe'), 'stub');
+      const oddExec = path.join(oddAppDir, 'wmux.exe');
+      fs.writeFileSync(oddExec, 'exe');
+      fs.writeFileSync(path.join(oddAppDir, 'resources', 'icon.ico'), 'icon-bytes');
+
+      const oddPins = path.join(oddSandbox, "O'Connor $app", 'TaskBar');
+      const oddPrograms = path.join(oddSandbox, "O'Connor $app", 'Programs');
+      fs.mkdirSync(oddPins, { recursive: true });
+      fs.mkdirSync(oddPrograms, { recursive: true });
+      const oddLoc: RepairLocations = {
+        legacyLnks: [path.join(oddPrograms, 'wmux.lnk')],
+        pinDirs: [oddPins],
+        publisherLnk: path.join(oddPrograms, '*', 'wmux.lnk'),
+      };
+
+      const pin = path.join(oddPins, 'wmux-pin.lnk');
+      makeLnk(pin, path.join(oddRoot, 'app-0.9.0', 'wmux.exe'));
+      expect(stageRootIcon(oddExec)).toBe(path.join(oddRoot, 'app.ico'));
+
+      expect(repairInstalledShortcuts(oddExec, oddLoc)).toEqual([
+        { path: pin, action: 'retargeted' },
+      ]);
+      const after = readLnk(pin);
+      expect(after.target.toLowerCase()).toBe(path.join(oddRoot, 'wmux.exe').toLowerCase());
+      expect(after.icon.toLowerCase()).toBe(`${path.join(oddRoot, 'app.ico')},0`.toLowerCase());
+    } finally {
+      fs.rmSync(oddSandbox, { recursive: true, force: true });
+    }
+  });
+
   it('does nothing when the root stub is missing (burned root — nothing sane to point at)', () => {
     fs.rmSync(path.join(root, 'wmux.exe'));
     const pin = path.join(pinDir, 'wmux-pin.lnk');
@@ -188,7 +258,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
       `}`,
       `'@`,
       `Add-Type -TypeDefinition $code`,
-      `[H.Api]::SetAumid('${pin}', 'com.squirrel.wmux.wmux')`,
+      `[H.Api]::SetAumid(${q(pin)}, 'com.squirrel.wmux.wmux')`,
     ].join('\n'));
 
     const actions = repairInstalledShortcuts(execPath, loc);
@@ -196,7 +266,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
 
     const aumid = ps([
       `$sh = New-Object -ComObject Shell.Application`,
-      `$item = $sh.NameSpace('${pinDir}').ParseName('${path.basename(pin)}')`,
+      `$item = $sh.NameSpace(${q(pinDir)}).ParseName(${q(path.basename(pin))})`,
       `$item.ExtendedProperty('System.AppUserModel.ID')`,
     ].join('\n')).trim();
     expect(aumid).toBe('com.squirrel.wmux.wmux');

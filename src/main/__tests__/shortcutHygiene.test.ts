@@ -22,7 +22,14 @@ describe('isSafePsPathLiteral', () => {
     expect(isSafePsPathLiteral('C:\\Users\\a b\\AppData\\Local\\wmux')).toBe(true);
   });
 
-  it.each(["'", '"', '$', '`', '\n', '\r'])('refuses %j', (ch) => {
+  // These are legal Windows path characters. Rejecting them would silently
+  // disable the repair for real profiles (O'Connor) and folders named $app —
+  // the single-quoted PS literal handles all of them.
+  it.each(["'", '"', '$', '`'])('accepts the legal path character %j', (ch) => {
+    expect(isSafePsPathLiteral(`C:\\Users\\O${ch}Connor\\wmux`)).toBe(true);
+  });
+
+  it.each(['\n', '\r'])('refuses the line terminator %j', (ch) => {
     expect(isSafePsPathLiteral(`C:\\wmux${ch}x`)).toBe(false);
   });
 
@@ -43,14 +50,21 @@ describe('buildRepairScript', () => {
     expect(s).toContain("if (-not (Test-Path $stub)) { Write-Output '[]'; exit 0 }");
   });
 
-  it('refuses to build when any embedded path could escape its quoting', () => {
-    expect(buildRepairScript("C:\\wmux'x", LOC)).toBeNull();
+  it('doubles an embedded apostrophe rather than refusing the path', () => {
+    const s = buildRepairScript("C:\\Users\\O'Connor\\wmux", LOC);
+    expect(s).not.toBeNull();
+    expect(s).toContain("$root = 'C:\\Users\\O''Connor\\wmux'");
+    // A doubled apostrophe must never leave an odd number of quotes behind.
+    const quotes = (s ?? '').split("$root = ")[1].split('\n')[0];
+    expect((quotes.match(/'/g) ?? []).length % 2).toBe(0);
+  });
+
+  it('refuses to build only when a path carries a line terminator', () => {
+    expect(buildRepairScript('C:\\wmux\nx', LOC)).toBeNull();
     expect(
-      buildRepairScript('C:\\wmux', { ...LOC, legacyLnks: ["C:\\a'b\\wmux.lnk"] }),
+      buildRepairScript('C:\\wmux', { ...LOC, legacyLnks: ['C:\\a\rb\\wmux.lnk'] }),
     ).toBeNull();
-    expect(
-      buildRepairScript('C:\\wmux', { ...LOC, pinDirs: ['C:\\p$in'] }),
-    ).toBeNull();
+    expect(buildRepairScript('C:\\wmux', { ...LOC, pinDirs: ['C:\\p$in'] })).not.toBeNull();
   });
 
   it('only ever repairs toward the root stub and app.ico', () => {

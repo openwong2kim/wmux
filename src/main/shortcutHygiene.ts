@@ -79,17 +79,23 @@ export interface RepairLocations {
 }
 
 /**
- * Paths are embedded in a single-quoted PowerShell literal. Refuse anything
- * that could escape the quoting instead of attempting to sanitize (the
- * squirrelTeardown rule). Windows paths never legitimately contain quotes,
- * newlines, `$` or backticks.
+ * Paths are embedded in a single-quoted PowerShell literal, where `$`, a
+ * backtick and `"` are all literal and an apostrophe is escaped by doubling
+ * (measured). So the only characters that can break out are the line
+ * terminators, which would split the statement-per-line script this module
+ * assembles.
+ *
+ * Rejecting more than that is not "extra safety" — it silently disables the
+ * repair for legitimate Windows profiles (`C:\Users\O'Connor\...`, a folder
+ * named `$app`), which is the failure mode this whole module exists to remove.
  */
 export function isSafePsPathLiteral(p: string): boolean {
-  return p.length > 0 && !/[\r\n'"$`]/.test(p);
+  return p.length > 0 && !/[\r\n]/.test(p);
 }
 
+/** Single-quoted PS literal; an embedded apostrophe is doubled. */
 function psQuote(p: string): string {
-  return `'${p}'`;
+  return `'${p.replace(/'/g, "''")}'`;
 }
 
 export function defaultRepairLocations(appData: string): RepairLocations {
@@ -128,7 +134,12 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `$root = ${psQuote(rootDir)}`,
     `$stub = Join-Path $root 'wmux.exe'`,
     `if (-not (Test-Path $stub)) { Write-Output '[]'; exit 0 }`,
+    // Only pin the icon when the file is actually there. Writing an
+    // IconLocation that resolves to nothing reproduces the very bug this pass
+    // exists to fix; with no icon staged, leaving IconLocation empty makes the
+    // shell fall back to the (version-stable) stub's embedded icon.
     `$icon = Join-Path $root 'app.ico'`,
+    `$haveIcon = Test-Path -LiteralPath $icon`,
     `$legacy = @(${legacyArray})`,
     `$cands = @() + $legacy`,
     `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk | ForEach-Object { $_.FullName }) } }`,
@@ -146,10 +157,17 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `  if ($dead -and $pubExists -and ($legacy -icontains $p)) { Remove-Item -LiteralPath $p -Force; $out += @{ path = $p; action = 'removed' }; continue }`,
     `  $l.TargetPath = $stub`,
     `  $l.WorkingDirectory = $root`,
-    `  $l.IconLocation = "$icon,0"`,
-    `  $l.Save()`,
+    `  if ($haveIcon) { $l.IconLocation = "$icon,0" }`,
+    // Save() on a read-only/locked .lnk fails WITHOUT setting $false on $? —
+    // measured — so only try/catch tells us whether the edit reached disk.
+    // Reporting a retarget that never happened would send the caller (and the
+    // next debugger of a blank icon) down the wrong path.
+    `  $saved = $true`,
+    `  try { $l.Save() } catch { $saved = $false }`,
+    `  if (-not $saved) { continue }`,
     `  $out += @{ path = $p; action = 'retargeted' }`,
     `}`,
+    `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sh) | Out-Null`,
     `ConvertTo-Json @($out) -Compress`,
   ].join('\n');
 }
