@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
+import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -719,7 +720,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Sidebar ─────────────────────────────────────────────────────────────
-  sidebarVisible: true,
+  sidebarVisible: CHROME_PRESET_VALUES.standard.sidebarVisible,
 
   toggleSidebar: () => set((state) => {
     state.sidebarVisible = !state.sidebarVisible;
@@ -729,7 +730,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.sidebarVisible = visible;
   }),
 
-  channelDockVisible: false,
+  channelDockVisible: CHROME_PRESET_VALUES.standard.channelDockVisible,
 
   toggleChannelDock: () => set((state) => {
     state.channelDockVisible = !state.channelDockVisible;
@@ -962,7 +963,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.deckBrainVendorMigrated = true;
   }),
 
-  channelsTabVisible: false,
+  channelsTabVisible: CHROME_PRESET_VALUES.standard.channelsTabVisible,
 
   setChannelsTabVisible: (visible) => set((state) => {
     state.channelsTabVisible = visible;
@@ -974,7 +975,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
 
-  paneActionsVisible: true,
+  paneActionsVisible: CHROME_PRESET_VALUES.standard.paneActionsVisible,
 
   setPaneActionsVisible: (visible) => set((state) => {
     state.paneActionsVisible = visible;
