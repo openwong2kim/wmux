@@ -11,6 +11,8 @@ const fsMock = vi.hoisted(() => ({
   statSync: vi.fn(),
   renameSync: vi.fn(),
   rmSync: vi.fn(),
+  openSync: vi.fn(),
+  closeSync: vi.fn(),
   unlinkSync: vi.fn(),
   chmodSync: vi.fn(),
   promises: {
@@ -37,6 +39,8 @@ vi.mock('fs', () => ({
   statSync: fsMock.statSync,
   renameSync: fsMock.renameSync,
   rmSync: fsMock.rmSync,
+  openSync: fsMock.openSync,
+  closeSync: fsMock.closeSync,
   unlinkSync: fsMock.unlinkSync,
   chmodSync: fsMock.chmodSync,
   promises: fsMock.promises,
@@ -139,6 +143,7 @@ function resetAll(): void {
   for (const fn of Object.values(fsMock.promises)) fn.mockReset();
   fsMock.existsSync.mockReturnValue(true);
   fsMock.readdirSync.mockReturnValue([]);
+  fsMock.openSync.mockReturnValue(3); // staging source readable unless a test says otherwise
   fsMock.readFileSync.mockReturnValue(Buffer.from('existing-token'));
   fsMock.mkdtempSync.mockImplementation((p: unknown) => `${p}RND`);
   fsMock.promises.mkdtemp.mockImplementation((p: unknown) => Promise.resolve(`${p}RND`));
@@ -361,6 +366,67 @@ describe('secureWriteTokenFile', () => {
       // verified either → fail closed: it is removed.
       expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
       expect(fsMock.renameSync).not.toHaveBeenCalled();
+    });
+
+    // Some Windows volumes refuse to rename ONTO an existing destination; the
+    // repo already works around that in atomicWrite/rotation.ts by unlinking
+    // the destination first. Without an equivalent here, every overwrite on
+    // such a volume fails and no token can ever be installed.
+    it('falls back to unlink-then-rename when the volume refuses to replace the destination', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      let renames = 0;
+      fsMock.renameSync.mockImplementation(() => {
+        renames += 1;
+        if (renames === 1) {
+          const e = new Error('EEXIST: destination exists') as NodeJS.ErrnoException;
+          e.code = 'EEXIST';
+          throw e;
+        }
+      });
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
+      expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+      expect(renames).toBe(2); // refused, destination removed, then installed
+    });
+
+    // The dangerous half of that fallback: EPERM/EACCES are ALSO what a scanner
+    // holding the staging SOURCE produces — and the staging file, freshly
+    // written, is the likelier scan target. Unlinking the destination there
+    // would delete the live token and STILL fail to install the replacement.
+    it('never unlinks the destination when the STAGING SOURCE is the locked one', async () => {
+      stubWhoamiSid('S-1-5-21-1-2-3-1001');
+      fsMock.renameSync.mockImplementation(() => {
+        const e = new Error('EPERM: source is locked') as NodeJS.ErrnoException;
+        e.code = 'EPERM';
+        throw e;
+      });
+      // The source cannot be opened — the probe that tells the two cases apart.
+      fsMock.openSync.mockImplementation((p: unknown) => {
+        if (String(p).includes(HARDEN_TMP)) {
+          const e = new Error('EPERM') as NodeJS.ErrnoException;
+          e.code = 'EPERM';
+          throw e;
+        }
+        return 3;
+      });
+      // Verification of the previous token succeeds, so it must be preserved.
+      fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) =>
+        enc === 'utf16le' && String(p).includes('wmux-dacl-')
+          ? OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001')
+          : Buffer.from('existing-token'),
+      );
+
+      const { secureWriteTokenFile } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+      expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+        /Failed to set secure ACL/,
+      );
+      // THE assertion: the live token was never deleted.
+      expect(fsMock.unlinkSync).not.toHaveBeenCalledWith(tokenPath);
     });
 
     it('keeps the previous token on a rename collision when its DACL VERIFIES owner-only', async () => {

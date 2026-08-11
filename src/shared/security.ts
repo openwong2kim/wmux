@@ -209,10 +209,12 @@ async function resolveOwnerIdentityAsync(
  * owner's ACEs are stripped — the exact lock-out getCurrentUserSid exists to
  * prevent, re-applied on every token load. Refuse and throw instead so callers
  * fail safe: secureWriteTokenFile aborts without ever writing the new token,
- * and — since an unresolved SID also makes the PREVIOUS token unverifiable —
- * removes that previous token rather than leave a file it cannot vouch for;
- * reHardenTokenFileAcl reports 'failed' without touching the existing ACL —
- * both strictly better than silently re-locking the owner out.
+ * and removes the PREVIOUS token only when owner-only verification cannot
+ * succeed — verification resolves a SID of its own (see
+ * verifyOwnerOnlyDaclSync), so a correctly hardened previous token survives
+ * even on this name-fallback path; reHardenTokenFileAcl reports 'failed'
+ * without touching the existing ACL — both strictly better than silently
+ * re-locking the owner out.
  */
 function validateAsciiUsernameFallback(filePath: string): { sid: null; username: string } {
   const username = process.env.USERNAME;
@@ -639,8 +641,13 @@ function repairInPlaceAndVerifySync(
  * path never uses it — a failed swap there falls through to the in-place
  * repair, which needs no rename at all and therefore no gap.
  *
- * A lock-induced EPERM/EACCES reaches the unlink too, which then fails and
- * propagates, so an AV hold cannot silently destroy the destination.
+ * EPERM/EACCES are ambiguous on Windows: they are equally what a scanner
+ * holding the STAGING SOURCE produces — and the staging file, just created and
+ * written, is the likelier scan target of the two. Unlinking the destination
+ * on that error would delete the live token and then STILL fail to install the
+ * replacement, because the source is what is locked. So the destination is
+ * only removed once the source is provably readable, which leaves the
+ * destination as the remaining explanation for the refusal.
  */
 function swapIntoPlaceAllowingUnlink(from: string, to: string): void {
   try {
@@ -649,8 +656,29 @@ function swapIntoPlaceAllowingUnlink(from: string, to: string): void {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'EEXIST' && code !== 'EPERM' && code !== 'EACCES') throw err;
+    if (!isReadableSync(from)) throw err; // source-side lock — never unlink
     fs.unlinkSync(to);
     fs.renameSync(from, to);
+  }
+}
+
+/** Can this path be opened for reading right now? Used to tell a source-side
+ *  lock apart from a destination-side rename refusal. */
+function isReadableSync(p: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(p, 'r');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* best effort */
+      }
+    }
   }
 }
 
