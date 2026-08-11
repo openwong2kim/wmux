@@ -665,6 +665,56 @@ describe('reHardenTokenFileAcl', () => {
     );
   });
 
+  // LIVE DOGFOOD REGRESSION: a file opened with FILE_SHARE_NONE (what several
+  // AV/backup products do while scanning) cannot be READ at all, so the
+  // snapshot read at the top of the rewrite threw EBUSY and the whole harden
+  // reported 'failed' — re-arming the exact self-DoS the collision handling
+  // exists to prevent. Mocks never showed this; the real daemon did.
+  it('falls back to the in-place repair when the file is LOCKED AGAINST READS', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return OWNER_ONLY_SDDL('S-1-5-21-1-2-3-1001');
+      }
+      const err = new Error('EBUSY: resource busy or locked') as NodeJS.ErrnoException;
+      err.code = 'EBUSY';
+      throw err;
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    // Reading the security descriptor is not blocked by share modes and an ACL
+    // edit needs only WRITE_DAC, so the in-place path still works.
+    expect(reHardenTokenFileAcl(tokenPath)).toBe('hardened');
+    // No staging was attempted — there was nothing to copy.
+    expect(fsMock.mkdirSync).not.toHaveBeenCalled();
+    expect(fsMock.renameSync).not.toHaveBeenCalled();
+    // The repair targets the ORIGINAL file, in place.
+    const inPlace = icaclsGrants().find((args) => args[0] === tokenPath);
+    expect(inPlace?.slice(1, 4)).toEqual(['/grant:r', '*S-1-5-21-1-2-3-1001:F', '/inheritance:r']);
+  });
+
+  it('still reports "failed" when the file is read-locked AND the in-place repair is not enough', async () => {
+    stubWin32();
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+    fsMock.readFileSync.mockImplementation((p: unknown, enc?: unknown) => {
+      if (enc === 'utf16le' && String(p).includes('wmux-dacl-')) {
+        return BROAD_SDDL('S-1-5-21-1-2-3-1001'); // a custom ACE the strip cannot remove
+      }
+      const err = new Error('EBUSY') as NodeJS.ErrnoException;
+      err.code = 'EBUSY';
+      throw err;
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+
+    expect(reHardenTokenFileAcl(path.join('C:', 'Users', 'tester', '.wmux-auth-token'))).toBe(
+      'failed',
+    );
+  });
+
   it('reports "failed" when the staging area cannot be hardened at all', async () => {
     stubWin32();
     execFileSyncMock.mockImplementation((cmd: unknown) => {

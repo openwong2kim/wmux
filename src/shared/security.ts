@@ -485,7 +485,27 @@ function applyRestrictiveWindowsAcl(filePath: string): HardenOutcome {
 function rewriteThroughFreshInode(filePath: string): HardenOutcome {
   const { sid, username } = resolveOwnerIdentity(filePath);
   const principal = sid ? `*${sid}` : (username as string);
-  const content = fs.readFileSync(filePath);
+
+  // A file opened with FILE_SHARE_NONE — what several AV and backup products
+  // do while scanning — cannot be READ at all, so the staged rewrite is
+  // impossible before it even begins. Live dogfood caught this: the snapshot
+  // read threw EBUSY and the whole harden reported 'failed', re-arming the
+  // very self-DoS the collision handling exists to prevent (PeerStore then
+  // unlinks the store / regenerates the machine key and drops every pairing).
+  // Reading the SECURITY DESCRIPTOR is not blocked by share modes, and an ACL
+  // edit needs only WRITE_DAC, so the in-place path still works here.
+  let content: Buffer;
+  try {
+    content = fs.readFileSync(filePath);
+  } catch (readErr) {
+    console.warn(
+      `[applyRestrictiveWindowsAcl] ${filePath} is locked against reads; ` +
+        `skipping the staged rewrite and repairing the DACL in place:`,
+      readErr,
+    );
+    return repairInPlaceAndVerifySync(filePath, principal, sid);
+  }
+
   const { dir, file } = createHardenedStagingSync(filePath, principal);
 
   try {
@@ -531,15 +551,30 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
   }
 
   discardStagingInode(dir);
-  // LAST RESORT (GLM round-3): repair the DACL IN PLACE. ACL edits need only
-  // WRITE_DAC, not exclusive access, so this succeeds even while the reader
-  // that defeated the rename still holds the file. For the dominant collision
-  // case — an AV scanning the fresh inode atomicWriteJSONSync just renamed in,
-  // which carries ONLY inherited ACEs — the in-place strip is
-  // security-equivalent to the rewrite, turning what used to be a destructive
-  // 'failed' (PeerStore unlinks the store / regenerates the machine key) into
-  // an honest 'hardened'. It cannot remove a CUSTOM explicit ACE (#124), so
-  // the read-back below decides whether it was enough.
+  return repairInPlaceAndVerifySync(filePath, principal, sid);
+}
+
+/**
+ * LAST RESORT (GLM round-3): repair the DACL IN PLACE, then read it back.
+ *
+ * ACL edits need only WRITE_DAC, not exclusive access, and reading a security
+ * descriptor is not subject to file share modes — so this works on a file that
+ * an AV or backup tool holds open, which is exactly the case that defeats both
+ * the snapshot read and the rename. (It is also why the pre-rewrite in-place
+ * implementation never collided at all.)
+ *
+ * For the dominant collision case — a fresh inode carrying ONLY inherited ACEs,
+ * e.g. the one atomicWriteJSONSync just renamed in — the strip is
+ * security-equivalent to the staged rewrite, turning what would be a
+ * destructive 'failed' into an honest 'hardened'. It cannot remove a CUSTOM
+ * explicit ACE (#124), so the read-back is what decides: unverified stays
+ * 'failed' and the fail-closed callers fire as designed.
+ */
+function repairInPlaceAndVerifySync(
+  filePath: string,
+  principal: string,
+  sid: string | null,
+): HardenOutcome {
   try {
     applyRestrictiveAclViaIcacls(filePath, principal);
   } catch {
@@ -547,8 +582,8 @@ function rewriteThroughFreshInode(filePath: string): HardenOutcome {
   }
   if (verifyOwnerOnlyDaclSync(filePath, sid)) {
     console.warn(
-      `[applyRestrictiveWindowsAcl] swap collided on ${filePath}; DACL repaired in place ` +
-        `and read back owner-only.`,
+      `[applyRestrictiveWindowsAcl] staged swap unavailable for ${filePath}; DACL repaired ` +
+        `in place and read back owner-only.`,
     );
     return 'hardened';
   }
@@ -580,7 +615,20 @@ function discardStagingInode(tmp: string): void {
 async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOutcome> {
   const { sid, username } = await resolveOwnerIdentityAsync(filePath);
   const principal = sid ? `*${sid}` : (username as string);
-  const content = await fs.promises.readFile(filePath);
+
+  // Read-locked target (FILE_SHARE_NONE) — see the sync twin.
+  let content: Buffer;
+  try {
+    content = await fs.promises.readFile(filePath);
+  } catch (readErr) {
+    console.warn(
+      `[scheduleTokenFileReHarden] ${filePath} is locked against reads; ` +
+        `skipping the staged rewrite and repairing the DACL in place:`,
+      readErr,
+    );
+    return repairInPlaceAndVerifyAsync(filePath, principal, sid);
+  }
+
   const { dir, file } = await createHardenedStagingAsync(filePath, principal);
 
   try {
@@ -615,7 +663,15 @@ async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOu
   }
 
   await discardStagingInodeAsync(dir);
-  // Last-resort in-place repair — see the sync twin for the full rationale.
+  return repairInPlaceAndVerifyAsync(filePath, principal, sid);
+}
+
+/** Async twin of repairInPlaceAndVerifySync — same rationale. */
+async function repairInPlaceAndVerifyAsync(
+  filePath: string,
+  principal: string,
+  sid: string | null,
+): Promise<HardenOutcome> {
   try {
     await applyRestrictiveAclViaIcaclsAsync(filePath, principal);
   } catch {
@@ -623,8 +679,8 @@ async function rewriteThroughFreshInodeAsync(filePath: string): Promise<HardenOu
   }
   if (await verifyOwnerOnlyDaclAsync(filePath, sid)) {
     console.warn(
-      `[scheduleTokenFileReHarden] swap collided on ${filePath}; DACL repaired in place ` +
-        `and read back owner-only.`,
+      `[scheduleTokenFileReHarden] staged swap unavailable for ${filePath}; DACL repaired ` +
+        `in place and read back owner-only.`,
     );
     return 'hardened';
   }
