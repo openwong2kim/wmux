@@ -96,6 +96,16 @@ describe('resumeSlice', () => {
       // readiness map is independent — pty-z not marked ready
       expect(useStore.getState().ptyReadyByPtyId['pty-z']).toBeUndefined();
     });
+
+    it('a repeat call is a store no-op (hot-path early return, no subscriber fire)', () => {
+      useStore.getState().markPtyReady('pty-hot');
+      const fired: number[] = [];
+      const unsub = useStore.subscribe(() => fired.push(1));
+      useStore.getState().markPtyReady('pty-hot'); // already ready → bails before set()
+      unsub();
+      expect(fired).toHaveLength(0);
+      expect(useStore.getState().ptyReadyByPtyId['pty-hot']).toBe(true);
+    });
   });
 
   describe('dead-pane replacement hand-off (#650)', () => {

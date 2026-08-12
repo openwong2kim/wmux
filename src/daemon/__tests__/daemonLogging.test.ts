@@ -19,15 +19,17 @@ describe('daemon durable logging + recovery instrumentation', () => {
   const daemonIndexPath = path.join(__dirname, '..', 'index.ts');
   const src = fs.readFileSync(daemonIndexPath, 'utf-8');
 
-  it('log() mirrors every line to a rotating daemon.log file', () => {
+  it('log() mirrors every line to the durable daemon.log writer', () => {
     expect(src).toMatch(/const DAEMON_LOG_PATH = path\.join\(wmuxDir, 'daemon\.log'\)/);
-    // The console.log line stays, and the file append is added alongside it.
-    expect(src).toMatch(/fs\.appendFileSync\(DAEMON_LOG_PATH, line\)/);
+    // The console.log line stays; the file side now routes through the
+    // buffered writer (logWriter.ts — behavior covered by logWriter.test.ts,
+    // incl. sync write-through for warn/error and rotation at the byte cap).
+    expect(src).toMatch(/daemonLogWriter\.write\(level, line\)/);
   });
 
-  it('rotates the log at a byte cap so it cannot grow unbounded', () => {
+  it('rotates at a byte cap and drains the buffer on process exit', () => {
     expect(src).toMatch(/DAEMON_LOG_MAX_BYTES/);
-    expect(src).toMatch(/fs\.renameSync\(DAEMON_LOG_PATH, `\$\{DAEMON_LOG_PATH\}\.1`\)/);
+    expect(src).toMatch(/process\.once\('exit', \(\) => daemonLogWriter\.flush\(\)\)/);
   });
 
   it('recoverSessions logs a load summary and a completion summary', () => {

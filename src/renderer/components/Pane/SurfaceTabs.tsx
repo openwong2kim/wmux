@@ -48,6 +48,24 @@ function statusDotColor(status: AgentStatus): string {
   return status === 'complete' ? 'var(--accent-green)' : 'var(--accent-red)';
 }
 
+/** B8 blink dot for a BACKGROUND tab, extracted so each tab subscribes to its
+ *  OWN `surfaceAgentStatus[ptyId]` entry (a primitive). The parent used to
+ *  subscribe to the whole map, so any pane's status change re-rendered every
+ *  tab strip in the app. */
+function SurfaceTabStatusDot({ ptyId, active }: { ptyId?: string; active: boolean }) {
+  const t = useT();
+  const status = useStore((s) => (ptyId ? s.surfaceAgentStatus[ptyId] : undefined));
+  if (!status || active) return null;
+  return (
+    <span
+      className="tab-status-blink inline-block w-1.5 h-1.5 rounded-full shrink-0"
+      style={{ backgroundColor: statusDotColor(status) }}
+      title={t('surface.terminal')}
+      aria-hidden="true"
+    />
+  );
+}
+
 interface SurfaceTabsProps {
   surfaces: Surface[];
   activeSurfaceId: string;
@@ -87,11 +105,9 @@ export default function SurfaceTabs({
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
   // gets eaten by a click-after-dragend race.
   const dragStartTimeRef = useRef<number>(0);
-  // B8: per-surface completed/awaiting status. A blinking dot marks a
-  // BACKGROUND tab (not the active surface) whose terminal finished, so a
-  // completed agent is discoverable even when its tab isn't on top. The
-  // active surface's completion is conveyed by the pane border blink instead.
-  const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
+  // B8 per-surface status dots live in SurfaceTabStatusDot (per-tab
+  // subscription) — subscribing to the whole map here re-rendered every tab
+  // strip on any pane's status change.
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
   // Right-aligned pane action cluster (new terminal / split / new browser).
   // Gated by a Settings toggle (default ON) for minimal-chrome setups.
@@ -102,9 +118,15 @@ export default function SurfaceTabs({
   const isZoomed = useStore((s) => s.zoomedPaneId === paneId);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
-  // stable auto coordinate `w<ws>-<pane>(<agent>)`.
-  const paneLabelMap = useStore((s) => s.paneLabel);
-  const surfaceAgent = useStore((s) => s.surfaceAgent);
+  // stable auto coordinate `w<ws>-<pane>(<agent>)`. Narrowed to THIS pane's
+  // label / THIS pane's active-surface slug (primitives) so unrelated panes'
+  // label or agent changes don't re-render this strip.
+  const paneLabel = useStore((s) => s.paneLabel[paneId]);
+  const activeSurface = surfaces.find((s) => s.id === activeSurfaceId) ?? surfaces[0];
+  const activeSurfacePtyId = activeSurface?.ptyId;
+  const activeSlug = useStore((s) =>
+    activeSurfacePtyId ? s.surfaceAgent[activeSurfacePtyId]?.slug : undefined,
+  );
   const [paneEditing, setPaneEditing] = useState(false);
   const [paneEditName, setPaneEditName] = useState('');
   const paneInputRef = useRef<HTMLInputElement>(null);
@@ -153,10 +175,8 @@ export default function SurfaceTabs({
   // surface; the user label (if any) overrides the auto coordinate.
   const leaf = findPane(workspace.rootPane, paneId);
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
-  const activeSurface = surfaces.find((s) => s.id === activeSurfaceId) ?? surfaces[0];
-  const activeSlug = activeSurface?.ptyId ? surfaceAgent[activeSurface.ptyId]?.slug : undefined;
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
-  const paneDisplay = paneDisplayName(paneLabelMap[paneId], paneAutoName);
+  const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
 
   const startPaneRename = () => {
     // Suppress the rename a double-click triggers right after a tab drag.
@@ -164,7 +184,7 @@ export default function SurfaceTabs({
     // Clear any stale cancel flag from a prior edit whose unmount-blur didn't
     // fire (e.g. parent unmounted) — else this rename would refuse to save (GLM).
     paneRenameCancelRef.current = false;
-    setPaneEditName(paneLabelMap[paneId] ?? '');
+    setPaneEditName(paneLabel ?? '');
     setPaneEditing(true);
   };
   const commitPaneRename = () => {
@@ -297,18 +317,7 @@ export default function SurfaceTabs({
           // once the shell renders its first prompt; before that, the name).
           title={editingId === s.id ? undefined : (displayPath(s.cwd) || s.title || t('surface.terminal'))}
         >
-          {(() => {
-            const status = s.ptyId ? surfaceAgentStatus[s.ptyId] : undefined;
-            if (!status || s.id === activeSurfaceId) return null;
-            return (
-              <span
-                className="tab-status-blink inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                style={{ backgroundColor: statusDotColor(status) }}
-                title={t('surface.terminal')}
-                aria-hidden="true"
-              />
-            );
-          })()}
+          <SurfaceTabStatusDot ptyId={s.ptyId} active={s.id === activeSurfaceId} />
           {editingId === s.id ? (
             <input
               ref={inputRef}

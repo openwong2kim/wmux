@@ -313,4 +313,12 @@ describe('notePtyOutput — remainder judging (adversarial review F11b)', () => 
     notePtyOutput(st, 'p', 1_000, '\x1b[24;80R\x1b[6n\x1b[1;1R');
     expect(st.lastOutputAt.has('p')).toBe(false);
   });
+
+  it('a plain chunk without ESC stamps via the fast path (no regex run)', () => {
+    // The ESC-free fast path must behave identically to the regex path for
+    // ordinary output: non-empty stamps, empty (covered above) does not.
+    const st = createPasteGateState();
+    notePtyOutput(st, 'p', 1_000, 'plain shell output\n');
+    expect(st.lastOutputAt.get('p')).toBe(1_000);
+  });
 });

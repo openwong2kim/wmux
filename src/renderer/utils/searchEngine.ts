@@ -51,6 +51,16 @@ export interface SearchOpts {
    * the global 200-result cap is enforced breadth-first across panes.
    */
   remainingBudget: number;
+  /**
+   * Scan only the LAST `tailRows` physical rows (the newest output) instead
+   * of the legacy head-first scan. Bounded by `perBufferLineCap` — when both
+   * are set the window is the last `min(tailRows, perBufferLineCap)` rows, so
+   * both bounds hold and the scan always keeps the NEWEST rows (the head-first
+   * cap kept the OLDEST 20k of a huge buffer, which is almost never what a
+   * cross-pane search wants). A window that starts mid-wrap truncates that
+   * logical line at the boundary — same explicit trade-off as the cap.
+   */
+  tailRows?: number;
 }
 
 export interface MatchInBuffer {
@@ -111,14 +121,15 @@ interface LogicalLine {
 function buildLogicalLines(
   buffer: SearchableBuffer,
   maxPhysicalRows: number,
+  startRow = 0,
 ): LogicalLine[] {
   const lines: LogicalLine[] = [];
-  const scanLimit = Math.min(buffer.length, maxPhysicalRows);
+  const scanLimit = Math.min(buffer.length, startRow + maxPhysicalRows);
 
   let currentText = '';
   let currentBaseY = -1;
 
-  for (let i = 0; i < scanLimit; i++) {
+  for (let i = startRow; i < scanLimit; i++) {
     const row = buffer.getLine(i);
     if (!row) {
       // Defensive: if a row is unexpectedly missing, flush any in-progress
@@ -134,9 +145,10 @@ function buildLogicalLines(
 
     const rowText = row.translateToString(true);
 
-    // Row 0 is by definition the start of a logical line; xterm should never
-    // mark it `isWrapped`, but we treat it as a fresh start defensively.
-    const isContinuation = i > 0 && row.isWrapped;
+    // The scan's first row is by definition the start of a logical line
+    // (row 0 is never wrapped; a tail window starting mid-wrap deliberately
+    // truncates that chain at the boundary).
+    const isContinuation = i > startRow && row.isWrapped;
 
     if (isContinuation && currentBaseY !== -1) {
       currentText += rowText;
@@ -213,7 +225,18 @@ export function searchInBuffer(
       })()
     : (text: string) => text.includes(query);
 
-  const logical = buildLogicalLines(buffer, perBufferLineCap);
+  const tailRows =
+    typeof opts.tailRows === 'number' && opts.tailRows > 0
+      ? Math.floor(opts.tailRows)
+      : undefined;
+  // Tail mode: scan the last min(tailRows, cap) rows. Legacy mode: head-first
+  // scan up to the cap (kept for callers that predate tail-bounding).
+  const startRow =
+    tailRows !== undefined
+      ? Math.max(0, buffer.length - Math.min(tailRows, perBufferLineCap))
+      : 0;
+
+  const logical = buildLogicalLines(buffer, perBufferLineCap, startRow);
   if (logical.length === 0) return [];
 
   const results: MatchInBuffer[] = [];

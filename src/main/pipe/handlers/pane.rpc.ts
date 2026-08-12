@@ -643,10 +643,20 @@ export function registerPaneRpc(
         new Error('pane.search: "workspaceId" must be a string if provided'),
       );
     }
+    const searchTailLines = params['searchTailLines'];
+    if (
+      searchTailLines !== undefined &&
+      (typeof searchTailLines !== 'number' || !Number.isFinite(searchTailLines) || searchTailLines < 1)
+    ) {
+      return Promise.reject(
+        new Error('pane.search: "searchTailLines" must be a number >= 1 if provided'),
+      );
+    }
     return sendToRenderer(getWindow, 'pane.search', {
       query: params['query'],
       ...(regex !== undefined && { regex }),
       ...(workspaceId !== undefined && { workspaceId }),
+      ...(searchTailLines !== undefined && { searchTailLines }),
     });
   });
 }

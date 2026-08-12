@@ -252,3 +252,66 @@ describe('searchInBuffer — result ordering', () => {
     expect(matches.map((m) => m.physicalBaseY)).toEqual([1, 3, 5]);
   });
 });
+
+describe('searchInBuffer — tail bounding (perf root-fix P5)', () => {
+  it('T14: tailRows scans only the NEWEST rows — an older match is excluded', () => {
+    const rows = [
+      { text: 'old match' },
+      { text: 'filler-1' },
+      { text: 'filler-2' },
+      { text: 'new match' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', { remainingBudget: HUGE_BUDGET, tailRows: 2 });
+    expect(matches).toHaveLength(1);
+    expect(matches[0].physicalBaseY).toBe(3); // absolute buffer index survives windowing
+  });
+
+  it('T16: a tailRows window covering the whole buffer behaves like a full scan', () => {
+    const rows = [{ text: 'old match' }, { text: 'filler' }, { text: 'new match' }];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', { remainingBudget: HUGE_BUDGET, tailRows: 1_000 });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([0, 2]);
+  });
+
+  it('tailRows is bounded by perBufferLineCap (window = newest min(tail, cap) rows)', () => {
+    const rows = [
+      { text: 'match-0' },
+      { text: 'match-1' },
+      { text: 'match-2' },
+      { text: 'match-3' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', {
+      remainingBudget: HUGE_BUDGET,
+      tailRows: 3,
+      perBufferLineCap: 2,
+    });
+    // Window is the last min(3, 2) = 2 rows — the NEWEST two, not the oldest.
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([2, 3]);
+  });
+
+  it('a window starting mid-wrap truncates that logical line at the boundary', () => {
+    const buf = makeBuffer(WRAPPED_3ROW_LINE); // one logical line over 3 physical rows
+    // Window starts at the 2nd physical row (mid-wrap): the continuation rows
+    // form their own (truncated) logical line rather than merging backwards.
+    const full = searchInBuffer(buf, '', { remainingBudget: HUGE_BUDGET });
+    expect(full).toHaveLength(0); // empty query guard unaffected
+    const matches = searchInBuffer(buf, WRAPPED_3ROW_LINE[1].text.slice(0, 3), {
+      remainingBudget: HUGE_BUDGET,
+      tailRows: 2,
+    });
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+    expect(matches[0].physicalBaseY).toBe(1);
+  });
+
+  it('legacy behavior without tailRows is unchanged (head-first cap)', () => {
+    const rows = [{ text: 'first match' }, { text: 'second match' }, { text: 'third match' }];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', {
+      remainingBudget: HUGE_BUDGET,
+      perBufferLineCap: 2,
+    });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([0, 1]);
+  });
+});
