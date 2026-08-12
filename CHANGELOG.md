@@ -1,3 +1,58 @@
+## [3.41.1] — 2026-08-13
+
+### Changed
+
+- **Installing an update on Windows now ends running sessions, and says so
+  before you press the button.** The daemon holds the install folder open, so it
+  has to go down for the installer to run. The update panel previously implied
+  the opposite. (#866)
+
+- **Terminal ownership checks stop waiting on the UI.** Every MCP call an agent
+  makes — sending to a pane, polling events, resolving its own identity — used
+  to ask the renderer who owns a terminal, once per check. That question was
+  slowest to answer exactly when the app was busiest. Main now answers from the
+  workspace snapshot the renderer already pushes it, and falls back to asking
+  whenever the snapshot is stale, missing, or disagrees. Cross-workspace access
+  is still refused on the renderer's word, never on a cached guess. (#870)
+
+- **Cross-pane search reads the newest output first.** `wmux_search_panes` used
+  to scan up to 20,000 lines per pane starting from the oldest, so on a long
+  scrollback the recent output you were actually looking for could be the part
+  that got cut. It now searches the newest 5,000 lines by default, says
+  `truncated: true` when older lines went unread, and takes a new optional
+  `searchTailLines` to go deeper. It also yields between panes instead of
+  freezing the window for the whole sweep. The in-app search bar is unaffected
+  and still covers your full configured scrollback. (#871)
+
+### Fixed
+
+- **Running the Windows installer while wmux is open can no longer destroy the
+  installation.** Squirrel's `Setup.exe` deletes the whole install folder as its
+  first step, and wmux used to start it without waiting to actually exit. With
+  the app fully up its loaded libraries are locked, the delete fails outright,
+  and the install stops half-finished — leaving blank shortcut icons and no
+  launcher to retry from. The installer is now started by a helper that waits
+  until nothing is using the folder any more, and refuses to start it at all if
+  something still is, so a failed update leaves your working version alone
+  instead of a broken one. The normal in-app update was not affected by this;
+  the failure needed the app to be fully running, as it is when the installer is
+  launched by hand. (#866)
+
+- **A failed update now says so.** If the installer could not be started safely,
+  wmux reports it the next time it opens instead of leaving you on the old
+  version with no explanation. (#866)
+
+- **The daemon no longer stalls on its own log file.** Each log line was written
+  and flushed to disk synchronously, which on Windows also meant a virus-scanner
+  hook per line. Routine lines are now batched; warnings and errors still write
+  through immediately, after the pending lines, so `daemon.log` stays in order
+  and a crash still records what happened. (#871)
+
+- **Terminal tab strips stopped re-rendering on unrelated panes.** Any pane's
+  status, label, or agent change re-rendered every tab strip in the app; each
+  strip now watches only its own pane. Terminal output also skips a
+  per-chunk regular-expression scan it did not need. (#871)
+
 ## [3.41.0] — 2026-08-12
 
 ### Known issues
