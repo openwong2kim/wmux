@@ -130,7 +130,22 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
     .map(parseFleet)
     .filter((f): f is FleetSnapshot => f !== null);
   const ts = typeof raw.ts === 'number' ? raw.ts : 0;
-  return { ts, entries, fleets };
+  const out: WorkspaceMirrorPushPayload = { ts, entries, fleets };
+  // D2 role bindings (perf root-fix P1): forward the map so the mirror-first
+  // binding resolver actually receives it — dropping the field here silently
+  // disables the fast path (every push would look like an old renderer and
+  // force the round-trip forever). Values stay opaque: ptyOwnership.ts
+  // re-normalizes them at the read boundary, so the parser only guards the
+  // container shape. Field ABSENT (old renderer) stays absent — the resolver
+  // must keep treating that as "unknown", never as "no bindings".
+  if (isRecord(raw.roleBindings)) {
+    const bindings: Record<string, unknown> = {};
+    for (const [ptyId, value] of Object.entries(raw.roleBindings)) {
+      if (typeof ptyId === 'string' && ptyId.length > 0) bindings[ptyId] = value;
+    }
+    out.roleBindings = bindings;
+  }
+  return out;
 }
 
 /**

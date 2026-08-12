@@ -97,7 +97,12 @@ export function useWorkspaceMirrorPush(): void {
         s.surfaceActivity !== prev.surfaceActivity ||
         s.surfaceActivityAt !== prev.surfaceActivityAt ||
         s.paneLabel !== prev.paneLabel ||
-        s.supervisionByPtyId !== prev.supervisionByPtyId;
+        s.supervisionByPtyId !== prev.supervisionByPtyId ||
+        // Role→model bindings ride the mirror (D2 resolver fast path) — a
+        // binding edit must reach main within the debounce window, not wait
+        // for the 30s periodic refresh.
+        s.paneRole !== prev.paneRole ||
+        s.orchestratorRoleBindings !== prev.orchestratorRoleBindings;
       if (statusChurn) scheduleTrailing();
     };
 
