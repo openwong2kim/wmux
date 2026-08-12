@@ -101,15 +101,27 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
 
   it('blocks while a tracked process is alive, and never launches meanwhile', () => {
     const holder = holdRoot();
-    writeWaiter(plan([holder.pid as number], 5_000));
-
-    // The holder outlives our patience on purpose: the waiter must still be
+    // Budget comfortably longer than our patience: the waiter must still be
     // waiting when we give up, and must not have launched the installer.
+    writeWaiter(plan([holder.pid as number], 90_000));
+
     const { timedOut } = runWaiter(12_000);
     expect(timedOut).toBe(true);
     expect(fs.existsSync(setupStamp)).toBe(false);
     expect(fs.existsSync(abortMarker)).toBe(false);
-  }, 90_000);
+  }, 120_000);
+
+  it('gives up instead of waiting forever on a process that will not die', () => {
+    // taskkill is best-effort. Before the wait was bounded, a survivor left the
+    // waiter blocked forever — and wmux had already quit, so the update stalled
+    // with nothing to show for it on the next boot.
+    const holder = holdRoot();
+    writeWaiter(plan([holder.pid as number], 3_000));
+
+    expect(runWaiter(60_000).status).toBe(3);
+    expect(fs.readFileSync(abortMarker, 'utf-8')).toContain('would not exit');
+    expect(fs.existsSync(setupStamp)).toBe(false);
+  }, 120_000);
 
   it('launches the installer once the tracked process is gone and the root is clear', () => {
     const holder = holdRoot();
@@ -153,6 +165,42 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(fs.existsSync(abortMarker)).toBe(true);
     expect(fs.readFileSync(abortMarker, 'utf-8')).toContain('install-aborted');
     // The whole point of the change.
+    expect(fs.existsSync(setupStamp)).toBe(false);
+  }, 120_000);
+
+  it('aborts when only a DLL is locked — the file the field failure actually died on', () => {
+    // The install that destroyed a real machine threw deleting `ffmpeg.dll`,
+    // not an .exe. An .exe-only probe reports "clear" here and launches into a
+    // live tree; this is the regression guard for that narrowing.
+    const heldDll = path.join(root, 'app-1.0.0', 'ffmpeg.dll');
+    fs.writeFileSync(heldDll, 'x');
+    const holder = spawn(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `$s=[System.IO.File]::Open(${q(heldDll)},'Open','Read','None'); Start-Sleep -Seconds 120; $s.Close()`],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    children.push(holder);
+    const deadline = Date.now() + 15_000;
+    let taken = false;
+    while (Date.now() < deadline && !taken) {
+      try { const fd = fs.openSync(heldDll, 'r+'); fs.closeSync(fd); }
+      catch { taken = true; }
+      if (!taken) execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 200'], { windowsHide: true });
+    }
+    expect(taken).toBe(true);
+
+    // Every pid the waiter knows about is already gone, so only the lock probe
+    // stands between it and Setup.exe.
+    const doomed = spawn(PS, ['-NoProfile', '-NonInteractive', '-Command', 'exit'], {
+      windowsHide: true, stdio: 'ignore',
+    });
+    children.push(doomed);
+    execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Seconds 2'], { windowsHide: true });
+
+    writeWaiter(plan([doomed.pid as number], 3_000));
+    expect(runWaiter(60_000).status).toBe(2);
+    expect(fs.existsSync(abortMarker)).toBe(true);
     expect(fs.existsSync(setupStamp)).toBe(false);
   }, 120_000);
 

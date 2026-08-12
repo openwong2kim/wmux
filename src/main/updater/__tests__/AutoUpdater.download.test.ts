@@ -132,7 +132,8 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
     readDaemonPid: vi.fn((): number | null => 4243),
     // Boot-time refused-install notice: default to "nothing to report" so it
     // never leaks an UPDATE_ERROR into tests about other flows.
-    consumeAbortMarker: vi.fn((): string | null => null),
+    readAbortMarker: vi.fn((): string | null => null),
+    clearAbortMarker: vi.fn(),
     INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
   };
   vi.doMock('../installTeardown', () => teardown);

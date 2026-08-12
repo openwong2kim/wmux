@@ -157,7 +157,8 @@ async function loadForPlatform(
     freeSpaceShortfall: vi.fn(() => null),
     probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
     readDaemonPid: vi.fn((): number | null => null),
-    consumeAbortMarker: vi.fn((): string | null => null),
+    readAbortMarker: vi.fn((): string | null => null),
+    clearAbortMarker: vi.fn(),
     INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
   };
   vi.doMock('../installTeardown', () => teardown);
@@ -722,7 +723,7 @@ describe('AutoUpdater #866 — a refused install is reported on the next boot', 
   it('win32: surfaces UPDATE_ERROR once when the waiter left an abort marker', async () => {
     vi.useFakeTimers();
     const loaded = await loadForPlatform('win32');
-    loaded.teardown.consumeAbortMarker.mockReturnValueOnce(
+    loaded.teardown.readAbortMarker.mockReturnValueOnce(
       'install-aborted: install root still locked',
     );
 

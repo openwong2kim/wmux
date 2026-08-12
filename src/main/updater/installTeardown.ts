@@ -194,6 +194,10 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
   const paths = [plan.setupExePath, plan.installRoot, plan.abortMarkerPath];
   if (!paths.every(isSafePsPathLiteral)) return null;
   if (!plan.pids.every((p) => Number.isInteger(p) && p > 0)) return null;
+  // Same check the pids get. A zero, negative or NaN budget would put the
+  // deadline in the past, so the lock loop would fall through on its first
+  // pass — turning the gate that makes this whole change work into a no-op.
+  if (!Number.isInteger(plan.lockBudgetMs) || plan.lockBudgetMs <= 0) return null;
 
   const pidList = plan.pids.join(',');
   return [
@@ -207,11 +211,35 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // process look like ours).
     `$handles = @()`,
     `foreach ($id in @(${pidList})) { try { $handles += [System.Diagnostics.Process]::GetProcessById($id) } catch { } }`,
-    `foreach ($h in $handles) { try { $h.WaitForExit() } catch { } }`,
+    // Bounded, and the bound is the point. taskkill is best-effort: a process
+    // it could not terminate would make an unbounded WaitForExit block forever,
+    // and by then wmux has already quit — so the update would silently stall
+    // with no marker and nothing to tell the user on the next boot. The whole
+    // wait shares one deadline rather than giving each handle a fresh budget.
+    `$waitDeadline = [Environment]::TickCount + $budget`,
+    `$stuck = $false`,
+    `foreach ($h in $handles) {`,
+    `  $left = $waitDeadline - [Environment]::TickCount`,
+    `  if ($left -le 0) { $stuck = $true; break }`,
+    `  try { if (-not $h.WaitForExit($left)) { $stuck = $true; break } } catch { }`,
+    `}`,
+    `if ($stuck) {`,
+    `  Set-Content -LiteralPath $marker -Value 'install-aborted: a process under the install root would not exit' -Encoding utf8`,
+    `  exit 3`,
+    `}`,
     // Everything we knew about is gone. That is necessary, not sufficient: the
     // MCP hosts can have spawned a replacement into the root meanwhile.
+    // Probe the loadable images, not just the .exe files. The delete that
+    // failed in the field died on `ffmpeg.dll`, and measuring a live install
+    // shows why: with the app running, 1 .exe is locked but 9 binaries are.
+    // Probing every file instead would be the complete answer and costs 10.8 s
+    // per pass against 0.7 s here — far too slow for a loop that re-checks
+    // twice a second. Binaries are a sound proxy: a process holds its own image
+    // and every module it loaded, so "no binary is locked" means the processes
+    // are gone, and their handles on data files went with them.
+    `$binExt = @('.exe', '.dll', '.node', '.asar')`,
     `function Test-RootLocked {`,
-    `  $files = @(Get-ChildItem -LiteralPath $root -Recurse -Filter *.exe -File -ErrorAction SilentlyContinue)`,
+    `  $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $binExt -contains $_.Extension })`,
     `  foreach ($f in $files) {`,
     `    try { $s = [System.IO.File]::Open($f.FullName, 'Open', 'ReadWrite', 'None'); $s.Close() } catch { return $true }`,
     `  }`,
@@ -225,7 +253,16 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `  Set-Content -LiteralPath $marker -Value 'install-aborted: install root still locked' -Encoding utf8`,
     `  exit 2`,
     `}`,
-    `Start-Process -FilePath $setup`,
+    // A verified installer can still be gone by now — quarantined by AV,
+    // swept by a temp cleaner. Under SilentlyContinue that failure is invisible
+    // and the script would exit 0, leaving a user who just watched wmux quit
+    // with no update and no explanation on the next boot.
+    `$started = $true`,
+    `try { Start-Process -FilePath $setup -ErrorAction Stop } catch { $started = $false }`,
+    `if (-not $started) {`,
+    `  Set-Content -LiteralPath $marker -Value 'install-aborted: the installer could not be started' -Encoding utf8`,
+    `  exit 4`,
+    `}`,
     `exit 0`,
   ].join('\n');
 }
@@ -270,7 +307,13 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
   try {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-install-waiter-'));
     const scriptPath = path.join(dir, 'wait-and-install.ps1');
-    fs.writeFileSync(scriptPath, script, 'utf-8');
+    // The BOM is load-bearing. Windows PowerShell 5.1 decodes a BOM-less file
+    // as the system ANSI code page, so on a Korean install every path we
+    // embedded — all of them under the user profile — comes back mangled.
+    // Measured: with `C:\Users\홍길동\...` the BOM-less script still exits 0
+    // while writing to the wrong path, which is the worst shape a failure can
+    // take here (silent success). With the BOM it behaves.
+    fs.writeFileSync(scriptPath, '\uFEFF' + script, 'utf-8');
     const systemRoot = process.env.SystemRoot || 'C:\\Windows';
     const powershell = path.join(
       systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
@@ -344,14 +387,31 @@ export function terminatePids(pids: readonly number[]): number[] {
   return killed;
 }
 
-/** Read + clear the abort marker. Called at boot so a refusal is reportable. */
-export function consumeAbortMarker(markerPath: string): string | null {
+/**
+ * Read the abort marker without clearing it. Pair with `clearAbortMarker`
+ * AFTER the notice has actually been delivered — clearing on read loses the
+ * only record of the refusal if the app dies before the renderer sees it, and
+ * then it is never reportable again.
+ */
+export function readAbortMarker(markerPath: string): string | null {
   try {
     if (!fs.existsSync(markerPath)) return null;
-    const text = fs.readFileSync(markerPath, 'utf-8').trim();
-    fs.unlinkSync(markerPath);
-    return text || 'install-aborted';
+    return fs.readFileSync(markerPath, 'utf-8').trim() || 'install-aborted';
   } catch {
+    // A read failure is not a refusal — say nothing rather than invent one.
     return null;
+  }
+}
+
+/**
+ * Drop the marker so the notice fires once. Separate from the read so an
+ * unlink failure (permissions, AV holding the file) cannot swallow a reason we
+ * already have in hand; the marker simply survives to the next boot.
+ */
+export function clearAbortMarker(markerPath: string): void {
+  try {
+    fs.unlinkSync(markerPath);
+  } catch {
+    /* best-effort — a surviving marker re-reports, which beats losing it */
   }
 }

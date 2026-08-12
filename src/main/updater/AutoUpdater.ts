@@ -21,10 +21,11 @@ import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManife
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 import {
   collectInstallRootPids,
-  consumeAbortMarker,
+  clearAbortMarker,
   freeSpaceShortfall,
   INSTALL_ABORT_MARKER,
   probeVolume,
+  readAbortMarker,
   spawnInstallWaiter,
   terminatePids,
 } from './installTeardown';
@@ -221,7 +222,7 @@ export class AutoUpdater {
    */
   private reportRefusedInstall(): void {
     const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
-    const reason = consumeAbortMarker(markerPath);
+    const reason = readAbortMarker(markerPath);
     if (!reason) return;
     console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
     setTimeout(() => {
@@ -230,6 +231,10 @@ export class AutoUpdater {
         message:
           'The last update did not install: something was still using the wmux install folder, so it was left untouched rather than half-replaced. Try again, or close wmux and run the installer from the releases page.',
       });
+      // Cleared only now. Clearing on read would lose the refusal entirely if
+      // the app went away inside this delay — and the whole point of the marker
+      // is that the failure stops being invisible.
+      clearAbortMarker(markerPath);
     }, REFUSED_INSTALL_NOTICE_DELAY_MS);
   }
 
@@ -691,12 +696,18 @@ export class AutoUpdater {
     const daemonPid = this.hooks.getDaemonPid();
     const forceKillPids = pids.filter((p) => p !== daemonPid);
 
-    // Ask for the daemon to actually go down on this quit, then take down the
-    // processes nothing else owns (the MCP servers belong to agent hosts, not
-    // to us, so a quit leaves them holding the tree open forever).
-    this.hooks.onInstallRequiresFullShutdown();
-    const killed = terminatePids(forceKillPids);
-
+    // ORDER MATTERS, and it is the reverse of the obvious one.
+    //
+    // The waiter starts FIRST, while everything is still alive: it captures a
+    // handle per pid up front, so it observes the processes we are about to end.
+    // Only once it exists do we mutate anything.
+    //
+    // Doing it the other way round leaves wreckage on the failure path. Both
+    // `onInstallRequiresFullShutdown` (a one-way latch — a later ordinary Quit
+    // would then tear the daemon down and close every session) and the
+    // force-kill are irreversible; if the waiter then failed to spawn we would
+    // have killed the user's agent tooling and armed a destructive quit for an
+    // install that never happened.
     const waiterPath = spawnInstallWaiter({
       pids,
       setupExePath: tempPath,
@@ -706,7 +717,8 @@ export class AutoUpdater {
     });
     if (!waiterPath) {
       // No waiter means no safe way to start the installer. Falling back to
-      // launching it directly is exactly the bug — refuse instead.
+      // launching it directly is exactly the bug — refuse instead, with nothing
+      // killed and no quit state armed.
       this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
@@ -714,6 +726,12 @@ export class AutoUpdater {
       });
       return;
     }
+
+    // Committed now: bring the daemon down gracefully (it flushes scrollback)
+    // and force-kill what nothing else owns — the MCP servers belong to agent
+    // hosts, so a quit leaves them holding the tree open forever.
+    this.hooks.onInstallRequiresFullShutdown();
+    const killed = terminatePids(forceKillPids);
 
     // Which path ran, and against what — the first question anyone asks when an
     // update goes wrong, and the log is the only place to answer it from.

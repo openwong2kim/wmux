@@ -17,7 +17,8 @@ import {
   buildWaiterScript,
   readDaemonPid,
   terminatePids,
-  consumeAbortMarker,
+  readAbortMarker,
+  clearAbortMarker,
   INSTALL_ABORT_MARKER,
   type WaiterPlan,
 } from '../installTeardown';
@@ -248,26 +249,55 @@ describe('consumeAbortMarker', () => {
     return d;
   };
 
-  it('returns the reason and CLEARS the marker so the notice fires once', () => {
+  it('reads WITHOUT clearing, so a crash before the notice cannot lose the refusal', () => {
     const dir = tempDir();
     const marker = path.join(dir, INSTALL_ABORT_MARKER);
     fs.writeFileSync(marker, 'install-aborted: install root still locked\n');
 
-    expect(consumeAbortMarker(marker)).toBe('install-aborted: install root still locked');
+    expect(readAbortMarker(marker)).toBe('install-aborted: install root still locked');
+    // Still there: clearing on read would drop the only record of the refusal
+    // if the app died before the renderer saw it, and it is then unreportable
+    // forever. Reads are idempotent.
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(readAbortMarker(marker)).toBe('install-aborted: install root still locked');
+  });
+
+  it('clears only when asked, and a sticky warning cannot outlive the clear', () => {
+    const dir = tempDir();
+    const marker = path.join(dir, INSTALL_ABORT_MARKER);
+    fs.writeFileSync(marker, 'install-aborted: install root still locked\n');
+
+    clearAbortMarker(marker);
     expect(fs.existsSync(marker)).toBe(false);
-    // A sticky warning about a since-succeeded update is worse than none.
-    expect(consumeAbortMarker(marker)).toBeNull();
+    expect(readAbortMarker(marker)).toBeNull();
+  });
+
+  it('clearing a marker that is already gone is not an error', () => {
+    expect(() => clearAbortMarker(path.join(tempDir(), INSTALL_ABORT_MARKER))).not.toThrow();
   });
 
   it('returns null when there is no marker', () => {
-    expect(consumeAbortMarker(path.join(tempDir(), INSTALL_ABORT_MARKER))).toBeNull();
+    expect(readAbortMarker(path.join(tempDir(), INSTALL_ABORT_MARKER))).toBeNull();
   });
 
   it('still reports a refusal when the marker is empty', () => {
     const dir = tempDir();
     const marker = path.join(dir, INSTALL_ABORT_MARKER);
     fs.writeFileSync(marker, '   \n');
-    expect(consumeAbortMarker(marker)).toBe('install-aborted');
-    expect(fs.existsSync(marker)).toBe(false);
+    expect(readAbortMarker(marker)).toBe('install-aborted');
+  });
+});
+
+describe('buildWaiterScript — the lock probe covers loadable images, not just .exe', () => {
+  it('probes dll/node/asar as well, because the failure in the field was a dll', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    // The install that destroyed a real machine died deleting ffmpeg.dll. On a
+    // live install 1 .exe is locked but 9 binaries are, so an .exe-only probe
+    // would have reported "clear" and launched Setup.exe into a live tree.
+    expect(s).toContain(".exe");
+    expect(s).toContain(".dll");
+    expect(s).toContain(".node");
+    expect(s).toContain(".asar");
+    expect(s).not.toContain('-Filter *.exe');
   });
 });
