@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { searchInBuffer, type SearchableBuffer } from '../searchEngine';
+import { searchInBuffer, normalizeSearchTailLines, type SearchableBuffer } from '../searchEngine';
 import {
   makeBuffer,
   makeBufferWithGap,
@@ -250,5 +250,116 @@ describe('searchInBuffer — result ordering', () => {
     const buf = makeBuffer(rows);
     const matches = searchInBuffer(buf, 'yes', { remainingBudget: HUGE_BUDGET });
     expect(matches.map((m) => m.physicalBaseY)).toEqual([1, 3, 5]);
+  });
+});
+
+describe('searchInBuffer — tail bounding (perf root-fix P5)', () => {
+  it('T14: tailRows scans only the NEWEST rows — an older match is excluded', () => {
+    const rows = [
+      { text: 'old match' },
+      { text: 'filler-1' },
+      { text: 'filler-2' },
+      { text: 'new match' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', { remainingBudget: HUGE_BUDGET, tailRows: 2 });
+    expect(matches).toHaveLength(1);
+    expect(matches[0].physicalBaseY).toBe(3); // absolute buffer index survives windowing
+  });
+
+  it('T16: a tailRows window covering the whole buffer behaves like a full scan', () => {
+    const rows = [{ text: 'old match' }, { text: 'filler' }, { text: 'new match' }];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', { remainingBudget: HUGE_BUDGET, tailRows: 1_000 });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([0, 2]);
+  });
+
+  it('tailRows is bounded by perBufferLineCap (window = newest min(tail, cap) rows)', () => {
+    const rows = [
+      { text: 'match-0' },
+      { text: 'match-1' },
+      { text: 'match-2' },
+      { text: 'match-3' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', {
+      remainingBudget: HUGE_BUDGET,
+      tailRows: 3,
+      perBufferLineCap: 2,
+    });
+    // Window is the last min(3, 2) = 2 rows — the NEWEST two, not the oldest.
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([2, 3]);
+  });
+
+  it('a window starting mid-wrap truncates that logical line at the boundary', () => {
+    const buf = makeBuffer(WRAPPED_3ROW_LINE); // one logical line over 3 physical rows
+    // Window starts at the 2nd physical row (mid-wrap): the continuation rows
+    // form their own (truncated) logical line rather than merging backwards.
+    const full = searchInBuffer(buf, '', { remainingBudget: HUGE_BUDGET });
+    expect(full).toHaveLength(0); // empty query guard unaffected
+    const matches = searchInBuffer(buf, WRAPPED_3ROW_LINE[1].text.slice(0, 3), {
+      remainingBudget: HUGE_BUDGET,
+      tailRows: 2,
+    });
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+    expect(matches[0].physicalBaseY).toBe(1);
+  });
+
+  it('legacy behavior without tailRows is unchanged (head-first cap)', () => {
+    const rows = [{ text: 'first match' }, { text: 'second match' }, { text: 'third match' }];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'match', {
+      remainingBudget: HUGE_BUDGET,
+      perBufferLineCap: 2,
+    });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([0, 1]);
+  });
+});
+
+describe('normalizeSearchTailLines — clamp honesty (3-way review: Codex+GLM)', () => {
+  it('defaults to 5000 for absent/junk/sub-1 inputs and floors fractions', () => {
+    expect(normalizeSearchTailLines(undefined)).toBe(5_000);
+    expect(normalizeSearchTailLines('9000')).toBe(5_000);
+    expect(normalizeSearchTailLines(0)).toBe(5_000);
+    expect(normalizeSearchTailLines(NaN)).toBe(5_000);
+    expect(normalizeSearchTailLines(1234.9)).toBe(1_234);
+  });
+
+  it('clamps above-cap requests to 20000 so truncation checks stay honest', () => {
+    // The bug this pins: with an UNclamped 50000 vs a 30k buffer,
+    // `30000 > 50000` is false → truncated:false while the engine scanned
+    // only the newest 20k rows. Clamped, `30000 > 20000` is true.
+    expect(normalizeSearchTailLines(50_000)).toBe(20_000);
+    expect(30_000 > normalizeSearchTailLines(50_000)).toBe(true);
+  });
+});
+
+describe('searchInBuffer — lineIdx stays buffer-absolute under tailRows (Codex+Claude)', () => {
+  it('a match at row 9000 of a 10k unwrapped buffer reports lineIdx 9000, not 4000', () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({
+      text: i === 9_000 ? 'the MATCH line' : `row ${i}`,
+    }));
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'MATCH', { remainingBudget: 10, tailRows: 5_000 });
+    expect(matches).toHaveLength(1);
+    expect(matches[0].physicalBaseY).toBe(9_000);
+    expect(matches[0].lineIdx).toBe(9_000);
+  });
+});
+
+describe('searchInBuffer — tailRows never scans beyond its window (parked-path invariant)', () => {
+  // The parked-pane path asks the daemon for N rows and can get back N plus a
+  // viewport, so it bounds the scan with tailRows to stay consistent with the
+  // same pane when mounted (Codex re-review). This pins that guarantee.
+  it('rows older than the window are invisible even when handed to the engine', () => {
+    const rows = [
+      { text: 'MATCH oldest (outside the window)' },
+      { text: 'filler' },
+      { text: 'filler' },
+      { text: 'MATCH newest (inside the window)' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'MATCH', { remainingBudget: 50, tailRows: 2 });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([3]);
   });
 });

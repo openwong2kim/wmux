@@ -16,7 +16,25 @@ import type {
   FleetSnapshotPane,
   WorkspaceMirrorPushPayload,
 } from '../../shared/workspaceMirror';
+import { normalizeRoleBinding } from '../../shared/orchestratorRole';
+import type { StoreState } from '../stores';
 import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
+
+/**
+ * The snapshot builder's input: the fleet selector state plus the two role
+ * maps the D2 binding resolution reads. Both are optional so states built for
+ * fleet-only tests keep compiling — an absent map simply yields an empty
+ * roleBindings payload (still COMPLETE: no roles bound means no bindings).
+ *
+ * INDEXED off StoreState (type-only import, same pattern as fleet.ts) so a
+ * store field rename breaks compilation here instead of silently producing an
+ * always-empty bindings map that main would trust as "nothing bound"
+ * (3-way review: Claude+GLM).
+ */
+export type MirrorSnapshotState = FleetSelectorState & {
+  paneRole?: StoreState['paneRole'];
+  orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
+};
 
 /**
  * Resolve the ptyId of a workspace's active pane + active surface.
@@ -175,9 +193,37 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
   return [...byWs.values()];
 }
 
+/**
+ * ptyId → resolved role binding for every surface whose pane carries a bound
+ * role — the SAME resolution the `input.findOwnerWorkspace` reply performs
+ * (paneRole[leaf.id] → orchestratorRoleBindings[role], normalized), so the
+ * mirror and the round-trip can never disagree on a binding. The map is
+ * COMPLETE by construction: a ptyId absent from it has no binding.
+ */
+export function buildRoleBindings(state: MirrorSnapshotState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const paneRole = state.paneRole ?? {};
+  const bindings = state.orchestratorRoleBindings ?? {};
+  // Fast exit for the common case (no roles bound anywhere): skip the
+  // ws×leaf×surface walk this builder otherwise pays on every mirror push.
+  if (Object.keys(paneRole).length === 0 || Object.keys(bindings).length === 0) return out;
+  for (const w of state.workspaces) {
+    for (const leaf of getLeafPanes(w.rootPane)) {
+      const role = paneRole[leaf.id];
+      if (!role) continue;
+      const binding = normalizeRoleBinding(bindings[role]);
+      if (!binding) continue;
+      for (const s of leaf.surfaces) {
+        if (s.ptyId) out[s.ptyId] = binding;
+      }
+    }
+  }
+  return out;
+}
+
 /** Assemble the full push payload from the live store state at `now()`. */
 export function buildWorkspaceMirrorPayload(
-  state: FleetSelectorState,
+  state: MirrorSnapshotState,
   now: () => number = Date.now,
 ): WorkspaceMirrorPushPayload {
   const ts = now();
@@ -185,5 +231,6 @@ export function buildWorkspaceMirrorPayload(
     ts,
     entries: buildWorkspaceListEntries(state.workspaces),
     fleets: buildFleetSnapshots(state, ts),
+    roleBindings: buildRoleBindings(state),
   };
 }

@@ -64,4 +64,14 @@ export interface WorkspaceMirrorPushPayload {
   ts: number;
   entries: WorkspaceListEntry[];
   fleets: FleetSnapshot[];
+  /**
+   * ptyId → resolved role→model binding for every surface whose pane carries a
+   * bound role (D2). COMPLETE when present: a ptyId absent from the map has no
+   * binding, so main's resolver can answer "unbound" without a renderer
+   * round-trip. An OLD renderer (stale preload under a packaged update) omits
+   * the field entirely — main must treat `undefined` as "unknown, round-trip",
+   * never as "unbound". Values are renderer-normalized but re-normalized at the
+   * main read boundary (the store is hand-editable via session.json).
+   */
+  roleBindings?: Record<string, unknown>;
 }

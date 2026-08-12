@@ -31,6 +31,9 @@ export type {
 export class WorkspaceMirror {
   private entries: WorkspaceListEntry[] | null = null;
   private fleets = new Map<string, FleetSnapshot>();
+  // null ⇒ the last push carried no roleBindings field (old renderer) — callers
+  // must treat the bindings as UNKNOWN and round-trip, never as "unbound".
+  private roleBindings: Record<string, unknown> | null = null;
   private setAt = 0;
   private populated = false;
   private readonly now: () => number;
@@ -46,6 +49,7 @@ export class WorkspaceMirror {
   setSnapshot(payload: WorkspaceMirrorPushPayload): void {
     this.entries = payload.entries;
     this.fleets = new Map(payload.fleets.map((f) => [f.workspaceId, f]));
+    this.roleBindings = payload.roleBindings ?? null;
     // Stamp with our own clock, not the renderer's `payload.ts`: `peek().ageMs`
     // must be measured against the same clock the caller reads `now()` on, so a
     // clock skew between renderer and main can never make a snapshot look
@@ -74,6 +78,21 @@ export class WorkspaceMirror {
   peek(): { entries: WorkspaceListEntry[]; ageMs: number } | null {
     if (this.entries === null) return null;
     return { entries: [...this.entries], ageMs: this.now() - this.setAt };
+  }
+
+  /**
+   * ONE pty's mirrored role binding plus the snapshot's age, WITHOUT mutating
+   * anything. null when nothing was ever pushed OR the last push predates the
+   * roleBindings field (old renderer) — both mean "unknown, round-trip".
+   * A non-null result with `binding: undefined` means the map is PRESENT and
+   * this pty is authoritatively unbound. Single-key on purpose: the caller
+   * (input.send hot path) reads one entry per call, so copying the whole map
+   * per lookup would tax exactly the path this mirror exists to speed up.
+   * The value is raw (untrusted); callers re-normalize at the read boundary.
+   */
+  peekRoleBinding(ptyId: string): { binding: unknown; ageMs: number } | null {
+    if (this.roleBindings === null) return null;
+    return { binding: this.roleBindings[ptyId], ageMs: this.now() - this.setAt };
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */

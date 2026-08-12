@@ -51,7 +51,7 @@ import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
-import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -70,12 +70,9 @@ async function resolveCallerWorkspace(getWindow: GetWindow, params: unknown): Pr
       : '';
   if (!senderPtyId) return '';
   try {
-    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
-    const wsId =
-      owner && typeof owner === 'object' && 'workspaceId' in owner
-        ? (owner as Record<string, unknown>).workspaceId
-        : null;
-    return typeof wsId === 'string' && wsId ? wsId : '';
+    // Mirror-first (workspace/ptyOwnership.ts); renderer round-trip fallback.
+    const wsId = await resolvePtyOwnerWorkspace(getWindow, senderPtyId);
+    return wsId ?? '';
   } catch {
     // Renderer unavailable (early boot / reload) — treat as unresolvable.
     return '';

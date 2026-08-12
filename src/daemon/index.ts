@@ -8,6 +8,7 @@ import {
   readNotifySinks,
   readPushPresenceSuppression,
 } from './config';
+import { createDaemonLogWriter } from './logWriter';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
@@ -594,9 +595,19 @@ const BOOT_MARKER_FILE = path.join(wmuxDir, 'daemon-booting');
 // failure must never crash the daemon.
 const DAEMON_LOG_PATH = path.join(wmuxDir, 'daemon.log');
 const DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024; // rotate at 5 MB, keep one .1 backup
-// In-memory byte counter so we don't statSync on every write. -1 = uninitialised
-// (seeded from the existing file size on the first line this process writes).
-let daemonLogBytes = -1;
+// Buffered file writer (logWriter.ts): info/debug lines coalesce for up to
+// 250ms / 64KB instead of paying one sync append (+ EDR scan on Windows) per
+// line; warn/error still write through synchronously after draining the
+// buffer, so ordering and crash durability are preserved. The 'exit' hook
+// below drains the tail on any clean exit; a hard kill can lose at most the
+// last 250ms of info lines (accepted — the error record is already durable).
+const daemonLogWriter = createDaemonLogWriter({
+  path: DAEMON_LOG_PATH,
+  maxBytes: DAEMON_LOG_MAX_BYTES,
+  flushMs: 250,
+  bufferMaxBytes: 64 * 1024,
+});
+process.once('exit', () => daemonLogWriter.flush());
 function log(level: string, msg: string, ...args: unknown[]): void {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [daemon/${level}] ${msg}`, ...args);
@@ -613,15 +624,7 @@ function log(level: string, msg: string, ...args: unknown[]): void {
           .join(' ')
       : '';
     const line = `[${ts}] [daemon/${level}] ${msg}${extra}\n`;
-    if (daemonLogBytes < 0) {
-      try { daemonLogBytes = fs.statSync(DAEMON_LOG_PATH).size; } catch { daemonLogBytes = 0; }
-    }
-    if (daemonLogBytes > DAEMON_LOG_MAX_BYTES) {
-      try { fs.renameSync(DAEMON_LOG_PATH, `${DAEMON_LOG_PATH}.1`); } catch { /* ignore */ }
-      daemonLogBytes = 0;
-    }
-    fs.appendFileSync(DAEMON_LOG_PATH, line);
-    daemonLogBytes += Buffer.byteLength(line);
+    daemonLogWriter.write(level, line);
   } catch {
     // Logging must never crash the daemon.
   }

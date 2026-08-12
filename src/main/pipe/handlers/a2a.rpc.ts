@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
@@ -228,11 +229,10 @@ export function registerA2aRpc(
         // scope — a snapshot-only liveness signal can be incomplete and would
         // risk deleting a LIVE pane's anchor (3-way review consensus).
         try {
-          const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: value });
-          const wsId =
-            owner && typeof owner === 'object' && 'workspaceId' in owner
-              ? (owner as Record<string, unknown>)['workspaceId']
-              : null;
+          // Mirror-first (workspace/ptyOwnership.ts) — this loop pays one
+          // lookup per live pid-map anchor, so a fresh mirror collapses N
+          // renderer round-trips into zero.
+          const wsId = await resolvePtyOwnerWorkspace(getWindow, value);
           if (typeof wsId === 'string' && wsId) {
             mappings[file] = wsId;
             entries.push({ pid: file, ptyId: value, workspaceId: wsId });

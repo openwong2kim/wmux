@@ -173,8 +173,16 @@ const CPR_SEQ_RE = /\x1b\[[0-9;?]*[Rn]/g;
 export function notePtyOutput(state: PasteGateState, ptyId: string, now: number, data?: string): void {
   if (!ptyId) return;
   if (data != null) {
-    const rest = data.replace(CPR_SEQ_RE, '');
-    if (rest.length === 0) return;
+    // Fast path: CPR/DSR sequences always contain ESC, so a chunk without one
+    // cannot reduce to empty — skip the regex on the (overwhelmingly common)
+    // plain-output chunk. The length guard keeps the F11b empty-chunk rule:
+    // an empty chunk is still not activity.
+    if (data.indexOf('\x1b') === -1) {
+      if (data.length === 0) return;
+    } else {
+      const rest = data.replace(CPR_SEQ_RE, '');
+      if (rest.length === 0) return;
+    }
   }
   state.lastOutputAt.set(ptyId, now);
 }

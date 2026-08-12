@@ -4,8 +4,12 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
-import { applyRoleBinding, normalizeRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
+import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 import { isGateHeldOn } from '../../deck/stopGateState';
+import {
+  assertWorkspaceOwnsPty,
+  resolveRoleBindingForPty,
+} from '../../workspace/ptyOwnership';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -94,42 +98,9 @@ async function resolveActivePtyId(getWindow: GetWindow, callerWs?: string): Prom
 }
 
 /**
- * Verify that `ptyId` belongs to a surface inside `expectedWorkspaceId`.
- * Throws when the PTY is owned by a different workspace (or no workspace at
- * all). Returns silently when `expectedWorkspaceId` is undefined — internal
- * callers (CLI, UI) skip this check.
- *
- * Closes the cross-workspace bypass where the metadata layer enforced
- * isolation but the PTY-id-keyed terminal IO layer didn't: any caller that
- * learned a foreign PTY id (via leaks, screenshots, surface_list) could
- * read or write that workspace's terminal at will.
- */
-async function assertWorkspaceOwnsPty(
-  getWindow: GetWindow,
-  ptyId: string,
-  expectedWorkspaceId: string | undefined,
-  rpcName: string,
-): Promise<void> {
-  if (!expectedWorkspaceId) return;
-  const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
-  const owner =
-    result && typeof result === 'object' && 'workspaceId' in result
-      ? ((result as Record<string, unknown>)['workspaceId'] as string | null)
-      : null;
-  if (owner !== expectedWorkspaceId) {
-    throw new Error(
-      `${rpcName}: PTY "${ptyId}" is not owned by workspace "${expectedWorkspaceId}" ` +
-        `(actual owner: ${owner ?? 'none'}). Cross-workspace terminal access is not allowed.`,
-    );
-  }
-}
-
-/**
- * Resolve a pane's enforced role→model binding for a ptyId, via the SAME
- * renderer oracle assertWorkspaceOwnsPty already consults (input.findOwnerWorkspace,
- * extended in D2 to also return the owning paneId + resolved roleBinding). Both
- * the role mirror and the operator binding map live in the renderer store, so
- * the renderer resolves the pair; main just applies the pure transform.
+ * Resolve a pane's enforced role→model binding for a ptyId. Mirror-first with
+ * a renderer round-trip fallback — see workspace/ptyOwnership.ts (which also
+ * hosts assertWorkspaceOwnsPty, shared with the other ownership call sites).
  *
  * Returns undefined on any miss (no owner, unbound role, malformed reply) — the
  * caller fails OPEN, never blocking a legitimate send because a lookup raced.
@@ -137,13 +108,8 @@ async function assertWorkspaceOwnsPty(
 export type RoleBindingResolver = (ptyId: string) => Promise<RoleBinding | undefined>;
 
 export function makeRoleBindingResolver(getWindow: GetWindow): RoleBindingResolver {
-  return async (ptyId: string): Promise<RoleBinding | undefined> => {
-    const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
-    if (!result || typeof result !== 'object' || !('roleBinding' in result)) return undefined;
-    // Re-normalize at the read boundary — the renderer store is hand-editable
-    // via session.json, so treat the binding as untrusted even here.
-    return normalizeRoleBinding((result as Record<string, unknown>)['roleBinding']);
-  };
+  return (ptyId: string): Promise<RoleBinding | undefined> =>
+    resolveRoleBindingForPty(getWindow, ptyId);
 }
 
 /**

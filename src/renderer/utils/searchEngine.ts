@@ -32,6 +32,29 @@ const DEFAULT_CONTEXT_LINES = 2;
 /** Default ceiling on physical rows scanned per buffer. */
 const DEFAULT_BUFFER_LINE_CAP = 20_000;
 
+/** Default tail window for cross-pane search (pane.search). */
+export const SEARCH_TAIL_DEFAULT = 5_000;
+/** Hard ceiling on the tail window — mirrors the per-buffer scan cap. */
+export const SEARCH_TAIL_MAX = DEFAULT_BUFFER_LINE_CAP;
+
+/**
+ * Normalize a caller-supplied `searchTailLines` into the effective tail
+ * window: floor, default 5,000, CLAMPED to the 20k scan cap. The clamp is
+ * load-bearing for truncation honesty (3-way review: Codex+GLM): comparing a
+ * buffer's length against an UNclamped request (say 50,000) reports
+ * `truncated:false` while the engine actually scanned only the newest 20k
+ * rows — a false completeness signal in exactly the "search deeper" case the
+ * parameter exists for. Every consumer (live scan, parked fetch, truncation
+ * checks) must use THIS value, never the raw request.
+ */
+export function normalizeSearchTailLines(raw: unknown): number {
+  const n =
+    typeof raw === 'number' && Number.isFinite(raw) && raw >= 1
+      ? Math.floor(raw)
+      : SEARCH_TAIL_DEFAULT;
+  return Math.min(n, SEARCH_TAIL_MAX);
+}
+
 export interface SearchOpts {
   /**
    * Treat `query` as a JS RegExp pattern. Invalid patterns throw `SyntaxError`.
@@ -51,6 +74,16 @@ export interface SearchOpts {
    * the global 200-result cap is enforced breadth-first across panes.
    */
   remainingBudget: number;
+  /**
+   * Scan only the LAST `tailRows` physical rows (the newest output) instead
+   * of the legacy head-first scan. Bounded by `perBufferLineCap` — when both
+   * are set the window is the last `min(tailRows, perBufferLineCap)` rows, so
+   * both bounds hold and the scan always keeps the NEWEST rows (the head-first
+   * cap kept the OLDEST 20k of a huge buffer, which is almost never what a
+   * cross-pane search wants). A window that starts mid-wrap truncates that
+   * logical line at the boundary — same explicit trade-off as the cap.
+   */
+  tailRows?: number;
 }
 
 export interface MatchInBuffer {
@@ -111,14 +144,15 @@ interface LogicalLine {
 function buildLogicalLines(
   buffer: SearchableBuffer,
   maxPhysicalRows: number,
+  startRow = 0,
 ): LogicalLine[] {
   const lines: LogicalLine[] = [];
-  const scanLimit = Math.min(buffer.length, maxPhysicalRows);
+  const scanLimit = Math.min(buffer.length, startRow + maxPhysicalRows);
 
   let currentText = '';
   let currentBaseY = -1;
 
-  for (let i = 0; i < scanLimit; i++) {
+  for (let i = startRow; i < scanLimit; i++) {
     const row = buffer.getLine(i);
     if (!row) {
       // Defensive: if a row is unexpectedly missing, flush any in-progress
@@ -134,9 +168,10 @@ function buildLogicalLines(
 
     const rowText = row.translateToString(true);
 
-    // Row 0 is by definition the start of a logical line; xterm should never
-    // mark it `isWrapped`, but we treat it as a fresh start defensively.
-    const isContinuation = i > 0 && row.isWrapped;
+    // The scan's first row is by definition the start of a logical line
+    // (row 0 is never wrapped; a tail window starting mid-wrap deliberately
+    // truncates that chain at the boundary).
+    const isContinuation = i > startRow && row.isWrapped;
 
     if (isContinuation && currentBaseY !== -1) {
       currentText += rowText;
@@ -213,7 +248,18 @@ export function searchInBuffer(
       })()
     : (text: string) => text.includes(query);
 
-  const logical = buildLogicalLines(buffer, perBufferLineCap);
+  const tailRows =
+    typeof opts.tailRows === 'number' && opts.tailRows > 0
+      ? Math.floor(opts.tailRows)
+      : undefined;
+  // Tail mode: scan the last min(tailRows, cap) rows. Legacy mode: head-first
+  // scan up to the cap (kept for callers that predate tail-bounding).
+  const startRow =
+    tailRows !== undefined
+      ? Math.max(0, buffer.length - Math.min(tailRows, perBufferLineCap))
+      : 0;
+
+  const logical = buildLogicalLines(buffer, perBufferLineCap, startRow);
   if (logical.length === 0) return [];
 
   const results: MatchInBuffer[] = [];
@@ -239,7 +285,15 @@ export function searchInBuffer(
     }
 
     results.push({
-      lineIdx: i,
+      // Buffer-absolute, not window-relative (3-way review: Codex+Claude —
+      // the search UI displays this as "matched line N" and a window-relative
+      // index showed ~line 4000 for a match at row 9000). Exact logical index
+      // in the legacy full scan (startRow 0). Under tailRows the rows BEFORE
+      // the window are counted physically (their wrap structure is unknowable
+      // without scanning them — the very work tail-bounding avoids), so the
+      // value is an upper-bound approximation that stays monotonic, unique
+      // per pane, and equal to the physical row anchor for unwrapped content.
+      lineIdx: startRow + i,
       physicalBaseY: line.physicalBaseY,
       text: capLine(line.text),
       contextBefore: before,
