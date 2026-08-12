@@ -3,7 +3,7 @@ import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import type { MetadataUpdatePayload } from '../../../shared/types';
 import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
-import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -18,12 +18,9 @@ async function resolveCallerWorkspace(getWindow: GetWindow, params: Record<strin
     typeof params['senderPtyId'] === 'string' ? params['senderPtyId'] : '';
   if (!senderPtyId) return '';
   try {
-    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
-    const wsId =
-      owner && typeof owner === 'object' && 'workspaceId' in owner
-        ? (owner as Record<string, unknown>)['workspaceId']
-        : null;
-    return typeof wsId === 'string' && wsId ? wsId : '';
+    // Mirror-first (workspace/ptyOwnership.ts); renderer round-trip fallback.
+    const wsId = await resolvePtyOwnerWorkspace(getWindow, senderPtyId);
+    return wsId ?? '';
   } catch {
     return '';
   }

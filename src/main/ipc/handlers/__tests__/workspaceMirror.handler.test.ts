@@ -91,3 +91,36 @@ describe('parseWorkspaceMirrorPayload — defensive renderer-trust validation', 
     expect(pane?.cwd).toBeUndefined();
   });
 });
+
+describe('parseWorkspaceMirrorPayload — roleBindings passthrough (3-way review: Codex)', () => {
+  // The original fast-path change validated the mirror by calling setSnapshot
+  // directly, bypassing this parser — which silently DROPPED roleBindings, so
+  // the resolver fell back to the round-trip on every call. These tests pin
+  // the production path: whatever reaches setSnapshot must carry the field.
+  const base = { ts: 1, entries: [], fleets: [] };
+
+  it('forwards a present roleBindings map (values opaque, keys validated)', () => {
+    const parsed = parseWorkspaceMirrorPayload({
+      ...base,
+      roleBindings: { 'pty-1': { agent: 'claude', model: 'haiku' }, '': { dropped: true } },
+    });
+    expect(parsed?.roleBindings).toEqual({ 'pty-1': { agent: 'claude', model: 'haiku' } });
+  });
+
+  it('an ABSENT field stays absent (old renderer ⇒ resolver must round-trip)', () => {
+    const parsed = parseWorkspaceMirrorPayload({ ...base });
+    expect(parsed).not.toBeNull();
+    expect('roleBindings' in (parsed as object)).toBe(false);
+  });
+
+  it('an EMPTY map survives as empty (authoritative "nothing bound")', () => {
+    const parsed = parseWorkspaceMirrorPayload({ ...base, roleBindings: {} });
+    expect(parsed?.roleBindings).toEqual({});
+  });
+
+  it('a non-record roleBindings is dropped, not fatal', () => {
+    const parsed = parseWorkspaceMirrorPayload({ ...base, roleBindings: 'junk' });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.roleBindings).toBeUndefined();
+  });
+});
