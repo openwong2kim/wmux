@@ -117,11 +117,11 @@ export async function resolveRoleBindingForPty(
   getWindow: GetWindow,
   ptyId: string,
 ): Promise<RoleBinding | undefined> {
-  const peeked = getWorkspaceMirror().peekRoleBindings();
+  const peeked = getWorkspaceMirror().peekRoleBinding(ptyId);
   if (peeked && peeked.ageMs < STALE_TRUST_MS) {
     // Re-normalize at the read boundary — the renderer store is hand-editable
     // via session.json, so treat the mirrored binding as untrusted even here.
-    return normalizeRoleBinding(peeked.bindings[ptyId]);
+    return normalizeRoleBinding(peeked.binding);
   }
   const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
   if (!result || typeof result !== 'object' || !('roleBinding' in result)) return undefined;

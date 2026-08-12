@@ -81,15 +81,18 @@ export class WorkspaceMirror {
   }
 
   /**
-   * The mirrored role-binding map plus its age, WITHOUT mutating anything.
-   * null when nothing was ever pushed OR the last push predates the
+   * ONE pty's mirrored role binding plus the snapshot's age, WITHOUT mutating
+   * anything. null when nothing was ever pushed OR the last push predates the
    * roleBindings field (old renderer) — both mean "unknown, round-trip".
-   * Returns the raw (untrusted) values; callers re-normalize at the read
-   * boundary. The record is copied so a mutating caller can't corrupt it.
+   * A non-null result with `binding: undefined` means the map is PRESENT and
+   * this pty is authoritatively unbound. Single-key on purpose: the caller
+   * (input.send hot path) reads one entry per call, so copying the whole map
+   * per lookup would tax exactly the path this mirror exists to speed up.
+   * The value is raw (untrusted); callers re-normalize at the read boundary.
    */
-  peekRoleBindings(): { bindings: Record<string, unknown>; ageMs: number } | null {
+  peekRoleBinding(ptyId: string): { binding: unknown; ageMs: number } | null {
     if (this.roleBindings === null) return null;
-    return { bindings: { ...this.roleBindings }, ageMs: this.now() - this.setAt };
+    return { binding: this.roleBindings[ptyId], ageMs: this.now() - this.setAt };
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */

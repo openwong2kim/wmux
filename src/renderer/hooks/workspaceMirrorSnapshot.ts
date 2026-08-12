@@ -17,6 +17,7 @@ import type {
   WorkspaceMirrorPushPayload,
 } from '../../shared/workspaceMirror';
 import { normalizeRoleBinding } from '../../shared/orchestratorRole';
+import type { StoreState } from '../stores';
 import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
 /**
@@ -24,10 +25,15 @@ import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../st
  * maps the D2 binding resolution reads. Both are optional so states built for
  * fleet-only tests keep compiling — an absent map simply yields an empty
  * roleBindings payload (still COMPLETE: no roles bound means no bindings).
+ *
+ * INDEXED off StoreState (type-only import, same pattern as fleet.ts) so a
+ * store field rename breaks compilation here instead of silently producing an
+ * always-empty bindings map that main would trust as "nothing bound"
+ * (3-way review: Claude+GLM).
  */
 export type MirrorSnapshotState = FleetSelectorState & {
-  paneRole?: Record<string, string | undefined>;
-  orchestratorRoleBindings?: Record<string, unknown>;
+  paneRole?: StoreState['paneRole'];
+  orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
 };
 
 /**
@@ -198,6 +204,9 @@ export function buildRoleBindings(state: MirrorSnapshotState): Record<string, un
   const out: Record<string, unknown> = {};
   const paneRole = state.paneRole ?? {};
   const bindings = state.orchestratorRoleBindings ?? {};
+  // Fast exit for the common case (no roles bound anywhere): skip the
+  // ws×leaf×surface walk this builder otherwise pays on every mirror push.
+  if (Object.keys(paneRole).length === 0 || Object.keys(bindings).length === 0) return out;
   for (const w of state.workspaces) {
     for (const leaf of getLeafPanes(w.rootPane)) {
       const role = paneRole[leaf.id];

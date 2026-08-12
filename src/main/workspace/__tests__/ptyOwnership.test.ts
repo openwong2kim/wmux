@@ -157,6 +157,27 @@ describe('resolveRoleBindingForPty (T6)', () => {
     expect(mockedSend).toHaveBeenCalledTimes(1);
   });
 
+  it('END-TO-END through the IPC parser: bindings survive parse→setSnapshot→resolve', async () => {
+    // Regression for the 3-way-review Codex finding: the production push path
+    // goes through parseWorkspaceMirrorPayload, which used to DROP the
+    // roleBindings field — so a setSnapshot-only test proved nothing about
+    // production. This test walks the real path.
+    const { parseWorkspaceMirrorPayload } = await import(
+      '../../ipc/handlers/workspaceMirror.handler'
+    );
+    const parsed = parseWorkspaceMirrorPayload({
+      ts: Date.now(),
+      entries: [{ id: 'ws-A', name: 'A', activePtyId: 'pty-1', ptyIds: ['pty-1'] }],
+      fleets: [],
+      roleBindings: { 'pty-1': binding },
+    });
+    expect(parsed).not.toBeNull();
+    getWorkspaceMirror().setSnapshot(parsed!);
+    const resolved = await resolveRoleBindingForPty(getWindow, 'pty-1');
+    expect(resolved?.model).toBe('haiku');
+    expect(mockedSend).not.toHaveBeenCalled();
+  });
+
   it('stale mirror round-trips; malformed mirrored binding normalizes to undefined', async () => {
     pushSnapshot({ roleBindings: { 'pty-1': binding } });
     vi.advanceTimersByTime(STALE_TRUST_MS + 1);
