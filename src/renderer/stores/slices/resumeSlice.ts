@@ -106,7 +106,7 @@ export const createResumeSlice: StateCreator<
   [['zustand/immer', never]],
   [],
   ResumeSlice
-> = (set) => ({
+> = (set, get) => ({
   resumeHintByPtyId: {},
   resumeBindingByPtyId: {},
   commandRunningByPtyId: {},
@@ -142,9 +142,15 @@ export const createResumeSlice: StateCreator<
     }
   }),
 
-  markPtyReady: (ptyId) => set((draft: StoreState) => {
-    if (!draft.ptyReadyByPtyId[ptyId]) draft.ptyReadyByPtyId[ptyId] = true;
-  }),
+  markPtyReady: (ptyId) => {
+    // Hot path (fed per output-adjacent event from useTerminal): bail before
+    // set() when already ready so the immer/update machinery doesn't run at
+    // all for the steady-state repeat call.
+    if (get().ptyReadyByPtyId[ptyId]) return;
+    set((draft: StoreState) => {
+      draft.ptyReadyByPtyId[ptyId] = true;
+    });
+  },
 
   setResumeHint: (ptyId, agent) => set((draft: StoreState) => {
     draft.resumeHintByPtyId[ptyId] = agent;

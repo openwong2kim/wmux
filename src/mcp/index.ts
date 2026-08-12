@@ -166,6 +166,7 @@ const PANE_GET_METADATA_SHAPE = {
 const WMUX_SEARCH_PANES_SHAPE = {
   query: z.string().min(1).describe('The text to search for. Required, non-empty. Treated as a literal substring unless regex=true.'),
   regex: z.boolean().optional().describe('If true, treat query as a JavaScript regex pattern (e.g. "ERROR|WARN", "\\\\bTODO\\\\b"). Default flags only — case-sensitive, no inline `(?i)`. Invalid pattern returns an error. Default false.'),
+  searchTailLines: z.number().int().min(1).optional().describe('How many of the NEWEST scrollback lines to scan per pane. Default 5000; raise (capped at 20000) to search deeper history. A pane holding more lines than the window reports truncated=true.'),
 };
 
 const WMUX_EVENTS_POLL_SHAPE = {
@@ -1117,10 +1118,11 @@ server.tool(
   'wmux_search_panes',
   'Search across all live terminal panes in the caller\'s workspace. Returns up to 200 matches with paneId + matched line + 2-line context (truncated=true means more were found). Use to find which pane has the JWT error, failing test, or build warning instead of polling each pane individually. Live panes only (v1); regex uses JS RegExp with default flags (case-sensitive, no inline `(?i)` — use `[Ee]rror` for case-insensitive).',
   WMUX_SEARCH_PANES_SHAPE,
-  async ({ query, regex }) => {
+  async ({ query, regex, searchTailLines }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId, query };
     if (regex !== undefined) params.regex = regex;
+    if (searchTailLines !== undefined) params.searchTailLines = searchTailLines;
     return callRpc('pane.search', params);
   },
 );
