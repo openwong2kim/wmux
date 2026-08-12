@@ -346,3 +346,20 @@ describe('searchInBuffer — lineIdx stays buffer-absolute under tailRows (Codex
     expect(matches[0].lineIdx).toBe(9_000);
   });
 });
+
+describe('searchInBuffer — tailRows never scans beyond its window (parked-path invariant)', () => {
+  // The parked-pane path asks the daemon for N rows and can get back N plus a
+  // viewport, so it bounds the scan with tailRows to stay consistent with the
+  // same pane when mounted (Codex re-review). This pins that guarantee.
+  it('rows older than the window are invisible even when handed to the engine', () => {
+    const rows = [
+      { text: 'MATCH oldest (outside the window)' },
+      { text: 'filler' },
+      { text: 'filler' },
+      { text: 'MATCH newest (inside the window)' },
+    ];
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'MATCH', { remainingBudget: 50, tailRows: 2 });
+    expect(matches.map((m) => m.physicalBaseY)).toEqual([3]);
+  });
+});

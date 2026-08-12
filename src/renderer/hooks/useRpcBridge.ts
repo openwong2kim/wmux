@@ -21,7 +21,12 @@ import {
 } from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
-import { searchInBuffer, normalizeSearchTailLines, type SearchableBuffer } from '../utils/searchEngine';
+import {
+  searchInBuffer,
+  normalizeSearchTailLines,
+  SEARCH_TAIL_MAX,
+  type SearchableBuffer,
+} from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
@@ -175,11 +180,13 @@ export function useRpcBridge(): void {
         // this the UI silently skipped the older half of a default 10k
         // scrollback (3-way review: Claude P1). normalizeSearchTailLines
         // still clamps to the 20k scan cap downstream (pre-existing bound).
-        handleRpcMethod('pane.search', {
-          query,
-          regex,
-          searchTailLines: useStore.getState().scrollbackLines,
-        });
+        // SEARCH_TAIL_MAX, not `scrollbackLines`: xterm's `buffer.length`
+        // counts the VIEWPORT on top of the scrollback, so a full buffer is
+        // `scrollbackLines + rows` and a window of exactly `scrollbackLines`
+        // would clip the oldest screenful (Codex re-review). The cap makes the
+        // window cover any buffer the engine will scan at all, which is the
+        // pre-tail-bounding behavior this entry point had.
+        handleRpcMethod('pane.search', { query, regex, searchTailLines: SEARCH_TAIL_MAX });
 
     // ── In-renderer entry point for useChannelsEventSubscription ─────────
     // The channel-message subscription hook (see
@@ -1329,10 +1336,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (read.rows.length >= parkedTail && parkedTail < store.scrollbackLines) truncated = true;
       try {
         const requestedBudget = remainingBudget;
+        // tailRows here too: the daemon answers a request for N rows with up
+        // to N + a viewport (readText's `scrollback` is history capacity, and
+        // generateTextSnapshot returns baseY + rows), so scanning everything
+        // it returned would let a parked pane match rows that the SAME pane
+        // mounted would exclude (Codex re-review). Bounding the scan to the
+        // requested window keeps live and parked panes consistent.
         const matches = searchInBuffer(
           rowsToSearchableBuffer(read.rows),
           query,
-          { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget },
+          { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget, tailRows: parkedTail },
         );
         totalMatches += matches.length;
         for (const m of matches) {
