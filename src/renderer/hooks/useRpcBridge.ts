@@ -21,7 +21,7 @@ import {
 } from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
-import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
+import { searchInBuffer, normalizeSearchTailLines, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
@@ -170,7 +170,16 @@ export function useRpcBridge(): void {
     // IPC round trip.
     (window as unknown as { __wmuxRunPaneSearch: (q: string, r: boolean) => Promise<RpcResult> })
       .__wmuxRunPaneSearch = (query: string, regex: boolean) =>
-        handleRpcMethod('pane.search', { query, regex });
+        // The HUMAN search bar must cover the user's whole configured
+        // scrollback, not the agent-facing 5,000-line tail default — without
+        // this the UI silently skipped the older half of a default 10k
+        // scrollback (3-way review: Claude P1). normalizeSearchTailLines
+        // still clamps to the 20k scan cap downstream (pre-existing bound).
+        handleRpcMethod('pane.search', {
+          query,
+          regex,
+          searchTailLines: useStore.getState().scrollbackLines,
+        });
 
     // ── In-renderer entry point for useChannelsEventSubscription ─────────
     // The channel-message subscription hook (see
@@ -1136,14 +1145,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // ─── Tail bounding (perf root-fix P5) ────────────────────────────────
     // Default: scan only the NEWEST `searchTailLines` physical rows per
     // buffer (5,000) instead of up to 20k oldest-first. Callers that need
-    // deeper history raise the param (clamped to the 20k per-buffer cap by
-    // the engine). Any pane whose buffer holds more rows than the window
-    // reports `truncated: true` so agents know older output went unscanned.
-    const rawTail = params['searchTailLines'];
-    const searchTailLines =
-      typeof rawTail === 'number' && Number.isFinite(rawTail) && rawTail >= 1
-        ? Math.floor(rawTail)
-        : 5_000;
+    // deeper history raise the param. normalizeSearchTailLines CLAMPS to the
+    // 20k scan cap here, before every use — truncation checks against an
+    // unclamped request would report `truncated:false` on partially-scanned
+    // buffers (3-way review: Codex+GLM). Any pane whose buffer holds more
+    // rows than the effective window reports `truncated: true`.
+    const searchTailLines = normalizeSearchTailLines(params['searchTailLines']);
 
     // ─── Workspace scope (C1, decisions D9) ──────────────────────────────
     // External MCP callers pass `workspaceId` via T-D so the search is

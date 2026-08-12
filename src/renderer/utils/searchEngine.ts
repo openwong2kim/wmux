@@ -32,6 +32,29 @@ const DEFAULT_CONTEXT_LINES = 2;
 /** Default ceiling on physical rows scanned per buffer. */
 const DEFAULT_BUFFER_LINE_CAP = 20_000;
 
+/** Default tail window for cross-pane search (pane.search). */
+export const SEARCH_TAIL_DEFAULT = 5_000;
+/** Hard ceiling on the tail window — mirrors the per-buffer scan cap. */
+export const SEARCH_TAIL_MAX = DEFAULT_BUFFER_LINE_CAP;
+
+/**
+ * Normalize a caller-supplied `searchTailLines` into the effective tail
+ * window: floor, default 5,000, CLAMPED to the 20k scan cap. The clamp is
+ * load-bearing for truncation honesty (3-way review: Codex+GLM): comparing a
+ * buffer's length against an UNclamped request (say 50,000) reports
+ * `truncated:false` while the engine actually scanned only the newest 20k
+ * rows — a false completeness signal in exactly the "search deeper" case the
+ * parameter exists for. Every consumer (live scan, parked fetch, truncation
+ * checks) must use THIS value, never the raw request.
+ */
+export function normalizeSearchTailLines(raw: unknown): number {
+  const n =
+    typeof raw === 'number' && Number.isFinite(raw) && raw >= 1
+      ? Math.floor(raw)
+      : SEARCH_TAIL_DEFAULT;
+  return Math.min(n, SEARCH_TAIL_MAX);
+}
+
 export interface SearchOpts {
   /**
    * Treat `query` as a JS RegExp pattern. Invalid patterns throw `SyntaxError`.
@@ -262,7 +285,15 @@ export function searchInBuffer(
     }
 
     results.push({
-      lineIdx: i,
+      // Buffer-absolute, not window-relative (3-way review: Codex+Claude —
+      // the search UI displays this as "matched line N" and a window-relative
+      // index showed ~line 4000 for a match at row 9000). Exact logical index
+      // in the legacy full scan (startRow 0). Under tailRows the rows BEFORE
+      // the window are counted physically (their wrap structure is unknowable
+      // without scanning them — the very work tail-bounding avoids), so the
+      // value is an upper-bound approximation that stays monotonic, unique
+      // per pane, and equal to the physical row anchor for unwrapped content.
+      lineIdx: startRow + i,
       physicalBaseY: line.physicalBaseY,
       text: capLine(line.text),
       contextBefore: before,

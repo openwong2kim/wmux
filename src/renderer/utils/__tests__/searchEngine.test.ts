@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { searchInBuffer, type SearchableBuffer } from '../searchEngine';
+import { searchInBuffer, normalizeSearchTailLines, type SearchableBuffer } from '../searchEngine';
 import {
   makeBuffer,
   makeBufferWithGap,
@@ -313,5 +313,36 @@ describe('searchInBuffer — tail bounding (perf root-fix P5)', () => {
       perBufferLineCap: 2,
     });
     expect(matches.map((m) => m.physicalBaseY)).toEqual([0, 1]);
+  });
+});
+
+describe('normalizeSearchTailLines — clamp honesty (3-way review: Codex+GLM)', () => {
+  it('defaults to 5000 for absent/junk/sub-1 inputs and floors fractions', () => {
+    expect(normalizeSearchTailLines(undefined)).toBe(5_000);
+    expect(normalizeSearchTailLines('9000')).toBe(5_000);
+    expect(normalizeSearchTailLines(0)).toBe(5_000);
+    expect(normalizeSearchTailLines(NaN)).toBe(5_000);
+    expect(normalizeSearchTailLines(1234.9)).toBe(1_234);
+  });
+
+  it('clamps above-cap requests to 20000 so truncation checks stay honest', () => {
+    // The bug this pins: with an UNclamped 50000 vs a 30k buffer,
+    // `30000 > 50000` is false → truncated:false while the engine scanned
+    // only the newest 20k rows. Clamped, `30000 > 20000` is true.
+    expect(normalizeSearchTailLines(50_000)).toBe(20_000);
+    expect(30_000 > normalizeSearchTailLines(50_000)).toBe(true);
+  });
+});
+
+describe('searchInBuffer — lineIdx stays buffer-absolute under tailRows (Codex+Claude)', () => {
+  it('a match at row 9000 of a 10k unwrapped buffer reports lineIdx 9000, not 4000', () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({
+      text: i === 9_000 ? 'the MATCH line' : `row ${i}`,
+    }));
+    const buf = makeBuffer(rows);
+    const matches = searchInBuffer(buf, 'MATCH', { remainingBudget: 10, tailRows: 5_000 });
+    expect(matches).toHaveLength(1);
+    expect(matches[0].physicalBaseY).toBe(9_000);
+    expect(matches[0].lineIdx).toBe(9_000);
   });
 });
