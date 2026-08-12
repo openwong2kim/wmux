@@ -82,6 +82,7 @@ import {
   WORKTASK_IDEMPOTENCY_CAP,
 } from '../../../shared/workTask';
 import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 
@@ -239,12 +240,9 @@ async function repoRootOf(dir: string): Promise<string | null> {
 async function resolveCallerWorkspace(getWindow: GetWindow, senderPtyId: string): Promise<string> {
   if (!senderPtyId) return '';
   try {
-    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
-    const wsId =
-      owner && typeof owner === 'object' && 'workspaceId' in owner
-        ? (owner as Record<string, unknown>)['workspaceId']
-        : null;
-    return typeof wsId === 'string' && wsId ? wsId : '';
+    // Mirror-first (workspace/ptyOwnership.ts); renderer round-trip fallback.
+    const wsId = await resolvePtyOwnerWorkspace(getWindow, senderPtyId);
+    return wsId ?? '';
   } catch {
     // Renderer unavailable (early boot / reload) — unresolvable, fail closed.
     return '';

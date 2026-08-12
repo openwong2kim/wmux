@@ -11,7 +11,7 @@ import {
   type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
-import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -53,12 +53,10 @@ async function resolveCallerWorkspace(
   const senderPtyId = typeof raw === 'string' ? raw.trim() : '';
   if (!senderPtyId) return '';
   try {
-    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
-    const wsId =
-      owner && typeof owner === 'object' && 'workspaceId' in owner
-        ? (owner as Record<string, unknown>).workspaceId
-        : null;
-    return typeof wsId === 'string' && wsId ? wsId : '';
+    // Mirror-first (workspace/ptyOwnership.ts) — this runs on every private-
+    // scoped agent poll, so the renderer round-trip is fallback, not hot path.
+    const wsId = await resolvePtyOwnerWorkspace(getWindow, senderPtyId);
+    return wsId ?? '';
   } catch {
     // Renderer unavailable (early boot / reload) — treat as unresolvable.
     return '';

@@ -20,7 +20,7 @@
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import { sendToRenderer } from './_bridge';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { commanderTokenWorkspace } from '../../deck/commanderTrust';
 import {
   loadWorkspaceDecision,
@@ -69,13 +69,12 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (typeof ptyId !== 'string' || ptyId.length === 0) {
       throw new Error('deck.resolvePaneRoute: missing required param "ptyId"');
     }
-    // Same ownership oracle assertWorkspaceOwnsPty consults — the renderer's
-    // live workspace tree.
-    const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
-    const owner =
-      result && typeof result === 'object' && 'workspaceId' in result
-        ? ((result as Record<string, unknown>)['workspaceId'] as string | null)
-        : null;
+    // Same ownership oracle assertWorkspaceOwnsPty consults — mirror-first
+    // with the renderer's live workspace tree as fallback/deny authority
+    // (workspace/ptyOwnership.ts).
+    const owner = await resolvePtyOwnerWorkspace(getWindow, ptyId, {
+      expected: tokenWorkspaceId,
+    });
     if (typeof owner !== 'string' || owner.length === 0) {
       throw new Error(`deck.resolvePaneRoute: no workspace owns PTY "${ptyId}"`);
     }
