@@ -157,6 +157,17 @@ describe('resolveRoleBindingForPty (T6)', () => {
     expect(mockedSend).toHaveBeenCalledTimes(1);
   });
 
+  it('a pty the snapshot has never seen ROUND-TRIPS instead of answering "unbound"', async () => {
+    // The push that would carry a just-spawned pane's binding may not have
+    // landed yet. Reading its absence as "no binding" would let the first
+    // submit after a split bypass the enforced model (Codex re-review).
+    pushSnapshot({ roleBindings: { 'pty-1': binding } });
+    mockedSend.mockResolvedValue({ workspaceId: 'ws-A', roleBinding: binding });
+    const resolved = await resolveRoleBindingForPty(getWindow, 'pty-just-spawned');
+    expect(resolved?.model).toBe('haiku');
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+  });
+
   it('END-TO-END through the IPC parser: bindings survive parse→setSnapshot→resolve', async () => {
     // Regression for the 3-way-review Codex finding: the production push path
     // goes through parseWorkspaceMirrorPayload, which used to DROP the

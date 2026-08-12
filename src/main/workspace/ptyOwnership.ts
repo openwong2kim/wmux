@@ -103,11 +103,19 @@ export async function assertWorkspaceOwnsPty(
 
 /**
  * Resolve a pane's enforced role→model binding for a ptyId. Mirror-first: the
- * push payload carries a COMPLETE ptyId→binding map (workspaceMirrorSnapshot
- * buildRoleBindings — same resolution the round-trip performs), so a fresh
- * mirror answers both "bound to X" and "unbound" locally. An old renderer that
- * pushes no roleBindings field yields peekRoleBindings() === null — unknown,
- * so we round-trip exactly as before.
+ * push payload carries a ptyId→binding map (workspaceMirrorSnapshot
+ * buildRoleBindings — the same resolution the round-trip performs), so a fresh
+ * mirror can answer both "bound to X" and "unbound" locally. An old renderer
+ * that pushes no roleBindings field yields peekRoleBinding() === null —
+ * unknown, so we round-trip exactly as before.
+ *
+ * The map is complete only for the PTYs THAT SNAPSHOT KNOWS ABOUT. A pane
+ * spawned after the last push is absent from it for a reason that has nothing
+ * to do with bindings, so answering "unbound" from its absence would let the
+ * first `terminal_send("claude", submit:true)` after a split escape the pane's
+ * enforced model — the exact bypass D2 exists to prevent (Codex re-review).
+ * Absence is therefore only authoritative when the ptyId is present in the
+ * SAME snapshot's ownership entries; otherwise we round-trip.
  *
  * Returns undefined on any miss (no owner, unbound role, malformed reply) —
  * the caller fails OPEN, never blocking a legitimate send because a lookup
@@ -117,11 +125,18 @@ export async function resolveRoleBindingForPty(
   getWindow: GetWindow,
   ptyId: string,
 ): Promise<RoleBinding | undefined> {
-  const peeked = getWorkspaceMirror().peekRoleBinding(ptyId);
+  const mirror = getWorkspaceMirror();
+  const peeked = mirror.peekRoleBinding(ptyId);
   if (peeked && peeked.ageMs < STALE_TRUST_MS) {
-    // Re-normalize at the read boundary — the renderer store is hand-editable
-    // via session.json, so treat the mirrored binding as untrusted even here.
-    return normalizeRoleBinding(peeked.binding);
+    // Same snapshot, read back-to-back (no await between) so the entries and
+    // the bindings map can never come from different pushes.
+    const snapshot = mirror.peek();
+    const knownPty = snapshot ? findWorkspaceIdForPty(ptyId, snapshot.entries) !== null : false;
+    if (knownPty) {
+      // Re-normalize at the read boundary — the renderer store is hand-editable
+      // via session.json, so treat the mirrored binding as untrusted even here.
+      return normalizeRoleBinding(peeked.binding);
+    }
   }
   const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
   if (!result || typeof result !== 'object' || !('roleBinding' in result)) return undefined;
