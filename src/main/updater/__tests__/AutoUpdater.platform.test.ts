@@ -33,7 +33,12 @@ const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/openwong2kim/wmux/da
  * so a construction that forgets to wire it must not compile.
  */
 function quitHooks() {
-  return { onBeforeInstallQuit: vi.fn(), onInstallQuitAborted: vi.fn() };
+  return {
+    onBeforeInstallQuit: vi.fn(),
+    onInstallQuitAborted: vi.fn(),
+    onInstallRequiresFullShutdown: vi.fn(),
+    getDaemonPid: vi.fn(() => null),
+  };
 }
 
 /** Platforms with no in-app updater: [platform, arch]. */
@@ -70,6 +75,7 @@ async function loadForPlatform(
   platform: NodeJS.Platform,
   routes?: (url: string) => FakeRoute | undefined,
   arch: string = platform === 'darwin' ? 'arm64' : 'x64',
+  { isPackaged = true }: { isPackaged?: boolean } = {},
 ) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -138,9 +144,28 @@ async function loadForPlatform(
     },
   };
 
+  // #866: the win32 install path enumerates and force-kills every process
+  // under the install root, which it derives from process.execPath. Under test
+  // that is the node binary, so the real implementation would target unrelated
+  // node processes. Stubbed so the handoff stays observable; the real thing is
+  // exercised against a sandbox in installTeardown.runtime.test.
+  const teardown = {
+    collectInstallRootPids: vi.fn((_root: string): number[] => [4242]),
+    terminatePids: vi.fn((pids: readonly number[]): number[] => [...pids]),
+    spawnInstallWaiter: vi.fn((_plan: { setupExePath: string }): string | null =>
+      'C:\\Temp\\waiter\\wait-and-install.ps1'),
+    freeSpaceShortfall: vi.fn(() => null),
+    probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
+    readDaemonPid: vi.fn((): number | null => null),
+    readAbortMarker: vi.fn((): string | null => null),
+    clearAbortMarker: vi.fn(),
+    INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
+  };
+  vi.doMock('../installTeardown', () => teardown);
+
   vi.doMock('electron', () => ({
     autoUpdater: nativeUpdater,
-    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit },
+    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged },
     ipcMain: {
       on: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcListeners.set(ch, cb); },
       handle: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcHandlers.set(ch, cb); },
@@ -152,7 +177,7 @@ async function loadForPlatform(
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown };
 }
 
 describe('AutoUpdater platform gating', () => {
@@ -345,31 +370,56 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     return { updater, installHandler, sent };
   }
 
-  it('win32: UPDATE_INSTALL launches the verified installer, then quits the app', async () => {
+  it('win32: UPDATE_INSTALL hands the verified installer to the waiter, then quits the app', async () => {
     const loaded = await loadForPlatform('win32', downloadRoutes);
     const { installHandler } = await downloadUpdateFor(loaded);
 
     await installHandler();
 
-    expect(loaded.shellOpenPath).toHaveBeenCalledTimes(1);
-    const openedPath = String(loaded.shellOpenPath.mock.calls[0]![0]);
-    expect(openedPath).toContain(`wmux-update-${UPDATE_VERSION}-`);
-    expect(openedPath).toContain('.Setup.exe');
-    // The quit is the fix: Squirrel must never run against a live instance.
+    // #866: the installer is never started from here. Setup.exe deletes the
+    // install root as its first action, so it has to be launched by something
+    // that outlives us and can confirm the tree is dead first.
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+    expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
+    const plan = loaded.teardown.spawnInstallWaiter.mock.calls[0]![0] as { setupExePath: string };
+    expect(plan.setupExePath).toContain(`wmux-update-${UPDATE_VERSION}-`);
+    expect(plan.setupExePath).toContain('.Setup.exe');
+    // #502 + #866: quit so Squirrel never runs against a live instance, and ask
+    // for the full shutdown so the daemon goes down with us.
     expect(loaded.appQuit).toHaveBeenCalledTimes(1);
   });
 
-  it('win32: a failed installer launch reports UPDATE_ERROR and does NOT quit', async () => {
+  it('win32: a handoff that cannot be prepared reports UPDATE_ERROR and does NOT quit', async () => {
     const loaded = await loadForPlatform('win32', downloadRoutes);
     const { installHandler, sent } = await downloadUpdateFor(loaded);
 
-    loaded.shellOpenPath.mockResolvedValueOnce('access denied');
+    loaded.teardown.spawnInstallWaiter.mockReturnValueOnce(null);
     await installHandler();
 
     expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(true);
-    // Quitting after a failed launch would close the app with no installer
-    // running — the user would just find wmux gone.
+    // Two things must NOT happen here. Quitting would close the app with no
+    // installer running — the user just finds wmux gone. And falling back to
+    // starting Setup.exe ourselves is the #866 bug, so the installer must stay
+    // untouched when the safe path is unavailable.
     expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+  });
+
+  it('win32: refuses to install from an unpackaged build instead of killing stray processes', async () => {
+    // The teardown derives the install root from process.execPath. Unpackaged
+    // that is the runtime binary, so enumerate-and-kill would target unrelated
+    // processes under it — this suite lost its own worker to exactly that
+    // before the guard existed.
+    const loaded = await loadForPlatform('win32', downloadRoutes, 'x64', { isPackaged: false });
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+
+    await installHandler();
+
+    expect(loaded.teardown.collectInstallRootPids).not.toHaveBeenCalled();
+    expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
+    expect(loaded.teardown.spawnInstallWaiter).not.toHaveBeenCalled();
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(true);
   });
 
   it('win32: UPDATE_INSTALL with no downloaded installer neither launches nor quits', async () => {
@@ -666,5 +716,73 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
 
     updater.stop();
+  });
+});
+
+describe('AutoUpdater #866 — a refused install is reported on the next boot', () => {
+  // The renderer PULLS this. The push-on-a-timer version it replaced sent
+  // UPDATE_ERROR into a window whose only listener lived in the Settings
+  // panel — mounted only while Settings is open — so with Settings closed the
+  // notice went nowhere AND the marker was cleared anyway. Live dogfood:
+  // marker planted, app booted, main logged the refusal, marker gone, nothing
+  // shown. These tests pin the take contract instead.
+  const takeHandler = (loaded: Awaited<ReturnType<typeof loadForPlatform>>) => {
+    const h = loaded.ipcHandlers.get(IPC.UPDATE_TAKE_REFUSED_INSTALL);
+    if (!h) throw new Error('UPDATE_TAKE_REFUSED_INSTALL handler was never registered');
+    return h;
+  };
+
+  it('win32: hands the reason to the renderer that asks, and clears the marker only then', async () => {
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.readAbortMarker.mockReturnValueOnce(
+      'install-aborted: install root still locked',
+    );
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    updater.start();
+
+    // Registering the handler must not consume the marker on its own.
+    expect(loaded.teardown.clearAbortMarker).not.toHaveBeenCalled();
+
+    const reason = await takeHandler(loaded)();
+    expect(reason).toBe('install-aborted: install root still locked');
+    expect(loaded.teardown.clearAbortMarker).toHaveBeenCalledTimes(1);
+
+    updater.stop();
+  });
+
+  it('win32: answers null and clears nothing when no install was refused', async () => {
+    const loaded = await loadForPlatform('win32');
+    // readAbortMarker defaults to null in the stub — nothing was refused.
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    updater.start();
+
+    expect(await takeHandler(loaded)()).toBeNull();
+    expect(loaded.teardown.clearAbortMarker).not.toHaveBeenCalled();
+
+    updater.stop();
+  });
+
+  it('the handler exists even where in-app updates are unsupported, so the invoke never rejects', async () => {
+    const loaded = await loadForPlatform('linux');
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    updater.start();
+
+    expect(await takeHandler(loaded)()).toBeNull();
+    updater.stop();
+  });
+
+  it('registers the handler at CONSTRUCTION, before start() — the renderer asks first', async () => {
+    // start() runs at the end of the ready sequence, which waits on the daemon
+    // bootstrap (39s on a cold boot in dogfood). The renderer mounts and asks
+    // at ~0.7s, so a handler registered in start() is not there yet and the
+    // invoke rejects — which is exactly how this notice went missing live.
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.readAbortMarker.mockReturnValueOnce('install-aborted: install root still locked');
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    // No start() call anywhere in this test.
+    expect(await takeHandler(loaded)()).toBe('install-aborted: install root still locked');
   });
 });

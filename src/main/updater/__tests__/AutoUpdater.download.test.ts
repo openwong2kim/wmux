@@ -13,9 +13,22 @@ const DL_URL = `https://github.com/openwong2kim/wmux/releases/download/v${NEW_VE
 const INSTALLER_BODY = Buffer.from('FAKE-INSTALLER-BYTES');
 const GOOD_SHA = createHash('sha256').update(INSTALLER_BODY).digest('hex');
 
-/** Quit hooks every AutoUpdater requires (see AutoUpdaterHooks). */
+/**
+ * Quit hooks every AutoUpdater requires (see AutoUpdaterHooks).
+ *
+ * `getDaemonPid` returns 4243, which is one of the two pids the mocked
+ * enumeration reports. That is deliberate: it is what lets a test see the
+ * daemon being EXCLUDED from the force-kill list (it gets the graceful
+ * shutdown instead). A null here would silently pass the exclusion assertion
+ * by never exercising it.
+ */
 function quitHooks() {
-  return { onBeforeInstallQuit: vi.fn(), onInstallQuitAborted: vi.fn() };
+  return {
+    onBeforeInstallQuit: vi.fn(),
+    onInstallQuitAborted: vi.fn(),
+    onInstallRequiresFullShutdown: vi.fn(),
+    getDaemonPid: vi.fn((): number | null => 4243),
+  };
 }
 
 const realPlatform = process.platform;
@@ -103,12 +116,34 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   const unlinkMock = vi.fn(async (_path: string) => undefined);
   vi.doMock('node:fs/promises', () => ({ unlink: unlinkMock }));
 
+  // #866: the install path enumerates and force-kills every process under the
+  // install root, which is derived from process.execPath. Under test that is
+  // the node binary, so the real implementation would kill unrelated node
+  // processes — it took out this suite's own worker before this mock existed.
+  // Stubbed here so the ORDER and the refusal branches stay observable; the
+  // real thing is exercised against a sandbox in installTeardown.runtime.test.
+  const teardown = {
+    collectInstallRootPids: vi.fn((_root: string): number[] => [4242, 4243]),
+    terminatePids: vi.fn((pids: readonly number[]): number[] => [...pids]),
+    spawnInstallWaiter: vi.fn((_plan: { setupExePath: string }): string | null =>
+      'C:\\Temp\\waiter\\wait-and-install.ps1'),
+    freeSpaceShortfall: vi.fn(() => null),
+    probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
+    readDaemonPid: vi.fn((): number | null => 4243),
+    // Boot-time refused-install notice: default to "nothing to report" so it
+    // never leaks an UPDATE_ERROR into tests about other flows.
+    readAbortMarker: vi.fn((): string | null => null),
+    clearAbortMarker: vi.fn(),
+    INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
+  };
+  vi.doMock('../installTeardown', () => teardown);
+
   // #502: UPDATE_INSTALL now calls app.quit() after a successful launch so
   // Squirrel never installs against a live instance — the mock must provide it.
   const quit = vi.fn();
   vi.doMock('electron', () => ({
     autoUpdater: {},
-    app: { getVersion: () => FAKE_VERSION, getPath: () => '/tmp', quit },
+    app: { getVersion: () => FAKE_VERSION, getPath: () => '/tmp', quit, isPackaged: true },
     ipcMain: {
       on: vi.fn(),
       handle: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcHandlers.set(ch, cb); },
@@ -120,7 +155,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock, teardown };
 }
 
 /** Flush queued microtasks so the chained net responses (feed→manifest→download) settle. */
@@ -164,7 +199,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   });
 
   it('a user-triggered check (UPDATE_CHECK) is one-shot: auto-installs once verified', async () => {
-    const { AutoUpdater, ipcHandlers, openPath, quit, win } = await loadWin32();
+    const { AutoUpdater, ipcHandlers, openPath, quit, win, teardown } = await loadWin32();
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -172,15 +207,20 @@ describe('AutoUpdater two-step flow (win32)', () => {
     // one-shot "update now": no second click needed to install.
     await ipcHandlers.get(IPC.UPDATE_CHECK)!();
     // performInstall runs fire-and-forget with a real 500ms session-save delay.
-    await until(() => openPath.mock.calls.length > 0);
+    await until(() => teardown.spawnInstallWaiter.mock.calls.length > 0);
 
-    expect(openPath).toHaveBeenCalledTimes(1);
-    expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
+    // #866: the installer is handed to a waiter, never launched from here —
+    // launching it directly is what deletes the install root out from under a
+    // live daemon.
+    expect(openPath).not.toHaveBeenCalled();
+    expect(teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
+    const plan = teardown.spawnInstallWaiter.mock.calls[0][0] as { setupExePath: string };
+    expect(plan.setupExePath).toContain('wmux-update-');
     expect(quit).toHaveBeenCalledTimes(1);
   });
 
-  it('UPDATE_INSTALL launches the downloaded file without re-fetching the manifest, then quits', async () => {
-    const { AutoUpdater, ipcHandlers, requestUrls, openPath, quit, win } = await loadWin32();
+  it('UPDATE_INSTALL hands off the downloaded file without re-fetching the manifest, then quits', async () => {
+    const { AutoUpdater, ipcHandlers, requestUrls, openPath, quit, win, teardown } = await loadWin32();
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -191,12 +231,15 @@ describe('AutoUpdater two-step flow (win32)', () => {
     await ipcHandlers.get(IPC.UPDATE_INSTALL)!();
     await flush();
 
-    // Launched the local installer, and made NO new network request.
-    expect(openPath).toHaveBeenCalledTimes(1);
-    expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
+    // Handed the local installer to the waiter, and made NO new network request.
+    expect(openPath).not.toHaveBeenCalled();
+    expect(teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
     expect(requestUrls.length).toBe(urlsAfterDownload);
-    // #502: quit after launch so Squirrel installs against a dead instance.
+    // #502 + #866: quit so Squirrel installs against a dead instance — and the
+    // daemon has to go with us, so the full-shutdown branch is requested first.
     expect(quit).toHaveBeenCalledTimes(1);
+    // The daemon is spared the force-kill; it gets the graceful shutdown.
+    expect(teardown.terminatePids).toHaveBeenCalledWith([4242]);
   });
 
   it('rejects on sha256 mismatch: emits error, no downloaded path, install is a no-op', async () => {
@@ -221,7 +264,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   });
 
   it('a manual press mid-poll preserves the one-shot intent so the in-flight download installs', async () => {
-    const { AutoUpdater, openPath, quit, win } = await loadWin32();
+    const { AutoUpdater, openPath, quit, win, teardown } = await loadWin32();
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -244,14 +287,17 @@ describe('AutoUpdater two-step flow (win32)', () => {
     // The in-flight poll now finishes its download → it honors the intent and installs.
     internals.isChecking = false;
     await internals.downloadUpdate();
-    await until(() => openPath.mock.calls.length > 0);
-    expect(openPath).toHaveBeenCalledTimes(1);
+    await until(() => teardown.spawnInstallWaiter.mock.calls.length > 0);
+    expect(openPath).not.toHaveBeenCalled();
     expect(quit).toHaveBeenCalledTimes(1);
   });
 
   it('a failed one-shot fast-path install clears the intent (no unattended restart later)', async () => {
-    const { AutoUpdater, openPath, quit, win } = await loadWin32();
-    openPath.mockResolvedValueOnce('launch failed'); // shell.openPath resolves with an error string, never throws
+    const { AutoUpdater, quit, win, teardown } = await loadWin32();
+    // #866: the failure mode is now "the waiter could not be prepared". When
+    // that happens the install must be ABANDONED — falling back to launching
+    // Setup.exe directly is the bug this change exists to remove.
+    teardown.spawnInstallWaiter.mockReturnValueOnce(null);
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -265,13 +311,13 @@ describe('AutoUpdater two-step flow (win32)', () => {
     internals.downloadedPath = 'C:/tmp/wmux-update-9.9.10.Setup.exe';
     internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
 
-    // Manual press → fast path → performInstall, whose launch fails.
+    // Manual press → fast path → performInstall, whose handoff fails.
     await internals.check(true);
-    await until(() => openPath.mock.calls.length > 0);
+    await until(() => teardown.spawnInstallWaiter.mock.calls.length > 0);
     await flush();
 
-    // The failed launch must NOT quit, and must have cleared the intent so a
-    // later background download can't auto-restart the app.
+    // A refused handoff must NOT quit (the user keeps a working app), and must
+    // have cleared the intent so a later background download can't auto-restart.
     expect(quit).not.toHaveBeenCalled();
     expect(internals.oneShotInstall).toBe(false);
   });

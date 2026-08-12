@@ -153,6 +153,7 @@ export const zhTW = {
   'settings.sidebarLeft': '左側',
   'settings.sidebarRight': '右側',
   'settings.updateReady': '更新已就緒',
+  'settings.updateEndsSessions': '安裝將關閉所有正在執行的工作階段。',
   'settings.checkFailed': '檢查失敗',
   'settings.unknownError': '未知錯誤',
   'settings.notificationBehavior': '通知行為',

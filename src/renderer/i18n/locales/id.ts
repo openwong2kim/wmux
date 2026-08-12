@@ -153,6 +153,7 @@ export const id = {
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Pembaruan siap',
+  'settings.updateEndsSessions': 'Pemasangan akan menutup sesi yang sedang berjalan.',
   'settings.checkFailed': 'Pemeriksaan gagal',
   'settings.unknownError': 'Galat tidak diketahui',
   'settings.notificationBehavior': 'Perilaku notifikasi',

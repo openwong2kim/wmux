@@ -153,6 +153,7 @@ export const uk = {
   'settings.sidebarLeft': 'Ліворуч',
   'settings.sidebarRight': 'Праворуч',
   'settings.updateReady': 'Оновлення готове',
+  'settings.updateEndsSessions': 'Встановлення закриє запущені сесії.',
   'settings.checkFailed': 'Перевірку не вдалося',
   'settings.unknownError': 'Невідома помилка',
   'settings.notificationBehavior': 'Поведінка сповіщень',

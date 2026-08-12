@@ -153,6 +153,7 @@ export const th = {
   'settings.sidebarLeft': 'ซ้าย',
   'settings.sidebarRight': 'ขวา',
   'settings.updateReady': 'การอัปเดตพร้อมแล้ว',
+  'settings.updateEndsSessions': 'การติดตั้งจะปิดเซสชันที่กำลังทำงานอยู่',
   'settings.checkFailed': 'การตรวจสอบล้มเหลว',
   'settings.unknownError': 'ข้อผิดพลาดที่ไม่รู้จัก',
   'settings.notificationBehavior': 'พฤติกรรมการแจ้งเตือน',

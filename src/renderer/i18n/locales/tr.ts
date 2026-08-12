@@ -153,6 +153,7 @@ export const tr = {
   'settings.sidebarLeft': 'Sol',
   'settings.sidebarRight': 'Sağ',
   'settings.updateReady': 'Güncelleme hazır',
+  'settings.updateEndsSessions': 'Kurulum çalışan oturumlarınızı kapatır.',
   'settings.checkFailed': 'Denetim başarısız',
   'settings.unknownError': 'Bilinmeyen hata',
   'settings.notificationBehavior': 'Bildirim davranışı',

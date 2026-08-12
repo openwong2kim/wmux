@@ -153,6 +153,7 @@ export const pl = {
   'settings.sidebarLeft': 'Lewo',
   'settings.sidebarRight': 'Prawo',
   'settings.updateReady': 'Aktualizacja gotowa',
+  'settings.updateEndsSessions': 'Instalacja zamknie uruchomione sesje.',
   'settings.checkFailed': 'Sprawdzanie nie powiodło się',
   'settings.unknownError': 'Nieznany błąd',
   'settings.notificationBehavior': 'Zachowanie powiadomień',

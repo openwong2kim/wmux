@@ -153,6 +153,7 @@ export const ptBR = {
   'settings.sidebarLeft': 'Esquerda',
   'settings.sidebarRight': 'Direita',
   'settings.updateReady': 'Atualização pronta',
+  'settings.updateEndsSessions': 'A instalação encerra as sessões em execução.',
   'settings.checkFailed': 'Verificação falhou',
   'settings.unknownError': 'Erro desconhecido',
   'settings.notificationBehavior': 'Comportamento das notificações',

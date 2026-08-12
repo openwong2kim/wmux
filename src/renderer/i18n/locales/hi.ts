@@ -153,6 +153,7 @@ export const hi = {
   'settings.sidebarLeft': 'बाएँ',
   'settings.sidebarRight': 'दाएँ',
   'settings.updateReady': 'अपडेट तैयार',
+  'settings.updateEndsSessions': 'इंस्टॉल करने पर आपके चल रहे सेशन बंद हो जाएंगे।',
   'settings.checkFailed': 'जाँच विफल',
   'settings.unknownError': 'अज्ञात त्रुटि',
   'settings.notificationBehavior': 'सूचना व्यवहार',

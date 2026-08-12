@@ -153,6 +153,7 @@ export const fr = {
   'settings.sidebarLeft': 'Gauche',
   'settings.sidebarRight': 'Droite',
   'settings.updateReady': 'Mise à jour prête',
+  'settings.updateEndsSessions': 'L’installation ferme vos sessions en cours.',
   'settings.checkFailed': 'Vérification échouée',
   'settings.unknownError': 'Erreur inconnue',
   'settings.notificationBehavior': 'Comportement des notifications',

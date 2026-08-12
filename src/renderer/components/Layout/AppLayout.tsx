@@ -297,6 +297,38 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
  * handler's fixed 36. Mirrors useTitleBarOverlaySync's color read. Safe under
  * jsdom: bails when electronAPI is absent.
  */
+/**
+ * #866 — collect a refused install's reason and say so, once, at mount.
+ *
+ * PULL rather than a main-side push: the push version fired on a boot timer
+ * and the only listener lived in the Settings panel, which is mounted only
+ * while Settings is OPEN. With Settings closed — the default — nothing
+ * received it and the marker was cleared anyway, so a failed update stayed as
+ * invisible as it was before the feature existed. This runs from AppLayout,
+ * which is always mounted, and the take is what clears the marker: a notice
+ * nobody could receive survives to the next boot instead.
+ */
+function useRefusedInstallNotice(t: (key: string) => string): void {
+  useEffect(() => {
+    const take = window.electronAPI?.updater?.takeRefusedInstall;
+    if (!take) return; // tests / non-electron / stale preload
+    let cancelled = false;
+    void take()
+      .then((reason) => {
+        if (cancelled || !reason) return;
+        useStore.getState().pushToast({ level: 'error', message: t('update.refusedInstall') });
+      })
+      .catch((err) => {
+        // Loud on purpose. The first version of this failed exactly here — the
+        // main-side handler was registered late and the invoke rejected — and
+        // a silent catch is what made a missing notice look like "no refusal
+        // happened". Never break mount over it, but never hide it either.
+        console.warn('[update] could not collect a refused-install notice:', err);
+      });
+    return () => { cancelled = true; };
+  }, [t]);
+}
+
 function useUiScaleSync(uiScale: number): void {
   useEffect(() => {
     const send = window.electronAPI?.window?.setUiScale;
@@ -403,6 +435,7 @@ export default function AppLayout() {
   const [showAutoUpdatePrompt, setShowAutoUpdatePrompt] = useState(false);
   const t = useT();
 
+  useRefusedInstallNotice(t);
   useKeyboard();
   // NOTE: useActivePaneFocus() now runs inside <FocusManager> (a render-null
   // child), NOT here. Its focusKey subscription embeds activeWorkspaceId and

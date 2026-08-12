@@ -153,6 +153,7 @@ export const da = {
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Højre',
   'settings.updateReady': 'Opdatering klar',
+  'settings.updateEndsSessions': 'Installation lukker dine kørende sessioner.',
   'settings.checkFailed': 'Tjek mislykkedes',
   'settings.unknownError': 'Ukendt fejl',
   'settings.notificationBehavior': 'Notifikationsadfærd',

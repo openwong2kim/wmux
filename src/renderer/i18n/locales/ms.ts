@@ -153,6 +153,7 @@ export const ms = {
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Kemas kini sedia',
+  'settings.updateEndsSessions': 'Pemasangan akan menutup sesi yang sedang berjalan.',
   'settings.checkFailed': 'Pemeriksaan gagal',
   'settings.unknownError': 'Ralat tidak diketahui',
   'settings.notificationBehavior': 'Kelakuan pemberitahuan',
