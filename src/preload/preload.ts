@@ -1066,6 +1066,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.UPDATE_CHECK) as Promise<{ status: string }>,
     installUpdate: () =>
       ipcRenderer.invoke(IPC.UPDATE_INSTALL),
+    // #866 — collect (and clear) the reason a previous install was refused.
+    // Pulled by an always-mounted renderer surface, because the push-on-boot
+    // version landed in a window whose only listener was the Settings panel.
+    takeRefusedInstall: () =>
+      ipcRenderer.invoke(IPC.UPDATE_TAKE_REFUSED_INSTALL) as Promise<string | null>,
     onUpdateAvailable: (callback: (data: { status: string; releaseName?: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { status: string; releaseName?: string }) =>
         callback(data);

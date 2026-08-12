@@ -720,55 +720,69 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
 });
 
 describe('AutoUpdater #866 — a refused install is reported on the next boot', () => {
-  it('win32: surfaces UPDATE_ERROR once when the waiter left an abort marker', async () => {
-    vi.useFakeTimers();
+  // The renderer PULLS this. The push-on-a-timer version it replaced sent
+  // UPDATE_ERROR into a window whose only listener lived in the Settings
+  // panel — mounted only while Settings is open — so with Settings closed the
+  // notice went nowhere AND the marker was cleared anyway. Live dogfood:
+  // marker planted, app booted, main logged the refusal, marker gone, nothing
+  // shown. These tests pin the take contract instead.
+  const takeHandler = (loaded: Awaited<ReturnType<typeof loadForPlatform>>) => {
+    const h = loaded.ipcHandlers.get(IPC.UPDATE_TAKE_REFUSED_INSTALL);
+    if (!h) throw new Error('UPDATE_TAKE_REFUSED_INSTALL handler was never registered');
+    return h;
+  };
+
+  it('win32: hands the reason to the renderer that asks, and clears the marker only then', async () => {
     const loaded = await loadForPlatform('win32');
     loaded.teardown.readAbortMarker.mockReturnValueOnce(
       'install-aborted: install root still locked',
     );
 
-    const sent: Array<{ channel: string }> = [];
-    const win = {
-      isDestroyed: () => false,
-      webContents: {
-        isCrashed: () => false,
-        send: (channel: string) => sent.push({ channel }),
-        executeJavaScript: vi.fn(async () => undefined),
-      },
-    };
-
-    const updater = new loaded.AutoUpdater(() => win as never, quitHooks());
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
     updater.start();
 
-    // Nothing yet: the notice waits for the renderer to attach its listeners.
-    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+    // Registering the handler must not consume the marker on its own.
+    expect(loaded.teardown.clearAbortMarker).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(1);
+    const reason = await takeHandler(loaded)();
+    expect(reason).toBe('install-aborted: install root still locked');
+    expect(loaded.teardown.clearAbortMarker).toHaveBeenCalledTimes(1);
 
     updater.stop();
   });
 
-  it('win32: stays silent when there is no marker', async () => {
-    vi.useFakeTimers();
+  it('win32: answers null and clears nothing when no install was refused', async () => {
     const loaded = await loadForPlatform('win32');
-    // consumeAbortMarker defaults to null in the stub — nothing was refused.
+    // readAbortMarker defaults to null in the stub — nothing was refused.
 
-    const sent: Array<{ channel: string }> = [];
-    const win = {
-      isDestroyed: () => false,
-      webContents: {
-        isCrashed: () => false,
-        send: (channel: string) => sent.push({ channel }),
-        executeJavaScript: vi.fn(async () => undefined),
-      },
-    };
-
-    const updater = new loaded.AutoUpdater(() => win as never, quitHooks());
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
     updater.start();
-    await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+    expect(await takeHandler(loaded)()).toBeNull();
+    expect(loaded.teardown.clearAbortMarker).not.toHaveBeenCalled();
+
     updater.stop();
+  });
+
+  it('the handler exists even where in-app updates are unsupported, so the invoke never rejects', async () => {
+    const loaded = await loadForPlatform('linux');
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    updater.start();
+
+    expect(await takeHandler(loaded)()).toBeNull();
+    updater.stop();
+  });
+
+  it('registers the handler at CONSTRUCTION, before start() — the renderer asks first', async () => {
+    // start() runs at the end of the ready sequence, which waits on the daemon
+    // bootstrap (39s on a cold boot in dogfood). The renderer mounts and asks
+    // at ~0.7s, so a handler registered in start() is not there yet and the
+    // invoke rejects — which is exactly how this notice went missing live.
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.readAbortMarker.mockReturnValueOnce('install-aborted: install root still locked');
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    // No start() call anywhere in this test.
+    expect(await takeHandler(loaded)()).toBe('install-aborted: install root still locked');
   });
 });

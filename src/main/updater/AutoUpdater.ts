@@ -65,10 +65,6 @@ const INSTALL_STAGING_HEADROOM_BYTES = 200 * 1024 * 1024;
 // can hold files for a while, and waiting is free while refusing costs the user
 // their update.
 const INSTALL_LOCK_BUDGET_MS = 60_000;
-// The refused-install notice waits for the renderer to attach its update
-// listeners. Sending it at boot would drop it into a window that is not
-// listening yet, which is indistinguishable from never reporting at all.
-const REFUSED_INSTALL_NOTICE_DELAY_MS = 5_000;
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -177,6 +173,14 @@ export class AutoUpdater {
   constructor(getWindow: () => BrowserWindow | null, hooks: AutoUpdaterHooks) {
     this.getWindow = getWindow;
     this.hooks = hooks;
+    // #866. Registered HERE, not in start(): start() runs at the end of the
+    // ready sequence, which waits on the daemon bootstrap — measured at 39s on
+    // a cold boot. The renderer mounts and asks for a refused install at
+    // ~0.7s, so a handler registered in start() is not there yet and the
+    // invoke rejects with "no handler registered", which is how this notice
+    // silently went missing in live dogfood. The constructor runs during
+    // module evaluation, before the window exists at all.
+    ipcMain.handle(IPC.UPDATE_TAKE_REFUSED_INSTALL, () => this.takeRefusedInstall());
   }
 
   start(): void {
@@ -197,12 +201,12 @@ export class AutoUpdater {
     void this.sweepStaleArtifacts();
 
     // #866: if the last install was refused because the install root never
-    // cleared, the waiter left a marker instead of running Setup.exe. Say so.
-    // Without this the user pressed "Restart to install", watched wmux quit and
-    // come back on the SAME version, and has nothing to go on — which is how
-    // this class of failure stays invisible until someone files a bug about
-    // icons instead.
-    this.reportRefusedInstall();
+    // cleared, the waiter left a marker instead of running Setup.exe. The
+    // renderer TAKES that reason once it is mounted (UPDATE_TAKE_REFUSED_INSTALL,
+    // registered above) — main does not push it here. Without the notice the
+    // user pressed "Restart to install", watched wmux quit and come back on
+    // the SAME version, and has nothing to go on, which is how this class of
+    // failure stays invisible until someone files a bug about icons instead.
 
     // 앱 시작 후 15초 뒤 첫 번째 확인 (시작 부하 방지)
     setTimeout(() => this.check(), 15_000);
@@ -212,30 +216,28 @@ export class AutoUpdater {
   }
 
   /**
-   * Surface a refused install from the previous run, once (#866).
+   * Hand a refused install's reason to the renderer, once (#866).
    *
-   * Reading the marker CLEARS it, so the notice appears on the boot right after
-   * the refusal and never again — a sticky warning about a since-succeeded
-   * update would be worse than none. Deliberately delayed a few seconds so the
-   * renderer has attached its update listeners; an UPDATE_ERROR sent into a
-   * window that is not listening yet is the same as not sending it.
+   * PULL, not push. Pushing this on a timer at boot assumed a listener was
+   * attached by then; the only listener lived in the Settings panel, which is
+   * mounted only while the user has Settings OPEN. With Settings closed — the
+   * default — the notice went nowhere AND the marker was cleared anyway, so
+   * the refusal stayed exactly as invisible as before this feature existed.
+   *
+   * The renderer therefore asks when it is mounted and can show something.
+   * Taking the reason is what clears the marker, so a notice that was never
+   * collected (renderer crashed, window closed early) survives to the next
+   * boot rather than being consumed by the attempt to deliver it. Once taken
+   * it does not come back: a sticky warning about a since-succeeded update
+   * would be worse than none.
    */
-  private reportRefusedInstall(): void {
+  private takeRefusedInstall(): string | null {
     const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
     const reason = readAbortMarker(markerPath);
-    if (!reason) return;
+    if (!reason) return null;
     console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
-    setTimeout(() => {
-      this.sendToRenderer(IPC.UPDATE_ERROR, {
-        status: 'error',
-        message:
-          'The last update did not install: something was still using the wmux install folder, so it was left untouched rather than half-replaced. Try again, or close wmux and run the installer from the releases page.',
-      });
-      // Cleared only now. Clearing on read would lose the refusal entirely if
-      // the app went away inside this delay — and the whole point of the marker
-      // is that the failure stops being invisible.
-      clearAbortMarker(markerPath);
-    }, REFUSED_INSTALL_NOTICE_DELAY_MS);
+    clearAbortMarker(markerPath);
+    return reason;
   }
 
   /**
@@ -556,6 +558,7 @@ export class AutoUpdater {
     ipcMain.on(IPC.AUTO_UPDATE_ENABLED, (_event, enabled: boolean) => {
       this.setEnabled(enabled);
     });
+
 
     ipcMain.handle(IPC.UPDATE_CHECK, async () => {
       if (process.env.NODE_ENV === 'development' || !isUpdaterSupported) {

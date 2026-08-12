@@ -320,6 +320,12 @@ export const IPC = {
   UPDATE_ERROR: 'update:error',
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
+  // #866 — the renderer PULLS a refused install's reason once it is mounted
+  // and can actually show it. Main pushing on a timer raced the mount and
+  // dropped the notice into a window with no listener; the take is what
+  // clears the on-disk marker, so a notice nobody received survives to the
+  // next boot instead of being consumed by the attempt.
+  UPDATE_TAKE_REFUSED_INSTALL: 'update:take-refused-install',
   // Settings sync (renderer → main)
   TOAST_ENABLED: 'settings:toast-enabled',
   // #516 — renderer mirrors the muted notification categories so the

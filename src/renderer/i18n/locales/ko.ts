@@ -814,6 +814,8 @@ export const ko = {
     '채널이 업데이트되었지만 백그라운드 데몬이 이전 버전으로 실행 중입니다. wmux를 완전히 종료한 뒤 다시 시작하면 적용됩니다.',
   'daemon.replacingToast':
     '백그라운드 데몬을 이 버전으로 업데이트하는 중입니다 — 판이 잠시 멈췄다가 자동으로 복원될 수 있습니다.',
+  'update.refusedInstall':
+    '지난 업데이트가 설치되지 않았습니다: 무언가가 wmux 설치 폴더를 계속 사용 중이어서, 반쯤 교체되는 대신 그대로 두었습니다. 다시 시도하거나, wmux를 종료한 뒤 릴리스 페이지의 설치 프로그램을 실행하세요.',
   'channels.alreadyMemberToast': '{workspace}은(는) 이미 #{channel}에 있습니다',
   'channels.joinFailedToast': '{workspace} 추가에 실패했습니다',
   'channels.leftToast': '#{channel}에서 나갔습니다',
