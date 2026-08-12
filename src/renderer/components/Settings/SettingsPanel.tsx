@@ -1848,6 +1848,15 @@ function UpdateStatus() {
         {state === 'error' && errorMsg && (
           <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{errorMsg}</p>
         )}
+        {/* #866: the Windows install has to run against a dead tree, so the
+            daemon goes down with the app and live panes do not survive it.
+            Said before the button is pressed, not after — the old copy
+            promised the opposite ("sessions persist in the daemon"). */}
+        {state === 'downloaded' && (
+          <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {t('settings.updateEndsSessions')}
+          </p>
+        )}
         {state === 'downloading' && (
           <div className="mt-1.5 h-1 w-40 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--bg-surface)' }}>
             <div

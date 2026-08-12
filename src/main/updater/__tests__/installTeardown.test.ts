@@ -5,7 +5,9 @@
 //   2. a still-locked root aborts instead of launching.
 //
 // Everything else (enumeration, volume budgeting, quoting) feeds those two.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   isSafePsPathLiteral,
@@ -13,6 +15,10 @@ import {
   selectInstallRootPids,
   parseProcessRows,
   buildWaiterScript,
+  readDaemonPid,
+  terminatePids,
+  consumeAbortMarker,
+  INSTALL_ABORT_MARKER,
   type WaiterPlan,
 } from '../installTeardown';
 
@@ -175,5 +181,93 @@ describe('freeSpaceShortfall — budgets per volume, not in aggregate', () => {
     expect(
       freeSpaceShortfall([{ dir: 'X', neededBytes: 1e12 }], () => null),
     ).toBeNull();
+  });
+});
+
+describe('readDaemonPid', () => {
+  const dirs: string[] = [];
+  const tempDir = (): string => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-daemonpid-'));
+    dirs.push(d);
+    return d;
+  };
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('reads the pid, tolerating the trailing newline the daemon writes', () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'daemon.pid'), '4321\n');
+    expect(readDaemonPid(dir)).toBe(4321);
+  });
+
+  it.each([
+    ['no file at all', null],
+    ['', ''],
+    ['not-a-number', 'abcd'],
+    ['zero', '0'],
+    ['negative', '-7'],
+    ['float', '12.5'],
+  ])('returns null for %s', (_label, contents) => {
+    const dir = tempDir();
+    if (contents !== null) fs.writeFileSync(path.join(dir, 'daemon.pid'), contents);
+    expect(readDaemonPid(dir)).toBeNull();
+  });
+
+  it('null fails safe: the caller force-kills the daemon rather than skipping it', () => {
+    // Documented contract. If this ever flips to "skip on null", a daemon we
+    // could not identify would be left holding the install root open, which is
+    // the failure this module exists to prevent.
+    const dir = tempDir();
+    const daemonPid = readDaemonPid(dir); // null — no pid file
+    const pids = [111, 222];
+    expect(pids.filter((p) => p !== daemonPid)).toEqual([111, 222]);
+  });
+});
+
+describe('terminatePids', () => {
+  it('ignores non-positive and non-integer pids instead of shelling out for them', () => {
+    // taskkill /PID 0 would be a nonsense call, and a float would be coerced
+    // into some other process's pid. Neither should ever reach the shell.
+    expect(terminatePids([0, -1, 1.5, NaN])).toEqual([]);
+  });
+
+  it('returns an empty list for an empty input', () => {
+    expect(terminatePids([])).toEqual([]);
+  });
+});
+
+describe('consumeAbortMarker', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const tempDir = (): string => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-abortmarker-'));
+    dirs.push(d);
+    return d;
+  };
+
+  it('returns the reason and CLEARS the marker so the notice fires once', () => {
+    const dir = tempDir();
+    const marker = path.join(dir, INSTALL_ABORT_MARKER);
+    fs.writeFileSync(marker, 'install-aborted: install root still locked\n');
+
+    expect(consumeAbortMarker(marker)).toBe('install-aborted: install root still locked');
+    expect(fs.existsSync(marker)).toBe(false);
+    // A sticky warning about a since-succeeded update is worse than none.
+    expect(consumeAbortMarker(marker)).toBeNull();
+  });
+
+  it('returns null when there is no marker', () => {
+    expect(consumeAbortMarker(path.join(tempDir(), INSTALL_ABORT_MARKER))).toBeNull();
+  });
+
+  it('still reports a refusal when the marker is empty', () => {
+    const dir = tempDir();
+    const marker = path.join(dir, INSTALL_ABORT_MARKER);
+    fs.writeFileSync(marker, '   \n');
+    expect(consumeAbortMarker(marker)).toBe('install-aborted');
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });

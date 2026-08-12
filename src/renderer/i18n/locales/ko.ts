@@ -436,6 +436,7 @@ export const ko = {
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
   'settings.updateReady': '업데이트 준비 완료',
+  'settings.updateEndsSessions': '설치하면 실행 중인 세션이 모두 종료됩니다.',
   'settings.checkFailed': '확인 실패',
   'settings.unknownError': '알 수 없는 오류',
   'settings.notificationBehavior': '알림 동작',

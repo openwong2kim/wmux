@@ -13,13 +13,21 @@ const DL_URL = `https://github.com/openwong2kim/wmux/releases/download/v${NEW_VE
 const INSTALLER_BODY = Buffer.from('FAKE-INSTALLER-BYTES');
 const GOOD_SHA = createHash('sha256').update(INSTALLER_BODY).digest('hex');
 
-/** Quit hooks every AutoUpdater requires (see AutoUpdaterHooks). */
+/**
+ * Quit hooks every AutoUpdater requires (see AutoUpdaterHooks).
+ *
+ * `getDaemonPid` returns 4243, which is one of the two pids the mocked
+ * enumeration reports. That is deliberate: it is what lets a test see the
+ * daemon being EXCLUDED from the force-kill list (it gets the graceful
+ * shutdown instead). A null here would silently pass the exclusion assertion
+ * by never exercising it.
+ */
 function quitHooks() {
   return {
     onBeforeInstallQuit: vi.fn(),
     onInstallQuitAborted: vi.fn(),
     onInstallRequiresFullShutdown: vi.fn(),
-    getDaemonPid: vi.fn(() => null),
+    getDaemonPid: vi.fn((): number | null => 4243),
   };
 }
 
@@ -122,6 +130,10 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
     freeSpaceShortfall: vi.fn(() => null),
     probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
     readDaemonPid: vi.fn((): number | null => 4243),
+    // Boot-time refused-install notice: default to "nothing to report" so it
+    // never leaks an UPDATE_ERROR into tests about other flows.
+    consumeAbortMarker: vi.fn((): string | null => null),
+    INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
   };
   vi.doMock('../installTeardown', () => teardown);
 
@@ -251,7 +263,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
   });
 
   it('a manual press mid-poll preserves the one-shot intent so the in-flight download installs', async () => {
-    const { AutoUpdater, openPath, quit, win } = await loadWin32();
+    const { AutoUpdater, openPath, quit, win, teardown } = await loadWin32();
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -280,8 +292,11 @@ describe('AutoUpdater two-step flow (win32)', () => {
   });
 
   it('a failed one-shot fast-path install clears the intent (no unattended restart later)', async () => {
-    const { AutoUpdater, openPath, quit, win } = await loadWin32();
-    openPath.mockResolvedValueOnce('launch failed'); // shell.openPath resolves with an error string, never throws
+    const { AutoUpdater, quit, win, teardown } = await loadWin32();
+    // #866: the failure mode is now "the waiter could not be prepared". When
+    // that happens the install must be ABANDONED — falling back to launching
+    // Setup.exe directly is the bug this change exists to remove.
+    teardown.spawnInstallWaiter.mockReturnValueOnce(null);
     const updater = new AutoUpdater(() => win as never, quitHooks());
     updater.start();
 
@@ -295,13 +310,13 @@ describe('AutoUpdater two-step flow (win32)', () => {
     internals.downloadedPath = 'C:/tmp/wmux-update-9.9.10.Setup.exe';
     internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
 
-    // Manual press → fast path → performInstall, whose launch fails.
+    // Manual press → fast path → performInstall, whose handoff fails.
     await internals.check(true);
-    await until(() => openPath.mock.calls.length > 0);
+    await until(() => teardown.spawnInstallWaiter.mock.calls.length > 0);
     await flush();
 
-    // The failed launch must NOT quit, and must have cleared the intent so a
-    // later background download can't auto-restart the app.
+    // A refused handoff must NOT quit (the user keeps a working app), and must
+    // have cleared the intent so a later background download can't auto-restart.
     expect(quit).not.toHaveBeenCalled();
     expect(internals.oneShotInstall).toBe(false);
   });

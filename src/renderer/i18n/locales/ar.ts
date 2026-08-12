@@ -153,6 +153,7 @@ export const ar = {
   'settings.sidebarLeft': 'يسار',
   'settings.sidebarRight': 'يمين',
   'settings.updateReady': 'التحديث جاهز',
+  'settings.updateEndsSessions': 'سيؤدي التثبيت إلى إغلاق الجلسات قيد التشغيل.',
   'settings.checkFailed': 'فشل التحقق',
   'settings.unknownError': 'خطأ غير معروف',
   'settings.notificationBehavior': 'سلوك الإشعارات',

@@ -608,6 +608,7 @@ export const en = {
   'settings.paneActionsVisible': 'Pane action buttons',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
   'settings.updateReady': 'Update ready',
+  'settings.updateEndsSessions': 'Installing closes your running sessions.',
   'settings.checkFailed': 'Check failed',
   'settings.unknownError': 'Unknown error',
   'settings.notificationBehavior': 'Notification behavior',

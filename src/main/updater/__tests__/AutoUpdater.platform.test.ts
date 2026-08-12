@@ -75,6 +75,7 @@ async function loadForPlatform(
   platform: NodeJS.Platform,
   routes?: (url: string) => FakeRoute | undefined,
   arch: string = platform === 'darwin' ? 'arm64' : 'x64',
+  { isPackaged = true }: { isPackaged?: boolean } = {},
 ) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -143,9 +144,27 @@ async function loadForPlatform(
     },
   };
 
+  // #866: the win32 install path enumerates and force-kills every process
+  // under the install root, which it derives from process.execPath. Under test
+  // that is the node binary, so the real implementation would target unrelated
+  // node processes. Stubbed so the handoff stays observable; the real thing is
+  // exercised against a sandbox in installTeardown.runtime.test.
+  const teardown = {
+    collectInstallRootPids: vi.fn((_root: string): number[] => [4242]),
+    terminatePids: vi.fn((pids: readonly number[]): number[] => [...pids]),
+    spawnInstallWaiter: vi.fn((_plan: { setupExePath: string }): string | null =>
+      'C:\\Temp\\waiter\\wait-and-install.ps1'),
+    freeSpaceShortfall: vi.fn(() => null),
+    probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
+    readDaemonPid: vi.fn((): number | null => null),
+    consumeAbortMarker: vi.fn((): string | null => null),
+    INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
+  };
+  vi.doMock('../installTeardown', () => teardown);
+
   vi.doMock('electron', () => ({
     autoUpdater: nativeUpdater,
-    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged: false },
+    app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged },
     ipcMain: {
       on: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcListeners.set(ch, cb); },
       handle: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcHandlers.set(ch, cb); },
@@ -157,7 +176,7 @@ async function loadForPlatform(
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown };
 }
 
 describe('AutoUpdater platform gating', () => {
@@ -350,31 +369,56 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     return { updater, installHandler, sent };
   }
 
-  it('win32: UPDATE_INSTALL launches the verified installer, then quits the app', async () => {
+  it('win32: UPDATE_INSTALL hands the verified installer to the waiter, then quits the app', async () => {
     const loaded = await loadForPlatform('win32', downloadRoutes);
     const { installHandler } = await downloadUpdateFor(loaded);
 
     await installHandler();
 
-    expect(loaded.shellOpenPath).toHaveBeenCalledTimes(1);
-    const openedPath = String(loaded.shellOpenPath.mock.calls[0]![0]);
-    expect(openedPath).toContain(`wmux-update-${UPDATE_VERSION}-`);
-    expect(openedPath).toContain('.Setup.exe');
-    // The quit is the fix: Squirrel must never run against a live instance.
+    // #866: the installer is never started from here. Setup.exe deletes the
+    // install root as its first action, so it has to be launched by something
+    // that outlives us and can confirm the tree is dead first.
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+    expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
+    const plan = loaded.teardown.spawnInstallWaiter.mock.calls[0]![0] as { setupExePath: string };
+    expect(plan.setupExePath).toContain(`wmux-update-${UPDATE_VERSION}-`);
+    expect(plan.setupExePath).toContain('.Setup.exe');
+    // #502 + #866: quit so Squirrel never runs against a live instance, and ask
+    // for the full shutdown so the daemon goes down with us.
     expect(loaded.appQuit).toHaveBeenCalledTimes(1);
   });
 
-  it('win32: a failed installer launch reports UPDATE_ERROR and does NOT quit', async () => {
+  it('win32: a handoff that cannot be prepared reports UPDATE_ERROR and does NOT quit', async () => {
     const loaded = await loadForPlatform('win32', downloadRoutes);
     const { installHandler, sent } = await downloadUpdateFor(loaded);
 
-    loaded.shellOpenPath.mockResolvedValueOnce('access denied');
+    loaded.teardown.spawnInstallWaiter.mockReturnValueOnce(null);
     await installHandler();
 
     expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(true);
-    // Quitting after a failed launch would close the app with no installer
-    // running — the user would just find wmux gone.
+    // Two things must NOT happen here. Quitting would close the app with no
+    // installer running — the user just finds wmux gone. And falling back to
+    // starting Setup.exe ourselves is the #866 bug, so the installer must stay
+    // untouched when the safe path is unavailable.
     expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+  });
+
+  it('win32: refuses to install from an unpackaged build instead of killing stray processes', async () => {
+    // The teardown derives the install root from process.execPath. Unpackaged
+    // that is the runtime binary, so enumerate-and-kill would target unrelated
+    // processes under it — this suite lost its own worker to exactly that
+    // before the guard existed.
+    const loaded = await loadForPlatform('win32', downloadRoutes, 'x64', { isPackaged: false });
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+
+    await installHandler();
+
+    expect(loaded.teardown.collectInstallRootPids).not.toHaveBeenCalled();
+    expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
+    expect(loaded.teardown.spawnInstallWaiter).not.toHaveBeenCalled();
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(true);
   });
 
   it('win32: UPDATE_INSTALL with no downloaded installer neither launches nor quits', async () => {
@@ -670,6 +714,60 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
 
+    updater.stop();
+  });
+});
+
+describe('AutoUpdater #866 — a refused install is reported on the next boot', () => {
+  it('win32: surfaces UPDATE_ERROR once when the waiter left an abort marker', async () => {
+    vi.useFakeTimers();
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.consumeAbortMarker.mockReturnValueOnce(
+      'install-aborted: install root still locked',
+    );
+
+    const sent: Array<{ channel: string }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        isCrashed: () => false,
+        send: (channel: string) => sent.push({ channel }),
+        executeJavaScript: vi.fn(async () => undefined),
+      },
+    };
+
+    const updater = new loaded.AutoUpdater(() => win as never, quitHooks());
+    updater.start();
+
+    // Nothing yet: the notice waits for the renderer to attach its listeners.
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(1);
+
+    updater.stop();
+  });
+
+  it('win32: stays silent when there is no marker', async () => {
+    vi.useFakeTimers();
+    const loaded = await loadForPlatform('win32');
+    // consumeAbortMarker defaults to null in the stub — nothing was refused.
+
+    const sent: Array<{ channel: string }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        isCrashed: () => false,
+        send: (channel: string) => sent.push({ channel }),
+        executeJavaScript: vi.fn(async () => undefined),
+      },
+    };
+
+    const updater = new loaded.AutoUpdater(() => win as never, quitHooks());
+    updater.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
     updater.stop();
   });
 });

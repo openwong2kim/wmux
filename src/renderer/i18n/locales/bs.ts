@@ -153,6 +153,7 @@ export const bs = {
   'settings.sidebarLeft': 'Lijevo',
   'settings.sidebarRight': 'Desno',
   'settings.updateReady': 'Ažuriranje spremno',
+  'settings.updateEndsSessions': 'Instalacija zatvara sve pokrenute sesije.',
   'settings.checkFailed': 'Provjera neuspjela',
   'settings.unknownError': 'Nepoznata greška',
   'settings.notificationBehavior': 'Ponašanje obavještenja',

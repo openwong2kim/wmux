@@ -153,6 +153,7 @@ export const ru = {
   'settings.sidebarLeft': 'Слева',
   'settings.sidebarRight': 'Справа',
   'settings.updateReady': 'Обновление готово',
+  'settings.updateEndsSessions': 'Установка закроет запущенные сессии.',
   'settings.checkFailed': 'Проверка не удалась',
   'settings.unknownError': 'Неизвестная ошибка',
   'settings.notificationBehavior': 'Поведение уведомлений',

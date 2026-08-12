@@ -153,6 +153,7 @@ export const nb = {
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Høyre',
   'settings.updateReady': 'Oppdatering klar',
+  'settings.updateEndsSessions': 'Installasjonen lukker øktene som kjører.',
   'settings.checkFailed': 'Sjekk mislyktes',
   'settings.unknownError': 'Ukjent feil',
   'settings.notificationBehavior': 'Varselatferd',

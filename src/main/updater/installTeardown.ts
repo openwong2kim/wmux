@@ -57,6 +57,17 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 
+/**
+ * Marker the waiter writes when it refuses to launch, relative to userData.
+ *
+ * Lives here rather than in AutoUpdater because two different processes need
+ * the same name: the updater hands the path to the waiter, and the next boot
+ * reads it back. A refused install is otherwise indistinguishable from "the
+ * update button did nothing", which is the state this whole change is trying
+ * to stop shipping.
+ */
+export const INSTALL_ABORT_MARKER = 'update-install-aborted.txt';
+
 /** Result of the pre-flight space check. `null` when there is enough room. */
 export interface SpaceShortfall {
   volume: string;
@@ -287,8 +298,13 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
  */
 export function readDaemonPid(wmuxDir: string): number | null {
   try {
-    const pid = parseInt(fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const raw = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
+    // Strict digits rather than parseInt: parseInt('12.5') is 12, so a
+    // malformed pid file would silently name a DIFFERENT process — and the one
+    // thing this value does is decide which process to spare from a kill.
+    if (!/^\d+$/.test(raw)) return null;
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
   }

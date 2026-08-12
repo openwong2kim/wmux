@@ -153,6 +153,7 @@ export const it = {
   'settings.sidebarLeft': 'Sinistra',
   'settings.sidebarRight': 'Destra',
   'settings.updateReady': 'Aggiornamento pronto',
+  'settings.updateEndsSessions': 'L’installazione chiude le sessioni in esecuzione.',
   'settings.checkFailed': 'Verifica fallita',
   'settings.unknownError': 'Errore sconosciuto',
   'settings.notificationBehavior': 'Comportamento notifiche',

@@ -153,6 +153,7 @@ export const de = {
   'settings.sidebarLeft': 'Links',
   'settings.sidebarRight': 'Rechts',
   'settings.updateReady': 'Update bereit',
+  'settings.updateEndsSessions': 'Die Installation beendet alle laufenden Sitzungen.',
   'settings.checkFailed': 'Prüfung fehlgeschlagen',
   'settings.unknownError': 'Unbekannter Fehler',
   'settings.notificationBehavior': 'Benachrichtigungsverhalten',

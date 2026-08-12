@@ -153,6 +153,7 @@ export const vi = {
   'settings.sidebarLeft': 'Trái',
   'settings.sidebarRight': 'Phải',
   'settings.updateReady': 'Cập nhật sẵn sàng',
+  'settings.updateEndsSessions': 'Cài đặt sẽ đóng các phiên đang chạy.',
   'settings.checkFailed': 'Kiểm tra thất bại',
   'settings.unknownError': 'Lỗi không xác định',
   'settings.notificationBehavior': 'Hành vi thông báo',

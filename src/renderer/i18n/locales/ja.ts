@@ -155,6 +155,7 @@ export const ja = {
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.updateReady': 'アップデート準備完了',
+  'settings.updateEndsSessions': 'インストールすると実行中のセッションはすべて終了します。',
   'settings.checkFailed': '確認に失敗しました',
   'settings.unknownError': '不明なエラー',
   'settings.notificationBehavior': '通知の動作',

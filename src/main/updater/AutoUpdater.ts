@@ -21,7 +21,9 @@ import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManife
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 import {
   collectInstallRootPids,
+  consumeAbortMarker,
   freeSpaceShortfall,
+  INSTALL_ABORT_MARKER,
   probeVolume,
   spawnInstallWaiter,
   terminatePids,
@@ -62,8 +64,10 @@ const INSTALL_STAGING_HEADROOM_BYTES = 200 * 1024 * 1024;
 // can hold files for a while, and waiting is free while refusing costs the user
 // their update.
 const INSTALL_LOCK_BUDGET_MS = 60_000;
-/** Written by the waiter when it refuses to launch; read on the next boot. */
-const INSTALL_ABORT_MARKER = 'update-install-aborted.txt';
+// The refused-install notice waits for the renderer to attach its update
+// listeners. Sending it at boot would drop it into a window that is not
+// listening yet, which is indistinguishable from never reporting at all.
+const REFUSED_INSTALL_NOTICE_DELAY_MS = 5_000;
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -191,11 +195,42 @@ export class AutoUpdater {
 
     void this.sweepStaleArtifacts();
 
+    // #866: if the last install was refused because the install root never
+    // cleared, the waiter left a marker instead of running Setup.exe. Say so.
+    // Without this the user pressed "Restart to install", watched wmux quit and
+    // come back on the SAME version, and has nothing to go on — which is how
+    // this class of failure stays invisible until someone files a bug about
+    // icons instead.
+    this.reportRefusedInstall();
+
     // 앱 시작 후 15초 뒤 첫 번째 확인 (시작 부하 방지)
     setTimeout(() => this.check(), 15_000);
 
     // 이후 주기적 확인
     this.checkTimer = setInterval(() => this.check(), CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Surface a refused install from the previous run, once (#866).
+   *
+   * Reading the marker CLEARS it, so the notice appears on the boot right after
+   * the refusal and never again — a sticky warning about a since-succeeded
+   * update would be worse than none. Deliberately delayed a few seconds so the
+   * renderer has attached its update listeners; an UPDATE_ERROR sent into a
+   * window that is not listening yet is the same as not sending it.
+   */
+  private reportRefusedInstall(): void {
+    const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
+    const reason = consumeAbortMarker(markerPath);
+    if (!reason) return;
+    console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
+    setTimeout(() => {
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message:
+          'The last update did not install: something was still using the wmux install folder, so it was left untouched rather than half-replaced. Try again, or close wmux and run the installer from the releases page.',
+      });
+    }, REFUSED_INSTALL_NOTICE_DELAY_MS);
   }
 
   /**
