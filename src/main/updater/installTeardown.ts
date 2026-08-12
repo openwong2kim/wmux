@@ -153,10 +153,16 @@ export function selectInstallRootPids(
   installRoot: string,
   ownPid: number,
 ): number[] {
-  const prefix = installRoot.endsWith(path.sep) ? installRoot : installRoot + path.sep;
+  // Backslash explicitly, not `path.sep`. Every input here is a Windows path
+  // read out of Win32_Process, and this only ever runs on win32 — but the
+  // function is pure, so it is unit-tested on the Linux and macOS CI legs too,
+  // where `path.sep` is `/` and the prefix would match nothing. The separator
+  // belongs to the DATA, not to the host.
+  const trimmed = installRoot.replace(/[\\/]+$/, '');
+  const prefix = `${trimmed}\\`.toLowerCase();
   return rows
     .filter((r) => r.pid !== ownPid && r.pid > 0)
-    .filter((r) => r.executablePath.toLowerCase().startsWith(prefix.toLowerCase()))
+    .filter((r) => r.executablePath.toLowerCase().startsWith(prefix))
     .map((r) => r.pid);
 }
 

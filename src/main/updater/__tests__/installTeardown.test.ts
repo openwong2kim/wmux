@@ -119,7 +119,17 @@ describe('selectInstallRootPids', () => {
 
   it('matches case-insensitively and tolerates a trailing separator on the root', () => {
     const rows = [{ pid: 5, executablePath: `${root.toUpperCase()}\\APP-3.40.2\\WMUX.EXE` }];
-    expect(selectInstallRootPids(rows, root + path.sep, 999)).toEqual([5]);
+    // Both separator spellings, because the caller derives the root from
+    // process.execPath and node normalizes inconsistently across APIs.
+    expect(selectInstallRootPids(rows, `${root}\\`, 999)).toEqual([5]);
+    expect(selectInstallRootPids(rows, `${root}/`, 999)).toEqual([5]);
+    expect(selectInstallRootPids(rows, root, 999)).toEqual([5]);
+  });
+
+  it('does not match a sibling whose name merely starts with the root', () => {
+    // `wmux-dev` must not be swept up by a prefix test against `wmux`.
+    const rows = [{ pid: 6, executablePath: `${root}-dev\\app-1.0.0\\wmux.exe` }];
+    expect(selectInstallRootPids(rows, root, 999)).toEqual([]);
   });
 });
 
