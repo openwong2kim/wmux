@@ -5,7 +5,7 @@
 // that the legacy Start Menu link is deduped rather than retargeted, that
 // foreign shortcuts are untouched, and that Save() preserves the link's
 // AppUserModelID (the property Windows resolves the taskbar icon through).
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -13,6 +13,15 @@ import { execFileSync } from 'node:child_process';
 import { repairInstalledShortcuts, stageRootIcon, type RepairLocations } from '../shortcutHygiene';
 
 const onWindows = process.platform === 'win32';
+
+// Every test here spawns real powershell.exe and drives real COM, and one of
+// them compiles C# through Add-Type. On this developer machine that test runs
+// in ~1.7 s, so the 5 s default looked fine — on a cold CI runner the csc
+// invocation alone blew past it and turned main red after the change had
+// already merged green. The work is IO-bound and machine-dependent, so it gets
+// a ceiling that reflects the slowest realistic runner rather than the fastest
+// laptop. A genuine hang still fails, just later.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 
 function ps(script: string): string {
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
