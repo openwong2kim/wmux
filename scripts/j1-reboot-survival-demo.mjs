@@ -21,13 +21,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SPEC = 'src/daemon/worktask/__tests__/j1-reboot-survival.demo.test.ts';
+const VITEST_CLI = path.join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+const SPEC = 'src/daemon/worktask/__tests__/j1-reboot-survival.demo.runtime.test.ts';
 
 console.log('[j1-demo] 리부트 생존 왕복 시작 — 실 git worktree + 데몬 재시작 replay + fs 검사');
 
+// Invoke the installed CLI through Node so Windows never needs to spawn a
+// .cmd shim and a missing dependency cannot make npx download code.
 const res = spawnSync(
-  'npx',
-  ['vitest', 'run', SPEC],
+  process.execPath,
+  [VITEST_CLI, 'run', SPEC],
   { cwd: REPO_ROOT, stdio: 'inherit', env: process.env },
 );
 

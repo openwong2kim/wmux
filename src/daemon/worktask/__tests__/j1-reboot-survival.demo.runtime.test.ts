@@ -7,6 +7,8 @@
 //
 // scripts/j1-reboot-survival-demo.mjs가 이 스펙을 구동한다. 여기 통과가 리부트
 // 생존 데모의 판정식이다.
+// This spec shells out to real Git and creates a worktree, so it belongs in
+// the serial runtime lane rather than the parallel unit-test lane.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -42,7 +44,7 @@ afterEach(() => {
 });
 
 function newLog(): AppendOnlyLog {
-  const log = new AppendOnlyLog({ dir: logDir, fsync: () => {} });
+  const log = new AppendOnlyLog({ dir: logDir, fsync: () => undefined });
   log.open();
   return log;
 }
