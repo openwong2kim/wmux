@@ -103,6 +103,8 @@ export function createWindowDisplayedReporter(channel: string): WindowDisplayedR
   // (a `show` on an already-shown window, `resume` right after `unlock-screen`)
   // does not wake every pane's report effect for nothing.
   let lastSent: boolean | null = null;
+  // powerMonitor is process-wide; its listeners are wired once, not per window.
+  let powerWired = false;
 
   const current = (): boolean => {
     if (!attached) return true;
@@ -133,10 +135,19 @@ export function createWindowDisplayedReporter(channel: string): WindowDisplayedR
       // every pane's report effect. Any real change still pushes.
       lastSent = current();
       for (const event of ['minimize', 'restore', 'hide', 'show'] as const) {
-        win.on(event, push);
+        // Ignore events from a window we are no longer reporting on. The main
+        // window is recreated on macOS dock re-activate, and Electron gives no
+        // listener-removal slice worth stubbing here, so the old window's
+        // listeners outlive the attach that replaced it.
+        win.on(event, () => { if (attached === win) push(); });
       }
       const power = opts.powerMonitor;
-      if (power) {
+      // powerMonitor is a PROCESS-wide emitter, not a per-window one: wiring it
+      // on every attach would stack a fresh set of listeners on each window
+      // recreation. The handlers read `attached` when they fire, so one set
+      // stays correct for every window that follows.
+      if (power && !powerWired) {
+        powerWired = true;
         for (const event of ['lock-screen', 'suspend'] as const) {
           power.on(event, () => { userAway = true; push(); });
         }

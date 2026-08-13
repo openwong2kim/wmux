@@ -3,8 +3,10 @@ import { createWindowDisplayedStore } from '../useWindowDisplayed';
 
 /** A controllable stand-in for the preload bridge. */
 function fakeBridge(initial: boolean, opts: { rejects?: boolean } = {}) {
-  let resolvePull: (v: boolean) => void = () => {};
-  let rejectPull: (e: unknown) => void = () => {};
+  // Definite assignment: the Promise executor below runs synchronously and
+  // assigns both before fakeBridge returns.
+  let resolvePull!: (v: boolean) => void;
+  let rejectPull!: (e: unknown) => void;
   const pull = new Promise<boolean>((res, rej) => { resolvePull = res; rejectPull = rej; });
   const pushListeners = new Set<(v: boolean) => void>();
   return {

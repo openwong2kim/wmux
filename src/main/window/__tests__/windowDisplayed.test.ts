@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createWindowDisplayedReporter,
   isWindowDisplayed,
@@ -182,6 +182,43 @@ describe('windowDisplayedReporter', () => {
 
     detach();
     expect(r.current()).toBe(true);
+  });
+
+  it('ignores events from a window it no longer reports on (macOS dock re-activate)', () => {
+    // The main window is recreated, and the old one's listeners outlive it.
+    const old = fakeWindow();
+    const fresh = fakeWindow();
+    const r = createWindowDisplayedReporter('ch');
+    r.attach(old as unknown as DisplayableWindow);
+    r.attach(fresh as unknown as DisplayableWindow);
+
+    old.minimized = true;
+    old.fire('minimize');
+    expect(old.sent).toEqual([]);   // nothing sent to the dead window
+    expect(fresh.sent).toEqual([]); // and the live one is not disturbed either
+    expect(r.current()).toBe(true); // the fresh window is what current() reads
+
+    fresh.minimized = true;
+    fresh.fire('minimize');
+    expect(fresh.values()).toEqual([false]);
+  });
+
+  it('wires the process-wide powerMonitor once, not once per window', () => {
+    // Stacking a fresh set on every window recreation would fire the lock
+    // handler N times and leak a listener per window.
+    const power = fakePower();
+    const onSpy = vi.spyOn(power, 'on');
+    const r = createWindowDisplayedReporter('ch');
+    r.attach(fakeWindow() as unknown as DisplayableWindow, { powerMonitor: power });
+    const afterFirst = onSpy.mock.calls.length;
+
+    const fresh = fakeWindow();
+    r.attach(fresh as unknown as DisplayableWindow, { powerMonitor: power });
+    expect(onSpy.mock.calls.length).toBe(afterFirst);
+
+    // The single set still follows the window that replaced the original.
+    power.fire('lock-screen');
+    expect(fresh.values()).toEqual([false]);
   });
 
   it('a destroyed window reads as not displayed through current()', () => {
