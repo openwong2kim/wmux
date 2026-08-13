@@ -753,6 +753,50 @@ describe('registerBrowserRpc', () => {
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 
+  it('shadow mode looks targets up by the request field, not the decision', async () => {
+    // Shadow is the rollback, so it must be pre-#810 behavior exactly. The
+    // regression this guards: returning the decision's workspace here would
+    // re-scope callers (notably the pinned lane) in the mode whose promise is
+    // that it changes nothing.
+    const router = register(() => null, undefined, 'shadow');
+
+    await router.dispatch({
+      id: 'scope-shadow-passthrough-none',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, undefined);
+
+    await router.dispatch({
+      id: 'scope-shadow-passthrough-declared',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-declared' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-declared');
+  });
+
+  it('treats an empty workspaceId as absent, the same as the pre-#810 inline check', async () => {
+    // `browser.cdp.info` used to inline `typeof x === 'string' && x.length > 0`
+    // and now shares `requestedWorkspaceId`. If those ever diverge, `""` would
+    // start filtering targets to a workspace that cannot exist — an empty list
+    // reported as `targetsScoped`, which reads as "you own nothing" rather than
+    // "your request was malformed".
+    const enforced = register(() => null, undefined, 'enforce');
+    const response = await enforced.dispatch({
+      id: 'scope-empty-ws',
+      method: 'browser.cdp.info',
+      params: { workspaceId: '' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    // Empty means unresolved, so an identified caller is refused rather than
+    // silently scoped to "".
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+  });
+
   it('shadow mode still answers every one of those calls', async () => {
     const router = register(() => null, undefined, 'shadow');
 

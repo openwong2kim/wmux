@@ -692,6 +692,19 @@ registerPerfRpc(rpcRouter);
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
+// Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
+// (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
+// the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.
+//
+// Resolved HERE, above every handler that reads it, rather than next to
+// `rpcRouter.setEnforcementMode` further down. Nothing awaits between the two
+// points today, so a later read was safe — but only accidentally: adding one
+// `await` in between would turn a browser RPC's mode read into a TDZ
+// ReferenceError instead of a mode. Ordering the declaration first removes the
+// class rather than relying on the gap staying synchronous.
+const isDevEnvironment = !app.isPackaged || process.env.NODE_ENV === 'development';
+const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
+
 // Shared bounded audit sink for permission rejections, legacy milestones, and
 // #810's browser caller-scope decisions.
 const shadowRejectionLogger = new ShadowRejectionLogger();
@@ -876,11 +889,8 @@ const legacyTrafficCounter = new LegacyTrafficCounter({
 rpcRouter.setLegacyTrafficCounter(legacyTrafficCounter);
 
 // Phase 2.2 pre-commit 6: enforcement mode + approval queue.
-// Production wmux defaults to `enforce`; dev (electron-forge / npm start)
-// defaults to `shadow` so a bad delta doesn't lock the developer out.
-// Override via `mcp.mode` in `~/.wmux/config.json`.
-const isDevEnvironment = !app.isPackaged || process.env.NODE_ENV === 'development';
-const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
+// (`isDevEnvironment` / `enforcementMode` are resolved above, before the RPC
+// handlers that read them are registered.)
 rpcRouter.setEnforcementMode(enforcementMode);
 
 // Issue #636: operator-extensible first-party client names. Read once here —

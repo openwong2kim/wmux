@@ -300,22 +300,30 @@ export function registerBrowserRpc(
    * The single place a target-resolving browser handler learns which workspace
    * to look a surface up in.
    *
-   * Both modes audit the same decision; they differ only in what happens to a
-   * refusal:
+   * Both modes audit the same decision. They differ in what the caller gets:
    *
    *        callerScope(ctx, params)
    *                 │
-   *      ┌──────────┴───────────┐
-   *   rejected                allowed / scoped
-   *      │                       │
-   *   audit-log               return decision workspace
-   *      │                    (undefined for the operator and legacy
-   *      │                     lanes that may stay unscoped)
-   *      ├── enforce ─► throw scopeRefusalError  (terminal, no target lookup)
-   *      └── shadow  ─► return requestedWorkspaceId(params)
-   *                     (byte-identical to pre-#810 behavior, which is the
-   *                      point: a dev build or an explicit
-   *                      `"mcp": {"mode": "shadow"}` is the rollback.)
+   *      ┌──────────┴────────────┐
+   *   rejected                 allowed / scoped
+   *      │                        │
+   *   audit-log                   │
+   *      │                        │
+   *      ├─ enforce ─► throw      ├─ enforce ─► decision.workspaceId
+   *      │   (terminal: no        │              (the pinned lane returns the
+   *      │    lookup, wake,       │               TOKEN binding, which is the
+   *      │    lease, or URL       │               point — it may differ from
+   *      │    validation runs)    │               what the caller asked for)
+   *      │                        │
+   *      └─ shadow ──────────────►┴─ shadow ──► requestedWorkspaceId(params)
+   *
+   * Shadow returns the request-derived workspace on EVERY lane, refused or not.
+   * That is deliberate and load-bearing: shadow is the rollback, so it has to
+   * be pre-#810 behavior exactly, not "pre-#810 except where the new decision
+   * happens to be better". Returning `decision.workspaceId` here would already
+   * re-scope a pinned caller — changing which targets `browser.cdp.info` lists
+   * and whether it sets `targetsScoped` — in the mode whose whole promise is
+   * that it changes nothing.
    *
    * The mode is `mcp.mode`, shared with the permission enforcer rather than a
    * second knob — both answer "is substrate enforcement live on this install?",
@@ -331,28 +339,31 @@ export function registerBrowserRpc(
     ctx: RpcContext | undefined,
   ): string | undefined => {
     const decision = callerScope(ctx, params);
-    if (decision.kind !== 'rejected') return decision.workspaceId;
+    const enforcing = getEnforcementMode() === 'enforce';
 
-    if (browserScopeShadowSink) {
-      try {
-        browserScopeShadowSink({
-          clientName: ctx?.clientName,
-          method,
-          reason: decision.reason,
-          ...(decision.requestedWorkspaceId && {
-            requestedWorkspaceId: decision.requestedWorkspaceId,
-          }),
-          ...(decision.pinnedWorkspaceId && {
-            pinnedWorkspaceId: decision.pinnedWorkspaceId,
-          }),
-        });
-      } catch {
-        /* browser scope audit logging must never affect dispatch */
+    if (decision.kind === 'rejected') {
+      if (browserScopeShadowSink) {
+        try {
+          browserScopeShadowSink({
+            clientName: ctx?.clientName,
+            method,
+            reason: decision.reason,
+            ...(decision.requestedWorkspaceId && {
+              requestedWorkspaceId: decision.requestedWorkspaceId,
+            }),
+            ...(decision.pinnedWorkspaceId && {
+              pinnedWorkspaceId: decision.pinnedWorkspaceId,
+            }),
+          });
+        } catch {
+          /* browser scope audit logging must never affect dispatch */
+        }
       }
+      if (enforcing) throw scopeRefusalError(method, decision.reason);
+      return requestedWorkspaceId(params);
     }
 
-    if (getEnforcementMode() === 'enforce') throw scopeRefusalError(method, decision.reason);
-    return requestedWorkspaceId(params);
+    return enforcing ? decision.workspaceId : requestedWorkspaceId(params);
   };
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
