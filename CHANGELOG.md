@@ -1,3 +1,68 @@
+## [3.42.0] — 2026-08-14
+
+### Added
+
+- **Complete Simplified Chinese (中文) locale.** `zh.ts` now translates all 1,203
+  keys from `en.ts` (previously ~390 / 32%). The locale was already registered and
+  selectable in Settings, so no wiring changes were needed. (#876)
+
+### Changed
+
+- **Browser automation now refuses a call whose workspace it cannot determine.**
+  A plugin or wire client that asked wmux to drive a browser page without saying
+  which workspace it was calling from used to get whichever page happened to be
+  registered first — possibly one in a workspace it had nothing to do with. It
+  now gets a clear, non-retryable refusal instead. Callers that already send
+  their workspace are unaffected, including the bundled MCP server, the `wmux`
+  CLI, and the app's own UI. Set `"mcp": { "mode": "shadow" }` in
+  `~/.wmux/config.json` to restore the previous behavior. (#810)
+
+### Fixed
+
+- **The IME candidate window now follows the terminal cursor.** Typing Chinese,
+  Japanese, or Korean in a wmux pane put the candidate list in the wrong place:
+  several rows off the caret whenever the terminal had been scrolled up even
+  slightly, and flying around the screen while an agent streamed output. Latin
+  input showed nothing because it draws no candidate window. Both came from the
+  same place — xterm anchors its hidden IME textarea at the cursor's position in
+  the scrollback buffer rather than its position on screen, and re-anchors it on
+  every keystroke of a composition, so the candidate list chased whatever the
+  agent's TUI was redrawing. wmux now corrects the anchor to the cell the cursor
+  is actually painted on, and pins it in place for the duration of a
+  composition so the candidate list stays put while you pick a character. (#874)
+
+- **Daemon events no longer disappear during the subscription handshake.** The
+  daemon now preserves events emitted after accepting the app's control socket
+  but before its subscription request arrives, so one-shot session and channel
+  transitions reach the app instead of falling into that window. (#877)
+
+- **Daemon push events are now limited to the desktop app without losing startup
+  events.** Control-pipe clients must identify as the first-party app before
+  subscribing, while bounded replay and reconnect handling preserve events
+  across compatible old/new client and daemon handshakes. (#878)
+
+- **Three labels stayed in English when wmux ran in Simplified Chinese.** The
+  agent toolbar's Broadcast and Multi Task buttons and the Git panel's Pull
+  Requests heading were carried over verbatim from the English locale, so they
+  read as English in an otherwise translated UI. (#880)
+
+- **Minimise wmux on Windows and your phone can finally resize the session.**
+  Handing PTY geometry to a phone depends on the desktop admitting nobody is
+  looking at the pane, and the desktop worked that out from the browser's
+  page-visibility signal — which on Windows never changes, not when the window
+  is covered and not even when it is minimised. So the phone was told the desk
+  owns the size forever, and the terminal it showed stayed wrapped for a window
+  nobody could see. The desktop now takes that answer from the window itself:
+  minimised, hidden to the tray, or screen locked all count as nobody looking,
+  and restoring the window takes the geometry back. Locking your screen releases
+  the size too, which is exactly when the phone is the only screen left.
+  (#882, follow-up to #766)
+
+- **Reboot-survival demos no longer contend with the parallel unit suite.**
+  The real-Git J1 and J3 checks now run in the serial runtime lane, preventing
+  load-sensitive Windows timeouts while preserving both standalone demo
+  commands without shell execution. (#884)
+
 ## [3.41.1] — 2026-08-13
 
 ### Changed
