@@ -17,7 +17,11 @@ vi.mock('../_bridge', () => ({
   sendToRenderer: sendToRendererMock,
 }));
 
-vi.mock('../../../../shared/constants', () => ({
+// Spread the real module: replacing it wholesale makes this test break the
+// moment anything in the import graph reaches for another export (IPC, and
+// friends). Only getPidMapDir needs redirecting.
+vi.mock('../../../../shared/constants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../shared/constants')>()),
   getPidMapDir: () => dirRef.current,
 }));
 

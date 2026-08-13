@@ -40,6 +40,7 @@ import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
+import { windowDisplayedReporter } from '../window/windowDisplayed';
 
 const EVENT_TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
 
@@ -373,6 +374,13 @@ export function registerAllHandlers(
     const win = getWindow();
     return !!win && !win.isDestroyed() && win.isFullScreen();
   });
+
+  // #882 — mount-time pull for "is anyone looking at this window". The push
+  // lives in createWindow with the other window events. The pull is what makes
+  // a renderer that loads while the window is hidden (start to tray, reload
+  // after a crash) start from the truth instead of the optimistic default.
+  ipcMain.removeHandler(IPC.WINDOW_IS_DISPLAYED);
+  ipcMain.handle(IPC.WINDOW_IS_DISPLAYED, () => windowDisplayedReporter.current());
 
   // EventBus publish from renderer (one-way). Validates the event type and
   // workspaceId at the trust boundary so a misbehaving renderer can't poison

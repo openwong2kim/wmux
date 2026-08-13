@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
 import type { MetadataUpdatePayload } from '../../../shared/types';
+import { isWindowDisplayed } from '../../window/windowDisplayed';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { gitSyncStatusCache } from '../../metadata/GitSyncStatusCache';
@@ -61,8 +62,11 @@ export function broadcastMetadataUpdate(
 export function shouldPollMetadata(win: BrowserWindow): boolean {
   if (win.isDestroyed()) return false;
   if (win.webContents.isLoading()) return false;
-  if (!win.isVisible() || win.isMinimized()) return false;
-  return true;
+  // Shared with the #882 viewer-visibility report so the two definitions of
+  // "the window is on screen" cannot drift apart. The loading check above stays
+  // local: a loading renderer is a reason not to poll it for cosmetics, but not
+  // a reason to tell the daemon nobody can see the window.
+  return isWindowDisplayed(win);
 }
 
 const collector = new MetadataCollector();

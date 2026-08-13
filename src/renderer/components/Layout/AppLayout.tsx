@@ -25,6 +25,7 @@ import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
 import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
+import { windowDisplayedStore } from '../../hooks/useWindowDisplayed';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -516,6 +517,14 @@ export default function AppLayout() {
         typeof onResumed === 'function' ? onResumed : () => () => {},
     });
   }, []);
+
+  // #882 — one renderer-wide subscription to "is anyone looking at this
+  // window" (minimized / hidden to tray / screen locked), which panes fold
+  // into their #766 viewer-visibility report. All platforms: the bit is right
+  // everywhere, it is only Windows where `document.visibilityState` could not
+  // supply it. See hooks/useWindowDisplayed.ts.
+  useEffect(() => windowDisplayedStore.init(), []);
+
 
   // #517 slice C — discard mode mirrors the same way. Effective only while
   // lightweight mode is also on (belt-and-braces: main enforces this too).
