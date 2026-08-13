@@ -16,7 +16,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { DaemonPipeServer } from '../DaemonPipeServer';
+import { DaemonPipeServer, PRE_SUBSCRIBE_BACKLOG_BYTES } from '../DaemonPipeServer';
 import { waitFor } from '../../test-utils/waitFor';
 
 function testPipeName(suffix: string): string {
@@ -101,6 +101,34 @@ describe('DaemonPipeServer — pushed events are opt-in (#659)', () => {
     // The frame shapes documented in PROTOCOL §2.9: events carry no `id`.
     expect(event['id']).toBeUndefined();
     expect(event['type']).toBe('title.changed');
+  });
+
+  it('replays events generated between accept and a first-RPC subscribe', async () => {
+    const { server, pipe, token } = await startServer('optin-accept-gap');
+    const { socket, lines } = await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+
+    server.broadcast({ type: 'session.died', sessionId: 's-gap', data: { exitCode: 1 } });
+    server.broadcast({ type: 'title.changed', sessionId: 's-gap', data: 'ready' });
+    expect(lines).toEqual([]);
+
+    socket.write(JSON.stringify({ id: 'sub', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => lines.some((l) => l.includes('"id":"sub"')));
+
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ type: 'session.died', sessionId: 's-gap' });
+    expect(JSON.parse(lines[1]!)).toMatchObject({ type: 'title.changed', sessionId: 's-gap' });
+    expect(JSON.parse(lines[2]!)).toMatchObject({ id: 'sub', ok: true, result: { ok: true } });
+  });
+
+  it('disconnects instead of silently truncating an oversized pre-subscribe backlog', async () => {
+    const { server, pipe } = await startServer('optin-accept-overflow');
+    await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+
+    server.broadcast({ type: 'channel.message', data: 'x'.repeat(PRE_SUBSCRIBE_BACKLOG_BYTES) });
+
+    await waitFor(() => server.getConnectionCount() === 0);
   });
 
   it('stops pushing after unsubscribe', async () => {

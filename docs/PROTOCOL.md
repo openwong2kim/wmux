@@ -256,6 +256,8 @@ A control connection can carry **two kinds of frame in the same newline-delimite
 
 **Events are opt-in.** A connection receives replies and nothing else until it calls `daemon.events.subscribe`; `daemon.events.unsubscribe` turns them off again. The subscription is per-connection and dies with the socket, so a client that reconnects MUST subscribe again. A client that only makes requests — the CLI and the MCP server are both in this category — never needs to touch either method, and its stream is then a plain request/reply stream.
 
+The first-party app sends `daemon.events.subscribe` as its first authenticated RPC. The daemon retains a bounded per-connection backlog between accepting that socket and dispatching its first authenticated request. A first-request subscribe flushes those frames in order before the subscribe reply, closing the accept-to-subscribe loss window; any other first request discards the backlog and leaves the connection reply-only. If the bounded backlog overflows, the daemon closes the socket so the app reconnects and rehydrates rather than continuing after silent partial loss. A client that intends to receive pushed events SHOULD therefore subscribe first and MUST correlate replies by `id`, including while the subscribe request itself is pending.
+
 Once subscribed, the two frame kinds are told apart by `id`:
 
 - **Replies always echo the `id` of the request they answer**, and always carry `ok`. This holds on every path, including `unauthorized`, `rate limited`, and `Invalid RPC request`. A reply to a request that could not be parsed at all carries `"id": null`.

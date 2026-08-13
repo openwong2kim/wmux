@@ -8,6 +8,24 @@ import { getDaemonAuthTokenPath } from '../shared/constants';
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
 /**
+ * Maximum pushed-event data retained while a fresh socket decides whether its
+ * first authenticated RPC is `daemon.events.subscribe`.
+ *
+ * The Electron main client deliberately sends subscribe first, but events can
+ * still be generated in the accept-to-subscribe round trip. Retaining that
+ * tiny window closes the loss gap without making ordinary RPC clients event
+ * subscribers. A client that cannot complete the handshake within this bound
+ * is disconnected so it reconnects and rehydrates instead of silently missing
+ * a partial backlog.
+ */
+export const PRE_SUBSCRIBE_BACKLOG_BYTES = 1024 * 1024;
+
+interface PreSubscribeBacklog {
+  frames: string[];
+  bytes: number;
+}
+
+/**
  * Unflushed bytes on one socket past which that client is treated as STALLED.
  *
  * `socket.write` returning false is advisory in Node: the data is queued anyway
@@ -70,13 +88,17 @@ export function classifyReclaimProbe(
  */
 export class DaemonPipeServer {
   private server: net.Server | null = null;
-  private authToken: string = '';
+  private authToken = '';
   private readonly handlers = new Map<string, RpcHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
   // Clients that asked for pushed events via `daemon.events.subscribe`. Empty
   // by default — see `broadcast`. Dies with the socket, so a reconnecting
   // client must re-subscribe.
   private readonly eventSubscribers = new Set<net.Socket>();
+  // Fresh sockets get one bounded chance to subscribe without losing events
+  // generated between accept and their first authenticated RPC. A first RPC
+  // for any other method discards this queue and preserves the opt-in default.
+  private readonly preSubscribeBacklogs = new Map<net.Socket, PreSubscribeBacklog>();
   // Per-client identity for unicast delivery. Both directions are kept because
   // `sendTo` resolves an id → socket while the RPC path needs socket → id.
   private readonly clientIds = new Map<net.Socket, string>();
@@ -305,12 +327,14 @@ export class DaemonPipeServer {
           return;
         }
         this.connectedSockets.add(socket);
+        this.preSubscribeBacklogs.set(socket, { frames: [], bytes: 0 });
         const clientId = `c${this.nextClientId++}`;
         this.clientIds.set(socket, clientId);
         this.socketsByClientId.set(clientId, socket);
         socket.on('close', () => {
           this.connectedSockets.delete(socket);
           this.eventSubscribers.delete(socket);
+          this.preSubscribeBacklogs.delete(socket);
           this.rateLimits.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
@@ -369,6 +393,7 @@ export class DaemonPipeServer {
     }
     this.connectedSockets.clear();
     this.eventSubscribers.clear();
+    this.preSubscribeBacklogs.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
     this.firstPartyClients.clear();
@@ -421,6 +446,7 @@ export class DaemonPipeServer {
     }
     this.connectedSockets.clear();
     this.eventSubscribers.clear();
+    this.preSubscribeBacklogs.clear();
     this.clientIds.clear();
     this.socketsByClientId.clear();
     this.firstPartyClients.clear();
@@ -447,6 +473,29 @@ export class DaemonPipeServer {
    */
   broadcast(event: unknown): void {
     const msg = JSON.stringify(event) + '\n';
+
+    // A newly accepted app socket sends subscribe as its first authenticated
+    // RPC. Queue only until that first request declares the socket's intent;
+    // ordinary RPC clients remain untouched and never receive these frames.
+    if (this.preSubscribeBacklogs.size > 0) {
+      const msgBytes = Buffer.byteLength(msg);
+      this.preSubscribeBacklogs.forEach((backlog, socket) => {
+        if (socket.destroyed) return;
+        if (backlog.bytes + msgBytes > PRE_SUBSCRIBE_BACKLOG_BYTES) {
+          const clientId = this.clientIds.get(socket) ?? 'unknown';
+          this.preSubscribeBacklogs.delete(socket);
+          console.warn(
+            `[DaemonPipeServer] closing event subscriber handshake ${clientId}: `
+            + `pre-subscribe backlog exceeds ${PRE_SUBSCRIBE_BACKLOG_BYTES} bytes`,
+          );
+          socket.destroy();
+          return;
+        }
+        backlog.frames.push(msg);
+        backlog.bytes += msgBytes;
+      });
+    }
+
     this.eventSubscribers.forEach((socket) => {
       if (!socket.destroyed) {
         if (socket.writableLength > SUBSCRIBER_BACKPRESSURE_BYTES) {
@@ -538,6 +587,13 @@ export class DaemonPipeServer {
       // for every new token attempt instead of spamming a single long-lived socket.
       socket.destroy();
       return;
+    }
+
+    // The backlog exists only to close the app's accept-to-subscribe window.
+    // Once an authenticated client chooses any other first RPC, discard it and
+    // keep that socket reply-only exactly as the opt-in contract promises.
+    if (String(request.method) !== 'daemon.events.subscribe') {
+      this.preSubscribeBacklogs.delete(socket);
     }
 
     // Global rate limit
@@ -638,7 +694,24 @@ export class DaemonPipeServer {
   subscribeEvents(clientId: string): boolean {
     const socket = this.socketsByClientId.get(clientId);
     if (!socket || socket.destroyed) return false;
+    const backlog = this.preSubscribeBacklogs.get(socket);
+    this.preSubscribeBacklogs.delete(socket);
     this.eventSubscribers.add(socket);
+    // Flush before the subscribe reply is written by processLine. Subscribers
+    // already have to correlate RPC ids with interleaved id-less event frames;
+    // preserving this order makes every accepted-window event observable once.
+    for (const frame of backlog?.frames ?? []) {
+      if (socket.destroyed || socket.writableLength > SUBSCRIBER_BACKPRESSURE_BYTES) {
+        this.eventSubscribers.delete(socket);
+        return false;
+      }
+      try {
+        socket.write(frame);
+      } catch {
+        this.eventSubscribers.delete(socket);
+        return false;
+      }
+    }
     return true;
   }
 
