@@ -370,10 +370,10 @@ export const zh = {
   'settings.inspect.proxyLabel': '编辑 {token}（{role}）',
 
   // ─── 智能体工具栏: fan-out / broadcast 按钮 ───
-  'toolbar.fanOut': 'Multi Task',
-  'toolbar.broadcast': 'Broadcast',
-  'toolbar.broadcastTooltip': 'Broadcast — 向当前工作区的每个终端面板发送相同文本（无隔离）',
-  'toolbar.broadcastPrompt': 'Broadcast — 发送到当前工作区的每个终端面板',
+  'toolbar.fanOut': '多任务',
+  'toolbar.broadcast': '广播',
+  'toolbar.broadcastTooltip': '广播 — 向当前工作区的每个终端面板发送相同文本（无隔离）',
+  'toolbar.broadcastPrompt': '广播 — 发送到当前工作区的每个终端面板',
 
   // ─── Fan-out 对话框（1 个提示 → N 个隔离任务）───
   'fanout.title': 'Fan-out — 1 个提示 → N 个隔离任务',
@@ -1065,7 +1065,7 @@ export const zh = {
   'git.create': '创建',
   'git.createFailed': '创建失败',
   'git.newBranchPlaceholder': '新分支名…',
-  'git.pullRequests': 'Pull Requests',
+  'git.pullRequests': '拉取请求',
   'git.noPrs': '没有打开的 pull request。',
   'git.noComments': '没有评论。',
   'git.ghMissing': '未安装 GitHub CLI（gh）— 安装后即可在此查看 pull request。',
