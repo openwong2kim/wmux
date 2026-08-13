@@ -133,7 +133,7 @@ export function computeImeAnchorCorrection(
  */
 export function parsePxOrNull(value: string | undefined | null): number | null {
   if (!value) return null;
-  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)px$/.exec(value.trim());
+  const match = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)px$/.exec(value.trim());
   if (!match) return null;
   const n = Number(match[1]);
   return Number.isFinite(n) ? n : null;

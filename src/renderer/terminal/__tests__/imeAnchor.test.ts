@@ -102,6 +102,7 @@ describe('#874 anchor math', () => {
     // Legal CSS forms Chromium does not currently emit, accepted anyway so a
     // change upstream cannot silently switch the correction off.
     expect(parsePxOrNull('.5px')).toBe(0.5);
+    expect(parsePxOrNull('+1px')).toBe(1);
     expect(parsePxOrNull('1e2px')).toBe(100);
     expect(parsePxOrNull('-1.5E-1px')).toBeCloseTo(-0.15, 6);
     expect(parsePxOrNull('-9999em')).toBeNull();
