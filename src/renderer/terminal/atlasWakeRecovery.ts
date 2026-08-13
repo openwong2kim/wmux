@@ -32,6 +32,16 @@
 //
 // The two triggers routinely fire together on a real wake; the throttle
 // collapses them into one rebuild.
+//
+// ON WINDOWS THE VISIBILITY TRIGGER NEVER FIRES. Measured on Electron 41:
+// `document.visibilityState` stays 'visible' while the window is fully covered
+// by another application, and also while the window is MINIMIZED, with and
+// without Chromium's `CalculateNativeWinOcclusion` feature —
+// `visibilitychange` fires exactly once per window, at teardown. So on Windows
+// `system-resumed` is the only live trigger here. Do not assume the visibility
+// backstop above covers that platform; anything that needs to know whether the
+// window can be seen has to ask main instead (see main/window/windowDisplayed.ts,
+// which is how the #766 viewer-visibility report gets its answer since #882).
 
 import { atlasGuard } from './atlasGuard';
 

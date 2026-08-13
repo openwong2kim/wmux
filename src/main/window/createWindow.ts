@@ -1,9 +1,10 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, powerMonitor, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { PLUGIN_PROTOCOL_SCHEME } from '../../shared/pluginHost';
 import { attachFlashFrameAutoClear } from './flashFrame';
+import { windowDisplayedReporter } from './windowDisplayed';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
@@ -150,6 +151,14 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   };
   mainWindow.on('enter-full-screen', () => pushFullscreen(true));
   mainWindow.on('leave-full-screen', () => pushFullscreen(false));
+
+  // #882 — "is anyone looking at this window" (minimized / hidden to tray /
+  // screen locked), pushed on the same window-event → renderer pattern. The
+  // renderer folds it into the #766 viewer-visibility report, which on Windows
+  // had no working window term at all: `document.visibilityState` never
+  // reports hidden there, not even for a minimized window. Rationale and the
+  // deliberate exclusion of plain blur live in window/windowDisplayed.ts.
+  windowDisplayedReporter.attach(mainWindow, { powerMonitor });
 
   // UI zoom (#822) is now renderer-driven: the persisted factor lives in the
   // renderer store and is pushed via the window:setUiScale IPC on hydration

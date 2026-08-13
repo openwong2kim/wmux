@@ -1044,6 +1044,21 @@ const electronAPI = {
       ipcRenderer.on(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
       return () => ipcRenderer.removeListener(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
     },
+    /**
+     * #882 — is anyone looking at this window (not minimized, not hidden to
+     * tray, screen not locked)? Mount-time pull; the push below carries the
+     * transitions. Feeds the #766 viewer-visibility report, whose window term
+     * was dead on Windows because `document.visibilityState` never reports any
+     * of those states there.
+     */
+    isDisplayed: () => ipcRenderer.invoke(IPC.WINDOW_IS_DISPLAYED) as Promise<boolean>,
+    /** #882 — live transitions of the above (push). */
+    onDisplayedChanged: (cb: (displayed: boolean) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { displayed?: boolean }) =>
+        cb(payload?.displayed === true);
+      ipcRenderer.on(IPC.WINDOW_DISPLAYED_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.WINDOW_DISPLAYED_CHANGED, listener);
+    },
   },
   events: {
     /**

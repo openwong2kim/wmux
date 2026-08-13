@@ -26,6 +26,8 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
+import { decideViewerVisibility } from '../terminal/viewerVisibility';
+import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
@@ -433,6 +435,20 @@ function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean): Promise
   });
 }
 
+/**
+ * #766/#882 — tell the daemon whether a desk renderer can see this pane.
+ *
+ * Fire-and-forget: local mode ignores it, and the value is re-sent on every
+ * visibility flip and after a daemon reattach, so one lost report self-corrects.
+ * Optional-chain style guard, as at resync: a packaged app updated under a
+ * running renderer can leave a preload that does not expose the method yet.
+ */
+function reportViewerVisibility(ptyId: string | null | undefined, visible: boolean): void {
+  if (!ptyId) return;
+  if (typeof window.electronAPI.pty.setViewerVisibility !== 'function') return;
+  window.electronAPI.pty.setViewerVisibility(ptyId, visible);
+}
+
 // Lightweight copy feedback toast — injects/removes a DOM element
 let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
 function showCopyToast() {
@@ -592,6 +608,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // closure value captured at mount would go stale across workspace switches.
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
+  // #882 — last value reported to the daemon for this pane. Read by the daemon
+  // reattach path, which is keyed on ptyId alone and would otherwise capture a
+  // stale value. Seeded to the same optimistic default the daemon holds.
+  const viewerVisibleRef = useRef(true);
   const onFirstDataRef = useRef(onFirstData);
   onFirstDataRef.current = onFirstData;
   const onContextMenuRef = useRef(onContextMenu);
@@ -2241,6 +2261,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       inFlight = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
       void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null)
+        .then(() => {
+          // #882 — the daemon starts every managed session at `viewerVisible:
+          // true` and resets to true on detach, so a reattach that lands while
+          // this pane is hidden (background workspace, minimized window) leaves
+          // the daemon believing the desk owns the size, and the phone keeps
+          // getting 409 with nothing to correct it: this pane's visibility is
+          // not going to change just because the daemon respawned. Replay the
+          // last reported value so a reattach cannot silently revert it.
+          if (ptyIdRef.current !== id) return;
+          reportViewerVisibility(id, viewerVisibleRef.current);
+        })
         .finally(() => { inFlight = false; });
     };
     // Daemon already connected when we mounted: its daemon:connected fired before
@@ -2438,26 +2469,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
   // #766 — visibility-based size ownership. Report to the daemon whether this
   // pane is actually on screen: `isVisible` (workspace shown + active tab) AND
-  // the window itself visible (`document.visibilityState` — minimized, fully
-  // occluded, or hidden windows report 'hidden'). While the report says
-  // hidden, the daemon lets a phone reshape the PTY; while it says visible,
-  // the phone gets `409 desk-owns-size` as before.
+  // the window itself visible. While the report says hidden, the daemon lets a
+  // phone reshape the PTY; while it says visible, the phone gets
+  // `409 desk-owns-size` as before.
+  //
+  // #882 — the window half needs BOTH terms. `document.visibilityState` is a
+  // constant `true` on Windows (measured: it does not change when the window is
+  // covered, nor when it is MINIMIZED), so on that platform it contributed
+  // nothing and minimising wmux never handed the size over. `windowDisplayed`
+  // is main's answer to the same question, which it can actually see.
   const [docVisible, setDocVisible] = useState(() => document.visibilityState === 'visible');
   useEffect(() => {
     const onChange = () => setDocVisible(document.visibilityState === 'visible');
     document.addEventListener('visibilitychange', onChange);
     return () => document.removeEventListener('visibilitychange', onChange);
   }, []);
-  const effectiveVisible = isVisible && docVisible;
-  const prevDocVisibleRef = useRef(docVisible);
+  const windowDisplayed = useWindowDisplayed();
+  const prevWindowVisibleRef = useRef(docVisible && windowDisplayed);
   useEffect(() => {
-    // Optional-chain style guard, as at resync above: a stale preload
-    // (packaged app updated under a running renderer) may not expose it yet.
-    if (ptyId && typeof window.electronAPI.pty.setViewerVisibility === 'function') {
-      // Fire-and-forget: local mode ignores it, and a report lost to a race
-      // is corrected by the next flip or the detach-time reset to visible.
-      window.electronAPI.pty.setViewerVisibility(ptyId, effectiveVisible);
-    }
+    const { viewerVisible, windowVisible, refit } = decideViewerVisibility({
+      paneVisible: isVisible,
+      docVisible,
+      windowDisplayed,
+      prevWindowVisible: prevWindowVisibleRef.current,
+    });
+    prevWindowVisibleRef.current = windowVisible;
+    // Latest reported value, for the replay after a daemon reattach (that
+    // effect is keyed on ptyId alone and must not capture a stale value).
+    viewerVisibleRef.current = viewerVisible;
+    reportViewerVisibility(ptyId, viewerVisible);
     // Reclaim on window-level reveal. Workspace/tab reveals re-fit via the
     // visibility effect above, but a restored window's container never
     // changed size, so no ResizeObserver tick fires — if a phone reshaped
@@ -2465,10 +2505,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // fit() resizes unconditionally (no last-sent dedup), and the daemon
     // drops the SIGWINCH when the geometry is already ours, so this is free
     // when nothing changed.
-    const docRevealed = docVisible && !prevDocVisibleRef.current;
-    prevDocVisibleRef.current = docVisible;
-    if (docRevealed && isVisible) fit();
-  }, [ptyId, effectiveVisible, docVisible, isVisible, fit]);
+    if (refit) fit();
+  }, [ptyId, isVisible, docVisible, windowDisplayed, fit]);
 
   const getSearchDecorations = useCallback(() => {
     const y = getComputedStyle(document.documentElement).getPropertyValue('--accent-yellow').trim();

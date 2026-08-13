@@ -461,6 +461,12 @@ export const IPC = {
   // time initial state.
   WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
   WINDOW_IS_FULLSCREEN: 'window:isFullScreen',
+  // #882 — "is anyone looking at this window": minimized / hidden to tray /
+  // screen locked. Same push + pull shape as fullscreen above. Feeds the #766
+  // viewer-visibility report, because `document.visibilityState` never reports
+  // any of those on Windows (see main/window/windowDisplayed.ts).
+  WINDOW_DISPLAYED_CHANGED: 'window:displayed-changed',
+  WINDOW_IS_DISPLAYED: 'window:isDisplayed',
   // MCP integration status / management (Settings panel + CLI parity)
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
