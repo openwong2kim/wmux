@@ -15,17 +15,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SPEC = 'src/daemon/worktask/__tests__/j3-fleet-reboot-survival.demo.test.ts';
+const VITEST_CLI = path.join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+const SPEC = 'src/daemon/worktask/__tests__/j3-fleet-reboot-survival.demo.runtime.test.ts';
 
 console.log('[j3-fleet-demo] 함대 리부트 생존 왕복 시작 — N=4 실 worktree + 산출물 시딩 + 재시작 replay');
 
-// Windows에서 `npx`는 `npx.cmd`라 shell 없이 직접 spawn하면 ENOENT/EINVAL(최신
-// Node의 .cmd 스폰 보안 완화). shell:true로 실행명을 해석시킨다 — 인자는 정적
-// 상수(SPEC)라 셸 인젝션 표면이 없다.
+// Invoke the installed CLI through Node so Windows never needs to spawn a
+// .cmd shim and a missing dependency cannot make npx download code.
 const res = spawnSync(
-  'npx',
-  ['vitest', 'run', SPEC],
-  { cwd: REPO_ROOT, stdio: 'inherit', env: process.env, shell: true },
+  process.execPath,
+  [VITEST_CLI, 'run', SPEC],
+  { cwd: REPO_ROOT, stdio: 'inherit', env: process.env },
 );
 
 if (res.status === 0) {

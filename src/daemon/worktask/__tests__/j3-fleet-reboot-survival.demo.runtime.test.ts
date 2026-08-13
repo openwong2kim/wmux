@@ -12,6 +12,8 @@
 // 이 테스트의 PASS를 근거로 "워크스페이스 생존"을 주장하지 않는다.
 //
 // scripts/j3-fleet-reboot-survival-demo.mjs가 이 스펙을 구동한다.
+// This spec shells out to real Git and creates four worktrees, so it belongs
+// in the serial runtime lane rather than the parallel unit-test lane.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -49,7 +51,7 @@ afterEach(() => {
 });
 
 function newLog(): AppendOnlyLog {
-  const log = new AppendOnlyLog({ dir: logDir, fsync: () => {} });
+  const log = new AppendOnlyLog({ dir: logDir, fsync: () => undefined });
   log.open();
   return log;
 }
