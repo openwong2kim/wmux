@@ -330,12 +330,19 @@ Once a plugin has identified itself and declared its capability set, every subse
 - Users can override either way explicitly via the config key.
 
 The same bounded JSONL file also carries `entryKind: "browser-scope"` rows for
-`#810`'s caller-derived browser workspace decision. Those rows are observation
-only in every `mcp.mode`: current target selection still uses the request's
-optional `workspaceId`, and no browser call is refused by `callerScope` yet.
-They record the calls a later enforcement PR would reject (for example, an
-identified approved plugin that omitted its workspace), so the flip can be
-based on real compatibility evidence rather than assumption.
+`#810`'s caller-derived browser workspace decision, and `mcp.mode` governs that
+decision too — one switch, one rollback. Under `enforce`, a target-resolving
+`browser.*` call whose scope cannot be derived fails with
+`BROWSER_SCOPE_REFUSED` before any target lookup; the most common case is an
+identified client that omitted its `workspaceId`, which previously fell back to
+whichever surface happened to be registered first. **If your plugin calls any
+`browser.*` method, send the `workspaceId` of the workspace you are calling
+from.** Under `shadow` the row is still written and the call still runs on the
+request-derived workspace, so the old behavior remains available for rollback.
+
+The refusal is terminal — retrying the identical call will not succeed. Fix the
+request instead: add `workspaceId`, or use the workspace your commander token is
+bound to.
 
 **Wire shape.** The `RpcResponse` failure arm carries a `rejection?: RpcRejection` discriminated union (see `src/shared/rpc.ts`):
 

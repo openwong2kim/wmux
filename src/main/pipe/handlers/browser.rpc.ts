@@ -28,6 +28,7 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
+import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 
@@ -87,11 +88,43 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
 }
 
 /**
- * Compute the future caller-derived browser scope without enforcing it.
+ * Compute the caller-derived browser scope.
  *
- * PR #810 lands this decision table in shadow first: handlers continue using
- * the request-derived scope below, while rejected decisions are audit-logged.
- * A later, separately reviewed change can switch target lookup to this result.
+ * #846 landed this table in shadow; it is now what target lookup actually uses
+ * under `mcp.mode: enforce` (see `scopeFor` below).
+ *
+ * The table itself is unchanged by the enforcement step. Enforcing it did
+ * surface one broken caller — `wmux browser navigate` outside a wmux pane omits
+ * `workspaceId` on purpose while still sending its `clientName`, so it would
+ * have been refused in every packaged build — but the fix belongs on the CLI,
+ * which now asks `workspace.current` instead of leaving the server to guess.
+ * A lane keyed on the CLI's `clientName` was tried and rejected: `clientName`
+ * is self-asserted, so any wire caller could claim it and buy back exactly the
+ * unscoped access this closes.
+ *
+ * Read that near-miss as the shadow evidence being weaker than it looked: #846's
+ * window recorded no `browser.*` traffic at all, so it validated nothing about
+ * these callers.
+ *
+ * What this closes and what it does NOT (#810, be precise — the tool layer has
+ * been mistaken for a boundary before):
+ *
+ *   closes  an approved THIRD-party caller that OMITS `workspaceId` no longer
+ *           falls through to the workspace-blind "first registered surface"
+ *           lookup; it is refused. This is the caller #810 describes.
+ *   closes  a pinned commander can no longer name a workspace other than the
+ *           one its validated token is bound to.
+ *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
+ *           it is the caller's own. Nothing in the main process binds a
+ *           clientName to a workspace — `mcp.claimWorkspace` forwards to the
+ *           renderer and records no server-side association — so a caller that
+ *           names a foreign workspace is still accepted here, exactly as before.
+ *   OPEN    the `legacy` lane (no `clientName`) stays allowed and unscoped, and
+ *           `PermissionEnforcer` grandfathers the same callers. Dropping the
+ *           identity envelope therefore still bypasses this.
+ *
+ * Both OPEN items need a caller-identity binding that does not exist yet; they
+ * are tracked on #810 rather than papered over here.
  */
 export function callerScope(
   ctx: RpcContext | undefined,
@@ -158,6 +191,7 @@ export function callerScope(
   if (requested) {
     return { kind: 'scoped', lane: 'declared', workspaceId: requested };
   }
+
   return {
     kind: 'rejected',
     lane: 'declared',
@@ -187,12 +221,49 @@ const CDP_SCREENSHOT_TIMEOUT_MS = 2_500;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
 
+/**
+ * Caller-facing text for a refused scope decision.
+ *
+ * Same contract as `noTargetError`: name the refusal, say it is terminal, and
+ * say what the caller can do instead. Never name another workspace or its URL —
+ * a refusal must not become the enumeration primitive it exists to prevent.
+ * `pinnedWorkspaceId` is the caller's own binding, but it is still left out so
+ * every branch has one disclosure rule instead of two.
+ */
+const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
+  'caller-context-unavailable':
+    'this call arrived without a caller context, so no workspace can be resolved for it',
+  'caller-origin-unsupported':
+    'browser surfaces are reachable only from this machine',
+  'pinned-source-unqualified':
+    'a workspace-pinned caller must arrive on the local wmux wire',
+  'pinned-workspace-mismatch':
+    'address a surface in the workspace your token is bound to',
+  'workspace-unresolved':
+    'send the workspaceId of the workspace you are calling from',
+};
+
+export function scopeRefusalError(
+  method: string,
+  reason: BrowserScopeShadowReason,
+): Error {
+  return new Error(
+    `${method}: BROWSER_SCOPE_REFUSED: ${SCOPE_REFUSAL_REMEDY[reason]}. ` +
+      `Do not retry unchanged.`,
+  );
+}
+
 export function registerBrowserRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   webviewCdpManager: WebviewCdpManager,
   backendStore?: BrowserBackendStore,
   browserScopeShadowSink?: (input: BrowserScopeShadowInput) => void,
+  // `mcp.mode` is resolved above this registration in main/index.ts; the getter
+  // reads it lazily per call so the two never have to stay adjacent. Defaults
+  // to shadow, so a caller that forgets to wire it keeps observing rather than
+  // silently starting to refuse traffic.
+  getEnforcementMode: () => EnforcementMode = () => 'shadow',
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -239,46 +310,73 @@ export function registerBrowserRpc(
   };
 
   /**
-   * The request-derived workspace used by the current lookup behavior (#695).
+   * The single place a target-resolving browser handler learns which workspace
+   * to look a surface up in.
    *
-   * This intentionally remains authoritative while callerScope is shadow-only:
-   * passing it to getTarget/ensureAwake preserves every pre-#810 response,
-   * including the unscoped fallback when the field is absent. Do not extend
-   * this into a caller-identity decision; the pure callerScope table above is
-   * the reviewed replacement that a later enforcement PR will switch to after
-   * the audit log is quiet.
+   * Both modes audit the same decision. They differ in what the caller gets:
+   *
+   *        callerScope(ctx, params)
+   *                 │
+   *      ┌──────────┴────────────┐
+   *   rejected                 allowed / scoped
+   *      │                        │
+   *   audit-log                   │
+   *      │                        │
+   *      ├─ enforce ─► throw      ├─ enforce ─► decision.workspaceId
+   *      │   (terminal: no        │              (the pinned lane returns the
+   *      │    lookup, wake,       │               TOKEN binding, which is the
+   *      │    lease, or URL       │               point — it may differ from
+   *      │    validation runs)    │               what the caller asked for)
+   *      │                        │
+   *      └─ shadow ──────────────►┴─ shadow ──► requestedWorkspaceId(params)
+   *
+   * Shadow returns the request-derived workspace on EVERY lane, refused or not.
+   * That is deliberate and load-bearing: shadow is the rollback, so it has to
+   * be pre-#810 behavior exactly, not "pre-#810 except where the new decision
+   * happens to be better". Returning `decision.workspaceId` here would already
+   * re-scope a pinned caller — changing which targets `browser.cdp.info` lists
+   * and whether it sets `targetsScoped` — in the mode whose whole promise is
+   * that it changes nothing.
+   *
+   * The mode is `mcp.mode`, shared with the permission enforcer rather than a
+   * second knob — both answer "is substrate enforcement live on this install?",
+   * and one switch means one rollback.
+   *
+   * The audit write is best-effort for the same reason as the permission shadow
+   * logger: telemetry must never break a browser call. Note the ordering — the
+   * log happens BEFORE the throw, so an enforced refusal is still evidence.
    */
-  const scopeOf = requestedWorkspaceId;
-
-  /**
-   * Observe future caller-scope refusals without changing target selection.
-   * The old request-derived `scopeOf` remains authoritative in this PR. The
-   * sink is best-effort for the same reason as the permission shadow logger:
-   * telemetry must never break a browser call.
-   */
-  const observeCallerScope = (
+  const scopeFor = (
     method: RpcMethod,
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
-  ): void => {
-    if (!browserScopeShadowSink) return;
+  ): string | undefined => {
     const decision = callerScope(ctx, params);
-    if (decision.kind !== 'rejected') return;
-    try {
-      browserScopeShadowSink({
-        clientName: ctx?.clientName,
-        method,
-        reason: decision.reason,
-        ...(decision.requestedWorkspaceId && {
-          requestedWorkspaceId: decision.requestedWorkspaceId,
-        }),
-        ...(decision.pinnedWorkspaceId && {
-          pinnedWorkspaceId: decision.pinnedWorkspaceId,
-        }),
-      });
-    } catch {
-      /* browser scope shadow logging must never affect dispatch */
+    const enforcing = getEnforcementMode() === 'enforce';
+
+    if (decision.kind === 'rejected') {
+      if (browserScopeShadowSink) {
+        try {
+          browserScopeShadowSink({
+            clientName: ctx?.clientName,
+            method,
+            reason: decision.reason,
+            ...(decision.requestedWorkspaceId && {
+              requestedWorkspaceId: decision.requestedWorkspaceId,
+            }),
+            ...(decision.pinnedWorkspaceId && {
+              pinnedWorkspaceId: decision.pinnedWorkspaceId,
+            }),
+          });
+        } catch {
+          /* browser scope audit logging must never affect dispatch */
+        }
+      }
+      if (enforcing) throw scopeRefusalError(method, decision.reason);
+      return requestedWorkspaceId(params);
     }
+
+    return enforcing ? decision.workspaceId : requestedWorkspaceId(params);
   };
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
@@ -345,16 +443,27 @@ export function registerBrowserRpc(
   // a per-op lease on the RESOLVED target surface. When no target is
   // registered yet, the handler runs unleased and fails with its own
   // "no webview target" error as before.
+  // The leased handlers take the resolved workspace as an argument rather than
+  // re-deriving it: `scopeFor` is the enforcement point, so a handler that
+  // forgot to call it used to silently keep the old workspace-blind lookup
+  // (#810). Threading it in makes that a type error instead of a quiet hole,
+  // and guarantees one decision — and at most one audit entry — per RPC.
   const registerLeased = (
     method: Parameters<RpcRouter['register']>[0],
-    handler: (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>,
+    handler: (
+      params: Record<string, unknown>,
+      scope: string | undefined,
+      ctx?: RpcContext,
+    ) => Promise<unknown>,
     // #517 backend fork: what to do when no builtin target resolves while the
     // backend is 'external'. Default is the fail-closed contract error; the
     // open-shaped handlers (navigate) pass a delegate instead.
     externalFallback?: (params: Record<string, unknown>) => Promise<unknown>,
   ): void => {
     router.register(method, async (params, ctx) => {
-      observeCallerScope(method, params, ctx);
+      // Before any work: a refused caller must not reach URL validation, the
+      // external-backend delegate, or a wake. Throwing here is the whole point.
+      const scope = scopeFor(method, params, ctx);
       const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
       // Memory relief (#517 slice C): automation targeting a discarded guest
       // wakes it (renderer remounts + page reloads) before taking the lease,
@@ -364,15 +473,15 @@ export function registerBrowserRpc(
       // (codex P1 — otherwise the default MCP path fails once the only pane is
       // discarded). In EXTERNAL mode the default lookup is blocked entirely —
       // see resolveTargetSurface.
-      const resolved = await resolveTargetSurface(surfaceId, scopeOf(params));
+      const resolved = await resolveTargetSurface(surfaceId, scope);
       if (!resolved) {
         if (backend() === 'external') {
           if (externalFallback) return externalFallback(params);
           throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
         }
-        return handler(params, ctx);
+        return handler(params, scope, ctx);
       }
-      return webviewCdpManager.withAutomationLease(resolved, () => handler(params, ctx));
+      return webviewCdpManager.withAutomationLease(resolved, () => handler(params, scope, ctx));
     });
   };
 
@@ -382,13 +491,13 @@ export function registerBrowserRpc(
   // TTL-bounded lease around each tool invocation instead, renewing during
   // long waits.
   router.register('browser.lease.acquire', async (params, ctx) => {
-    observeCallerScope('browser.lease.acquire', params, ctx);
+    const scope = scopeFor('browser.lease.acquire', params, ctx);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     // Wake a discarded guest so out-of-process (Playwright) automation gets a
     // live target under its lease (#517 slice C). Without surfaceId this
     // defaults to any discarded surface in builtin mode; external mode blocks
     // the default lookup (see resolveTargetSurface).
-    const resolved = await resolveTargetSurface(surfaceId, scopeOf(params));
+    const resolved = await resolveTargetSurface(surfaceId, scope);
     if (!resolved) return { token: null };
     return { token: webviewCdpManager.acquireRpcLease(resolved) };
   });
@@ -635,13 +744,13 @@ export function registerBrowserRpc(
     }
     return params['url'];
   };
-  registerLeased('browser.navigate', async (params) => {
+  registerLeased('browser.navigate', async (params, scope) => {
     const navUrl = requireNavigateUrl(params);
     await validateUrl(navUrl, 'browser.navigate');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     // Try CDP direct navigation first
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
     if (target) {
       try {
         const wc = webContents.fromId(target.webContentsId);
@@ -661,11 +770,11 @@ export function registerBrowserRpc(
     // workspace check of its own — it picks the caller-supplied id, or its own
     // default when there is none. Neither choice is safe to hand a scoped
     // caller unless this side has already proven ownership (#695).
-    if (scopeOf(params)) {
+    if (scope) {
       // No target means the scoped lookup refused one, or there is none to
       // own. Routing that to the bridge would reinstate exactly the
       // workspace-blind selection this change removes, so refuse instead.
-      if (!target) throw noTargetError('browser.navigate', surfaceId, scopeOf(params));
+      if (!target) throw noTargetError('browser.navigate', surfaceId, scope);
       // A target did resolve and CDP merely failed on it. Ownership is already
       // established, so the bridge is fine — but pin it to that exact surface.
       // Leaving the id absent would let the bridge choose its own default,
@@ -690,11 +799,11 @@ export function registerBrowserRpc(
    * Navigate the active browser Surface back by one history entry.
    * params: { surfaceId?: string }
    */
-  registerLeased('browser.goBack', async (params) => {
+  registerLeased('browser.goBack', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.goBack', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.goBack', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.goBack: WebContents unavailable');
@@ -843,7 +952,8 @@ export function registerBrowserRpc(
    * not the primitive that bypasses the tool-layer capability and lease checks.
    */
   router.register('browser.cdp.info', async (params, ctx) => {
-    observeCallerScope('browser.cdp.info', params, ctx);
+    // Refuse before disclosing anything, including whether CDP is enabled.
+    const callerWorkspaceId = scopeFor('browser.cdp.info', params, ctx);
     const cdpPort = webviewCdpManager.getCdpPort();
     if (cdpPort <= 0) {
       throw new Error(
@@ -853,10 +963,6 @@ export function registerBrowserRpc(
       );
     }
     const discloseAttachInfo = canDiscloseBrowserAttachInfo(ctx);
-    const callerWorkspaceId =
-      typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
-        ? params['workspaceId']
-        : undefined;
 
     const listRelevantTargets = () => {
       const targets = webviewCdpManager.listTargets();
@@ -927,12 +1033,12 @@ export function registerBrowserRpc(
    * Capture a screenshot of the webview.
    * params: { surfaceId?: string, fullPage?: boolean }
    */
-  registerLeased('browser.screenshot', async (params) => {
+  registerLeased('browser.screenshot', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const fullPage = params['fullPage'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.screenshot', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.screenshot', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
@@ -994,13 +1100,13 @@ export function registerBrowserRpc(
    * Execute JavaScript in the webview and return the result.
    * params: { expression: string, surfaceId?: string }
    */
-  registerLeased('browser.evaluate', async (params) => {
+  registerLeased('browser.evaluate', async (params, scope) => {
     const expression = typeof params['expression'] === 'string' ? params['expression'] : '';
     if (!expression) throw new Error('browser.evaluate: missing "expression"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.evaluate', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.evaluate', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
@@ -1039,12 +1145,12 @@ export function registerBrowserRpc(
    * the MCP browser_console tool, #106). Capture is enabled lazily on first call.
    * params: { surfaceId?: string, clear?: boolean }
    */
-  registerLeased('browser.console.get', async (params) => {
+  registerLeased('browser.console.get', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.console.get', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.console.get', surfaceId, scope);
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.console.get: capture unavailable (webContents gone)');
@@ -1060,12 +1166,12 @@ export function registerBrowserRpc(
    * fetched separately via browser.responseBody.get to keep this payload small.
    * params: { surfaceId?: string, clear?: boolean }
    */
-  registerLeased('browser.network.get', async (params) => {
+  registerLeased('browser.network.get', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.network.get', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.network.get', surfaceId, scope);
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.network.get: capture unavailable (webContents gone)');
@@ -1080,13 +1186,13 @@ export function registerBrowserRpc(
    * Return the last captured response body whose URL matches the glob (#106).
    * params: { surfaceId?: string, urlPattern: string }
    */
-  registerLeased('browser.responseBody.get', async (params) => {
+  registerLeased('browser.responseBody.get', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const urlPattern = typeof params['urlPattern'] === 'string' ? params['urlPattern'] : '';
     if (!urlPattern) throw new Error('browser.responseBody.get: missing "urlPattern"');
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.responseBody.get', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.responseBody.get', surfaceId, scope);
 
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) throw new Error('browser.responseBody.get: capture unavailable (webContents gone)');
@@ -1101,13 +1207,13 @@ export function registerBrowserRpc(
    * This simulates real keyboard input, which works with React/controlled inputs.
    * params: { text: string, surfaceId?: string }
    */
-  registerLeased('browser.type.cdp', async (params) => {
+  registerLeased('browser.type.cdp', async (params, scope) => {
     const text = typeof params['text'] === 'string' ? params['text'] : '';
     if (!text) throw new Error('browser.type.cdp: missing "text"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.type.cdp', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.type.cdp', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.type.cdp: WebContents unavailable');
@@ -1122,12 +1228,12 @@ export function registerBrowserRpc(
    * Click at coordinates or on the focused element via CDP Input events.
    * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
    */
-  registerLeased('browser.click.cdp', async (params) => {
+  registerLeased('browser.click.cdp', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.click.cdp', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.click.cdp', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.click.cdp: WebContents unavailable');
@@ -1177,13 +1283,13 @@ export function registerBrowserRpc(
    * Press a keyboard key via CDP Input events.
    * params: { key: string, surfaceId?: string }
    */
-  registerLeased('browser.press.cdp', async (params) => {
+  registerLeased('browser.press.cdp', async (params, scope) => {
     const key = typeof params['key'] === 'string' ? params['key'] : '';
     if (!key) throw new Error('browser.press.cdp: missing "key"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
-    const target = webviewCdpManager.getTarget(surfaceId, scopeOf(params));
-    if (!target) throw noTargetError('browser.press.cdp', surfaceId, scopeOf(params));
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.press.cdp', surfaceId, scope);
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.press.cdp: WebContents unavailable');
@@ -1205,7 +1311,7 @@ export function registerBrowserRpc(
    * params: { surfaceId?: string }
    */
   router.register('browser.cdp.target', async (params, ctx) => {
-    observeCallerScope('browser.cdp.target', params, ctx);
+    const scope = scopeFor('browser.cdp.target', params, ctx);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     if (surfaceId) {
@@ -1215,7 +1321,7 @@ export function registerBrowserRpc(
         // latency. Post-checking an unscoped wait would not achieve that: the
         // foreign case answers instantly and the missing case costs the full
         // timeout, and that difference is itself the disclosure.
-        const target = await webviewCdpManager.waitForTarget(surfaceId, 5000, scopeOf(params));
+        const target = await webviewCdpManager.waitForTarget(surfaceId, 5000, scope);
         return {
           targetId: target.targetId,
           surfaceId: target.surfaceId,
@@ -1225,7 +1331,7 @@ export function registerBrowserRpc(
       }
     }
 
-    const target = webviewCdpManager.getTarget(undefined, scopeOf(params));
+    const target = webviewCdpManager.getTarget(undefined, scope);
     if (!target) return { error: 'no active browser webview' };
 
     return {
@@ -1250,10 +1356,10 @@ export function registerBrowserRpc(
    * params: { action, urls?, cookies?, surfaceId? }
    * Sensitive-domain redaction stays in the MCP tool (state.ts), not here.
    */
-  registerLeased('browser.cookies', async (params) => {
+  registerLeased('browser.cookies', async (params, scope) => {
     const action = params['action'];
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.cookies', scopeOf(params));
+    const wc = resolveWc(surfaceId, 'browser.cookies', scope);
 
     if (action === 'get') {
       const urls = Array.isArray(params['urls'])
@@ -1303,14 +1409,14 @@ export function registerBrowserRpc(
    * Override the viewport size via CDP Emulation.setDeviceMetricsOverride.
    * params: { width: number, height: number, surfaceId? }
    */
-  registerLeased('browser.resize', async (params) => {
+  registerLeased('browser.resize', async (params, scope) => {
     const width = typeof params['width'] === 'number' ? params['width'] : NaN;
     const height = typeof params['height'] === 'number' ? params['height'] : NaN;
     if (!Number.isFinite(width) || !Number.isFinite(height)) {
       throw new Error('browser.resize: width and height must be numbers');
     }
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.resize', scopeOf(params));
+    const wc = resolveWc(surfaceId, 'browser.resize', scope);
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
       width, height, deviceScaleFactor: 0, mobile: false,
     });
@@ -1330,9 +1436,9 @@ export function registerBrowserRpc(
    *   surfaceId?
    * }
    */
-  registerLeased('browser.emulate', async (params) => {
+  registerLeased('browser.emulate', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const wc = resolveWc(surfaceId, 'browser.emulate', scopeOf(params));
+    const wc = resolveWc(surfaceId, 'browser.emulate', scope);
     const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
       wc.debugger.sendCommand(method, p);
     const applied: string[] = [];
