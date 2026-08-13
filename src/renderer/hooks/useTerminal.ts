@@ -26,6 +26,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
+import { windowWakeRepaint } from '../terminal/windowWakeRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
@@ -1204,6 +1205,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       },
     });
 
+    // #879 — window-level wake repaint. The textarea `focus` repaint above
+    // reaches only the ONE pane that owns the focused textarea; on Windows,
+    // where nothing else fires on re-activation (see windowWakeRepaint.ts for
+    // the measurements), every other visible pane would keep whatever pixels
+    // it has, including none. Registration is unconditional; the coordinator
+    // is the thing that is platform-gated, so a non-Windows build simply never
+    // calls back.
+    const unregisterWindowWake = windowWakeRepaint.register({
+      isVisible: () => isVisibleRef.current,
+      repaint: () => {
+        if (terminalRef.current !== terminal) return;
+        glyphRepaint.onWindowWake();
+      },
+    });
+
     // Only fit immediately if the container is actually visible (non-zero size).
     // If the workspace starts hidden (display:none), skip the initial fit so we
     // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
@@ -2143,6 +2159,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       unregisterAtlasGuard();
+      unregisterWindowWake();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
       imeAnchor.dispose();

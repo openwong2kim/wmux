@@ -25,6 +25,7 @@ import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
 import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
+import { windowWakeRepaint } from '../../terminal/windowWakeRepaint';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -516,6 +517,18 @@ export default function AppLayout() {
         typeof onResumed === 'function' ? onResumed : () => () => {},
     });
   }, []);
+
+  // #879 — window-level wake repaint, Windows only. On Windows
+  // `document.visibilityState` never reports hidden (measured: not when the
+  // window is covered, not even when it is minimized), so the wake recovery
+  // above and useTerminal's `docRevealed` reclaim can never fire there, and a
+  // pane that lost its canvas pixels while the window was away has nothing to
+  // repaint it. macOS and Linux do flip visibility, so they are already
+  // covered and get no extra GPU work. Rationale and measurements live in
+  // terminal/windowWakeRepaint.ts.
+  useEffect(() => windowWakeRepaint.init({
+    enabled: window.electronAPI?.platform === 'win32',
+  }), []);
 
   // #517 slice C — discard mode mirrors the same way. Effective only while
   // lightweight mode is also on (belt-and-braces: main enforces this too).

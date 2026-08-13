@@ -30,6 +30,15 @@
 // output is flowing re-arms xterm's page-merge race (xterm.js #4480) — the
 // same reason glyphRepaint's focus path never touches the atlas.
 //
+// ON WINDOWS THE VISIBILITY TRIGGER NEVER FIRES (#879). Measured on Electron
+// 41: `document.visibilityState` stays 'visible' when the window is fully
+// covered by another app AND when it is minimized, with or without Chromium's
+// CalculateNativeWinOcclusion feature — `visibilitychange` fires once per
+// window, at teardown. So on Windows `system-resumed` is the only live trigger
+// here, and the plain "came back from alt-tab" case is covered by
+// windowWakeRepaint.ts instead, which repaints (never touches the atlas, for
+// the reason above).
+//
 // The two triggers routinely fire together on a real wake; the throttle
 // collapses them into one rebuild.
 

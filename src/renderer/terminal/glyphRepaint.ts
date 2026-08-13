@@ -78,7 +78,7 @@
 // tested without xterm; all rendering side effects live in the caller's
 // `repaint` callback.
 
-export type RepaintReason = 'focus' | 'visible' | 'burst';
+export type RepaintReason = 'focus' | 'visible' | 'burst' | 'window-wake';
 
 export interface GlyphRepaintScheduler {
   /** Feed PTY write sizes; fires repaint('burst') on the streaming cadence. */
@@ -87,6 +87,12 @@ export interface GlyphRepaintScheduler {
   onFocus(): void;
   /** The terminal became visible again; immediate repaint('visible'). */
   onVisible(): void;
+  /** The wmux WINDOW came back to the foreground (#879). Distinct from
+   *  `onVisible`, which is about this pane's workspace/tab: on Windows the
+   *  window can be covered or minimized for minutes without any pane changing
+   *  visibility, and the canvas can come back unpainted. Unthrottled — the
+   *  window-wake coordinator owns the cadence, this is only the execution. */
+  onWindowWake(): void;
   /** Cancel pending timers; all further calls become no-ops. */
   dispose(): void;
 }
@@ -222,6 +228,11 @@ export function createGlyphRepaintScheduler(
     onVisible(): void {
       if (disposed) return;
       repaint('visible');
+    },
+
+    onWindowWake(): void {
+      if (disposed) return;
+      repaint('window-wake');
     },
 
     dispose(): void {
