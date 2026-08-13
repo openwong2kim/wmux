@@ -446,16 +446,21 @@ What that closes, precisely:
 - A server-pinned caller can no longer name a workspace other than its token
   binding, and is scoped to that binding regardless of what it asked for.
 
-One lane was **added** during the flip: `internal-cli`. `wmux browser navigate`
-run outside a wmux pane has no pane above it, so `resolveSelfContext` correctly
-resolves nothing and the CLI omits the field to keep active-target behavior
-(#845) — while still sending `clientName`. Enforcing without this lane would
-have refused a shipped, tested command in every packaged build. The predicate
-mirrors `PermissionEnforcer`'s internal-CLI lane exactly
-(`isLocalExternalWireContext` + `isInternalCliClient`) and is deliberately
-narrower than the first-party predicate that gates `cdpPort`.
+**No lane is keyed on the caller's name.** Enforcing did surface one broken
+caller: `wmux browser navigate` run outside a wmux pane has no pane above it, so
+`resolveSelfContext` correctly resolves nothing and the CLI omitted the field to
+keep active-target behavior (#845) — while still sending `clientName`. It would
+have been refused in every packaged build.
 
-That lane is also the honest verdict on #846's shadow window: it recorded no
+A lane for the CLI's `clientName` was tried and rejected. `clientName` is
+self-asserted, so any wire caller could claim it and buy back exactly the
+unscoped access this change removes. The fix is on the CLI instead: when nothing
+resolves, it asks `workspace.current` and names that workspace — the same one
+the old server-side fallback would have picked, now chosen explicitly by the
+caller. If that lookup fails the CLI still sends nothing and lets the refusal
+explain itself, rather than inventing a workspace to get past the gate.
+
+That near-miss is the honest verdict on #846's shadow window: it recorded no
 `browser.*` traffic at all, so "the audit log is quiet" meant *unexercised*,
 not *exercised and clean*. The gap it hid was this CLI path.
 

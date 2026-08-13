@@ -168,35 +168,25 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
-      // `wmux browser navigate` outside a wmux pane: no pane above it, so
-      // resolveSelfContext returns nothing and the field is omitted (#845).
-      'bundled CLI that resolved to no workspace',
+      // No lane is keyed on the caller's NAME. `clientName` is self-asserted,
+      // so a lane for the bundled CLI would be a lane for anything willing to
+      // claim its name — the CLI resolves `workspace.current` instead.
+      'bundled CLI name buys nothing on its own',
       { origin: 'local', externalWire: true, clientName: 'wmux-cli' },
       {},
-      { kind: 'allowed', lane: 'internal-cli' },
+      { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
-      // The lane is a fallback, not a bypass: a first-party client that DID
-      // resolve its workspace is scoped to it like anyone else.
-      'bundled CLI that did resolve one',
+      'bundled CLI that resolved its workspace',
       { origin: 'local', externalWire: true, clientName: 'wmux-cli' },
       { workspaceId: 'ws-cli' },
       { kind: 'scoped', lane: 'declared', workspaceId: 'ws-cli' },
     ],
     [
-      // The lane is narrower than the first-party predicate used for cdpPort:
-      // a bundled MCP server already sends its workspace, so it stays refused
-      // when it does not.
+      // Being first-party is not a scope either: the bundled MCP servers send
+      // their workspace on every call, so omitting it is a caller bug.
       'first-party MCP client omitting its scope',
       { origin: 'local', externalWire: true, clientName: 'claude-code' },
-      {},
-      { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
-    ],
-    [
-      // Name alone is not provenance: without PipeServer's external-wire
-      // marker, an iframe plugin sharing the manifest namespace stays refused.
-      'CLI name without external-wire provenance',
-      { origin: 'local', firstParty: true, clientName: 'wmux-cli' },
       {},
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],

@@ -51,13 +51,48 @@ describe('wmux browser navigate caller scoping (#810)', () => {
     });
   });
 
-  it('preserves active-target fallback when no caller workspace resolves', async () => {
+  it('names the active workspace when no caller workspace resolves', async () => {
+    // Outside a wmux pane there is no pane identity to walk to. This used to
+    // send no workspace and let the main process fall back to whichever target
+    // registered first; #810 removed that fallback, so the CLI asks which
+    // workspace is active and says so. Same workspace the old fallback picked,
+    // now chosen explicitly by the caller.
     selfContext.mockResolvedValue({});
+    rpc.mockImplementation(async (method: string) =>
+      method === 'workspace.current'
+        ? { id: 'rpc-cur', ok: true, result: { id: 'ws-active', name: 'Active' } }
+        : { id: 'rpc-ok', ok: true, result: { ok: true } },
+    );
+
+    await handleBrowser(['navigate', 'https://example.com/outside'], false);
+
+    expect(rpc).toHaveBeenCalledWith('browser.navigate', {
+      url: 'https://example.com/outside',
+      workspaceId: 'ws-active',
+    });
+  });
+
+  it('omits the field when the active workspace cannot be read', async () => {
+    // Do not invent a workspace to get past the gate — send nothing and let the
+    // server's own refusal explain itself. Guessing here would reintroduce the
+    // "some workspace, who knows which" routing #810 is about.
+    selfContext.mockResolvedValue({});
+    rpc.mockImplementation(async (method: string) =>
+      method === 'workspace.current'
+        ? { id: 'rpc-cur', ok: false, error: 'renderer unavailable' }
+        : { id: 'rpc-ok', ok: true, result: { ok: true } },
+    );
 
     await handleBrowser(['navigate', 'https://example.com/outside'], false);
 
     expect(rpc).toHaveBeenCalledWith('browser.navigate', {
       url: 'https://example.com/outside',
     });
+  });
+
+  it('does not spend a round trip when the caller workspace already resolved', async () => {
+    await handleBrowser(['navigate', 'https://example.com'], false);
+
+    expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 });

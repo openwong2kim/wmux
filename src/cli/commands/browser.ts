@@ -88,16 +88,30 @@ export async function handleBrowser(
       // Resolve the caller exactly like `wmux open` / `wmux browser close`.
       // Inside a wmux pane this prevents a background workspace from
       // navigating whichever browser target happened to register first.
-      // Outside wmux, no workspace resolves and active-target compatibility is
-      // preserved by omitting the field.
       const ctx = await resolveSelfContext({
         sendRequest,
         env: process.env,
         ppid: process.ppid,
         getParentPid: getParentPidDefault,
       });
+      // Outside wmux nothing resolves, and this used to send no workspace at
+      // all — which let the main process fall back to "whichever target
+      // registered first". #810 removed that fallback, so ASK for the target
+      // instead of leaving the server to guess: `workspace.current` is the same
+      // active workspace the old renderer fallback would have picked, so the
+      // user-visible behavior is unchanged and the choice is now explicit and
+      // attributable. A failed lookup leaves the field absent and lets the
+      // server's own refusal explain itself, rather than inventing a workspace.
+      let workspaceId = ctx.workspaceId;
+      if (!workspaceId) {
+        const current = await sendRequest('workspace.current', {});
+        if (current.ok) {
+          const id = (current.result as { id?: unknown } | null)?.id;
+          if (typeof id === 'string' && id.length > 0) workspaceId = id;
+        }
+      }
       const params: Record<string, unknown> = { url };
-      if (ctx.workspaceId) params.workspaceId = ctx.workspaceId;
+      if (workspaceId) params.workspaceId = workspaceId;
 
       response = await sendRequest('browser.navigate', params);
       if (jsonMode) {
