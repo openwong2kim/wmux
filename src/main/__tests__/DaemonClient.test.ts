@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 import { FLUSH_DONE_MARKER } from '../../daemon/SessionPipe';
+import { waitFor } from '../../test-utils/waitFor';
 
 // Helper: unique pipe name per test
 function testPipeName(suffix: string): string {
@@ -916,6 +917,42 @@ describe('DaemonClient — event subscription (#659, #858)', () => {
     await new Promise((r) => setTimeout(r, 600));
     expect(identifyAttempts).toBeGreaterThanOrEqual(2);
     expect(identified).toBe(true);
+  });
+
+  it('abandons a disconnected retry loop before handshaking on a new socket', async () => {
+    const pipeName = testPipeName('evgeneration');
+    const methods: string[] = [];
+    let rejectHandshake = true;
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      'daemon.client.identify': () => {
+        methods.push('daemon.client.identify');
+        if (rejectHandshake) throw new Error('rate limited');
+        return { ok: true };
+      },
+      'daemon.events.subscribe': () => {
+        methods.push('daemon.events.subscribe');
+        if (rejectHandshake) throw new Error('rate limited');
+        return { ok: true };
+      },
+    });
+    await mockServer.start();
+
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => methods.length >= 2);
+    client.disconnectSync();
+
+    rejectHandshake = false;
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => methods.length >= 4);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    expect(methods).toEqual([
+      'daemon.events.subscribe',
+      'daemon.client.identify',
+      'daemon.events.subscribe',
+      'daemon.client.identify',
+    ]);
   });
 
   it('stops asking a daemon that predates opt-in events', async () => {

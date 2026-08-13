@@ -11,12 +11,16 @@
 // These tests pin the default (a client that never subscribes is never pushed
 // to) rather than the delivery mechanics, because the default is the fix.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { DaemonPipeServer, PRE_SUBSCRIBE_BACKLOG_BYTES } from '../DaemonPipeServer';
+import {
+  DaemonPipeServer,
+  PRE_SUBSCRIBE_BACKLOG_BYTES,
+  PRE_SUBSCRIBE_HANDSHAKE_TTL_MS,
+} from '../DaemonPipeServer';
 import { waitFor } from '../../test-utils/waitFor';
 
 function testPipeName(suffix: string): string {
@@ -29,6 +33,7 @@ const servers: DaemonPipeServer[] = [];
 const clients: net.Socket[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const c of clients.splice(0)) c.destroy();
   for (const s of servers.splice(0)) await s.stop();
 });
@@ -110,6 +115,49 @@ describe('DaemonPipeServer — pushed events are opt-in (#659)', () => {
 
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({ id: 'r1', ok: true });
+  });
+
+  it('does not replay the accept window after an unrelated first RPC', async () => {
+    const { server, pipe, token } = await startServer('optin-first-rpc');
+    const client = await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+
+    server.broadcast({ type: 'session.died', sessionId: 's-before-intent' });
+    client.socket.write(JSON.stringify({ id: 'fence', method: 'test.echo', token }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"fence"')));
+
+    await subscribeAndIdentify(client, token);
+    expect(client.lines.some((line) => line.includes('s-before-intent'))).toBe(false);
+
+    server.broadcast({ type: 'title.changed', sessionId: 's-live' });
+    await waitFor(() => client.lines.some((line) => line.includes('s-live')));
+  });
+
+  it('keeps an identity-first client usable without retaining the accept window', async () => {
+    const { server, pipe, token } = await startServer('optin-identity-first');
+    const client = await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+
+    server.broadcast({ type: 'session.died', sessionId: 's-before-identity' });
+    client.socket.write(JSON.stringify({
+      id: 'identify-first',
+      method: 'daemon.client.identify',
+      params: { role: 'main' },
+      token,
+    }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"identify-first"')));
+
+    // The identity is valid, but only subscribe declares event-delivery intent.
+    // A large later broadcast therefore cannot overflow an abandoned backlog.
+    server.broadcast({ type: 'channel.message', data: 'x'.repeat(PRE_SUBSCRIBE_BACKLOG_BYTES) });
+    expect(server.getConnectionCount()).toBe(1);
+
+    client.socket.write(JSON.stringify({ id: 'sub-after-identity', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"sub-after-identity"')));
+    expect(client.lines.some((line) => line.includes('s-before-identity'))).toBe(false);
+
+    server.broadcast({ type: 'title.changed', sessionId: 's-identity-live' });
+    await waitFor(() => client.lines.some((line) => line.includes('s-identity-live')));
   });
 
   it('pushes events once the client subscribes', async () => {
@@ -217,6 +265,40 @@ describe('DaemonPipeServer — pushed events are opt-in (#659)', () => {
     server.broadcast({ type: 'channel.message', data: 'x'.repeat(PRE_SUBSCRIBE_BACKLOG_BYTES) });
 
     await waitFor(() => server.getConnectionCount() === 0);
+  });
+
+  it('expires an incomplete handshake backlog without disconnecting the RPC socket', async () => {
+    const { server, pipe, token } = await startServer('optin-handshake-expiry');
+    const client = await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+    server.broadcast({ type: 'session.died', sessionId: 's-accept' });
+    client.socket.write(JSON.stringify({ id: 'sub-initial', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"sub-initial"')));
+    server.broadcast({ type: 'title.changed', sessionId: 's-handshake' });
+
+    now += PRE_SUBSCRIBE_HANDSHAKE_TTL_MS + 1;
+    server.broadcast({ type: 'session.restarted', sessionId: 's-expired' });
+    expect(server.getConnectionCount()).toBe(1);
+    nowSpy.mockRestore();
+
+    client.socket.write(JSON.stringify({
+      id: 'identify-expired',
+      method: 'daemon.client.identify',
+      params: { role: 'main' },
+      token,
+    }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"identify-expired"')));
+    client.socket.write(JSON.stringify({ id: 'sub-final-expired', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"sub-final-expired"')));
+
+    expect(client.lines.some((line) => line.includes('s-accept'))).toBe(false);
+    expect(client.lines.some((line) => line.includes('s-handshake'))).toBe(false);
+    expect(client.lines.some((line) => line.includes('s-expired'))).toBe(false);
+    server.broadcast({ type: 'title.changed', sessionId: 's-after-expiry' });
+    await waitFor(() => client.lines.some((line) => line.includes('s-after-expiry')));
   });
 
   it('stops pushing after unsubscribe', async () => {

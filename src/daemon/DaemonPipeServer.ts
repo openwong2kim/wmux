@@ -13,17 +13,20 @@ const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clie
  *
  * Events can still be generated while the daemon dispatches those two requests.
  * Retaining the bounded window closes the loss gap without making
- * ordinary RPC clients event subscribers. A client that cannot complete the
- * handshake within this bound is disconnected so it reconnects and rehydrates
- * instead of silently missing a partial backlog.
+ * ordinary RPC clients event subscribers. Byte overflow disconnects so the app
+ * reconnects and rehydrates; time expiry discards the queue so an incomplete
+ * handshake cannot eventually flap an otherwise usable RPC-only socket.
  */
 export const PRE_SUBSCRIBE_BACKLOG_BYTES = 1024 * 1024;
+export const PRE_SUBSCRIBE_HANDSHAKE_TTL_MS = 15_000;
 
 interface PreSubscribeBacklog {
   frames: string[];
   bytes: number;
-  /** Once a handshake starts, ordinary RPCs cannot discard retained events. */
-  handshakeStarted: boolean;
+  /** Only subscribe declares intent; identity-first remains live-only. */
+  intentDeclared: boolean;
+  /** The accept window is time-bounded even if the client sends no RPC. */
+  expiresAt: number;
 }
 
 /**
@@ -329,7 +332,12 @@ export class DaemonPipeServer {
           return;
         }
         this.connectedSockets.add(socket);
-        this.preSubscribeBacklogs.set(socket, { frames: [], bytes: 0, handshakeStarted: false });
+        this.preSubscribeBacklogs.set(socket, {
+          frames: [],
+          bytes: 0,
+          intentDeclared: false,
+          expiresAt: Date.now() + PRE_SUBSCRIBE_HANDSHAKE_TTL_MS,
+        });
         const clientId = `c${this.nextClientId++}`;
         this.clientIds.set(socket, clientId);
         this.socketsByClientId.set(clientId, socket);
@@ -483,6 +491,14 @@ export class DaemonPipeServer {
       const msgBytes = Buffer.byteLength(msg);
       this.preSubscribeBacklogs.forEach((backlog, socket) => {
         if (socket.destroyed) return;
+        if (Date.now() >= backlog.expiresAt) {
+          // An incomplete handshake must not retain events for the lifetime of
+          // an otherwise usable RPC socket. Expiry degrades to live-only
+          // delivery if the client eventually subscribes; it does not flap the
+          // connection merely because an old app never completed the handshake.
+          this.preSubscribeBacklogs.delete(socket);
+          return;
+        }
         if (backlog.bytes + msgBytes > PRE_SUBSCRIBE_BACKLOG_BYTES) {
           const clientId = this.clientIds.get(socket) ?? 'unknown';
           this.preSubscribeBacklogs.delete(socket);
@@ -592,29 +608,30 @@ export class DaemonPipeServer {
     }
 
     // The backlog exists only to close the app's subscribe/identify handshake.
-    // The first handshake method commits this socket to completing that flow:
-    // keep retained events through a refused subscribe, identity, retries, and
-    // any intervening ordinary RPCs. This is required for old apps, which send
-    // subscribe first but identify later from installation code. A socket whose
-    // first authenticated request is unrelated remains an ordinary reply-only
-    // client and discards the queue immediately.
+    // Subscribe commits this socket to completing that flow for a bounded time:
+    // keep retained events through a refusal, identity, retries, and intervening
+    // ordinary RPCs. This is required for old apps, which send subscribe first
+    // but identify later from installation code. A socket whose first request
+    // is unrelated remains an ordinary reply-only client and discards the queue.
+    const now = Date.now();
     const method = String(request.method);
-    const params = request.params && typeof request.params === 'object'
-      ? request.params as Record<string, unknown>
-      : {};
-    const isEventHandshakeRequest = method === 'daemon.events.subscribe'
-      || (method === 'daemon.client.identify' && params['role'] === 'main');
+    const startsEventHandshake = method === 'daemon.events.subscribe';
     const backlog = this.preSubscribeBacklogs.get(socket);
     if (backlog) {
-      if (isEventHandshakeRequest) {
-        backlog.handshakeStarted = true;
-      } else if (!backlog.handshakeStarted) {
+      if (now >= backlog.expiresAt) {
+        this.preSubscribeBacklogs.delete(socket);
+      } else if (startsEventHandshake) {
+        backlog.intentDeclared = true;
+      } else if (!backlog.intentDeclared) {
+        // Identity-first callers are compatible but do not preserve the accept
+        // window: only subscribe declares event-delivery intent. Subscribe-first
+        // clients retain the backlog across their later identify and any RPCs
+        // installed between those two calls.
         this.preSubscribeBacklogs.delete(socket);
       }
     }
 
     // Global rate limit
-    const now = Date.now();
     if (now > this.globalRate.resetAt) {
       this.globalRate = { count: 0, resetAt: now + 1000 };
     }
@@ -712,24 +729,41 @@ export class DaemonPipeServer {
     if (!this.isFirstParty(clientId)) return false;
     const socket = this.socketsByClientId.get(clientId);
     if (!socket || socket.destroyed) return false;
-    const backlog = this.preSubscribeBacklogs.get(socket);
-    this.preSubscribeBacklogs.delete(socket);
-    this.eventSubscribers.add(socket);
+    let backlog = this.preSubscribeBacklogs.get(socket);
+    if (backlog && Date.now() >= backlog.expiresAt) {
+      this.preSubscribeBacklogs.delete(socket);
+      backlog = undefined;
+    }
     // Flush before the subscribe reply is written by processLine. Subscribers
     // already have to correlate RPC ids with interleaved id-less event frames;
     // preserving this order makes every accepted-window event observable once.
     for (const frame of backlog?.frames ?? []) {
       if (socket.destroyed || socket.writableLength > SUBSCRIBER_BACKPRESSURE_BYTES) {
-        this.eventSubscribers.delete(socket);
+        // Returning false and retrying on this socket would delete the retained
+        // tail and later report success. Close instead so the app reconnects and
+        // rehydrates after a complete, explicit loss boundary.
+        this.preSubscribeBacklogs.delete(socket);
+        console.warn(
+          `[DaemonPipeServer] closing stalled event subscriber handshake ${clientId}: `
+          + `${socket.writableLength} buffered bytes exceeds ${SUBSCRIBER_BACKPRESSURE_BYTES}`,
+        );
+        socket.destroy();
         return false;
       }
       try {
         socket.write(frame);
       } catch {
-        this.eventSubscribers.delete(socket);
+        this.preSubscribeBacklogs.delete(socket);
+        console.warn(
+          `[DaemonPipeServer] closing event subscriber handshake ${clientId}: `
+          + 'failed while flushing retained events',
+        );
+        socket.destroy();
         return false;
       }
     }
+    this.preSubscribeBacklogs.delete(socket);
+    this.eventSubscribers.add(socket);
     return true;
   }
 

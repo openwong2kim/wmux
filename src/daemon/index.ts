@@ -2815,25 +2815,7 @@ function registerRpcHandlers(
     // on synchronous handler completion for correctness — they retry subscribe
     // after this reply settles — but doing the cheap mark first still minimizes
     // the refusal window for every caller.
-    const newlyIdentified = !pipeServer.isFirstParty(ctx.clientId);
     pipeServer.markFirstParty(ctx.clientId);
-    // The app is the one client that must subscribe to events (#659). If it
-    // identified but never did, it is an older build talking to this daemon and
-    // it is about to sit there receiving nothing — the same silent, undiagnosable
-    // failure #659 was about, pointing the other way. Say so in the log, because
-    // a subscriber count of zero looks perfectly normal from in here. Only the
-    // app identifies as 'main', so this cannot fire for the CLI or MCP server.
-    if (newlyIdentified) {
-      const idleCheck = setTimeout(() => {
-        if (pipeServer.isFirstParty(ctx.clientId) && !pipeServer.isEventSubscriber(ctx.clientId)) {
-          log(
-            'warn',
-            `[events] first-party client ${ctx.clientId} identified but never subscribed — it will receive no events (pre-#659 app build?)`,
-          );
-        }
-      }, 5_000);
-      idleCheck.unref();
-    }
     return { ok: true };
   });
 
