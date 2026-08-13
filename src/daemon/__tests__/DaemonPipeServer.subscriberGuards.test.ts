@@ -132,6 +132,8 @@ describe('DaemonPipeServer — subscriber backpressure (D6)', () => {
     }
     expect(refused).toBe(true);
 
+    server.markFirstParty(stalled.clientId);
+    server.markFirstParty(draining.clientId);
     expect(server.subscribeEvents(stalled.clientId)).toBe(true);
     expect(server.subscribeEvents(draining.clientId)).toBe(true);
 
@@ -149,6 +151,39 @@ describe('DaemonPipeServer — subscriber backpressure (D6)', () => {
     await waitFor(() => received.includes('"n":"after-drop"'));
     expect(server.isEventSubscriber(draining.clientId)).toBe(true);
   });
+
+  it('closes a stalled socket instead of accepting a lossy subscription retry', async () => {
+    const { server, pipe, token } = await startServer('subscribe-flush-backpressure');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let clientId = '';
+    server.onRpc('daemon.events.subscribe', async (_p, ctx) => {
+      clientId = ctx.clientId;
+      return { ok: server.subscribeEvents(ctx.clientId) };
+    });
+    const socket = net.createConnection(pipe);
+    clients.push(socket);
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    socket.write(JSON.stringify({ id: 'sub', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => clientId !== '');
+    server.broadcast({ type: 'session.died', sessionId: 'retained' });
+    socket.pause();
+
+    const payload = { type: 'transcript.appended', blob: 'z'.repeat(SUBSCRIBER_BACKPRESSURE_BYTES) };
+    expect(server.sendTo(clientId, payload)).toBe(true);
+    let refused = false;
+    for (let i = 0; i < 5 && !refused; i++) {
+      refused = server.sendTo(clientId, payload) === false;
+    }
+    expect(refused).toBe(true);
+
+    server.markFirstParty(clientId);
+    expect(server.subscribeEvents(clientId)).toBe(false);
+    await waitFor(() => server.getConnectionCount() === 0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('closing stalled event subscriber handshake'));
+  });
 });
 
 describe('DaemonPipeServer — first-party classification (D7)', () => {
@@ -159,6 +194,7 @@ describe('DaemonPipeServer — first-party classification (D7)', () => {
     // The default matters: the CLI and MCP never claim the role, so the gate is
     // closed for them without either of them changing.
     expect(server.isFirstParty(clientId)).toBe(false);
+    expect(server.subscribeEvents(clientId)).toBe(false);
 
     server.markFirstParty(clientId);
     expect(server.isFirstParty(clientId)).toBe(true);
