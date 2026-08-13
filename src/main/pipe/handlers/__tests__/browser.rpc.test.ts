@@ -215,6 +215,7 @@ describe('registerBrowserRpc', () => {
   function register(
     getWindow: () => BrowserWindow | null = () => null,
     browserScopeShadowSink?: Parameters<typeof registerBrowserRpc>[4],
+    enforcementMode: 'shadow' | 'enforce' = 'shadow',
   ): RpcRouter {
     const router = new RpcRouter();
     const webviewCdpManager = {
@@ -237,8 +238,17 @@ describe('registerBrowserRpc', () => {
       webviewCdpManager as never,
       undefined,
       browserScopeShadowSink,
+      () => enforcementMode,
     );
+    // Handed back so enforcement tests can assert a refusal never reached the
+    // target lookup — "returned an error" is not the same as "did not look".
+    (router as unknown as { __cdp: typeof webviewCdpManager }).__cdp = webviewCdpManager;
     return router;
+  }
+
+  /** The lookup mock behind a router built by `register`. */
+  function cdpOf(router: RpcRouter) {
+    return (router as unknown as { __cdp: { getTarget: ReturnType<typeof vi.fn>; listTargets: ReturnType<typeof vi.fn>; waitForTarget: ReturnType<typeof vi.fn>; ensureAwake: ReturnType<typeof vi.fn> } }).__cdp;
   }
 
   /** Build a fake main window whose webContents.getURL() returns `url`. */
@@ -585,6 +595,180 @@ describe('registerBrowserRpc', () => {
       reason: 'workspace-unresolved',
     });
     expect(mockWebContents.debugger.sendCommand).toHaveBeenCalled();
+  });
+
+  // ── #810 step 4: the same decisions, now authoritative ────────────────────
+  //
+  // Every case below is paired: the shadow assertions above prove the response
+  // is unchanged, these prove the enforce mode refuses. A test that only checked
+  // enforce would not catch the rollback path silently breaking.
+
+  it('refuses an identified caller that omits workspaceId, and never looks a target up', async () => {
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-evaluate',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+      expect(response.error).toContain('send the workspaceId');
+      expect(response.error).toContain('Do not retry unchanged');
+    }
+    // The refusal is the whole point: no lookup, no lease, no evaluation.
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(cdpOf(router).ensureAwake).not.toHaveBeenCalled();
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+    // Enforced refusals stay auditable — the log is written before the throw.
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'approved-plugin',
+      method: 'browser.evaluate',
+      reason: 'workspace-unresolved',
+    });
+  });
+
+  // The pinned lane cannot be reached from here: `commanderWorkspace` is set
+  // only by RpcRouter after validating a commander token, never from dispatch
+  // options or a request field. Its decisions are covered pure-functionally in
+  // the `callerScope` describe above; `scopeFor` funnels every rejected lane
+  // through one branch, exercised by the unresolved cases here.
+
+  it('hands the decided workspace to the lookup, not the raw request field', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-declared',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-declared' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-declared');
+  });
+
+  it('refuses a caller with no context at all', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    // No dispatch options: RpcRouter still builds a ctx, so this exercises the
+    // realistic shape rather than a hand-made `undefined` ctx. An identified
+    // caller that never proved a source lands on the unresolved lane.
+    const response = await router.dispatch({
+      id: 'scope-enforce-nosource',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'approved-plugin',
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+  });
+
+  it('keeps the operator and legacy lanes working under enforce', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    // Human operator crossing workspaces on purpose.
+    const operator = await router.dispatch({
+      id: 'scope-enforce-operator',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+    }, { operator: true });
+    expect(operator.ok).toBe(true);
+
+    // Envelope-less caller: still grandfathered, matching PermissionEnforcer.
+    // This lane is the documented remaining hole on #810, asserted so that
+    // closing it later is a deliberate, visible change rather than a drift.
+    const legacy = await router.dispatch({
+      id: 'scope-enforce-legacy',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+    });
+    expect(legacy.ok).toBe(true);
+  });
+
+  it('refuses cdp.info before disclosing anything, including targets', async () => {
+    const router = register(windowWithUrl('http://localhost:5173/'), undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-info',
+      method: 'browser.cdp.info',
+      params: {},
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(cdpOf(router).listTargets).not.toHaveBeenCalled();
+  });
+
+  it('refuses cdp.target before the discovery wait', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-cdp-target',
+      method: 'browser.cdp.target',
+      params: { surfaceId: 'surface-1' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(cdpOf(router).waitForTarget).not.toHaveBeenCalled();
+  });
+
+  it('refuses lease.acquire rather than handing back a null token', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-lease',
+      method: 'browser.lease.acquire',
+      params: {},
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    // `{ token: null }` would read as "no surface open" and send the caller
+    // into a retry loop; a refusal is terminal and says why.
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+  });
+
+  it('refuses navigate before URL validation or the external delegate', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-navigate',
+      method: 'browser.navigate',
+      params: { url: 'https://example.com/' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(validateResolvedNavigationUrlMock).not.toHaveBeenCalled();
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('shadow mode still answers every one of those calls', async () => {
+    const router = register(() => null, undefined, 'shadow');
+
+    for (const [id, method, params] of [
+      ['s1', 'browser.evaluate', { expression: '1 + 1' }],
+      ['s2', 'browser.cdp.info', {}],
+      ['s3', 'browser.lease.acquire', {}],
+    ] as const) {
+      const response = await router.dispatch({
+        id,
+        method,
+        params: params as Record<string, unknown>,
+        clientName: 'approved-plugin',
+      }, { externalWire: true });
+      expect(response.ok).toBe(true);
+    }
   });
 
   it('browser.navigate rejects URLs whose resolved targets are blocked', async () => {

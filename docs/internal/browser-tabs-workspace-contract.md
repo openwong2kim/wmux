@@ -426,16 +426,43 @@ It originally composed with a sibling in `browser.close`, which resolved an expl
 
 This remains **confinement of approved plugins, not containment of hostile same-user code.** A same-user process holding the daemon token can impersonate a recognised wire client under the existing #113 trust ceiling. What #810 removes is the accidental implication that granting an honest plugin `browser.read` also grants direct attachment to every page in the Electron process.
 
-**Caller-derived target scope is shadow-only (#810).** The target-resolving
-`browser.*` handlers now compute a `callerScope` decision with explicit
-operator, server-pinned, legacy, declared, and rejected lanes. They still use
-the old request-derived `workspaceId` for every lookup, so this stage changes no
-target, response, or error. A future refusal is appended as an
-`entryKind: "browser-scope"` row in `~/.wmux/shadow-rejections.log`; logging is
-best-effort and cannot fail the call. Enforcement waits for those logs to be
-quiet and for a separate review. Envelope-less legacy traffic remains open and
-continues through its existing per-method milestone audit rather than starting
-a second deprecation clock here.
+**Caller-derived target scope is enforced under `mcp.mode: enforce` (#810).**
+The target-resolving `browser.*` handlers compute a `callerScope` decision with
+explicit operator, server-pinned, legacy, declared, and rejected lanes, and
+`scopeFor` is the single point where a handler learns which workspace to look a
+surface up in. A rejected decision is appended as an `entryKind: "browser-scope"`
+row in `~/.wmux/shadow-rejections.log` (best-effort, cannot fail the call) and
+then, under `enforce`, throws `BROWSER_SCOPE_REFUSED` before any lookup, wake,
+lease, or URL validation runs. Under `shadow` — the dev default, and available
+in production as `"mcp": {"mode": "shadow"}` — the same row is written and the
+call proceeds on the old request-derived workspace, which is the rollback path.
+
+What that closes, precisely:
+
+- A caller that **omits** `workspaceId` no longer falls through to the
+  workspace-blind "first registered surface" lookup.
+- A server-pinned caller can no longer name a workspace other than its token
+  binding, and is scoped to that binding regardless of what it asked for.
+
+What it does **not** close, and why it is written down rather than implied:
+
+- The `declared` lane checks that `workspaceId` is *present*, not that it is the
+  caller's own. Nothing in the main process binds a `clientName` to a workspace
+  (`mcp.claimWorkspace` forwards to the renderer and records no association), so
+  a caller naming a foreign workspace is accepted exactly as before.
+- The `legacy` lane (no `clientName`) stays allowed and unscoped, matching
+  `PermissionEnforcer`'s grandfather. Dropping the identity envelope bypasses
+  this layer. Envelope-less traffic continues through its existing per-method
+  milestone audit rather than starting a second deprecation clock here.
+- `browser.open` and `browser.close` route a create/close by the request's
+  `workspaceId` and fall back to the UI-active workspace when it is absent. They
+  are surface lifecycle rather than target resolution, were never shadowed, and
+  so are not flipped here — there is no traffic evidence to flip on.
+
+Both remaining lookup gaps need a caller-identity binding that does not exist
+yet; they stay tracked on #810. `browser.rpc.scopeCoverage.test.ts` reads this
+file's source and fails if a new handler resolves a target without going through
+`scopeFor`, or reads `workspaceId` outside the three handlers listed above.
 
 Both legs predated #565 and neither was introduced by it. `browser_tabs` never consulted `browser.cdp.info` and never left the caller's workspace, so its own contract was always unaffected. The exposure was already bounded: no URL, title, or page content, and a discarded surface is absent because it holds no registered target.
 

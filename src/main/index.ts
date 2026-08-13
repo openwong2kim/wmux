@@ -693,7 +693,7 @@ registerPerfRpc(rpcRouter);
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
 // Shared bounded audit sink for permission rejections, legacy milestones, and
-// #810's shadow-only browser caller-scope decisions.
+// #810's browser caller-scope decisions.
 const shadowRejectionLogger = new ShadowRejectionLogger();
 registerBrowserRpc(
   rpcRouter,
@@ -701,6 +701,10 @@ registerBrowserRpc(
   webviewCdpManager,
   browserBackendStore,
   (entry) => shadowRejectionLogger.appendBrowserScope(entry),
+  // Same `mcp.mode` the permission enforcer runs on, so one switch rolls both
+  // back. Read lazily: `enforcementMode` is resolved further down this file,
+  // and the getter is only called once an RPC arrives.
+  () => enforcementMode,
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
