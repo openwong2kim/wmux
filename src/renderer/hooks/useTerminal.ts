@@ -1033,15 +1033,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // viewport offsets the candidate window by exactly that many rows, and the
     // composition path re-anchors on every keystroke so the window chases the
     // TUI's cursor while an agent streams. See terminal/imeAnchor.ts.
+    // #874 could not be reproduced locally (no CJK IME on the dev boxes), so
+    // the anchor reports what it corrected and a reporter's log tells us
+    // whether any offset survives. A CJK user starts a composition per word,
+    // so this is capped: the first few are all anyone needs to diagnose, and
+    // the cap keeps it from filling main-*.log for the rest of the session.
+    // Remove the whole diagnostic once #874 is confirmed fixed in the field.
+    let imeAnchorLogsLeft = 20;
     const imeAnchor = attachImeAnchor(terminal, {
       onCompositionDiagnostic: ({ baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy }) => {
-        // #874 could not be reproduced locally (no CJK IME on the dev boxes),
-        // so this line is how a reporter's log tells us whether any offset
-        // survives the correction. Mirrored into the main-side log file by
-        // src/main/index.ts's console-message listener.
+        if (imeAnchorLogsLeft <= 0) return;
+        imeAnchorLogsLeft -= 1;
+        // Mirrored into the main-side log file by src/main/index.ts's
+        // console-message listener, so the user can share it.
         console.info(
           `[wmux:ime-anchor] pty=${ptyIdRef.current} compositionstart ybase=${baseY} ydisp=${viewportY} ` +
-          `cursor=(${cursorX},${cursorY}) cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})`,
+          `cursor=(${cursorX},${cursorY}) cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})` +
+          (imeAnchorLogsLeft === 0 ? ' (last one, diagnostic capped)' : ''),
         );
       },
     });

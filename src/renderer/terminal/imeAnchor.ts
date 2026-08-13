@@ -123,13 +123,17 @@ export function computeImeAnchorCorrection(
 }
 
 /**
- * Parse a `<n>px` inline style value. Returns null for anything else —
- * notably xterm's stylesheet default of `left: -9999em`, which means "xterm has
- * not positioned this yet" and must not be read as a pixel offset.
+ * Parse a `<n>px` inline style value. Returns null for anything else, notably
+ * xterm's stylesheet default of `left: -9999em`, which means "xterm has not
+ * positioned this yet" and must not be read as a pixel offset. The number
+ * accepts every CSS form (`.5px`, `1e2px`) rather than only what Chromium
+ * happens to serialize today, so a change in how the offset is computed
+ * upstream degrades into a wrong-but-parsed value we can see rather than
+ * silently switching the correction off.
  */
 export function parsePxOrNull(value: string | undefined | null): number | null {
   if (!value) return null;
-  const match = /^(-?\d+(?:\.\d+)?)px$/.exec(value.trim());
+  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)px$/.exec(value.trim());
   if (!match) return null;
   const n = Number(match[1]);
   return Number.isFinite(n) ? n : null;
