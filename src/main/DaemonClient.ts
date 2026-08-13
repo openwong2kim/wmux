@@ -157,6 +157,11 @@ export class DaemonClient extends EventEmitter {
         resolve();
       };
       void this.runEventHandshakeWithRetry(generation, signalHandshakeWritten)
+        .catch((err: unknown) => {
+          console.warn(
+            `[lifecycle] DaemonClient event handshake threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        })
         .finally(signalHandshakeWritten);
     });
   }

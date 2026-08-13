@@ -500,8 +500,13 @@ export class DaemonPipeServer {
           return;
         }
         if (backlog.bytes + msgBytes > PRE_SUBSCRIBE_BACKLOG_BYTES) {
-          const clientId = this.clientIds.get(socket) ?? 'unknown';
           this.preSubscribeBacklogs.delete(socket);
+          // Before subscribe declares intent this is only an opportunistic
+          // accept-window buffer. Drop it without disrupting an idle RPC client.
+          // Once intent is declared, however, continuing would let a later
+          // retry report success after silently losing retained events.
+          if (!backlog.intentDeclared) return;
+          const clientId = this.clientIds.get(socket) ?? 'unknown';
           console.warn(
             `[DaemonPipeServer] closing event subscriber handshake ${clientId}: `
             + `pre-subscribe backlog exceeds ${PRE_SUBSCRIBE_BACKLOG_BYTES} bytes`,

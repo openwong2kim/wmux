@@ -835,7 +835,7 @@ describe('DaemonClient — event subscription (#659, #858)', () => {
 
     client = new DaemonClient(pipeName, AUTH_TOKEN);
     expect(await client.connect()).toBe(true);
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => methods.length >= 3);
 
     // The fulfilled `{ok:false}` payload is a gate refusal, not success. The
     // retry follows the identity reply without waiting for exponential backoff.
@@ -888,11 +888,13 @@ describe('DaemonClient — event subscription (#659, #858)', () => {
     await client.connect();
 
     // The post-identify retry heals the transient first answer immediately.
-    await new Promise((r) => setTimeout(r, 600));
+    await waitFor(() => attempts >= 2);
     expect(attempts).toBeGreaterThanOrEqual(2);
 
     mockServer.sockets.forEach((s) => s.write(JSON.stringify({ type: 'title.changed', sessionId: 's1' }) + '\n'));
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => seen.some((event) => (
+      event as { type?: unknown }
+    ).type === 'title.changed'));
     expect(seen).toContainEqual(expect.objectContaining({ type: 'title.changed' }));
   });
 
@@ -914,7 +916,7 @@ describe('DaemonClient — event subscription (#659, #858)', () => {
     client = new DaemonClient(pipeName, AUTH_TOKEN);
     expect(await client.connect()).toBe(true);
 
-    await new Promise((r) => setTimeout(r, 600));
+    await waitFor(() => identifyAttempts >= 2);
     expect(identifyAttempts).toBeGreaterThanOrEqual(2);
     expect(identified).toBe(true);
   });

@@ -160,6 +160,19 @@ describe('DaemonPipeServer — pushed events are opt-in (#659)', () => {
     await waitFor(() => client.lines.some((line) => line.includes('s-identity-live')));
   });
 
+  it('drops an overflowing pre-intent backlog without disconnecting an idle RPC client', async () => {
+    const { server, pipe, token } = await startServer('optin-pre-intent-overflow');
+    const client = await connectClient(pipe);
+    await waitFor(() => server.getConnectionCount() === 1);
+
+    server.broadcast({ type: 'channel.message', data: 'x'.repeat(PRE_SUBSCRIBE_BACKLOG_BYTES) });
+    client.socket.write(JSON.stringify({ id: 'still-usable', method: 'test.echo', token }) + '\n');
+
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"still-usable"')));
+    expect(server.getConnectionCount()).toBe(1);
+    expect(client.lines.some((line) => line.includes('channel.message'))).toBe(false);
+  });
+
   it('pushes events once the client subscribes', async () => {
     const { server, pipe, token } = await startServer('optin-subscribed');
     const client = await connectClient(pipe);
@@ -258,10 +271,12 @@ describe('DaemonPipeServer — pushed events are opt-in (#659)', () => {
   });
 
   it('disconnects instead of silently truncating an oversized pre-subscribe backlog', async () => {
-    const { server, pipe } = await startServer('optin-accept-overflow');
-    await connectClient(pipe);
+    const { server, pipe, token } = await startServer('optin-accept-overflow');
+    const client = await connectClient(pipe);
     await waitFor(() => server.getConnectionCount() === 1);
 
+    client.socket.write(JSON.stringify({ id: 'sub-intent', method: 'daemon.events.subscribe', token }) + '\n');
+    await waitFor(() => client.lines.some((line) => line.includes('"id":"sub-intent"')));
     server.broadcast({ type: 'channel.message', data: 'x'.repeat(PRE_SUBSCRIBE_BACKLOG_BYTES) });
 
     await waitFor(() => server.getConnectionCount() === 0);
