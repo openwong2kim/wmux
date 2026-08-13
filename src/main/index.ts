@@ -715,8 +715,8 @@ registerBrowserRpc(
   browserBackendStore,
   (entry) => shadowRejectionLogger.appendBrowserScope(entry),
   // Same `mcp.mode` the permission enforcer runs on, so one switch rolls both
-  // back. Read lazily: `enforcementMode` is resolved further down this file,
-  // and the getter is only called once an RPC arrives.
+  // back. `enforcementMode` is resolved just above; the getter keeps the read
+  // lazy so registration does not depend on where the mode is resolved.
   () => enforcementMode,
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
