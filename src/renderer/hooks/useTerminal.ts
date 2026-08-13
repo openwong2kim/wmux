@@ -19,6 +19,7 @@ import { decodeOsc52Write } from '../utils/osc52Clipboard';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
@@ -1023,6 +1024,33 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           `[wmux:ime] keydown-229 claim storm on pty=${ptyId} (${count} keys: ${codes.join(', ')}) — IME context resynced via blur/refocus`,
         );
         useStore.getState().pushToast({ message: t('terminal.imeInputRecovered'), level: 'info' });
+      },
+    });
+
+    // #874: keep the IME candidate window on the cursor. xterm anchors its
+    // hidden helper textarea at the ybase-relative cursor row while the
+    // renderer paints the cursor at the ydisp-relative one, so a scrolled-up
+    // viewport offsets the candidate window by exactly that many rows, and the
+    // composition path re-anchors on every keystroke so the window chases the
+    // TUI's cursor while an agent streams. See terminal/imeAnchor.ts.
+    // #874 could not be reproduced locally (no CJK IME on the dev boxes), so
+    // the anchor reports what it corrected and a reporter's log tells us
+    // whether any offset survives. A CJK user starts a composition per word,
+    // so this is capped: the first few are all anyone needs to diagnose, and
+    // the cap keeps it from filling main-*.log for the rest of the session.
+    // Remove the whole diagnostic once #874 is confirmed fixed in the field.
+    let imeAnchorLogsLeft = 20;
+    const imeAnchor = attachImeAnchor(terminal, {
+      onCompositionDiagnostic: ({ baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy }) => {
+        if (imeAnchorLogsLeft <= 0) return;
+        imeAnchorLogsLeft -= 1;
+        // Mirrored into the main-side log file by src/main/index.ts's
+        // console-message listener, so the user can share it.
+        console.info(
+          `[wmux:ime-anchor] pty=${ptyIdRef.current} compositionstart ybase=${baseY} ydisp=${viewportY} ` +
+          `cursor=(${cursorX},${cursorY}) cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})` +
+          (imeAnchorLogsLeft === 0 ? ' (last one, diagnostic capped)' : ''),
+        );
       },
     });
 
@@ -2117,6 +2145,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       unregisterAtlasGuard();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
+      imeAnchor.dispose();
       deadInputWatchdog.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
