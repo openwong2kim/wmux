@@ -8,21 +8,22 @@ import { getDaemonAuthTokenPath } from '../shared/constants';
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
 /**
- * Maximum pushed-event data retained while a fresh socket decides whether its
- * first authenticated RPC is `daemon.events.subscribe`.
+ * Maximum pushed-event data retained while a fresh socket identifies as the
+ * first-party app and decides whether to call `daemon.events.subscribe`.
  *
- * The Electron main client deliberately sends subscribe first, but events can
- * still be generated in the accept-to-subscribe round trip. Retaining that
- * tiny window closes the loss gap without making ordinary RPC clients event
- * subscribers. A client that cannot complete the handshake within this bound
- * is disconnected so it reconnects and rehydrates instead of silently missing
- * a partial backlog.
+ * Events can still be generated while the daemon dispatches those two requests.
+ * Retaining the bounded window closes the loss gap without making
+ * ordinary RPC clients event subscribers. A client that cannot complete the
+ * handshake within this bound is disconnected so it reconnects and rehydrates
+ * instead of silently missing a partial backlog.
  */
 export const PRE_SUBSCRIBE_BACKLOG_BYTES = 1024 * 1024;
 
 interface PreSubscribeBacklog {
   frames: string[];
   bytes: number;
+  /** Once a handshake starts, ordinary RPCs cannot discard retained events. */
+  handshakeStarted: boolean;
 }
 
 /**
@@ -95,9 +96,10 @@ export class DaemonPipeServer {
   // by default — see `broadcast`. Dies with the socket, so a reconnecting
   // client must re-subscribe.
   private readonly eventSubscribers = new Set<net.Socket>();
-  // Fresh sockets get one bounded chance to subscribe without losing events
-  // generated between accept and their first authenticated RPC. A first RPC
-  // for any other method discards this queue and preserves the opt-in default.
+  // Fresh sockets get one bounded chance to identify as the first-party app
+  // and subscribe without losing events generated during that handshake. An
+  // unrelated first authenticated RPC discards this queue and preserves the
+  // opt-in default; once a handshake starts, its retries retain the queue.
   private readonly preSubscribeBacklogs = new Map<net.Socket, PreSubscribeBacklog>();
   // Per-client identity for unicast delivery. Both directions are kept because
   // `sendTo` resolves an id → socket while the RPC path needs socket → id.
@@ -327,7 +329,7 @@ export class DaemonPipeServer {
           return;
         }
         this.connectedSockets.add(socket);
-        this.preSubscribeBacklogs.set(socket, { frames: [], bytes: 0 });
+        this.preSubscribeBacklogs.set(socket, { frames: [], bytes: 0, handshakeStarted: false });
         const clientId = `c${this.nextClientId++}`;
         this.clientIds.set(socket, clientId);
         this.socketsByClientId.set(clientId, socket);
@@ -474,9 +476,9 @@ export class DaemonPipeServer {
   broadcast(event: unknown): void {
     const msg = JSON.stringify(event) + '\n';
 
-    // A newly accepted app socket sends subscribe as its first authenticated
-    // RPC. Queue only until that first request declares the socket's intent;
-    // ordinary RPC clients remain untouched and never receive these frames.
+    // A newly accepted app socket subscribes and identifies. Queue only through
+    // that bounded handshake; ordinary RPC clients discard the queue with their
+    // first non-handshake request and never receive these frames.
     if (this.preSubscribeBacklogs.size > 0) {
       const msgBytes = Buffer.byteLength(msg);
       this.preSubscribeBacklogs.forEach((backlog, socket) => {
@@ -589,11 +591,26 @@ export class DaemonPipeServer {
       return;
     }
 
-    // The backlog exists only to close the app's accept-to-subscribe window.
-    // Once an authenticated client chooses any other first RPC, discard it and
-    // keep that socket reply-only exactly as the opt-in contract promises.
-    if (String(request.method) !== 'daemon.events.subscribe') {
-      this.preSubscribeBacklogs.delete(socket);
+    // The backlog exists only to close the app's subscribe/identify handshake.
+    // The first handshake method commits this socket to completing that flow:
+    // keep retained events through a refused subscribe, identity, retries, and
+    // any intervening ordinary RPCs. This is required for old apps, which send
+    // subscribe first but identify later from installation code. A socket whose
+    // first authenticated request is unrelated remains an ordinary reply-only
+    // client and discards the queue immediately.
+    const method = String(request.method);
+    const params = request.params && typeof request.params === 'object'
+      ? request.params as Record<string, unknown>
+      : {};
+    const isEventHandshakeRequest = method === 'daemon.events.subscribe'
+      || (method === 'daemon.client.identify' && params['role'] === 'main');
+    const backlog = this.preSubscribeBacklogs.get(socket);
+    if (backlog) {
+      if (isEventHandshakeRequest) {
+        backlog.handshakeStarted = true;
+      } else if (!backlog.handshakeStarted) {
+        this.preSubscribeBacklogs.delete(socket);
+      }
     }
 
     // Global rate limit
@@ -683,15 +700,16 @@ export class DaemonPipeServer {
   }
 
   /**
-   * Start delivering pushed events to this client. Returns false when the
-   * client is already gone.
+   * Start delivering pushed events to an identified first-party client.
+   * Returns false when the client is unclassified or already gone.
    *
-   * This is a delivery switch, not a permission check: every control-pipe
-   * client presents the same credential, and the events carried here are the
-   * same ones every client used to receive unconditionally. What it buys is a
-   * safe default for clients that never ask — see `broadcast`.
+   * `markFirstParty` is a classification over the shared control-pipe token,
+   * not a second authentication boundary. Requiring it still removes the
+   * accidental and prompt-injection path where the CLI or MCP server could
+   * subscribe to workspace-bearing events simply because they hold the token.
    */
   subscribeEvents(clientId: string): boolean {
+    if (!this.isFirstParty(clientId)) return false;
     const socket = this.socketsByClientId.get(clientId);
     if (!socket || socket.destroyed) return false;
     const backlog = this.preSubscribeBacklogs.get(socket);
@@ -715,10 +733,17 @@ export class DaemonPipeServer {
     return true;
   }
 
-  /** Stop delivering pushed events to this client. Idempotent. */
+  /**
+   * Stop delivering pushed events and cancel any pending subscribe handshake.
+   * Idempotent: an explicit unsubscribe also discards accept-window events
+   * retained before the client completed its first-party classification.
+   */
   unsubscribeEvents(clientId: string): void {
     const socket = this.socketsByClientId.get(clientId);
-    if (socket) this.eventSubscribers.delete(socket);
+    if (socket) {
+      this.eventSubscribers.delete(socket);
+      this.preSubscribeBacklogs.delete(socket);
+    }
   }
 
   /** Is this client receiving pushed events? */

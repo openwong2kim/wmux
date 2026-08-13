@@ -106,16 +106,12 @@ export class DaemonClient extends EventEmitter {
         this.controlPipe = socket;
         this.connected = true;
         this.setupControlPipe(socket);
-        // Pushed events are opt-in on the daemon side (issue #659), and this
-        // client is the one consumer that needs them. Sent here rather than
-        // from the connect callers so the request is the FIRST line on the
-        // socket: the daemon processes lines in order, so every event it
-        // generates after reading this one is delivered. Deliberately not
-        // awaited — waiting for the reply would only widen the gap, and an
-        // older daemon that has no such method just answers `Unknown method`
-        // while still pushing events to everyone, as it always did.
-        this.subscribeToEvents();
-        finish({ ok: true });
+        // Pushed events are first-party-only and opt-in. Start the event
+        // handshake before connect() resolves so no caller RPC can overtake it
+        // on this socket. The returned barrier settles after subscribe and
+        // identify have both been written (not after either
+        // reply), preserving non-blocking startup while fixing the wire order.
+        void this.startEventHandshake().finally(() => finish({ ok: true }));
       });
 
       socket.on('error', (err: NodeJS.ErrnoException) => {
@@ -131,7 +127,8 @@ export class DaemonClient extends EventEmitter {
   }
 
   /**
-   * Ask the daemon to push events down this control pipe.
+   * Ask for pushed events, identify as the Electron main client, then retry
+   * subscribe if this daemon enforces the first-party gate.
    *
    * Retried, because a swallowed failure here is silent and total: the app
    * would keep running with no session, title, cwd, or notification events for
@@ -143,33 +140,88 @@ export class DaemonClient extends EventEmitter {
    * predates opt-in events and is already pushing to everyone, so retrying
    * would only spend the rate limit re-asking a question already answered.
    */
-  private static readonly SUBSCRIBE_MAX_ATTEMPTS = 5;
+  private static readonly EVENT_HANDSHAKE_MAX_ATTEMPTS = 5;
 
   // Bumped on every connect so a retry loop left over from a previous socket
   // cannot resurrect itself and subscribe on behalf of a connection that is
   // already gone.
-  private subscribeGeneration = 0;
+  private eventHandshakeGeneration = 0;
 
-  private subscribeToEvents(): void {
-    const generation = ++this.subscribeGeneration;
-    void this.runSubscribeWithRetry(generation);
+  private startEventHandshake(): Promise<void> {
+    const generation = ++this.eventHandshakeGeneration;
+    return new Promise<void>((resolve) => {
+      let handshakeWritten = false;
+      const signalHandshakeWritten = (): void => {
+        if (handshakeWritten) return;
+        handshakeWritten = true;
+        resolve();
+      };
+      void this.runEventHandshakeWithRetry(generation, signalHandshakeWritten)
+        .finally(signalHandshakeWritten);
+    });
   }
 
-  private async runSubscribeWithRetry(generation: number): Promise<void> {
-    for (let attempt = 1; attempt <= DaemonClient.SUBSCRIBE_MAX_ATTEMPTS; attempt++) {
-      if (generation !== this.subscribeGeneration || !this.connected) return;
-      try {
-        // The handler's own answer rides in `result`; the envelope's `ok` only
-        // says the RPC was dispatched, so checking it alone would read a
-        // refusal as a success.
-        const result = (await this.rpc('daemon.events.subscribe')) as { ok?: boolean } | null;
-        if (result?.ok === true) return;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+  private async runEventHandshakeWithRetry(
+    generation: number,
+    signalHandshakeWritten: () => void,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= DaemonClient.EVENT_HANDSHAKE_MAX_ATTEMPTS; attempt++) {
+      if (generation !== this.eventHandshakeGeneration || !this.connected) return;
+      // Subscribe stays first for compatibility with daemons that already
+      // retain an accept-to-subscribe backlog but do not yet enforce identity:
+      // sending identify first would make those daemons discard the backlog.
+      // A gated daemon refuses this first attempt, then the identify below
+      // classifies the socket. Both writes happen before connect() resolves.
+      const subscribe = this.rpc('daemon.events.subscribe');
+      const identify = this.rpc('daemon.client.identify', { role: 'main' });
+      signalHandshakeWritten();
+
+      const [subscribeResult, identifyResult] = await Promise.allSettled([subscribe, identify]);
+      const rpcSucceeded = (result: PromiseSettledResult<unknown>): boolean =>
+        result.status === 'fulfilled'
+        && (result.value as { ok?: boolean } | null)?.ok === true;
+
+      if (rpcSucceeded(subscribeResult)) return;
+      if (subscribeResult.status === 'rejected') {
+        const message = subscribeResult.reason instanceof Error
+          ? subscribeResult.reason.message
+          : String(subscribeResult.reason);
         if (message.includes('Unknown method')) return;
+      }
+
+      if (identifyResult.status === 'rejected') {
+        const message = identifyResult.reason instanceof Error
+          ? identifyResult.reason.message
+          : String(identifyResult.reason);
+        // A daemon old enough not to recognise identity either predates opt-in
+        // events or still permits subscribe without the classification gate.
+        if (!message.includes('Unknown method')) {
+          console.warn(`[lifecycle] DaemonClient identify attempt ${attempt} failed: ${message}`);
+        }
+      }
+
+      // A gated daemon normally refuses the first subscribe and then accepts
+      // this immediate post-identify retry. Awaiting the identity result makes
+      // correctness independent of whether its handler ever gains an `await`
+      // before classification, while connect() itself remains non-blocking.
+      if (rpcSucceeded(identifyResult)
+        && generation === this.eventHandshakeGeneration
+        && this.connected) {
+        try {
+          const retry = (await this.rpc('daemon.events.subscribe')) as { ok?: boolean } | null;
+          if (retry?.ok === true) return;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes('Unknown method')) return;
+          console.warn(`[lifecycle] DaemonClient post-identify subscribe attempt ${attempt} failed: ${message}`);
+        }
+      } else if (subscribeResult.status === 'rejected') {
+        const message = subscribeResult.reason instanceof Error
+          ? subscribeResult.reason.message
+          : String(subscribeResult.reason);
         console.warn(`[lifecycle] DaemonClient events subscribe attempt ${attempt} failed: ${message}`);
       }
-      if (attempt < DaemonClient.SUBSCRIBE_MAX_ATTEMPTS) {
+      if (attempt < DaemonClient.EVENT_HANDSHAKE_MAX_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
       }
     }

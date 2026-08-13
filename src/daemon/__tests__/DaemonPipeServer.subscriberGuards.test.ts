@@ -132,6 +132,8 @@ describe('DaemonPipeServer — subscriber backpressure (D6)', () => {
     }
     expect(refused).toBe(true);
 
+    server.markFirstParty(stalled.clientId);
+    server.markFirstParty(draining.clientId);
     expect(server.subscribeEvents(stalled.clientId)).toBe(true);
     expect(server.subscribeEvents(draining.clientId)).toBe(true);
 
@@ -159,6 +161,7 @@ describe('DaemonPipeServer — first-party classification (D7)', () => {
     // The default matters: the CLI and MCP never claim the role, so the gate is
     // closed for them without either of them changing.
     expect(server.isFirstParty(clientId)).toBe(false);
+    expect(server.subscribeEvents(clientId)).toBe(false);
 
     server.markFirstParty(clientId);
     expect(server.isFirstParty(clientId)).toBe(true);

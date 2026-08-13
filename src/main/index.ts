@@ -1206,12 +1206,16 @@ app.on('ready', async () => {
     onInstall: async (client) => {
       daemonClient = client;
       console.log('[Main] Connected to wmux-daemon (auth verified)');
-      // Claim the first-party role, then report presence. The daemon refuses
-      // `daemon.presence.desktop` from a client it cannot place — a report
-      // that withholds a notification must not be sendable by the MCP server,
-      // the CLI, or an agent talked into it — so the handshake has to land
-      // first. Both are best-effort: an old daemon without either method
-      // simply never learns the user is present and keeps sending pushes.
+      // DaemonClient has already sent subscribe -> identify, followed by a
+      // post-identify subscribe when the daemon enforces the gate. Repeat the
+      // idempotent identity RPC here so the presence report
+      // is chained to an acknowledged classification even if the event
+      // handshake's first identify attempt was transiently rejected. The
+      // daemon refuses `daemon.presence.desktop` from a client it cannot place
+      // — a report that withholds a notification must not be sendable by the
+      // MCP server, the CLI, or an agent talked into it. Both are best-effort:
+      // an old daemon without either method simply never learns the user is
+      // present and keeps sending pushes.
       //
       // The presence report is a one-shot because a fresh daemon has never
       // heard a focus transition, and the user may have been sitting in a

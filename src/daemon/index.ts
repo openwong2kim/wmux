@@ -2811,6 +2811,11 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
     const role = typeof params['role'] === 'string' ? params['role'] : '';
     if (role !== 'main') return { ok: false };
+    // Keep classification as the first side effect. New clients no longer rely
+    // on synchronous handler completion for correctness — they retry subscribe
+    // after this reply settles — but doing the cheap mark first still minimizes
+    // the refusal window for every caller.
+    const newlyIdentified = !pipeServer.isFirstParty(ctx.clientId);
     pipeServer.markFirstParty(ctx.clientId);
     // The app is the one client that must subscribe to events (#659). If it
     // identified but never did, it is an older build talking to this daemon and
@@ -2818,23 +2823,30 @@ function registerRpcHandlers(
     // failure #659 was about, pointing the other way. Say so in the log, because
     // a subscriber count of zero looks perfectly normal from in here. Only the
     // app identifies as 'main', so this cannot fire for the CLI or MCP server.
-    const idleCheck = setTimeout(() => {
-      if (pipeServer.isFirstParty(ctx.clientId) && !pipeServer.isEventSubscriber(ctx.clientId)) {
-        log(
-          'warn',
-          `[events] first-party client ${ctx.clientId} identified but never subscribed — it will receive no events (pre-#659 app build?)`,
-        );
-      }
-    }, 5_000);
-    idleCheck.unref();
+    if (newlyIdentified) {
+      const idleCheck = setTimeout(() => {
+        if (pipeServer.isFirstParty(ctx.clientId) && !pipeServer.isEventSubscriber(ctx.clientId)) {
+          log(
+            'warn',
+            `[events] first-party client ${ctx.clientId} identified but never subscribed — it will receive no events (pre-#659 app build?)`,
+          );
+        }
+      }, 5_000);
+      idleCheck.unref();
+    }
     return { ok: true };
   });
 
   // Pushed events are opt-in (issue #659). A client that never calls this reads
   // nothing but replies to its own requests, so "write a request, read one line
   // back" — the obvious client — can no longer read an event by mistake and
-  // report it as a failure with an empty error message.
+  // report it as a failure with an empty error message. The stream carries
+  // workspace-bearing channel and a2a events, so only the app socket that
+  // identified above may opt in. This is the same shared-token classification
+  // boundary as the transcript RPCs, not protection from a local token thief.
   pipeServer.onRpc('daemon.events.subscribe', async (_params, ctx) => {
+    // A false result is an expected first step of the compatibility handshake,
+    // so do not warn here. DaemonClient identifies and immediately retries.
     return { ok: pipeServer.subscribeEvents(ctx.clientId) };
   });
 
