@@ -168,6 +168,39 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
+      // `wmux browser navigate` outside a wmux pane: no pane above it, so
+      // resolveSelfContext returns nothing and the field is omitted (#845).
+      'bundled CLI that resolved to no workspace',
+      { origin: 'local', externalWire: true, clientName: 'wmux-cli' },
+      {},
+      { kind: 'allowed', lane: 'internal-cli' },
+    ],
+    [
+      // The lane is a fallback, not a bypass: a first-party client that DID
+      // resolve its workspace is scoped to it like anyone else.
+      'bundled CLI that did resolve one',
+      { origin: 'local', externalWire: true, clientName: 'wmux-cli' },
+      { workspaceId: 'ws-cli' },
+      { kind: 'scoped', lane: 'declared', workspaceId: 'ws-cli' },
+    ],
+    [
+      // The lane is narrower than the first-party predicate used for cdpPort:
+      // a bundled MCP server already sends its workspace, so it stays refused
+      // when it does not.
+      'first-party MCP client omitting its scope',
+      { origin: 'local', externalWire: true, clientName: 'claude-code' },
+      {},
+      { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
+    ],
+    [
+      // Name alone is not provenance: without PipeServer's external-wire
+      // marker, an iframe plugin sharing the manifest namespace stays refused.
+      'CLI name without external-wire provenance',
+      { origin: 'local', firstParty: true, clientName: 'wmux-cli' },
+      {},
+      { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
+    ],
+    [
       'legacy caller remaining unscoped',
       { origin: 'local', externalWire: true },
       {},

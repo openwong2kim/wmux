@@ -30,6 +30,7 @@ import type {
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
+import { isInternalCliClient } from '../../mcp/internalCli';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 
 type GetWindow = () => BrowserWindow | null;
@@ -65,7 +66,7 @@ export function canDiscloseBrowserAttachInfo(ctx: RpcContext | undefined): boole
 export type BrowserCallerScopeDecision =
   | {
       kind: 'allowed';
-      lane: 'operator' | 'legacy';
+      lane: 'operator' | 'legacy' | 'internal-cli';
       workspaceId?: string;
     }
   | {
@@ -91,15 +92,23 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  * Compute the caller-derived browser scope.
  *
  * #846 landed this table in shadow; it is now what target lookup actually uses
- * under `mcp.mode: enforce` (see `scopeFor` below). The table is deliberately
- * unchanged by the enforcement step so the behavior that ships is the behavior
- * the shadow window observed.
+ * under `mcp.mode: enforce` (see `scopeFor` below).
+ *
+ * One lane was ADDED when enforcement was tried: `first-party`. #846 intended
+ * the table to ship unchanged, on the theory that the shadow window had
+ * validated it — but that window recorded no `browser.*` traffic at all, so it
+ * validated nothing about these callers. The gap it hid is `wmux browser
+ * navigate` run outside a wmux pane, which deliberately omits `workspaceId`
+ * while still sending its `clientName`, and would have been refused in every
+ * packaged build. Read that as the shadow evidence being weaker than it looked,
+ * not as the lane being an afterthought.
  *
  * What this closes and what it does NOT (#810, be precise — the tool layer has
  * been mistaken for a boundary before):
  *
- *   closes  a caller that OMITS `workspaceId` no longer falls through to the
- *           workspace-blind "first registered surface" lookup; it is refused.
+ *   closes  an approved THIRD-party caller that OMITS `workspaceId` no longer
+ *           falls through to the workspace-blind "first registered surface"
+ *           lookup; it is refused. This is the caller #810 describes.
  *   closes  a pinned commander can no longer name a workspace other than the
  *           one its validated token is bound to.
  *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
@@ -179,6 +188,31 @@ export function callerScope(
   if (requested) {
     return { kind: 'scoped', lane: 'declared', workspaceId: requested };
   }
+
+  // The bundled CLI can legitimately resolve to no workspace at all, and that
+  // is a real state rather than a caller cutting a corner: `wmux browser
+  // navigate` typed into an ordinary terminal has no wmux pane above it, so
+  // `resolveSelfContext` correctly returns nothing and the CLI omits the field
+  // to keep active-target behavior (#845). Refusing it would break a shipped,
+  // tested command in every packaged build, where the default mode is
+  // `enforce`.
+  //
+  // This mirrors `PermissionEnforcer`'s internal-CLI lane exactly — same
+  // `isLocalExternalWireContext` + `isInternalCliClient` pair — rather than
+  // inventing a parallel notion of "trusted enough". Deliberately NARROWER
+  // than the first-party predicate used for `cdpPort` above: the bundled MCP
+  // servers are first-party too, but they already send their workspace on
+  // every call, so widening this to them would give up refusals for callers
+  // that do not need the lane.
+  //
+  // A self-asserted `clientName` is not identity. That ceiling is #113's and
+  // already carries the CLI's permission bypass, so this adds no reach a caller
+  // willing to claim the name did not already have. The approved THIRD-party
+  // plugin that #810 is actually about fails this predicate and stays refused.
+  if (isLocalExternalWireContext(ctx) && isInternalCliClient(ctx.clientName)) {
+    return { kind: 'allowed', lane: 'internal-cli' };
+  }
+
   return {
     kind: 'rejected',
     lane: 'declared',

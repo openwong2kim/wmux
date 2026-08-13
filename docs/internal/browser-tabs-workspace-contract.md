@@ -439,10 +439,25 @@ call proceeds on the old request-derived workspace, which is the rollback path.
 
 What that closes, precisely:
 
-- A caller that **omits** `workspaceId` no longer falls through to the
-  workspace-blind "first registered surface" lookup.
+- An approved **third-party** caller that omits `workspaceId` no longer falls
+  through to the workspace-blind "first registered surface" lookup. This is the
+  caller #810 describes. A first-party MCP client that omits it is refused too —
+  they already send it on every call.
 - A server-pinned caller can no longer name a workspace other than its token
   binding, and is scoped to that binding regardless of what it asked for.
+
+One lane was **added** during the flip: `internal-cli`. `wmux browser navigate`
+run outside a wmux pane has no pane above it, so `resolveSelfContext` correctly
+resolves nothing and the CLI omits the field to keep active-target behavior
+(#845) — while still sending `clientName`. Enforcing without this lane would
+have refused a shipped, tested command in every packaged build. The predicate
+mirrors `PermissionEnforcer`'s internal-CLI lane exactly
+(`isLocalExternalWireContext` + `isInternalCliClient`) and is deliberately
+narrower than the first-party predicate that gates `cdpPort`.
+
+That lane is also the honest verdict on #846's shadow window: it recorded no
+`browser.*` traffic at all, so "the audit log is quiet" meant *unexercised*,
+not *exercised and clean*. The gap it hid was this CLI path.
 
 What it does **not** close, and why it is written down rather than implied:
 
