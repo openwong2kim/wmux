@@ -124,7 +124,7 @@ winget install openwong2kim.wmux
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
 - 📱 **`wmux web`** — your live panes in a phone browser (PWA-installable), read-only and loopback-only by default; input and network exposure are explicit, warned-about opt-ins
 - ⬆️ **In-app auto-update** on Windows and macOS (arm64) — checked every 30 minutes, SHA-256 verified against a published manifest before it installs
-- 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
+- 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English · 한국어 · 中文 complete, 日本語 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
 
 > 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`, `channel_post`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes` / `wmux channel post`) to orchestrate panes programmatically.
 
@@ -260,7 +260,7 @@ wmux is built in the open. Huge thanks to everyone who's shipped code, squashed 
 
 Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac6](https://github.com/matdac6), [@margvez](https://github.com/margvez), [@zer0ken](https://github.com/zer0ken), [@AnandSundar](https://github.com/AnandSundar), [@cloim](https://github.com/cloim), [@cheyras](https://github.com/cheyras), [@junbeom09](https://github.com/junbeom09), [@rayss868](https://github.com/rayss868), [@dev-minggyu](https://github.com/dev-minggyu), and [@alphabeen](https://github.com/alphabeen) for their contributions. 💛
 
-**New here?** Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
+**New here?** Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale (한국어 · 中文 complete, 日本語 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
 
 Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microsoft/node-pty), [Electron](https://www.electronjs.org/), and [Playwright](https://playwright.dev/).
 
