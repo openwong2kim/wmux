@@ -1,0 +1,12 @@
+#!/bin/sh
+# Blocks internal-only documents (strategy, roadmap, competitive material) from
+# entering this public repository. See scripts/lib/internal-doc-guard.mjs for
+# what the policy is and why it is shaped this way.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# `git commit --no-verify` skips this, as it skips every hook — git offers no
+# way to prevent that. The same audit therefore also runs as a vitest case, so a
+# local bypass still fails CI on the pull request.
+exec node scripts/check-internal-docs.mjs
