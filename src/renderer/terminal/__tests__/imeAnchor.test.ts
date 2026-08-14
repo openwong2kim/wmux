@@ -17,9 +17,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   attachImeAnchor,
   computeImeAnchorCorrection,
+  createRestingTracker,
   isUsableGeometry,
+  noteCursorMove,
   paintedCursorPosition,
   parsePxOrNull,
+  pointFromCell,
+  resetRestingTracker,
+  RESTING_MS,
+  selectFreezeCell,
   type ImeAnchorBufferState,
   type ImeAnchorGeometry,
   type ImeAnchorTerminal,
@@ -159,22 +165,27 @@ function makeTerminal(dom: ReturnType<typeof buildTerminalDom>, rows = 39, cols 
   onRender: FakeEmitter<unknown>;
   onScroll: FakeEmitter<unknown>;
   onResize: FakeEmitter<unknown>;
+  onCursorMove: FakeEmitter<unknown>;
+  onBufferChange: FakeEmitter<unknown>;
   state: ImeAnchorBufferState;
 } {
   const onRender = new FakeEmitter<unknown>();
   const onScroll = new FakeEmitter<unknown>();
   const onResize = new FakeEmitter<unknown>();
+  const onCursorMove = new FakeEmitter<unknown>();
+  const onBufferChange = new FakeEmitter<unknown>();
   const state = buf();
   const terminal: ImeAnchorTerminal = {
     rows, cols,
     textarea: dom.textarea,
     element: dom.root,
-    buffer: { active: state },
+    buffer: { active: state, onBufferChange: onBufferChange.event },
     onRender: onRender.event,
     onScroll: onScroll.event,
     onResize: onResize.event,
+    onCursorMove: onCursorMove.event,
   };
-  return { terminal, onRender, onScroll, onResize, state };
+  return { terminal, onRender, onScroll, onResize, onCursorMove, onBufferChange, state };
 }
 
 describe('#874 attachImeAnchor', () => {
@@ -367,7 +378,7 @@ describe('#874 attachImeAnchor', () => {
 
   it('dispose unsubscribes everything and clears the transform', () => {
     const dom = buildTerminalDom();
-    const { terminal, onRender, onScroll, onResize, state } = makeTerminal(dom);
+    const { terminal, onRender, onScroll, onResize, onCursorMove, onBufferChange, state } = makeTerminal(dom);
     const handle = attachImeAnchor(terminal);
     Object.assign(state, { baseY: 10, viewportY: 5, cursorY: 4, cursorX: 0 });
     dom.textarea.style.top = `${4 * 17.6}px`;
@@ -380,6 +391,8 @@ describe('#874 attachImeAnchor', () => {
     expect(onRender.size).toBe(0);
     expect(onScroll.size).toBe(0);
     expect(onResize.size).toBe(0);
+    expect(onCursorMove.size).toBe(0);
+    expect(onBufferChange.size).toBe(0);
     // A composition after dispose must not resurrect the transform.
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     onRender.fire(undefined);
@@ -391,12 +404,211 @@ describe('#874 attachImeAnchor', () => {
     const textarea = document.createElement('textarea');
     const terminal = {
       rows: 39, cols: 142, textarea, element: root,
-      buffer: { active: buf() },
+      buffer: { active: buf(), onBufferChange: new FakeEmitter<unknown>().event },
       onRender: new FakeEmitter<unknown>().event,
       onScroll: new FakeEmitter<unknown>().event,
       onResize: new FakeEmitter<unknown>().event,
+      onCursorMove: new FakeEmitter<unknown>().event,
     } as ImeAnchorTerminal;
     expect(() => attachImeAnchor(terminal).dispose()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#874 resting-cell tracker (cause 3, pure)', () => {
+  it('pointFromCell and paintedCursorPosition agree (delegation)', () => {
+    const b = buf({ baseY: 22, viewportY: 14, cursorY: 38, cursorX: 12 });
+    const geom = { ...GEOM, rows: 47 };
+    expect(paintedCursorPosition(b, geom)).toEqual(
+      pointFromCell(b.baseY + b.cursorY, b.cursorX, b, geom),
+    );
+  });
+
+  it('pointFromCell clamps rows into the viewport and a wrap-pending col', () => {
+    const b = buf({ viewportY: 30 });
+    // Above the viewport -> row 0; below -> last row; col === cols -> cols - 1.
+    expect(pointFromCell(2, 0, b, GEOM).top).toBe(0);
+    expect(pointFromCell(200, 0, b, GEOM).top).toBe((GEOM.rows - 1) * GEOM.cellHeight);
+    expect(pointFromCell(30, GEOM.cols, b, GEOM).left).toBe((GEOM.cols - 1) * GEOM.cellWidth);
+  });
+
+  it('a bootstrap-seeded tracker reads as at-rest (no null hole before the first move)', () => {
+    const t = createRestingTracker(30, 8, 1000);
+    const sel = selectFreezeCell(t, 30, 8, 1005);
+    // held < RESTING_MS but there is no resting cell yet — instantaneous wins.
+    expect(sel).toMatchObject({ absRow: 30, col: 8, src: 'instant', restAge: -1 });
+  });
+
+  it('a burst of sub-threshold moves never promotes a resting cell', () => {
+    const t = createRestingTracker(30, 8, 1000);
+    noteCursorMove(t, 49, 113, 1000 + RESTING_MS); // 30,8 held exactly RESTING_MS -> promoted
+    expect(t.hasResting).toBe(true);
+    noteCursorMove(t, 49, 0, 1000 + RESTING_MS + 2);   // 49,113 held 2ms -> not promoted
+    noteCursorMove(t, 50, 0, 1000 + RESTING_MS + 5);   // 49,0 held 3ms -> not promoted
+    expect(t.lastRestingAbsRow).toBe(30);
+    expect(t.lastRestingCol).toBe(8);
+  });
+
+  it('same-cell events are no-ops (the dwell clock keeps running)', () => {
+    const t = createRestingTracker(30, 8, 1000);
+    noteCursorMove(t, 30, 8, 1010);
+    expect(t.currentSince).toBe(1000);
+    // Leaving after a long same-cell run still promotes from the ORIGINAL entry time.
+    noteCursorMove(t, 49, 113, 1100);
+    expect(t.hasResting).toBe(true);
+    expect(t.lastRestingAbsRow).toBe(30);
+  });
+
+  it('selectFreezeCell: at-rest cursor is trusted, mid-burst falls back to the resting cell', () => {
+    const t = createRestingTracker(30, 8, 1000);
+    noteCursorMove(t, 49, 113, 1100); // caret promoted, cursor parked at 49,113
+    // 5ms after the park: mid-burst -> resting cell.
+    const midBurst = selectFreezeCell(t, 49, 113, 1105);
+    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5 });
+    // 100ms after the park: the parked cell is now at rest -> trusted as-is
+    // (the documented cause-3 residual: dwell cannot tell a caret from a parked
+    // cell — the diagnostic fields are the field-log discriminator).
+    const atRest = selectFreezeCell(t, 49, 113, 1200);
+    expect(atRest).toMatchObject({ absRow: 49, col: 113, src: 'instant', held: 100 });
+  });
+
+  it('resetRestingTracker drops the resting cell across a reflow boundary', () => {
+    const t = createRestingTracker(30, 8, 1000);
+    noteCursorMove(t, 49, 113, 1100);
+    expect(t.hasResting).toBe(true);
+    resetRestingTracker(t, 12, 0, 1105);
+    expect(t.hasResting).toBe(false);
+    // Mid-burst right after the reset: no resting cell -> instantaneous.
+    expect(selectFreezeCell(t, 12, 0, 1106).src).toBe('instant');
+  });
+
+  it('rejects a resting cell that has scrolled off the viewport', () => {
+    // Scrolling output (a build log, not an in-place TUI repaint) leaves the
+    // resting cell above ydisp within a frame or two. pointFromCell would clamp
+    // it to row 0 and park the candidate window at the top of the terminal —
+    // worse than the live cursor, which is always on screen.
+    const t = createRestingTracker(1000, 8, 1000);
+    noteCursorMove(t, 3000, 0, 1100); // 1000,8 promoted; buffer has scrolled on
+    const viewport = { top: 2960, rows: 40 }; // rows 2960..2999 are visible
+    const sel = selectFreezeCell(t, 3000, 0, 1105, viewport);
+    expect(sel).toMatchObject({ absRow: 3000, col: 0, src: 'scrolled_out' });
+  });
+
+  it('keeps a resting cell that is still inside the viewport', () => {
+    // The in-place repaint case (ybase unchanged): both cells are on screen, so
+    // the resting cell is still the caret and must win.
+    const t = createRestingTracker(2990, 18, 1000);
+    noteCursorMove(t, 2984, 6, 1100);
+    const sel = selectFreezeCell(t, 2984, 6, 1105, { top: 2960, rows: 40 });
+    expect(sel).toMatchObject({ absRow: 2990, col: 18, src: 'resting' });
+  });
+
+  it('without a viewport the off-screen guard does not fire (arg stays optional)', () => {
+    const t = createRestingTracker(1000, 8, 1000);
+    noteCursorMove(t, 3000, 0, 1100);
+    expect(selectFreezeCell(t, 3000, 0, 1105).src).toBe('resting');
+  });
+});
+
+describe('#874 resting-cell wiring (cause 3)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  /** Attach with a controllable clock; park the caret, then burst the cursor away. */
+  function scenario(): {
+    dom: ReturnType<typeof buildTerminalDom>;
+    t: ReturnType<typeof makeTerminal>;
+    handle: { dispose(): void };
+    diag: ReturnType<typeof vi.fn>;
+    setClock: (ms: number) => void;
+    parkCursorAt: (absRow: number, col: number) => void;
+  } {
+    const dom = buildTerminalDom(10, 17.6, 60);
+    const t = makeTerminal(dom, 60);
+    let clock = 1000;
+    const diag = vi.fn();
+    // Caret rests at row 30, col 8 from attach time.
+    Object.assign(t.state, { baseY: 0, viewportY: 0, cursorY: 30, cursorX: 8 });
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      onCompositionDiagnostic: diag,
+    });
+    return {
+      dom, t, handle, diag,
+      setClock: (ms) => { clock = ms; },
+      parkCursorAt: (absRow, col) => {
+        Object.assign(t.state, { cursorY: absRow, cursorX: col });
+        t.onCursorMove.fire(undefined);
+        // Stand in for xterm's own (instantaneous) anchoring of the textarea.
+        dom.textarea.style.top = `${absRow * 17.6}px`;
+        dom.textarea.style.left = `${col * 10}px`;
+      },
+    };
+  }
+
+  it('a composition starting mid-burst anchors to the resting caret, not the parked cursor', () => {
+    const { dom, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(49, 113); // TUI repaint parks the cursor bottom-right
+    setClock(1105);        // 5ms later — inside the burst window
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    // Anchor must land on the caret cell (30, 8): correction = desired - actual.
+    expect(translateOf(dom.helpers)?.dy).toBeCloseTo((30 - 49) * 17.6, 6);
+    expect(translateOf(dom.helpers)?.dx).toBeCloseTo((8 - 113) * 10, 6);
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'resting', held: 5, restAge: 5, selY: 30, selX: 8, cursorY: 49, cursorX: 113,
+    });
+    handle.dispose();
+  });
+
+  it('a composition starting at rest keeps the #875 instantaneous behavior (regression lock)', () => {
+    const { dom, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(30, 8); // no-op move: cursor is already the caret
+    dom.textarea.style.top = `${30 * 17.6}px`;
+    dom.textarea.style.left = '80px';
+    setClock(1200); // held 200ms >= RESTING_MS
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    // Pinned at bottom, cursor at rest: nothing to correct, no transform.
+    expect(dom.helpers.style.transform).toBe('');
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'instant', selY: 30, selX: 8 });
+    handle.dispose();
+  });
+
+  it('resize resets the tracker — no stale resting cell crosses a reflow', () => {
+    const { dom, t, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(49, 113);
+    t.onResize.fire(undefined); // reflow boundary between park and composition
+    setClock(1105);
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0].src).toBe('instant'); // resting cell was dropped
+    handle.dispose();
+  });
+
+  it('an alt-screen switch resets the tracker', () => {
+    const { dom, t, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(49, 113);
+    t.onBufferChange.fire(undefined);
+    setClock(1105);
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0].src).toBe('instant');
+    handle.dispose();
+  });
+
+  it('scrolling output past the resting cell falls back to the live cursor', () => {
+    // The wiring passes the live viewport to the selection, so a resting cell
+    // the output has scrolled away from is rejected instead of being clamped to
+    // the top edge (dogfooded on the dev build with 20k lines of output).
+    const { dom, t, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(49, 113);          // caret cell (30,8) promoted to resting
+    Object.assign(t.state, { viewportY: 45 }); // …and then scrolled out of view
+    setClock(1105);
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'scrolled_out', selY: 49, selX: 113 });
+    handle.dispose();
   });
 });
 
