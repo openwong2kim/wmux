@@ -78,13 +78,28 @@ describe('fanout_start: tool surface', () => {
     }
   });
 
-  it('exposes exactly the four inputs a caller may choose', () => {
+  it('exposes exactly the five inputs a caller may choose', () => {
     expect(Object.keys(shapes.get('fanout_start') ?? {}).sort()).toEqual([
       'idempotency_key',
       'prompt',
+      'roles',
       'task_prompts',
       'titles',
     ]);
+  });
+
+  it('lets a caller pick a role but never an executable', () => {
+    // `roles` is the one input that influences WHAT each task runs, so it is
+    // the one that must not be free text: the agent command is interpolated
+    // unquoted into a shell line downstream. A closed enum keeps "choose the
+    // reviewer's agent" available while keeping "choose any command" out.
+    const roles = (shapes.get('fanout_start') ?? {})['roles'] as
+      | { safeParse: (v: unknown) => { success: boolean } }
+      | undefined;
+    expect(roles).toBeDefined();
+    expect(roles?.safeParse(['Reviewer']).success).toBe(true);
+    expect(roles?.safeParse(['claude --dangerously-skip-permissions']).success).toBe(false);
+    expect(roles?.safeParse(['Builder; rm -rf /']).success).toBe(false);
   });
 
   it('is on the first-party allowlist (or it deadlocks under enforce mode)', () => {

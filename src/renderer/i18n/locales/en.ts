@@ -1302,6 +1302,8 @@ export const en = {
   'fanout.taskCount': 'Task count (N): {n}',
   'fanout.titlesLabel': 'Per-task title & prompt (editable — branch/slug identity)',
   'fanout.taskPromptPlaceholder': 'Task {k} instructions… (combined with the shared prompt; empty = shared only)',
+  'fanout.roleLabel': 'Task {k} role (decides which agent and model it launches on)',
+  'fanout.roleNone': 'no role',
   'fanout.repoLabel': 'repo path',
   'fanout.agentLabel': 'agent command',
   'fanout.skipPermissionsUnsupported':

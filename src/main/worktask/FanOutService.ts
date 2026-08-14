@@ -89,6 +89,11 @@ export interface FanOutRendererPort {
     initialCommand: string;
     /** T2 — extra env for the task pane (currently WMUX_TASK_PORT). */
     env?: Record<string, string>;
+    /** Orchestrator role for this task's pane. The renderer owns the role→agent
+     *  +model bindings (they are UI settings), so main sends the ROLE and the
+     *  renderer rewrites the launch command through the same applyRoleBinding
+     *  path a human-opened pane uses. Absent = launch the command as given. */
+    role?: string;
   }): Promise<{ workspaceId: string; ptyId?: string } | { error: string }>;
 }
 
@@ -118,6 +123,17 @@ export interface FanOutRequest {
   repoPath: string;
   /** 에이전트 명령(기본 'claude'). */
   agentCmd: string;
+  /**
+   * Per-task orchestrator role, index-aligned with `titles` (optional; an empty
+   * or absent entry means "no role").
+   *
+   * This is how a fan-out puts different tasks on different agents and models
+   * WITHOUT any caller ever naming an executable: the role is a closed
+   * vocabulary (ORCH_ROLES), and the agent + model it maps to comes from the
+   * operator's own role bindings in Settings. A caller can choose among the
+   * bindings the operator configured; it cannot invent a command.
+   */
+  roles?: string[];
   /** 렌더러 신뢰 신원(channelLocal과 동일 trust basis — 프로세스 경계). */
   verifiedWorkspaceId: string;
   /** 미션 채널 멤버 좌표(생성자 memberId — 기본 verifiedWorkspaceId). */
@@ -341,6 +357,7 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
+        ...(req.roles?.[k] ? { role: req.roles[k] } : {}),
       });
       tasks.push(r);
     }
@@ -424,6 +441,8 @@ export class FanOutService {
     port?: number;
     /** T2 — trust-gated worktree setup hook (absent = nothing to run). */
     setupCommand?: string;
+    /** Orchestrator role for this task's pane (absent = unroled). */
+    role?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -526,6 +545,7 @@ export class FanOutService {
         cwd: plan.worktreePath,
         initialCommand,
         ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+        ...(ctx.role ? { role: ctx.role } : {}),
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);

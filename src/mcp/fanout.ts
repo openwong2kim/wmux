@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../shared/workTask';
+import { ORCH_ROLES } from '../shared/orchestratorRole';
 
 /** Resolvers the parent module injects (mirrors ChannelToolDeps). */
 export interface FanOutToolDeps {
@@ -77,6 +78,13 @@ const FANOUT_START_SHAPE = {
     .describe(
       'Per-task prompts, index-aligned with titles. Each task receives shared prompt + "\\n\\n" + its own prompt (empty side dropped). Use this for N different jobs; omit it for N attempts at the same job.',
     ),
+  roles: z
+    .array(z.enum(ORCH_ROLES))
+    .max(FANOUT_MAX_TASKS)
+    .optional()
+    .describe(
+      `Per-task role, index-aligned with titles: ${ORCH_ROLES.join(' | ')}. Decides which agent CLI and model that task launches on, via the operator's role bindings — so one fan-out can run review work on a different agent or model than build work. Omit for the default agent. An unknown role is rejected, not ignored.`,
+    ),
 };
 
 /** Register the fan-out tool on the given MCP server. */
@@ -92,15 +100,16 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       `Up to ${FANOUT_MAX_TASKS} tasks per call. ` +
       'Returns immediately with { status: "accepted" } — spawning takes far longer than one RPC, so the work continues in the background. Poll it by calling again with the SAME idempotency_key, or watch the tasks appear via channel_mission_list. ' +
       'The user is asked to approve before anything spawns, and that prompt is never auto-approved; if nobody answers it, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
-      "The repository, the owning workspace and the agent command are all determined by the server from your verified identity: fan-out always runs in YOUR workspace's repository, and the tasks are owned by you. Fan-out is refused if your identity cannot be verified.",
+      "The repository, the owning workspace and the agent command are all determined by the server from your verified identity: fan-out always runs in YOUR workspace's repository, and the tasks are owned by you. Fan-out is refused if your identity cannot be verified. You cannot name an executable; per-task agent/model selection goes through `roles`.",
     FANOUT_START_SHAPE,
-    async ({ idempotency_key, titles, prompt, task_prompts }) => {
+    async ({ idempotency_key, titles, prompt, task_prompts, roles }) => {
       const params: Record<string, unknown> = {
         idempotencyKey: idempotency_key,
         titles,
       };
       if (prompt !== undefined) params['prompt'] = prompt;
       if (task_prompts !== undefined) params['taskPrompts'] = task_prompts;
+      if (roles !== undefined) params['roles'] = roles;
       // The verified ptyId is the whole identity basis for this call — the
       // handler resolves it to the owning workspace and refuses without it.
       // Resolve identity FIRST: the walk that produces that ptyId is a side

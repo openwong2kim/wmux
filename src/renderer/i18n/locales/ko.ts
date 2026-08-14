@@ -1043,6 +1043,8 @@ export const ko = {
   'fanout.taskCount': '태스크 수 (N): {n}',
   'fanout.titlesLabel': '태스크별 제목·프롬프트 (편집 가능 — 브랜치·slug 식별)',
   'fanout.taskPromptPlaceholder': '태스크 {k} 개별 지시… (공통 프롬프트와 결합, 비우면 공통만)',
+  'fanout.roleLabel': '태스크 {k} 역할 (어떤 에이전트·모델로 뜰지 결정)',
+  'fanout.roleNone': '역할 없음',
   'fanout.repoLabel': 'repo 경로',
   'fanout.agentLabel': 'agent 명령',
   'fanout.skipPermissionsUnsupported':

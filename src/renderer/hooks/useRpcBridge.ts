@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
+import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
@@ -8,7 +8,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
-import { normalizeRoleBinding } from '../../shared/orchestratorRole';
+import { normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
@@ -671,6 +671,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // Per-task orchestrator role → the agent + model the OPERATOR bound to that
+    // role in Settings. main sends the role name only; the bindings live here
+    // (they are UI state), and the rewrite goes through the same
+    // applyRoleBinding path a human-opened pane uses — so a fan-out task honours
+    // "Reviewer runs codex --model o3" exactly like a hand-launched one. An
+    // unknown or unbound role is a silent no-op: the task still launches on the
+    // default command rather than failing over a preference.
+    const role = sanitizeOrchRole(params.role);
+    const roleBinding = role ? useStore.getState().orchestratorRoleBindings[role] : undefined;
+
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
     const newWs = afterAdd.workspaces.find((w) => w.id === afterAdd.activeWorkspaceId);
@@ -684,14 +694,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     try {
       const created = await window.electronAPI.pty.create(
         withWorkspaceProfile(
-          withDefaultShell(
-            {
-              workspaceId: newWsId,
-              cwd: cwd || undefined,
-              ...(initialCommand ? { initialCommand } : {}),
-              ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
-            },
-            useStore.getState().defaultShell,
+          withRoleBinding(
+            withDefaultShell(
+              {
+                workspaceId: newWsId,
+                cwd: cwd || undefined,
+                ...(initialCommand ? { initialCommand } : {}),
+                ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+              },
+              useStore.getState().defaultShell,
+            ),
+            roleBinding,
+            role,
           ),
           // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
           // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
@@ -715,6 +729,20 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { error: 'fanout.spawnWorkspace: pane disappeared during PTY creation' };
     }
     afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
+
+    // Stamp the role on the pane itself, not just on the launch command. It is
+    // what the Fleet list shows, and it is what keeps the binding in force for
+    // everything that happens AFTER the first launch — a re-fire, or a line the
+    // orchestrator later types into this pane, both re-apply the binding from
+    // the pane's role. Best-effort: the task is already running, so a metadata
+    // write that fails must not fail the spawn.
+    if (role) {
+      try {
+        await window.electronAPI.metadata.setRole(paneId, newWsId, role);
+      } catch {
+        /* the task is spawned; a missing role label is not worth failing it */
+      }
+    }
 
     // 포커스 복원 — fan-out 스폰이 사람 화면을 훔치지 않는다.
     useStore.getState().setActiveWorkspace(previousActiveId);
