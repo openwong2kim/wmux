@@ -207,3 +207,115 @@ export function resolvePaneRole(
   if (task.to.paneId && task.to.paneId === callerAddr.paneId) return 'agent';
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Reply delivery decision (dogfood 2026-08-13 follow-up)
+// ---------------------------------------------------------------------------
+
+/** Why a reply's PTY nudge was withheld. Surfaced verbatim in the
+ *  `delivery.reason` field of the a2a.task.send response so the SENDING agent
+ *  can act on it instead of believing the send reached the other party. */
+export type ReplySuppressReason =
+  | 'pin_lost'            // pinned target pane no longer exists (fail closed, no active-pane fallback)
+  | 'same_ws_no_anchor'   // same-ws task side has no pane anchor → active-pane fallback would risk the #239 self-paste loop
+  | 'self_loop'           // pinned target resolves to the caller's own pty
+  | 'unverified_sender';  // same-ws + no verified senderPtyId → cannot prove the route is not self
+
+export type ReplyDeliveryDecision =
+  | { kind: 'deliver'; sameWs: boolean; explicitPtyId?: string }
+  | { kind: 'suppress'; reason: ReplySuppressReason };
+
+/**
+ * Decide whether a reply's nudge may be delivered, or why it must be withheld.
+ * Extracted verbatim from the reply branch of useRpcBridge (same four guards,
+ * same precedence) so the decision is unit-testable and the suppression reason
+ * is a value, not a silent skip. The 2026-08-13 dogfood sessions hit these
+ * guards blind: the send reported success, the receiver got nothing, and a
+ * human ended up relaying every message by hand. The guards are CORRECT
+ * (they exist so a same-ws route that can't be proven non-self never pastes
+ * into the caller's own prompt) — what was broken was their silence.
+ *
+ * Precedence (first match wins) only affects the REPORTED reason; any single
+ * true guard suppresses, exactly as the original conjunction did.
+ */
+export function decideReplyDelivery(
+  sameWsTask: boolean,
+  hasAnchor: boolean,
+  pinnedAddressLost: boolean,
+  explicitPtyId: string | undefined,
+  callerPtyId: string,
+): ReplyDeliveryDecision {
+  if (pinnedAddressLost) return { kind: 'suppress', reason: 'pin_lost' };
+  if (sameWsTask && !hasAnchor) return { kind: 'suppress', reason: 'same_ws_no_anchor' };
+  if (!!explicitPtyId && !!callerPtyId && explicitPtyId === callerPtyId) {
+    return { kind: 'suppress', reason: 'self_loop' };
+  }
+  if (sameWsTask && !callerPtyId) return { kind: 'suppress', reason: 'unverified_sender' };
+  return { kind: 'deliver', sameWs: sameWsTask, ...(explicitPtyId ? { explicitPtyId } : {}) };
+}
+
+/** Per-reason guidance for the SENDING agent, shipped as `delivery.hint`.
+ *  Every branch names a concrete next action — an honest failure that offers
+ *  no recovery path is just a better-documented dead end. */
+export const REPLY_SUPPRESS_HINTS: Record<ReplySuppressReason, string> = {
+  pin_lost:
+    'The pinned target pane is gone. The reply is stored; the receiver can still poll ' +
+    'a2a_task_query. To nudge a live pane, start a new task addressed with pane_id.',
+  same_ws_no_anchor:
+    'This same-workspace task has no pane anchor on the target side, so a nudge cannot be ' +
+    'routed safely. The reply is stored; the receiver must poll a2a_task_query.',
+  self_loop:
+    'The pinned target resolves to your own pane — no nudge was sent to avoid pasting into ' +
+    'your own prompt. The reply is stored for the other party to poll via a2a_task_query.',
+  unverified_sender:
+    'Your pane identity could not be verified (no senderPtyId reached the server), so a ' +
+    'same-workspace nudge cannot be proven non-self and was withheld. The reply is stored; ' +
+    'the receiver must poll a2a_task_query.',
+};
+
+/**
+ * Count completed round trips in a task thread. Definition (fixed here so the
+ * cap fires identically everywhere): 1 round trip = one message from EACH side,
+ * i.e. `min(#user-role messages, #agent-role messages)`. Consecutive messages
+ * from the same side count once toward that side's total, so a double-post
+ * cannot inflate the round count, and a thread where only one side has ever
+ * spoken is 0 round trips regardless of length.
+ */
+export function countRoundTrips(history: ReadonlyArray<{ kind: string; role?: string }>): number {
+  let user = 0;
+  let agent = 0;
+  for (const h of history) {
+    if (h.kind !== 'message') continue;
+    if (h.role === 'user') user++;
+    else if (h.role === 'agent') agent++;
+  }
+  return Math.min(user, agent);
+}
+
+/**
+ * The larger of the two per-side message counts. Companion ceiling to
+ * `countRoundTrips`: min() alone never trips on a MONOLOGUE — an agent
+ * re-replying to a thread the other side ignores stays at 0 round trips
+ * forever while nudging the receiver on every message (review finding). The
+ * reply path refuses once one side exceeds `REPLY_ROUND_CAP * 2` messages,
+ * so a one-sided runaway is bounded even though it never completes a round.
+ */
+export function maxSideMessages(history: ReadonlyArray<{ kind: string; role?: string }>): number {
+  let user = 0;
+  let agent = 0;
+  for (const h of history) {
+    if (h.kind !== 'message') continue;
+    if (h.role === 'user') user++;
+    else if (h.role === 'agent') agent++;
+  }
+  return Math.max(user, agent);
+}
+
+/** Reply round-trip ceiling per thread. When `countRoundTrips` reaches this,
+ *  further replies are REFUSED (a2a.task.send returns an error) instead of
+ *  silently looping — two agents left alone will politely ping-pong without
+ *  converging, and no state-machine transition can stop them (the reply path
+ *  never consults task status). A refusal is visible to the sending agent AND
+ *  costs nothing to honor: continue by having the human open a fresh task
+ *  that references this one. */
+export const REPLY_ROUND_CAP = 5;

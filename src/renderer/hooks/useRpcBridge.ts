@@ -29,7 +29,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
@@ -319,16 +319,23 @@ export function useRpcBridge(): void {
 // active terminal. Extracted to avoid duplication across send/reply/update.
 // ---------------------------------------------------------------------------
 
+// Returns whether a pty was actually written to. A workspace whose active pane
+// has no terminal (browser surface, empty) resolves no pty and this is a no-op
+// — callers that report a `delivery` outcome MUST use the return value instead
+// of assuming success (review 2-MODEL finding: the unconditional
+// `notified:true` was the same false receipt this PR set out to remove).
 function deliverPtyNotification(
   targetWs: { rootPane: Pane; activePaneId: string; name: string },
   senderName: string,
   message: string,
   explicitPtyId?: string,
-): void {
+): boolean {
   const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
   if (ptyId) {
     submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message));
+    return true;
   }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,15 +347,18 @@ function deliverPtyNotification(
 // it cannot corrupt a multi-line readline state.
 // ---------------------------------------------------------------------------
 
+// Returns whether a pty was actually written to — see deliverPtyNotification.
 function deliverPtyNudge(
   targetWs: { rootPane: Pane; activePaneId: string },
   nudge: string,
   explicitPtyId?: string,
-): void {
+): boolean {
   const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
   if (ptyId) {
     submitToPty(ptyId, nudge);
+    return true;
   }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1860,6 +1870,29 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           && task.metadata.from.paneId && callerAddr && paneRole === null) {
         return { error: 'a2a.task.send: caller pane is not a participant of this task' };
       }
+      // Round cap (dogfood 2026-08-13): refuse the reply BEFORE storing it once
+      // the thread has completed REPLY_ROUND_CAP round trips. A status-based cap
+      // was rejected in review — the reply path never consults task.status, and
+      // input-required→working is agent-reachable, so a transition would neither
+      // stop the loop nor stay stopped. A hard refusal in the send response is
+      // visible to the agent that must act on it.
+      // Two ceilings: completed round trips (ping-pong), and per-side message
+      // count (monologue — min() never trips when the other side stays silent,
+      // but every one-sided reply still nudges the receiver).
+      if (
+        countRoundTrips(task.history) >= REPLY_ROUND_CAP ||
+        maxSideMessages(task.history) > REPLY_ROUND_CAP * 2
+      ) {
+        return {
+          error:
+            `a2a.task.send: round cap reached — this thread has completed ${REPLY_ROUND_CAP} ` +
+            'round trips (or one side exceeded its message ceiling). Escalate to the human: ' +
+            'summarize the thread state and, if the conversation must continue, have a NEW ' +
+            'task opened that references this task id.',
+          reason: 'cap_reached',
+          roundTrips: countRoundTrips(task.history),
+        };
+      }
       const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
@@ -1876,11 +1909,25 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // re-enter "paste into your own prompt". The reply is still persisted +
       // teed onto the bus (pollable via a2a_task_query). Same-ws delivery is a
       // one-line NUDGE only, never a full-body paste into a sibling agent's prompt.
+      // Delivery outcome, reported honestly in the response. `stored` is always
+      // true past this point (addTaskMessage above); `notified` says whether the
+      // OTHER party got any push signal. Before this field existed the response
+      // was a bare success either way — the 2026-08-13 dogfood sessions showed
+      // both agents believing their replies were delivered while every nudge was
+      // being suppressed, leaving a human to relay the whole debate by hand.
+      let delivery: Record<string, unknown> = { stored: true, notified: false, reason: 'silent' };
       if (!silent) {
         const replyingToReceiver = role === 'user';
         const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
-        if (targetWs) {
+        if (!targetWs) {
+          delivery = {
+            stored: true,
+            notified: false,
+            reason: 'target_workspace_gone',
+            hint: 'The other party\'s workspace no longer exists. The reply is stored on the task.',
+          };
+        } else {
           const senderWs = store.workspaces.find((w) => w.id === workspaceId);
           const senderName = senderWs?.name ?? 'unknown';
           const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
@@ -1893,32 +1940,61 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             if ('error' in addr) pinnedAddressLost = true;
             else explicitPty = addr.ptyId;
           }
-          const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId;
-          const sameWsNoAnchor = sameWsTask && !hasAnchor;
-          // Same-ws with an UNVERIFIED caller (no senderPtyId): we cannot tell the
-          // sender pane from the receiver pane, so the ws-level role defaults to
-          // 'user' and would route the nudge to `to` — which is the caller ITSELF
-          // when the receiver is the one replying (self-route), and the selfLoop
-          // guard can't catch it because callerPtyId is empty. Suppress, mirroring
-          // decideSameWsSend's absent-senderPtyId rule. The reply is still
-          // persisted + teed onto the bus (pollable via a2a_task_query).
-          const sameWsUnverified = sameWsTask && !callerPtyId;
-          if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
-            if (sameWsTask) {
+          // Four suppression guards, extracted to decideReplyDelivery (pure,
+          // unit-tested) — semantics unchanged, but the reason is now a VALUE
+          // that reaches the sender instead of a silent skip. See the extracted
+          // function for why each guard exists (same-ws self-paste safety).
+          const decision = decideReplyDelivery(sameWsTask, hasAnchor, pinnedAddressLost, explicitPty, callerPtyId);
+          if (decision.kind === 'suppress') {
+            delivery = {
+              stored: true,
+              notified: false,
+              reason: decision.reason,
+              hint: REPLY_SUPPRESS_HINTS[decision.reason],
+            };
+          } else {
+            // `notified` comes from the delivery helpers' actual outcome — they
+            // resolve a pty at write time and are a no-op when none exists (e.g.
+            // the cross-ws active pane is a browser surface). Assuming success
+            // here would recreate the exact false receipt this change removes.
+            let wrote: boolean;
+            let mode: 'nudge' | 'notification' = 'nudge';
+            if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
+              wrote = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-                deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
+                wrote = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
               } else {
-                deliverPtyNotification(targetWs, senderName, message, explicitPty);
+                wrote = deliverPtyNotification(targetWs, senderName, message, explicitPty);
+                mode = 'notification';
               }
             }
+            delivery = wrote
+              ? { stored: true, notified: true, mode }
+              : {
+                  stored: true,
+                  notified: false,
+                  reason: 'no_target_pty',
+                  hint:
+                    'The target workspace has no terminal pane to write to (its active pane may ' +
+                    'be a browser surface). The reply is stored; the receiver must poll a2a_task_query.',
+                };
           }
         }
       }
-      return { ok: true, taskId, silent };
+      // Any reply that produced NO push signal still tees the task pointer onto
+      // the EventBus, so a receiver polling wmux_events_poll learns the thread
+      // moved. This covers every not-notified outcome — guard suppression,
+      // silent, target workspace gone, and a failed pty write. Delivered
+      // replies deliberately do NOT emit (the nudge already signals; emitting
+      // per delivered message is the flood the create-path comment forbids).
+      if (delivery.notified !== true) {
+        const updatedTask = store.getTask(taskId);
+        if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
+      }
+      return { ok: true, taskId, silent, delivery };
     }
 
     // ── New task branch ──
@@ -2041,16 +2117,43 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // still created + teed onto the EventBus below, so a sibling can poll it via
     // a2a_task_query — only the loud prompt injection is withheld.
     const suppressPaste = silent || sameWsDecision.suppressPaste;
+    // Honest delivery outcome for the response (mirrors the reply branch). The
+    // suppressPaste=true-without-silent case is the one that used to lie: a
+    // same-ws send whose caller identity could not be verified was created
+    // silently while the response looked identical to a delivered one.
+    let delivery: Record<string, unknown>;
     if (!suppressPaste) {
       const explicitPty = resolvedAddr?.ptyId;
       // Liveness for the nudge-vs-paste choice must reflect the ADDRESSED pane's
       // agent (a workspace can host >1 agent), not ws-level metadata.
       const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, target.metadata);
+      let wrote: boolean;
+      let mode: 'nudge' | 'notification' = 'nudge';
       if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
+        wrote = deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
       } else {
-        deliverPtyNotification(target, fromName, message, explicitPty);
+        wrote = deliverPtyNotification(target, fromName, message, explicitPty);
+        mode = 'notification';
       }
+      delivery = wrote
+        ? { stored: true, notified: true, mode }
+        : {
+            stored: true,
+            notified: false,
+            reason: 'no_target_pty',
+            hint:
+              'The target workspace has no terminal pane to write to (its active pane may ' +
+              'be a browser surface). The task is stored; the receiver must poll a2a_task_query.',
+          };
+    } else if (silent) {
+      delivery = { stored: true, notified: false, reason: 'silent' };
+    } else {
+      delivery = {
+        stored: true,
+        notified: false,
+        reason: 'unverified_sender',
+        hint: REPLY_SUPPRESS_HINTS.unverified_sender,
+      };
     }
 
     // Tee the new task onto the EventBus (created). Read it BACK from the
@@ -2066,7 +2169,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // `task`: 확정된 태스크 스냅샷(주소 해석 반영) — main이 데몬 A2aTaskService에
     // 정본 미러-생성(envelope PR4)할 때 쓰고, 파이프 호출자에게 반환하기 전에
     // main이 제거한다(응답 계약 불변).
-    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id, executeApproved: executeRequested, task: createdTask };
+    return { ok: true, taskId: newTaskId, silent, delivery, toWorkspaceId: target.id, executeApproved: executeRequested, task: createdTask };
   }
 
   if (method === 'a2a.task.query') {
