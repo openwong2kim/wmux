@@ -19,6 +19,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 
 /** Ownership marker, written as the first line of every generated skill's
  *  BODY (the line right after the closing `---`). Its ABSENCE is what protects
@@ -94,7 +95,7 @@ ${WMUX_SKILL_MARKER}
 
 # Fan out — N tasks, N worktrees, one call
 
-\`fanout_start\` turns one job into up to 8 parallel tasks. Each task gets its
+\`fanout_start\` turns one job into up to ${FANOUT_MAX_TASKS} parallel tasks. Each task gets its
 own git worktree on a fresh \`wtask/\` branch, its own workspace with an agent
 pane already launched on the prompt, and its own mission channel.
 
@@ -123,8 +124,11 @@ Use a plain pane split when the work is one worker, or is read-only.
   \`idempotency_key\`; you will get \`awaiting_approval\`, then \`running\`, then
   \`completed\` with the per-task result.
 - **The operator must approve it.** The prompt is never auto-approved. A
-  \`denied\` answer with reason \`declined\` or \`timeout\` is a real outcome, not an
-  error to retry around. If nobody was at the keyboard, say so.
+  \`denied\` answer is a real outcome, not an error to retry around, and there
+  are four reasons: \`declined\` (they said no), \`timeout\` (nobody was at the
+  keyboard), \`unavailable\` (the prompt could not be shown), and \`repo-moved\`
+  (the anchor pane changed directory mid-approval). None of them is retried by
+  minting a new key — say what happened instead.
 - **You do not choose the repository or the workspace.** They are derived from
   your own verified identity. Fan-out always runs in your workspace's
   repository.

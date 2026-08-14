@@ -303,6 +303,22 @@ describe('a commander brain is a verifiable caller without a pty', () => {
     expect(h.approvalCount()).toBe(0);
   });
 
+  it('keeps its idempotency keys out of the pane agents\' key space', async () => {
+    // Keys are caller-chosen strings. A brain polling an obvious key like
+    // "fanout-1" must not read a pane agent's fan-out result — task ids,
+    // branches, worktree paths — nor have its own start answered as that
+    // agent's poll.
+    const h = setup();
+    await h.call(goodParams({ idempotencyKey: 'shared' }));
+    await h.flush();
+    const paneKey = h.request().idempotencyKey;
+
+    const h2 = setup();
+    await h2.call({ ...goodParams({ idempotencyKey: 'shared' }), senderPtyId: undefined }, COMMANDER);
+    await h2.flush();
+    expect(h2.request().idempotencyKey).not.toBe(paneKey);
+  });
+
   it('leaves the pty path fail-closed for a NON-commander with no pty', async () => {
     const h = setup();
     const res = await h.call({ ...goodParams(), senderPtyId: undefined });
@@ -353,6 +369,12 @@ describe('roles choose the agent per task, without naming one', () => {
     await h.flush();
     expect(h.preview()).toContain('role: Builder');
     expect(h.preview()).toContain('role: Reviewer');
+  });
+
+  it('rejects more roles than titles instead of dropping the extras', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ titles: ['a', 'b'], roles: ['Builder', 'Reviewer', 'Tester'] }));
+    expect(errorOf(res).code).toBe('INVALID_ARGUMENT');
   });
 
   it('omits roles entirely when the caller sent none', async () => {

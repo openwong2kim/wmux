@@ -118,6 +118,60 @@ export function launcherSupportsModelFlag(stem: string): boolean {
 }
 
 /**
+ * Swap the agent CLI in a launch command for the one a role is bound to.
+ *
+ * Deliberately NOT part of {@link applyRoleBinding}, which refuses to touch a
+ * command whose launcher differs from the binding's agent and only reports a
+ * note. That refusal is right for what it governs — a line a HUMAN typed at a
+ * live pane, where silently launching a different program than the one written
+ * would be indefensible.
+ *
+ * A fan-out task is the other case: nobody typed the command, wmux assembled it
+ * (`<agent> "$(cat <prompt file>)"`), and the operator's whole reason for
+ * binding Reviewer to codex is that review tasks should run on codex. Without
+ * this, every task in a fan-out launches on the same default agent and the
+ * binding is silently inert — the model flag never even applies, because
+ * applyRoleBinding bails on the stem mismatch first.
+ *
+ * Refuses in three cases, each fail-soft (command unchanged, note explains):
+ *  - the bound agent is not a launcher wmux recognises;
+ *  - the command's own launcher is not one either (it is not an agent launch);
+ *  - the command carries flags. `claude --dangerously-skip-permissions` is a
+ *    Claude-only spelling, so swapping the stem under it would produce
+ *    `codex --dangerously-skip-permissions` — a launch that just fails, and one
+ *    nobody asked for. A command with flags was written by a person who meant
+ *    those flags; their command wins over the binding.
+ */
+export function applyRoleAgent(
+  command: string,
+  binding: RoleBinding | undefined,
+): { command: string; changed: boolean; note?: string } {
+  const unchanged = { command, changed: false };
+  const agent = binding?.agent?.trim();
+  if (!agent) return unchanged;
+  if (!KNOWN_AGENT_STEMS.has(agent)) {
+    return { ...unchanged, note: `Role is bound to "${agent}", which wmux does not recognise as an agent CLI; launched unchanged.` };
+  }
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return unchanged;
+  const stem = launcherStem(tokens[0].value);
+  if (!KNOWN_AGENT_STEMS.has(stem)) return unchanged;
+  if (stem === agent) return unchanged;
+  const flagged = tokens.slice(1).some((t) => !t.quoted && t.value.startsWith('-'));
+  if (flagged) {
+    return {
+      ...unchanged,
+      note:
+        `Role is bound to "${agent}", but the launch command carries flags written for ` +
+        `"${stem}"; the agent was NOT swapped (the flags would not survive it).`,
+    };
+  }
+  // Replace only the launcher token; everything after it (the prompt argument)
+  // is spliced back byte-identical.
+  return { command: agent + command.slice(tokens[0].end), changed: true };
+}
+
+/**
  * Will this binding actually cause a model flag to be spliced into a launch?
  *
  * The three conditions are exactly applyRoleBinding's: a model to pin, an agent

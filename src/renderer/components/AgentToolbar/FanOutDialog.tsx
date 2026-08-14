@@ -215,7 +215,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 

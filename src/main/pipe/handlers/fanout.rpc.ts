@@ -419,6 +419,13 @@ function parseTasks(
   if (rawRoles.length > FANOUT_MAX_TASKS) {
     return { error: `roles length ${rawRoles.length} exceeds the cap of ${FANOUT_MAX_TASKS}` };
   }
+  // More roles than titles is a caller that has miscounted its own tasks, and
+  // the extras would be dropped in silence — the same "acting on a false
+  // picture" the repoPath/agentCmd rejections refuse to allow. (Fewer is fine:
+  // a short array means the remaining tasks are unroled, which is expressible.)
+  if (rawRoles.length > rawTitles.length) {
+    return { error: `roles has ${rawRoles.length} entries but there are only ${rawTitles.length} titles` };
+  }
   for (const [k, r] of rawRoles.entries()) {
     if (r === undefined || r === null || r === '') continue;
     if (typeof r !== 'string' || !(ORCH_ROLES as readonly string[]).includes(r)) {
@@ -578,8 +585,17 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       );
     }
     /** Per-workspace key space (see above). The GUI mints uuid keys of its own,
-     *  so a wire caller also cannot collide with an in-flight GUI fan-out. */
-    const key = `${callerWorkspaceId}::${callerKey}`;
+     *  so a wire caller also cannot collide with an in-flight GUI fan-out.
+     *
+     *  The brain gets its own sub-space inside that workspace. Keys are
+     *  caller-chosen strings and a brain and a pane agent in one workspace now
+     *  both reach this handler, so a brain polling an obvious key like
+     *  "fanout-1" would otherwise read a pane agent's result — task ids,
+     *  branches, worktree paths — and see its own start silently answered as a
+     *  poll. Pane callers keep the exact key space they had. */
+    const key = commanderWorkspaceId
+      ? `${callerWorkspaceId}::commander::${callerKey}`
+      : `${callerWorkspaceId}::${callerKey}`;
 
     // ── Poll branch ──────────────────────────────────────────────────────
     // A repeat of a key we already know answers from bookkeeping and starts
@@ -737,6 +753,12 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
             repoPath: callerRepoRoot,
             taskCount: parsed.titles.length,
             promptPreview: buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles),
+            // The roles again, as data. The preview prints the role NAME, but
+            // what a role resolves to — agent, model, extra args — lives in the
+            // renderer's bindings, and approving "[role: Reviewer]" without
+            // seeing that it means `codex --model o3 --some-flag` is approving
+            // a string that is not what runs. The renderer expands them.
+            roles: parsed.roles,
           },
           { timeoutMs: APPROVAL_TIMEOUT_MS },
         )) as { approved?: unknown; outcome?: unknown } | null;

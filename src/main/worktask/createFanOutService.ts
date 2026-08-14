@@ -42,10 +42,17 @@ export function createFanOutService(
       spawnWorkspace: async (p) => {
         const res = (await sendToRenderer(getWindow, 'fanout.spawnWorkspace', p, {
           timeoutMs: SPAWN_TIMEOUT_MS,
-        })) as { workspaceId?: string; ptyId?: string; error?: string };
+        })) as { workspaceId?: string; ptyId?: string; initialCommand?: string; error?: string };
         if (res && typeof res.error === 'string') return { error: res.error };
         if (res && typeof res.workspaceId === 'string') {
-          return { workspaceId: res.workspaceId, ...(res.ptyId ? { ptyId: res.ptyId } : {}) };
+          return {
+            workspaceId: res.workspaceId,
+            ...(res.ptyId ? { ptyId: res.ptyId } : {}),
+            // The post-role-binding command (see FanOutRendererPort).
+            ...(typeof res.initialCommand === 'string' && res.initialCommand
+              ? { initialCommand: res.initialCommand }
+              : {}),
+          };
         }
         return { error: 'fanout.spawnWorkspace: renderer returned no workspaceId' };
       },

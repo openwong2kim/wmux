@@ -46,6 +46,25 @@ describe('useRpcBridge — fan-out task roles', () => {
     expect(fanoutSpawnBlock()).toMatch(/orchestratorRoleBindings\[role\]/);
   });
 
+  it('swaps the agent BEFORE the model rewrite — both steps, in order', () => {
+    // applyRoleBinding refuses a command whose launcher differs from the
+    // binding's agent, so without the swap first a Reviewer→codex binding is
+    // inert twice over: no agent change AND no model flag. Panel review caught
+    // exactly this.
+    const block = fanoutSpawnBlock();
+    expect(block).toMatch(/applyRoleAgent\(initialCommand, roleBinding\)/);
+    // Match the CALLS, not the prose: the comment above the swap names
+    // withRoleBinding first, so a plain indexOf compares against the comment.
+    expect(block.search(/applyRoleAgent\(/)).toBeLessThan(block.search(/withRoleBinding\(\n/));
+    // …and the swapped command is what gets launched, not the original.
+    expect(block).toMatch(/initialCommand: launchCommand/);
+    expect(src).toMatch(/import \{[^}]*applyRoleAgent[^}]*\} from '\.\.\/\.\.\/shared\/orchestratorRole'/);
+  });
+
+  it('returns the launched command so a re-fire replays the bound one', () => {
+    expect(fanoutSpawnBlock()).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand \}/);
+  });
+
   it('applies the binding to the launch command via withRoleBinding', () => {
     const block = fanoutSpawnBlock();
     expect(block).toMatch(/withRoleBinding\(/);
@@ -62,6 +81,27 @@ describe('useRpcBridge — fan-out task roles', () => {
     // pane's role — so a spawn that rewrote the command but never stamped the
     // pane would drift back to the default model on the second turn.
     expect(fanoutSpawnBlock()).toMatch(/metadata\.setRole\(paneId, newWsId, role\)/);
+  });
+
+  it('expands roles into what they will run for the approval dialog', () => {
+    // The wire preview prints role NAMES; the bindings live here. Approving
+    // "[role: Reviewer]" without seeing it means another CLI, another model, or
+    // extra flags would make the approved text and the executed command differ.
+    const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
+    expect(m?.[0]).toMatch(/describeFanOutRoles\(params\.roles\)/);
+    // Only claim a model that will actually be injected.
+    const helper = src.match(/function describeFanOutRoles\([\s\S]*?\n\}/);
+    expect(helper?.[0]).toMatch(/bindingEnforcesModel\(b\)/);
+    expect(helper?.[0]).toMatch(/no binding/);
+  });
+
+  it('restores focus before the role write, not after', () => {
+    // setRole is an IPC round-trip; awaiting it while the new workspace is
+    // active drags the user's screen for every task in the fan-out.
+    const block = fanoutSpawnBlock();
+    expect(block.indexOf('setActiveWorkspace(previousActiveId)')).toBeLessThan(
+      block.indexOf('metadata.setRole'),
+    );
   });
 
   it('never fails the spawn over a role', () => {

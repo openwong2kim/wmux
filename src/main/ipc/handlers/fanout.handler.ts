@@ -15,7 +15,13 @@
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { sanitizeOrchRole } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, sanitizeOrchRole } from '../../../shared/orchestratorRole';
+
+/** A role name only if it is one wmux actually defines; '' otherwise. */
+function asOrchRole(raw: unknown): string {
+  const cleaned = sanitizeOrchRole(raw);
+  return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
+}
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
@@ -59,7 +65,11 @@ export function normalizeRequest(raw: unknown): FanOutRequest | { error: string 
     .map((rt, k) => ({
       title: rt,
       taskPrompt: typeof rawTaskPrompts[k] === 'string' ? (rawTaskPrompts[k] as string) : '',
-      role: sanitizeOrchRole(rawRoles[k]) ?? '',
+      // Membership-checked, not merely sanitized: the role is stamped onto pane
+      // metadata and used as a lookup key into the operator's bindings, so an
+      // arbitrary 64-char string reaching either would be a wider surface than
+      // the wire path allows (it rejects out-of-vocabulary roles outright).
+      role: asOrchRole(rawRoles[k]),
     }))
     .filter((e): e is { title: string; taskPrompt: string; role: string } => typeof e.title === 'string');
   const titles = pairedEntries.map((e) => e.title);

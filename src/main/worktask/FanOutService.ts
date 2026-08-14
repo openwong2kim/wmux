@@ -94,7 +94,17 @@ export interface FanOutRendererPort {
      *  renderer rewrites the launch command through the same applyRoleBinding
      *  path a human-opened pane uses. Absent = launch the command as given. */
     role?: string;
-  }): Promise<{ workspaceId: string; ptyId?: string } | { error: string }>;
+  }): Promise<
+    | {
+        workspaceId: string;
+        ptyId?: string;
+        /** The command the renderer actually launched. Differs from the one we
+         *  sent when a role binding swapped the agent or pinned a model, and it
+         *  is that version a re-fire must replay. */
+        initialCommand?: string;
+      }
+    | { error: string }
+  >;
 }
 
 /**
@@ -282,10 +292,14 @@ export class FanOutService {
     // title·개별 프롬프트는 인덱스로 정렬된 쌍이다 — 빈 title 필터 전에 먼저 묶어
     // 정렬이 어긋나지 않게 한다(개별 프롬프트가 다른 태스크에 오배달되면 치명).
     const rawPrompts = Array.isArray(req.taskPrompts) ? req.taskPrompts : [];
+    // role도 같은 이유로 필터 전에 묶는다 — 뒤에서 원본 인덱스로 읽으면 빈 title
+    // 하나에 역할이 통째로 밀려 다른 태스크가 남의 에이전트·모델로 뜬다.
+    const rawRoles = Array.isArray(req.roles) ? req.roles : [];
     const entries = req.titles
       .map((t, k) => ({
         title: typeof t === 'string' ? t.trim() : '',
         taskPrompt: typeof rawPrompts[k] === 'string' ? rawPrompts[k].trim() : '',
+        role: typeof rawRoles[k] === 'string' ? rawRoles[k].trim() : '',
       }))
       .filter((e) => e.title.length > 0);
     const n = entries.length;
@@ -357,7 +371,7 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
-        ...(req.roles?.[k] ? { role: req.roles[k] } : {}),
+        ...(entries[k].role ? { role: entries[k].role } : {}),
       });
       tasks.push(r);
     }
@@ -554,6 +568,9 @@ export class FanOutService {
       workspaceId = spawned.workspaceId;
       // ptyId는 옵셔널(핸드셰이크가 싣지 못하면 부재) — §3 onExhausted 토스트 매핑용.
       if (spawned.ptyId) base.ptyId = spawned.ptyId;
+      // 렌더러가 role 바인딩으로 커맨드를 바꿨다면 재발사 재료도 그 버전이어야
+      // 한다 — 아니면 재발사가 역할의 에이전트·모델을 조용히 잃는다.
+      if (spawned.initialCommand) base.initialCommand = spawned.initialCommand;
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };
