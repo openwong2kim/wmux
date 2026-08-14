@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "43a8ff42f7d8c85aa201d30bbada14c3280888e4830afc60bd3b7ebfba4261c3",
+      "wireResultSha256": "b5553f4bfffeecbbfec5e5fd00eed292b9dfa06b589ce73d087e84673835d5c0",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -96,8 +96,8 @@
       ]
     },
     "commander": {
-      "maxListBytes": 47000,
-      "wireResultSha256": "21d87db3c04f214f98c2bee54dda1a622970204c88233812df5a8c5634f8d13f",
+      "maxListBytes": 48000,
+      "wireResultSha256": "bb91312b697eb31c55d3b82693c73d1fdb86c4a1b04ea196b4acfd6167076a33",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -135,6 +135,7 @@
         "channel_unread",
         "channel_mission_start",
         "channel_mission_close",
+        "fanout_start",
         "pane_split",
         "pane_focus",
         "surface_new"

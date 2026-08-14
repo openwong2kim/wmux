@@ -86,7 +86,7 @@ const FANOUT_START_SHAPE = {
       // Kept terse on purpose: the commander tools/list payload is budgeted
       // (scripts/mcp-protocol-baseline.json), and the long form of this already
       // lives in the brain's `fanout` skill and the SDK system prompt.
-      `Per-task role, index-aligned with titles: ${ORCH_ROLES.join(' | ')}. Picks which agent CLI and model that task launches on, from the operator's role bindings — the only agent control you have. Omit for the default agent; an unknown role is rejected.`,
+      `Per-task role (${ORCH_ROLES.join(' | ')}), index-aligned with titles. Picks that task's agent CLI and model from the operator's bindings — your only agent control. Omit for the default; unknown roles are rejected.`,
     ),
 };
 
