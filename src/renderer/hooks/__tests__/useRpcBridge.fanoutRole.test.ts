@@ -21,7 +21,10 @@ import * as path from 'node:path';
  * fan-out path stays connected to it.
  */
 describe('useRpcBridge — fan-out task roles', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
+  // Normalised to LF: the block regex below anchors on `\n {2}\}\n`, which a
+  // CRLF checkout turns into `\r\n  }\r\n` and never matches. That made every
+  // test in this file fail on Windows while macOS and Ubuntu passed.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8').replace(/\r\n/g, '\n');
 
   function fanoutSpawnBlock(): string {
     const m = src.match(/if \(method === 'fanout\.spawnWorkspace'\)[\s\S]*?\n {2}\}\n/);
