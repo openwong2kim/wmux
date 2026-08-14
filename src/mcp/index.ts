@@ -1180,7 +1180,35 @@ server.tool(
   'a2a_discover',
   'List all available workspaces/agents and their names. ALWAYS call this first when the user references a workspace by number or name (e.g. "3번", "Workspace 1") so you know valid targets.',
   {},
-  async () => callRpc('a2a.discover'),
+  async () => {
+    // elapsedMs: measured at the MCP tool entry, i.e. the caller-visible round
+    // trip through pipe + main + renderer. A dogfood report blamed a ~2865s
+    // stall on this call; the server side is bounded by a 5s bridge timeout
+    // (_bridge.ts) and the handler is a pure in-memory map, so any large number
+    // a client observes accrues OUTSIDE this span (its own queueing/harness).
+    // Stamping the span here lets the next report tell those apart.
+    const t0 = Date.now();
+    const res = await callRpc('a2a.discover');
+    const elapsedMs = Date.now() - t0;
+    // callRpc returns the MCP content envelope; the RPC payload is JSON text
+    // inside it. Re-stringify with elapsedMs appended; a non-JSON payload
+    // (error string) passes through untouched.
+    const text = res.content[0]?.text;
+    if (typeof text === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({ ...(parsed as Record<string, unknown>), elapsedMs }, null, 2),
+            }],
+          };
+        }
+      } catch { /* non-JSON payload — return unmodified */ }
+    }
+    return res;
+  },
 );
 
 // 3. send_message — Primary tool for inter-workspace communication

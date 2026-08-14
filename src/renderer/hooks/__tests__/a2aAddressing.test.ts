@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, countRoundTrips, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -209,5 +209,89 @@ describe('resolvePaneRole (S-C2 per-pane history role)', () => {
     const wsOnlyFrom = { from: {}, to: { paneId: 'pane-B' } };
     expect(resolvePaneRole(wsOnlyFrom, addrA)).toBeNull(); // from has no anchor
     expect(resolvePaneRole(wsOnlyFrom, addrB1)).toBe('agent'); // to still matches
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decideReplyDelivery — the four reply suppression guards as values
+// ---------------------------------------------------------------------------
+describe('decideReplyDelivery', () => {
+  it('pin_lost wins over everything (a dead pinned pane fails closed)', () => {
+    const d = decideReplyDelivery(true, true, true, undefined, '');
+    expect(d).toEqual({ kind: 'suppress', reason: 'pin_lost' });
+  });
+
+  it('same-ws task without an anchor on the target side → same_ws_no_anchor', () => {
+    const d = decideReplyDelivery(true, false, false, undefined, 'pty-caller');
+    expect(d).toEqual({ kind: 'suppress', reason: 'same_ws_no_anchor' });
+  });
+
+  it('pinned target resolving to the caller own pty → self_loop', () => {
+    const d = decideReplyDelivery(false, true, false, 'pty-A', 'pty-A');
+    expect(d).toEqual({ kind: 'suppress', reason: 'self_loop' });
+  });
+
+  it('same-ws with an unverified caller (no callerPtyId) → unverified_sender', () => {
+    const d = decideReplyDelivery(true, true, false, 'pty-B', '');
+    expect(d).toEqual({ kind: 'suppress', reason: 'unverified_sender' });
+  });
+
+  it('same-ws verified sibling delivers with the explicit pty', () => {
+    const d = decideReplyDelivery(true, true, false, 'pty-B', 'pty-A');
+    expect(d).toEqual({ kind: 'deliver', sameWs: true, explicitPtyId: 'pty-B' });
+  });
+
+  it('cross-ws without an anchor delivers (active-pane fallback preserved — no explicitPtyId)', () => {
+    const d = decideReplyDelivery(false, false, false, undefined, '');
+    expect(d).toEqual({ kind: 'deliver', sameWs: false });
+  });
+
+  it('cross-ws unverified caller still delivers (unverified guard is same-ws only)', () => {
+    const d = decideReplyDelivery(false, true, false, 'pty-B', '');
+    expect(d).toEqual({ kind: 'deliver', sameWs: false, explicitPtyId: 'pty-B' });
+  });
+
+  it('every suppress reason has a hint that names a next action', () => {
+    for (const hint of Object.values(REPLY_SUPPRESS_HINTS)) {
+      expect(hint).toMatch(/a2a_task_query|pane_id/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countRoundTrips — cap arithmetic (1 round trip = one message from EACH side)
+// ---------------------------------------------------------------------------
+describe('countRoundTrips', () => {
+  const msg = (role: 'user' | 'agent') => ({ kind: 'message', role });
+
+  it('empty history → 0', () => {
+    expect(countRoundTrips([])).toBe(0);
+  });
+
+  it('one-sided thread is 0 round trips regardless of length', () => {
+    expect(countRoundTrips([msg('user'), msg('user'), msg('user')])).toBe(0);
+  });
+
+  it('alternating exchange counts min(user, agent)', () => {
+    expect(countRoundTrips([msg('user'), msg('agent'), msg('user'), msg('agent')])).toBe(2);
+  });
+
+  it('double-posts do not inflate the count', () => {
+    expect(countRoundTrips([msg('user'), msg('user'), msg('agent'), msg('agent')])).toBe(2);
+    // min(2,2)=2 — but a single reply to a burst stays 1:
+    expect(countRoundTrips([msg('user'), msg('user'), msg('user'), msg('agent')])).toBe(1);
+  });
+
+  it('non-message history entries are ignored', () => {
+    expect(countRoundTrips([{ kind: 'status-update' }, msg('user'), msg('agent')])).toBe(1);
+  });
+
+  it('cap boundary: 4 round trips pass, 5 hit REPLY_ROUND_CAP', () => {
+    const four = Array.from({ length: 4 }, () => [msg('user'), msg('agent')]).flat();
+    expect(countRoundTrips(four)).toBe(4);
+    expect(countRoundTrips(four) >= REPLY_ROUND_CAP).toBe(false);
+    const five = [...four, msg('user'), msg('agent')];
+    expect(countRoundTrips(five)).toBe(5);
+    expect(countRoundTrips(five) >= REPLY_ROUND_CAP).toBe(true);
   });
 });

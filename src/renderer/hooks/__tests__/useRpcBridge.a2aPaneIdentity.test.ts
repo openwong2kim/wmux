@@ -68,15 +68,21 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/const suppressPaste = silent \|\| sameWsDecision\.suppressPaste/);
     expect(block).toMatch(/if \(!suppressPaste\)/);
     // S-C2: the same-ws reply is no longer blanket-suppressed — it pins to the
-    // SYMMETRIC from/to anchor and suppresses ONLY on no-anchor or self-loop,
-    // delivering a one-line nudge to a proven sibling (never a full-body paste).
+    // SYMMETRIC from/to anchor and suppresses ONLY per the four guards, which
+    // now live in decideReplyDelivery (a2aAddressing.ts, unit-tested there):
+    // pin_lost / same_ws_no_anchor / self_loop / unverified_sender. The reply
+    // branch must route through that single decision point AND surface its
+    // outcome in the response (delivery.reason + hint) instead of skipping
+    // silently — the silent skip is what the 2026-08-13 dogfood hit.
     expect(block).toMatch(/const sameWsTask = task\.metadata\.from\.workspaceId === task\.metadata\.to\.workspaceId/);
     expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
-    expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);
-    expect(block).toMatch(/const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId/);
-    // an unverified same-ws caller (no senderPtyId) is suppressed: ws-level role
-    // defaults to 'user' and would self-route the nudge to the caller's own pane
-    expect(block).toMatch(/const sameWsUnverified = sameWsTask && !callerPtyId/);
+    expect(block).toMatch(/decideReplyDelivery\(sameWsTask, hasAnchor, pinnedAddressLost, explicitPty, callerPtyId\)/);
+    expect(block).toMatch(/REPLY_SUPPRESS_HINTS\[decision\.reason\]/);
+    // a suppressed reply still emits the task pointer onto the bus (the ONLY
+    // remaining signal to the receiver when the nudge is withheld)
+    expect(block).toMatch(/if \(updatedTask\) emitA2aTaskEvent\(updatedTask, 'updated'\)/);
+    // the round cap refuses further replies BEFORE the store write
+    expect(block).toMatch(/countRoundTrips\(task\.history\) >= REPLY_ROUND_CAP/);
   });
 
   it('a2a.task.send computes the reply role per-pane (S-C2) with a ws-level fallback', () => {
