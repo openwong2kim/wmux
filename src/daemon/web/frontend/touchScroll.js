@@ -44,8 +44,20 @@
    */
   var MAX_KEYS_PER_MOVE = 24;
 
-  var KEY_UP = '\x1b[A';
-  var KEY_DOWN = '\x1b[B';
+  /**
+   * Arrow keys in both encodings, because the alt screen needs the right one.
+   *
+   * A TUI that turns on keypad-transmit (terminfo `smkx`, which sets DECCKM)
+   * expects the SS3 form and treats the CSI form as noise. Git for Windows
+   * `less` does exactly that: during the #890 dogfood the handler claimed all
+   * 14 touchmoves of a swipe and `less` still did not move, because every
+   * keystroke went out as CSI. vim, less and htop are precisely the panes this
+   * branch exists for, so guessing one encoding is guessing wrong.
+   */
+  var CSI_UP = '\x1b[A';
+  var CSI_DOWN = '\x1b[B';
+  var SS3_UP = '\x1bOA';
+  var SS3_DOWN = '\x1bOB';
 
   /**
    * Property stamped on a host that already carries the listeners.
@@ -115,6 +127,29 @@
       // whose worst case is a scrollLines that moves nothing.
       return false;
     }
+  }
+
+  /**
+   * The arrow-key byte sequence this terminal's app is currently listening for.
+   *
+   * `term.modes.applicationCursorKeysMode` is public xterm API (DECCKM,
+   * `CSI ? 1 h`) and is what xterm consults for its own keyboard encoding —
+   * reading it here is how a swipe agrees with the arrow key on the key bar.
+   *
+   * Read live rather than cached: an app can flip DECCKM at any moment, and a
+   * pane changes what it is running without the handler being re-attached.
+   * Falls back to CSI, which is the unmodified default and what a terminal
+   * without the `modes` accessor would have wanted anyway.
+   */
+  function arrowKeyFor(term, up) {
+    var application = false;
+    try {
+      application = !!(term && term.modes && term.modes.applicationCursorKeysMode);
+    } catch (e) {
+      application = false;
+    }
+    if (application) return up ? SS3_UP : SS3_DOWN;
+    return up ? CSI_UP : CSI_DOWN;
   }
 
   /** True when the normal buffer actually has history above the viewport. */
@@ -275,8 +310,9 @@
           // The alt screen has no scrollback to move, so translate the swipe
           // into the arrow keys the TUI scrolls itself with — the same thing
           // xterm does with a wheel there, and what xterm.js#1007 asks for.
+          // The encoding follows the pane's DECCKM state; see arrowKeyFor.
           var n = Math.min(Math.abs(step.lines), MAX_KEYS_PER_MOVE);
-          var seq = step.lines > 0 ? KEY_UP : KEY_DOWN;
+          var seq = arrowKeyFor(current, step.lines > 0);
           var out = '';
           for (var i = 0; i < n; i++) out += seq;
           if (typeof o.sendKeys === 'function') o.sendKeys(out);

@@ -152,14 +152,36 @@ type FakeTerm = {
   rows: number;
   element: { getBoundingClientRect: () => { height: number } };
   buffer: { active: { type: string; baseY: number } };
+  modes?: { applicationCursorKeysMode: boolean };
+  setDecckm: (on: boolean) => void;
   scrollLines: ReturnType<typeof vi.fn>;
   onResize: (cb: () => void) => void;
   fireResize: () => void;
 };
 
-function makeTerm(opts: { alt?: boolean; baseY?: number; height?: number } = {}): FakeTerm {
+/** Both arrow encodings are three characters: ESC [ A and ESC O A. */
+const ARROW_LEN = 3;
+
+/** The single arrow sequence a payload repeats, or '' if it is not uniform. */
+function arrowEncoding(sent: string): string {
+  if (sent.length === 0 || sent.length % ARROW_LEN !== 0) return '';
+  const seq = sent.slice(0, ARROW_LEN);
+  for (let i = ARROW_LEN; i < sent.length; i += ARROW_LEN) {
+    if (sent.slice(i, i + ARROW_LEN) !== seq) return '';
+  }
+  return seq;
+}
+
+function lastSent(fn: ReturnType<typeof vi.fn>): string {
+  const call = fn.mock.lastCall;
+  return call ? String(call[0]) : '';
+}
+
+type TermOpts = { alt?: boolean; baseY?: number; height?: number; decckm?: boolean; noModes?: boolean };
+
+function makeTerm(opts: TermOpts = {}): FakeTerm {
   let onResize: (() => void) | null = null;
-  return {
+  const term: FakeTerm = {
     rows: 24,
     element: { getBoundingClientRect: () => ({ height: opts.height ?? 240 }) },
     buffer: {
@@ -170,13 +192,18 @@ function makeTerm(opts: { alt?: boolean; baseY?: number; height?: number } = {})
         baseY: opts.baseY ?? 500,
       },
     },
+    setDecckm: (on) => { if (term.modes) term.modes.applicationCursorKeysMode = on; },
     scrollLines: vi.fn(),
     onResize: (cb) => { onResize = cb; },
     fireResize: () => { if (onResize) onResize(); },
   };
+  // `noModes` stands in for a terminal that predates IModes — the fallback has
+  // to be the unmodified CSI form, not a crash.
+  if (!opts.noModes) term.modes = { applicationCursorKeysMode: opts.decckm === true };
+  return term;
 }
 
-function makeRig(termOpts: { alt?: boolean; baseY?: number } = {}, allowInput = false) {
+function makeRig(termOpts: TermOpts = {}, allowInput = false) {
   const term = makeTerm(termOpts);
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -307,14 +334,72 @@ describe('attachTouchScroll — alt screen', () => {
     expect(sendKeys).toHaveBeenCalledWith('\x1b[B\x1b[B');
   });
 
-  it('caps one move at a screenful of keystrokes', () => {
+  it('★ DECCKM on: sends the SS3 form the TUI is actually listening for', () => {
+    // The T5 dogfood failure. Git for Windows `less` turns on keypad-transmit
+    // (terminfo smkx → DECCKM), so it expects SS3 and reads CSI as noise: the
+    // handler claimed all 14 touchmoves of a swipe and less did not move a row.
+    const { host, sendKeys } = makeRig({ alt: true, decckm: true }, true);
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 125]]);
+    expect(sendKeys).toHaveBeenCalledWith('\x1bOA\x1bOA');
+
+    sendKeys.mockClear();
+    touch(host, 'touchend', []);
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 75]]);
+    expect(sendKeys).toHaveBeenCalledWith('\x1bOB\x1bOB');
+  });
+
+  it('★ reads DECCKM live, so a pane that flips mode mid-gesture keeps working', () => {
+    // An app can set or clear DECCKM at any moment, and the handler is not
+    // re-attached when it does. Caching the encoding would resurrect this bug
+    // the first time a pane changed its mind.
+    // Asserts the ENCODING, not the key count — how many arrows each move is
+    // worth depends on the carried remainder, which is a different test's job.
+    const { term, host, sendKeys } = makeRig({ alt: true }, true);
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 125]]);
+    expect(arrowEncoding(lastSent(sendKeys))).toBe('\x1b[A');
+
+    term.setDecckm(true);
+    touch(host, 'touchmove', [[50, 150]]);
+    expect(arrowEncoding(lastSent(sendKeys))).toBe('\x1bOA');
+  });
+
+  it('★ a terminal without IModes falls back to CSI rather than throwing', () => {
+    const { host, sendKeys } = makeRig({ alt: true, noModes: true }, true);
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 125]]);
+    expect(sendKeys).toHaveBeenCalledWith('\x1b[A\x1b[A');
+  });
+
+  it('survives a terminal whose modes accessor throws', () => {
+    const term = makeTerm({ alt: true, noModes: true });
+    Object.defineProperty(term, 'modes', {
+      get() { throw new Error('disposed'); },
+    });
+    const host = document.createElement('div');
+    const sendKeys = vi.fn();
+    attachTouchScroll(term, host, { allowInput: () => true, sendKeys });
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 125]]);
+    expect(sendKeys).toHaveBeenCalledWith('\x1b[A\x1b[A');
+  });
+
+  it('caps one move at a screenful of keystrokes, in either encoding', () => {
     // Each line is a keystroke POSTed at a live TUI. A pathological delta (a
     // finger re-entering the element, a synthetic event) must not hammer it.
-    const { host, sendKeys } = makeRig({ alt: true }, true);
-    touch(host, 'touchstart', [[50, 1000]]);
-    touch(host, 'touchmove', [[50, 0]]);   // 100 cells' worth
-    const sent = sendKeys.mock.calls[0][0] as string;
-    expect(sent.length / '\x1b[B'.length).toBe(24);
+    const csi = makeRig({ alt: true }, true);
+    touch(csi.host, 'touchstart', [[50, 1000]]);
+    touch(csi.host, 'touchmove', [[50, 0]]);   // 100 cells' worth
+    expect(arrowEncoding(lastSent(csi.sendKeys))).toBe('\x1b[B');
+    expect(lastSent(csi.sendKeys).length / ARROW_LEN).toBe(24);
+
+    const ss3 = makeRig({ alt: true, decckm: true }, true);
+    touch(ss3.host, 'touchstart', [[50, 1000]]);
+    touch(ss3.host, 'touchmove', [[50, 0]]);
+    expect(arrowEncoding(lastSent(ss3.sendKeys))).toBe('\x1bOB');
+    expect(lastSent(ss3.sendKeys).length / ARROW_LEN).toBe(24);
   });
 
   it('★ read-only + alt screen: says so ONCE, and does nothing else', () => {
