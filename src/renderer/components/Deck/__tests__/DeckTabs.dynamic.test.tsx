@@ -27,6 +27,7 @@ function mount(props: {
   onSelect?: (t: DeckTab) => void;
   channelsUnread?: number;
   showChannels?: boolean;
+  afterTabs?: React.ReactNode;
   rightSlot?: React.ReactNode;
   commanderModelLabel?: string;
   commanderModelOptions?: { value: string; label: string }[];
@@ -40,6 +41,7 @@ function mount(props: {
         onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
         ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
+        ...(props.afterTabs !== undefined ? { afterTabs: props.afterTabs } : {}),
         ...(props.rightSlot !== undefined ? { rightSlot: props.rightSlot } : {}),
         ...(props.commanderModelLabel !== undefined ? { commanderModelLabel: props.commanderModelLabel } : {}),
         ...(props.commanderModelOptions !== undefined ? { commanderModelOptions: props.commanderModelOptions } : {}),
@@ -115,6 +117,36 @@ describe('DeckTabs', () => {
     expect(container.querySelector('[data-deck-tab="commander"]')).not.toBeNull();
     expect(container.querySelector('[data-deck-tab="channels"]')).toBeNull();
     expect(container.querySelector('[data-deck-tab-unread]')).toBeNull();
+  });
+
+  it('keeps non-tab controls OUT of the tablist', () => {
+    // A tablist may own tabs and nothing else. The web glyph (afterTabs) and
+    // the header controls are buttons, not tabs — inside the list they break
+    // AT's "N of M" counting and its arrow-key model.
+    mount({
+      active: 'commander',
+      afterTabs: createElement('button', { 'data-test-web': 'true' }, 'web'),
+      rightSlot: createElement('button', { 'data-test-chip': 'true' }, 'chip'),
+    });
+    const list = container.querySelector('[role="tablist"]') as HTMLElement;
+    expect(list).not.toBeNull();
+    expect(list.querySelector('[data-test-web]')).toBeNull();
+    expect(list.querySelector('[data-test-chip]')).toBeNull();
+    // Every direct child of the list is a tab.
+    const kids = Array.from(list.children);
+    expect(kids.length).toBe(3);
+    for (const kid of kids) {
+      const isTab = kid.getAttribute('role') === 'tab' || kid.querySelector('[role="tab"]') !== null;
+      expect(isTab).toBe(true);
+    }
+    // …and the glyphs still render, just as siblings.
+    expect(container.querySelector('[data-test-web]')).not.toBeNull();
+  });
+
+  it('announces the unread count, which is only a badge visually', () => {
+    mount({ active: 'commander', channelsUnread: 3 });
+    expect(tab('channels').getAttribute('aria-label')).toBe('deck.tabChannels (3 unread)');
+    expect(container.querySelector('[data-deck-tab-unread]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('renders rightSlot header controls after the tabs', () => {

@@ -54,6 +54,7 @@ export default function ChannelDock(): React.ReactElement {
   // snaps activeDeckTab back to commander when the tab is turned off, but a
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
   // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
@@ -80,9 +81,15 @@ export default function ChannelDock(): React.ReactElement {
     >
       <DeckTabs
         active={showChannelsView ? 'channels' : showGitView ? 'git' : 'commander'}
-        onSelect={setActiveDeckTab}
+        // Pressing the Channels glyph IS the opt-in, exactly as the deleted
+        // sidebar Channels row was: `channelsTabVisible` ships FALSE, so
+        // hiding the glyph with it left an open deck no way at all to reach
+        // channels — the row used to cover that case from the other edge.
+        onSelect={(tab) => {
+          if (tab === 'channels' && !channelsTabVisible) setChannelsTabVisible(true);
+          setActiveDeckTab(tab);
+        }}
         channelsUnread={sumUnread(channelUnread)}
-        showChannels={channelsTabVisible}
         commanderModelLabel={commanderModelLabel}
         commanderModelOptions={MODEL_OPTIONS}
         commanderModelValue={deckBrainModel}

@@ -112,12 +112,19 @@ export function DeckTabs({
   return (
     <div
       data-deck-tabs
-      role="tablist"
-      aria-label={t('deck.tabsAriaLabel') || 'Command deck tabs'}
       className="flex items-stretch shrink-0 border-b border-[var(--bg-surface)]"
       style={{ borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgSurface', 'border')}
     >
+      {/* `tablist` owns the tabs and NOTHING else: the web glyph and the
+          header controls are not tabs, and a tablist that contains them makes
+          AT announce "1 of 5" and wire arrow keys to buttons that aren't tabs.
+          They are siblings of the list, inside the same 36px strip. */}
+      <div
+        role="tablist"
+        aria-label={t('deck.tabsAriaLabel') || 'Command deck tabs'}
+        className="flex items-stretch shrink-0"
+      >
       {tabs.map((tab) => {
         const isActive = active === tab.id;
         const isCommander = tab.id === 'commander';
@@ -128,13 +135,17 @@ export function DeckTabs({
         // `Agent (Sonnet 5)` — 글자가 사라진 만큼 모델을 확인할 곳이 여기뿐이다.
         const label = isCommander && commanderModelLabel ? `${baseLabel} (${commanderModelLabel})` : baseLabel;
         const unread = tab.id === 'channels' ? formatDeckCount(channelsUnread) : null;
+        // The badge digit is decoration to a screen reader — with the text
+        // label gone it has to ride in the accessible name, or the count is
+        // simply not announced (the deleted sidebar rows read it as text).
+        const ariaLabel = unread ? `${label} (${unread} unread)` : label;
         const button = (
           <button
             key={tab.id}
             type="button"
             role="tab"
             aria-selected={isActive}
-            aria-label={label}
+            aria-label={ariaLabel}
             title={label}
             data-deck-tab={tab.id}
             data-active={isActive ? 'true' : undefined}
@@ -153,7 +164,7 @@ export function DeckTabs({
               <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[8px] opacity-70">▾</span>
             )}
             {unread && (
-              <span data-deck-tab-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
+              <span aria-hidden="true" data-deck-tab-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
                 {unread}
               </span>
             )}
@@ -213,6 +224,7 @@ export function DeckTabs({
           </div>
         );
       })}
+      </div>
       {afterTabs && (
         <div data-deck-header-tools className="flex items-stretch shrink-0">
           {afterTabs}

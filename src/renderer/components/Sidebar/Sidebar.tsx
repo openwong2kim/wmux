@@ -206,8 +206,9 @@ export default function Sidebar() {
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
 
-      {/* Agent · Git · Channels · web moved to the titlebar's deck rail
-          (DeckRail.tsx, owner decision 2026-08-14): they all command the
+      {/* Agent · Git · Channels · web moved onto the deck's own icon strip
+          (Deck/DeckTabs.tsx while it is open, Deck/DeckMiniRail.tsx while it
+          is collapsed) — owner decision 2026-08-14. They all command the
           right-hand deck, and as rows here they cost 144px of the workspace
           list and vanished entirely when the sidebar collapsed. */}
 

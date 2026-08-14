@@ -11,17 +11,11 @@ export const en = {
   'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
-  'sidebar.agent': 'Agent',
-  'sidebar.git': 'Git',
-  'sidebar.gitTooltip': 'Toggle the Git panel',
-  'sidebar.channels': 'Channels',
-  'sidebar.channelsTooltip': 'Toggle the Channels panel',
   'sidebar.screenOff': 'Screen off',
   'sidebar.screenOn': 'Screen on',
   'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',
   'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
   'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
-  'sidebar.agentTooltip': 'Toggle agent panel',
 
   // Workspace
   'workspace.agentRunning': 'Running',
@@ -316,6 +310,9 @@ export const en = {
 
   // wmux web — titlebar toggle + popover (browser/PWA terminal server)
   'web.label': 'web',
+  // Spoken state for the icon-only toggle: with the text label gone, "running"
+  // has to reach a screen reader through the accessible name.
+  'web.running': 'running',
   'web.tooltip': 'Serve panes to a browser',
   'web.headline': 'Serve panes to a browser',
   'web.allowInput': 'Allow input',

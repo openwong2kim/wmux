@@ -37,6 +37,13 @@ import {
 const POLL_INTERVAL_MS = 10_000;
 
 /**
+ * Tallest the popover may get before it scrolls internally, and the budget the
+ * open-position math reserves below the button. The running body (QR + pair
+ * code + Stop + paired devices) is the long one.
+ */
+const POPOVER_MAX_HEIGHT = 440;
+
+/**
  * Cap on the device name.
  *
  * The popover is a fixed 288px box, so an unbounded name is a layout bug, and
@@ -673,7 +680,13 @@ export default function WebToggle() {
       const menuWidth = 288; // w-72
       if (r) {
         setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
-        setAnchorTop(r.bottom + 4);
+        // Clamp DOWNWARD too. On the vertical rail the button sits ~184px
+        // down, and the running body (QR + pair code + Stop + devices) is
+        // ~500px — hung straight off r.bottom it runs past a short window and
+        // takes Stop with it. The popover also caps its own height and
+        // scrolls, so a window shorter than the body still reaches every
+        // control.
+        setAnchorTop(Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - POPOVER_MAX_HEIGHT)));
       }
     }
     setOpen(!open);
@@ -831,8 +844,10 @@ export default function WebToggle() {
         onClick={toggleOpen}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-pressed={running}
-        aria-label={t('web.label')}
+        // No aria-pressed: this button opens a popover, it does not toggle the
+        // server. Reporting "pressed" for a running server contradicts
+        // haspopup/expanded, so the running state rides in the name instead.
+        aria-label={running ? `${t('web.label')} (${t('web.running')})` : t('web.label')}
         title={t('web.tooltip')}
         data-testid="deck-web-toggle"
         data-deck-web=""
@@ -853,8 +868,12 @@ export default function WebToggle() {
           ref={popRef}
           role="dialog"
           aria-label={t('web.headline')}
-          style={{ left: anchorLeft, top: anchorTop } as CSSProperties}
-          className="fixed z-50 w-72 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
+          style={{
+            left: anchorLeft,
+            top: anchorTop,
+            maxHeight: `min(${POPOVER_MAX_HEIGHT}px, calc(100vh - 16px))`,
+          } as CSSProperties}
+          className="fixed z-50 w-72 overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
         >
           <WebPopoverBody
             info={info}

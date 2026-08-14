@@ -18,6 +18,67 @@ import { sumUnread } from '../Channels/ChannelsPanel';
 import { DECK_ICON_BUTTON, DECK_ICON_BADGE, deckIconTone, formatDeckCount } from './deckIconStyles';
 import type { DeckTab } from '../../stores/slices/deckSlice';
 
+/**
+ * One glyph cell. `last` marks the tab the deck will return to — collapsed
+ * there is no active view, but a rail where every glyph looks identical
+ * leaves the expand chevron a blind guess, so the remembered tab keeps a thin
+ * steel edge (the collapsed echo of the open deck's active underline).
+ */
+function RailGlyph({
+  tab,
+  icon,
+  label,
+  count = null,
+  countNoun,
+  badgeAttr,
+  last,
+  onOpen,
+  dockOnRight,
+}: {
+  tab: DeckTab;
+  icon: React.ReactNode;
+  label: string;
+  count?: string | null;
+  countNoun?: string;
+  badgeAttr?: string;
+  last: boolean;
+  onOpen: (tab: DeckTab) => void;
+  dockOnRight: boolean;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(tab)}
+      data-deck-rail={tab}
+      data-last-active={last ? 'true' : undefined}
+      // The badge digit is aria-hidden decoration, so the count has to be in
+      // the name or a screen reader never hears it.
+      aria-label={count ? `${label} (${count} ${countNoun})` : label}
+      title={label}
+      className={`${DECK_ICON_BUTTON} ${deckIconTone(false, count !== null)}`}
+    >
+      {icon}
+      {count && (
+        <span
+          aria-hidden="true"
+          className={DECK_ICON_BADGE}
+          {...(badgeAttr ? { [badgeAttr]: '' } : {})}
+          {...tokenAttrs('accent', 'bg')}
+        >
+          {count}
+        </span>
+      )}
+      {last && (
+        <span
+          aria-hidden="true"
+          className={`absolute top-1 bottom-1 w-0.5 bg-[var(--accent-blue)] ${dockOnRight ? 'left-0' : 'right-0'}`}
+          {...tokenAttrs('accentSecondary', 'bg')}
+        />
+      )}
+    </button>
+  );
+}
+
 export default function DeckMiniRail(): React.ReactElement {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
@@ -37,11 +98,21 @@ export default function DeckMiniRail(): React.ReactElement {
   // sits opposite the workspace sidebar and its border faces the panes.
   const dockOnRight = sidebarPosition !== 'right';
 
+  // Pressing a glyph is a deliberate choice of THAT tab, so the Channels glyph
+  // may flip the Settings opt-in on. Expanding is not — see `expand` below.
   const open = (tab: DeckTab) => {
-    // The Channels tab defaults to OFF; pressing its glyph IS the statement "I
-    // want channels", so turn the tab on rather than opening an empty deck.
     if (tab === 'channels' && !channelsTabVisible) setChannelsTabVisible(true);
     setActiveDeckTab(tab);
+    setChannelDockVisible(true);
+  };
+
+  // Expand restores the last tab, and must NOT turn anything on: a persisted
+  // `activeDeckTab: 'channels'` from before the Settings opt-in existed would
+  // otherwise make a plain "expand" silently enable the frozen channel UI.
+  const expand = () => {
+    const target: DeckTab =
+      activeDeckTab === 'channels' && !channelsTabVisible ? 'commander' : activeDeckTab;
+    setActiveDeckTab(target);
     setChannelDockVisible(true);
   };
 
@@ -52,53 +123,43 @@ export default function DeckMiniRail(): React.ReactElement {
       data-deck-mini-rail
       {...tokenAttrs('bgMantle', 'bg')}
     >
-      <button
-        type="button"
-        onClick={() => open('commander')}
-        data-deck-rail="commander"
-        aria-label={t('deck.tabCommander') || 'Orchestrator'}
-        title={t('deck.tabCommander') || 'Orchestrator'}
-        className={`${DECK_ICON_BUTTON} ${deckIconTone(false, false)}`}
-      >
-        <IconRobot size={15} />
-      </button>
-      <button
-        type="button"
-        onClick={() => open('git')}
-        data-deck-rail="git"
-        aria-label={t('deck.tabGit') || 'Git'}
-        title={t('deck.tabGit') || 'Git'}
-        className={`${DECK_ICON_BUTTON} ${deckIconTone(false, dirty !== null)}`}
-      >
-        <IconGitBranch size={15} />
-        {dirty && (
-          <span data-deck-rail-dirty className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
-            {dirty}
-          </span>
-        )}
-      </button>
-      <button
-        type="button"
-        onClick={() => open('channels')}
-        data-deck-rail="channels"
-        aria-label={t('deck.tabChannels') || 'Channels'}
-        title={t('deck.tabChannels') || 'Channels'}
-        className={`${DECK_ICON_BUTTON} ${deckIconTone(false, unread !== null)}`}
-      >
-        <IconHash size={15} />
-        {unread && (
-          <span data-deck-rail-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
-            {unread}
-          </span>
-        )}
-      </button>
+      <RailGlyph
+        tab="commander"
+        icon={<IconRobot size={15} />}
+        label={t('deck.tabCommander') || 'Orchestrator'}
+        last={activeDeckTab === 'commander'}
+        onOpen={open}
+        dockOnRight={dockOnRight}
+      />
+      <RailGlyph
+        tab="git"
+        icon={<IconGitBranch size={15} />}
+        label={t('deck.tabGit') || 'Git'}
+        count={dirty}
+        countNoun="dirty"
+        badgeAttr="data-deck-rail-dirty"
+        last={activeDeckTab === 'git'}
+        onOpen={open}
+        dockOnRight={dockOnRight}
+      />
+      <RailGlyph
+        tab="channels"
+        icon={<IconHash size={15} />}
+        label={t('deck.tabChannels') || 'Channels'}
+        count={unread}
+        countNoun="unread"
+        badgeAttr="data-deck-rail-unread"
+        last={activeDeckTab === 'channels'}
+        onOpen={open}
+        dockOnRight={dockOnRight}
+      />
       <WebToggle />
 
       {/* Expand — reopens whatever tab was last active. Pinned to the foot so
           it mirrors the collapse chevron's place in the open deck's header. */}
       <button
         type="button"
-        onClick={() => open(activeDeckTab)}
+        onClick={expand}
         data-deck-expand
         aria-label={t('deck.expandDock') || 'Expand dock'}
         title={t('deck.expandDock') || 'Expand dock'}

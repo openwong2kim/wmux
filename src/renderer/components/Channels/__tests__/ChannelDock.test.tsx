@@ -37,7 +37,12 @@ describe('channel dock — wiring regression guard', () => {
     expect(dock).toMatch(/<CommanderView\s*\/>/);
     expect(dock).toContain('activeDeckTab');
     expect(dock).toMatch(/activeDeckTab === 'channels' && channelsTabVisible/);
-    expect(dock).toMatch(/showChannels=\{channelsTabVisible\}/);
+    // The VIEW stays gated on channelsTabVisible, but the glyph no longer is:
+    // hiding it left an open deck with no way to reach channels at all once
+    // the sidebar's Channels row was deleted, since the flag ships false.
+    // Pressing the glyph is the opt-in, exactly as that row was (2026-08-14).
+    expect(dock).not.toMatch(/showChannels=/);
+    expect(dock).toMatch(/if \(tab === 'channels' && !channelsTabVisible\) setChannelsTabVisible\(true\)/);
   });
 
   it('ChannelView is dock content, NOT a fixed covering overlay', () => {
@@ -64,8 +69,12 @@ describe('channel dock — wiring regression guard', () => {
     expect(sidebar).not.toMatch(/<ChannelsPanel\s*\/>/);
   });
 
-  it('uiSlice owns the persisted channelDockVisible flag + toggle', () => {
+  it('uiSlice owns the persisted channelDockVisible flag + setter', () => {
     expect(uiSlice).toContain('channelDockVisible');
-    expect(uiSlice).toMatch(/toggleChannelDock/);
+    // `toggleChannelDock` went with the sidebar rows that were its only
+    // caller — the deck strip and the collapsed rail both set the flag to a
+    // known value rather than flipping it (2026-08-14).
+    expect(uiSlice).toMatch(/setChannelDockVisible/);
+    expect(uiSlice).not.toMatch(/toggleChannelDock/);
   });
 });

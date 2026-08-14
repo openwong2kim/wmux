@@ -76,6 +76,46 @@ describe('DeckMiniRail', () => {
     expect(s.activeDeckTab).toBe('git');
   });
 
+  it('expanding never turns the frozen Channels tab on by itself', () => {
+    // A session persisted before the Settings opt-in existed can hold
+    // activeDeckTab:'channels' with channelsTabVisible:false. Plain "expand"
+    // is not a request for channels, so it must fall back instead of
+    // enabling the frozen UI behind the user's back.
+    useStore.setState({
+      channelDockVisible: false,
+      activeDeckTab: 'channels',
+      channelsTabVisible: false,
+    });
+
+    const container = render();
+    act(() => (container.querySelector('[data-deck-expand]') as HTMLButtonElement).click());
+
+    const s = useStore.getState();
+    expect(s.channelDockVisible).toBe(true);
+    expect(s.channelsTabVisible).toBe(false);
+    expect(s.activeDeckTab).toBe('commander');
+  });
+
+  it('marks the tab the deck will return to, and announces counts', () => {
+    useStore.setState({
+      channelDockVisible: false,
+      activeDeckTab: 'git',
+      channelUnread: { a: 4 },
+    });
+
+    const container = render();
+    expect(
+      (container.querySelector('[data-deck-rail="git"]') as HTMLElement).getAttribute('data-last-active'),
+    ).toBe('true');
+    expect(
+      (container.querySelector('[data-deck-rail="commander"]') as HTMLElement).getAttribute('data-last-active'),
+    ).toBeNull();
+    // The badge is aria-hidden, so the count has to be in the name.
+    expect(
+      (container.querySelector('[data-deck-rail="channels"]') as HTMLElement).getAttribute('aria-label'),
+    ).toContain('4 unread');
+  });
+
   it('badges unread channels on the Channels glyph only when there is unread', () => {
     useStore.setState({ channelDockVisible: false, channelUnread: {} });
     expect(render().querySelector('[data-deck-rail-unread]')).toBeNull();
