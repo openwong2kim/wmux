@@ -161,8 +161,9 @@
    *
    * Reuses the existing notification stack rather than inventing a toast, and
    * follows the same shape endReplay() uses for a page-level notice: no session
-   * id (so tapping it just dismisses instead of switching panes), with the
-   * explanation in the subline slot.
+   * id, so tapping it just dismisses instead of switching panes. The
+   * explanation rides the `sessionName` field, which pushNotif renders as the
+   * subline text — a notice that belongs to no pane has no name to put there.
    */
   function touchScrollNotice(title, sub) {
     pushNotif({ kind: 'notify', slim: false, sessionId: null, sessionName: sub, title: title, sub: '' });

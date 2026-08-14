@@ -35,14 +35,22 @@
   var AXIS_THRESHOLD = 8;
 
   /**
-   * Ceiling on arrow keys emitted for ONE touchmove on the alt screen.
+   * Fixed ceiling on arrow keys emitted for ONE touchmove on the alt screen.
    *
    * A normal move carries a handful of lines. A pathological one (a finger
    * re-entering the element after leaving it, a synthetic event) can carry
-   * hundreds, and each line is a keystroke POSTed at a live TUI. Cap it at
-   * roughly a screenful rather than let a stray delta hammer the pane.
+   * hundreds, and each line is a keystroke POSTed at a live TUI. This bounds
+   * that, nothing more — it is deliberately NOT derived from `rows`, because it
+   * is not modelling a screenful (a 7-row split tile and a 60-row pane both get
+   * 24). Anything past this in a single event is a delta we do not believe.
    */
   var MAX_KEYS_PER_MOVE = 24;
+
+  /**
+   * Cell-height change, in px, that counts as a real re-scale rather than
+   * sub-pixel layout jitter from getBoundingClientRect.
+   */
+  var CELL_EPSILON = 0.1;
 
   /**
    * Arrow keys in both encodings, because the alt screen needs the right one.
@@ -152,13 +160,38 @@
     return up ? CSI_UP : CSI_DOWN;
   }
 
-  /** True when the normal buffer actually has history above the viewport. */
-  function hasScrollback(term) {
+  /**
+   * Can the normal buffer actually move the way this delta asks it to?
+   *
+   * Asking only whether scrollback EXISTS is not enough, and the difference is
+   * a dead zone at both ends. xterm clamps `scrollLines` to a no-op there, but
+   * `preventDefault` would already have fired — so the pane does not move AND
+   * `#stage` loses the gesture. That is the same silent no-op this whole branch
+   * exists to eliminate, and in zoom mode it would make any pane with
+   * scrollback impossible to pan vertically, which is most of them.
+   *
+   * `dy > 0` (finger down) walks the viewport back into history and needs room
+   * above it; `dy < 0` walks it toward the bottom and needs room below. A zero
+   * delta moves nothing, so it claims nothing.
+   *
+   * Reading `viewportY` is safe here in a way it is not on `.xterm-viewport`:
+   * the DOM element stopped being scroll state in xterm 6, but the BUFFER
+   * accessor is public API and is the ground truth the renderer itself uses.
+   */
+  function canScrollBuffer(term, dy) {
+    var active;
     try {
-      return !!(term && term.buffer && term.buffer.active && term.buffer.active.baseY > 0);
+      active = term && term.buffer && term.buffer.active;
     } catch (e) {
       return false;
     }
+    if (!active) return false;
+    var baseY = typeof active.baseY === 'number' ? active.baseY : 0;
+    var viewportY = typeof active.viewportY === 'number' ? active.viewportY : 0;
+    if (!(baseY > 0)) return false;        // no scrollback at all
+    if (dy > 0) return viewportY > 0;      // room above to scroll back into
+    if (dy < 0) return viewportY < baseY;  // room below to return toward
+    return false;
   }
 
   /**
@@ -225,12 +258,14 @@
     var startY = 0;
     var lastY = 0;
     var accum = 0;        // sub-cell pixels carried between touchmove events
+    var lastCell = 0;     // cell height the banked pixels were measured against
     var noticed = false;  // the read-only alt-screen notice is one-shot
 
     function reset() {
       active = false;
       axis = '';
       accum = 0;
+      lastCell = 0;
     }
 
     // A resize re-measures every cell, so pixels accumulated against the old
@@ -270,17 +305,23 @@
 
     host.addEventListener('touchmove', function (e) {
       if (!active) return;
-      // Someone closer to the target already claimed this gesture. Today
-      // nothing does; the day xterm grows its own touch handling it will, and
-      // this is what keeps that from scrolling the pane twice per swipe. We sit
-      // on the host, so any handler xterm adds inside runs first.
-      if (e.defaultPrevented) return;
       var touches = e.touches || [];
       if (touches.length !== 1) { reset(); return; }   // a second finger landed mid-gesture
       var t = touches[0];
-      axis = decideGestureAxis(t.clientX - startX, t.clientY - startY, AXIS_THRESHOLD, axis);
+      // Track the finger BEFORE any early return. On an event we decline to
+      // act on, `lastY` still has to advance — otherwise the next delta is
+      // measured from wherever the finger was several moves ago and the pane
+      // lurches by the whole gap.
       var dy = t.clientY - lastY;
       lastY = t.clientY;
+      // Someone closer to the target already claimed this gesture. Today
+      // nothing does; the day xterm grows its own touch handling it will, and
+      // this is what keeps that from scrolling the pane twice per swipe. We sit
+      // on the host, so any handler xterm adds inside runs first — this assumes
+      // the BUBBLE phase, so a capture-phase listener added here later would
+      // have to revisit it.
+      if (e.defaultPrevented) return;
+      axis = decideGestureAxis(t.clientX - startX, t.clientY - startY, AXIS_THRESHOLD, axis);
       // Undecided or horizontal: never preventDefault, or the #stage pan that
       // zoom mode depends on dies. Pre-lock travel is discarded rather than
       // accumulated — it is the threshold distance, well under one cell.
@@ -288,6 +329,7 @@
 
       var alt = isAltScreen(current);
       if (alt && !(typeof o.allowInput === 'function' && o.allowInput())) {
+        accum = 0;   // nothing here will ever consume it
         if (!noticed) {
           noticed = true;
           if (typeof o.notify === 'function') {
@@ -299,11 +341,20 @@
         }
         return;   // nothing was handled — leave the page's own scrolling alone
       }
-      // No history above the viewport: let #stage keep the gesture so a pane
-      // taller than the screen can still be panned into view in zoom mode.
-      if (!alt && !hasScrollback(current)) return;
+      // Nowhere to go in the direction being asked for — no scrollback at all,
+      // or already clamped against that end of it. Decline the gesture so
+      // #stage keeps it and a pane taller than the screen can still be panned.
+      if (!alt && !canScrollBuffer(current, dy)) return;
 
-      var step = touchDeltaToLines(accum, dy, cellHeightOf(current));
+      var cell = cellHeightOf(current);
+      // A zoom-button or Fit-toggle press re-scales `#scaler` and fires NO
+      // event of any kind, so pixels banked against the old scale would be
+      // spent at the new one. onResize covers the cases that do announce
+      // themselves; comparing the measurement covers the ones that do not.
+      if (lastCell > 0 && cell > 0 && Math.abs(cell - lastCell) > CELL_EPSILON) accum = 0;
+      if (cell > 0) lastCell = cell;
+
+      var step = touchDeltaToLines(accum, dy, cell);
       accum = step.remainder;
       if (step.lines !== 0) {
         if (alt) {

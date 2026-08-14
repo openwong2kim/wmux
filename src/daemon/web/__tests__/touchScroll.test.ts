@@ -151,7 +151,7 @@ describe('decideGestureAxis', () => {
 type FakeTerm = {
   rows: number;
   element: { getBoundingClientRect: () => { height: number } };
-  buffer: { active: { type: string; baseY: number } };
+  buffer: { active: { type: string; baseY: number; viewportY: number } };
   modes?: { applicationCursorKeysMode: boolean };
   setDecckm: (on: boolean) => void;
   scrollLines: ReturnType<typeof vi.fn>;
@@ -177,7 +177,14 @@ function lastSent(fn: ReturnType<typeof vi.fn>): string {
   return call ? String(call[0]) : '';
 }
 
-type TermOpts = { alt?: boolean; baseY?: number; height?: number; decckm?: boolean; noModes?: boolean };
+type TermOpts = {
+  alt?: boolean;
+  baseY?: number;
+  viewportY?: number;
+  height?: number;
+  decckm?: boolean;
+  noModes?: boolean;
+};
 
 function makeTerm(opts: TermOpts = {}): FakeTerm {
   let onResize: (() => void) | null = null;
@@ -187,9 +194,11 @@ function makeTerm(opts: TermOpts = {}): FakeTerm {
     buffer: {
       active: {
         type: opts.alt ? 'alternate' : 'normal',
-        // Non-zero by default: a pane with no history above the viewport
-        // deliberately leaves the gesture to #stage (covered separately).
+        // Parked mid-scrollback by default, so both directions have somewhere
+        // to go. A pane with no scrollback, and a pane clamped against either
+        // end, deliberately decline the gesture — covered separately.
         baseY: opts.baseY ?? 500,
+        viewportY: opts.viewportY ?? 250,
       },
     },
     setDecckm: (on) => { if (term.modes) term.modes.applicationCursorKeysMode = on; },
@@ -269,7 +278,7 @@ describe('attachTouchScroll — normal buffer', () => {
     // A fresh pane cannot scroll back, but it CAN be taller than the phone in
     // zoom mode — and panning it into view is the only useful vertical motion
     // there. Claiming the gesture would kill that for nothing.
-    const { term, host } = makeRig({ baseY: 0 });
+    const { term, host } = makeRig({ baseY: 0, viewportY: 0 });
     touch(host, 'touchstart', [[50, 100]]);
     const e = touch(host, 'touchmove', [[50, 140]]);
     expect(term.scrollLines).not.toHaveBeenCalled();
@@ -283,6 +292,85 @@ describe('attachTouchScroll — normal buffer', () => {
     touch(host, 'touchstart', [[50, 100]]);
     touch(host, 'touchmove', [[50, 200]]);
     expect(term.scrollLines).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachTouchScroll — clamped at either end of the scrollback', () => {
+  // The dead zone GLM-5.2 found. Asking only "does scrollback exist" claims the
+  // gesture at both ends, where xterm clamps scrollLines to a no-op — so
+  // nothing moves AND #stage cannot pan. Direction has to be part of the
+  // question, and it is knowable from `dy` before any line arithmetic.
+
+  it('★ at the bottom, a swipe UP claims nothing', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 500 });
+    touch(host, 'touchstart', [[50, 100]]);
+    const e = touch(host, 'touchmove', [[50, 60]]);   // finger up → toward the bottom
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('★ at the bottom, a swipe DOWN still scrolls back into history', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 500 });
+    touch(host, 'touchstart', [[50, 100]]);
+    const e = touch(host, 'touchmove', [[50, 140]]);
+    expect(term.scrollLines).toHaveBeenCalledWith(-4);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('★ at the top, a swipe DOWN claims nothing', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 0 });
+    touch(host, 'touchstart', [[50, 100]]);
+    const e = touch(host, 'touchmove', [[50, 140]]);   // finger down → further back
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('★ at the top, a swipe UP still returns toward the bottom', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 0 });
+    touch(host, 'touchstart', [[50, 100]]);
+    const e = touch(host, 'touchmove', [[50, 60]]);
+    expect(term.scrollLines).toHaveBeenCalledWith(4);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('mid-scrollback claims and scrolls in BOTH directions', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 250 });
+    touch(host, 'touchstart', [[50, 100]]);
+    expect(touch(host, 'touchmove', [[50, 140]]).defaultPrevented).toBe(true);
+    expect(touch(host, 'touchmove', [[50, 100]]).defaultPrevented).toBe(true);
+    expect(term.scrollLines.mock.calls).toEqual([[-4], [4]]);
+  });
+
+  it('★ zoom mode: a pane WITH scrollback can still be panned at its edges', () => {
+    // The regression this guard protects. A tall pane parked at the bottom used
+    // to swallow every upward swipe, so #stage could never scroll down to the
+    // rows below the fold.
+    const { host } = makeRig({ baseY: 500, viewportY: 500 });
+    touch(host, 'touchstart', [[50, 400]]);
+    const a = touch(host, 'touchmove', [[50, 300]]);
+    const b = touch(host, 'touchmove', [[50, 200]]);
+    expect(a.defaultPrevented).toBe(false);
+    expect(b.defaultPrevented).toBe(false);
+  });
+
+  it('reads the clamp live, so scrolling stops exactly at the end', () => {
+    const { term, host } = makeRig({ baseY: 500, viewportY: 250 });
+    touch(host, 'touchstart', [[50, 100]]);
+    expect(touch(host, 'touchmove', [[50, 140]]).defaultPrevented).toBe(true);
+
+    term.buffer.active.viewportY = 0;   // xterm has reached the top
+    expect(touch(host, 'touchmove', [[50, 180]]).defaultPrevented).toBe(false);
+    expect(term.scrollLines).toHaveBeenCalledTimes(1);
+  });
+
+  it('declines a zero-delta move rather than claiming it', () => {
+    const { term, host } = makeRig();
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 140]]);          // lock vertical
+    term.scrollLines.mockClear();
+    const e = touch(host, 'touchmove', [[50, 140]]);   // finger held still
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
   });
 });
 
@@ -386,7 +474,7 @@ describe('attachTouchScroll — alt screen', () => {
     expect(sendKeys).toHaveBeenCalledWith('\x1b[A\x1b[A');
   });
 
-  it('caps one move at a screenful of keystrokes, in either encoding', () => {
+  it('caps one move at a fixed number of keystrokes, in either encoding', () => {
     // Each line is a keystroke POSTed at a live TUI. A pathological delta (a
     // finger re-entering the element, a synthetic event) must not hammer it.
     const csi = makeRig({ alt: true }, true);
@@ -430,6 +518,25 @@ describe('attachTouchScroll — alt screen', () => {
     const text = (notify.mock.calls[0] as string[]).join(' ');
     expect(text).not.toMatch(/enabl|allow-input|allow input|turn on|--allow/i);
     expect(text).toMatch(/read-only/i);
+  });
+
+  it('★ read-only + alt screen clears the accumulator instead of banking it', () => {
+    // Nothing on that path will ever spend those pixels, and a pane that leaves
+    // the alt screen should not inherit a swipe the user made while it was
+    // refusing to move.
+    // Has to START on the normal buffer, or there is nothing banked to clear
+    // and the test passes either way.
+    const { term, host } = makeRig({}, false);
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 109]]);    // locks vertical, banks 9px
+    expect(term.scrollLines).not.toHaveBeenCalled();
+
+    term.buffer.active.type = 'alternate';
+    touch(host, 'touchmove', [[50, 149]]);    // 40px the read-only alt path declines
+
+    term.buffer.active.type = 'normal';
+    touch(host, 'touchmove', [[50, 150]]);    // 1px — a whole line only if the 9 survived
+    expect(term.scrollLines).not.toHaveBeenCalled();
   });
 
   it('reads the buffer type live, so a pane that leaves the alt screen scrolls again', () => {
@@ -477,6 +584,32 @@ describe('attachTouchScroll — horizontal and taps', () => {
     const { term, host } = makeRig();
     touch(host, 'touchmove', [[50, 200]]);
     expect(term.scrollLines).not.toHaveBeenCalled();
+  });
+
+  it('★ keeps tracking the finger through moves it declines to act on', () => {
+    // `lastY` has to advance even on a declined event. It used to sit behind
+    // the defaultPrevented return, so a downstream handler claiming a few moves
+    // left `lastY` several moves stale and the next delta arrived as one lurch.
+    const { term, host } = makeRig();
+    const inner = document.createElement('div');
+    host.appendChild(inner);
+    let claim = true;
+    inner.addEventListener('touchmove', (e) => { if (claim) e.preventDefault(); });
+
+    const move = (y: number) => {
+      const e = new Event('touchmove', { cancelable: true, bubbles: true });
+      Object.defineProperty(e, 'touches', { value: [{ clientX: 50, clientY: y }] });
+      inner.dispatchEvent(e);
+    };
+
+    touch(host, 'touchstart', [[50, 100]]);
+    move(140);          // claimed downstream — we act on none of it
+    move(180);          // still claimed
+    expect(term.scrollLines).not.toHaveBeenCalled();
+
+    claim = false;
+    move(190);          // 10px since the LAST move, not 90px since touchstart
+    expect(term.scrollLines).toHaveBeenCalledWith(-1);
   });
 
   it('★ stands down when something closer to the target already claimed the gesture', () => {
@@ -553,6 +686,36 @@ describe('attachTouchScroll — resize mid-gesture', () => {
     touch(host, 'touchmove', [[50, 109]]);
     touch(host, 'touchmove', [[50, 114]]);
     expect(term.scrollLines.mock.calls).toEqual([[-1]]);
+  });
+
+  it('★ drops the accumulator when #scaler re-scales, which fires no event at all', () => {
+    // The zoom buttons and the Fit toggle change `#scaler`'s transform. xterm
+    // knows nothing about it, so onResize never fires — but every cell just
+    // changed visual height, and pixels banked at the old scale would be spent
+    // at the new one. Comparing the measurement is the only signal there is.
+    let height = 240;                                   // 24 rows → 10px cells
+    const term = makeTerm();
+    term.element.getBoundingClientRect = () => ({ height });
+    const host = document.createElement('div');
+    attachTouchScroll(term, host, { allowInput: () => false });
+
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 109]]);              // locks vertical, banks 9px
+    expect(term.scrollLines).not.toHaveBeenCalled();
+
+    height = 480;                                       // "A+" pressed: 20px cells
+    touch(host, 'touchmove', [[50, 120]]);              // 11px at the new scale
+    // 9 + 11 = 20 would be a whole line at the NEW height if the stale pixels
+    // carried. They must not.
+    expect(term.scrollLines).not.toHaveBeenCalled();
+  });
+
+  it('control: without a re-scale those same two moves do cross a cell', () => {
+    const { term, host } = makeRig();
+    touch(host, 'touchstart', [[50, 100]]);
+    touch(host, 'touchmove', [[50, 109]]);
+    touch(host, 'touchmove', [[50, 120]]);
+    expect(term.scrollLines).toHaveBeenCalledWith(-2);
   });
 
   it('survives a terminal that exposes no onResize at all', () => {
