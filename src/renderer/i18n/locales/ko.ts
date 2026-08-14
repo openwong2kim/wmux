@@ -11,17 +11,11 @@ export const ko = {
   'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
-  'sidebar.agent': '에이전트',
-  'sidebar.git': 'Git',
-  'sidebar.gitTooltip': 'Git 패널 열기/닫기',
-  'sidebar.channels': '채널',
-  'sidebar.channelsTooltip': '채널 패널 열기/닫기',
   'sidebar.screenOff': '화면 끄기',
   'sidebar.screenOn': '화면 켜기',
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
   'sidebar.screenOffAccessibility': 'wmux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
   'sidebar.screenOffFailed': '내장 화면 전환에 실패했습니다.',
-  'sidebar.agentTooltip': '에이전트 패널 토글',
 
   // Workspace
   'workspace.agentRunning': '실행 중',
@@ -901,6 +895,7 @@ export const ko = {
   'git.diff': 'Diff',
   'git.diffDesc': '이 워크트리의 diff 뷰 열기',
   'deck.collapseDock': '도크 접기',
+  'deck.expandDock': '도크 펼치기',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':
     'agent에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',

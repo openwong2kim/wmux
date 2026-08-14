@@ -10,6 +10,7 @@ import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconBrowser } from '../icons';
+import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
 import {
   webIsExposed,
@@ -34,6 +35,13 @@ import {
 
 /** Poll cadence while the popover is open (owner spec). */
 const POLL_INTERVAL_MS = 10_000;
+
+/**
+ * Tallest the popover may get before it scrolls internally, and the budget the
+ * open-position math reserves below the button. The running body (QR + pair
+ * code + Stop + paired devices) is the long one.
+ */
+const POPOVER_MAX_HEIGHT = 440;
 
 /**
  * Cap on the device name.
@@ -559,13 +567,12 @@ export function WebPopoverBody({
 // ─── The mounted toggle ────────────────────────────────────────────────────
 
 /**
- * `statusbar` — the compact instrument-strip chip (quiet text + amber dot).
- * `sidebar`  — a full-width labeled row matching the Agent / Git entries at the
- *              foot of the workspace list, with the popover opening upward.
+ * The web toggle is a glyph on the deck's icon strip (owner decision
+ * 2026-08-14) — horizontal in DeckTabs while the deck is open, vertical in
+ * DeckMiniRail while it is collapsed. Both are 36px cells, so one rendition
+ * serves both; the popover anchors under the button either way.
  */
-export type WebToggleVariant = 'statusbar' | 'sidebar';
-
-export default function WebToggle({ variant = 'statusbar' }: { variant?: WebToggleVariant } = {}) {
+export default function WebToggle() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
@@ -593,9 +600,9 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
-  // Sidebar rows sit at the bottom of a tall column, so the popover has to open
-  // upward from the button instead of hanging off the titlebar.
-  const [anchorBottom, setAnchorBottom] = useState<number | null>(null);
+  // The button sits on the window's right edge, so the popover is anchored by
+  // its measured rect and clamped inward rather than hung off a fixed corner.
+  const [anchorTop, setAnchorTop] = useState(40);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
 
@@ -672,25 +679,18 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
       const r = btnRef.current?.getBoundingClientRect();
       const menuWidth = 288; // w-72
       if (r) {
-        if (variant === 'sidebar') {
-          // Fly out beside the row, bottom-aligned with it: opening upward
-          // would cover the sibling Agent / Git rows. Prefer the side facing
-          // the content area, and fall back if it would overflow.
-          const toRight = r.right + 6 + menuWidth <= window.innerWidth - 8;
-          setAnchorLeft(
-            toRight
-              ? r.right + 6
-              : Math.max(8, r.left - 6 - menuWidth),
-          );
-          setAnchorBottom(Math.max(8, window.innerHeight - r.bottom));
-        } else {
-          setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
-          setAnchorBottom(null);
-        }
+        setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+        // Clamp DOWNWARD too. On the vertical rail the button sits ~184px
+        // down, and the running body (QR + pair code + Stop + devices) is
+        // ~500px — hung straight off r.bottom it runs past a short window and
+        // takes Stop with it. The popover also caps its own height and
+        // scrolls, so a window shorter than the body still reaches every
+        // control.
+        setAnchorTop(Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - POPOVER_MAX_HEIGHT)));
       }
     }
     setOpen(!open);
-  }, [open, variant]);
+  }, [open]);
 
   const handleStart = useCallback(async () => {
     const a = webApi();
@@ -836,52 +836,31 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
 
   const running = info.running === true;
 
-  const isSidebar = variant === 'sidebar';
-
-  // Sidebar row: same geometry and type as the Agent / Git entries above it.
-  // Colour follows the Git precedent — steel while the popover is open
-  // (navigation), amber while the server is running (alive), muted at rest.
-  const sidebarClass = `flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
-    open
-      ? 'text-[var(--accent-blue)]'
-      : running
-        ? 'text-[var(--accent)] hover:opacity-80'
-        : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
-  }`;
-
-  const statusbarClass = `flex items-center gap-1.5 transition-colors ${
-    running
-      ? 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
-      : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
-  }`;
-
   return (
-    <div className={isSidebar ? 'contents' : 'relative flex items-center'}>
+    <div className="contents">
       <button
         ref={btnRef}
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-pressed={isSidebar ? running : undefined}
+        // No aria-pressed: this button opens a popover, it does not toggle the
+        // server. Reporting "pressed" for a running server contradicts
+        // haspopup/expanded, so the running state rides in the name instead.
+        aria-label={running ? `${t('web.label')} (${t('web.running')})` : t('web.label')}
         title={t('web.tooltip')}
-        data-testid={isSidebar ? 'sidebar-web-toggle' : 'statusbar-web-toggle'}
-        data-sidebar-web={isSidebar ? '' : undefined}
-        style={isSidebar ? ({ borderColor: 'var(--border-soft)' } as CSSProperties) : undefined}
-        className={isSidebar ? sidebarClass : statusbarClass}
+        data-testid="deck-web-toggle"
+        data-deck-web=""
+        className={`${DECK_ICON_BUTTON} ${deckIconTone(open, running)}`}
       >
-        {isSidebar ? (
-          <IconBrowser size={14} />
-        ) : running ? (
-          <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--accent)]" />
-        ) : null}
-        <span>{t('web.label')}</span>
-        {isSidebar && running ? (
+        <IconBrowser size={15} />
+        {running && (
           <span
             aria-hidden="true"
-            className="ml-auto w-[6px] h-[6px] rounded-full bg-[var(--accent)]"
+            data-deck-web-running
+            className="absolute top-1.5 right-1.5 w-[6px] h-[6px] rounded-full bg-[var(--accent)]"
           />
-        ) : null}
+        )}
       </button>
 
       {open ? (
@@ -889,10 +868,12 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
           ref={popRef}
           role="dialog"
           aria-label={t('web.headline')}
-          style={(anchorBottom !== null
-            ? { left: anchorLeft, bottom: anchorBottom }
-            : { left: anchorLeft, top: 40 }) as CSSProperties}
-          className="fixed z-50 w-72 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
+          style={{
+            left: anchorLeft,
+            top: anchorTop,
+            maxHeight: `min(${POPOVER_MAX_HEIGHT}px, calc(100vh - 16px))`,
+          } as CSSProperties}
+          className="fixed z-50 w-72 overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
         >
           <WebPopoverBody
             info={info}

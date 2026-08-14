@@ -36,6 +36,7 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import ChannelDock from '../Channels/ChannelDock';
+import DeckMiniRail from '../Deck/DeckMiniRail';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -1465,10 +1466,23 @@ export default function AppLayout() {
           the sidebar is docked right) puts this on the correct edge, so it
           reflows the panes instead of the old fixed overlay that covered them.
           Holds the channel list + active conversation; collapsible. */}
-      {channelDockVisible && (
+      {channelDockVisible ? (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
         </ErrorBoundary>
+      ) : (
+        // Collapsed deck — the 36px glyph rail stands in for it so the way
+        // back is on the deck's own edge (owner decision 2026-08-14). The old
+        // reopen affordance lived at the foot of the workspace sidebar, the
+        // opposite edge, and disappeared with the sidebar. The width lives on
+        // this wrapper, not only inside the rail, so a crash renders the
+        // boundary's fallback in 36px instead of letting its error text shove
+        // the panes aside.
+        <div className="shrink-0 overflow-hidden" style={{ width: 36 }}>
+          <ErrorBoundary name="DeckMiniRail">
+            <DeckMiniRail />
+          </ErrorBoundary>
+        </div>
       )}
       {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 파동2 사이클 A에서 전체화면 모달을
           상시 크롬으로 전환. ChannelDock과 같은 flex 형제 패턴으로 워크스페이스

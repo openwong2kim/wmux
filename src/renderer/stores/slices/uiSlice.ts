@@ -88,7 +88,6 @@ export interface UISlice {
   // users without channels pay no screen width; auto-opens on first channel
   // select/create (setActiveChannel) and is collapsible. Persisted.
   channelDockVisible: boolean;
-  toggleChannelDock: () => void;
   setChannelDockVisible: (visible: boolean) => void;
 
   notificationPanelVisible: boolean;
@@ -731,10 +730,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   channelDockVisible: CHROME_PRESET_VALUES.standard.channelDockVisible,
-
-  toggleChannelDock: () => set((state) => {
-    state.channelDockVisible = !state.channelDockVisible;
-  }),
 
   setChannelDockVisible: (visible) => set((state) => {
     state.channelDockVisible = visible;

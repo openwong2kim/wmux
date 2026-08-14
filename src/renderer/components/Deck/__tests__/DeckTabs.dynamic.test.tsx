@@ -27,6 +27,7 @@ function mount(props: {
   onSelect?: (t: DeckTab) => void;
   channelsUnread?: number;
   showChannels?: boolean;
+  afterTabs?: React.ReactNode;
   rightSlot?: React.ReactNode;
   commanderModelLabel?: string;
   commanderModelOptions?: { value: string; label: string }[];
@@ -40,6 +41,7 @@ function mount(props: {
         onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
         ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
+        ...(props.afterTabs !== undefined ? { afterTabs: props.afterTabs } : {}),
         ...(props.rightSlot !== undefined ? { rightSlot: props.rightSlot } : {}),
         ...(props.commanderModelLabel !== undefined ? { commanderModelLabel: props.commanderModelLabel } : {}),
         ...(props.commanderModelOptions !== undefined ? { commanderModelOptions: props.commanderModelOptions } : {}),
@@ -117,6 +119,36 @@ describe('DeckTabs', () => {
     expect(container.querySelector('[data-deck-tab-unread]')).toBeNull();
   });
 
+  it('keeps non-tab controls OUT of the tablist', () => {
+    // A tablist may own tabs and nothing else. The web glyph (afterTabs) and
+    // the header controls are buttons, not tabs — inside the list they break
+    // AT's "N of M" counting and its arrow-key model.
+    mount({
+      active: 'commander',
+      afterTabs: createElement('button', { 'data-test-web': 'true' }, 'web'),
+      rightSlot: createElement('button', { 'data-test-chip': 'true' }, 'chip'),
+    });
+    const list = container.querySelector('[role="tablist"]') as HTMLElement;
+    expect(list).not.toBeNull();
+    expect(list.querySelector('[data-test-web]')).toBeNull();
+    expect(list.querySelector('[data-test-chip]')).toBeNull();
+    // Every direct child of the list is a tab.
+    const kids = Array.from(list.children);
+    expect(kids.length).toBe(3);
+    for (const kid of kids) {
+      const isTab = kid.getAttribute('role') === 'tab' || kid.querySelector('[role="tab"]') !== null;
+      expect(isTab).toBe(true);
+    }
+    // …and the glyphs still render, just as siblings.
+    expect(container.querySelector('[data-test-web]')).not.toBeNull();
+  });
+
+  it('announces the unread count, which is only a badge visually', () => {
+    mount({ active: 'commander', channelsUnread: 3 });
+    expect(tab('channels').getAttribute('aria-label')).toBe('deck.tabChannels (3 unread)');
+    expect(container.querySelector('[data-deck-tab-unread]')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('renders rightSlot header controls after the tabs', () => {
     mount({
       active: 'commander',
@@ -132,7 +164,7 @@ describe('DeckTabs', () => {
     expect(container.querySelector('[data-deck-header-controls]')).toBeNull();
   });
 
-  it('renders the Agent tab label with the current model in parentheses', () => {
+  it('carries the Agent tab name + current model in its label, now that the tab is a glyph', () => {
     mount({
       active: 'commander',
       commanderModelLabel: 'Sonnet 5',
@@ -140,8 +172,13 @@ describe('DeckTabs', () => {
       commanderModelValue: 'sonnet',
       onCommanderModelSelect: vi.fn(),
     });
+    // Icons replaced the text labels (owner 2026-08-14), so the name and the
+    // model live in the tooltip / accessible name — the only place left to
+    // read which model the orchestrator is on.
     // deck.tabCommander (identity translator returns the key) + ` (Sonnet 5)`.
-    expect(tab('commander').textContent).toContain('deck.tabCommander (Sonnet 5)');
+    expect(tab('commander').getAttribute('aria-label')).toBe('deck.tabCommander (Sonnet 5)');
+    expect(tab('commander').getAttribute('title')).toBe('deck.tabCommander (Sonnet 5)');
+    expect(tab('git').getAttribute('aria-label')).toBe('deck.tabGit');
   });
 
   it('opens the model menu on active-tab re-click and fires the select callback', () => {
