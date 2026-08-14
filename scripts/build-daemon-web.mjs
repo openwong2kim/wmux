@@ -67,6 +67,12 @@ const attentionFormatJs = read(join(frontendDir, 'attentionFormat.js'));
 // scanned code is auto-submitted or lands on the manual form — is unit-tested
 // against the exact bytes the phone runs.
 const pairQueryJs = read(join(frontendDir, 'pairQuery.js'));
+// Same reason again: it publishes `wmuxTouchScroll` on the global and app.js
+// attaches it to every terminal it creates. Separate so the gesture arithmetic
+// — sub-cell accumulation and the axis lock, which is where a touch handler
+// actually goes wrong — is unit-tested against the exact bytes the phone runs,
+// without evaluating the whole app IIFE.
+const touchScrollJs = read(join(frontendDir, 'touchScroll.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -74,6 +80,7 @@ html = inject(html, '/*__APP_CSS__*/', appCss);
 html = inject(html, '/*__XTERM_JS__*/', xtermJs);
 html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
 html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
+html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -122,13 +129,14 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines four scripts (xterm, attentionFormat, pairQuery, app) and
-// one style block (xterm css + our css). A count that moved means index.html
-// grew or lost a block and nobody re-read this gate; refuse rather than guess
-// which. Raised 3 → 4 when pairQuery.js was added for QR pairing: the policy
-// itself is derived from the served bytes, so an extra block is hashed like the
-// others — the count is here to make the change deliberate, not to cap it.
-if (blocks.scripts.length !== 4) fail(`expected 4 inline <script> blocks, found ${blocks.scripts.length}`);
+// The page inlines five scripts (xterm, attentionFormat, pairQuery,
+// touchScroll, app) and one style block (xterm css + our css). A count that
+// moved means index.html grew or lost a block and nobody re-read this gate;
+// refuse rather than guess which. Raised 3 → 4 when pairQuery.js was added for
+// QR pairing, 4 → 5 when touchScroll.js was added for #890: the policy itself
+// is derived from the served bytes, so an extra block is hashed like the others
+// — the count is here to make the change deliberate, not to cap it.
+if (blocks.scripts.length !== 5) fail(`expected 5 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(

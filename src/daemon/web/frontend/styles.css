@@ -195,17 +195,31 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #term { display: inline-block; }
 .xterm { padding: 2px; }
 
-/* xterm ships a default (light) scrollbar that reads as a bright seam against
-   the graphite terminal. Tone it into the chrome. */
-.xterm-viewport { scrollbar-width: thin; scrollbar-color: #3a3a41 transparent; }
-.xterm-viewport::-webkit-scrollbar { width: 10px; }
-.xterm-viewport::-webkit-scrollbar-track { background: transparent; }
-.xterm-viewport::-webkit-scrollbar-thumb {
+/* xterm draws its own scrollbar, and it reads as a bright seam against the
+   graphite terminal (its slider defaults to the FOREGROUND at 20% opacity).
+   Tone it into the chrome.
+
+   These rules used to target `.xterm-viewport::-webkit-scrollbar`, which was
+   correct for xterm 5's natively-scrolling viewport and has been dead since
+   xterm 6: the viewport element still exists but keeps scrollHeight ===
+   clientHeight forever, and scrolling moved to VS Code's overlay
+   `.xterm-scrollable-element`. Same toning, live target (#890).
+
+   The `.xterm` prefix is load-bearing: xterm injects its own theme-derived
+   `.xterm .xterm-scrollable-element > .scrollbar > .slider` rules into the
+   document at runtime, i.e. AFTER this block, so matching its specificity
+   would lose the tie.
+
+   Geometry is deliberately untouched. The bar's width comes from xterm's own
+   inline styles, and widening it into a fatter touch target costs readable
+   columns on a 390px screen — deferred until the swipe has been dogfooded. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical { background: transparent; }
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   background: #3a3a41;
-  border: 3px solid var(--bg-base);
   border-radius: 5px;
 }
-.xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4a4a52; }
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.active { background: #4a4a52; }
 
 /* ── split view ──────────────────────────────────────────────────────────── */
 /* One tile per watched pane. The 1px gap IS the divider — the grid background

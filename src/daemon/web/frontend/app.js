@@ -9,10 +9,21 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
-/* global Terminal, wmuxAttentionFormat */ // provided by the inlined bundles
+/* global Terminal, wmuxAttentionFormat, pairQuery, wmuxTouchScroll */ // provided by the inlined bundles
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
+
+  // Named locally so both call sites read as one function (the source-invariant
+  // test asserts they do) rather than as two paths that could drift apart.
+  //
+  // Tolerant of a missing block on purpose: every other inlined helper is
+  // reached lazily (`pairQuery.` at pair time, `wmuxAttentionFormat.` at
+  // notification time), so a block that failed to load costs only its own
+  // feature. Dereferencing this one at load time instead would turn a dead
+  // swipe into a dead terminal.
+  var attachTouchScroll = (typeof wmuxTouchScroll !== 'undefined' && wmuxTouchScroll.attachTouchScroll)
+    || function () { /* touch scrolling unavailable */ };
 
   // Credential storage is localStorage, NOT sessionStorage, and the reason is
   // the home screen. The manifest's start_url is "./", so launching the
@@ -131,8 +142,30 @@
       theme: THEME,
       cursorBlink: false,
       scrollback: 5000,
+      // A wheel notch (−120) moved exactly ONE line, which is unusable for
+      // reaching scrollback on any device with a wheel (#890). This is xterm's
+      // own public option — a hand-rolled `wheel` listener with its own
+      // deltaMode mapping would double-scroll the day xterm handles the wheel
+      // differently.
+      scrollSensitivity: 3,
+      // Makes one swipe or notch read as motion rather than a jump, so the eye
+      // can follow where the text went. NOT momentum: xterm cannot do momentum
+      // structurally (xterm.js#594), and this covers the perceptual half.
+      smoothScrollDuration: 90,
       disableStdin: !allowInput
     });
+  }
+
+  /**
+   * The one-shot notice a gesture raises when it genuinely cannot act (#890).
+   *
+   * Reuses the existing notification stack rather than inventing a toast, and
+   * follows the same shape endReplay() uses for a page-level notice: no session
+   * id (so tapping it just dismisses instead of switching panes), with the
+   * explanation in the subline slot.
+   */
+  function touchScrollNotice(title, sub) {
+    pushNotif({ kind: 'notify', slim: false, sessionId: null, sessionName: sub, title: title, sub: '' });
   }
 
   // Tap the terminal to type.
@@ -187,6 +220,13 @@
     if (!term) {
       term = newTerm(cols, rows);
       term.open(termHost);
+      // Swipe to reach scrollback. A phone has no wheel and no Shift+PageUp, so
+      // without this the only history it can ever see is the opening snapshot.
+      attachTouchScroll(term, termHost, {
+        allowInput: function () { return allowInput; },
+        sendKeys: sendInput,
+        notify: touchScrollNotice
+      });
       if (allowInput) term.onData(function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
@@ -1304,6 +1344,14 @@
     // Same reason as the single-pane host: on iOS the keyboard only comes up
     // for a focus made inside a user gesture.
     host.addEventListener('click', function () { focusFromGesture(tile.term); });
+    // Same wiring as the 1-up terminal, ONE function — a tile is where a swipe
+    // matters most, since a quarter-screen pane shows barely any output at all.
+    // The keys go to THIS tile's pane, not to whichever one is focused.
+    attachTouchScroll(tile.term, host, {
+      allowInput: function () { return allowInput; },
+      sendKeys: function (seq) { sendTo(tile.sessionId, seq); },
+      notify: touchScrollNotice
+    });
     if (allowInput) {
       // Typing into a tile targets THAT tile's pane — and tapping it already
       // made it the focused one, so "input goes to the focused tile" holds.
