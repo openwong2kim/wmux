@@ -482,6 +482,33 @@ describe('#874 resting-cell tracker (cause 3, pure)', () => {
     // Mid-burst right after the reset: no resting cell -> instantaneous.
     expect(selectFreezeCell(t, 12, 0, 1106).src).toBe('instant');
   });
+
+  it('rejects a resting cell that has scrolled off the viewport', () => {
+    // Scrolling output (a build log, not an in-place TUI repaint) leaves the
+    // resting cell above ydisp within a frame or two. pointFromCell would clamp
+    // it to row 0 and park the candidate window at the top of the terminal —
+    // worse than the live cursor, which is always on screen.
+    const t = createRestingTracker(1000, 8, 1000);
+    noteCursorMove(t, 3000, 0, 1100); // 1000,8 promoted; buffer has scrolled on
+    const viewport = { top: 2960, rows: 40 }; // rows 2960..2999 are visible
+    const sel = selectFreezeCell(t, 3000, 0, 1105, viewport);
+    expect(sel).toMatchObject({ absRow: 3000, col: 0, src: 'scrolled_out' });
+  });
+
+  it('keeps a resting cell that is still inside the viewport', () => {
+    // The in-place repaint case (ybase unchanged): both cells are on screen, so
+    // the resting cell is still the caret and must win.
+    const t = createRestingTracker(2990, 18, 1000);
+    noteCursorMove(t, 2984, 6, 1100);
+    const sel = selectFreezeCell(t, 2984, 6, 1105, { top: 2960, rows: 40 });
+    expect(sel).toMatchObject({ absRow: 2990, col: 18, src: 'resting' });
+  });
+
+  it('without a viewport the off-screen guard does not fire (arg stays optional)', () => {
+    const t = createRestingTracker(1000, 8, 1000);
+    noteCursorMove(t, 3000, 0, 1100);
+    expect(selectFreezeCell(t, 3000, 0, 1105).src).toBe('resting');
+  });
 });
 
 describe('#874 resting-cell wiring (cause 3)', () => {
@@ -567,6 +594,20 @@ describe('#874 resting-cell wiring (cause 3)', () => {
     setClock(1105);
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     expect(diag.mock.calls[0][0].src).toBe('instant');
+    handle.dispose();
+  });
+
+  it('scrolling output past the resting cell falls back to the live cursor', () => {
+    // The wiring passes the live viewport to the selection, so a resting cell
+    // the output has scrolled away from is rejected instead of being clamped to
+    // the top edge (dogfooded on the dev build with 20k lines of output).
+    const { dom, t, handle, diag, setClock, parkCursorAt } = scenario();
+    setClock(1100);
+    parkCursorAt(49, 113);          // caret cell (30,8) promoted to resting
+    Object.assign(t.state, { viewportY: 45 }); // …and then scrolled out of view
+    setClock(1105);
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'scrolled_out', selY: 49, selX: 113 });
     handle.dispose();
   });
 });

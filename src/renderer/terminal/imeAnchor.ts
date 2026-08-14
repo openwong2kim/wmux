@@ -256,10 +256,15 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
   state.hasResting = false;
 }
 
+/** Where the freeze cell came from. `scrolled_out` is `instant` chosen because
+ *  the resting cell had left the viewport — kept distinct so a field log can
+ *  tell that rejection apart from a cursor that was simply at rest. */
+export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out';
+
 export interface FreezeCellSelection {
   absRow: number;
   col: number;
-  src: 'instant' | 'resting';
+  src: FreezeCellSource;
   /** How long the instantaneous cell had been held when selection ran. */
   held: number;
   /** Age of the resting cell at selection time; -1 when none exists. */
@@ -271,17 +276,33 @@ export interface FreezeCellSelection {
  * cell for RESTING_MS is at rest — trust it. A cursor that moved more recently
  * is mid-repaint, so fall back to the last cell that did rest. With no resting
  * cell recorded (fresh tracker), the instantaneous cursor is all there is.
+ *
+ * `viewport` guards the one case where the resting cell is the WORSE of the
+ * two. A resting cell is by definition a past cell, so output that scrolls the
+ * buffer (a build log, not an in-place TUI repaint) pushes it off the top of
+ * the screen within a frame or two. `pointFromCell` then clamps that row into
+ * view and parks the candidate window at the very top of the terminal — a
+ * bigger miss than the live cursor, and one #875 could not produce because it
+ * only ever read the live cursor, which is always on screen. Verified on the
+ * dev build: 20k lines of scrolling output selected resting cells 1000+ rows
+ * above `ydisp`, every one correcting to the top edge. Off-screen resting
+ * cells are therefore rejected rather than trusted.
  */
 export function selectFreezeCell(
   state: RestingTrackerState,
   instAbsRow: number,
   instCol: number,
   now: number,
+  viewport?: { top: number; rows: number },
 ): FreezeCellSelection {
   const held = now - state.currentSince;
   const restAge = state.hasResting ? now - state.lastRestingAt : -1;
   if (held >= RESTING_MS || !state.hasResting) {
     return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge };
+  }
+  if (viewport && (state.lastRestingAbsRow < viewport.top
+    || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge };
   }
   return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge };
 }
@@ -330,7 +351,7 @@ export interface ImeAnchorOptions {
     dx: number;
     dy: number;
     /** Which cell the anchor froze to (cause 3 discriminator). */
-    src: 'instant' | 'resting';
+    src: FreezeCellSource;
     held: number;
     restAge: number;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
@@ -475,7 +496,10 @@ export function attachImeAnchor(
     // cursor when it is at rest, the last resting cell when the composition
     // starts inside a repaint burst (cause 3).
     const b = bufferState();
-    const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now());
+    const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now(), {
+      top: b.viewportY,
+      rows: geometry.rows,
+    });
     frozen = isUsableGeometry(geometry)
       ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;
