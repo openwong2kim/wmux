@@ -1197,7 +1197,9 @@ server.tool(
     if (typeof text === 'string') {
       try {
         const parsed: unknown = JSON.parse(text);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // Leave error payloads untouched — appending elapsedMs would mutate the
+        // error object shape callers match on.
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !('error' in parsed)) {
           return {
             content: [{
               type: 'text' as const,

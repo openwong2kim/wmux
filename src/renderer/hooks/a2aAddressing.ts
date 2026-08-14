@@ -292,6 +292,25 @@ export function countRoundTrips(history: ReadonlyArray<{ kind: string; role?: st
   return Math.min(user, agent);
 }
 
+/**
+ * The larger of the two per-side message counts. Companion ceiling to
+ * `countRoundTrips`: min() alone never trips on a MONOLOGUE — an agent
+ * re-replying to a thread the other side ignores stays at 0 round trips
+ * forever while nudging the receiver on every message (review finding). The
+ * reply path refuses once one side exceeds `REPLY_ROUND_CAP * 2` messages,
+ * so a one-sided runaway is bounded even though it never completes a round.
+ */
+export function maxSideMessages(history: ReadonlyArray<{ kind: string; role?: string }>): number {
+  let user = 0;
+  let agent = 0;
+  for (const h of history) {
+    if (h.kind !== 'message') continue;
+    if (h.role === 'user') user++;
+    else if (h.role === 'agent') agent++;
+  }
+  return Math.max(user, agent);
+}
+
 /** Reply round-trip ceiling per thread. When `countRoundTrips` reaches this,
  *  further replies are REFUSED (a2a.task.send returns an error) instead of
  *  silently looping — two agents left alone will politely ping-pong without

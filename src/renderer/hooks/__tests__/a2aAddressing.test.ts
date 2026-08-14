@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, countRoundTrips, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -293,5 +293,32 @@ describe('countRoundTrips', () => {
     const five = [...four, msg('user'), msg('agent')];
     expect(countRoundTrips(five)).toBe(5);
     expect(countRoundTrips(five) >= REPLY_ROUND_CAP).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maxSideMessages — the monologue ceiling companion to countRoundTrips
+// ---------------------------------------------------------------------------
+describe('maxSideMessages', () => {
+  const msg = (role: 'user' | 'agent') => ({ kind: 'message', role });
+
+  it('empty history → 0', () => {
+    expect(maxSideMessages([])).toBe(0);
+  });
+
+  it('returns the LARGER side count (a monologue registers where min() stays 0)', () => {
+    const monologue = Array.from({ length: 11 }, () => msg('user'));
+    expect(countRoundTrips(monologue)).toBe(0);      // ping-pong cap never trips...
+    expect(maxSideMessages(monologue)).toBe(11);     // ...but the monologue ceiling does
+  });
+
+  it('ceiling boundary: 2*CAP messages pass, 2*CAP+1 exceed', () => {
+    const atCap = Array.from({ length: REPLY_ROUND_CAP * 2 }, () => msg('agent'));
+    expect(maxSideMessages(atCap) > REPLY_ROUND_CAP * 2).toBe(false);
+    expect(maxSideMessages([...atCap, msg('agent')]) > REPLY_ROUND_CAP * 2).toBe(true);
+  });
+
+  it('non-message entries are ignored', () => {
+    expect(maxSideMessages([{ kind: 'status-update' }, msg('user'), msg('user')])).toBe(2);
   });
 });
