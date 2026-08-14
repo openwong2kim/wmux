@@ -26,11 +26,42 @@
  *      the TUI last parked the cursor mid-redraw. Latin input shows no
  *      candidate window, which is why only CJK users see it.
  *
- * Both live in upstream xterm and this repo does not patch node_modules, so the
- * correction is applied downstream: one `transform` on the `.xterm-helpers`
- * container, which holds the textarea and the visible preedit box. xterm keeps
- * writing `style.top` / `style.left` on those children; a transform on their
- * parent composes with that instead of fighting it.
+ * And a third cause lives in the anchor's input rather than its math
+ * (field-verified on v3.42.0 after the first two were fixed): the buffer
+ * cursor sampled at `compositionstart` is not always the input caret. A TUI
+ * like Claude Code repaints its lower region every frame, and while a frame's
+ * escape stream is being parsed the cursor rides along with the writes — it is
+ * only parked back on the caret by the cursor-positioning sequence at the end
+ * of the frame. Frames arrive from the PTY split across chunks, so there are
+ * real JS turns where the cursor sits mid-frame, and a composition starting in
+ * one of them freezes a wrong-but-stable anchor:
+ *
+ *   PTY frame (one TUI repaint, split across N chunks):
+ *
+ *    chunk1        chunk2        chunk3(final: CUP to caret)
+ *    ├─parse─┤gap├─parse─┤gap├─parse─┤───────── rest ─────────┤ next frame
+ *    cursor:  mid-frame    mid-frame  caret     caret (holds)
+ *             (transient)  (transient)
+ *    gap  = inter-chunk, sub-ms to a few ms
+ *    rest = inter-frame, >= ~50 ms streaming, seconds when idle
+ *
+ *    compositionstart in a "gap"  -> samples a transient   <- the bug
+ *    compositionstart in "rest"   -> samples the caret
+ *
+ * The countermeasure is a resting-cell tracker: the anchor freezes to the last
+ * cell the cursor held for at least RESTING_MS when the instantaneous cursor
+ * is inside a move burst. Known limit, accepted deliberately: dwell time
+ * cannot distinguish the caret from any cell the cursor parks on for
+ * >= RESTING_MS, so the compositionstart diagnostic reports which source was
+ * selected and why — the field log is the discriminator before any further
+ * complexity is added.
+ *
+ * All of this lives in upstream xterm and this repo does not patch
+ * node_modules, so the correction is applied downstream: one `transform` on
+ * the `.xterm-helpers` container, which holds the textarea and the visible
+ * preedit box. xterm keeps writing `style.top` / `style.left` on those
+ * children; a transform on their parent composes with that instead of
+ * fighting it.
  *
  *   .xterm-screen  (position: relative, origin for everything below)
  *     +-- .xterm-helpers                 <- transform: translate(dx, dy)  [ours]
@@ -91,7 +122,8 @@ export function isUsableGeometry(geometry: ImeAnchorGeometry): boolean {
 }
 
 /**
- * Where the renderer actually paints the cursor, in screen-local CSS pixels.
+ * Where the renderer would paint a given buffer cell, in screen-local CSS
+ * pixels.
  *
  * The row is clamped into the viewport: once the cursor scrolls out of view
  * xterm stops moving the textarea at all, and an unclamped anchor would send
@@ -99,16 +131,26 @@ export function isUsableGeometry(geometry: ImeAnchorGeometry): boolean {
  * keeps it attached to the terminal, which is the least surprising thing an IME
  * can do when the caret itself is off-screen. The column is clamped to
  * `cols - 1` to match what xterm does (CompositionHelper.ts:221) so a
- * wrap-pending cursor at `cursorX === cols` does not land a cell too far right.
+ * wrap-pending cursor at `col === cols` does not land a cell too far right.
  */
+export function pointFromCell(
+  absRow: number,
+  col: number,
+  buffer: ImeAnchorBufferState,
+  geometry: ImeAnchorGeometry,
+): ImeAnchorPoint {
+  const viewportRow = absRow - buffer.viewportY;
+  const row = Math.min(Math.max(viewportRow, 0), geometry.rows - 1);
+  const clampedCol = Math.min(Math.max(col, 0), geometry.cols - 1);
+  return { left: clampedCol * geometry.cellWidth, top: row * geometry.cellHeight };
+}
+
+/** Where the renderer actually paints the live cursor. */
 export function paintedCursorPosition(
   buffer: ImeAnchorBufferState,
   geometry: ImeAnchorGeometry,
 ): ImeAnchorPoint {
-  const viewportRow = (buffer.baseY + buffer.cursorY) - buffer.viewportY;
-  const row = Math.min(Math.max(viewportRow, 0), geometry.rows - 1);
-  const col = Math.min(Math.max(buffer.cursorX, 0), geometry.cols - 1);
-  return { left: col * geometry.cellWidth, top: row * geometry.cellHeight };
+  return pointFromCell(buffer.baseY + buffer.cursorY, buffer.cursorX, buffer, geometry);
 }
 
 /**
@@ -140,6 +182,111 @@ export function parsePxOrNull(value: string | undefined | null): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Resting-cell tracker (cause 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A cell counts as "at rest" once the cursor has held it this long. Inter-chunk
+ * gaps inside one TUI repaint are sub-ms to a few ms; the inter-frame rest is
+ * >= ~50 ms while streaming and seconds when idle — 32 ms sits between the two
+ * populations with roughly 10x margin on both sides.
+ */
+export const RESTING_MS = 32;
+
+/**
+ * Mutable tracker record. The transition functions below mutate it in place —
+ * that is how "pure-function testability" and an allocation-free hot path
+ * coexist: each function is deterministic in (state, args), returns scalars,
+ * and tests simply construct a fresh record per case.
+ */
+export interface RestingTrackerState {
+  /** Cell the cursor is in right now (absolute row = ybase + buffer.y). */
+  currentAbsRow: number;
+  currentCol: number;
+  /** Clock reading when the current cell was entered. */
+  currentSince: number;
+  /** Last cell that was held for >= RESTING_MS before the cursor left it. */
+  lastRestingAbsRow: number;
+  lastRestingCol: number;
+  /** Clock reading when the resting cell was promoted. */
+  lastRestingAt: number;
+  hasResting: boolean;
+}
+
+/**
+ * Seed the tracker from the live cursor. Seeding (rather than starting empty)
+ * means an idle caret that never moves still reads as "at rest", so the
+ * pre-first-move window has no hole where the selection could do nothing.
+ */
+export function createRestingTracker(absRow: number, col: number, now: number): RestingTrackerState {
+  return {
+    currentAbsRow: absRow,
+    currentCol: col,
+    currentSince: now,
+    lastRestingAbsRow: 0,
+    lastRestingCol: 0,
+    lastRestingAt: 0,
+    hasResting: false,
+  };
+}
+
+/** Record a cursor movement. Promotes the cell being left if it had rested. */
+export function noteCursorMove(state: RestingTrackerState, absRow: number, col: number, now: number): void {
+  if (absRow === state.currentAbsRow && col === state.currentCol) return;
+  if (now - state.currentSince >= RESTING_MS) {
+    state.lastRestingAbsRow = state.currentAbsRow;
+    state.lastRestingCol = state.currentCol;
+    state.lastRestingAt = now;
+    state.hasResting = true;
+  }
+  state.currentAbsRow = absRow;
+  state.currentCol = col;
+  state.currentSince = now;
+}
+
+/**
+ * Invalidate everything and re-seed. Resize reflow and buffer switches
+ * (alt-screen) change what an absolute row means, so a resting cell recorded
+ * before either event must never be selected after it.
+ */
+export function resetRestingTracker(state: RestingTrackerState, absRow: number, col: number, now: number): void {
+  state.currentAbsRow = absRow;
+  state.currentCol = col;
+  state.currentSince = now;
+  state.hasResting = false;
+}
+
+export interface FreezeCellSelection {
+  absRow: number;
+  col: number;
+  src: 'instant' | 'resting';
+  /** How long the instantaneous cell had been held when selection ran. */
+  held: number;
+  /** Age of the resting cell at selection time; -1 when none exists. */
+  restAge: number;
+}
+
+/**
+ * Pick the cell the composition should anchor to. A cursor that has held its
+ * cell for RESTING_MS is at rest — trust it. A cursor that moved more recently
+ * is mid-repaint, so fall back to the last cell that did rest. With no resting
+ * cell recorded (fresh tracker), the instantaneous cursor is all there is.
+ */
+export function selectFreezeCell(
+  state: RestingTrackerState,
+  instAbsRow: number,
+  instCol: number,
+  now: number,
+): FreezeCellSelection {
+  const held = now - state.currentSince;
+  const restAge = state.hasResting ? now - state.lastRestingAt : -1;
+  if (held >= RESTING_MS || !state.hasResting) {
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge };
+  }
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge };
+}
+
+// ---------------------------------------------------------------------------
 // Runtime wiring
 // ---------------------------------------------------------------------------
 
@@ -157,10 +304,15 @@ export interface ImeAnchorTerminal {
   readonly cols: number;
   readonly textarea: HTMLTextAreaElement | undefined;
   readonly element: HTMLElement | undefined;
-  readonly buffer: { active: ImeAnchorBufferState };
+  readonly buffer: {
+    active: ImeAnchorBufferState;
+    /** Fires on normal <-> alt buffer switches. */
+    onBufferChange: EventEmitterLike<unknown>;
+  };
   onRender: EventEmitterLike<unknown>;
   onScroll: EventEmitterLike<unknown>;
   onResize: EventEmitterLike<unknown>;
+  onCursorMove: EventEmitterLike<unknown>;
 }
 
 export interface ImeAnchorOptions {
@@ -177,7 +329,16 @@ export interface ImeAnchorOptions {
     cellHeight: number;
     dx: number;
     dy: number;
+    /** Which cell the anchor froze to (cause 3 discriminator). */
+    src: 'instant' | 'resting';
+    held: number;
+    restAge: number;
+    /** Selected cell, ybase-relative like cursorY/cursorX. */
+    selY: number;
+    selX: number;
   }) => void;
+  /** Clock override for tests. Defaults to performance.now. */
+  now?: () => number;
 }
 
 const NO_OP: Disposable = { dispose: () => undefined };
@@ -192,6 +353,8 @@ export function attachImeAnchor(
   if (!textarea || !screen || !helpers) {
     return NO_OP;
   }
+
+  const now = options.now ?? ((): number => performance.now());
 
   // xterm's own cell height, learned from the `style.height` it writes onto the
   // textarea in _syncTextArea. Deriving it from clientHeight instead leaves a
@@ -236,6 +399,13 @@ export function attachImeAnchor(
   // with the rest of the geometry.
   let helpersOrigin: ImeAnchorPoint = readHelpersOrigin();
 
+  const bufferState = (): ImeAnchorBufferState => terminal.buffer.active;
+  const tracker = createRestingTracker(
+    bufferState().baseY + bufferState().cursorY,
+    bufferState().cursorX,
+    now(),
+  );
+
   let frozen: ImeAnchorPoint | null = null;
   let lastDx = 0;
   let lastDy = 0;
@@ -277,28 +447,40 @@ export function attachImeAnchor(
     // `left: -9999em`). Nothing to correct against, and forcing a transform
     // now would only move the off-screen parking spot around.
     if (!actual) return null;
-    const desired = frozen ?? paintedCursorPosition(terminal.buffer.active, geometry);
+    const desired = frozen ?? paintedCursorPosition(bufferState(), geometry);
     const correction = computeImeAnchorCorrection(desired, actual);
     apply(correction.dx, correction.dy);
     return correction;
   };
 
+  const resetTracker = (): void => {
+    const b = bufferState();
+    resetRestingTracker(tracker, b.baseY + b.cursorY, b.cursorX, now());
+  };
+
   const onRefreshGeometry = (): void => {
     geometry = readGeometry();
     helpersOrigin = readHelpersOrigin();
+    // Resize reflow re-wraps the buffer — absolute rows recorded before it no
+    // longer name the same content, so the resting cell must not survive.
+    resetTracker();
     sync();
   };
 
   const onCompositionStart = (): void => {
     // Pin the anchor for the whole composition. The buffer cursor keeps moving
     // while the agent streams, but the candidate window belongs where the user
-    // started typing, not wherever the TUI's redraw last left the cursor.
+    // started typing, not wherever the TUI's redraw last left the cursor. The
+    // cell it pins to is the resting-tracker selection: the instantaneous
+    // cursor when it is at rest, the last resting cell when the composition
+    // starts inside a repaint burst (cause 3).
+    const b = bufferState();
+    const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now());
     frozen = isUsableGeometry(geometry)
-      ? paintedCursorPosition(terminal.buffer.active, geometry)
+      ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;
     const correction = sync();
     if (options.onCompositionDiagnostic) {
-      const b = terminal.buffer.active;
       options.onCompositionDiagnostic({
         baseY: b.baseY,
         viewportY: b.viewportY,
@@ -307,6 +489,11 @@ export function attachImeAnchor(
         cellHeight: geometry.cellHeight,
         dx: correction?.dx ?? 0,
         dy: correction?.dy ?? 0,
+        src: sel.src,
+        held: sel.held,
+        restAge: sel.restAge,
+        selY: sel.absRow - b.baseY,
+        selX: sel.col,
       });
     }
   };
@@ -335,6 +522,14 @@ export function attachImeAnchor(
   // #874 — so this is where the scrolled-viewport correction actually lands.
   const scrollSub = terminal.onScroll(() => sync());
   const resizeSub = terminal.onResize(onRefreshGeometry);
+  // Coalesced per parse batch by xterm; the handler is a compare plus a few
+  // number writes, so the streaming hot path stays cold.
+  const cursorSub = terminal.onCursorMove(() => {
+    const b = bufferState();
+    noteCursorMove(tracker, b.baseY + b.cursorY, b.cursorX, now());
+  });
+  // Normal <-> alt buffer switches change what an absolute row means.
+  const bufferSub = terminal.buffer.onBufferChange(resetTracker);
 
   textarea.addEventListener('compositionstart', onCompositionStart);
   textarea.addEventListener('compositionupdate', onCompositionUpdate);
@@ -347,6 +542,8 @@ export function attachImeAnchor(
       renderSub.dispose();
       scrollSub.dispose();
       resizeSub.dispose();
+      cursorSub.dispose();
+      bufferSub.dispose();
       textarea.removeEventListener('compositionstart', onCompositionStart);
       textarea.removeEventListener('compositionupdate', onCompositionUpdate);
       textarea.removeEventListener('compositionend', onCompositionEnd);

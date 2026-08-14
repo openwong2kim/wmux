@@ -1061,14 +1061,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Remove the whole diagnostic once #874 is confirmed fixed in the field.
     let imeAnchorLogsLeft = 20;
     const imeAnchor = attachImeAnchor(terminal, {
-      onCompositionDiagnostic: ({ baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy }) => {
+      onCompositionDiagnostic: ({ baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, src, held, restAge, selY, selX }) => {
         if (imeAnchorLogsLeft <= 0) return;
         imeAnchorLogsLeft -= 1;
         // Mirrored into the main-side log file by src/main/index.ts's
-        // console-message listener, so the user can share it.
+        // console-message listener, so the user can share it. The "2" in the
+        // tag marks the resting-cell build so a shared log is unambiguous
+        // about which release produced it. src/held/restAge/sel are the
+        // cause-3 discriminator: src=resting means the composition started
+        // mid-repaint and the anchor used the last resting cell instead of
+        // the instantaneous cursor.
         console.info(
-          `[wmux:ime-anchor] pty=${ptyIdRef.current} compositionstart ybase=${baseY} ydisp=${viewportY} ` +
-          `cursor=(${cursorX},${cursorY}) cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})` +
+          `[wmux:ime-anchor2] pty=${ptyIdRef.current} compositionstart ybase=${baseY} ydisp=${viewportY} ` +
+          `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src} held=${held.toFixed(0)}ms ` +
+          `restAge=${restAge.toFixed(0)}ms cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})` +
           (imeAnchorLogsLeft === 0 ? ' (last one, diagnostic capped)' : ''),
         );
       },
