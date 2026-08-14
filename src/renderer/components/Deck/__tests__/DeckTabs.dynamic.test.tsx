@@ -132,7 +132,7 @@ describe('DeckTabs', () => {
     expect(container.querySelector('[data-deck-header-controls]')).toBeNull();
   });
 
-  it('renders the Agent tab label with the current model in parentheses', () => {
+  it('carries the Agent tab name + current model in its label, now that the tab is a glyph', () => {
     mount({
       active: 'commander',
       commanderModelLabel: 'Sonnet 5',
@@ -140,8 +140,13 @@ describe('DeckTabs', () => {
       commanderModelValue: 'sonnet',
       onCommanderModelSelect: vi.fn(),
     });
+    // Icons replaced the text labels (owner 2026-08-14), so the name and the
+    // model live in the tooltip / accessible name — the only place left to
+    // read which model the orchestrator is on.
     // deck.tabCommander (identity translator returns the key) + ` (Sonnet 5)`.
-    expect(tab('commander').textContent).toContain('deck.tabCommander (Sonnet 5)');
+    expect(tab('commander').getAttribute('aria-label')).toBe('deck.tabCommander (Sonnet 5)');
+    expect(tab('commander').getAttribute('title')).toBe('deck.tabCommander (Sonnet 5)');
+    expect(tab('git').getAttribute('aria-label')).toBe('deck.tabGit');
   });
 
   it('opens the model menu on active-tab re-click and fires the select callback', () => {

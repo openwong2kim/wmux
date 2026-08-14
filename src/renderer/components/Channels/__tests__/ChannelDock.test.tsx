@@ -50,7 +50,11 @@ describe('channel dock — wiring regression guard', () => {
 
   it('AppLayout mounts ChannelDock gated on channelDockVisible (not the old overlay)', () => {
     expect(appLayout).toMatch(/import ChannelDock from '\.\.\/Channels\/ChannelDock'/);
-    expect(appLayout).toContain('channelDockVisible && (');
+    // Collapsed no longer means absent: the flag now picks between the dock
+    // and its 36px glyph rail (owner decision 2026-08-14), so the gate is a
+    // ternary rather than `&&`.
+    expect(appLayout).toContain('channelDockVisible ? (');
+    expect(appLayout).toMatch(/<DeckMiniRail\s*\/>/);
     expect(appLayout).toMatch(/<ChannelDock\s*\/>/);
     // The old always-mounted overlay <ChannelView /> must be gone from AppLayout.
     expect(appLayout).not.toMatch(/^\s*<ChannelView\s*\/>/m);

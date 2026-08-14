@@ -33,6 +33,7 @@ import { CommanderView } from '../Deck/CommanderView';
 import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
+import WebToggle from '../StatusBar/WebToggle';
 import { FOCUS_RING } from '../focusRing';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
@@ -86,6 +87,11 @@ export default function ChannelDock(): React.ReactElement {
         commanderModelOptions={MODEL_OPTIONS}
         commanderModelValue={deckBrainModel}
         onCommanderModelSelect={setDeckBrainModel}
+        // wmux web — the fourth glyph on the strip. Not a tab (it opens a
+        // popover, not a deck view), so it rides alongside the tablist rather
+        // than inside it. Same glyph, same place, whether the deck is open or
+        // collapsed into DeckMiniRail.
+        afterTabs={<WebToggle />}
         rightSlot={
           <>
             {/* Collapse the whole dock (terminals reclaim the width); reopen

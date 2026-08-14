@@ -7,10 +7,18 @@
 // surface 탭으로 이관됐다. Warm rounded count badge: Channels = unread. Pure +
 // props-driven so the tab-switch behavior is unit-testable under jsdom without
 // the store-connected dock body.
+//
+// Icons, not words (owner decision 2026-08-14, orca): the strip used to read
+// `Agent (Default) ▾ | Git | Channels` and three text labels ate the whole
+// header of a 248–320px column. Each tab is now a 36px glyph cell — the name
+// (and the orchestrator's model) moved into the tooltip/aria-label, the steel
+// underline still says which one is active, and the unread badge moved to the
+// glyph's corner.
 
 import { useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
-import { FOCUS_RING } from '../focusRing';
+import { IconRobot, IconGitBranch, IconHash } from '../icons';
+import { DECK_ICON_BUTTON, DECK_ICON_BADGE, deckIconTone, formatDeckCount } from './deckIconStyles';
 import type { DeckTab } from '../../stores/slices/deckSlice';
 
 export interface DeckTabsProps {
@@ -24,6 +32,10 @@ export interface DeckTabsProps {
    *  it hidden the strip shows the single Orchestrator tab, doubling as the
    *  deck's header. */
   showChannels?: boolean;
+  /** Non-tab glyphs that sit right after the tabs (the wmux-web toggle). They
+   *  are not tabs — web is a popover, not a deck view — so they render outside
+   *  the tablist semantics but inside the same 36px strip. */
+  afterTabs?: React.ReactNode;
   /** Right-aligned header controls (model chip + collapse button). Rendered
    *  after the tabs, pinned to the trailing edge — the deck's one header row,
    *  so orchestrator settings live next to its name instead of buried in
@@ -44,16 +56,15 @@ export interface DeckTabsProps {
   t?: (key: string) => string;
 }
 
-// Warm rounded count badge (Channels unread) — a solid warm fill is reserved for
-// tiny count badges (DESIGN.md two-accent grammar). Tabular figures + full-round
-// per the geometry rules.
-const WARM_BADGE =
-  'inline-flex items-center justify-center shrink-0 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-semibold tabular-nums leading-none bg-[var(--accent)] text-[var(--bg-base)]';
-
-const TABS: { id: DeckTab; labelKey: string; fallback: string }[] = [
-  { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator' },
-  { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git' },
-  { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels' },
+const TABS: {
+  id: DeckTab;
+  labelKey: string;
+  fallback: string;
+  Icon: (props: { size?: number }) => React.ReactElement;
+}[] = [
+  { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator', Icon: IconRobot },
+  { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git', Icon: IconGitBranch },
+  { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels', Icon: IconHash },
 ];
 
 export function DeckTabs({
@@ -61,6 +72,7 @@ export function DeckTabs({
   onSelect,
   channelsUnread = 0,
   showChannels = true,
+  afterTabs,
   rightSlot,
   commanderModelLabel,
   commanderModelOptions,
@@ -112,14 +124,18 @@ export function DeckTabs({
         // Agent 탭만 모델 인라인 드롭다운을 가진다(활성 상태에서 재클릭 시 토글).
         const tabHasModelMenu = isCommander && canModelMenu;
         const baseLabel = t(tab.labelKey) || tab.fallback;
-        // Agent 탭 라벨에 현재 모델을 괄호로 덧붙인다 → `Agent (Sonnet 5)`.
+        // 라벨은 아이콘 탭의 툴팁/aria로 간다. Agent는 현재 모델을 괄호로 덧붙여
+        // `Agent (Sonnet 5)` — 글자가 사라진 만큼 모델을 확인할 곳이 여기뿐이다.
         const label = isCommander && commanderModelLabel ? `${baseLabel} (${commanderModelLabel})` : baseLabel;
+        const unread = tab.id === 'channels' ? formatDeckCount(channelsUnread) : null;
         const button = (
           <button
             key={tab.id}
             type="button"
             role="tab"
             aria-selected={isActive}
+            aria-label={label}
+            title={label}
             data-deck-tab={tab.id}
             data-active={isActive ? 'true' : undefined}
             {...(tabHasModelMenu ? { 'aria-haspopup': 'menu', 'aria-expanded': modelMenuOpen } : {})}
@@ -128,20 +144,17 @@ export function DeckTabs({
               if (tabHasModelMenu && isActive) setModelMenuOpen((v) => !v);
               else onSelect(tab.id);
             }}
-            className={`relative min-w-0 flex items-center justify-center gap-1 px-3 py-2 text-[12.5px] font-semibold transition-colors duration-150 ${FOCUS_RING} ${
-              isActive
-                ? 'text-[var(--text-main)] bg-[rgba(var(--bg-surface-rgb),0.5)]'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
-            }`}
+            className={`${DECK_ICON_BUTTON} ${deckIconTone(isActive, unread !== null)}`}
             {...(isActive ? tokenAttrs('textMain', 'text') : tokenAttrs('textMuted', 'text'))}
           >
-            <span className="truncate">{label}</span>
-            {tabHasModelMenu && (
-              <span aria-hidden="true" className="text-[9px] opacity-70">▾</span>
+            <tab.Icon size={15} />
+            {/* 활성 Agent 탭에만 붙는 힌트 — 재클릭하면 모델 메뉴가 열린다는 표시. */}
+            {tabHasModelMenu && isActive && (
+              <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[8px] opacity-70">▾</span>
             )}
-            {tab.id === 'channels' && channelsUnread > 0 && (
-              <span data-deck-tab-unread className={WARM_BADGE} {...tokenAttrs('accent', 'bg')}>
-                {channelsUnread > 99 ? '99+' : channelsUnread}
+            {unread && (
+              <span data-deck-tab-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
+                {unread}
               </span>
             )}
             {isActive && (
@@ -200,6 +213,11 @@ export function DeckTabs({
           </div>
         );
       })}
+      {afterTabs && (
+        <div data-deck-header-tools className="flex items-stretch shrink-0">
+          {afterTabs}
+        </div>
+      )}
       {rightSlot && (
         <div data-deck-header-controls className="flex items-center ml-auto shrink-0 pr-1.5 gap-0.5">
           {rightSlot}
