@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../shared/workTask';
+import { ORCH_ROLES } from '../shared/orchestratorRole';
 
 /** Resolvers the parent module injects (mirrors ChannelToolDeps). */
 export interface FanOutToolDeps {
@@ -77,6 +78,16 @@ const FANOUT_START_SHAPE = {
     .describe(
       'Per-task prompts, index-aligned with titles. Each task receives shared prompt + "\\n\\n" + its own prompt (empty side dropped). Use this for N different jobs; omit it for N attempts at the same job.',
     ),
+  roles: z
+    .array(z.enum(ORCH_ROLES))
+    .max(FANOUT_MAX_TASKS)
+    .optional()
+    .describe(
+      // Kept terse on purpose: the commander tools/list payload is budgeted
+      // (scripts/mcp-protocol-baseline.json), and the long form of this already
+      // lives in the brain's `fanout` skill and the SDK system prompt.
+      `Per-task role (${ORCH_ROLES.join(' | ')}), index-aligned with titles. Picks that task's agent CLI and model from the operator's bindings — your only agent control. Omit for the default; unknown roles are rejected.`,
+    ),
 };
 
 /** Register the fan-out tool on the given MCP server. */
@@ -90,17 +101,22 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
     'fanout_start',
     'Fan out one job into N isolated parallel tasks. Each task gets its own git worktree on a fresh wtask/ branch, its own wmux workspace with an agent pane already launched on the prompt, and its own mission channel. Use it to race N attempts at the same problem, or to run N independent jobs without them colliding in one checkout. ' +
       `Up to ${FANOUT_MAX_TASKS} tasks per call. ` +
-      'Returns immediately with { status: "accepted" } — spawning takes far longer than one RPC, so the work continues in the background. Poll it by calling again with the SAME idempotency_key, or watch the tasks appear via channel_mission_list. ' +
+      // Deliberately NOT naming channel_mission_list here: that tool is outside
+      // the commander surface, so pointing a brain at it names a tool its
+      // tools/list does not contain. Every profile can see the mission channels
+      // themselves, which is the same answer.
+      'Returns immediately with { status: "accepted" } — spawning takes far longer than one RPC, so the work continues in the background. Poll it by calling again with the SAME idempotency_key, or watch each task\'s mission channel appear in your channel list. ' +
       'The user is asked to approve before anything spawns, and that prompt is never auto-approved; if nobody answers it, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
       "The repository, the owning workspace and the agent command are all determined by the server from your verified identity: fan-out always runs in YOUR workspace's repository, and the tasks are owned by you. Fan-out is refused if your identity cannot be verified.",
     FANOUT_START_SHAPE,
-    async ({ idempotency_key, titles, prompt, task_prompts }) => {
+    async ({ idempotency_key, titles, prompt, task_prompts, roles }) => {
       const params: Record<string, unknown> = {
         idempotencyKey: idempotency_key,
         titles,
       };
       if (prompt !== undefined) params['prompt'] = prompt;
       if (task_prompts !== undefined) params['taskPrompts'] = task_prompts;
+      if (roles !== undefined) params['roles'] = roles;
       // The verified ptyId is the whole identity basis for this call — the
       // handler resolves it to the owning workspace and refuses without it.
       // Resolve identity FIRST: the walk that produces that ptyId is a side

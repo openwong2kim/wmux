@@ -68,6 +68,16 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'surface_new',
   'terminal_send',
   'terminal_send_key',
+  // Fan out one job into N isolated worktrees. In scope for the same reason
+  // pane_split is: it CREATES work, it never tears any down. It is also the
+  // only way a brain can put a worker on its own branch at all — the brain has
+  // no shell, so `git worktree add` is not an alternative it could reach. The
+  // powers a wire caller might have abused are already server-derived rather
+  // than caller-stated (repository, owning workspace, agent command) and the
+  // spawn is gated on a human approval prompt that is never auto-approved, so
+  // adding it here widens what the brain can ASK for, not what it can do
+  // unattended.
+  'fanout_start',
   // Channel + A2A messaging.
   'channel_create',
   'channel_post',
@@ -150,6 +160,10 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'a2a.channel.unread',
   'task.mission.start',
   'task.mission.close',
+  // fan-out (create-only; the handler resolves the repository and the owning
+  // workspace from the validated commander binding, and every spawn still
+  // passes the approval prompt).
+  'task.fanout.start',
 ]);
 
 /** Teardown-EFFECT methods a validated commander is refused server-side

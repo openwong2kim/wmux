@@ -14,11 +14,21 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+/** Look a skill up by folder name rather than by position: the list grows, and
+ *  an index-based lookup silently starts asserting against a different skill
+ *  when it does (which is exactly what adding `fanout` did). */
+function skillNamed(name: string): string {
+  const hit = buildBrainSkills().find((s) => s.relPath === path.join(name, 'SKILL.md'));
+  if (!hit) throw new Error(`no brain skill named ${name}`);
+  return hit.content;
+}
+
 describe('buildBrainSkills', () => {
-  it('returns delegate + approve, each a well-formed, marked SKILL.md', () => {
+  it('returns delegate + fanout + approve, each a well-formed, marked SKILL.md', () => {
     const skills = buildBrainSkills();
     expect(skills.map((s) => s.relPath)).toEqual([
       path.join('delegate', 'SKILL.md'),
+      path.join('fanout', 'SKILL.md'),
       path.join('approve', 'SKILL.md'),
     ]);
     for (const skill of skills) {
@@ -33,7 +43,7 @@ describe('buildBrainSkills', () => {
   });
 
   it('states the two facts the delegate skill exists to state', () => {
-    const delegate = buildBrainSkills()[0].content;
+    const delegate = skillNamed('delegate');
     // 1. The no-shell boundary, named tool by tool.
     expect(delegate).toContain('You cannot run commands');
     for (const tool of ['Bash', 'Edit', 'Write', 'Task', 'Agent']) {
@@ -44,20 +54,37 @@ describe('buildBrainSkills', () => {
   });
 
   it('makes the approve skill say verify-then-press, not press-on-event', () => {
-    const approve = buildBrainSkills()[1].content;
+    const approve = skillNamed('approve');
     expect(approve).toContain('Never press on the strength of the event alone');
     expect(approve).toContain('deck_ask_decision');
+  });
+
+  it('tells the brain what fan-out is FOR, not just that the tool exists', () => {
+    const fanout = skillNamed('fanout');
+    // The choice it exists to inform: same checkout vs. isolated worktree.
+    expect(fanout).toContain('pane_split');
+    expect(fanout).toContain('worktree');
+    // The two ways a brain gets this wrong on its own: treating an unfinished
+    // fan-out as failed, and minting a fresh key on a slow poll.
+    expect(fanout).toContain('idempotency_key');
+    expect(fanout).toContain('never auto-approved');
+    // Roles are the multi-agent story; without this the tool reads as
+    // "N copies of the same agent".
+    expect(fanout).toContain('roles');
+    for (const role of ['Builder', 'Reviewer', 'Tester', 'Planner']) {
+      expect(fanout).toContain(role);
+    }
   });
 });
 
 describe('installBrainSkills', () => {
-  it('writes both skills under the brain home and is idempotent', () => {
+  it('writes every skill under the brain home and is idempotent', () => {
     installBrainSkills(tmpDir);
     const root = path.join(tmpDir, '.claude', 'skills');
     const delegate = path.join(root, 'delegate', 'SKILL.md');
-    const approve = path.join(root, 'approve', 'SKILL.md');
-    expect(fs.existsSync(delegate)).toBe(true);
-    expect(fs.existsSync(approve)).toBe(true);
+    for (const { relPath } of buildBrainSkills()) {
+      expect(fs.existsSync(path.join(root, relPath)), relPath).toBe(true);
+    }
 
     const before = fs.readFileSync(delegate, 'utf8');
     installBrainSkills(tmpDir);

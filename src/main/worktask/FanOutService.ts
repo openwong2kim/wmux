@@ -89,7 +89,22 @@ export interface FanOutRendererPort {
     initialCommand: string;
     /** T2 — extra env for the task pane (currently WMUX_TASK_PORT). */
     env?: Record<string, string>;
-  }): Promise<{ workspaceId: string; ptyId?: string } | { error: string }>;
+    /** Orchestrator role for this task's pane. The renderer owns the role→agent
+     *  +model bindings (they are UI settings), so main sends the ROLE and the
+     *  renderer rewrites the launch command through the same applyRoleBinding
+     *  path a human-opened pane uses. Absent = launch the command as given. */
+    role?: string;
+  }): Promise<
+    | {
+        workspaceId: string;
+        ptyId?: string;
+        /** The command the renderer actually launched. Differs from the one we
+         *  sent when a role binding swapped the agent or pinned a model, and it
+         *  is that version a re-fire must replay. */
+        initialCommand?: string;
+      }
+    | { error: string }
+  >;
 }
 
 /**
@@ -118,6 +133,17 @@ export interface FanOutRequest {
   repoPath: string;
   /** 에이전트 명령(기본 'claude'). */
   agentCmd: string;
+  /**
+   * Per-task orchestrator role, index-aligned with `titles` (optional; an empty
+   * or absent entry means "no role").
+   *
+   * This is how a fan-out puts different tasks on different agents and models
+   * WITHOUT any caller ever naming an executable: the role is a closed
+   * vocabulary (ORCH_ROLES), and the agent + model it maps to comes from the
+   * operator's own role bindings in Settings. A caller can choose among the
+   * bindings the operator configured; it cannot invent a command.
+   */
+  roles?: string[];
   /** 렌더러 신뢰 신원(channelLocal과 동일 trust basis — 프로세스 경계). */
   verifiedWorkspaceId: string;
   /** 미션 채널 멤버 좌표(생성자 memberId — 기본 verifiedWorkspaceId). */
@@ -266,10 +292,14 @@ export class FanOutService {
     // title·개별 프롬프트는 인덱스로 정렬된 쌍이다 — 빈 title 필터 전에 먼저 묶어
     // 정렬이 어긋나지 않게 한다(개별 프롬프트가 다른 태스크에 오배달되면 치명).
     const rawPrompts = Array.isArray(req.taskPrompts) ? req.taskPrompts : [];
+    // role도 같은 이유로 필터 전에 묶는다 — 뒤에서 원본 인덱스로 읽으면 빈 title
+    // 하나에 역할이 통째로 밀려 다른 태스크가 남의 에이전트·모델로 뜬다.
+    const rawRoles = Array.isArray(req.roles) ? req.roles : [];
     const entries = req.titles
       .map((t, k) => ({
         title: typeof t === 'string' ? t.trim() : '',
         taskPrompt: typeof rawPrompts[k] === 'string' ? rawPrompts[k].trim() : '',
+        role: typeof rawRoles[k] === 'string' ? rawRoles[k].trim() : '',
       }))
       .filter((e) => e.title.length > 0);
     const n = entries.length;
@@ -341,6 +371,7 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
+        ...(entries[k].role ? { role: entries[k].role } : {}),
       });
       tasks.push(r);
     }
@@ -424,6 +455,8 @@ export class FanOutService {
     port?: number;
     /** T2 — trust-gated worktree setup hook (absent = nothing to run). */
     setupCommand?: string;
+    /** Orchestrator role for this task's pane (absent = unroled). */
+    role?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -526,6 +559,7 @@ export class FanOutService {
         cwd: plan.worktreePath,
         initialCommand,
         ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+        ...(ctx.role ? { role: ctx.role } : {}),
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
@@ -534,6 +568,9 @@ export class FanOutService {
       workspaceId = spawned.workspaceId;
       // ptyId는 옵셔널(핸드셰이크가 싣지 못하면 부재) — §3 onExhausted 토스트 매핑용.
       if (spawned.ptyId) base.ptyId = spawned.ptyId;
+      // 렌더러가 role 바인딩으로 커맨드를 바꿨다면 재발사 재료도 그 버전이어야
+      // 한다 — 아니면 재발사가 역할의 에이전트·모델을 조용히 잃는다.
+      if (spawned.initialCommand) base.initialCommand = spawned.initialCommand;
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };

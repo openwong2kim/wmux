@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyRoleAgent,
   applyRoleBinding,
   bindingEnforcesModel,
   launcherSupportsModelFlag,
@@ -437,5 +438,62 @@ describe('bindingEnforcesModel — the UI may only claim what the rewrite does',
       const launched = applyRoleBinding(binding.agent ?? 'claude', binding);
       expect(launched.modelInjected).toBe(bindingEnforcesModel(binding));
     }
+  });
+});
+
+describe('applyRoleAgent — launcher swap for wmux-assembled launches', () => {
+  const PROMPT_ARG = `"$(cat '/tmp/wtask/prompt.md')"`;
+
+  it('swaps the launcher for the role\'s agent', () => {
+    const out = applyRoleAgent(`claude ${PROMPT_ARG}`, { agent: 'codex' });
+    expect(out.changed).toBe(true);
+    expect(out.command).toBe(`codex ${PROMPT_ARG}`);
+  });
+
+  it('leaves the prompt argument byte-identical', () => {
+    // The argument carries a quoted shell substitution; splicing must not
+    // requote, reorder or normalize any of it.
+    const out = applyRoleAgent(`claude ${PROMPT_ARG}`, { agent: 'codex' });
+    expect(out.command.slice('codex '.length)).toBe(PROMPT_ARG);
+  });
+
+  it('lets the model flag apply afterwards — the two steps compose', () => {
+    // The whole point: applyRoleBinding bails on a stem mismatch, so before the
+    // swap a Reviewer→codex binding injected nothing at all.
+    const binding: RoleBinding = { agent: 'codex', model: 'o3' };
+    const before = applyRoleBinding(`claude ${PROMPT_ARG}`, binding, { spawnedProcess: true });
+    expect(before.modelInjected).toBe(false);
+
+    const swapped = applyRoleAgent(`claude ${PROMPT_ARG}`, binding);
+    const after = applyRoleBinding(swapped.command, binding, { spawnedProcess: true });
+    expect(after.modelInjected).toBe(true);
+    expect(after.command).toContain('--model o3');
+    expect(after.command.startsWith('codex')).toBe(true);
+  });
+
+  it('refuses when the command carries flags written for the other CLI', () => {
+    // `codex --dangerously-skip-permissions` is not a launch anyone asked for.
+    const out = applyRoleAgent('claude --dangerously-skip-permissions', { agent: 'codex' });
+    expect(out.changed).toBe(false);
+    expect(out.command).toBe('claude --dangerously-skip-permissions');
+    expect(out.note).toMatch(/NOT swapped/);
+  });
+
+  it('refuses an agent wmux does not recognise, and says so', () => {
+    const out = applyRoleAgent(`claude ${PROMPT_ARG}`, { agent: 'rm -rf /' as string });
+    expect(out.changed).toBe(false);
+    expect(out.note).toMatch(/does not recognise/);
+  });
+
+  it('never touches a non-agent command', () => {
+    for (const cmd of ['npm test', 'git commit -m wip', 'ls']) {
+      expect(applyRoleAgent(cmd, { agent: 'codex' })).toMatchObject({ command: cmd, changed: false });
+    }
+  });
+
+  it('is a no-op when the binding names no agent, or the same one', () => {
+    expect(applyRoleAgent('claude x', { model: 'o3' }).changed).toBe(false);
+    expect(applyRoleAgent('claude x', { agent: 'claude' }).changed).toBe(false);
+    expect(applyRoleAgent('claude x', undefined).changed).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
+import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
@@ -8,7 +8,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
-import { normalizeRoleBinding } from '../../shared/orchestratorRole';
+import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
@@ -43,6 +43,39 @@ import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './
 // plain-text rows and adapt them so the SAME search engine / read path runs —
 // no silent misses (hard AC). Fails soft to null: a legacy daemon, local mode,
 // or a gone session degrades to "skip this pane" exactly as before the feature.
+
+/**
+ * Render "what each role in this fan-out will actually launch" for the approval
+ * dialog, from the operator's own bindings.
+ *
+ * Every clause here is about not overstating: an unbound role says so rather
+ * than implying a default, and a model is only claimed when it will really be
+ * injected (`bindingEnforcesModel` — a model with no agent, or an agent whose
+ * `--model` grammar wmux has not verified, is stored but never enforced).
+ * Saying "codex --model o3" when o3 will not be passed is the exact failure the
+ * enforcement predicate exists to prevent elsewhere.
+ *
+ * Returns '' when no task carries a role, so the ordinary preview is unchanged.
+ */
+function describeFanOutRoles(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+  const seen: string[] = [];
+  for (const entry of raw) {
+    const role = typeof entry === 'string' ? entry.trim() : '';
+    if (role && !seen.includes(role)) seen.push(role);
+  }
+  if (seen.length === 0) return '';
+  const bindings = useStore.getState().orchestratorRoleBindings;
+  const lines = seen.map((role) => {
+    const b = bindings[role];
+    if (!b || (!b.agent && !b.model && !b.args)) return `  ${role} → the default agent (no binding)`;
+    const parts: string[] = [b.agent || 'the default agent'];
+    if (b.model) parts.push(bindingEnforcesModel(b) ? `--model ${b.model}` : `(model "${b.model}" is configured but will NOT be applied)`);
+    if (b.args) parts.push(b.args);
+    return `  ${role} → ${parts.join(' ')}`;
+  });
+  return `\n\nRoles resolve to:\n${lines.join('\n')}`;
+}
 
 interface DaemonTextRow { text: string; wrapped: boolean }
 interface ParkedPaneRead { rows: DaemonTextRow[]; truncated: boolean }
@@ -643,11 +676,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const repoPath = typeof params.repoPath === 'string' ? params.repoPath : '';
     const taskCount = typeof params.taskCount === 'number' ? params.taskCount : 0;
     const promptPreview = typeof params.promptPreview === 'string' ? params.promptPreview : '';
+    // Expand the roles the caller chose into what they will actually launch.
+    // main writes the role NAMES into the preview because that is all it knows;
+    // the bindings are renderer state. Approving "[role: Reviewer]" while the
+    // binding silently adds a different CLI, another model, or extra flags
+    // would make the approved text and the executed command two different
+    // things — the one property this gate exists to hold.
+    const previewWithRoles = promptPreview + describeFanOutRoles(params.roles);
     const verdict = await requestFanOutApproval({
       workspaceId: callerWsId,
       repoPath,
       taskCount,
-      messagePreview: promptPreview,
+      messagePreview: previewWithRoles,
     });
     return { approved: verdict.approved, outcome: verdict.outcome };
   }
@@ -671,6 +711,30 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // Per-task orchestrator role → the agent + model the OPERATOR bound to that
+    // role in Settings. main sends the role name only; the bindings live here
+    // (they are UI state), and the rewrite goes through the same
+    // applyRoleBinding path a human-opened pane uses — so a fan-out task honours
+    // "Reviewer runs codex --model o3" exactly like a hand-launched one. An
+    // unknown or unbound role is a silent no-op: the task still launches on the
+    // default command rather than failing over a preference.
+    const role = sanitizeOrchRole(params.role);
+    const roleBinding = role ? useStore.getState().orchestratorRoleBindings[role] : undefined;
+    // Two steps, and BOTH are needed. applyRoleBinding (inside withRoleBinding
+    // below) refuses to touch a command whose launcher differs from the
+    // binding's agent — right for a line a human typed, wrong here, where wmux
+    // assembled `<agent> "$(cat …)"` itself and a Reviewer→codex binding exists
+    // precisely so review tasks run on codex. Without the swap first, the stem
+    // mismatch made the whole binding inert: no agent change AND no model flag.
+    const swap = applyRoleAgent(initialCommand, roleBinding);
+    if (swap.note) {
+      // A refusal (unknown agent, or flags that would not survive the swap) is
+      // fail-soft — the task still launches, so the reason must be visible
+      // somewhere rather than silently discarded.
+      console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
+    }
+    const launchCommand = swap.command;
+
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
     const newWs = afterAdd.workspaces.find((w) => w.id === afterAdd.activeWorkspaceId);
@@ -684,14 +748,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     try {
       const created = await window.electronAPI.pty.create(
         withWorkspaceProfile(
-          withDefaultShell(
-            {
-              workspaceId: newWsId,
-              cwd: cwd || undefined,
-              ...(initialCommand ? { initialCommand } : {}),
-              ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
-            },
-            useStore.getState().defaultShell,
+          withRoleBinding(
+            withDefaultShell(
+              {
+                workspaceId: newWsId,
+                cwd: cwd || undefined,
+                ...(launchCommand ? { initialCommand: launchCommand } : {}),
+                ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+              },
+              useStore.getState().defaultShell,
+            ),
+            roleBinding,
+            role,
           ),
           // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
           // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
@@ -716,10 +784,29 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
 
-    // 포커스 복원 — fan-out 스폰이 사람 화면을 훔치지 않는다.
+    // 포커스 복원 — fan-out 스폰이 사람 화면을 훔치지 않는다. 아래 role 스탬프
+    // 앞에 둔다: setRole은 IPC 왕복이고, 그 사이 사용자 화면이 새 워크스페이스에
+    // 붙들려 있으면 N개 태스크마다 화면이 끌려간다.
     useStore.getState().setActiveWorkspace(previousActiveId);
 
-    return { workspaceId: newWsId, ptyId };
+    // Stamp the role on the pane itself, not just on the launch command. It is
+    // what the Fleet list shows, and it is what a line the orchestrator later
+    // types into this pane re-derives its model enforcement from. Best-effort:
+    // the task is already running, so a metadata write that fails must not fail
+    // the spawn.
+    if (role) {
+      try {
+        await window.electronAPI.metadata.setRole(paneId, newWsId, role);
+      } catch {
+        /* the task is spawned; a missing role label is not worth failing it */
+      }
+    }
+
+    // Hand back the command that ACTUALLY launched, not the one main assembled.
+    // main stores this as the re-fire material, and a re-fire that replayed the
+    // pre-binding string would quietly drop the role's agent and model — the
+    // task would come back on the default (expensive) one with nothing said.
+    return { workspaceId: newWsId, ptyId, initialCommand: launchCommand };
   }
 
   // -------------------------------------------------------------------------

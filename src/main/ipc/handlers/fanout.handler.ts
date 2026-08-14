@@ -15,6 +15,13 @@
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { ORCH_ROLES, sanitizeOrchRole } from '../../../shared/orchestratorRole';
+
+/** A role name only if it is one wmux actually defines; '' otherwise. */
+function asOrchRole(raw: unknown): string {
+  const cleaned = sanitizeOrchRole(raw);
+  return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
+}
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
@@ -51,14 +58,23 @@ export function normalizeRequest(raw: unknown): FanOutRequest | { error: string 
   // 'ignored'를 받음). 페어링 후에 필터링해 인덱스를 함께 유지한다.
   const rawTitles = Array.isArray(r['titles']) ? (r['titles'] as unknown[]) : [];
   const rawTaskPrompts = Array.isArray(r['taskPrompts']) ? (r['taskPrompts'] as unknown[]) : [];
+  // roles ride the same index-aligned pairing as taskPrompts, for the same
+  // reason: a non-string title must not shift another task's role onto it.
+  const rawRoles = Array.isArray(r['roles']) ? (r['roles'] as unknown[]) : [];
   const pairedEntries = rawTitles
     .map((rt, k) => ({
       title: rt,
       taskPrompt: typeof rawTaskPrompts[k] === 'string' ? (rawTaskPrompts[k] as string) : '',
+      // Membership-checked, not merely sanitized: the role is stamped onto pane
+      // metadata and used as a lookup key into the operator's bindings, so an
+      // arbitrary 64-char string reaching either would be a wider surface than
+      // the wire path allows (it rejects out-of-vocabulary roles outright).
+      role: asOrchRole(rawRoles[k]),
     }))
-    .filter((e): e is { title: string; taskPrompt: string } => typeof e.title === 'string');
+    .filter((e): e is { title: string; taskPrompt: string; role: string } => typeof e.title === 'string');
   const titles = pairedEntries.map((e) => e.title);
   const taskPrompts = Array.isArray(r['taskPrompts']) ? pairedEntries.map((e) => e.taskPrompt) : undefined;
+  const roles = Array.isArray(r['roles']) ? pairedEntries.map((e) => e.role) : undefined;
   const repoPath = typeof r['repoPath'] === 'string' ? r['repoPath'] : '';
   const agentCmd = typeof r['agentCmd'] === 'string' ? r['agentCmd'] : 'claude';
   const verifiedWorkspaceId = typeof r['verifiedWorkspaceId'] === 'string' ? r['verifiedWorkspaceId'] : '';
@@ -69,6 +85,7 @@ export function normalizeRequest(raw: unknown): FanOutRequest | { error: string 
     prompt,
     titles,
     ...(taskPrompts ? { taskPrompts } : {}),
+    ...(roles ? { roles } : {}),
     repoPath,
     agentCmd,
     verifiedWorkspaceId,

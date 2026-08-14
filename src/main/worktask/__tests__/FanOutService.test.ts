@@ -91,13 +91,19 @@ function makeDaemonFake(opts?: {
 
 /** renderer fake — spawnWorkspace가 실제 workspaceId를 회수 반환. 반환한 ptyId도
  *  기록해 FanOutService가 그 id를 결과에 무변형 전달하는지 검증 가능케 한다(F11). */
-function makeRendererFake(opts?: { spawnFailOn?: (name: string) => boolean }) {
+function makeRendererFake(opts?: {
+  spawnFailOn?: (name: string) => boolean;
+  /** Stand in for the renderer's role-binding rewrite: what it ACTUALLY launched. */
+  rewriteCommand?: (p: { initialCommand: string; role?: string }) => string;
+}) {
   const spawned: Array<{
     name: string;
     cwd: string;
     initialCommand: string;
     /** T2 — per-task env (WMUX_TASK_PORT) main hands the renderer. */
     env?: Record<string, string>;
+    /** Per-task orchestrator role main forwards for binding resolution. */
+    role?: string;
     returnedPtyId?: string;
   }> = [];
   let seq = 0;
@@ -110,7 +116,12 @@ function makeRendererFake(opts?: { spawnFailOn?: (name: string) => boolean }) {
       seq++;
       const ptyId = `pty-${seq}`;
       spawned.push({ ...p, returnedPtyId: ptyId });
-      return { workspaceId: `ws-task-${seq}`, ptyId };
+      const rewritten = opts?.rewriteCommand?.(p);
+      return {
+        workspaceId: `ws-task-${seq}`,
+        ptyId,
+        ...(rewritten ? { initialCommand: rewritten } : {}),
+      };
     }),
   };
   return { port, spawned };
@@ -701,5 +712,57 @@ describe('T2 per-repo fan-out environment (ports + setup hook)', () => {
     const closed = daemon.calls.filter((c) => c.method === 'task.mission.close');
     expect(closed).toHaveLength(1);
     expect(closed[0]?.params.taskId).toBe(first.taskId);
+  });
+});
+
+describe('per-task roles', () => {
+  it('keeps a role paired with its title when an empty title is dropped', async () => {
+    // Same failure the taskPrompt pairing above guards: filtering titles after
+    // indexing shifts every later task onto the wrong role — and a role decides
+    // which agent and model that task runs on, so the mis-delivery is silent.
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const worktrees = makeWorktreesFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees });
+
+    await svc.start(
+      baseReq({
+        titles: ['Task A', '   ', 'Task C'],
+        roles: ['Builder', 'Tester', 'Reviewer'],
+      }),
+    );
+
+    expect(renderer.spawned.map((s) => s.role)).toEqual(['Builder', 'Reviewer']);
+  });
+
+  it('forwards no role for an unroled task', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const worktrees = makeWorktreesFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees });
+
+    await svc.start(baseReq({ titles: ['Task A', 'Task B'], roles: ['Builder', ''] }));
+
+    expect(renderer.spawned[0].role).toBe('Builder');
+    expect(renderer.spawned[1].role).toBeUndefined();
+  });
+
+  it('records the command the renderer actually launched as the re-fire material', async () => {
+    // The renderer may swap the agent and pin a model for the task's role. A
+    // re-fire replays base.initialCommand, so storing the pre-binding string
+    // would bring the task back on the default agent with nothing said.
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake({
+      rewriteCommand: (p) => (p.role === 'Reviewer' ? p.initialCommand.replace(/^claude/, 'codex --model o3') : p.initialCommand),
+    });
+    const worktrees = makeWorktreesFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees });
+
+    const res = await svc.start(baseReq({ titles: ['Build it', 'Review it'], roles: ['Builder', 'Reviewer'] }));
+
+    expect(res.tasks[0].initialCommand?.startsWith('claude')).toBe(true);
+    expect(res.tasks[1].initialCommand?.startsWith('codex --model o3')).toBe(true);
+    // …and the prompt file argument survived the rewrite either way.
+    for (const t of res.tasks) expect(t.initialCommand).toMatch(/prompt\.md/);
   });
 });

@@ -19,6 +19,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 
 /** Ownership marker, written as the first line of every generated skill's
  *  BODY (the line right after the closing `---`). Its ABSENCE is what protects
@@ -53,13 +54,17 @@ an exception does not change it.
 
 - Observe the fleet: list panes, read their screens, read their metadata.
 - Create workers: split a pane, then drive it by typing into it.
+- Create ISOLATED workers: \`fanout_start\` gives each task its own git worktree,
+  branch, workspace and mission channel. You have no shell, so this is the only
+  way you can put work on its own branch — see the \`fanout\` skill.
 - Communicate: post to channels, read unread, send and answer A2A tasks.
 - Escalate: raise a decision gate when a choice belongs to the operator.
 
-## Everything else goes to a worker pane
+## Everything else goes to a worker
 
 There is no third option. If a task needs a shell, a file edit, or a build, it
-belongs to a worker. Split a pane, send it the task, and wait for it.
+belongs to a worker — either a pane you split in this checkout, or a fan-out
+task on its own worktree. Send it the task and wait for it.
 
 Two things about that path you must not forget:
 
@@ -80,6 +85,79 @@ Two things about that path you must not forget:
    rather than working around it.
 3. An explicit statement of how the next instruction reaches the worker once it
    goes idle — a worker that does not know it will be woken invents work.
+`;
+
+const FANOUT_SKILL = `---
+name: fanout
+description: Use when work splits into more than one task that could run at the same time, when two workers would otherwise edit the same files, when racing several attempts at one problem, or when a task should run on a different agent or model than the others. Explains fanout_start — one call, N isolated worktrees.
+---
+${WMUX_SKILL_MARKER}
+
+# Fan out — N tasks, N worktrees, one call
+
+\`fanout_start\` turns one job into up to ${FANOUT_MAX_TASKS} parallel tasks. Each task gets its
+own git worktree on a fresh \`wtask/\` branch, its own workspace with an agent
+pane already launched on the prompt, and its own mission channel.
+
+You cannot run \`git worktree add\` — you have no shell. This tool is how
+isolated parallel work happens at all.
+
+## Choose it over splitting panes
+
+\`pane_split\` gives you a worker in the SAME checkout. That is right for one
+worker at a time, and wrong the moment two of them touch the same files: they
+overwrite each other's edits, share one branch, and their commits interleave.
+
+Use fan-out when any of these is true:
+
+- Two or more workers would be editing the repository at the same time.
+- You want N attempts at the same problem and then the best one.
+- A task should be abandonable — a worktree is deleted without touching
+  anything else.
+
+Use a plain pane split when the work is one worker, or is read-only.
+
+## How the call behaves
+
+- **It returns before it finishes.** The first call answers
+  \`{ status: "accepted" }\`. Poll by calling AGAIN with the SAME
+  \`idempotency_key\`; you will get \`awaiting_approval\`, then \`running\`, then
+  \`completed\` with the per-task result.
+- **The operator must approve it.** The prompt is never auto-approved. A
+  \`denied\` answer is a real outcome, not an error to retry around, and there
+  are four reasons: \`declined\` (they said no), \`timeout\` (nobody was at the
+  keyboard), \`unavailable\` (the prompt could not be shown), and \`repo-moved\`
+  (the anchor pane changed directory mid-approval). None of them is retried by
+  minting a new key — say what happened instead.
+- **You do not choose the repository or the workspace.** They are derived from
+  your own verified identity. Fan-out always runs in your workspace's
+  repository.
+- **A fresh key means a fresh fan-out.** Reusing a key polls; inventing a new
+  one spawns N more worktrees. Never mint a new key just because a poll was
+  slow.
+
+## Put different tasks on different agents
+
+\`roles\` is index-aligned with \`titles\` and takes one of: Builder, Reviewer,
+Tester, Planner. The role decides which agent CLI and which model that task
+launches on, because the operator binds each role to an agent and model in
+Settings.
+
+This is how one fan-out puts its review task on a different CLI, or a cheaper
+model, than its build tasks. Pick the role that matches what the task IS —
+never to reach for a particular model. If a role has no binding configured, the
+task simply launches on the default agent; that is the operator's call, not a
+problem to route around.
+
+Assigning a role to a task you are creating is yours to do. Changing the role
+of a pane that already exists is not — that stays the operator's.
+
+## After it spawns
+
+Each task has a mission channel. That is where its worker reports and where you
+follow it. The tasks are yours: nobody else will chase them, and a worker that
+went idle looks exactly like one that is still thinking until you read its
+channel.
 `;
 
 const APPROVE_SKILL = `---
@@ -122,6 +200,7 @@ for you to confirm — ask.
 export function buildBrainSkills(): BrainSkillFile[] {
   return [
     { relPath: path.join('delegate', 'SKILL.md'), content: DELEGATE_SKILL },
+    { relPath: path.join('fanout', 'SKILL.md'), content: FANOUT_SKILL },
     { relPath: path.join('approve', 'SKILL.md'), content: APPROVE_SKILL },
   ];
 }

@@ -81,6 +81,7 @@ import {
   FANOUT_PROMPT_MAX_BYTES,
   WORKTASK_IDEMPOTENCY_CAP,
 } from '../../../shared/workTask';
+import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
@@ -161,7 +162,12 @@ function truncateUtf8(s: string, maxBytes: number): string {
  * told. Titles alone are not instructions, and a preview is not consent unless
  * it contains what is actually injected.
  */
-export function buildFanOutPreview(sharedPrompt: string, titles: string[], taskPrompts: string[]): string {
+export function buildFanOutPreview(
+  sharedPrompt: string,
+  titles: string[],
+  taskPrompts: string[],
+  roles: string[] = [],
+): string {
   const perTask = Math.max(
     FANOUT_PREVIEW_MIN_TASK_BYTES,
     Math.floor(FANOUT_PREVIEW_MAX_BYTES / Math.max(1, titles.length)),
@@ -174,7 +180,12 @@ export function buildFanOutPreview(sharedPrompt: string, titles: string[], taskP
         effective.length > 0
           ? truncateUtf8(effective, perTask)
           : '(no prompt — this task opens an agent pane with nothing typed into it)';
-      return `── task ${k + 1}/${titles.length}: ${title}\n${body}`;
+      // The role decides which agent CLI and model this task launches on, so it
+      // belongs in what the operator approves: consenting to a prompt is not
+      // consenting to run it on whatever the caller picked. Roles come from the
+      // closed ORCH_ROLES vocabulary, so there is nothing to neutralize here.
+      const role = typeof roles[k] === 'string' && roles[k].length > 0 ? ` [role: ${roles[k]}]` : '';
+      return `── task ${k + 1}/${titles.length}: ${title}${role}\n${body}`;
     })
     .join('\n\n');
 }
@@ -288,6 +299,50 @@ async function resolveSenderSurfaceCwd(
   return '';
 }
 
+/**
+ * The pty an orchestrator BRAIN anchors its fan-out to: its workspace's active
+ * pane's active surface — the terminal the operator is looking at in the
+ * workspace this brain is bound to.
+ *
+ * A brain is a subprocess with no pane ancestry, so it has no senderPtyId of
+ * its own and R3's "the caller's own surface" has nothing to resolve. Rather
+ * than inventing a looser rule for it, it borrows ONE concrete pane and then
+ * goes through the exact same derivation every other caller does. Resolved once
+ * and reused for the post-approval re-check, so the operator moving their focus
+ * between panes cannot turn an approved fan-out into a repo-moved denial — only
+ * that pane actually changing directory can, which is the same rule a pty
+ * caller lives under. '' when unresolvable, which fails the fan-out closed.
+ *
+ * What this does NOT claim (panel review): that the brain cannot influence
+ * which repository it gets. `pane_focus` is on the commander surface, so a
+ * brain can move the active pane before calling and thereby pick any repo its
+ * workspace already has a pane in — and a pane that reports no cwd of its own
+ * still reads the workspace-level one (the residual R3 already documents).
+ * Neither escapes the workspace: ctx.commanderWorkspace is bound to exactly one
+ * and every path here is scoped to it. What holds the line inside the workspace
+ * is the approval prompt, which prints the resolved repository and is never
+ * auto-approved — the operator sees the path before anything spawns.
+ */
+async function resolveCommanderAnchorPtyId(
+  getWindow: GetWindow,
+  workspaceId: string,
+): Promise<string> {
+  let list: unknown;
+  try {
+    list = await sendToRenderer(getWindow, 'workspace.list', {});
+  } catch {
+    return '';
+  }
+  if (!Array.isArray(list)) return '';
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = entry as Record<string, unknown>;
+    if (row['id'] !== workspaceId) continue;
+    return typeof row['activePtyId'] === 'string' ? row['activePtyId'].trim() : '';
+  }
+  return '';
+}
+
 /** R3, end to end: caller's surface → cwd → git toplevel. Returns the root, or
  *  the wire error to answer with. One function because the SAME derivation runs
  *  twice — once before the prompt and once after the approval — and a second
@@ -302,7 +357,7 @@ async function deriveCallerRepoRoot(
     return {
       code: 'FAILED_PRECONDITION',
       message:
-        "task.fanout.start could not determine the calling terminal's working directory — run the caller inside a pane whose cwd is a git repository",
+        "task.fanout.start could not determine the calling terminal's working directory — the fan-out anchors on a pane whose cwd is a git repository",
     };
   }
   const resolved = normalizeRepoInput(cwd);
@@ -319,10 +374,12 @@ async function deriveCallerRepoRoot(
   return { root };
 }
 
-/** Parsed + capped task list. `titles[k]` pairs with `taskPrompts[k]`. */
+/** Parsed + capped task list. `titles[k]` pairs with `taskPrompts[k]` and
+ *  `roles[k]` ('' = no role for that task). */
 interface ParsedTasks {
   titles: string[];
   taskPrompts: string[];
+  roles: string[];
 }
 
 /**
@@ -349,11 +406,40 @@ function parseTasks(
   if (rawPrompts.length > FANOUT_MAX_TASKS) {
     return { error: `taskPrompts length ${rawPrompts.length} exceeds the cap of ${FANOUT_MAX_TASKS}` };
   }
+  // Roles are a CLOSED vocabulary, and an unknown one is rejected rather than
+  // dropped. Silently ignoring it would spawn the task on the default agent
+  // while the caller believed it had asked for the reviewer's model — the same
+  // "acting on a false picture" the repoPath/agentCmd rejections above exist to
+  // prevent. What a role MAPS to is still the operator's to decide: an
+  // in-vocabulary role with no binding configured launches the default command.
+  if (params['roles'] !== undefined && !Array.isArray(params['roles'])) {
+    return { error: 'roles must be an array of role names when provided' };
+  }
+  const rawRoles = Array.isArray(params['roles']) ? (params['roles'] as unknown[]) : [];
+  if (rawRoles.length > FANOUT_MAX_TASKS) {
+    return { error: `roles length ${rawRoles.length} exceeds the cap of ${FANOUT_MAX_TASKS}` };
+  }
+  // More roles than titles is a caller that has miscounted its own tasks, and
+  // the extras would be dropped in silence — the same "acting on a false
+  // picture" the repoPath/agentCmd rejections refuse to allow. (Fewer is fine:
+  // a short array means the remaining tasks are unroled, which is expressible.)
+  if (rawRoles.length > rawTitles.length) {
+    return { error: `roles has ${rawRoles.length} entries but there are only ${rawTitles.length} titles` };
+  }
+  for (const [k, r] of rawRoles.entries()) {
+    if (r === undefined || r === null || r === '') continue;
+    if (typeof r !== 'string' || !(ORCH_ROLES as readonly string[]).includes(r)) {
+      return {
+        error: `roles[${k}] is not a known orchestrator role — use one of ${ORCH_ROLES.join(', ')}, or omit it`,
+      };
+    }
+  }
 
   const paired = rawTitles
     .map((t, k) => ({
       title: typeof t === 'string' ? t.trim() : '',
       taskPrompt: typeof rawPrompts[k] === 'string' ? (rawPrompts[k] as string).trim() : '',
+      role: typeof rawRoles[k] === 'string' ? (rawRoles[k] as string).trim() : '',
     }))
     .filter((e) => e.title.length > 0);
 
@@ -376,6 +462,7 @@ function parseTasks(
   return {
     titles: paired.map((e) => e.title),
     taskPrompts: paired.map((e) => e.taskPrompt),
+    roles: paired.map((e) => e.role),
   };
 }
 
@@ -462,8 +549,26 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
     // scoped to the workspace that started the fan-out. Keys are caller-chosen
     // strings; without the scoping below, guessing "fanout-1" would read a
     // neighbouring workspace's result.
-    const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'].trim() : '';
-    const callerWorkspaceId = await resolveCallerWorkspace(getWindow, senderPtyId);
+    //
+    // Two ways to be verifiable, and BOTH are server-side facts:
+    //   - a pane agent proves itself with a PID-map-walked senderPtyId, which
+    //     the renderer resolves to the workspace that owns that pty right now;
+    //   - an orchestrator brain proves itself with its commander token, which
+    //     RpcRouter validated before this handler ran and turned into
+    //     ctx.commanderWorkspace. The brain is a subprocess with no pane
+    //     ancestry, so it has no ptyId to offer and the walk above would refuse
+    //     it forever — which is why it could not fan out at all until now.
+    // A validated commander binding OUTRANKS a stated senderPtyId: the token is
+    // the stronger claim, and honouring the pty field for a commander would let
+    // a brain aim a fan-out at a workspace it is not bound to.
+    const commanderWorkspaceId = ctx?.commanderWorkspace ?? '';
+    const senderPtyId = commanderWorkspaceId
+      ? ''
+      : typeof params['senderPtyId'] === 'string'
+        ? params['senderPtyId'].trim()
+        : '';
+    const callerWorkspaceId =
+      commanderWorkspaceId || (await resolveCallerWorkspace(getWindow, senderPtyId));
     if (!callerWorkspaceId) {
       return deny(
         'NOT_AUTHORIZED',
@@ -480,8 +585,17 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       );
     }
     /** Per-workspace key space (see above). The GUI mints uuid keys of its own,
-     *  so a wire caller also cannot collide with an in-flight GUI fan-out. */
-    const key = `${callerWorkspaceId}::${callerKey}`;
+     *  so a wire caller also cannot collide with an in-flight GUI fan-out.
+     *
+     *  The brain gets its own sub-space inside that workspace. Keys are
+     *  caller-chosen strings and a brain and a pane agent in one workspace now
+     *  both reach this handler, so a brain polling an obvious key like
+     *  "fanout-1" would otherwise read a pane agent's result — task ids,
+     *  branches, worktree paths — and see its own start silently answered as a
+     *  poll. Pane callers keep the exact key space they had. */
+    const key = commanderWorkspaceId
+      ? `${callerWorkspaceId}::commander::${callerKey}`
+      : `${callerWorkspaceId}::${callerKey}`;
 
     // ── Poll branch ──────────────────────────────────────────────────────
     // A repeat of a key we already know answers from bookkeeping and starts
@@ -579,7 +693,12 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
     claim(key);
 
     // ── R3: repo confinement ─────────────────────────────────────────────
-    const preflight = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, senderPtyId);
+    // A pane agent anchors on its OWN surface; a brain has none, so it anchors
+    // on its workspace's active pane (resolved once — see the helper).
+    const anchorPtyId = commanderWorkspaceId
+      ? await resolveCommanderAnchorPtyId(getWindow, commanderWorkspaceId)
+      : senderPtyId;
+    const preflight = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
     if (!('root' in preflight)) {
       // Nothing was started and nothing was asked, so the key must go back —
       // otherwise a transient renderer miss would brick it until eviction.
@@ -600,6 +719,12 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       taskPrompts: parsed.taskPrompts,
       repoPath: callerRepoRoot,
       agentCmd: FANOUT_WIRE_AGENT_CMD,
+      // Roles ride along where agentCmd cannot: the caller names a role, never
+      // an executable, and the renderer resolves it against the operator's own
+      // bindings. That is what lets a wire fan-out put its reviewer tasks on a
+      // different agent/model than its builders without the wire ever carrying
+      // a command string.
+      roles: parsed.roles,
       verifiedWorkspaceId: callerWorkspaceId,
     };
 
@@ -627,7 +752,13 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
             workspaceId: callerWorkspaceId,
             repoPath: callerRepoRoot,
             taskCount: parsed.titles.length,
-            promptPreview: buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts),
+            promptPreview: buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles),
+            // The roles again, as data. The preview prints the role NAME, but
+            // what a role resolves to — agent, model, extra args — lives in the
+            // renderer's bindings, and approving "[role: Reviewer]" without
+            // seeing that it means `codex --model o3 --some-flag` is approving
+            // a string that is not what runs. The renderer expands them.
+            roles: parsed.roles,
           },
           { timeoutMs: APPROVAL_TIMEOUT_MS },
         )) as { approved?: unknown; outcome?: unknown } | null;
@@ -651,7 +782,7 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       // sibling pane's if the surface reports no cwd of its own). Re-derive and
       // require the same root, or the approval was given for one repo and spent
       // on another.
-      const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, senderPtyId);
+      const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
       if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
         settle(key, { phase: 'denied', reason: 'repo-moved' });
         console.warn(`[fanout.rpc] fan-out ${key} denied (repo-moved)`);

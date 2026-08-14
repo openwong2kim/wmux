@@ -15,6 +15,7 @@ import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjectio
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
+import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import Button from '../ui/Button';
@@ -79,6 +80,9 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   // knows Claude Code's bypass flag, so a Codex (or other CLI) user types their
   // own flag once and it survives into the next fan-out.
   const [agentCmd, setAgentCmd] = useState(() => loadLastAgentCmd() || 'claude');
+  // Per-task role, index-aligned with titles. '' = launch on agentCmd as typed.
+  const [roles, setRoles] = useState<string[]>([]);
+  const roleBindings = useStore((s) => s.orchestratorRoleBindings);
   const [submitting, setSubmitting] = useState(false);
 
   // repo 기본값이 늦게 로드되면 반영.
@@ -158,6 +162,14 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     });
   }, []);
 
+  const setRoleAt = useCallback((k: number, v: string) => {
+    setRoles((prev) => {
+      const next = [...prev];
+      next[k] = v;
+      return next;
+    });
+  }, []);
+
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
     // §7: 프롬프트가 전부 비어도 거부하지 않는다 — "환경만 조성"(worktree·에이전트
@@ -179,6 +191,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
         prompt,
         titles: titles.slice(0, n),
         taskPrompts: Array.from({ length: n }, (_, k) => effectiveTaskPrompts[k] ?? ''),
+        roles: Array.from({ length: n }, (_, k) => roles[k] ?? ''),
         repoPath: repoPath.trim(),
         agentCmd: effectiveAgentCmd,
         // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
@@ -202,7 +215,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
@@ -284,6 +297,27 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
                 onChange={(e) => setTitleAt(k, e.target.value)}
                 data-testid={`fanout-title-${k}`}
               />
+              {/* Per-task role. The agent + model each role launches on is the
+                  operator's own binding (Settings → role bindings), so the
+                  option text names the bound agent: picking "Reviewer" here is
+                  how one fan-out puts its review task on a different CLI than
+                  its build tasks. Unbound roles stay selectable — the task then
+                  launches on the command above, unchanged. */}
+              <select
+                aria-label={t('fanout.roleLabel', { k: k + 1 })}
+                className="ui-input shrink-0 text-[11px] py-0.5"
+                style={{ minWidth: 92 }}
+                value={roles[k] ?? ''}
+                onChange={(e) => setRoleAt(k, e.target.value)}
+                data-testid={`fanout-role-${k}`}
+              >
+                <option value="">{t('fanout.roleNone')}</option>
+                {ORCH_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {roleBindings[r]?.agent ? `${r} — ${roleBindings[r]?.agent}` : r}
+                  </option>
+                ))}
+              </select>
               <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
                 wtask/{previewSlug(titles[k] ?? '') || '…'}
               </span>

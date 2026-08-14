@@ -91,7 +91,12 @@ function setup(opts?: {
   approval?: ApprovalStub;
   /** 'hang' models a run that outlives the caller's RPC deadline. */
   run?: 'immediate' | 'hang';
+  /** What workspace.list reports as the commander workspace's active pty.
+   *  '' models a workspace with no resolvable active pane. */
+  commanderAnchorPtyId?: string;
 }): Harness {
+  const commanderAnchorPtyId =
+    opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
 
@@ -132,6 +137,16 @@ function setup(opts?: {
 
   vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string, p?: unknown) => {
     if (method === 'input.findOwnerWorkspace') return ownerWs ? { workspaceId: ownerWs } : {};
+    // A brain has no pty of its own, so it anchors on its workspace's ACTIVE
+    // pane — which is what workspace.list reports as activePtyId. 'pty-1' here
+    // is the same surface a pane caller would identify as, so the commander
+    // path and the pty path are asserted against the same repository.
+    if (method === 'workspace.list') {
+      return [
+        { id: 'ws-elsewhere', activePtyId: 'pty-sibling' },
+        { id: ownerWs, activePtyId: commanderAnchorPtyId },
+      ];
+    }
     if (method === 'surface.list') {
       expect((p as Record<string, unknown>)?.workspaceId).toBe(ownerWs);
       // The caller's OWN surface plus a sibling sitting in a different repo —
@@ -238,6 +253,135 @@ describe('task.fanout.start — happy path (so the rejections below mean somethi
     expect(h.request().titles).toEqual(['a', 'c']);
     // 'pc' must follow 'c' — not slide onto it from the dropped slot.
     expect(h.request().taskPrompts).toEqual(['pa', 'pc']);
+  });
+});
+
+// ── the orchestrator brain as a caller ────────────────────────────────────
+//
+// A brain is a subprocess with no pane ancestry: the PID-map walk always misses
+// for it, so it has no senderPtyId and the pty path refuses it forever. Its
+// identity is the commander token RpcRouter already validated into
+// ctx.commanderWorkspace. Without these paths a brain cannot fan out at all —
+// and it has no shell, so it cannot create a worktree any other way either.
+describe('a commander brain is a verifiable caller without a pty', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('accepts a fan-out with no senderPtyId, anchored on its active pane', async () => {
+    const h = setup();
+    const res = await h.call({ ...goodParams(), senderPtyId: undefined }, COMMANDER);
+    expect(res).toMatchObject({
+      ok: true,
+      status: 'accepted',
+      repoPath: CALLER_REPO_ROOT,
+      workspaceId: CALLER_WS,
+    });
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
+  });
+
+  it('ignores a senderPtyId a commander states — the token outranks it', async () => {
+    // Honouring the field would let a brain aim a fan-out at a pane, and so at
+    // a repository, outside the workspace its token is bound to.
+    const h = setup();
+    const res = await h.call(goodParams({ senderPtyId: 'pty-sibling' }), COMMANDER);
+    expect(res).toMatchObject({ repoPath: CALLER_REPO_ROOT, workspaceId: CALLER_WS });
+  });
+
+  it('still requires an approval — a brain caller is not a pre-approved one', async () => {
+    const h = setup({ approval: { approved: false, outcome: 'declined' } });
+    await h.call({ ...goodParams(), senderPtyId: undefined }, COMMANDER);
+    await h.flush();
+    expect(h.approvalCount()).toBe(1);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the commander workspace has no resolvable active pane', async () => {
+    const h = setup({ commanderAnchorPtyId: '' });
+    const res = await h.call({ ...goodParams(), senderPtyId: undefined }, COMMANDER);
+    expect(errorOf(res).code).toBe('FAILED_PRECONDITION');
+    expect(h.approvalCount()).toBe(0);
+  });
+
+  it('keeps its idempotency keys out of the pane agents\' key space', async () => {
+    // Keys are caller-chosen strings. A brain polling an obvious key like
+    // "fanout-1" must not read a pane agent's fan-out result — task ids,
+    // branches, worktree paths — nor have its own start answered as that
+    // agent's poll.
+    const h = setup();
+    await h.call(goodParams({ idempotencyKey: 'shared' }));
+    await h.flush();
+    const paneKey = h.request().idempotencyKey;
+
+    const h2 = setup();
+    await h2.call({ ...goodParams({ idempotencyKey: 'shared' }), senderPtyId: undefined }, COMMANDER);
+    await h2.flush();
+    expect(h2.request().idempotencyKey).not.toBe(paneKey);
+  });
+
+  it('leaves the pty path fail-closed for a NON-commander with no pty', async () => {
+    const h = setup();
+    const res = await h.call({ ...goodParams(), senderPtyId: undefined });
+    expect(errorOf(res).code).toBe('NOT_AUTHORIZED');
+  });
+});
+
+// ── per-task roles ────────────────────────────────────────────────────────
+//
+// Roles are how one fan-out lands on more than one agent/model. The wire
+// carries a role NAME, never a command: the agent command is interpolated
+// unquoted into a shell line downstream, which is why R1 rejects agentCmd
+// outright. A closed vocabulary keeps the capability without reopening that.
+describe('roles choose the agent per task, without naming one', () => {
+  it('forwards index-aligned roles to the service', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['a', 'b'], roles: ['Builder', 'Reviewer'] }));
+    await h.flush();
+    expect(h.request().roles).toEqual(['Builder', 'Reviewer']);
+  });
+
+  it('keeps role pairing when an empty title is dropped', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['a', '  ', 'c'], roles: ['Builder', 'Tester', 'Reviewer'] }));
+    await h.flush();
+    expect(h.request().titles).toEqual(['a', 'c']);
+    expect(h.request().roles).toEqual(['Builder', 'Reviewer']);
+  });
+
+  it('rejects an unknown role instead of silently using the default agent', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ roles: ['Builder', 'Overlord'] }));
+    expect(errorOf(res).code).toBe('INVALID_ARGUMENT');
+    expect(h.approvalCount()).toBe(0);
+  });
+
+  it('rejects a command smuggled in as a role', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ roles: ['claude --dangerously-skip-permissions'] }));
+    expect(errorOf(res).code).toBe('INVALID_ARGUMENT');
+  });
+
+  it('shows the role in what the operator approves', async () => {
+    // Approving a prompt is not approving whatever agent the caller picked to
+    // run it, so the role has to be visible in the preview.
+    const h = setup();
+    await h.call(goodParams({ titles: ['a', 'b'], roles: ['Builder', 'Reviewer'] }));
+    await h.flush();
+    expect(h.preview()).toContain('role: Builder');
+    expect(h.preview()).toContain('role: Reviewer');
+  });
+
+  it('rejects more roles than titles instead of dropping the extras', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ titles: ['a', 'b'], roles: ['Builder', 'Reviewer', 'Tester'] }));
+    expect(errorOf(res).code).toBe('INVALID_ARGUMENT');
+  });
+
+  it('omits roles entirely when the caller sent none', async () => {
+    const h = setup();
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.request().roles).toEqual(['', '']);
   });
 });
 
