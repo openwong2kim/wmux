@@ -22,6 +22,7 @@
     "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
     "licenses": "node scripts/check-licenses.mjs",
+    "check:internal-docs": "node scripts/check-internal-docs.mjs --tracked",
     "test": "npm run test:parallel && npm run test:runtime",
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",

@@ -1,0 +1,6 @@
+# Git hooks are executed by sh. With core.autocrlf=true (the Windows default,
+# and this project's primary dev platform) they would otherwise be checked out
+# with CRLF, and sh fails them at the shebang: `bad interpreter: /bin/sh^M`.
+# Scoped to .githooks/ on purpose — a repo-wide rule here would renormalize
+# every tracked text file in one commit.
+.githooks/* text eol=lf
