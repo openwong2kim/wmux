@@ -175,6 +175,31 @@ class CoherentFakeAtlas {
   occupyAll(): void {
     for (const p of this.pages) p.currentRow = { x: 12, y: 340 };
   }
+  /**
+   * The patched atlas fires upstream's removal event too — `_deletePage` is
+   * still what a reducing merge calls. Without this the coherent fake never
+   * arms the guard's latch, so the STRONGEST cure signal was the one the
+   * coherent cases never exercised.
+   */
+  private removalListeners: Array<(canvas: unknown) => void> = [];
+  onRemoveTextureAtlasCanvas(listener: (canvas: unknown) => void): { dispose(): void } {
+    this.removalListeners.push(listener);
+    return { dispose: () => { this.removalListeners = []; } };
+  }
+  /**
+   * A reducing same-size merge (`_tryMergeSameSizePages`): four pages go, one
+   * merged page arrives, the removal event fires once per deleted page, and
+   * the generation advances — that last part is what the guard leans on, and
+   * nothing pinned it before.
+   */
+  mergePages(count = 4): void {
+    this.pages.splice(0, count);
+    this.pages.push({ currentRow: { x: 0, y: 1 } });
+    for (let i = 0; i < count; i++) {
+      for (const l of this.removalListeners) l({});
+    }
+    this.clearModelGeneration++;
+  }
 }
 
 type GuardAtlas = FakeAtlas | CoherentFakeAtlas;
@@ -804,6 +829,66 @@ describe('atlasGuard', () => {
       expect(prevents).toHaveLength(0);
       expect(atlas.clearCalls).toBe(0);
       expect(pane.refreshes()).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not CURE a coherent atlas that merges pages itself', () => {
+    // The evict case above only covers count-drop + page-identity. A reducing
+    // merge also fires the REMOVAL EVENT, which is the guard's strongest cure
+    // signal and outranks both — `removed` short-circuits detectMerge. The
+    // generation check has to consume that one too, and until now no test
+    // asked it to: the coherent fake had no removal event at all, so the
+    // latch was never even armed on this path.
+    const atlas = new CoherentFakeAtlas(12);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS); // baseline tick arms the latch
+
+      atlas.mergePages(4);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => /\[wmux:atlas-guard] cure/.test(l))).toHaveLength(0);
+      expect(lines.filter((l) => /\[wmux:atlas-guard] prevent/.test(l))).toHaveLength(0);
+      expect(atlas.clearCalls).toBe(0);
+      expect(pane.refreshes()).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still CUREs a coherent atlas when pages vanish WITHOUT a generation bump', () => {
+    // The skip is not "coherent atlases are exempt" — it is "the atlas told us
+    // it already rebuilt its owners". A collapse with no generation advance
+    // means nobody rebuilt anything, and the backstop must still fire. This is
+    // what keeps the check honest if a future patch ever drops a bump.
+    const atlas = new CoherentFakeAtlas(12);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      const generationBefore = atlas.clearModelGeneration;
+      atlas.mergePages(4);
+      atlas.clearModelGeneration = generationBefore; // the bump never happened
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      const cures = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => /\[wmux:atlas-guard] cure/.test(l));
+      expect(cures).toHaveLength(1);
+      expect(pane.refreshes()).toBe(1);
     } finally {
       warn.mockRestore();
     }
