@@ -44,6 +44,14 @@
 //            with no rate limit. Corruption is visible for at most one poll
 //            interval instead of indefinitely.
 //
+//            A coherent atlas that just wiped or merged already bumped
+//            `clearModelGeneration` and each GlyphRenderer rebuilt on its
+//            next beginFrame. That same collapse looks like count-drop /
+//            page-identity / page-removed to this poll. When generation
+//            advanced since the last tick, consume the latch, re-baseline,
+//            and skip — the atlas invalidated itself. Unpatched addons
+//            omit the field and still get every CURE.
+//
 //            Three signals feed it, strongest first — a page-removal EVENT, a
 //            page-count drop, and a page-identity change. Count alone is not
 //            enough, and the trigger workload walks straight into its blind
@@ -151,7 +159,8 @@ interface AtlasLike {
   clearTexture?: () => void;
   constructor?: { maxAtlasPages?: number };
   /** Present on the patched addon (I3). Optional — DOM renderer / reshape
-   *  omit it and still no-op. When it is a number, PREVENT is skipped. */
+   *  omit it and still no-op. When it is a number, PREVENT is skipped and a
+   *  generation advance consumes CURE (the atlas already rebuilt owners). */
   clearModelGeneration?: number;
   /** Upstream public event. Its only emitter is `_mergePages`, reached solely
    *  from `_createNewPage`'s merge branch — so it is an exact, real-time merge
@@ -396,6 +405,8 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   } = options;
 
   const entries = new Set<AtlasGuardEntry>();
+  // Last seen clearModelGeneration per atlas. Undefined until first poll.
+  const prevGeneration = new WeakMap<object, number>();
   // Page-tag snapshot per atlas at the previous poll. Tags (not page objects)
   // so a merged-away page is free to be collected immediately. WeakMap so a
   // released atlas (all owner panes disposed) never leaks an entry.
@@ -523,6 +534,16 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       // a repair. Unpatched addons omit the field and still get the backstop.
       const coherent = typeof atlas.clearModelGeneration === 'number';
       const nearTrigger = !coherent && len >= preventAt && used >= preventAt;
+      if (coherent) {
+        const gen = atlas.clearModelGeneration as number;
+        const lastGen = prevGeneration.get(atlas as object);
+        prevGeneration.set(atlas as object, gen);
+        if (lastGen !== undefined && gen !== lastGen) {
+          // Atlas wiped or merged itself. Owners already rebuild via I3.
+          // The collapse would otherwise look like CURE with no cooldown.
+          continue;
+        }
+      }
       if (!mergeSignal && !nearTrigger) continue;
 
       // PREVENT-only cooldown. A rebuild is no longer cheap: it now drops every

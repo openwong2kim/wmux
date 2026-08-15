@@ -36,8 +36,8 @@ describe('atlas coherence model', () => {
 
   it('I3: two observers both see a wipe', () => {
     const atlas = createAtlasModel(4);
-    let a = atlas.generation;
-    let b = atlas.generation;
+    const a = atlas.generation;
+    const b = atlas.generation;
     atlas.rasterize('x', 8, 8);
     atlas.clearTexture();
     expect(atlas.generation).not.toBe(a);

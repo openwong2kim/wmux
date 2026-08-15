@@ -769,9 +769,41 @@ describe('atlasGuard', () => {
       const prevents = warn.mock.calls
         .map((c) => String(c[0]))
         .filter((l) => /\[wmux:atlas-guard] prevent/.test(l));
-      expect(prevents.length).toBeLessThanOrEqual(1);
-      expect(atlas.clearCalls).toBeLessThanOrEqual(1);
-      expect(pane.refreshes()).toBeLessThanOrEqual(1);
+      expect(prevents).toHaveLength(0);
+      expect(atlas.clearCalls).toBe(0);
+      expect(pane.refreshes()).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not CURE a coherent atlas that self-evicts at the cap', () => {
+    // growBy past maxPages runs I2 evict-all (new page objects, count 16→1).
+    // That is count-drop + page-identity — unlimited CURE on an unpatched
+    // read. Generation must consume it: GlyphRenderer already rebuilt.
+    const atlas = new CoherentFakeAtlas(CoherentFakeAtlas.maxAtlasPages);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      atlas.growBy(1);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      const cures = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => /\[wmux:atlas-guard] cure/.test(l));
+      const prevents = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => /\[wmux:atlas-guard] prevent/.test(l));
+      expect(cures).toHaveLength(0);
+      expect(prevents).toHaveLength(0);
+      expect(atlas.clearCalls).toBe(0);
+      expect(pane.refreshes()).toBe(0);
     } finally {
       warn.mockRestore();
     }
