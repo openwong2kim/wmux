@@ -53,6 +53,22 @@ declare global {
         onSampleTaskTimeout: (callback: () => void) => () => void;
       };
       /**
+       * #898 — fired once at startup when a Claude Code plugin install is
+       * still running a bridge that forces a permission prompt. wmux refreshes
+       * its own copy of the bridge but never the plugin's, so the renderer
+       * surfaces the command that does. Read-only report; no resolve half.
+       */
+      onStalePluginGate?: (
+        callback: (
+          found: Array<{
+            pluginKey: string;
+            version: string;
+            installPath: string;
+            updateCommand: string;
+          }>,
+        ) => void,
+      ) => () => void;
+      /**
        * Phase 2.2 — MCP plugin permission approval. Main fires `onOpen`
        * with the prompt payload; renderer resolves via `resolve(promptId,
        * approved)`. See `PermissionApprovalDialog` for the UX.

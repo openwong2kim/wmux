@@ -344,6 +344,11 @@ export const IPC = {
   // the pluginHost deadlock-break, or a coalesced sibling). Lets the renderer
   // approval-inbox remove the row. Payload: { promptId }.
   PERMISSION_PROMPT_CLOSED: 'permission:prompt-closed',
+  // #898 — main → renderer push, once at startup, when a Claude Code plugin
+  // install is found whose bridge still forces a permission prompt. wmux
+  // refreshes its OWN copy of the bridge but never the plugin's, so this tells
+  // the user to run the plugin update. Payload: StalePluginGate[].
+  PLUGIN_GATE_STALE: 'plugin:gate-stale',
   // LanLink PR-2 — main → renderer push of a materialized read-only REMOTE
   // inbox item (origin:'remote', off-machine peer). RemoteInboxBridge sends it
   // after a daemon.inbox.poll; the renderer's useRemoteInboxBridge projects it

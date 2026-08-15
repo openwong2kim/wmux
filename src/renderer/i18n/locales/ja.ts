@@ -457,4 +457,9 @@ export const ja = {
   // ─── ワークスペース項目: タスク worktree 境界の警告 ───
   'workspace.cwdDeparted': 'ペインの cwd がタスク worktree の境界外へ離脱しました: {cwd}',
   'workspace.departed': '離脱',
+
+  // ─── Stale Claude Code plugin hook bridge (#898) ───
+  'plugin.staleGate.message': 'Claude Code プラグインが古く、すべてのツール呼び出しで権限確認を強制しています。wmux を更新してもプラグインは更新されません。プラグインを更新してください。',
+  'plugin.staleGate.copy': 'コマンドをコピー',
+  'plugin.staleGate.copied': 'コマンドをコピーしました。ターミナルで実行し、Claude セッションを再起動してください。',
 } as const;

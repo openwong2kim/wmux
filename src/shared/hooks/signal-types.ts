@@ -160,13 +160,19 @@ export interface HookSignalResponse {
    *  which Claude Code feeds back on exit 2). */
   block?: { reason: string };
   /**
-   * #783 — PreToolUse permission gate verdict. Present when the signal was an
-   * `agent.awaiting_permission` request. The bridge translates this into the
-   * modern PreToolUse `hookSpecificOutput.permissionDecision` JSON on stdout.
-   * `allow` = proceed without prompting; `deny` = block; `ask`/`defer` = fall
-   * back to Claude Code's normal permission flow. Absent for non-gate signals.
+   * #783 — PreToolUse permission gate verdict. Present ONLY when a real
+   * decision was reached: `allow` = proceed without prompting, `deny` = block.
+   * The bridge translates it into the modern PreToolUse
+   * `hookSpecificOutput.permissionDecision` JSON on stdout.
+   *
+   * #898 — there is no "no opinion" VALUE; absence is how that is expressed.
+   * A non-gate signal, a non-gated tool, a disarmed gate, or a broker that
+   * self-deferred all omit this field, and the bridge then writes nothing at
+   * all so the tool call follows the session's own permission flow. `ask` used
+   * to be sent for those cases; it is not neutral — it forces a prompt and
+   * overrides permission modes like `bypassPermissions`.
    */
-  permissionDecision?: 'allow' | 'deny' | 'ask' | 'defer';
+  permissionDecision?: 'allow' | 'deny';
   /** Reason hint when ok=false. Logged by the bridge to ~/.wmux/bridge.log. */
   reason?:
     | 'no-workspace-match'

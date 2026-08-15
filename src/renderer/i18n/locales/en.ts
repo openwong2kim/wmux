@@ -485,6 +485,12 @@ export const en = {
   'hooks.prompt.doneTitle': 'Hooks installed',
   'hooks.prompt.doneBody': 'Restart the Claude sessions in your panes to activate the hooks.',
   'hooks.prompt.close': 'Close',
+  // #898 — the plugin's own copy of the hook bridge is stale and still forces a
+  // permission prompt on every tool call. Updating wmux cannot fix it; only a
+  // plugin update can, so the notice hands over the exact command.
+  'plugin.staleGate.message': 'Your Claude Code plugin is out of date and is forcing a permission prompt on every tool call. Updating wmux does not update the plugin — update it to stop this.',
+  'plugin.staleGate.copy': 'Copy command',
+  'plugin.staleGate.copied': 'Command copied. Run it in a terminal, then restart your Claude sessions.',
   'deck.mode.danger': 'Danger',
   'deck.mode.dangerDesc': 'Launches Claude in bypass mode (--dangerously-skip-permissions). Nothing prompts it — it acts on its own judgment.',
   // Composer lock reason for mode `off` (main refuses the send too — this is

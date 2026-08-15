@@ -2946,12 +2946,16 @@ function registerRpcHandlers(
       const signal: AgentSignal = params;
       // #783 — runtime escape hatch (POST /api/gate/off). The tool passes
       // through ungated; we still emit agent.tool_started for phone liveness.
-      // `ask`, never `allow`. The wide PreToolUse matcher sees EVERY tool, so
-      // answering `allow` would hand a blanket auto-approval to every tool wmux
-      // does not gate — silently overriding Claude Code's own permission
-      // prompts and the user's settings.json deny rules. `ask` means "wmux has
-      // no opinion here", which is the whole point of an escape hatch: it falls
-      // back to the normal local flow. Only a real phone approval says `allow`.
+      // Never `allow`: the wide PreToolUse matcher sees EVERY tool, so a
+      // blanket auto-approval would silently override Claude Code's own
+      // permission prompts and the user's settings.json deny rules. Only a real
+      // phone approval says `allow`.
+      // #898 — but the no-opinion answer is an ABSENT decision, not `ask`. This
+      // used to return `ask`, believing it meant "wmux has no opinion, use the
+      // local flow". It does not: `ask` actively forces a prompt and overrides
+      // the session's permission mode, so the escape hatch left every tool call
+      // — Read included — prompting in a bypassPermissions session. Omitting
+      // the field lets the bridge write nothing, which is the real fall-through.
       // #783 — the gate arms ONLY while the card it raises can actually be
       // ANSWERED. The desktop app raises a "Permission needed" notification but
       // has no answer UI, so `POST /api/approvals/:id` is the only resolution
@@ -2966,25 +2970,32 @@ function registerRpcHandlers(
       // restore path can assign the instance after this handler is registered.
       if (gateRuntimeOff || webTerminalServer?.canResolveGates !== true) {
         ingest.handle({ ...signal, kind: 'agent.tool_started' });
-        return { ok: true, permissionDecision: 'ask' as const };
+        return { ok: true };
       }
       const gate = ingest.handlePermissionGate(signal);
       if (!gate.ok || !gate.gateId) {
-        // Unroutable or non-gated tool — hand it back to the local flow.
+        // Unroutable or non-gated tool (or a bypassPermissions session, which
+        // handlePermissionGate deliberately never gates) — hand it back to the
+        // local flow by saying nothing. #898: this is the path a plain Read
+        // takes, and returning `ask` here is what re-prompted for every tool
+        // the gate does not even cover.
         return {
           ok: gate.ok,
           ...(gate.reason ? { reason: gate.reason } : {}),
-          permissionDecision: 'ask' as const,
         };
       }
       // Gated: await the broker. The bridge holds its stdout open until this
       // resolves. The broker self-defers at 120s; the bridge times out at 130s.
       const verdict = await gateBroker!.awaitVerdict(gate.gateId, gate.sessionId ?? '');
+      // A self-deferred broker (nobody answered in 120 s) carries no verdict, so
+      // the field is omitted and the bridge stays silent — the call then follows
+      // the session's own permission flow. #898: `ask` here forced a prompt even
+      // on a session that had opted out of prompting entirely.
       const permissionDecision = verdict.decision === 'allow'
         ? 'allow' as const
         : verdict.decision === 'deny'
           ? 'deny' as const
-          : 'ask' as const;
+          : undefined;
       // Release the phone's liveness header. `agent.awaiting_permission` put it
       // in "waiting on you, elapsed N s", and nothing else would take it back
       // out: the wide PostToolUse hook this used to ride was removed, so the
@@ -3003,7 +3014,7 @@ function registerRpcHandlers(
           signal,
         }, Date.now()));
       }
-      return { ok: true, permissionDecision };
+      return { ok: true, ...(permissionDecision ? { permissionDecision } : {}) };
     }
     return ingest.handle(params);
   });

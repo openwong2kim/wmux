@@ -1198,6 +1198,57 @@ export default function AppLayout() {
     };
   }, []);
 
+  // #898 — a Claude Code plugin install still running the bridge that answers
+  // `ask` on every fall-through. That state blocks EVERY tool call in a
+  // bypass-permissions session and cannot be turned off from inside the
+  // session, so the notice persists rather than expiring after five seconds:
+  // the user has to run a command, and the breakage outlives any timeout.
+  // wmux deliberately does not repair the plugin's own directory (see
+  // stalePluginGate) — it hands over the command instead.
+  useEffect(() => {
+    const off = window.electronAPI.onStalePluginGate?.((found) => {
+      if (found.length === 0) return;
+      // A user and a project scope install can both be stale, and fixing one
+      // leaves the other prompting — so copy every command, not just the first.
+      const command = found.map((f) => f.updateCommand).join('\n');
+      useStore.getState().pushToast({
+        level: 'warn',
+        persist: true,
+        message: t('plugin.staleGate.message'),
+        action: {
+          label: t('plugin.staleGate.copy'),
+          onClick: () => {
+            void (async () => {
+              try {
+                const clipboard = window.clipboardAPI;
+                // An absent bridge has to reach the fallback too, or the
+                // button would report a copy that never happened.
+                if (!clipboard) throw new Error('clipboard bridge unavailable');
+                // Awaited inside the try because writeText MAY throw
+                // SYNCHRONOUSLY (review: CodeRabbit) — a `.catch()` chained
+                // onto the call sees rejections only, and would miss it.
+                await clipboard.writeText(command);
+                useStore.getState().pushToast({
+                  level: 'info',
+                  message: t('plugin.staleGate.copied'),
+                });
+              } catch {
+                // Showing the raw command keeps the user able to act, which is
+                // the whole point of the notice.
+                useStore.getState().pushToast({
+                  level: 'warn',
+                  persist: true,
+                  message: command,
+                });
+              }
+            })();
+          },
+        },
+      });
+    });
+    return () => off?.();
+  }, []);
+
   // X8 pane supervision — keep the renderer supervision slice in sync with the
   // daemon's PaneSupervisor. Three inputs:
   //   - pty.onSupervisionChanged: sticky status flip (guard-trip / rearm /
