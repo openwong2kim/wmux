@@ -55,6 +55,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
+import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountStore } from './account/accountStore';
@@ -80,6 +81,7 @@ import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
+import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -399,7 +401,13 @@ let mainWindow: BrowserWindow | null = null;
 // in this file). Lets the detector tee call `recordDetector` on emit without
 // reordering hook/router boot earlier than the PTY layer.
 let hookSignalRouter: HookSignalRouter | null = null;
-const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRouter);
+// Forward-declared the same way: the local-mode CompletionAlarm (verdict gate
+// for the daemon-UNREACHABLE hook fallback and the detector path) is built
+// later in boot order alongside the router. ONE instance is shared by
+// PTYBridge and registerHooksRpc — the detector's provisional window and the
+// hook's Stop candidate must arbitrate against the same pane gate.
+let localCompletionAlarm: CompletionAlarm | null = null;
+const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRouter, () => localCompletionAlarm);
 // The hooks carry the two things the updater cannot reach: the quit flag that
 // lets windows actually close (without it quitAndInstall never installs — see
 // prepareInstallQuit) and the way back if that handoff stalls.
@@ -674,6 +682,21 @@ function attachWindowRecovery(win: BrowserWindow): void {
 const signalLatencyMeter = new SignalLatencyMeter();
 hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 
+// Local-mode verdict gate — the same CompletionAlarm the daemon's HookIngest
+// runs, mirroring its rules onto the daemon-UNREACHABLE fallback path
+// (hooks.rpc) and the detector path (PTYBridge). onConfirmed just resumes
+// the stashed fan-out; every reject/hold decision lives in the shared module.
+// Unref'd timers, same rule as the daemon's: an open provisional window must
+// never hold the process open at quit.
+localCompletionAlarm = new CompletionAlarm({
+  schedule: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    t.unref?.();
+    return () => clearTimeout(t);
+  },
+  onConfirmed: (_pane, _slug, _cls, resume) => resume(),
+});
+
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
@@ -809,7 +832,7 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
 };
-const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd);
+const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
 // Opt-in. Stays idle until the renderer sends IPC.USAGE_TOGGLE with `true`.

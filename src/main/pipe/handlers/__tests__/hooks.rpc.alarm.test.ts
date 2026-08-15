@@ -1,0 +1,265 @@
+// Verdict-gate integration tests for the local (daemon-unreachable) hooks.rpc
+// path with a REAL CompletionAlarm injected. Mirrors hooks.rpc.emit.test.ts's
+// harness (mocked _bridge / sendNotification / metadata broadcast, stubbed
+// HookSignalRouter) and adds `vi.useFakeTimers` to drive the 1.5s provisional
+// window. The behaviors locked here:
+//   - hold → confirmed: ledger write, lifecycle tee, usage probe, and toast
+//     all fire only AFTER the window expires (R1 — recordHook at confirm time,
+//     so the detector-then-hook race can never bury the broadcast in a stale
+//     'dedup').
+//   - hold → rebutted: nothing fires and the stop never touches the ledger.
+//   - subagent_stop: 'internal' trace, no toast, no ledger write.
+//   - stop(clean) replacing a pending done window: exactly one fan-out.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BrowserWindow } from 'electron';
+import { RpcRouter } from '../../RpcRouter';
+import { eventBus } from '../../../events/EventBus';
+import type { HookSignalRouter } from '../../../hooks/HookSignalRouter';
+import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
+import { CompletionAlarm, DEFAULT_ALARM_WINDOW_MS } from '../../../../shared/hooks/CompletionAlarm';
+
+const { sendToRendererMock, sendNotificationMock, broadcastMetadataUpdateMock } = vi.hoisted(() => ({
+  sendToRendererMock: vi.fn(),
+  sendNotificationMock: vi.fn(),
+  broadcastMetadataUpdateMock: vi.fn(),
+}));
+
+vi.mock('../_bridge', () => ({
+  sendToRenderer: sendToRendererMock,
+}));
+
+vi.mock('../../../notification/sendNotification', () => ({
+  sendNotification: sendNotificationMock,
+}));
+
+vi.mock('../../../ipc/handlers/metadata.handler', () => ({
+  broadcastMetadataUpdate: broadcastMetadataUpdateMock,
+}));
+
+vi.mock('../../../notification/rendererNotificationReadiness', () => ({
+  isRendererNotificationListenerReady: () => true,
+}));
+
+import { registerHooksRpc } from '../hooks.rpc';
+
+function fakeWindow(): BrowserWindow {
+  return {
+    isDestroyed: () => false,
+    webContents: { send: vi.fn() },
+  } as unknown as BrowserWindow;
+}
+
+function stubHookRouter() {
+  const recordHook = vi.fn().mockReturnValue('emit');
+  const router = {
+    recordHook,
+    recordDetector: vi.fn(),
+    touchAuthority: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(false),
+    getLatencyMeter: () => ({
+      recordSignal: vi.fn(),
+      recordWorkspaceMatch: vi.fn(),
+      onStatsChange: () => vi.fn(),
+      getStats: () => ({}),
+    }),
+  } as unknown as HookSignalRouter;
+  return { router, recordHook };
+}
+
+function signal(overrides: Partial<AgentSignal>): AgentSignal {
+  return {
+    kind: 'agent.stop',
+    agent: 'claude',
+    cwd: '/repo',
+    payload: {},
+    ts: 1_700_000_000_000,
+    ...overrides,
+  } as AgentSignal;
+}
+
+function workspaces() {
+  return [{
+    id: 'ws-1',
+    name: 'one',
+    metadata: { cwd: '/repo' },
+    activePtyId: 'pty-1',
+    ptyIds: ['pty-1'],
+  }];
+}
+
+function pollLifecycle() {
+  const { events } = eventBus.poll(0, { types: ['agent.lifecycle'] });
+  return events as Array<{ kind?: string; decision?: string }>;
+}
+
+interface Rig {
+  router: RpcRouter;
+  recordHook: ReturnType<typeof stubHookRouter>['recordHook'];
+  onClaudeTurnEnd: ReturnType<typeof vi.fn>;
+  dispatch: (overrides: Partial<AgentSignal>) => Promise<{ ok: boolean }>;
+}
+
+function rig(): Rig {
+  const stub = stubHookRouter();
+  const onClaudeTurnEnd = vi.fn();
+  // Real alarm: main wires an unref'd schedule in production; tests just need
+  // the default setTimeout, which fake timers control.
+  const alarm = new CompletionAlarm({
+    onConfirmed: (_pane, _slug, _cls, resume) => resume(),
+  });
+  const router = new RpcRouter();
+  registerHooksRpc(router, () => fakeWindow(), stub.router, undefined, onClaudeTurnEnd, undefined, alarm);
+  return {
+    router,
+    recordHook: stub.recordHook,
+    onClaudeTurnEnd,
+    dispatch: (overrides) => router.dispatch({
+      id: `t-${Math.random().toString(36).slice(2, 6)}`,
+      method: 'hooks.signal',
+      params: signal(overrides) as unknown as Record<string, unknown>,
+    }) as Promise<{ ok: boolean }>,
+  };
+}
+
+/** Working evidence must precede a stop, or the turn gate rejects it. */
+async function primeWorking(r: Rig): Promise<void> {
+  await r.dispatch({ kind: 'agent.activity' });
+  vi.clearAllMocks(); // the activity signal itself does not fan out
+}
+
+describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    eventBus.reset();
+    sendToRendererMock.mockResolvedValue(workspaces());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('holds a stop, then fires ledger+tee+toast only at window confirmation', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    const res = await r.dispatch({ kind: 'agent.stop' });
+    expect(res.ok).toBe(true);
+    // Held: nothing has fired yet — the provisional window is open.
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(pollLifecycle()).toHaveLength(0);
+    expect(r.onClaudeTurnEnd).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    // Confirmed: ledger FIRST (R1 — recordHook at confirm time), then the
+    // tee carries decision 'emit', the usage probe rides the confirmed turn
+    // end, and the toast fires exactly once.
+    expect(r.recordHook).toHaveBeenCalledTimes(1);
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop', decision: 'emit' });
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    expect(r.onClaudeTurnEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('a working cue inside the window rebuts the stop — nothing fires, ledger untouched', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop' });
+    // Tool resumed right after the stop: rebuttal inside the window.
+    await r.dispatch({ kind: 'agent.tool_started' });
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(r.onClaudeTurnEnd).not.toHaveBeenCalled();
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('a stop with no prior working evidence is rejected — internal trace, no toast', async () => {
+    const r = rig();
+
+    await r.dispatch({ kind: 'agent.stop' });
+
+    // Turn-gate miss is an immediate drop, not a hold.
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop', decision: 'internal' });
+  });
+
+  it('a stop stamped with leftover background work is rejected even with working evidence', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop', payload: { wmux_leftover_work: 2 } });
+
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0].decision).toBe('internal');
+  });
+
+  it('subagent_stop never toasts: internal trace only, ledger untouched', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.subagent_stop' });
+
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.subagent_stop', decision: 'internal' });
+  });
+
+  it('a second clean stop replaces the pending window — exactly one fan-out (R2)', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop' });
+    // The hook's stop supersedes the pending (detector-shaped) window.
+    await r.dispatch({ kind: 'agent.stop' });
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(r.recordHook).toHaveBeenCalledTimes(1);
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    expect(r.onClaudeTurnEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('awaiting_input holds as attention and confirms into the toast + dot', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.awaiting_input' });
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'awaiting_input' }),
+    );
+  });
+
+  it('an answered cue rebuts a pending attention window', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.awaiting_input' });
+    await r.dispatch({ kind: 'agent.input_answered' });
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+  });
+});

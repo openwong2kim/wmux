@@ -250,8 +250,15 @@ export interface AgentLifecycleEvent extends WmuxEventBase {
    * is published either way for observability; consumers that only want
    * "first-of-kind" signals filter on `decision === 'emit'`. OSC 133
    * events are always 'emit' (no dedup applies to shell command lifecycle).
+   *
+   * 'internal' = the CompletionAlarm rejected the candidate as NOT a real
+   * turn end (subagent stop, leftover background work, turn-gate miss,
+   * already announced, or a rebutted provisional window). No notification
+   * fired and no ledger entry was written — the event is published as a
+   * trace only. Consumers that filter on `decision === 'emit'` are
+   * unaffected by construction.
    */
-  decision: 'emit' | 'dedup';
+  decision: 'emit' | 'dedup' | 'internal';
   /**
    * Process exit code reported by the OSC 133 D marker, when present.
    * Only set for `source:'osc133'`; absent or `null` for hook/detector
