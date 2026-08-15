@@ -135,7 +135,7 @@ export class CompletionAlarm {
    *   answered         | attention      | cancel → drop
    *   answered         | other/none     | no-op → drop
    *   attention        | done/attention | cancel, open attention window → hold
-   *   stop.child       | any            | cancel, no toast ever → drop
+   *   stop.child       | any            | NO-OP, never a toast → drop
    *   stop.leftover>0  | any            | cancel, treated as working → drop
    *   stop clean       | attention      | cancel, then evaluate the gate
    *   stop clean       | done           | cancel, replace with new window (R2)
@@ -168,11 +168,30 @@ export class CompletionAlarm {
         return this.openWindow(state, key, pane, slug, 'attention', resume);
 
       case 'stop': {
-        this.cancelPending(state, key, 'superseded by stop');
         if (cue.child) {
-          // A subagent finishing is never a lead-turn end. Status only.
+          // A subagent finishing is never a lead-turn end — and it is not
+          // evidence ABOUT the lead turn either, so it must leave a window the
+          // lead turn's own stop opened completely alone. Status only, no
+          // state touched.
+          //
+          // This used to cancel first and ask afterwards, which lost real
+          // alarms: the cancel dropped the completion outright — nothing
+          // re-fires, while `seenWorking`/`announced` still say one is owed.
+          //
+          // The rule that settles it is the asymmetry, NOT an ordering
+          // guarantee. Do not restore the cancel on the argument that a child
+          // stop inside the window proves the turn resumed: a backgrounded
+          // Task dispatch lets the lead turn end while a subagent is still
+          // running, so a genuinely-later child stop is possible, and hooks
+          // are separate processes that can deliver out of order anyway. In
+          // BOTH readings the cost is bounded — at worst one early toast, and
+          // a resumed turn announces itself again through its own working
+          // cues — whereas cancelling costs the alarm entirely, with nothing
+          // left to fire. Missed beats early is the trade this module refuses
+          // to make.
           return 'drop';
         }
+        this.cancelPending(state, key, 'superseded by stop');
         if (cue.leftoverWork > 0) {
           // The turn has not actually ended: background work is running.
           // Treat as working evidence so the eventual real stop (after the
@@ -234,7 +253,30 @@ export class CompletionAlarm {
       current.announced = true;
       current.seenWorking = false;
       this.log?.('debug', `[alarm] ${cls} confirmed for ${key} after ${this.now() - t0}ms`);
-      this.onConfirmed(pane, slug, cls, resume);
+      // Guarded because this runs from a TIMER, not from the caller's stack.
+      // The resume closures fan out through eventBus.emit (synchronous
+      // listeners), metadata broadcasts and toast delivery; a throw from any
+      // of them here is an uncaughtException, which takes the whole process
+      // with it rather than failing one notification. The daemon path wraps
+      // its own broadcast, the local fallback does not — guarding at the one
+      // call site covers both. State is already committed above, so a
+      // throwing consumer cannot leave the gate mid-transition either.
+      try {
+        this.onConfirmed(pane, slug, cls, resume);
+      } catch (err) {
+        // console.warn is the FALLBACK, not a nicety: neither wiring site
+        // passes `log` today, so `this.log?.()` alone would swallow the throw
+        // whole — and by here `announced` is already committed, so nothing
+        // re-fires. That trades a loud crash for a silent lost alarm, which is
+        // the worse half of this module's own rule. The stack, not just the
+        // message: the daemon's resume runs ordered side effects (ledger
+        // write, then phone-card expiry, then broadcast), so WHERE it threw
+        // decides which of them landed.
+        const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        const line = `[alarm] ${cls} confirmation for ${key} threw: ${detail}`;
+        if (this.log) this.log('warn', line);
+        else console.warn(line);
+      }
     }, this.windowMs);
     state.pending = { cls, cancel, resume };
     return 'hold';

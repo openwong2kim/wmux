@@ -599,15 +599,17 @@ function countLeftoverBackgroundTasks(transcriptPath) {
           ? entry.attachment.prompt
           : null;
       // `includes` over `startsWith`: the body can carry leading whitespace
-      // before the opening tag. Any `<status>` VALUE settles — a whitelist
-      // (completed|failed) that misses a future terminal status would leave
-      // the task counted as running forever and permanently suppress the
-      // completion alarm; a spuriously-settled task at worst fires one
+      // before the opening tag. The ARRIVAL of a task-notification for an id
+      // settles it — neither the `<status>` value nor the tag's presence is
+      // required. Both directions of that check have the same failure mode:
+      // a value whitelist (completed|failed) that misses a future terminal
+      // status, or a renamed/absent tag, leaves the task counted as running
+      // FOREVER and permanently suppresses the completion alarm for the rest
+      // of the session. A spuriously-settled task at worst fires one
       // window-gated alarm. Fail-open, same posture as the read errors above.
       if (body && body.includes('<task-notification>')) {
         const idMatch = body.match(/<tool-use-id>([^<]+)<\/tool-use-id>/);
-        const statusMatch = body.match(/<status>([^<]+)<\/status>/);
-        if (idMatch && statusMatch) settledIds.add(idMatch[1]);
+        if (idMatch) settledIds.add(idMatch[1]);
       }
     }
     let leftover = 0;

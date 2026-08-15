@@ -783,9 +783,11 @@ export function registerHooksRpc(
       return { ok: true };
     }
 
-    // A subagent stop is never a lead-turn end. The cue (child stop) cancels
-    // any pending window and arms nothing; the trace is 'internal' and no
-    // toast fires.
+    // A subagent stop is never a lead-turn end. The cue (child stop) is a
+    // NO-OP in the alarm — it arms nothing AND cancels nothing, so a window
+    // the lead turn's own stop opened survives a child stop that lands inside
+    // it (cancelling there dropped the completion with nothing left to
+    // re-fire). The trace is 'internal' and no toast fires.
     if (signal.kind === 'agent.subagent_stop') {
       alarm.observe(ptyId, signal.agent, normalizeHookCue(signal));
       const subWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);

@@ -117,6 +117,22 @@ describe('countLeftoverBackgroundTasks', () => {
     expect(count(p)).toBe(0);
   });
 
+  it('settles when the notification carries NO <status> tag at all', () => {
+    // The value whitelist was already loosened; requiring the TAG had the same
+    // failure mode and was left in place. A task-notification whose status tag
+    // is absent, renamed, or moved would never settle its id, so leftover
+    // stayed above zero and every later Stop in that session was suppressed —
+    // permanent silence, from a shape change we do not control. The ARRIVAL of
+    // a notification for an id is the settlement; the status is diagnostic.
+    const body = '<task-notification>\n<task-id>task1</task-id>\n<tool-use-id>call_nostatus</tool-use-id>\n<summary>Background command finished</summary>\n</task-notification>';
+    const p = fixture('settled-no-status.jsonl', [
+      bgStart('call_nostatus'),
+      bgStartResult('call_nostatus'),
+      { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-15T00:00:00.000Z', sessionId: 's1', content: body },
+    ]);
+    expect(count(p)).toBe(0);
+  });
+
   it('settled via the DURABLE attachment shape (queue already drained) → 0', () => {
     const p = fixture('settled-attachment.jsonl', [
       bgStart('call_a'),

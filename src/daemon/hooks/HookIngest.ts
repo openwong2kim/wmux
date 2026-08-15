@@ -822,7 +822,10 @@ export class HookIngest {
     // arbitrate cleanly instead of finding a ghost 'emit'.
     const cue = normalizeHookCue(signal);
     if (signal.kind === 'agent.subagent_stop') {
-      // Never a lead-turn end: cancel any pending window, status only. The
+      // Never a lead-turn end, and never a verdict about one: the cue is a
+      // NO-OP in the alarm — it leaves a window the lead turn's own stop
+      // opened untouched, because cancelling there loses that completion with
+      // nothing left to re-fire. Status only. The
       // pane's own turn keeps going, so the broadcast says RUNNING — taking a
       // subagent's 'complete' at face value would flip the status dot (and the
       // phone liveness header, which special-cases this hookKind) mid-turn.
