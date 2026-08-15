@@ -19,25 +19,38 @@
 // Korean-heavy sessions mint new glyphs continuously and are the realistic
 // way to exhaust 16 pages.
 //
-// Strategy — keep the buggy merge path from ever executing, and repair
-// coherently if it does:
+// Strategy — the patched addon (I1–I4) is the happy path. This guard is a
+// backstop for unpatched / old addons, and for a merge that still slips
+// through:
 //
-//   PREVENT  When a shared atlas's page count approaches the merge trigger
-//            (trigger − GUARD_MARGIN_PAGES) AND that many pages are actually
-//            OCCUPIED (a long pool of empty pages is nowhere near a merge —
-//            see defect 2 below), clear the atlas
-//            (clearTexture empties every page in place and clears both cache
-//            maps) and then drop the render model of every pane sharing it, in
-//            the same tick. That is the coherent all-owners rebuild upstream
-//            itself performs on font changes — the #191 hazard was clearing
-//            from ONE pane while its siblings kept stale references, which
-//            this never does. Speculative firings are rate-limited
+//   PREVENT  Unpatched addon only. When a shared atlas's page count
+//            approaches the merge trigger (trigger − GUARD_MARGIN_PAGES) AND
+//            that many pages are actually OCCUPIED (a long pool of empty
+//            pages is nowhere near a merge — see defect 2 below), clear the
+//            atlas (clearTexture empties every page in place and clears both
+//            cache maps) and then drop the render model of every pane sharing
+//            it, in the same tick. That is the coherent all-owners rebuild
+//            upstream itself performs on font changes — the #191 hazard was
+//            clearing from ONE pane while its siblings kept stale references,
+//            which this never does. Speculative firings are rate-limited
 //            (GUARD_PREVENT_COOLDOWN_MS); a saturated pool re-arms the gate
 //            every poll and the rebuild is not free.
+//
+//            A coherent atlas duck-types via optional `clearModelGeneration`
+//            and self-evicts at the sampler budget (I2). PREVENT never fires
+//            on that shape — wiping it every 30s would fight the atlas.
 //
 //   CURE     If a merge slips through anyway, do the same clear+rebuild-all,
 //            with no rate limit. Corruption is visible for at most one poll
 //            interval instead of indefinitely.
+//
+//            A coherent atlas that just wiped or merged already bumped
+//            `clearModelGeneration` and each GlyphRenderer rebuilt on its
+//            next beginFrame. That same collapse looks like count-drop /
+//            page-identity / page-removed to this poll. When generation
+//            advanced since the last tick, consume the latch, re-baseline,
+//            and skip — the atlas invalidated itself. Unpatched addons
+//            omit the field and still get every CURE.
 //
 //            Three signals feed it, strongest first — a page-removal EVENT, a
 //            page-count drop, and a page-identity change. Count alone is not
@@ -145,6 +158,10 @@ interface AtlasLike {
   pages?: ArrayLike<{ currentRow?: { x?: number; y?: number } }>;
   clearTexture?: () => void;
   constructor?: { maxAtlasPages?: number };
+  /** Present on the patched addon (I3). Optional — DOM renderer / reshape
+   *  omit it and still no-op. When it is a number, PREVENT is skipped and a
+   *  generation advance consumes CURE (the atlas already rebuilt owners). */
+  clearModelGeneration?: number;
   /** Upstream public event. Its only emitter is `_mergePages`, reached solely
    *  from `_createNewPage`'s merge branch — so it is an exact, real-time merge
    *  signal (verified against @xterm/addon-webgl 0.19.0). */
@@ -252,11 +269,13 @@ function pageInUse(page: { currentRow?: { x?: number; y?: number } } | undefined
  * path firing on every poll with no effect — 4657 guard events in one day
  * against 6 cures.
  *
- * The fix has to live here: @xterm/addon-webgl is a dependency we do not patch.
- * When some page is in use but page 0 is not, move page 0's cursor off the
- * origin so the probe cannot short-circuit, then let upstream do the real work
- * (it also clears the two glyph cache maps, which we must not do by hand — a
- * cleared page with a live cache entry pointing into it is the #191 hazard).
+ * The page-0 nudge stays for unpatched / old addons. A patched atlas
+ * implements I1 itself (probes every page, collapses to one empty page), so
+ * the nudge is unused on that path. When some page is in use but page 0 is
+ * not, move page 0's cursor off the origin so the probe cannot short-circuit,
+ * then let upstream do the real work (it also clears the two glyph cache
+ * maps, which we must not do by hand — a cleared page with a live cache
+ * entry pointing into it is the #191 hazard).
  *
  * The postcondition is then VERIFIED rather than assumed: every page must come
  * back idle. If it does not, the nudge is rolled back and the caller is told,
@@ -386,6 +405,8 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   } = options;
 
   const entries = new Set<AtlasGuardEntry>();
+  // Last seen clearModelGeneration per atlas. Undefined until first poll.
+  const prevGeneration = new WeakMap<object, number>();
   // Page-tag snapshot per atlas at the previous poll. Tags (not page objects)
   // so a merged-away page is free to be collected immediately. WeakMap so a
   // released atlas (all owner panes disposed) never leaks an entry.
@@ -508,7 +529,21 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       const removed = latch?.fired ?? false;
       if (latch) latch.fired = false;
       const mergeSignal: MergeSignal | null = removed ? 'page-removed' : detectMerge(prev, tags);
-      const nearTrigger = len >= preventAt && used >= preventAt;
+      // Patched atlas (I2): self-evicts at the sampler budget. Duck-typed by
+      // optional clearModelGeneration. PREVENT on that shape is a storm, not
+      // a repair. Unpatched addons omit the field and still get the backstop.
+      const coherent = typeof atlas.clearModelGeneration === 'number';
+      const nearTrigger = !coherent && len >= preventAt && used >= preventAt;
+      if (coherent) {
+        const gen = atlas.clearModelGeneration as number;
+        const lastGen = prevGeneration.get(atlas as object);
+        prevGeneration.set(atlas as object, gen);
+        if (lastGen !== undefined && gen !== lastGen) {
+          // Atlas wiped or merged itself. Owners already rebuild via I3.
+          // The collapse would otherwise look like CURE with no cooldown.
+          continue;
+        }
+      }
       if (!mergeSignal && !nearTrigger) continue;
 
       // PREVENT-only cooldown. A rebuild is no longer cheap: it now drops every
@@ -528,9 +563,13 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
       }
 
       const outcome = rebuildGroup(atlas, group);
+      const gen =
+        typeof atlas.clearModelGeneration === 'number'
+          ? `, gen=${atlas.clearModelGeneration}`
+          : '';
       console.warn(
         `[wmux:atlas-guard] ${mergeSignal ? `cure (merge detected: ${mergeSignal})` : 'prevent'}` +
-          ` — pages=${used}/${len} used, cap=${mergeTrigger}, panes=${group.length}, clear=${outcome}`,
+          ` — pages=${used}/${len} used, cap=${mergeTrigger}, panes=${group.length}, clear=${outcome}${gen}`,
       );
       // Re-baseline from the POST-rebuild pool. The rebuild is itself a
       // structural change, so a snapshot taken before it could read as a merge
