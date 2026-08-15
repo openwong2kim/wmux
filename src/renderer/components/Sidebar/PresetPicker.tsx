@@ -87,8 +87,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
         onClick={handleBrowseFolder}
       >
-        <div className="font-semibold">Browse Folder…</div>
-        <div className="text-[var(--text-muted)] text-[10px]">Pick a folder as workspace</div>
+        <div className="font-semibold">{t('sidebar.browseFolder')}</div>
+        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.pickFolderAsWorkspace')}</div>
       </button>
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
@@ -98,8 +98,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
         onClick={() => handleSelect(null)}
       >
-        <div className="font-semibold">Empty</div>
-        <div className="text-[var(--text-muted)] text-[10px]">Blank single pane</div>
+        <div className="font-semibold">{t('sidebar.emptyWorkspace')}</div>
+        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.blankSinglePane')}</div>
       </button>
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
@@ -111,8 +111,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
           className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
           onClick={() => handleSelect(preset.id)}
         >
-          <div className="font-semibold">{preset.name}</div>
-          <div className="text-[var(--text-muted)] text-[10px]">{preset.description}</div>
+          <div className="font-semibold">{t(`preset.${preset.id}.name`)}</div>
+          <div className="text-[var(--text-muted)] text-[10px]">{t(`preset.${preset.id}.description`)}</div>
         </button>
       ))}
 
