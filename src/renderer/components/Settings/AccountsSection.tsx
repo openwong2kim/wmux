@@ -316,7 +316,9 @@ export function AccountsSection(): React.ReactElement | null {
         const n = res.affectedWorkspaceIds.length;
         // Tell the user which workspaces now fall back to the default account
         // instead of silently reverting them (Codex review P2).
-        setRemoveNotice(n > 0 ? t('accounts.removedReverted', { n }) : t('accounts.removed'));
+        setRemoveNotice(n > 0
+          ? (n === 1 ? t('accounts.removedReverted', { n }) : t('accounts.removedRevertedPlural', { n }))
+          : t('accounts.removed'));
         setTimeout(() => setRemoveNotice(null), 6000);
         reload();
       }).catch(() => { /* useIpc surfaces the error */ });

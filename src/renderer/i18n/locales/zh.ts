@@ -179,6 +179,7 @@ export const zh = {
   'accounts.accountAdded': '✓ 账号已添加。',
   'accounts.removed': '已移除。',
   'accounts.removedReverted': '已移除 — {n} 个工作区已还原为默认账号。',
+  'accounts.removedRevertedPlural': '已移除 — {n} 个工作区已还原为默认账号。',
   'accounts.refreshUsageTitle': '立即刷新用量（会消耗该账号配额的一次请求）',
   'accounts.updatedTitle': '更新于 {age}',
   'accounts.lastKnownTitle': '上次已知数据，刷新失败',
