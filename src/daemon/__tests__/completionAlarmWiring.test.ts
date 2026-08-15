@@ -50,5 +50,13 @@ describe('CompletionAlarm daemon wiring', () => {
     // on the pane. Detected name first, persisted slug as the fallback.
     expect(body).toMatch(/agentDisplayToSlug\(payload\.agentName/);
     expect(body).toMatch(/meta\.lastDetectedAgent/);
+    // A resize repaint is not work: the alarm feed must skip
+    // likelyRepaint-flagged bursts (a refit rebutting a pending completion
+    // window would silently kill a real alarm) while the loose status-dot
+    // broadcast below the guard keeps running.
+    const feedIdx = body.indexOf('notePaneWorking(');
+    const repaintGuardIdx = body.indexOf('likelyRepaint');
+    expect(repaintGuardIdx).toBeGreaterThan(-1);
+    expect(repaintGuardIdx).toBeLessThan(feedIdx);
   });
 });

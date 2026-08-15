@@ -4393,14 +4393,20 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string }) => {
+  sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
     // CompletionAlarm byte-activity feed (brief rule 4 / D3): any PTY output
     // — the user typing the next prompt, a background build chattering —
     // rebuts an open completion window and arms the turn gate. The detected
     // agent name is the primary key; a pane with no live detection falls back
     // to the persisted lastDetectedAgent so an ungoverned agent pane still
     // gets text-only-turn rebuttals (hooks.json has no UserPromptSubmit).
-    hookIngest?.notePaneWorking(
+    // EXCEPT a resize repaint: a refit burst right after pty:resize is not
+    // work, and letting it rebut would silently kill a real completion
+    // alarm (the same class of false-negative the resize-redraw guard in
+    // DaemonPTYBridge already protects the detector dedup from). The loose
+    // status-dot broadcast below still runs — only the strict alarm feed
+    // skips repaint-flagged bursts.
+    if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
       payload.sessionId,
       agentDisplayToSlug(payload.agentName ?? '')
         ?? sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent

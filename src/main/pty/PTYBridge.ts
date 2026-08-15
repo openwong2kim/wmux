@@ -581,10 +581,16 @@ export class PTYBridge {
         // Verdict-gate working feed: sustained output is working evidence —
         // it rebuts a pending completion window and re-arms `announced` for
         // the next turn. Keyed to the pane's last detected agent; a pane with
-        // no agent yet has nothing to arm.
+        // no agent yet has nothing to arm. SKIPPED inside the resize-redraw
+        // guard window (the daemon mirror flags this `likelyRepaint`): a
+        // refit burst is not work, and letting it rebut would silently kill
+        // a real completion alarm. No deferral here, unlike the detector
+        // reset below — a deferred working cue landing 3s later would reset
+        // `announced` on repaint noise and re-open the door to a duplicate
+        // toast for an already-announced turn.
         const activeAlarm = this.getAlarm?.() ?? null;
         const activeSlug = agentDisplayToSlug(lastAgent);
-        if (activeAlarm && activeSlug) {
+        if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
           activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
         }
         broadcastMetadataUpdate(this.getWindow(), {

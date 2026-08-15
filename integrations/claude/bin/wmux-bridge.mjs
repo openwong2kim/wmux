@@ -598,9 +598,15 @@ function countLeftoverBackgroundTasks(transcriptPath) {
         : entry.attachment && typeof entry.attachment.prompt === 'string'
           ? entry.attachment.prompt
           : null;
-      if (body && body.startsWith('<task-notification>')) {
+      // `includes` over `startsWith`: the body can carry leading whitespace
+      // before the opening tag. Any `<status>` VALUE settles — a whitelist
+      // (completed|failed) that misses a future terminal status would leave
+      // the task counted as running forever and permanently suppress the
+      // completion alarm; a spuriously-settled task at worst fires one
+      // window-gated alarm. Fail-open, same posture as the read errors above.
+      if (body && body.includes('<task-notification>')) {
         const idMatch = body.match(/<tool-use-id>([^<]+)<\/tool-use-id>/);
-        const statusMatch = body.match(/<status>(completed|failed)<\/status>/);
+        const statusMatch = body.match(/<status>([^<]+)<\/status>/);
         if (idMatch && statusMatch) settledIds.add(idMatch[1]);
       }
     }

@@ -21,7 +21,9 @@ import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
  *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
- *  - 'active'   → { sessionId: string }                — onActive cycle start
+ *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
+ *                 start; likelyRepaint marks a passive burst inside the
+ *                 resize-redraw guard window (alarm feeds must ignore it)
  *  - 'idle'     → { sessionId: string }                — onActiveToIdle
  *  - 'exit'     → { sessionId: string, exitCode, signal }
  *  - 'resize'   → (no payload) — an applied geometry change; consumers read the
@@ -247,9 +249,11 @@ export class DaemonPTYBridge extends EventEmitter {
       // passive startup/autonomous burst, retain the resize-redraw guard: a TUI
       // repaint is not a new turn and must not make an unchanged footer emit
       // another waiting notification.
+      let likelyRepaint = false;
       if (!inputStartedTurn) {
         const elapsed = Date.now() - this.lastResizeAtMs;
-        if (elapsed < RESIZE_REDRAW_GUARD_MS) {
+        likelyRepaint = elapsed < RESIZE_REDRAW_GUARD_MS;
+        if (likelyRepaint) {
           if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
           this.resizeGuardTimer = setTimeout(() => {
             this.resizeGuardTimer = null;
@@ -265,7 +269,17 @@ export class DaemonPTYBridge extends EventEmitter {
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
       // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
       // 상태에서 agentName이 채워진다.
-      this.emit('active', { sessionId: ptyId, agentName: this.agentDetector?.getLastAgent() ?? undefined });
+      // `likelyRepaint`: this passive burst sits inside the resize-redraw
+      // guard window, so it is a TUI repaint, not work. The loose status dot
+      // still updates (the flag travels with the event), but the alarm's
+      // working feed in daemon/index.ts must NOT treat it as turn evidence —
+      // a repaint rebutting a pending completion window would silently kill
+      // a real "finished" alarm.
+      this.emit('active', {
+        sessionId: ptyId,
+        agentName: this.agentDetector?.getLastAgent() ?? undefined,
+        likelyRepaint,
+      });
     });
 
     // Terminal desktop-notification sequences (OSC 9/777/99). Stateful for

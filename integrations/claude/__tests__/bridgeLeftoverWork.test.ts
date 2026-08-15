@@ -101,6 +101,22 @@ describe('countLeftoverBackgroundTasks', () => {
     expect(count(p)).toBe(0);
   });
 
+  it('settles even with leading whitespace in the body and a non-whitelisted status (fail-open)', () => {
+    // review-team catch: `startsWith` + a (completed|failed) whitelist would
+    // miss a body carrying leading whitespace or a future terminal status
+    // value — the task would then count as running FOREVER and permanently
+    // suppress every later Stop alarm, the exact failure mode this miner
+    // exists to avoid. Any <status> settles; a spurious settle at worst
+    // fires one window-gated alarm.
+    const body = '  \n<task-notification>\n<tool-use-id>call_w</tool-use-id>\n<output-file>/tmp/x</output-file>\n<status>killed</status>\n<summary>Background command finished</summary>\n</task-notification>';
+    const p = fixture('settled-loose.jsonl', [
+      bgStart('call_w'),
+      bgStartResult('call_w'),
+      { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-15T00:00:00.000Z', sessionId: 's1', content: body },
+    ]);
+    expect(count(p)).toBe(0);
+  });
+
   it('settled via the DURABLE attachment shape (queue already drained) → 0', () => {
     const p = fixture('settled-attachment.jsonl', [
       bgStart('call_a'),
