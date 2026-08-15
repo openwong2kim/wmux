@@ -32,19 +32,24 @@ function ToastItem({
   level,
   action,
   target,
+  persist,
 }: {
   id: string;
   message: string;
   level: ToastLevel;
   action?: { label: string; onClick: () => void };
   target?: Toast['target'];
+  persist?: boolean;
 }) {
   const dismissToast = useStore((s) => s.dismissToast);
 
   useEffect(() => {
+    // A persistent toast reports a state that is still true after five seconds
+    // and needs the user to act (#898). The ✕ is still the way out.
+    if (persist) return;
     const t = setTimeout(() => dismissToast(id), AUTO_DISMISS_MS);
     return () => clearTimeout(t);
-  }, [id, dismissToast]);
+  }, [id, dismissToast, persist]);
 
   // Notification-sourced toasts carry a click-jump target: body click lands
   // on the originating pane (ptyId → surfaceId → workspaceId resolution),
@@ -126,7 +131,14 @@ export default function ToastContainer() {
     >
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto">
-          <ToastItem id={t.id} message={t.message} level={t.level} action={t.action} target={t.target} />
+          <ToastItem
+            id={t.id}
+            message={t.message}
+            level={t.level}
+            action={t.action}
+            target={t.target}
+            persist={t.persist}
+          />
         </div>
       ))}
     </div>

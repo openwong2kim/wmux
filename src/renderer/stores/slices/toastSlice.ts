@@ -38,6 +38,14 @@ export interface Toast {
     workspaceId?: string | null;
     surfaceId?: string | null;
   };
+  /**
+   * #898 — stay until dismissed instead of expiring after 5 s. For the rare
+   * toast that reports a broken state the user has to ACT on: a five-second
+   * window is a coin flip on whether they were looking at the screen, and the
+   * state is still broken afterwards either way. Ordinary toasts must not set
+   * this — a screen of undismissable notices is its own bug.
+   */
+  persist?: boolean;
 }
 
 export interface ToastSlice {

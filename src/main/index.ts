@@ -131,6 +131,7 @@ import {
   refreshHookBridge,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -1097,6 +1098,36 @@ app.on('ready', async () => {
     }, 3000);
     refreshTimer.unref();
   }
+
+  // #898 — the OTHER copy of the bridge. `refreshHookBridge` above owns
+  // `~/.wmux/hooks/`; a Claude Code plugin install is a snapshot in a version
+  // directory that Claude Code owns, and no wmux release touches it. A user who
+  // installed the plugin can therefore keep being prompted for every tool call
+  // long after the fix shipped, with `WMUX_GATE=0` powerless to stop it.
+  //
+  // Read-only on purpose (see stalePluginGate): repairing another tool's cache
+  // would put content in a directory whose name promises a different version,
+  // and could downgrade a bridge newer than this app's. So: detect, and tell
+  // the user the one command that fixes it. Runs unpackaged too — it writes
+  // nothing, and dogfooding the notice needs it. Deferred so a probe spawn
+  // never sits on the boot path.
+  const staleGateTimer = setTimeout(() => {
+    void detectStalePluginGates()
+      .then((found) => {
+        if (found.length === 0) return;
+        logLine('warn', 'main', `stale plugin permission gate: ${found.map((f) => `${f.pluginKey}@${f.version}`).join(', ')}`);
+        const wc = mainWindow?.webContents;
+        if (!wc || wc.isDestroyed()) return;
+        // A slow first paint would otherwise swallow the notice: a send before
+        // the renderer subscribes goes nowhere.
+        if (wc.isLoading()) wc.once('did-finish-load', () => wc.send(IPC.PLUGIN_GATE_STALE, found));
+        else wc.send(IPC.PLUGIN_GATE_STALE, found);
+      })
+      .catch(() => {
+        // detectStalePluginGates already swallows; belt and braces.
+      });
+  }, 5000);
+  staleGateTimer.unref();
 
   // Dev Dock 아이콘: dev에선 패키징 안 된 제네릭 Electron 바이너리로 실행돼
   // macOS Dock에 기본 원자 아이콘이 뜬다. 패키지 빌드는 packagerConfig.icon으로

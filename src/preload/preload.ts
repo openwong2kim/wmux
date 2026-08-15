@@ -1147,6 +1147,27 @@ document.addEventListener('DOMContentLoaded', () => {
 };
 
 // Phase 2.2 — MCP plugin permission approval bridge.
+// #898 — main fires this once at startup when a Claude Code plugin install is
+// still running a bridge that forces a permission prompt. Read-only report:
+// wmux never edits another tool's plugin cache, so the renderer's job is to
+// tell the user which command fixes it.
+(electronAPI as Record<string, unknown>).onStalePluginGate = (
+  callback: (
+    found: Array<{
+      pluginKey: string;
+      version: string;
+      installPath: string;
+      updateCommand: string;
+    }>,
+  ) => void,
+) => {
+  const listener = (_event: unknown, found: Parameters<typeof callback>[0]) => callback(found);
+  ipcRenderer.on(IPC.PLUGIN_GATE_STALE, listener);
+  return () => {
+    ipcRenderer.removeListener(IPC.PLUGIN_GATE_STALE, listener);
+  };
+};
+
 // Main fires PERMISSION_PROMPT_OPEN with the ApprovalPromptInfo payload
 // when an unconfirmed plugin needs the user's approval; the renderer's
 // PermissionApprovalDialog renders it and sends the decision back via
