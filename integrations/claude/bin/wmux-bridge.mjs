@@ -726,9 +726,31 @@ async function sendToTargets(targets, buildRequest, timeoutMs = HOOK_TIMEOUT_MS)
 //
 //   allow = proceed without prompting the user.
 //   deny  = block the tool call (the reason is shown to the model).
-//   ask   = fall back to Claude Code's normal permission flow.
-//   defer = same as 'ask' for PreToolUse — "I have no opinion, ask the user".
+//
+// There is deliberately no third value. `ask` is NOT the neutral option: it is
+// an active instruction to raise a prompt, and it OVERRIDES the session's
+// permission mode. #898 — measured on Claude Code 2.1.233 with a probe hook on
+// the wide `""` matcher, under `--permission-mode bypassPermissions`:
+//
+//   hook emits `ask`  -> permission_denials: [Read, Bash]  (agent blocked)
+//   hook emits nothing -> permission_denials: []            (tools run)
+//
+// Same hook, same settings, same mode — the only difference was the JSON. The
+// docs state the neutral contract directly: "Exit code 0 with no output means
+// the hook has no decision to report, so the tool call continues through the
+// normal permission flow."
+//
+// So every "wmux has no opinion here" path — gate disabled, headless, outside
+// wmux, daemon unreachable, non-gated tool, broker self-deferred — must write
+// NOTHING. Emitting `ask` for those is what made the plugin re-prompt for even
+// a Read in a bypassPermissions session, with no way for the user to turn it
+// off (WMUX_GATE=0 emitted `ask` too, so the escape hatch left the symptom in
+// place — exactly what the reporter saw).
 function outputPermissionDecision(decision, reasonText) {
+  // Only a real verdict is ever written. Anything else — undefined, 'ask',
+  // 'defer', or an unrecognised value from a newer daemon — is no opinion, and
+  // the only faithful encoding of that is an empty stdout.
+  if (decision !== 'allow' && decision !== 'deny') return;
   const out = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -778,15 +800,22 @@ async function main() {
   //      WMUX_PTY_ID is same-user spoofable (env is writable from inside the
   //      pane) — this is a UX guard, not a security control.
   //   3. No WMUX_PTY_ID — the agent is running outside any wmux pane.
+  //
+  // All three exit SILENTLY (see outputPermissionDecision): they mean "wmux has
+  // no opinion", and only an empty stdout says that without overriding the
+  // session's permission mode.
   const INTERACTIVE_ENTRYPOINTS = new Set(['cli', 'vscode', 'jetbrains']);
   if (permissionGateMode) {
     if (process.env.WMUX_GATE === '0') {
-      outputPermissionDecision('ask', 'gate disabled (WMUX_GATE=0)');
+      logEvent('permission-gate-skipped', { reason: 'gate-disabled' });
       return;
     }
     const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
     if (!process.env.WMUX_PTY_ID || !entrypoint || !INTERACTIVE_ENTRYPOINTS.has(entrypoint)) {
-      outputPermissionDecision('ask', 'headless or outside wmux');
+      logEvent('permission-gate-skipped', {
+        reason: 'headless-or-outside-wmux',
+        entrypoint: entrypoint ?? null,
+      });
       return;
     }
   }
@@ -1049,26 +1078,30 @@ async function main() {
   }
 
   // #783 — PreToolUse permission gate. The daemon's response carries
-  // permissionDecision ('allow'|'deny'|'ask'|'defer'). The bridge translates
-  // to the modern hookSpecificOutput JSON on stdout. Everything fails OPEN: a
-  // transport error, a non-gate daemon, or an absent field all default to
-  // 'ask' so the agent never hangs — it falls back to the local permission
-  // prompt, which is exactly what would happen without the gate.
+  // permissionDecision. The bridge translates it to the modern
+  // hookSpecificOutput JSON on stdout, and ONLY a real verdict is written.
+  //
+  // #898 — everything else fails OPEN by staying silent: a transport error, a
+  // non-gate daemon, an absent field, a non-gated tool, or a broker self-defer
+  // all leave stdout empty, so the tool call continues through the session's
+  // normal permission flow. This is what "exactly what would happen without the
+  // gate" actually requires — an earlier revision defaulted to `ask` here,
+  // which instead FORCED a prompt and overrode bypassPermissions.
   if (permissionGateMode) {
     const verdict = innerOk && rpcResult.result.permissionDecision
       ? rpcResult.result.permissionDecision
-      : 'ask';
+      : null;
     outputPermissionDecision(
       verdict,
-      verdict === 'deny'
-        // Without a reason the model reads a bare refusal and retries the same
-        // call. Say who refused (review: Claude).
-        ? 'denied from the wmux remote approval'
-        : verdict === 'ask' && !innerOk
-          ? 'gate unreachable — falling back to local prompt'
-          : undefined,
+      // Without a reason the model reads a bare refusal and retries the same
+      // call. Say who refused (review: Claude).
+      verdict === 'deny' ? 'denied from the wmux remote approval' : undefined,
     );
-    logEvent('permission-gate', { hook: hookName, target: targetName, verdict });
+    logEvent('permission-gate', {
+      hook: hookName,
+      target: targetName,
+      verdict: verdict === 'allow' || verdict === 'deny' ? verdict : 'no-opinion',
+    });
     // Always exit 0 — the decision is in stdout, not the exit code.
     return 0;
   }
