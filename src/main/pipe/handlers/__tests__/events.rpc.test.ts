@@ -1130,3 +1130,71 @@ describe('events.rpc — events.poll blocking', () => {
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
+
+/**
+ * The shape an orchestrator actually calls — the flow this whole feature
+ * exists to replace. Worth its own tests because the parts pass individually
+ * and can still fail together: the escape-hatch types have no ptyId semantics
+ * in common with agent.lifecycle, and `kinds` must not drop them.
+ */
+describe('events.rpc — the orchestrator wait shape', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const ORCHESTRATOR_CALL = {
+    blockMs: 5_000,
+    ptyId: 'pty-worker',
+    types: ['agent.lifecycle', 'pane.closed', 'process.exited'],
+    kinds: ['agent.awaiting_input', 'agent.stop'],
+  };
+
+  it('wakes on the worker blocking for input, and ignores its subagent noise', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'e1', method: 'events.poll', params: ORCHESTRATOR_CALL },
+      { firstParty: true },
+    );
+    // A nested subagent returning is NOT the pane blocking — it is the exact
+    // signal that revived idle panes in the field (#733 family), so a wait
+    // filtered to stop/awaiting_input must sit through it.
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-worker',
+      kind: 'agent.subagent_stop', agent: 'claude', source: 'hook',
+    }), 10);
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-worker',
+      kind: 'agent.awaiting_input', agent: 'claude', source: 'hook',
+    }), 40);
+
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: Array<{ kind: string }> };
+      expect(r.events.map((e) => e.kind)).toEqual(['agent.awaiting_input']);
+    }
+  });
+
+  it('ends the wait when the pane dies instead of burning the full budget', async () => {
+    const router = setupRouter();
+    const started = Date.now();
+    const pending = router.dispatch(
+      { id: 'e2', method: 'events.poll', params: ORCHESTRATOR_CALL },
+      { firstParty: true },
+    );
+    // The documented escape hatch: without process.exited in `types`, a wait on
+    // a pane that just died runs to the full blockMs and reports nothing —
+    // indistinguishable from an agent that is simply still working.
+    setTimeout(() => eventBus.emit({
+      type: 'process.exited', workspaceId: 'ws-1', ptyId: 'pty-worker', exitCode: 1,
+    }), 20);
+
+    const res = await pending;
+    if (res.ok) {
+      const r = res.result as { events: Array<{ type: string }> };
+      expect(r.events.map((e) => e.type)).toEqual(['process.exited']);
+    }
+    // returned on the event, not on the 5s budget
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});

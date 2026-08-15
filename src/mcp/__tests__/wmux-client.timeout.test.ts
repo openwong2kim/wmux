@@ -72,7 +72,7 @@ describe('mcp — only a blocking poll raises its own deadline', () => {
     // main returns AT its own blockMs; the client must outlive that by enough
     // to receive the answer, or an on-time response surfaces as a timeout.
     const m = INDEX_SRC.match(/const EVENTS_POLL_BLOCK_MARGIN_MS = ([\d_]+);/);
-    expect(m).not.toBeNull();
-    expect(Number(m![1].replace(/_/g, ''))).toBeGreaterThanOrEqual(1_000);
+    if (!m) throw new Error('EVENTS_POLL_BLOCK_MARGIN_MS not found in mcp/index.ts');
+    expect(Number(m[1].replace(/_/g, ''))).toBeGreaterThanOrEqual(1_000);
   });
 });
