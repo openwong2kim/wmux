@@ -109,7 +109,41 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
   });
 
   it('unsubscribes the live listener on unmount', () => {
-    expect(hookBody('usePendingInstallNotice')).toMatch(/unsubscribe\?\.\(\)/);
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/unsubscribe\?\.\(\)/);
+    expect(body).toMatch(/unsubscribeError\?\.\(\)/);
+  });
+
+  it('says so when an install the user asked for is refused', () => {
+    // The action button dismisses its own toast, and every performInstall
+    // refusal reports on UPDATE_ERROR — whose only other listener is the
+    // Settings panel, closed by definition whenever this toast is what the
+    // user is looking at. Without this the button looks inert, which is the
+    // silence #897 is about.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/onUpdateError/);
+    expect(body).toMatch(/update\.installFailed/);
+  });
+
+  it('does not report a background check or download failure as an install failure', () => {
+    // UPDATE_ERROR is not an install channel: it also carries a failed poll
+    // (the first runs seconds after launch) and a failed download. Subscribed
+    // outright, an offline machine posts "the update could not be installed"
+    // at startup and again every poll — false copy, on a toast that never
+    // fades, in a list that evicts its OLDEST entry, i.e. the ready-notice
+    // this feature exists to keep on screen. The report is correlated to a
+    // click instead.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/installRequestedAt/);
+    expect(body).toMatch(/INSTALL_ERROR_WINDOW_MS/);
+  });
+
+  it('replaces the previous notice when a newer release supersedes it', () => {
+    // A second release staged in the same session re-announces. Pushing on top
+    // would leave the old toast up, naming version A over a button that
+    // installs the staged B.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/dismissToast\(announcedToastId\)/);
   });
 
   it('never breaks mount, and never swallows the failure silently', () => {

@@ -1767,6 +1767,11 @@ function UpdateStatus() {
   const t = useT();
   const [state, setState] = useState<UpdateState>('idle');
   const [releaseName, setReleaseName] = useState<string>('');
+  // The subscription effect runs once, so its closure would hold the mount-time
+  // releaseName forever. The comparison that decides whether an `available`
+  // event is the release we already staged has to read the live value.
+  const releaseNameRef = useRef<string>('');
+  useEffect(() => { releaseNameRef.current = releaseName; }, [releaseName]);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [percent, setPercent] = useState<number | null>(null);
   // Updater-not-configured in dev is expected; don't spam toasts for UNKNOWN.
@@ -1784,7 +1789,18 @@ function UpdateStatus() {
         // ever follows to undo this. Demoting turned the Install button back
         // into "Check for updates" within the poll interval and left it that
         // way, on the exact state this panel was just taught to read on mount.
-        setState((prev) => (prev === 'downloaded' ? prev : 'available'));
+        //
+        // Held only while it is the SAME release, though. A superseding
+        // release unlinks the staged artifact and announces the new version
+        // before re-downloading it; holding `downloaded` through that would
+        // offer an Install button for a file main just deleted. The version
+        // is what distinguishes "we already have this one" from "this is a
+        // different one" — so track it either way.
+        const next = data.releaseName;
+        setState((prev) => (prev === 'downloaded' && (!next || next === releaseNameRef.current)
+          ? prev
+          : 'available'));
+        if (next) setReleaseName(next);
       }
     });
     const removeProgress = window.electronAPI.updater.onUpdateProgress((data) => {

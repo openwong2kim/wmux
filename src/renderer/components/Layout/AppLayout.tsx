@@ -350,6 +350,12 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
  * honest. "An update is ready" is still true five minutes later, and a notice
  * that fades leaves the user exactly where they started.
  */
+/** How long after a user-requested install an UPDATE_ERROR is still that
+ *  install's. performInstall's refusals are decided before it launches
+ *  anything, so they land almost immediately; a background check or download
+ *  failure arriving outside this window belongs to Settings, not here. */
+const INSTALL_ERROR_WINDOW_MS = 30_000;
+
 function usePendingInstallNotice(
   t: (key: string, vars?: Record<string, string | number>) => string,
 ): void {
@@ -369,10 +375,19 @@ function usePendingInstallNotice(
     // sentence and the button describing the same thing.
     let announcedVersion: string | null = null;
 
+    // The toast currently on screen, so a superseding release can replace it
+    // rather than stack on top. Leaving the old one up would leave a clickable
+    // sentence naming version A over a button that installs the staged B.
+    let announcedToastId: string | null = null;
+    // Set while an install the USER asked for is in flight — see the error
+    // subscription below for why an unfiltered UPDATE_ERROR is not usable.
+    let installRequestedAt = 0;
+
     const announce = (version: string, currentVersion: string): void => {
       if (cancelled || announcedVersion === version) return;
       announcedVersion = version;
-      useStore.getState().pushToast({
+      if (announcedToastId) useStore.getState().dismissToast(announcedToastId);
+      announcedToastId = useStore.getState().pushToast({
         level: 'info',
         persist: true,
         // t() interpolates; a hand-rolled `.replace()` chain substitutes only
@@ -383,7 +398,11 @@ function usePendingInstallNotice(
           label: t('update.installNow'),
           // Every pane closes with the app — the toast is the last warning,
           // so the label says "install", not something softer.
-          onClick: () => { void install(); },
+          onClick: () => {
+            installRequestedAt = Date.now();
+            announcedToastId = null; // the action dismisses this toast itself
+            void install();
+          },
         },
       });
     };
@@ -429,8 +448,20 @@ function usePendingInstallNotice(
     // whenever this toast is the thing the user is looking at. Without this,
     // pressing "Install now" and having it fail looks exactly like #897 again:
     // you press the button and nothing happens.
+    //
+    // CORRELATED to the click, not subscribed outright. UPDATE_ERROR is not an
+    // install channel: it also carries a failed background check (the first
+    // one runs ~15s after launch) and a failed download, so an offline machine
+    // would post "the update could not be installed" on startup and again
+    // every poll — a sentence that is false, on a toast that never fades, in a
+    // list that evicts its OLDEST entry, which is the ready-notice this whole
+    // feature exists to keep on screen. Only a failure that lands while an
+    // install the user asked for is outstanding is one this surface can
+    // honestly name.
     const unsubscribeError = onError?.((data) => {
       if (cancelled) return;
+      if (Date.now() - installRequestedAt > INSTALL_ERROR_WINDOW_MS) return;
+      installRequestedAt = 0; // one report per request
       useStore.getState().pushToast({
         level: 'error',
         persist: true,
