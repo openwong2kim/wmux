@@ -42,3 +42,23 @@ export function platformChoice<T>(choices: PlatformChoice<T>): T {
   if (isLinux && choices.linux !== undefined) return choices.linux;
   return choices.default;
 }
+
+/**
+ * Windows build number out of an OS version string — `10.0.19045` -> `19045`.
+ *
+ * Accepts what `os.release()` and Electron's `process.getSystemVersion()` both
+ * return on Windows (measured: identical, `10.0.26200` on Win11 26200). The
+ * build is the THIRD field; the first two are the marketing-frozen `10.0` that
+ * Windows 11 still reports, so neither one distinguishes 10 from 11.
+ *
+ * Returns null for anything that is not a version string with a numeric third
+ * field, so a caller can keep whatever its no-information default is instead of
+ * acting on a number that was never really read.
+ */
+export function parseWindowsBuildNumber(systemVersion: string | null | undefined): number | null {
+  if (typeof systemVersion !== 'string') return null;
+  const build = systemVersion.trim().split('.')[2];
+  if (build === undefined || !/^\d+$/.test(build)) return null;
+  const parsed = Number(build);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
