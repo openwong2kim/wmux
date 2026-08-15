@@ -531,6 +531,25 @@ export function registerEventsRpc(
       if (ptyId && (event as { ptyId?: unknown }).ptyId !== ptyId) return false;
       if (kinds && event.type === 'agent.lifecycle'
         && !kinds.has(String((event as { kind?: unknown }).kind))) return false;
+      // Workspace scope, for the lifecycle types ONLY — the ones collect()
+      // actually decides with `clientSet`. Without this a poll that named no
+      // pane and no types (which the tool allows) has nothing to filter on, so
+      // every event on the bus wakes it, costs a full ring re-scan through the
+      // whole scope chain, yields an empty page and parks again. Under OSC 133
+      // the bus ticks once per shell command, so at fleet scale that is
+      // O(parked × ring) of synchronous main-process work per command.
+      //
+      // The PRIVATE types are deliberately exempt and must stay that way: they
+      // are scoped per RECIPIENT, not by the base workspaceId. A
+      // channel.message carries the SENDER in `workspaceId` and the member set
+      // in `recipientWorkspaceIds`; a2a.task is dual-party; channel.catalog can
+      // carry a '*' broadcast. Testing `clientSet` against `workspaceId` on any
+      // of those would skip a wake the caller is entitled to — and a missed
+      // wake is the single failure this pre-filter must never introduce, since
+      // the event is already in the ring and nothing will re-announce it.
+      if (clientScoped
+        && !PRIVATE_EVENT_TYPES.has(event.type)
+        && !clientSet.has(event.workspaceId)) return false;
       // An unentitled caller has these stripped by collect() anyway, so waking
       // for them is pure churn — and a caller that asked ONLY for them would
       // wake on every one for its whole budget and deliver nothing.

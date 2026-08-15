@@ -783,6 +783,34 @@ describe('events.rpc — workspaceIds union scoping (FIX-MULTI-WS)', () => {
     expect(events).toHaveLength(1);
   });
 
+  it('WAKES a parked poll on a channel.message it is only a RECIPIENT of', async () => {
+    // The wake pre-filter narrows by workspace so a parked poll is not woken by
+    // every workspace's traffic. It must not narrow the PRIVATE types the same
+    // way: a channel.message carries the SENDER in `workspaceId`, and the
+    // membership lives in `recipientWorkspaceIds`. Testing the base id against
+    // the caller's scope would skip this wake — and the event is already in the
+    // ring by then, so nothing re-announces it and the poll burns its whole
+    // budget before returning a page it should have had at once.
+    const router = setupRouter();
+    const pending = router.dispatch(
+      {
+        id: 'recipient-wake',
+        method: 'events.poll',
+        params: { workspaceId: 'ws-B', blockMs: 5_000, types: ['channel.message'] },
+      },
+      { firstParty: true },
+    );
+    // ws-C posts; ws-B is only a member, never the base workspaceId.
+    setTimeout(() => emitChannelMessage('ws-C', ['ws-B', 'ws-C']), 20);
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.parked).toBe(true);
+    }
+  });
+
   it('drops a channel.message with NO overlap against the union (third-party leak guard)', async () => {
     emitChannelMessage('ws-C', ['ws-C', 'ws-D']);
     const router = setupRouter();
@@ -1299,6 +1327,64 @@ describe('events.rpc — blocking poll, review regressions', () => {
     // The cap must leave the majority of the budget for ordinary
     // connect -> send -> close traffic.
     expect(Math.floor(MAX_PIPE_CONNECTIONS / 4)).toBeLessThan(MAX_PIPE_CONNECTIONS / 2);
+  });
+
+  it('parks up to the cap and refuses to park past it', async () => {
+    // The arithmetic above says the cap is SIZED sanely. It does not say the
+    // cap is ENFORCED — delete the counter and it still passes. This does:
+    // fill every slot, then show the next caller is turned away immediately
+    // instead of queueing behind them, which is the whole back-pressure story.
+    const { MAX_PIPE_CONNECTIONS } = await import('../../PipeServer');
+    const cap = Math.floor(MAX_PIPE_CONNECTIONS / 4);
+    const router = setupRouter();
+
+    const parked = Array.from({ length: cap }, (_, i) => router.dispatch(
+      { id: `cap-${i}`, method: 'events.poll', params: { blockMs: 5_000, ptyId: `pty-park-${i}` } },
+      { firstParty: true },
+    ));
+    // Let every one of them reach the park (they only occupy a slot once the
+    // handler has run its immediate collect and decided to wait).
+    await new Promise((r) => setTimeout(r, 30));
+
+    const overflow = await router.dispatch(
+      { id: 'cap-over', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-overflow' } },
+      { firstParty: true },
+    );
+    expect(overflow.ok).toBe(true);
+    if (overflow.ok) {
+      const r = overflow.result as { parked?: boolean; parkedCapReached?: boolean };
+      expect(r.parkedCapReached).toBe(true);
+      expect(r.parked).toBe(false);
+    }
+
+    // The parked ones are still parked — the overflow answer did not disturb
+    // them — and each still wakes on its own pane.
+    for (let i = 0; i < cap; i++) {
+      eventBus.emit(lifecycle(`pty-park-${i}`, 'agent.stop'));
+    }
+    const settled = await Promise.all(parked);
+    for (const res of settled) {
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const r = res.result as { parked?: boolean; parkedCapReached?: boolean };
+        expect(r.parked).toBe(true);
+        expect(r.parkedCapReached).toBeUndefined();
+      }
+    }
+
+    // And the slots are given back, so the next caller can park again.
+    const after = router.dispatch(
+      { id: 'cap-after', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-after' } },
+      { firstParty: true },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    eventBus.emit(lifecycle('pty-after', 'agent.stop'));
+    const afterRes = await after;
+    if (afterRes.ok) {
+      const r = afterRes.result as { parked?: boolean; parkedCapReached?: boolean };
+      expect(r.parkedCapReached).toBeUndefined();
+      expect(r.parked).toBe(true);
+    }
   });
 });
 
