@@ -136,8 +136,14 @@ function parsePipeServerCaps(source, file) {
   if (!bufM) die(`could not find \`const MAX_LINE_BUFFER = <a> * <b>\` in ${rel} — update the scanner or the table.`);
   const perSocketM = /if\s*\(\s*limit\.count\s*>\s*(\d+)\s*\)/m.exec(source);
   if (!perSocketM) die(`could not find the per-socket \`limit.count > <n>\` cap in ${rel} — update the scanner or the table.`);
+  // MAX_CONNECTIONS is the one cap that is NOT private-static-with-a-literal:
+  // it is a module-level export, because events.rpc derives its parked-poll cap
+  // from it (a parked poll holds a connection, so the two spend one budget). The
+  // class static reads that export, so the number lives here.
+  const connM = /export\s+const\s+MAX_PIPE_CONNECTIONS\s*=\s*(\d+)/m.exec(source);
+  if (!connM) die(`could not find \`export const MAX_PIPE_CONNECTIONS = <n>\` in ${rel} — update the scanner or the table.`);
   return {
-    maxConnections: staticNum('MAX_CONNECTIONS'),
+    maxConnections: Number(connM[1]),
     globalRateLimit: staticNum('GLOBAL_RATE_LIMIT'),
     maxNewConnectionsPerSec: staticNum('MAX_NEW_CONNECTIONS_PER_SEC'),
     maxLineBuffer: Number(bufM[1]) * Number(bufM[2]),
@@ -402,7 +408,7 @@ function buildMarkdown() {
   p(`| Default poll page (\`POLL_DEFAULT_MAX\`) | ${pollDefaultMax} | \`src/shared/events.ts\` |`);
   // The transport caps live in PipeServer (not exported); parsed from the
   // source by parsePipeServerCaps so this table can't drift either.
-  p(`| Max concurrent connections (\`MAX_CONNECTIONS\`) | ${caps.maxConnections} | \`src/main/pipe/PipeServer.ts\` (private static) |`);
+  p(`| Max concurrent connections (\`MAX_PIPE_CONNECTIONS\`) | ${caps.maxConnections} | \`src/main/pipe/PipeServer.ts\` (exported) |`);
   p(`| Per-socket RPC rate limit | ${caps.perSocketRateLimit} / s | \`src/main/pipe/PipeServer.ts\` |`);
   p(`| Global RPC rate limit (\`GLOBAL_RATE_LIMIT\`) | ${caps.globalRateLimit} / s | \`src/main/pipe/PipeServer.ts\` (private static) |`);
   p(`| New connections rate limit (\`MAX_NEW_CONNECTIONS_PER_SEC\`) | ${caps.maxNewConnectionsPerSec} / s (pre-auth) | \`src/main/pipe/PipeServer.ts\` (private static) |`);
