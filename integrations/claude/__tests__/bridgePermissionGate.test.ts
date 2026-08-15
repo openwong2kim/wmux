@@ -30,11 +30,45 @@
  * So these tests assert on STDOUT BEING EMPTY, not on a decision value. An
  * assertion like `toBe('ask')` is what let the bug ship green.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const BRIDGE_PATH = path.resolve(process.cwd(), 'integrations/claude/bin/wmux-bridge.mjs');
+
+/**
+ * An endpoint nothing is listening on. `WMUX_PIPE_NAME` is the bridge's ONLY
+ * endpoint override; an earlier revision of this file set `WMUX_SOCKET_PATH`,
+ * which the bridge never reads — that name belongs to `src/cli/client.ts`. The
+ * cases below that DO reach the transport were therefore dialling the real
+ * per-user pipe, which on a developer machine is a live daemon: the pipe name
+ * is derived from the USERNAME and is global per user, and that is precisely
+ * why `WMUX_PIPE_NAME` exists (see `resolveTargets` in the bridge).
+ */
+const DEAD_ENDPOINT = process.platform === 'win32'
+  ? '\\\\.\\pipe\\wmux-test-nonexistent-4f2b1c9e'
+  : '/nonexistent/wmux-test-4f2b1c9e.sock';
+
+/**
+ * An isolated home, so the token walk cannot pick the real one up. A temp home
+ * alone does NOT isolate the endpoint (hence DEAD_ENDPOINT), and the token has
+ * to EXIST: with no token the bridge returns before it ever dials, and the
+ * transport-failure cases would then pass for the wrong reason.
+ */
+let tmpHome: string;
+
+beforeAll(() => {
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gate-test-'));
+  fs.mkdirSync(path.join(tmpHome, '.wmux'), { recursive: true });
+  fs.writeFileSync(path.join(tmpHome, '.wmux', 'daemon-auth-token'), 'test-token', 'utf8');
+  fs.writeFileSync(path.join(tmpHome, '.wmux-auth-token'), 'test-token', 'utf8');
+});
+
+afterAll(() => {
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+});
 
 /** Run the bridge in gate mode and return its raw stdout. */
 function runGate(env: Record<string, string | undefined>): string {
@@ -47,11 +81,11 @@ function runGate(env: Record<string, string | undefined>): string {
       timeout: 15_000,
       env: {
         PATH: process.env.PATH ?? '',
-        HOME: process.env.HOME ?? '',
-        // Point the bridge at a socket that does not exist, so a test that
-        // DOES reach the daemon path fails open instead of hanging on a real
-        // daemon that may be running on this machine.
-        WMUX_SOCKET_PATH: '/nonexistent/wmux-test.sock',
+        // getHomeDir() reads USERPROFILE before HOME, so both have to point at
+        // the temp dir or the real home leaks back in on Windows.
+        HOME: tmpHome,
+        USERPROFILE: tmpHome,
+        WMUX_PIPE_NAME: DEAD_ENDPOINT,
         ...env,
       },
     },
@@ -84,9 +118,10 @@ describe('permission gate — headless guard', () => {
   });
 
   it('never forces a prompt when the daemon is unreachable', () => {
-    // An interactive pane DOES reach the daemon path; the socket above does not
-    // exist, so this exercises the transport-failure fall-through. Failing open
-    // means writing nothing — not asking.
+    // An interactive pane DOES reach the daemon path, and DEAD_ENDPOINT is
+    // where it lands, so this exercises the transport-failure fall-through
+    // rather than whatever daemon happens to be up. Failing open means writing
+    // nothing — not asking.
     expect(runGate({
       WMUX_PTY_ID: 'pty-1',
       CLAUDE_CODE_ENTRYPOINT: 'cli',
