@@ -16,8 +16,7 @@ import { displayPath } from '../../utils/displayPath';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below
- *  (4 buttons after the new-terminal button was removed — split-right,
- *  split-down, new-browser, zoom):
+ *  (split-right, split-down, new-browser, zoom):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
  *    4 × w-6 buttons (24 each) ...................................... 96
  *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
@@ -85,6 +84,8 @@ interface SurfaceTabsProps {
   onSplitHorizontal: () => void;
   /** Split this pane stacked (a new pane below — 'vertical'). */
   onSplitVertical: () => void;
+  /** New terminal surface (tab) in this pane. */
+  onAddTerminal: () => void;
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
 }
@@ -99,6 +100,7 @@ export default function SurfaceTabs({
   onClose,
   onSplitHorizontal,
   onSplitVertical,
+  onAddTerminal,
   onAddBrowser,
 }: SurfaceTabsProps) {
   const t = useT();
@@ -346,6 +348,15 @@ export default function SurfaceTabs({
           </button>
         </div>
       ))}
+      <button
+        className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
+        onClick={(e) => { e.stopPropagation(); onAddTerminal(); }}
+        title={t('pane.newTerminal')}
+        aria-label={t('pane.newTerminal')}
+        data-pane-action="new-terminal"
+      >
+        +
+      </button>
       </div>
 
       {/* Right-aligned pane action cluster. Native next to the per-tab close
@@ -358,11 +369,6 @@ export default function SurfaceTabs({
           className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
           data-pane-actions
         >
-          {/* The "new terminal (tab in this pane)" button was removed by owner
-              decision: one pane = one terminal is the product concept, so adding
-              a second terminal surface to the same pane doesn't belong in the
-              header. The Ctrl+T keyboard path is intentionally kept (power-user
-              escape hatch); only the discoverable button is gone. */}
           <button
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}

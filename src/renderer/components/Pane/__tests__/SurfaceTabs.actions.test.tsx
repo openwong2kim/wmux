@@ -1,11 +1,7 @@
 // @vitest-environment jsdom
 //
-// Dynamic verification for the pane-header action cluster (split right /
-// split down / new browser / zoom).
-//
-// The "new terminal (tab in this pane)" button was removed by owner decision
-// (one pane = one terminal); Ctrl+T still adds a surface via the keyboard path.
-//
+// Dynamic verification for the pane-header action cluster and the new-terminal
+// tab action (split right / split down / new browser / zoom).
 // Mounts the REAL SurfaceTabs against the REAL zustand store, wiring the
 // action callbacks to the same store actions Pane.tsx wires them to, then
 // clicks each button and asserts the store effect:
@@ -63,6 +59,7 @@ function mount(paneId: string): void {
         onClose: () => undefined,
         onSplitHorizontal: () => useStore.getState().splitPane(paneId, 'horizontal', ws.id),
         onSplitVertical: () => useStore.getState().splitPane(paneId, 'vertical', ws.id),
+        onAddTerminal: () => useStore.getState().addSurface(paneId, 'test-pty', 'Terminal', 'D:/repo', ws.id),
         onAddBrowser: () => useStore.getState().addBrowserSurface(paneId, undefined, undefined, ws.id),
       }),
     );
@@ -92,19 +89,62 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders the action buttons in order (no new-terminal button)', () => {
+  it('renders the terminal add button after the final tab and action buttons after it', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
     expect(actions).toEqual([
+      'new-terminal',
       'split-right',
       'split-down',
       'new-browser',
       'zoom',
     ]);
-    // The removed "new terminal" button must not reappear.
-    expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="new-terminal"]')).not.toBeNull();
+    expect(container.querySelector('[data-pane-action="new-terminal"]')?.getAttribute('aria-label')).toBe('New terminal');
+  });
+
+  it('Add terminal invokes the callback without selecting a tab', () => {
+    const paneId = rootLeafId();
+    let addTerminalCalls = 0;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const ws = activeWs();
+    act(() => {
+      root.render(
+        React.createElement(SurfaceTabs, {
+          surfaces: [],
+          activeSurfaceId: '',
+          workspace: ws,
+          paneId,
+          paneActive: true,
+          onSelect: () => { throw new Error('onSelect should not run'); },
+          onClose: () => undefined,
+          onSplitHorizontal: () => undefined,
+          onSplitVertical: () => undefined,
+          onAddTerminal: () => { addTerminalCalls += 1; },
+          onAddBrowser: () => undefined,
+        }),
+      );
+    });
+
+    click('new-terminal');
+
+    expect(addTerminalCalls).toBe(1);
+  });
+
+  it('Add terminal creates a terminal surface in this pane', () => {
+    const paneId = rootLeafId();
+    mount(paneId);
+
+    click('new-terminal');
+
+    const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
+    const terminals = leaf.surfaces.filter((s) => s.ptyId === 'test-pty');
+    expect(terminals).toHaveLength(1);
+    expect(leaf.activeSurfaceId).toBe(terminals[0].id);
   });
 
   it('Split right splits the pane horizontally (side-by-side columns)', () => {
@@ -159,12 +199,7 @@ describe('SurfaceTabs pane action cluster', () => {
     mount(rootLeafId());
 
     expect(container.querySelector('[data-pane-actions]')).toBeNull();
-    expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(0);
-    // NOTE: when the cluster is off, Pane.tsx falls back to its absolute corner
-    // maximize/restore control. That lives on Pane.tsx (not SurfaceTabs), and
-    // mounting the full Pane pulls in Terminal/xterm + the SplitSurfaceView tree
-    // — too heavy for this focused SurfaceTabs unit. The fallback's render
-    // condition (`!paneActionsVisible && …`) is verified by code review; the
-    // PaneContainer.zoom.test.tsx suite covers the zoom state machine itself.
+    expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(1);
+    expect(container.querySelector('[data-pane-action="new-terminal"]')).not.toBeNull();
   });
 });
