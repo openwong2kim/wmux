@@ -148,6 +148,38 @@ describe('HookIngest', () => {
       expect(data.signal.kind).toBe('agent.stop');
     });
 
+    /**
+     * A nested subagent returning is NOT this pane finishing.
+     *
+     * This mapped to 'complete', and that status flows straight through to the
+     * pane's agentStatus (DaemonNotificationRouter: `agentStatus: ev.status`),
+     * so every subagent return marked the whole pane done while its main turn
+     * was still running: the pane drops out of "who is busy", the fleet reads
+     * it as free, and an orchestrator's next wake lands on an agent that never
+     * stopped. Same family as #733, in the opposite direction — there a
+     * deleted guard blocked the only clear, here a nested event cleared too
+     * eagerly.
+     *
+     * It reports 'running' rather than nothing: the pane IS still working.
+     * The event itself still reaches the bus either way, so a consumer that
+     * genuinely wants subagent boundaries can still see them.
+     */
+    it('never lets a subagent return mark the pane finished', () => {
+      // The regression guard, stated as the property rather than the value:
+      // whatever shape subagent_stop takes, it must not be the same "this pane
+      // is done" status that agent.stop produces. Someone restoring symmetry
+      // between the two ("both are stops, right?") is exactly how this comes
+      // back, and every other test stays green when it does.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-b', kind: 'agent.subagent_stop' }));
+      const [mainStop, subStop] = fixture.emitted;
+      expect(mainStop.data.status).toBe('complete');
+      expect(subStop.data.status).not.toBe('complete');
+      // and it must still be reported, not silently dropped — the pane is
+      // working, and saying so beats saying nothing.
+      expect(subStop.data.hookKind).toBe('agent.subagent_stop');
+    });
+
     it('maps subagent_stop and awaiting_input to their own shapes', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
       // A subagent stop is never a lead-turn end: status-only, immediate, and
@@ -158,12 +190,17 @@ describe('HookIngest', () => {
         decision: 'internal',
       });
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.awaiting_input' }));
+      // The attention cue opens its own provisional window, so the
+      // awaiting_input broadcast lands only once that confirms.
       vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
-      expect(fixture.emitted[1].data).toMatchObject({
-        status: 'awaiting_input',
-        message: 'Awaiting input',
-        decision: 'emit',
-      });
+      // The whole sequence, not just one entry: the subagent emit must stay
+      // `running` AND stay ahead of the attention one. Asserting them
+      // separately let a regression swap either without failing.
+      expect(fixture.emitted.map((e) => [e.data.status, e.data.message])).toEqual([
+        ['running', 'Subagent finished'],
+        ['awaiting_input', 'Awaiting input'],
+      ]);
+      expect(fixture.emitted[1].data.decision).toBe('emit');
     });
 
     it('reports a broadcast failure as internal-error rather than throwing at the bridge', () => {

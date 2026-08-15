@@ -433,12 +433,26 @@ function isMetadataKind(kind: AgentSignalKind): kind is
  */
 function eventShapeFor(
   kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input',
-): { status: 'complete' | 'awaiting_input'; message: string } {
+): { status: 'complete' | 'awaiting_input' | 'running'; message: string } {
   switch (kind) {
     case 'agent.stop':
       return { status: 'complete', message: 'Task finished' };
     case 'agent.subagent_stop':
-      return { status: 'complete', message: 'Subagent finished' };
+      // A nested subagent returning is NOT this pane finishing. It said
+      // 'complete', which flows straight through to the pane's agentStatus
+      // (DaemonNotificationRouter: `agentStatus: ev.status`), so every
+      // subagent return marked the whole pane done while its main turn was
+      // still running — the pane drops out of "who is busy", the fleet reads
+      // it as free, and the orchestrator's next wake lands on an agent that
+      // never stopped. Same family as #733's stuck status, in the opposite
+      // direction: there a deleted guard blocked the only clear, here a
+      // nested event clears too eagerly.
+      //
+      // It reports 'running' rather than being dropped, because the pane IS
+      // still working and saying so is more accurate than saying nothing —
+      // and the event itself still reaches the bus, so a poller that wants
+      // subagent boundaries can still see them.
+      return { status: 'running', message: 'Subagent finished' };
     case 'agent.awaiting_input':
       return { status: 'awaiting_input', message: 'Awaiting input' };
   }
