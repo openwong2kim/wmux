@@ -1218,23 +1218,30 @@ export default function AppLayout() {
         action: {
           label: t('plugin.staleGate.copy'),
           onClick: () => {
-            void window.clipboardAPI
-              ?.writeText(command)
-              .then(() => {
+            void (async () => {
+              try {
+                const clipboard = window.clipboardAPI;
+                // An absent bridge has to reach the fallback too, or the
+                // button would report a copy that never happened.
+                if (!clipboard) throw new Error('clipboard bridge unavailable');
+                // Awaited inside the try because writeText MAY throw
+                // SYNCHRONOUSLY (review: CodeRabbit) — a `.catch()` chained
+                // onto the call sees rejections only, and would miss it.
+                await clipboard.writeText(command);
                 useStore.getState().pushToast({
                   level: 'info',
                   message: t('plugin.staleGate.copied'),
                 });
-              })
-              .catch(() => {
-                // Clipboard MAY throw. Falling back to the raw command keeps
-                // the user able to act — it is the whole point of the notice.
+              } catch {
+                // Showing the raw command keeps the user able to act, which is
+                // the whole point of the notice.
                 useStore.getState().pushToast({
                   level: 'warn',
                   persist: true,
                   message: command,
                 });
-              });
+              }
+            })();
           },
         },
       });
