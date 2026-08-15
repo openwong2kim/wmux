@@ -999,6 +999,7 @@ interface ElectronMcpApi {
  * verify Claude Code can discover the wmux MCP bridge — DX D4 decision.
  */
 function McpStatusSection() {
+  const t = useT();
   const [status, setStatus] = useState<McpStatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [confirmingUnregister, setConfirmingUnregister] = useState(false);
@@ -1056,7 +1057,7 @@ function McpStatusSection() {
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <StatusBadge ok={server.registered} okLabel="registered" failLabel="not registered" />
+          <StatusBadge ok={server.registered} okLabel={t('settings.mcpRegistered')} failLabel={t('settings.mcpNotRegistered')} />
           <span className="text-sm text-[color:var(--text-main)] font-mono">{label}</span>
         </div>
         {server.path && (
@@ -1082,9 +1083,9 @@ function McpStatusSection() {
           <span
             className="text-[9px] px-1 py-0.5 rounded"
             style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
-            title="Integration not yet verified end-to-end"
+            title={t('settings.mcpExperimentalTitle')}
           >
-            experimental
+            {t('settings.mcpExperimental')}
           </span>
         )}
       </div>
@@ -1093,7 +1094,7 @@ function McpStatusSection() {
           {renderRow('wmux', target.wmux)}
           <p className="text-[10px] text-[color:var(--text-muted)] font-mono truncate" title={target.configPath}>
             {target.configPath}
-            {target.configModified ? ` · modified ${new Date(target.configModified).toLocaleString()}` : ''}
+            {target.configModified ? ` ${t('settings.mcpModified', { date: new Date(target.configModified).toLocaleString() })}` : ''}
           </p>
         </>
       ) : (
@@ -1101,7 +1102,7 @@ function McpStatusSection() {
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          Not detected · <span className="font-mono">{target.configPath}</span>
+          {t('settings.mcpNotDetected')}<span className="font-mono">{target.configPath}</span>
         </div>
       )}
     </div>
@@ -1109,13 +1110,13 @@ function McpStatusSection() {
 
   return (
     <div className="flex flex-col gap-3">
-      <SectionLabel label="MCP Servers" />
+      <SectionLabel label={t('settings.mcpServers')} />
       {loading ? (
         <div
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          Checking agent configs…
+          {t('settings.mcpChecking')}
         </div>
       ) : status ? (
         <>
@@ -1127,7 +1128,7 @@ function McpStatusSection() {
               disabled={pending !== null}
               style={{ opacity: pending ? 0.5 : 1 }}
             >
-              {pending === 'reregister' ? '…' : 'Re-register'}
+              {pending === 'reregister' ? '…' : t('settings.mcpReregister')}
             </Button>
             {confirmingUnregister ? (
               <>
@@ -1136,14 +1137,14 @@ function McpStatusSection() {
                   onClick={() => void handleUnregister()}
                   disabled={pending !== null}
                 >
-                  {pending === 'unregister' ? '…' : 'Confirm'}
+                  {pending === 'unregister' ? '…' : t('settings.mcpConfirm')}
                 </Button>
                 <Button
                   variant="secondary"
                   onClick={() => setConfirmingUnregister(false)}
                   disabled={pending !== null}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </>
             ) : (
@@ -1153,7 +1154,7 @@ function McpStatusSection() {
                 disabled={pending !== null}
                 style={{ color: 'var(--accent-red)' }}
               >
-                Unregister
+                {t('settings.mcpUnregister')}
               </Button>
             )}
           </div>
@@ -1163,7 +1164,7 @@ function McpStatusSection() {
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          MCP status unavailable. Restart wmux and try again.
+          {t('settings.mcpUnavailable')}
         </div>
       )}
     </div>
@@ -3429,9 +3430,9 @@ function TabAppearance() {
     <div className="flex flex-col gap-4">
       {/* Theme */}
       <div className="flex flex-col gap-2">
-        <SectionLabel label="Theme" />
+        <SectionLabel label={t('settings.theme')} />
         <style>{THEME_CARD_STYLE}</style>
-        <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Theme">
+        <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t('settings.theme')}>
           {THEME_OPTIONS.map(({ value, label }) => {
             const selected = currentTheme === value;
             const palette = value === 'custom'
@@ -3906,6 +3907,7 @@ function TabNotifications() {
 // ─── Key capture overlay ──────────────────────────────────────────────────────
 
 function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCapture: (key: string, code: string) => void; onCancel: () => void }) {
+  const t = useT();
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       e.preventDefault();
@@ -3939,7 +3941,7 @@ function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCa
         onClick={(e) => e.stopPropagation()}
       >
         <p className="text-lg text-[color:var(--text-main)] font-mono mb-2">{label}</p>
-        <p className="text-xs text-[color:var(--text-muted)]">ESC to cancel</p>
+        <p className="text-xs text-[color:var(--text-muted)]">{t('settings.escToCancel')}</p>
       </div>
     </div>
   );
