@@ -610,6 +610,8 @@ export const en = {
   'settings.multiviewRows': 'Rows',
   'settings.paneActionsVisible': 'Pane action buttons',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
+  'settings.currentVersion': 'Current',
+  'settings.latestVersion': 'Latest',
   'settings.updateReady': 'Update ready',
   'settings.updateEndsSessions': 'Installing closes your running sessions.',
   'settings.checkFailed': 'Check failed',

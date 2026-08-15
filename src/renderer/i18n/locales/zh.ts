@@ -154,6 +154,8 @@ export const zh = {
   'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
+  'settings.currentVersion': '当前版本',
+  'settings.latestVersion': '最新版本',
   'settings.updateReady': '更新已准备就绪',
   'settings.updateEndsSessions': '安装将关闭所有正在运行的会话。',
   'settings.checkFailed': '检查失败',

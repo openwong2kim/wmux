@@ -1795,6 +1795,30 @@ function UpdateStatus() {
     return () => { removeAvailable(); removeProgress(); removeNotAvailable(); removeError(); };
   }, []);
 
+  // #897 — ask what is already true, instead of only listening for what happens
+  // next. Subscribing alone means this panel knows nothing on mount: a
+  // background poll that downloaded an update BEFORE Settings was opened fired
+  // its one event into a component that did not exist yet, so the panel showed
+  // a bare version number and a "check for updates" button while a verified
+  // installer sat on disk. That is the same push-only mistake as #866's refused
+  // notice and the missing ready-toast — third time in this subsystem, so the
+  // read is a pull.
+  useEffect(() => {
+    const read = window.electronAPI?.updater?.getPendingInstall;
+    if (!read) return; // stale preload / tests
+    let cancelled = false;
+    void read()
+      .then((pending) => {
+        if (cancelled || !pending) return;
+        // Only fills an unknown state — a live event that arrived first is
+        // fresher than this snapshot and must not be stomped.
+        setState((prev) => (prev === 'idle' ? 'downloaded' : prev));
+        setReleaseName((prev) => prev || pending.version);
+      })
+      .catch(() => { /* the widget still works from live events */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const handleCheck = async () => {
     setState('checking');
     const result = await ipcInvoke(() => window.electronAPI.updater.checkForUpdates());
@@ -1842,9 +1866,23 @@ function UpdateStatus() {
     >
       <div>
         <p className="text-sm text-[color:var(--text-main)]">{t('settings.wmuxUpdates')}</p>
-        <p className="text-[11px] mt-0.5" style={{ color: statusText ? statusColor : 'var(--text-muted)' }}>
-          v{__APP_VERSION__}{statusText ? ` — ${statusText}` : ''}
+        {/* Current and latest on their own lines. The old copy put the running
+            version and a status word on one line and never named the version
+            you would be moving TO, so "update ready" could not be reconciled
+            against anything — #897's reporters were comparing exactly those two
+            numbers by hand (winget list vs the app). */}
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          {t('settings.currentVersion')} v{__APP_VERSION__}
         </p>
+        {releaseName && (
+          <p className="text-[11px] mt-0.5" style={{ color: statusColor }}>
+            {t('settings.latestVersion')} {releaseName}
+            {statusText ? ` — ${statusText}` : ''}
+          </p>
+        )}
+        {!releaseName && statusText && (
+          <p className="text-[11px] mt-0.5" style={{ color: statusColor }}>{statusText}</p>
+        )}
         {state === 'error' && errorMsg && (
           <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{errorMsg}</p>
         )}
@@ -1876,7 +1914,10 @@ function UpdateStatus() {
             onClick={handleInstall}
             style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
           >
-            {t('settings.updateReady')}
+            {/* An action, not a status. This said "Update ready", which is what
+                the line above already reports — a button labelled with a state
+                does not tell you what pressing it does. */}
+            {t('update.installNow')}
           </Button>
         ) : (
           <Button

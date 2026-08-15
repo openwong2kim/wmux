@@ -432,6 +432,8 @@ export const ko = {
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
+  'settings.currentVersion': '현재 버전',
+  'settings.latestVersion': '최신 버전',
   'settings.updateReady': '업데이트 준비 완료',
   'settings.updateEndsSessions': '설치하면 실행 중인 세션이 모두 종료됩니다.',
   'settings.checkFailed': '확인 실패',
