@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useT } from '../../hooks/useT';
 
 interface EditorPanelProps {
   filePath: string;
@@ -25,6 +26,7 @@ function shortenPath(p: string): string {
 }
 
 export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPanelProps) {
+  const t = useT();
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +42,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
     setError(null);
     readFileContent(filePath).then((result) => {
       if (result === null) {
-        setError('Unable to read file');
+        setError(t('editor.unableToRead'));
         setContent(null);
       } else {
         setContent(result);
@@ -68,7 +70,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
     setError(null);
     readFileContent(filePath).then((result) => {
       if (result === null) {
-        setError('Unable to read file');
+        setError(t('editor.unableToRead'));
         setContent(null);
       } else {
         setContent(result);
@@ -96,15 +98,15 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
         <button
           className="px-2 py-0.5 rounded-[5px] text-[10px] transition-colors border bg-[color-mix(in_srgb,var(--bg-surface)_72%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] text-[var(--text-sub)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)] hover:border-[color-mix(in_srgb,var(--text-main)_16%,transparent)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.25)]"
           onClick={handleReload}
-          title="Reload file"
+          title={t('editor.reloadTitle')}
         >
-          Reload
+          {t('editor.reload')}
         </button>
         {/* View | Edit — a single segmented control (one track, active segment
             raised). Replaces the paired toggle button per the gpui recipe. */}
         <div
           role="tablist"
-          aria-label="Editor mode"
+          aria-label={t('editor.modeLabel')}
           className="inline-flex items-center gap-0.5 p-0.5 rounded-[7px]"
           style={{
             background: 'var(--bg-mantle)',
@@ -128,9 +130,9 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
             onClick={() => {
               if (editing) setEditing(false);
             }}
-            title="Switch to view mode"
+            title={t('editor.switchToView')}
           >
-            View
+            {t('editor.view')}
           </button>
           <button
             role="tab"
@@ -149,9 +151,9 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
             onClick={() => {
               if (!editing) handleToggleEdit();
             }}
-            title="Switch to edit mode"
+            title={t('editor.switchToEdit')}
           >
-            Edit
+            {t('editor.edit')}
           </button>
         </div>
         {/* No Save button: the panel is a read-only viewer with a local-only
@@ -166,7 +168,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
       <div className="flex-1 overflow-auto">
         {loading && (
           <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
-            Loading...
+            {t('editor.loading')}
           </div>
         )}
         {!loading && error && (

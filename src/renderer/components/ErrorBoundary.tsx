@@ -1,4 +1,5 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react';
+import { t } from '../i18n';
 
 interface Props {
   children: ReactNode;
@@ -37,7 +38,7 @@ export class ErrorBoundary extends Component<Props, State> {
           justifyContent: 'center',
           gap: 8,
         }}>
-          <div>Crashed: {this.state.error?.message}</div>
+          <div>{t('error.crashed', { message: this.state.error?.message ?? '' })}</div>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
             style={{
@@ -50,7 +51,7 @@ export class ErrorBoundary extends Component<Props, State> {
               fontFamily: 'inherit',
             }}
           >
-            Retry
+            {t('error.retry')}
           </button>
         </div>
       );
