@@ -353,6 +353,37 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
     }
   });
 
+  it('decision:"internal" is treated exactly like veto — dot only, no toast, no tee', async () => {
+    // The daemon's CompletionAlarm rejected the candidate as NOT a real turn
+    // end (subagent stop, leftover background work, turn-gate miss, already
+    // announced, or a rebutted window). Main must not fan anything out.
+    const hookRouter = stubHookRouter('emit');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      dispatchNotificationMock.mockClear();
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'done',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'internal',
+        },
+      });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalled(); // dot stays live
+      expect(dispatchNotificationMock).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled();
+    } finally {
+      nr.stop();
+    }
+  });
+
   it('decision:"dedup" tees the event but suppresses the second toast', async () => {
     const { router: nr, captured } = makeRouter();
     try {

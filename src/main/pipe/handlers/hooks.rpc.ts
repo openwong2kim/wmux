@@ -55,6 +55,7 @@ import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume'
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
 import { deliverBrainPtyHookSignal } from '../../deck/brainPtyHookBus';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { normalizeHookCue, type CompletionAlarm } from '../../../shared/hooks/CompletionAlarm';
 import type { AgentLastMessage } from '../../../shared/events';
 import type { NotificationCategory } from '../../../shared/types';
 import os from 'node:os';
@@ -430,6 +431,10 @@ export function registerHooksRpc(
   // Consulted FIRST in resolveWorkspacesForSignal so a hook can resolve without
   // any renderer round-trip. Injected (default the singleton) for testability.
   getMirror: () => Pick<WorkspaceMirror, 'peek'> = getWorkspaceMirror,
+  // CompletionAlarm — the same verdict gate the daemon applies, mirrored onto
+  // this daemon-UNREACHABLE fallback path. Optional: an absent alarm keeps the
+  // pre-gate immediate-emit behavior (tests, or a boot ordering gap).
+  alarm?: CompletionAlarm,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -663,97 +668,165 @@ export function registerHooksRpc(
       || signal.kind === 'agent.subagent_stop'
       || signal.kind === 'agent.awaiting_input';
     if (!isEmitKind) {
+      // Verdict-gate feed for everything that is NOT a turn boundary: working
+      // evidence (activity / tool_started / awaiting_permission), the session
+      // reset (session_start), and the answered cues that cancel a pending
+      // attention window. These kinds return here, so this is their only feed
+      // site on the local path.
+      alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
       return { ok: true };
     }
 
-    const decision = hookRouter.recordHook(signal, ptyId);
+    // The CONFIRMED fan-out: everything below the verdict gate that must only
+    // fire on a real turn end — the ledger write, the lifecycle tee, the usage
+    // probe, the toast, and the awaiting-input dot. The alarm calls this from
+    // the resume closure at window confirmation; without an alarm it runs
+    // inline (the legacy immediate path, byte-for-byte).
+    const fanOutConfirmed = (): void => {
+      const decision = hookRouter.recordHook(signal, ptyId);
 
-    // 5. Tee to EventBus for external observers (orchestrator clients via
-    //    `wmux_events_poll`). Emits BOTH 'emit' and 'dedup' decisions so
-    //    a forensic consumer can see the dedup ledger's behavior; the
-    //    fan-out notification below is the only side effect gated on
-    //    `decision === 'emit'`.
-    //
-    //    NOTE: This is additive at the EVENT-TEE level but the wider PR
-    //    also wires detector emits into the ledger (PTYBridge.onEvent +
-    //    DaemonNotificationRouter), which activates `recordHook`'s
-    //    detector-dedup branch (HookSignalRouter.ts L109). Before this
-    //    PR, `recordDetector` had no production caller and that branch
-    //    was effectively dead code. After: when the detector fires
-    //    ~50-100ms ahead of the hook (typical), the hook now returns
-    //    'dedup' and the `if (decision === 'dedup') return` above
-    //    suppresses the SECOND sendNotification for the same turn.
-    //    This collapses a latent double-toast that was always possible
-    //    when hook+detector both ran, and is the intended consequence
-    //    of round-2 cross-model review feedback — not an accident.
-    //    SIGNAL_HEALTH_UPDATE is unchanged.
-    //
-    //    Carries ptyId only (no paneId). The workspaceId attached here is
-    //    the one that owns the resolved ptyId — needed so events.poll
-    //    workspace filtering works for orchestrator clients scoped to a
-    //    single claimed workspace.
-    const workspaceId = findWorkspaceIdForPty(ptyId, workspaces);
-    if (workspaceId) {
-      // Attach the pane's closing words to a turn-end wake. Without this the
-      // orchestrator receives "pane stopped" and nothing else, so its only way
-      // to find out whether the pane finished or is blocked on a question is to
-      // read the rendered terminal — where an agent's printed proposal is
-      // indistinguishable from text pending in the input box. Carrying the
-      // message (and whether it ends in a question) makes the wake actionable
-      // the same way pr.review_comment carries the reviewer's snippet.
+      // 5. Tee to EventBus for external observers (orchestrator clients via
+      //    `wmux_events_poll`). Emits BOTH 'emit' and 'dedup' decisions so
+      //    a forensic consumer can see the dedup ledger's behavior; the
+      //    fan-out notification below is the only side effect gated on
+      //    `decision === 'emit'`.
       //
-      // Stop only: awaiting_input is a mid-turn y/N gate whose prompt is
-      // already on screen, and subagent_stop is a nested return the human is
-      // not waiting on. Best-effort — a null just restores the old behavior.
-      const lastMessage = stopMessage;
+      //    NOTE: This is additive at the EVENT-TEE level but the wider PR
+      //    also wires detector emits into the ledger (PTYBridge.onEvent +
+      //    DaemonNotificationRouter), which activates `recordHook`'s
+      //    detector-dedup branch (HookSignalRouter.ts L109). Before this
+      //    PR, `recordDetector` had no production caller and that branch
+      //    was effectively dead code. After: when the detector fires
+      //    ~50-100ms ahead of the hook (typical), the hook now returns
+      //    'dedup' and the `if (decision === 'dedup') return` below
+      //    suppresses the SECOND sendNotification for the same turn.
+      //    This collapses a latent double-toast that was always possible
+      //    when hook+detector both ran, and is the intended consequence
+      //    of round-2 cross-model review feedback — not an accident.
+      //    SIGNAL_HEALTH_UPDATE is unchanged.
+      //
+      //    Carries ptyId only (no paneId). The workspaceId attached here is
+      //    the one that owns the resolved ptyId — needed so events.poll
+      //    workspace filtering works for orchestrator clients scoped to a
+      //    single claimed workspace.
+      const workspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+      if (workspaceId) {
+        // Attach the pane's closing words to a turn-end wake. Without this the
+        // orchestrator receives "pane stopped" and nothing else, so its only way
+        // to find out whether the pane finished or is blocked on a question is to
+        // read the rendered terminal — where an agent's printed proposal is
+        // indistinguishable from text pending in the input box. Carrying the
+        // message (and whether it ends in a question) makes the wake actionable
+        // the same way pr.review_comment carries the reviewer's snippet.
+        //
+        // Stop only: awaiting_input is a mid-turn y/N gate whose prompt is
+        // already on screen, and subagent_stop is a nested return the human is
+        // not waiting on. Best-effort — a null just restores the old behavior.
+        const lastMessage = stopMessage;
+        eventBus.emit({
+          type: 'agent.lifecycle',
+          workspaceId,
+          ptyId,
+          kind: signal.kind,
+          source: 'hook',
+          agent: signal.agent,
+          decision,
+          ...(lastMessage ? { lastMessage } : {}),
+        });
+        // M2: a claude turn just ended in this workspace — the usage number for
+        // its bound account may have moved. Hook-gate a per-account probe (main
+        // applies the enabled/cooldown/inflight gates). Fires on BOTH emit and
+        // dedup: the turn genuinely ended regardless of which signal source won
+        // the toast. A REBUTTED stop must never reach it (the turn did not end),
+        // which is why it lives inside this closure.
+        if (signal.kind === 'agent.stop' && signal.agent === 'claude') {
+          onClaudeTurnEnd?.(workspaceId);
+        }
+      }
+
+      if (decision === 'dedup') {
+        // Hook arrived too late — detector already emitted. We measured
+        // the latency (above) but don't fan out a second time.
+        return;
+      }
+
+      // dispatchNotification: renderer alive → IPC only (its policy decides
+      // every surface INCLUDING the OS toast — hook completions finally get
+      // one); renderer gone → direct-toast fallback so the completion isn't
+      // silently lost during a window teardown.
+      dispatchNotification(
+        getWindow(),
+        ptyId,
+        {
+          type: 'agent',
+          title: titleFor(signal),
+          body: bodyFor(signal),
+          category: categoryFor(signal),
+        },
+        { ptyId },
+      );
+      const win = getWindow();
+      if (win) {
+        // Hook path (unlike the detector path in DaemonNotificationRouter) does
+        // not otherwise touch agentStatus. For awaiting_input, set it so the
+        // sidebar dot turns yellow — the part users see at a glance.
+        if (signal.kind === 'agent.awaiting_input') {
+          broadcastMetadataUpdate(win, { ptyId, agentStatus: 'awaiting_input' });
+        }
+      }
+    };
+
+    // No verdict gate configured (tests / a boot ordering gap): the legacy
+    // immediate path, unchanged.
+    if (!alarm) {
+      fanOutConfirmed();
+      return { ok: true };
+    }
+
+    // A subagent stop is never a lead-turn end. The cue (child stop) is a
+    // NO-OP in the alarm — it arms nothing AND cancels nothing, so a window
+    // the lead turn's own stop opened survives a child stop that lands inside
+    // it (cancelling there dropped the completion with nothing left to
+    // re-fire). The trace is 'internal' and no toast fires.
+    if (signal.kind === 'agent.subagent_stop') {
+      alarm.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      const subWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+      if (subWorkspaceId) {
+        eventBus.emit({
+          type: 'agent.lifecycle',
+          workspaceId: subWorkspaceId,
+          ptyId,
+          kind: signal.kind,
+          source: 'hook',
+          agent: signal.agent,
+          decision: 'internal',
+        });
+      }
+      return { ok: true };
+    }
+
+    // Stop / awaiting_input: hold a provisional window. The bridge is
+    // answered NOW (the 2s budget never waits out the window); the fan-out
+    // fires from the resume closure at confirmation, or never if a working
+    // cue rebuts the window. A REJECTED candidate (turn-gate miss, already
+    // announced, leftover background work) leaves an 'internal' trace only —
+    // the status dot was already updated by the boundary broadcast above.
+    const outcome = alarm.observe(ptyId, signal.agent, normalizeHookCue(signal), fanOutConfirmed);
+    if (outcome === 'hold') {
+      return { ok: true };
+    }
+    const traceWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+    if (traceWorkspaceId) {
       eventBus.emit({
         type: 'agent.lifecycle',
-        workspaceId,
+        workspaceId: traceWorkspaceId,
         ptyId,
         kind: signal.kind,
         source: 'hook',
         agent: signal.agent,
-        decision,
-        ...(lastMessage ? { lastMessage } : {}),
+        decision: 'internal',
+        ...(signal.kind === 'agent.stop' && stopMessage ? { lastMessage: stopMessage } : {}),
       });
-      // M2: a claude turn just ended in this workspace — the usage number for its
-      // bound account may have moved. Hook-gate a per-account probe (main applies
-      // the enabled/cooldown/inflight gates). Fires on BOTH emit and dedup: the
-      // turn genuinely ended regardless of which signal source won the toast.
-      if (signal.kind === 'agent.stop' && signal.agent === 'claude') {
-        onClaudeTurnEnd?.(workspaceId);
-      }
-    }
-
-    if (decision === 'dedup') {
-      // Hook arrived too late — detector already emitted. We measured
-      // the latency (above) but don't fan out a second time.
-      return { ok: true };
-    }
-
-    // dispatchNotification: renderer alive → IPC only (its policy decides
-    // every surface INCLUDING the OS toast — hook completions finally get
-    // one); renderer gone → direct-toast fallback so the completion isn't
-    // silently lost during a window teardown.
-    dispatchNotification(
-      getWindow(),
-      ptyId,
-      {
-        type: 'agent',
-        title: titleFor(signal),
-        body: bodyFor(signal),
-        category: categoryFor(signal),
-      },
-      { ptyId },
-    );
-    const win = getWindow();
-    if (win) {
-      // Hook path (unlike the detector path in DaemonNotificationRouter) does
-      // not otherwise touch agentStatus. For awaiting_input, set it so the
-      // sidebar dot turns yellow — the part users see at a glance.
-      if (signal.kind === 'agent.awaiting_input') {
-        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'awaiting_input' });
-      }
     }
     return { ok: true };
   });

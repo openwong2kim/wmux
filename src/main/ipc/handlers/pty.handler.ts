@@ -679,6 +679,11 @@ export function registerPTYHandlers(
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));
       }
+      // Verdict-gate working feed (local mode's mirror of the daemon's
+      // session:active → notePaneWorking): user keystrokes rebut a pending
+      // completion window. Daemon mode needs no twin here — its own
+      // session:active broadcast covers the same input.
+      ptyBridge.noteUserInput(id);
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }

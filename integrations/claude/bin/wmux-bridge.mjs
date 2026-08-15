@@ -41,7 +41,7 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 // (setupHooks.refreshHookBridge, run at boot), never by this number.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — suffix-isolated lifecycle routing and bridge state.
-const BRIDGE_VERSION = '0.3.0';
+const BRIDGE_VERSION = '0.4.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -498,6 +498,137 @@ function extractPermissionModeFromTranscript(transcriptPath) {
   }
 }
 
+// Leftover background-work mining for Stop-class envelopes.
+//
+// A Stop hook fires when the lead turn ends EVEN IF background tasks the
+// agent started (run_in_background Bash) are still running — and while they
+// run, no further hook events arrive to rebut a premature "finished"
+// alarm. The count below lets the daemon's verdict gate treat such a Stop
+// as "still working" instead of "done".
+//
+// Verified transcript shapes (live spike, 2026-08-15):
+//  - START: an assistant record whose message.content[] has a tool_use block
+//    with name "Bash" and input.run_in_background === true. NOTE: its
+//    tool_result ("Command running in background with ID: …") is written
+//    IMMEDIATELY at dispatch — it is NOT a completion signal, so plain
+//    tool_use↔tool_result pairing always balances to zero.
+//  - COMPLETION: a task-notification record, durable in the transcript even
+//    after the queue drains it. Two observed shapes carrying the same
+//    XML-tagged body (matched by <tool-use-id>, settled by
+//    <status>completed|failed</status>):
+//      {"type":"queue-operation","operation":"enqueue","content":"<task-notification>…"}
+//      {"type":"attachment","attachment":{"type":"queued_command",
+//       "commandMode":"task-notification","prompt":"<task-notification>…"}}
+//
+// Returns 0 on any failure (fail-open: the alarm then relies on the
+// provisional window alone). A 1MB tail — much wider than the usage/mode
+// readers, because the start record can sit behind an entire turn's tool
+// output (measured: a real session's early starts were already 1.4MB deep).
+// A substring pre-filter keeps the parse cost near zero for the common
+// line. The residual miss case (a start pushed out of the window by a very
+// verbose turn) reads as no leftover — the fail-open direction.
+function countLeftoverBackgroundTasks(transcriptPath) {
+  try {
+    if (!existsSync(transcriptPath)) return 0;
+    const stat = statSync(transcriptPath);
+    const TAIL_BYTES = 1024 * 1024;
+    const readBytes = Math.min(TAIL_BYTES, stat.size);
+    const offset = stat.size - readBytes;
+    const buf = Buffer.alloc(readBytes);
+    const fd = openSync(transcriptPath, 'r');
+    try {
+      readSync(fd, buf, 0, readBytes, offset);
+    } finally {
+      closeSync(fd);
+    }
+    const tail = buf.toString('utf8');
+    // Trim leading partial line if we landed mid-line (offset > 0).
+    const start = offset > 0 ? tail.indexOf('\n') + 1 : 0;
+    const lines = tail.slice(start).split('\n').filter((l) => l.trim().length > 0);
+
+    const startedIds = new Set();
+    const resultTexts = new Map(); // tool_use id → immediate tool_result text
+    const settledIds = new Set();
+    for (const line of lines) {
+      // Cheap pre-filter: only the two marker substrings can contribute.
+      if (!line.includes('"run_in_background"') && !line.includes('<task-notification>')
+          && !line.includes('"tool_result"')) {
+        continue;
+      }
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry !== 'object') continue;
+      const content = entry.message && Array.isArray(entry.message.content)
+        ? entry.message.content
+        : null;
+      if (content) {
+        for (const block of content) {
+          if (!block || typeof block !== 'object') continue;
+          // START shape — a run_in_background Bash dispatch.
+          if (block.type === 'tool_use'
+            && block.name === 'Bash' && block.input
+            && block.input.run_in_background === true && typeof block.id === 'string'
+          ) {
+            startedIds.add(block.id);
+          }
+          // The IMMEDIATE tool_result of a background dispatch. Its text
+          // separates a real start ("Command running in background with
+          // ID: …") from a synchronously REJECTED attempt (hook error,
+          // sandbox refusal): the latter never spawns a task and never
+          // receives a task-notification, so counting it would suppress
+          // every later Stop's alarm for the rest of the session.
+          if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+            const text = typeof block.content === 'string'
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.map((c) => (c && typeof c.text === 'string') ? c.text : '').join('')
+                : '';
+            if (!resultTexts.has(block.tool_use_id)) resultTexts.set(block.tool_use_id, text);
+          }
+        }
+      }
+      // COMPLETION shapes: both carry the XML-tagged notification body, in
+      // `content` (queue-operation) or `attachment.prompt` (queued_command).
+      const body = typeof entry.content === 'string'
+        ? entry.content
+        : entry.attachment && typeof entry.attachment.prompt === 'string'
+          ? entry.attachment.prompt
+          : null;
+      // `includes` over `startsWith`: the body can carry leading whitespace
+      // before the opening tag. The ARRIVAL of a task-notification for an id
+      // settles it — neither the `<status>` value nor the tag's presence is
+      // required. Both directions of that check have the same failure mode:
+      // a value whitelist (completed|failed) that misses a future terminal
+      // status, or a renamed/absent tag, leaves the task counted as running
+      // FOREVER and permanently suppresses the completion alarm for the rest
+      // of the session. A spuriously-settled task at worst fires one
+      // window-gated alarm. Fail-open, same posture as the read errors above.
+      if (body && body.includes('<task-notification>')) {
+        const idMatch = body.match(/<tool-use-id>([^<]+)<\/tool-use-id>/);
+        if (idMatch) settledIds.add(idMatch[1]);
+      }
+    }
+    let leftover = 0;
+    for (const id of startedIds) {
+      if (settledIds.has(id)) continue;
+      // Only a dispatch that actually spawned a background task counts.
+      // A rejected attempt (error tool_result) or a missing result never
+      // settles — treating either as leftover would permanently suppress
+      // the completion alarm.
+      const started = /running in background/i.test(resultTexts.get(id) ?? '');
+      if (started) leftover++;
+    }
+    return leftover;
+  } catch (err) {
+    logEvent('transcript-leftover-read-error', { error: String(err) });
+    return 0;
+  }
+}
+
 // X6 ③ (#12235-safe): the origin session id is the transcript FILENAME without
 // its .jsonl extension. `claude --resume <id>` mints a NEW session_id on the
 // hook payload but APPENDS to the SAME transcript file (F3), so the filename is
@@ -900,6 +1031,15 @@ async function main() {
     usage = extractUsageFromTranscript(transcriptPath);
   }
 
+  // Leftover background-work count for the LEAD turn only — SubagentStop
+  // rides a sidechain transcript where the flag is meaningless anyway
+  // (the daemon drops child stops before the alarm gate). Stamped only
+  // when > 0 so absent stays "no signal" for older daemons.
+  let leftoverWork = 0;
+  if (hookName === 'Stop' && transcriptPath) {
+    leftoverWork = countLeftoverBackgroundTasks(transcriptPath);
+  }
+
   // X6 ③: capture the permission mode LIVE — on SessionStart and on every
   // Stop/SubagentStop while the session is still alive. This is deliberately
   // NOT a teardown/exit hook: a real reboot is SIGKILL, so no exit hook fires;
@@ -961,6 +1101,7 @@ async function main() {
       ...(payload ?? {}),
       ...(usage ? { usage } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(leftoverWork > 0 ? { wmux_leftover_work: leftoverWork } : {}),
     },
     ts: Date.now(),
   };

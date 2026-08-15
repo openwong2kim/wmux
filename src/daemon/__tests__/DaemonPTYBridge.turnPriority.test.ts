@@ -232,4 +232,35 @@ describe('DaemonPTYBridge turn priority', () => {
       expect(active).toEqual(['sess-3']);
     });
   });
+
+  describe('resize-redraw repaint flag on active events', () => {
+    // review-team [2-MODEL] catch: the alarm's working feed consumes
+    // session:active, so a TUI repaint right after a resize would rebut a
+    // pending completion window and silently kill a real "finished" alarm.
+    // The flag lets daemon/index.ts skip ONLY the alarm feed — the loose
+    // status dot still updates.
+    it('flags a passive burst inside the guard window, clears it after', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: true }]);
+
+      // Idle out, then a burst AFTER the guard window is real output.
+      vi.advanceTimersByTime(5_000 + 100);
+      feed(BIG);
+      expect(payloads[1]).toMatchObject({ sessionId: 'sess-1', likelyRepaint: false });
+    });
+
+    it('never flags a burst started by submitted input', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      bridge.noteResize();
+      bridge.noteInput('\r');
+      feed(BIG);
+      expect(payloads).toEqual([{ sessionId: 'sess-1', agentName: undefined, likelyRepaint: false }]);
+    });
+  });
 });

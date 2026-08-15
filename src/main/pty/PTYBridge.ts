@@ -12,6 +12,7 @@ import { dispatchNotification } from '../notification/dispatchNotification';
 import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
+import { normalizeDetectorCue, type CompletionAlarm } from '../../shared/hooks/CompletionAlarm';
 import type { AgentStatus } from '../../shared/types';
 
 // How long after an AgentDetector event to suppress the ActivityMonitor idle
@@ -62,6 +63,13 @@ export class PTYBridge {
     // the binding by reference. Tests pass `undefined` and fall through to
     // a bare 'emit' decision — the test rig has no hook bridge anyway.
     private getHookRouter?: () => HookSignalRouter | null,
+    // Lazy accessor for the shared CompletionAlarm (same forward-declared
+    // pattern as getHookRouter, and for the same reason: the alarm is built
+    // later in main/index.ts boot order). MUST be the same instance
+    // registerHooksRpc observes — the detector's provisional window and the
+    // hook's Stop candidate arbitrate against one shared pane gate. Absent
+    // (tests) → the detector path keeps its pre-gate immediate fan-out.
+    private getAlarm?: () => CompletionAlarm | null,
   ) {
     this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
     // Activity-based fallback: fires when sustained output drops to idle.
@@ -192,7 +200,37 @@ export class PTYBridge {
       console.warn('[PTYBridge] hookRouter.dropPty error:', err);
     }
 
+    // Verdict gate: same cleanup discipline — a reused ptyId must start from
+    // an empty gate, or a fresh pane's first stop would arbitrate against the
+    // dead pane's `announced`/`seenWorking` state.
+    try {
+      this.getAlarm?.()?.dropPty(ptyId);
+    } catch (err) {
+      console.warn('[PTYBridge] alarm.dropPty error:', err);
+    }
+
     this.ptyManager.remove(ptyId);
+  }
+
+  /**
+   * Working-evidence feed for the verdict gate on the LOCAL input path — the
+   * mirror of the daemon's session:active → notePaneWorking wiring. Called
+   * from the local PTY_WRITE IPC branch (pty.handler.ts): user keystrokes are
+   * the primary prompt-arrival rebuttal, and ActivityMonitor's threshold
+   * (>2000B/3s of OUTPUT) never fires for a short text-only turn, so without
+   * this feed the gate would drop every completion on exactly those panes.
+   */
+  noteUserInput(ptyId: string): void {
+    const alarm = this.getAlarm?.() ?? null;
+    if (!alarm) return;
+    try {
+      const lastAgent = this.agentDetectors.get(ptyId)?.getLastAgent() ?? '';
+      const slug = agentDisplayToSlug(lastAgent);
+      if (!slug) return; // nothing to key the gate to yet
+      alarm.observe(ptyId, slug, { class: 'working' });
+    } catch (err) {
+      console.warn('[PTYBridge] noteUserInput alarm feed error:', err);
+    }
   }
 
   /**
@@ -400,6 +438,16 @@ export class PTYBridge {
           agentSlug: agentDisplayToSlug(agentEvent.agent) ?? null,
         });
 
+        // Verdict-gate feed: a 'running' detection is working evidence — it
+        // arms the turn gate on an ungoverned pane and clears `announced`
+        // after a confirmed completion (the next turn's boundary). Keyed to
+        // the detected slug; an agent-less running event has nothing to arm.
+        const slug = agentDisplayToSlug(agentEvent.agent);
+        const alarm = this.getAlarm?.() ?? null;
+        if (status === 'running' && alarm && slug) {
+          alarm.observe(ptyId, slug, { class: 'working' });
+        }
+
         if (status === 'waiting' || status === 'complete' || status === 'awaiting_input') {
           this.lastAgentEventAt.set(ptyId, Date.now());
 
@@ -425,7 +473,6 @@ export class PTYBridge {
           // `status`) are the ONLY signal source for those. Vetoing here
           // would leave an agent blocked on a real approval prompt
           // completely silent for the full authority TTL (30 minutes).
-          const slug = agentDisplayToSlug(agentEvent.agent);
           const hookRouter = this.getHookRouter?.() ?? null;
           if (status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(ptyId, slug)) {
             return;
@@ -440,40 +487,81 @@ export class PTYBridge {
           // approval prompt lands in 'agent-turn'. Subagent classification
           // requires the hook bridge (#516).
           const category = status === 'awaiting_input' ? 'approval' as const : 'agent-turn' as const;
-          dispatchNotification(win, ptyId, { type: 'agent', title, body, category }, { ptyId });
 
-          // Tee to EventBus for external observers (orchestrator clients).
-          // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
-          // represent the same user-visible event ("turn finished, ready
-          // for next input"), matching the hook-side dedup mapping in
-          // HookSignalRouter. 'awaiting_input' maps to its own kind so
-          // orchestrators can distinguish "turn ended, send next task"
-          // from "agent paused mid-turn, send y/N answer". Call
-          // `recordDetector` before emitting so the ledger sees this side
-          // of the dedup window: a hook+detector pair for the same turn
-          // now resolves to one 'emit' and one 'dedup', not two emits.
-          // Without this, an orchestrator filtering on `decision === 'emit'`
-          // would re-run follow-up work twice on the standard
-          // plugin-plus-detector setup. Skip when workspaceId is
-          // unknown — same gate as the process.started emit above.
-          if (instance.workspaceId) {
-            if (slug) {
-              const lifecycleKind = status === 'awaiting_input'
-                ? 'agent.awaiting_input' as const
-                : 'agent.stop' as const;
-              const decision = hookRouter
-                ? hookRouter.recordDetector(slug, lifecycleKind, ptyId)
-                : 'emit';
-              eventBus.emit({
-                type: 'agent.lifecycle',
-                workspaceId: instance.workspaceId,
-                ptyId,
-                kind: lifecycleKind,
-                source: 'detector',
-                agent: slug,
-                decision,
-              });
+          // The CONFIRMED fan-out — everything that must only fire on a real
+          // turn end. The dedup-ledger write (recordDetector) deliberately
+          // lives INSIDE this closure, not at arrival: in the detect-then-hook
+          // race the detector's window is replaced by the hook's Stop before
+          // it expires, and an arrival-time ledger entry would make the hook's
+          // confirmed broadcast land as a stale 'dedup' — killing the toast
+          // for a genuine completion. A dropped (rebutted / gate-missed)
+          // candidate writes nothing to the ledger at all.
+          const fanOutConfirmed = (): void => {
+            dispatchNotification(win, ptyId, { type: 'agent', title, body, category }, { ptyId });
+
+            // Tee to EventBus for external observers (orchestrator clients).
+            // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
+            // represent the same user-visible event ("turn finished, ready
+            // for next input"), matching the hook-side dedup mapping in
+            // HookSignalRouter. 'awaiting_input' maps to its own kind so
+            // orchestrators can distinguish "turn ended, send next task"
+            // from "agent paused mid-turn, send y/N answer". Call
+            // `recordDetector` before emitting so the ledger sees this side
+            // of the dedup window: a hook+detector pair for the same turn
+            // now resolves to one 'emit' and one 'dedup', not two emits.
+            // Without this, an orchestrator filtering on `decision === 'emit'`
+            // would re-run follow-up work twice on the standard
+            // plugin-plus-detector setup. Skip when workspaceId is
+            // unknown — same gate as the process.started emit above.
+            if (instance.workspaceId) {
+              if (slug) {
+                const lifecycleKind = status === 'awaiting_input'
+                  ? 'agent.awaiting_input' as const
+                  : 'agent.stop' as const;
+                const decision = hookRouter
+                  ? hookRouter.recordDetector(slug, lifecycleKind, ptyId)
+                  : 'emit';
+                eventBus.emit({
+                  type: 'agent.lifecycle',
+                  workspaceId: instance.workspaceId,
+                  ptyId,
+                  kind: lifecycleKind,
+                  source: 'detector',
+                  agent: slug,
+                  decision,
+                });
+              }
             }
+          };
+
+          // No verdict gate configured (tests) or nothing to key it to: the
+          // legacy immediate path, unchanged.
+          const cue = alarm && slug ? normalizeDetectorCue(status) : null;
+          if (!alarm || !slug || !cue) {
+            fanOutConfirmed();
+            return;
+          }
+
+          // Hold a provisional window. A working cue (new tool output, user
+          // input) inside it rebuts the candidate — no toast, no ledger. A
+          // rejected candidate leaves an 'internal' trace only; the status
+          // dot above already updated, which is the intended loose surface.
+          const outcome = alarm.observe(ptyId, slug, cue, fanOutConfirmed);
+          if (outcome === 'hold') {
+            return;
+          }
+          if (instance.workspaceId) {
+            eventBus.emit({
+              type: 'agent.lifecycle',
+              workspaceId: instance.workspaceId,
+              ptyId,
+              kind: status === 'awaiting_input'
+                ? 'agent.awaiting_input' as const
+                : 'agent.stop' as const,
+              source: 'detector',
+              agent: slug,
+              decision: 'internal',
+            });
           }
         }
       } catch (err) {
@@ -490,6 +578,21 @@ export class PTYBridge {
       if (id !== ptyId) return;
       try {
         const lastAgent = agentDetector.getLastAgent() ?? '';
+        // Verdict-gate working feed: sustained output is working evidence —
+        // it rebuts a pending completion window and re-arms `announced` for
+        // the next turn. Keyed to the pane's last detected agent; a pane with
+        // no agent yet has nothing to arm. SKIPPED inside the resize-redraw
+        // guard window (the daemon mirror flags this `likelyRepaint`): a
+        // refit burst is not work, and letting it rebut would silently kill
+        // a real completion alarm. No deferral here, unlike the detector
+        // reset below — a deferred working cue landing 3s later would reset
+        // `announced` on repaint noise and re-open the door to a duplicate
+        // toast for an already-announced turn.
+        const activeAlarm = this.getAlarm?.() ?? null;
+        const activeSlug = agentDisplayToSlug(lastAgent);
+        if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+          activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
+        }
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId,
           agentStatus: 'running',

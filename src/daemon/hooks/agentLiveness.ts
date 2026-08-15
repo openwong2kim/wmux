@@ -13,7 +13,22 @@
  * reasoning as the approval registry and the transcript projector, which it
  * also takes as types only).
  */
-import type { HookAgentEventData } from './HookIngest';
+import type { AgentSignal } from '../../shared/hooks/signal-types';
+
+/**
+ * The subset of an `agent.event` payload the projection reads. Both shapes
+ * satisfy it: `HookAgentEventData` (hook-sourced, envelope attached) and the
+ * detector-sourced event the daemon broadcasts (`signal`/`hookKind` absent).
+ */
+interface LivenessSource {
+  agent: string;
+  status: string;
+  message?: string;
+  source?: 'hook' | 'detector';
+  decision?: string;
+  hookKind?: string;
+  signal?: AgentSignal;
+}
 
 /**
  * What the header says the pane is doing.
@@ -92,7 +107,7 @@ function sanitizeToolName(raw: unknown): string | undefined {
  */
 export function deriveAgentLiveness(
   sessionId: string,
-  data: HookAgentEventData,
+  data: LivenessSource,
   at: number,
 ): AgentLivenessBody {
   const tool = sanitizeToolName(data.signal?.payload?.['tool_name']);

@@ -1579,6 +1579,11 @@ export function registerDeckHandler(
     }
     if (ev.type !== 'agent.lifecycle') return;
     if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
+    // 'internal' traces are turn-end candidates the CompletionAlarm REJECTED
+    // (subagent stop, leftover background work, rebutted provisional window).
+    // Waking the deck brain on one would announce work that never ended —
+    // same class of false "finished" the alarm exists to suppress.
+    if (ev.decision === 'internal') return;
     coalescer?.push({
       workspaceId: ev.workspaceId,
       ptyId: ev.ptyId,

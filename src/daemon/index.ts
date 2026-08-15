@@ -73,6 +73,7 @@ import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET } from '../shared/agentIdentity';
+import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
@@ -2930,6 +2931,17 @@ function registerRpcHandlers(
         // no-op until one opens it, and harmless when the web server is off.
         webTerminalServer?.emitTranscriptNudge(sessionId);
       },
+      // CompletionAlarm — a held detector candidate confirms its window LATER,
+      // after the `session:agent` handler that would have broadcast it has
+      // long returned (decision:'pending' → no broadcast there). Same fan-out
+      // the handler performs, minus what already ran before arbitration
+      // (lastDetectedAgent persistence, resume-chip arm).
+      emitDetectorEvent: (sessionId, data) => {
+        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status as AgentEventStatus);
+        const event: DaemonEvent = { type: 'agent.event', sessionId, data };
+        pipeServer.broadcast(event);
+        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+      },
     });
   }
   const ingest = hookIngest;
@@ -4381,7 +4393,25 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string }) => {
+  sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // CompletionAlarm byte-activity feed (brief rule 4 / D3): any PTY output
+    // — the user typing the next prompt, a background build chattering —
+    // rebuts an open completion window and arms the turn gate. The detected
+    // agent name is the primary key; a pane with no live detection falls back
+    // to the persisted lastDetectedAgent so an ungoverned agent pane still
+    // gets text-only-turn rebuttals (hooks.json has no UserPromptSubmit).
+    // EXCEPT a resize repaint: a refit burst right after pty:resize is not
+    // work, and letting it rebut would silently kill a real completion
+    // alarm (the same class of false-negative the resize-redraw guard in
+    // DaemonPTYBridge already protects the detector dedup from). The loose
+    // status-dot broadcast below still runs — only the strict alarm feed
+    // skips repaint-flagged bursts.
+    if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
+      payload.sessionId,
+      agentDisplayToSlug(payload.agentName ?? '')
+        ?? sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent
+        ?? undefined,
+    );
     const event: DaemonEvent = {
       type: 'activity.active',
       sessionId: payload.sessionId,
@@ -4430,6 +4460,12 @@ function wireEvents(
     // arbitrate against; the bare tag is the legacy always-emit behavior.
     const arbitration: HookArbitration =
       hookIngest?.arbitrateDetector(payload.sessionId, payload.event) ?? { source: 'detector' };
+    // CompletionAlarm: a provisional completion window is open — the stash
+    // broadcast (ledger write + agent.event) fires from the alarm at window
+    // expiry via `emitDetectorEvent`. Everything ABOVE this point already ran
+    // and stays: lastDetectedAgent persistence, resume-chip arm, the
+    // recovered-set deletes.
+    if (arbitration.decision === 'pending') return;
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,
