@@ -119,12 +119,72 @@ class FakeAtlas {
   }
 }
 
+/** Patched-addon stand-in: I1 wipe (one empty page + generation bump) and
+ *  I2 evict-all so allocation never exceeds `maxAtlasPages`. The broken
+ *  `FakeAtlas` above stays — it models unpatched 0.19. */
+class CoherentFakeAtlas {
+  static maxAtlasPages = 16;
+  pages: Array<{ currentRow: { x: number; y: number } }> = [];
+  clearCalls = 0;
+  paneClears = 0;
+  clearModelGeneration = 0;
+  constructor(pageCount: number, lastPageInUse = true) {
+    this.setPages(pageCount, lastPageInUse);
+  }
+  setPages(pageCount: number, lastPageInUse: boolean): void {
+    const cap = (this.constructor as typeof CoherentFakeAtlas).maxAtlasPages;
+    const n = Math.min(Math.max(pageCount, 0), cap);
+    this.pages = Array.from({ length: n }, () => ({ currentRow: { x: 0, y: 1 } }));
+    if (this.pages.length > 0 && !lastPageInUse) {
+      this.pages[this.pages.length - 1].currentRow = { x: 0, y: 0 };
+    }
+  }
+  /** I1: already constructor shape → no-op; else one empty page + bump. */
+  clearTexture(): void {
+    this.clearCalls++;
+    this.applyClear();
+  }
+  clearTextureFromPane(): void {
+    this.paneClears++;
+    this.applyClear();
+  }
+  private applyClear(): void {
+    const constructorShape =
+      this.pages.length === 1 &&
+      this.pages[0].currentRow.x === 0 &&
+      this.pages[0].currentRow.y === 0;
+    if (constructorShape) return;
+    // Idle the existing pages first so clearAtlasTexture's in-place
+    // postcondition (held on the pre-call array) still holds.
+    for (const p of this.pages) p.currentRow = { x: 0, y: 0 };
+    this.pages = [{ currentRow: { x: 0, y: 0 } }];
+    this.clearModelGeneration++;
+  }
+  /** I2: grow by appending; at the cap, evict-all then place on page 0. */
+  growBy(n: number): void {
+    const cap = (this.constructor as typeof CoherentFakeAtlas).maxAtlasPages;
+    for (let i = 0; i < n; i++) {
+      if (this.pages.length >= cap) {
+        this.applyClear();
+        this.pages[0].currentRow = { x: 0, y: 1 };
+      } else {
+        this.pages.push({ currentRow: { x: 0, y: 1 } });
+      }
+    }
+  }
+  occupyAll(): void {
+    for (const p of this.pages) p.currentRow = { x: 12, y: 340 };
+  }
+}
+
+type GuardAtlas = FakeAtlas | CoherentFakeAtlas;
+
 /** The addon surface the guard walks. `clearTextureAtlas` is upstream's public
  *  wrapper and does what WebglRenderer.clearTextureAtlas does: clear the shared
  *  texture, then clear THIS pane's render model + glyph renderer. Omit it
  *  (`withModelClear: false`) to model a reshaped/DOM-renderer addon. */
 function addonFor(
-  atlas: FakeAtlas | null,
+  atlas: GuardAtlas | null,
   onModelClear?: () => void,
   withModelClear = true,
 ): unknown {
@@ -139,7 +199,7 @@ function addonFor(
 }
 
 function makePane(
-  atlas: FakeAtlas | null,
+  atlas: GuardAtlas | null,
   withModelClear = true,
 ): {
   entry: { getAddon(): unknown; refresh(): void };
@@ -684,5 +744,36 @@ describe('atlasGuard', () => {
     atlas.mergePages(4); // corruption is real now, not speculative
     vi.advanceTimersByTime(GUARD_POLL_MS);
     expect(atlas.effectiveClears).toBe(2);
+  });
+
+  // --- Coherent atlas (patched I1–I2): PREVENT is a backstop, not a storm ---
+
+  it('does not PREVENT-storm a coherent atlas sitting just under the page cap', () => {
+    // I2 holds: the atlas self-evicts at maxPages. Occupancy at maxPages-1
+    // would re-arm the unpatched PREVENT gate every cooldown (30s). Over 60s
+    // that is two speculative wipes fighting a pool that will never merge.
+    const maxPages = CoherentFakeAtlas.maxAtlasPages;
+    const atlas = new CoherentFakeAtlas(maxPages - 1);
+    atlas.occupyAll();
+    expect(atlas.pages.length).toBe(maxPages - 1);
+    expect(atlas.pages.every((p) => p.currentRow.x > 0 || p.currentRow.y > 0)).toBe(true);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+
+      vi.advanceTimersByTime(60_000);
+
+      const prevents = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => /\[wmux:atlas-guard] prevent/.test(l));
+      expect(prevents.length).toBeLessThanOrEqual(1);
+      expect(atlas.clearCalls).toBeLessThanOrEqual(1);
+      expect(pane.refreshes()).toBeLessThanOrEqual(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
