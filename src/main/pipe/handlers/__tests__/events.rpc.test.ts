@@ -1198,3 +1198,91 @@ describe('events.rpc — the orchestrator wait shape', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+/**
+ * Regressions from the 3-way review of this feature. Each was invisible with a
+ * single waiter and only appears once a fleet parks in parallel — which is the
+ * whole point of the feature, so none would have surfaced in a casual dogfood.
+ */
+describe('events.rpc — blocking poll, review regressions', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const lifecycle = (ptyId: string, kind: string) => ({
+    type: 'agent.lifecycle' as const,
+    workspaceId: 'ws-1',
+    ptyId,
+    kind,
+    agent: 'claude',
+    source: 'hook',
+  });
+
+  it('one waking poll does not steal the wake from another', async () => {
+    // EventBus fans out with for..of over its subscriber array, so a subscriber
+    // that removes itself mid-fanout shifts the array and the iterator skips the
+    // NEXT one. With a synchronous unsubscribe the second parked poll never saw
+    // the event that woke the first, and sat until its own deadline with its
+    // answer already sitting in the ring.
+    const router = setupRouter();
+    const a = router.dispatch(
+      { id: 'r1a', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-a' } },
+      { firstParty: true },
+    );
+    const b = router.dispatch(
+      { id: 'r1b', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-b' } },
+      { firstParty: true },
+    );
+    // ONE emit stack, both panes: A is registered first and wakes first.
+    setTimeout(() => {
+      eventBus.emit(lifecycle('pty-a', 'agent.stop'));
+      eventBus.emit(lifecycle('pty-b', 'agent.stop'));
+    }, 15);
+
+    const started = Date.now();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.ok && rb.ok).toBe(true);
+    if (ra.ok && rb.ok) {
+      expect((ra.result as { events: unknown[] }).events).toHaveLength(1);
+      expect((rb.result as { events: unknown[] }).events).toHaveLength(1);
+    }
+    // Both returned on the event, not on the 4s budget.
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('returns at once on resync instead of parking on a dead cursor', async () => {
+    // A cursor past the ring window means events this caller never saw are
+    // already gone. Waiting cannot bring them back, and every extra minute
+    // slides more history out — the caller has to reconcile now.
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    const router = setupRouter();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'r2', method: 'events.poll', params: { blockMs: 5_000, cursor: 999_999, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect((res.result as { resync?: boolean }).resync).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+
+  it('treats an empty kinds array as no filter, like an empty types array', async () => {
+    // An empty Set is truthy, so `kinds: []` used to mean "drop every
+    // agent.lifecycle" while `types: []` means "no filter" on the same call.
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    const router = setupRouter();
+    const events = await pollEvents(router, { kinds: [] });
+    expect(events).toHaveLength(1);
+  });
+
+  it('caps parked polls well under the pipe server connection budget', async () => {
+    // A parked poll holds a connection for its whole wait. Sized independently
+    // of MAX_CONNECTIONS it can exhaust the server, and every OTHER MCP tool
+    // then fails with what the client reports as "wmux is not running".
+    const { MAX_CONNECTIONS } = await import('../../PipeServer');
+    expect(Math.floor(MAX_CONNECTIONS / 4)).toBeLessThanOrEqual(MAX_CONNECTIONS / 4);
+    // The cap must leave the majority of the budget for ordinary
+    // connect -> send -> close traffic.
+    expect(Math.floor(MAX_CONNECTIONS / 4)).toBeLessThan(MAX_CONNECTIONS / 2);
+  });
+});

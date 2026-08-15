@@ -6,12 +6,14 @@ import {
   RING_CAPACITY,
   POLL_DEFAULT_MAX,
   type WmuxEventType,
+  type WmuxEvent,
   type A2aTaskEvent,
   type ChannelMessageEvent,
   type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { MAX_CONNECTIONS } from '../PipeServer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -49,31 +51,67 @@ const MAX_BLOCK_MS = 600_000;
  * plus a buggy caller can pin main's pipe server. Over the cap we do not queue
  * or reject — we answer immediately with whatever the ring has, which is
  * exactly the pre-block behavior, and flag it so the caller can back off.
+ *
+ * DERIVED from the pipe server's connection budget rather than picked, because
+ * the two are spending the same resource. A flat 32 against MAX_CONNECTIONS=50
+ * leaves only 18 for everything else: parking a fleet plus ordinary traffic
+ * exhausts the server, Node stops accepting, and EVERY other MCP tool starts
+ * failing with what the client reports as "wmux is not running" — a self-inflicted
+ * outage that looks like a crash and does not point back here. A quarter keeps
+ * the majority of the budget for the connect → send → close traffic that is the
+ * normal shape.
  */
-const MAX_PARKED_POLLS = 32;
+const MAX_PARKED_POLLS = Math.floor(MAX_CONNECTIONS / 4);
 
 let parkedPolls = 0;
 
 /**
- * Park until the next event is emitted, or the deadline passes.
+ * Park until an event this caller could care about is emitted, or the deadline
+ * passes. Resolves `true` if an event woke us, `false` on timeout.
  *
- * Resolves `true` if an event woke us, `false` on timeout. The EventBus hook is
- * synchronous and runs inside `emit()`, so the handler does nothing but resolve
- * a promise there — no `emit()` re-entrancy (which the bus forbids), no work on
- * the emitter's stack.
+ * `interesting` is a CHEAP per-event pre-filter run inside the emitter's stack.
+ * Without it every emit wakes every parked poll and each one re-scans the whole
+ * 1024-entry ring through the full scope chain — O(parked × ring) of synchronous
+ * work in the main process per event, on a bus that ticks once per shell command
+ * under OSC 133. The predicate is deliberately allowed to be over-permissive:
+ * it exists to skip obvious non-matches, and `collect()` remains the authority.
+ *
+ * The unsubscribe is DEFERRED to a microtask, and that is load-bearing. EventBus
+ * fans out with `for (const sub of this.subscribers)`, so removing an entry from
+ * that array mid-iteration shifts the remaining ones and the iterator SKIPS the
+ * next subscriber. Unsubscribing synchronously here meant the first parked poll
+ * to wake silently stole the wake from the next one — measured: subscribers
+ * [A,B,C] with A self-removing fires A and C, never B. The skipped poll then sat
+ * until some later event or its full deadline, even though its event was already
+ * in the ring. Exactly the fleet case this feature is for, and invisible with a
+ * single waiter. `done` makes the extra callbacks that arrive before the
+ * microtask runs into no-ops.
  */
-function waitForEmit(timeoutMs: number): Promise<boolean> {
+function waitForEmit(
+  timeoutMs: number,
+  interesting: (event: WmuxEvent) => boolean,
+  signal?: AbortSignal,
+): Promise<'event' | 'timeout' | 'aborted'> {
   return new Promise((resolve) => {
     let done = false;
-    const finish = (woke: boolean): void => {
+    const finish = (outcome: 'event' | 'timeout' | 'aborted'): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      unsubscribe();
-      resolve(woke);
+      signal?.removeEventListener('abort', onAbort);
+      queueMicrotask(unsubscribe);
+      resolve(outcome);
     };
-    const unsubscribe = eventBus.subscribe(() => finish(true));
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    const onAbort = (): void => finish('aborted');
+    const unsubscribe = eventBus.subscribe((event) => {
+      if (done) return;
+      if (!interesting(event)) return;
+      finish('event');
+    });
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
+    // Already-aborted signals never fire the event, so check before listening.
+    if (signal?.aborted) finish('aborted');
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -226,9 +264,14 @@ export function registerEventsRpc(
     // Narrow `agent.lifecycle` by its `kind` (agent.stop / agent.subagent_stop /
     // agent.awaiting_input). Applies ONLY to that type — every other type passes
     // through untouched, so `kinds` never silently empties a mixed poll.
-    const kinds = Array.isArray(params['kinds'])
-      ? new Set((params['kinds'] as unknown[]).filter((k): k is string => typeof k === 'string'))
-      : undefined;
+    // An EMPTY array normalizes to "no filter", matching how `types` behaves on
+    // this same call (EventBus treats an empty type list as unfiltered). Left as
+    // an empty Set it would mean the opposite — drop every agent.lifecycle — so
+    // the same shape would widen one param and silently blind the other.
+    const kindList = Array.isArray(params['kinds'])
+      ? (params['kinds'] as unknown[]).filter((k): k is string => typeof k === 'string')
+      : [];
+    const kinds = kindList.length > 0 ? new Set(kindList) : undefined;
 
     // Workspace scoping is applied as a POST-filter here (placement B), NOT via
     // the EventBus wsFilter, for ONE load-bearing reason: an a2a.task's base
@@ -312,15 +355,24 @@ export function registerEventsRpc(
     // before any collect: it depends only on the caller's identity, and a parked
     // poll must not re-hit the trust DB on every wake.
     let allowNotifications = true;
-    if (ctx?.clientName && trustLookup) {
+    const refreshNotificationsGate = async (): Promise<void> => {
+      if (!ctx?.clientName || !trustLookup) return;
       let trust: PluginIdentityRecord | undefined;
       try {
         trust = await trustLookup(ctx.clientName);
       } catch {
         trust = undefined; // unreadable trust DB → grandfather, enforcer handles the rest
       }
-      allowNotifications = allowsNotifications(trust);
-    }
+      // NARROW-ONLY. A park can last minutes, so an entitlement revoked during
+      // it must take effect before the page is written — but a grant that
+      // arrives mid-park must NOT retroactively open the page the caller was
+      // already waiting on. `&&` gives exactly that: this can turn true→false
+      // and never false→true. The private-workspace scope is deliberately NOT
+      // re-resolved (it costs a renderer round-trip per check, and unlike this
+      // it fails closed already), so its revocation lands on the next poll.
+      allowNotifications = allowNotifications && allowsNotifications(trust);
+    };
+    await refreshNotificationsGate();
 
     /**
      * One attempt: read the ring from `cursor`, apply every scope/narrowing
@@ -423,42 +475,78 @@ export function registerEventsRpc(
       return result;
     };
 
+    // Cheap pre-filter for the parked path (see waitForEmit). Mirrors the
+    // narrowing filters only — never the scope filters, which is why it can be
+    // over-permissive without being wrong: a false positive costs one extra
+    // collect(), a false NEGATIVE would be a missed wake, so anything uncertain
+    // must pass.
+    const interesting = (event: WmuxEvent): boolean => {
+      if (types && !types.includes(event.type)) return false;
+      if (ptyId && (event as { ptyId?: unknown }).ptyId !== ptyId) return false;
+      if (kinds && event.type === 'agent.lifecycle'
+        && !kinds.has(String((event as { kind?: unknown }).kind))) return false;
+      return true;
+    };
+
     // ── Immediate path — unchanged behavior ───────────────────────────────────
     // No `blockMs`, or the ring already has something for this caller: answer
     // now. Every pre-existing caller lands here.
+    //
+    // `resync` also short-circuits: it means the cursor fell out of the ring, so
+    // events this caller never saw are already gone. Parking on that waits up to
+    // ten more minutes to deliver a page that cannot contain them — the caller
+    // needs to reconcile via pane_list NOW, and every extra minute is more
+    // history sliding out of the window.
     const first = collect();
-    if (blockMs <= 0 || first.events.length > 0) return first;
+    if (blockMs <= 0 || first.events.length > 0 || first.resync) return first;
 
     // ── Parked path ───────────────────────────────────────────────────────────
     // Over the cap we degrade to the immediate answer rather than queueing:
     // parking is a convenience, and a caller that cannot park is strictly better
-    // off polling than waiting behind 32 others for a connection slot.
+    // off polling than waiting behind others for a connection slot.
     if (parkedPolls >= MAX_PARKED_POLLS) {
       return { ...first, parked: false, parkedCapReached: true };
     }
 
     parkedPolls++;
     try {
-      const deadline = Date.now() + blockMs;
+      // Monotonic, not wall-clock: a backward system clock step (NTP correction,
+      // a VM resuming) would inflate `remaining` off Date.now() and hold the
+      // socket past the client's own deadline — the client gives up, the slot
+      // stays taken. The remaining time is also re-clamped to the original
+      // budget so no single wait can exceed what the caller asked for.
+      const startedAt = performance.now();
       for (;;) {
-        const remaining = deadline - Date.now();
+        // The client is gone — stop holding its connection slot. Collect once
+        // more below anyway: the response write is already no-op'd on a dead
+        // socket, and bailing early keeps the exit path single.
+        if (ctx?.signal?.aborted) break;
+        const remaining = Math.min(blockMs, blockMs - (performance.now() - startedAt));
         if (remaining <= 0) break;
-        // A wake is "some event was emitted", not "an event you care about" —
-        // the bus hook is global. So re-collect and keep waiting when the wake
-        // was someone else's traffic, instead of returning an empty page and
-        // making the caller re-poll (which is the loop this exists to remove).
-        const woke = await waitForEmit(remaining);
+        // A wake means "an event that passed the cheap pre-filter" — collect()
+        // is still the authority, so re-collect and keep waiting when the wake
+        // turns out not to match after full scoping, instead of returning an
+        // empty page and making the caller re-poll (the loop this removes).
+        const outcome = await waitForEmit(remaining, interesting, ctx?.signal);
+        if (outcome === 'aborted') break;
         const next = collect();
-        if (next.events.length > 0) return { ...next, parked: true };
-        if (!woke) break;
+        // Same reasoning as above: a mid-park resync is terminal, not a reason
+        // to keep waiting.
+        if (next.events.length > 0 || next.resync) break;
+        if (outcome === 'timeout') break;
       }
     } finally {
       parkedPolls--;
     }
 
-    // Waited the full budget with nothing to show. Collect once more rather than
-    // reusing `first`: an event may have landed between the last wake and here,
-    // and dropping it would be a lost wakeup of our own making.
+    // An entitlement can be revoked while a poll is parked; re-check before the
+    // page is written, then re-collect so the gate is applied to it.
+    await refreshNotificationsGate();
+
+    // One final collect for BOTH exits (matched, or budget spent). Re-reading
+    // from the original cursor is idempotent, so this cannot lose the page the
+    // loop just found, and it picks up anything that landed between the last
+    // wake and here — a lost wakeup of our own making otherwise.
     return { ...collect(), parked: true };
   });
 }

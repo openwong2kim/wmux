@@ -172,11 +172,16 @@ const WMUX_SEARCH_PANES_SHAPE = {
 /**
  * Slack added to a blocking poll's client-side RPC deadline.
  *
- * main returns at its own `blockMs` deadline; this covers the wake → collect →
- * serialize → write that happens after it. Too small and a poll that answered
- * on time still surfaces as a transport error.
+ * The client's clock starts when the call is made; main's `blockMs` budget does
+ * not start until AFTER it has resolved the caller's scope and entitlements —
+ * and scope resolution can cost a renderer round-trip. So this margin covers
+ * two things, not one: that pre-park work, plus the wake → collect → serialize →
+ * write that follows. Sized against a renderer that is slow rather than idle:
+ * this repo has a MEASURED 120 s renderer freeze on the permission-gate path, so
+ * a few seconds of slack would turn a poll that answered correctly into a
+ * transport error the agent reads as "wmux is broken".
  */
-const EVENTS_POLL_BLOCK_MARGIN_MS = 5_000;
+const EVENTS_POLL_BLOCK_MARGIN_MS = 30_000;
 
 const WMUX_EVENTS_POLL_SHAPE = {
   cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
@@ -196,8 +201,8 @@ const WMUX_EVENTS_POLL_SHAPE = {
     .optional()
     .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence. `a2a.task` fires on agent-to-agent task lifecycle and carries taskId, from (sender workspaceId), to (receiver workspaceId), kind (created|updated|cancelled), state (submitted|working|input-required|completed|failed|canceled), and an optional messagePreview (≤200 chars). On completed/failed transitions it additionally carries verifiedItemCount (count of verified completion-evidence items; 0 = unverified completion). It is a POINTER, not the payload — the body is omitted by default; follow up with a2a_task_query to fetch it. UNLIKE every other event type (scoped strictly to the calling workspace), `a2a.task` is DUAL-PARTY: visible to BOTH the sending (from) and receiving (to) workspace, and to no third workspace. An unscoped poll receives zero a2a.task events.'),
   max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
-  blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait up to this many ms for a matching event instead of returning an empty page. Default 0 = return immediately (the classic poll). Use this INSTEAD of a terminal_read loop when you want to wait for another pane: combine with ptyId + kinds to wait for exactly one pane to block on a question. If the ring already holds a match the call returns at once, so a match that landed before you asked is never missed. Capped at 600000 (10 min); a longer wait is a re-poll with the returned nextCursor, which loses nothing. Also pass `pane.closed` and `process.exited` in `types` so the wait ends if the pane dies instead of running to the full budget.'),
-  ptyId: z.string().optional().describe('Only return events about this pane (ptyId). Events that carry no ptyId (e.g. pane.created, workspace.metadata.changed) are excluded while this is set.'),
+  blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait up to this many ms for a matching event instead of returning an empty page. Default 0 = return immediately (the classic poll). Use this INSTEAD of a terminal_read loop when you want to wait for another pane: combine with ptyId + kinds to wait for exactly one pane to block on a question. If the ring already holds a match the call returns at once, so a match that landed before you asked is never missed. Capped at 600000 (10 min); a longer wait is a re-poll with the returned nextCursor, which loses nothing. ALSO pass `process.exited` in `types` so the wait ends when the pane dies instead of running to the full budget — note `pane.closed` will NOT serve that purpose while `ptyId` is set, because it carries a paneId and no ptyId. Two response fields matter here: `parked: true` means the call waited (absent = answered immediately), and `parkedCapReached: true` means too many polls are already waiting so this one answered immediately WITHOUT waiting — treat that as "back off", not as "no events", or you will spin. Finally, a tool call running past ~2 minutes is moved to a background task by Claude Code, so a long blockMs returns via that path rather than inline.'),
+  ptyId: z.string().optional().describe('Only return events about this pane (ptyId). Events that carry no ptyId are excluded while this is set — that includes every pane.* event (pane.created / pane.closed / pane.focused / pane.metadata.changed), which are keyed by paneId. Use process.exited to observe this pane going away.'),
   kinds: z.array(z.string()).optional().describe('Narrow `agent.lifecycle` to these kinds (agent.stop | agent.subagent_stop | agent.awaiting_input). Applies ONLY to agent.lifecycle; every other type passes through. Note agent.subagent_stop fires when a nested subagent returns, NOT when the pane\'s main turn ends — filter to agent.stop/agent.awaiting_input if you are waiting for the pane itself.'),
 };
 
