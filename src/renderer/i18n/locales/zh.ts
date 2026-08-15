@@ -158,6 +158,7 @@ export const zh = {
   'settings.latestVersion': '最新版本',
   'settings.updateReady': '更新已准备就绪',
   'settings.updateEndsSessions': '安装将关闭所有正在运行的会话。',
+  'update.installFailed': '无法安装更新。{error}',
   'settings.checkFailed': '检查失败',
   'settings.unknownError': '未知错误',
   'settings.notificationBehavior': '通知行为',

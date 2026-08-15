@@ -1778,7 +1778,13 @@ function UpdateStatus() {
         setState('downloaded');
         if (data.releaseName) setReleaseName(data.releaseName);
       } else {
-        setState('available');
+        // NOT an unconditional demotion. Every background poll re-announces
+        // `available` for a release it already downloaded, and downloadUpdate
+        // returns early once a staged path is held — so no second `downloaded`
+        // ever follows to undo this. Demoting turned the Install button back
+        // into "Check for updates" within the poll interval and left it that
+        // way, on the exact state this panel was just taught to read on mount.
+        setState((prev) => (prev === 'downloaded' ? prev : 'available'));
       }
     });
     const removeProgress = window.electronAPI.updater.onUpdateProgress((data) => {
@@ -1842,7 +1848,12 @@ function UpdateStatus() {
         ? t('settings.checkUpdate') + '…'
         : `${t('settings.checkUpdate')}… ${percent}%`;
       case 'available': return t('settings.updateAvailable');
-      case 'downloaded': return t('settings.updateReady') + (releaseName ? ` (${releaseName})` : '');
+      // No `(releaseName)` suffix here: the Latest line above already prints
+      // the version, and appending it produced "Latest 3.43.0 — Update ready
+      // (3.43.0)". The suffix only ever existed for the case where there is no
+      // Latest line to print, which the `!releaseName && statusText` branch
+      // below already covers.
+      case 'downloaded': return t('settings.updateReady');
       case 'not-available': return t('settings.upToDate');
       case 'error': return t('settings.updateFailed');
       default: return '';

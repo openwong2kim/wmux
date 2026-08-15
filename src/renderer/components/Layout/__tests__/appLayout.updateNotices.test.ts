@@ -28,6 +28,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { en } from '../../../i18n/locales/en';
 
 describe('AppLayout — update notices are pulled, not pushed', () => {
   const source = fs.readFileSync(
@@ -69,9 +70,19 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
   it('names both versions so the notice is checkable', () => {
     // A bare "an update is ready" cannot be reconciled against what the user
     // sees in Settings; #897's reporters were comparing exactly those numbers.
+    //
+    // Asserted on the STRING, not on the call site: the placeholders live in
+    // the locale copy, and t() interpolates them. Matching the source for
+    // literal `{current}` only proved the hook happened to hand-roll a
+    // `.replace()` chain — it went red the moment that was replaced with the
+    // correct `t(key, vars)` call, while the user-visible contract was
+    // unchanged. The locale contract test owns per-locale coverage; this owns
+    // "the default copy names both".
+    expect(en['update.readyToInstall']).toContain('{version}');
+    expect(en['update.readyToInstall']).toContain('{current}');
+    // And the hook must actually pass them, or the sentence renders with holes.
     const body = hookBody('usePendingInstallNotice');
-    expect(body).toMatch(/\{version\}/);
-    expect(body).toMatch(/\{current\}/);
+    expect(body).toMatch(/update\.readyToInstall'\s*,\s*\{[^}]*version[^}]*current/s);
   });
 
   it('also fires when the update becomes ready DURING the session', () => {
@@ -83,12 +94,18 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
     expect(body).toMatch(/data\.status !== 'downloaded'/);
   });
 
-  it('announces once, whichever path gets there first', () => {
+  it('announces once per version, whichever path gets there first', () => {
     // The pull and the live event describe the SAME pending install. Without a
     // guard, a download finishing shortly after boot posts the toast twice.
+    //
+    // The guard is keyed on the VERSION, not a bare boolean: an app left open
+    // across two releases sees main replace the staged installer and re-fire
+    // `downloaded`, and a boolean would leave the old version named in a
+    // persistent toast whose button installs the new one.
     const body = hookBody('usePendingInstallNotice');
-    expect(body).toMatch(/announced/);
-    expect(body).toMatch(/if \(cancelled \|\| announced\) return;/);
+    expect(body).toMatch(/announcedVersion/);
+    expect(body).toMatch(/announcedVersion === version/);
+    expect(body).toMatch(/announcedVersion = version/);
   });
 
   it('unsubscribes the live listener on unmount', () => {

@@ -232,6 +232,15 @@ export class AutoUpdater {
    * it does not come back: a sticky warning about a since-succeeded update
    * would be worse than none.
    */
+  private takeRefusedInstall(): string | null {
+    const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
+    const reason = readAbortMarker(markerPath);
+    if (!reason) return null;
+    console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
+    clearAbortMarker(markerPath);
+    return reason;
+  }
+
   /**
    * The update that is downloaded, verified, and waiting for the user to say go.
    *
@@ -257,15 +266,6 @@ export class AutoUpdater {
       version: this.pendingUpdate.name,
       currentVersion: app.getVersion(),
     };
-  }
-
-  private takeRefusedInstall(): string | null {
-    const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
-    const reason = readAbortMarker(markerPath);
-    if (!reason) return null;
-    console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
-    clearAbortMarker(markerPath);
-    return reason;
   }
 
   /**

@@ -350,28 +350,35 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
  * honest. "An update is ready" is still true five minutes later, and a notice
  * that fades leaves the user exactly where they started.
  */
-function usePendingInstallNotice(t: (key: string) => string): void {
+function usePendingInstallNotice(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): void {
   useEffect(() => {
     const read = window.electronAPI?.updater?.getPendingInstall;
     const install = window.electronAPI?.updater?.installUpdate;
     const onAvailable = window.electronAPI?.updater?.onUpdateAvailable;
+    const onError = window.electronAPI?.updater?.onUpdateError;
     if (!read || !install) return; // tests / non-electron / stale preload
 
     let cancelled = false;
-    // One notice per run. The pull and the live event describe the SAME
-    // pending install, and whichever lands first is the one that gets to say
-    // so — otherwise a download finishing shortly after boot posts it twice.
-    let announced = false;
+    // The version this run has already announced, not a bare "did we". An app
+    // left open for days can see a second release supersede the first: main
+    // replaces the staged installer and re-fires `downloaded`, and a boolean
+    // would leave the OLD version named in a persistent toast whose button
+    // installs the NEW one. Re-announcing on a version change keeps the
+    // sentence and the button describing the same thing.
+    let announcedVersion: string | null = null;
 
     const announce = (version: string, currentVersion: string): void => {
-      if (cancelled || announced) return;
-      announced = true;
+      if (cancelled || announcedVersion === version) return;
+      announcedVersion = version;
       useStore.getState().pushToast({
         level: 'info',
         persist: true,
-        message: t('update.readyToInstall')
-          .replace('{version}', version)
-          .replace('{current}', currentVersion),
+        // t() interpolates; a hand-rolled `.replace()` chain substitutes only
+        // the FIRST occurrence of each placeholder, so a locale that names a
+        // version twice would silently ship a raw `{version}`.
+        message: t('update.readyToInstall', { version, current: currentVersion }),
         action: {
           label: t('update.installNow'),
           // Every pane closes with the app — the toast is the last warning,
@@ -402,10 +409,36 @@ function usePendingInstallNotice(t: (key: string) => string): void {
       if (data.status !== 'downloaded') return;
       void read()
         .then((pending) => { if (pending) announce(pending.version, pending.currentVersion); })
-        .catch(() => { /* the event alone is not enough to name both versions */ });
+        .catch((err) => {
+          // NOT silent: `downloaded` does not fire twice for the same staged
+          // installer (downloadUpdate returns early once a path is held), so
+          // swallowing this loses the notice for the rest of the session —
+          // the very shape of the bug being fixed. The event names the new
+          // version and the renderer already knows its own, so announce from
+          // those rather than give up.
+          console.warn('[update] pending-install read failed on the live event:', err);
+          if (data.releaseName) announce(data.releaseName, __APP_VERSION__);
+        });
     });
 
-    return () => { cancelled = true; unsubscribe?.(); };
+    // An install that cannot proceed must say so HERE. The action button
+    // dismisses its own toast on click, and every refusal path inside
+    // performInstall (a staged path already consumed, no disk space, a dev
+    // build, one already running) reports through UPDATE_ERROR — whose only
+    // other listener is the Settings panel, which is closed by definition
+    // whenever this toast is the thing the user is looking at. Without this,
+    // pressing "Install now" and having it fail looks exactly like #897 again:
+    // you press the button and nothing happens.
+    const unsubscribeError = onError?.((data) => {
+      if (cancelled) return;
+      useStore.getState().pushToast({
+        level: 'error',
+        persist: true,
+        message: t('update.installFailed', { error: data.message || '' }),
+      });
+    });
+
+    return () => { cancelled = true; unsubscribe?.(); unsubscribeError?.(); };
   }, [t]);
 }
 

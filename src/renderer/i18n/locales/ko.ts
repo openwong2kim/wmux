@@ -436,6 +436,7 @@ export const ko = {
   'settings.latestVersion': '최신 버전',
   'settings.updateReady': '업데이트 준비 완료',
   'settings.updateEndsSessions': '설치하면 실행 중인 세션이 모두 종료됩니다.',
+  'update.installFailed': '업데이트를 설치하지 못했습니다. {error}',
   'settings.checkFailed': '확인 실패',
   'settings.unknownError': '알 수 없는 오류',
   'settings.notificationBehavior': '알림 동작',

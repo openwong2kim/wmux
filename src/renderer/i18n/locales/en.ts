@@ -614,6 +614,7 @@ export const en = {
   'settings.latestVersion': 'Latest',
   'settings.updateReady': 'Update ready',
   'settings.updateEndsSessions': 'Installing closes your running sessions.',
+  'update.installFailed': 'The update could not be installed. {error}',
   'settings.checkFailed': 'Check failed',
   'settings.unknownError': 'Unknown error',
   'settings.notificationBehavior': 'Notification behavior',
