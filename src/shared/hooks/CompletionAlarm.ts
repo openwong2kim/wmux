@@ -32,6 +32,10 @@ import type { AgentSignal } from './signal-types';
  *  completion alarm still feels immediate. */
 export const DEFAULT_ALARM_WINDOW_MS = 1_500;
 
+// Shared resume default — an expression body, because a block body `() => {}`
+// trips @typescript-eslint/no-empty-function on the observe() signature.
+const noop = (): void => undefined;
+
 /**
  * A normalized cue. Everything the alarm needs to make a verdict, with all
  * vendor/detector specifics already stripped by the normalize functions.
@@ -142,7 +146,7 @@ export class CompletionAlarm {
    * Window expiry (no rebuttal) fires `onConfirmed` with the stashed resume
    * closure, sets announced=true and seenWorking=false.
    */
-  observe(pane: string, slug: string, cue: AlarmCue, resume: () => void = () => {}): AlarmOutcome {
+  observe(pane: string, slug: string, cue: AlarmCue, resume: () => void = noop): AlarmOutcome {
     const key = `${slug}:${pane}`;
     const state = this.stateFor(key);
 

@@ -6,9 +6,10 @@
 // so "which signals may mint one" is the load-bearing question, and the answer
 // has to be enforced structurally rather than described in a prompt.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { HookIngest, type HookIngestSession } from '../../hooks/HookIngest';
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
+import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import type { ApprovalExpiryReason, ApprovalHookSink } from '../types';
 
 type Created = {
@@ -121,28 +122,33 @@ describe('hook → approval registry wiring', () => {
 
     // The detector emission point. A regex match on pane text is a suspicion,
     // not testimony — it is the one thing that must never mint a request.
+    // The verdict gate HOLDS the candidate ('pending' — provisional window
+    // open, no broadcast yet); even its confirmation never mints a request,
+    // because only the hook path calls noteHookAwaitingInput.
     const arbitration = ingest.arbitrateDetector('pty-a', {
       agent: 'Claude Code',
       status: 'awaiting_input',
     });
 
-    expect(arbitration).toEqual({ source: 'detector', decision: 'emit' });
+    expect(arbitration).toEqual({ source: 'detector', decision: 'pending' });
     expect(approvals.created).toHaveLength(0);
     expect(approvals.expired).toHaveLength(0);
   });
 
-  it('creates NOTHING for a dedup\'d hook awaiting_input', () => {
+  it('a hook awaiting_input creates the request even when the detector got there first', () => {
     const { ingest, approvals } = makeIngest();
 
-    // The detector got there first, so the hook is the canonical-but-redundant
-    // report of the SAME prompt. Creating here would mint a duplicate request
-    // and — via the supersede rule — kill the one a phone may already be
-    // holding.
+    // The detector reports the prompt first (held as 'pending'), then the
+    // bridge's hook envelope arrives for the SAME prompt. The card is minted
+    // on hook arrival, unconditionally — the detector path never mints one,
+    // so gating this on the ledger would leave the detect-then-hook race
+    // with NO card at all and a blocked pane with no phone approval.
     ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'awaiting_input' });
     const res = ingest.handle(makeSignal());
 
     expect(res).toEqual({ ok: true });
-    expect(approvals.created).toHaveLength(0);
+    expect(approvals.created).toHaveLength(1);
+    expect(approvals.created[0]).toMatchObject({ sessionId: 'pty-a', agent: 'claude' });
   });
 
   it('creates nothing when the signal resolves to no live pane', () => {
@@ -159,12 +165,46 @@ describe('hook → approval registry wiring', () => {
     expect(approvals.created).toHaveLength(0);
   });
 
-  it('agent.stop expires the pending request — the turn it blocked on is over', () => {
-    const { ingest, approvals } = makeIngest();
+  it('agent.stop expires the pending request only once the turn end is CONFIRMED', async () => {
+    // The expiry rides the stop's resume closure: a stop is a CANDIDATE until
+    // the provisional window expires unrebutted, and a rebutted stop means
+    // the turn is still going — the card must survive it.
+    vi.useFakeTimers();
+    try {
+      const { ingest, approvals } = makeIngest();
 
-    ingest.handle(makeSignal({ kind: 'agent.stop' }));
+      // Working evidence first — a stop with none is rejected by the turn
+      // gate before it can hold a window at all.
+      ingest.handle(makeSignal({ kind: 'agent.activity' }));
+      ingest.handle(makeSignal({ kind: 'agent.stop' }));
 
-    expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'turn-ended' }]);
+      // Held: the window is open, the turn has not been confirmed ended.
+      expect(approvals.expired).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_ALARM_WINDOW_MS);
+
+      expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'turn-ended' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a REBUTTED agent.stop never expires the request — the turn is still going', async () => {
+    vi.useFakeTimers();
+    try {
+      const { ingest, approvals } = makeIngest();
+
+      ingest.handle(makeSignal({ kind: 'agent.activity' }));
+      ingest.handle(makeSignal({ kind: 'agent.stop' }));
+      // Tool output resumes inside the window — the stop is discarded.
+      ingest.handle(makeSignal({ kind: 'agent.tool_started' }));
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_ALARM_WINDOW_MS);
+
+      expect(approvals.expired).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('agent.input_answered expires the pending request — user answered on the local machine', () => {
