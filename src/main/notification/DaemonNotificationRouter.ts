@@ -46,10 +46,14 @@ interface AgentEventPayload {
    *   'veto'     — hook-governed pane, detector-sourced: status dot only
    *   'activity' — a per-tool-call ping (PostToolUse): Fleet View activity line
    *                only, never a toast and never a lifecycle tee
+   *   'internal' — the daemon's CompletionAlarm rejected the candidate as NOT
+   *                a real turn end (subagent stop, leftover background work,
+   *                turn-gate miss, already announced, or the window was
+   *                rebutted): status dot only, exactly like 'veto'
    * Absent when the daemon could not arbitrate (unknown agent), which means
    * the pre-ledger always-emit behavior.
    */
-  decision?: 'emit' | 'dedup' | 'veto' | 'activity';
+  decision?: 'emit' | 'dedup' | 'veto' | 'activity' | 'internal';
   /**
    * The validated envelope the daemon ingested, present on hook-sourced events
    * only. Main replays off it the side effects its own `hooks.signal` handler
@@ -77,8 +81,13 @@ function arbitratedSource(ev: AgentEventPayload): 'hook' | 'detector' | null {
  * is one the daemon could not arbitrate (unknown agent display name), and the
  * behavior main assumed before any ledger existed was to always emit.
  */
-function arbitratedDecision(ev: AgentEventPayload): 'emit' | 'dedup' | 'veto' | 'activity' {
-  return ev.decision === 'dedup' || ev.decision === 'veto' || ev.decision === 'activity'
+function arbitratedDecision(
+  ev: AgentEventPayload,
+): 'emit' | 'dedup' | 'veto' | 'activity' | 'internal' {
+  return ev.decision === 'dedup'
+    || ev.decision === 'veto'
+    || ev.decision === 'activity'
+    || ev.decision === 'internal'
     ? ev.decision
     : 'emit';
 }
@@ -751,9 +760,13 @@ export class DaemonNotificationRouter {
           const decision = arbitratedDecision(ev);
           if (arbitrated) {
             // 'veto' is the daemon having applied the rule this block used to
-            // apply locally: a detector event on a hook-governed pane. The
-            // status dot (broadcast above) stays live; nothing else fires.
-            if (decision === 'veto') return;
+            // apply locally: a detector event on a hook-governed pane.
+            // 'internal' is the daemon's CompletionAlarm rejecting the
+            // candidate as not-a-real-turn-end (subagent stop, leftover
+            // background work, turn-gate miss, already announced, or a
+            // rebutted window). Same treatment either way: the status dot
+            // (broadcast above) stays live; nothing else fires.
+            if (decision === 'veto' || decision === 'internal') return;
           } else if (
             ev.status !== 'awaiting_input'
             && slug

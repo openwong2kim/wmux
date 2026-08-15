@@ -40,6 +40,12 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { HookSignalRouter } from '../../shared/hooks/HookSignalRouter';
+import {
+  CompletionAlarm,
+  normalizeHookCue,
+  normalizeDetectorCue,
+  type AlarmCue,
+} from '../../shared/hooks/CompletionAlarm';
 import { SignalLatencyMeter, type LatencyStats } from '../../shared/hooks/SignalLatencyMeter';
 import { HookFloodMeter, describeHookFlood, type HookFloodSummary } from '../../shared/hooks/HookFloodMeter';
 import {
@@ -109,12 +115,25 @@ export interface HookIngestSession {
  * Treat an unrecognized `hookKind` in this class as a no-op rather than an
  * error: the class is deliberately open so a new metadata kind does not need a
  * new event type.
+ *
+ * Two verdict-gate values (CompletionAlarm) join the union:
+ *   - 'pending' — a provisional completion window is OPEN. The daemon does NOT
+ *                 broadcast yet; the stash's resume closure fires the ledger
+ *                 write + broadcast at confirmation. This value never leaves
+ *                 the daemon — the daemon-side emission site skips the
+ *                 broadcast and nothing else consumes it.
+ *   - 'internal' — the verdict gate REJECTED the candidate (subagent stop,
+ *                 leftover background work, turn-gate miss, already announced,
+ *                 or a working cue rebutted the window). Status dot only: no
+ *                 toast, no lifecycle tee, and — unlike 'emit'/'dedup' — no
+ *                 dedup-ledger write, so a later same-turn candidate can still
+ *                 arbitrate cleanly. Main treats it exactly like 'veto'.
  */
 export interface HookArbitration {
   source: 'hook' | 'detector';
   /** Present only for source:'hook'. The canonical envelope kind. */
   hookKind?: AgentSignalKind;
-  decision?: 'emit' | 'dedup' | 'veto' | 'activity';
+  decision?: 'emit' | 'dedup' | 'veto' | 'activity' | 'internal' | 'pending';
 }
 
 /**
@@ -193,6 +212,31 @@ export interface HookIngestDeps {
     /** The signal's own agent session id, when it carried one. */
     agentSessionId?: string,
   ) => void;
+  /**
+   * CompletionAlarm — emit a DETECTOR-sourced `agent.event` whose completion
+   * window has just CONFIRMED. The detector emission site (daemon/index.ts
+   * `session:agent`) broadcasts immediately for everything else, but a held
+   * candidate has already returned `decision:'pending'` to that site, so the
+   * only path left for its stash is this callback at window expiry.
+   *
+   * Optional: only the daemon supplies it, and no hook behaviour depends on it.
+   */
+  emitDetectorEvent?: (sessionId: string, data: DetectorHeldEventData) => void;
+}
+
+/**
+ * The confirmed detector event, as `emitDetectorEvent` receives it. Deliberately
+ * stringlier than `HookAgentEventData`: the detector vocabulary includes
+ * statuses (`waiting`) the hook union never produces, and there is no
+ * `AgentSignal` envelope to attach — main's DaemonNotificationRouter reads the
+ * same fields off the wire today.
+ */
+export interface DetectorHeldEventData {
+  agent: string;
+  status: string;
+  message: string;
+  source: 'detector';
+  decision: 'emit' | 'dedup';
 }
 
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
@@ -407,6 +451,8 @@ export class HookIngest {
   private readonly floodTimer: ReturnType<typeof setInterval>;
   private readonly deps: HookIngestDeps;
   private readonly now: () => number;
+  /** CompletionAlarm — gates every "turn finished" alarm on real turn end. */
+  private readonly alarm: CompletionAlarm;
 
   constructor(deps: HookIngestDeps) {
     this.deps = deps;
@@ -415,6 +461,22 @@ export class HookIngest {
     this.router = new HookSignalRouter({
       latencyMeter: this.meter,
       ...(deps.dedupWindowMs !== undefined ? { dedupWindowMs: deps.dedupWindowMs } : {}),
+    });
+    this.alarm = new CompletionAlarm({
+      now: this.now,
+      // Unref'd timers: an open provisional window must never keep the daemon
+      // alive (same rule as the flood logger below).
+      schedule: (fn, ms) => {
+        const t = setTimeout(fn, ms);
+        t.unref?.();
+        return () => clearTimeout(t);
+      },
+      onConfirmed: (_pane, _slug, _cls, resume) => {
+        resume();
+      },
+      log: (level, message) => {
+        this.deps.log?.(level === 'warn' ? 'warn' : 'info', message);
+      },
     });
     this.floodTimer = setInterval(() => {
       const summary = this.floodMeter.flush(HOOK_FLOOD_LOG_INTERVAL_MS);
@@ -499,6 +561,14 @@ export class HookIngest {
 
     // Touch authority on every gate signal — the bridge is alive on this pane.
     this.router.touchAuthority(sessionId, signal.agent, this.now());
+
+    // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
+    // interceptor routes awaiting_permission straight here — so this is the
+    // ONLY working-evidence feed for tool calls on the daemon path. Both the
+    // gated and ungated outcome share it, which is the point: an agent about
+    // to run ANY tool is working, and this cue must rebut any open completion
+    // window before the tool's own output arrives.
+    this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
 
     // Transcript nudge: a PreToolUse means the agent is active.
     try {
@@ -616,6 +686,9 @@ export class HookIngest {
     this.router.touchAuthority(sessionId, signal.agent, this.now());
 
     // User answered a pending approval locally — no turn boundary, just expire the request.
+    // The alarm is fed FIRST: an `answered` cue cancels a pending ATTENTION
+    // window, and these kinds return before any other cue-feeding site below.
+    this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     if (signal.kind === 'agent.input_answered') {
       this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
       return { ok: true };
@@ -703,6 +776,12 @@ export class HookIngest {
     // under main's 3s leading-edge window), and main derives its labels from
     // `signal.payload` where that logic already lives.
     if (isMetadataKind(signal.kind)) {
+      // Verdict-gate feed: every metadata kind carries alarm semantics — the
+      // activity/permission kinds are WORKING evidence (they rebut any open
+      // completion window and arm the turn gate), session_start is a SESSION
+      // boundary (resets the gate so a fresh session must work before any
+      // stop can announce).
+      this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
       // M2: a fresh session on this pane means the question the PREVIOUS
       // session asked will never be answered — the same reasoning that makes
       // session_start clear main's stale pendingQuestion label applies to a
@@ -729,60 +808,92 @@ export class HookIngest {
       return { ok: true };
     }
 
-    const decision = this.router.recordHook(signal, sessionId, this.now());
-    this.driveApprovals(signal, sessionId, decision, sessions);
+    // ---- Emit-class kinds: turn boundaries, now behind the verdict gate ----
+    //
+    // R1 (ledger at confirmation): a stop/attention candidate that the alarm
+    // HOLDS writes nothing to the dedup ledger yet and returns `{ok:true}` to
+    // the bridge immediately (the 2s hook budget must never wait out a 1.5s
+    // window). The resume closure below runs at confirmation: ledger write,
+    // turn-ended approval expiry (R5 — a rebutted stop must leave the phone's
+    // card alive), then the broadcast. A candidate the alarm DROPS (subagent,
+    // leftover work, gate miss, already announced) broadcasts immediately with
+    // `decision:'internal'` and never touches the ledger — main renders the
+    // status dot and nothing else, and a later same-turn candidate can still
+    // arbitrate cleanly instead of finding a ghost 'emit'.
+    const cue = normalizeHookCue(signal);
+    if (signal.kind === 'agent.subagent_stop') {
+      // Never a lead-turn end: cancel any pending window, status only. The
+      // pane's own turn keeps going, so the broadcast says RUNNING — taking a
+      // subagent's 'complete' at face value would flip the status dot (and the
+      // phone liveness header, which special-cases this hookKind) mid-turn.
+      this.alarm.observe(sessionId, signal.agent, cue);
+      return this.broadcast(sessionId, {
+        agent: agentSlugToDisplay(signal.agent),
+        status: 'running',
+        message: 'Subagent finished',
+        source: 'hook',
+        hookKind: signal.kind,
+        decision: 'internal',
+        signal,
+      });
+    }
+
+    // Awaiting input keeps its phone card IMMEDIATELY (R5): a remote device
+    // must see the question while the provisional window runs, not 1.5s later.
+    if (signal.kind === 'agent.awaiting_input') {
+      this.noteAwaitingInput(signal, sessionId, sessions);
+    }
+
     const { status, message } = eventShapeFor(signal.kind);
-    // Broadcast on BOTH decisions. 'dedup' is not a drop: the detector already
-    // fanned out this turn, and a forensic consumer still wants to see that the
-    // hook landed. Suppression is the CONSUMER's job, gated on `decision` —
-    // see HookArbitration.
+    const resume = () => {
+      const decision = this.router.recordHook(signal, sessionId, this.now());
+      if (signal.kind === 'agent.stop') {
+        this.deps.approvals?.expireForSession(sessionId, 'turn-ended');
+      }
+      // Broadcast on BOTH decisions. 'dedup' is not a drop: the detector
+      // already fanned out this turn, and a forensic consumer still wants to
+      // see that the hook landed. Suppression is the CONSUMER's job, gated on
+      // `decision` — see HookArbitration.
+      return this.broadcast(sessionId, {
+        agent: agentSlugToDisplay(signal.agent),
+        status,
+        message,
+        source: 'hook',
+        hookKind: signal.kind,
+        decision,
+        signal,
+      });
+    };
+    const outcome = this.alarm.observe(sessionId, signal.agent, cue, resume);
+    if (outcome === 'hold') {
+      // The bridge is answered NOW; the broadcast fires at confirmation (or
+      // never, if a rebuttal cue lands inside the window).
+      return { ok: true };
+    }
     return this.broadcast(sessionId, {
       agent: agentSlugToDisplay(signal.agent),
       status,
       message,
       source: 'hook',
       hookKind: signal.kind,
-      decision,
+      decision: 'internal',
       signal,
     });
   }
 
   /**
-   * M2 — drive the approval registry off an emit-class hook signal.
-   *
-   *   awaiting_input, decision 'emit' → create a request (superseding any
-   *                                     pending one on the same pane)
-   *   agent.stop                      → expire whatever was pending
-   *
-   * Why `decision:'emit'` only: a 'dedup' awaiting_input is the SAME turn
-   * boundary the detector already reported, not a second question. Creating on
-   * it would mint a duplicate request for one prompt and — through the
-   * supersede rule — immediately kill the record a phone might already be
-   * looking at. A genuine re-prompt arrives as a fresh emit and supersedes
-   * properly.
-   *
-   * Why stop expires on ANY decision: a dedup'd stop is still a turn that
-   * ended, so the question is moot either way. `agent.subagent_stop`
-   * deliberately does NOT expire — a subagent finishing says nothing about the
-   * main agent's prompt still sitting on screen.
-   *
-   * Detector-sourced awaiting_input never reaches here at all (this is the hook
-   * path), which is the CommanderEventCoalescer bar enforced structurally: a
-   * regex match is a suspicion, and this registry writes bytes into terminals.
+   * The awaiting_input half of the old driveApprovals, kept immediate while the
+   * stop half moved into the confirmation closure. Creates the phone card the
+   * moment the hook lands — a rebutted window may supersede it later, but a
+   * 1.5s delay on "the agent is blocked on you" is the wrong trade.
    */
-  private driveApprovals(
+  private noteAwaitingInput(
     signal: AgentSignal,
     sessionId: string,
-    decision: 'emit' | 'dedup',
     sessions: HookIngestSession[],
   ): void {
     const approvals = this.deps.approvals;
     if (!approvals) return;
-    if (signal.kind === 'agent.stop') {
-      approvals.expireForSession(sessionId, 'turn-ended');
-      return;
-    }
-    if (signal.kind !== 'agent.awaiting_input' || decision !== 'emit') return;
     const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
     // A4 — carry WHAT is being asked. Extraction happens here because this is
     // the envelope-aware layer; the registry never learns hook payload shapes.
@@ -835,16 +946,66 @@ export class HookIngest {
    *   - an unknown agent display name falls back to the bare `source` tag:
    *     the legacy always-emit behavior main assumed before the ledger.
    */
-  arbitrateDetector(sessionId: string, event: { agent: string; status: string }): HookArbitration {
+  arbitrateDetector(sessionId: string, event: { agent: string; status: string; message?: string }): HookArbitration {
     const source = 'detector' as const;
     const slug = agentDisplayToSlug(event.agent);
     if (!slug) return { source };
     const kind = agentStatusToSignalKind(event.status as AgentEventStatus);
-    if (!kind || kind === 'agent.activity') return { source };
+    if (!kind || kind === 'agent.activity') {
+      // 'running' and friends: not a turn boundary — but for an UNGOVERNED
+      // pane (no bridge) this is the only working-evidence feed the alarm
+      // gets, without which the turn gate would reject every detector stop.
+      const cue = normalizeDetectorCue(event.status);
+      if (cue) this.alarm.observe(sessionId, slug, cue);
+      return { source };
+    }
     if (kind !== 'agent.awaiting_input' && this.router.isGovernedFor(sessionId, slug, this.now())) {
       return { source, decision: 'veto' };
     }
-    return { source, decision: this.router.recordDetector(slug, kind, sessionId, this.now()) };
+    // Verdict gate (R1): the candidate holds a provisional window before it
+    // may write the ledger or broadcast. `pending` tells the emission site to
+    // skip its broadcast — everything it does BEFORE arbitration (agent
+    // persistence, resume-chip arm) already ran and stays. The stash's resume
+    // closure performs the ledger write + broadcast at confirmation.
+    const cue: AlarmCue | null = normalizeDetectorCue(event.status);
+    if (!cue) {
+      // Unreachable for the kind-filtered statuses above; kept defensive.
+      return { source, decision: this.router.recordDetector(slug, kind, sessionId, this.now()) };
+    }
+    const resume = () => {
+      const decision = this.router.recordDetector(slug, kind, sessionId, this.now());
+      try {
+        this.deps.emitDetectorEvent?.(sessionId, {
+          agent: event.agent,
+          status: event.status,
+          message: event.message ?? '',
+          source,
+          decision,
+        });
+      } catch (err) {
+        this.deps.log?.(
+          'warn',
+          `[hooks] held detector broadcast failed for ${sessionId}: ${String(err)}`,
+        );
+      }
+    };
+    const outcome = this.alarm.observe(sessionId, slug, cue, resume);
+    if (outcome === 'hold') return { source, decision: 'pending' };
+    return { source, decision: 'internal' };
+  }
+
+  /**
+   * Byte-activity backstop (brief rule 4 / D3): the wiring layer calls this
+   * from `session:active`, so any PTY output — a prompt being typed, a
+   * background build chattering — rebuts an open completion window and arms
+   * the turn gate for panes the hooks cannot see. Keyed to ONE slug: the
+   * caller passes the agent the pane is known to run (detected name, else the
+   * persisted lastDetectedAgent), because a keyless "working" cue would arm
+   * every agent's gate on the pane and let noise announce for the wrong one.
+   */
+  notePaneWorking(sessionId: string, slug?: string): void {
+    if (!slug) return;
+    this.alarm.observe(sessionId, slug, { class: 'working' });
   }
 
   /**
@@ -855,6 +1016,9 @@ export class HookIngest {
    */
   dropPty(sessionId: string): void {
     this.router.dropPty(sessionId);
+    // Cancel any open provisional window for the disposed pane — a reused id
+    // must start from an empty gate, not an inherited pending confirmation.
+    this.alarm.dropPty(sessionId);
     // M2: the pane is gone, so there is no PTY left to press. Without this a
     // phone would keep listing a request whose only possible outcome is a
     // 'prompt-gone' refusal — and a reused session id could inherit it.
@@ -863,5 +1027,6 @@ export class HookIngest {
 
   dispose(): void {
     clearInterval(this.floodTimer);
+    this.alarm.dispose();
   }
 }

@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   HookIngest,
   resolveSessionIdForSignal,
+  type DetectorHeldEventData,
   type HookAgentEventData,
   type HookIngestSession,
 } from '../HookIngest';
+import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import type { AgentSignal, AgentSignalKind } from '../../../shared/hooks/signal-types';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import os from 'node:os';
@@ -46,11 +48,17 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
   // #770 — track every approval-sink call so the locally-answered expiry path
   // can be asserted (expireForSession reason + that nothing broadcasts).
   const approvalsCalls: Array<{ sessionId: string; reason: string; kind?: string }> = [];
+  // The verdict gate's confirmed-detector outlet: a held detector candidate
+  // broadcasts through this at window expiry, not through emitAgentEvent.
+  const detectorEmitted: Array<{ sessionId: string; data: DetectorHeldEventData }> = [];
   let clock = 10_000;
   const deps = {
     listLiveSessions: () => sessions,
     emitAgentEvent: (sessionId: string, data: HookAgentEventData) => {
       emitted.push({ sessionId, data });
+    },
+    emitDetectorEvent: (sessionId: string, data: DetectorHeldEventData) => {
+      detectorEmitted.push({ sessionId, data });
     },
     applyResumeBinding: (ptyId: string, binding: ResumeBinding) => {
       bindings.push({ ptyId, binding });
@@ -71,6 +79,7 @@ function makeDeps(sessions: HookIngestSession[] = [session({ id: 'pty-a' })]) {
   return {
     deps,
     emitted,
+    detectorEmitted,
     bindings,
     nudges,
     approvalsCalls,
@@ -83,8 +92,15 @@ describe('HookIngest', () => {
   let fixture: ReturnType<typeof makeDeps>;
 
   beforeEach(() => {
+    // Fake timers: the verdict gate's provisional window is a real setTimeout
+    // inside HookIngest, so confirmation is driven by advancing the clock.
+    vi.useFakeTimers();
     fixture = makeDeps();
     ingest = new HookIngest(fixture.deps);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('envelope validation', () => {
@@ -109,10 +125,17 @@ describe('HookIngest', () => {
 
   describe('emission', () => {
     it('broadcasts an agent.event carrying source/hookKind/decision and the display name', () => {
+      // Arm the turn gate first — the alarm drops a stop on a pane it never
+      // saw work (idle-chrome repaint protection).
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
       const res = ingest.handle(makeSignal({ ptyId: 'pty-a', workspaceId: 'ws-1' }));
+      // hold: the bridge is answered NOW; the broadcast waits out the
+      // provisional window (the 2s hook budget must never block on it).
       expect(res).toEqual({ ok: true });
       expect(fixture.emitted).toHaveLength(1);
-      const { sessionId, data } = fixture.emitted[0];
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted).toHaveLength(2);
+      const { sessionId, data } = fixture.emitted[1];
       expect(sessionId).toBe('pty-a');
       // Display name, not the slug: main reads this field straight into the
       // sidebar label and back through agentDisplayToSlug.
@@ -127,17 +150,28 @@ describe('HookIngest', () => {
 
     it('maps subagent_stop and awaiting_input to their own shapes', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      // A subagent stop is never a lead-turn end: status-only, immediate, and
+      // RUNNING — the pane's own turn is still going.
+      expect(fixture.emitted[0].data).toMatchObject({
+        status: 'running',
+        message: 'Subagent finished',
+        decision: 'internal',
+      });
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.awaiting_input' }));
-      expect(fixture.emitted.map((e) => [e.data.status, e.data.message])).toEqual([
-        ['complete', 'Subagent finished'],
-        ['awaiting_input', 'Awaiting input'],
-      ]);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted[1].data).toMatchObject({
+        status: 'awaiting_input',
+        message: 'Awaiting input',
+        decision: 'emit',
+      });
     });
 
     it('reports a broadcast failure as internal-error rather than throwing at the bridge', () => {
       const boom = makeDeps();
       boom.deps.emitAgentEvent = () => { throw new Error('pipe closed'); };
       const failing = new HookIngest(boom.deps);
+      // A gate-missed stop still broadcasts its status-only event immediately,
+      // so the failure surfaces on the same path it always did.
       expect(failing.handle(makeSignal({ ptyId: 'pty-a' }))).toEqual({ ok: false, reason: 'internal-error' });
     });
   });
@@ -175,9 +209,12 @@ describe('HookIngest', () => {
     it('leaves the following turn-end a first-class emit', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.session_start' }));
       fixture.advance(100);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
       expect(fixture.emitted.map((e) => [e.data.hookKind, e.data.decision])).toEqual([
         ['agent.session_start', 'activity'],
+        ['agent.activity', 'activity'],
         ['agent.stop', 'emit'],
       ]);
     });
@@ -241,7 +278,14 @@ describe('HookIngest', () => {
       // registry-level no-op; here we confirm the signal path still routes it.
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
       fixture.advance(100);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      // The turn-ended expiry rides the resume closure: a REBUTTED stop must
+      // leave the phone card alive, so it may only fire at confirmation.
+      expect(fixture.approvalsCalls).toEqual([
+        { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' },
+      ]);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
       expect(fixture.approvalsCalls).toEqual([
         { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' },
         // The backstop stays kind-agnostic: the turn ended, so every pending
@@ -249,8 +293,9 @@ describe('HookIngest', () => {
         { sessionId: 'pty-a', reason: 'turn-ended', kind: undefined },
       ]);
       // Only the stop broadcasts — input_answered stayed silent.
-      expect(fixture.emitted).toHaveLength(1);
-      expect(fixture.emitted[0].data.hookKind).toBe('agent.stop');
+      const stops = fixture.emitted.filter((e) => e.data.hookKind === 'agent.stop');
+      expect(stops).toHaveLength(1);
+      expect(stops[0].data.decision).toBe('emit');
     });
   });
 
@@ -286,6 +331,7 @@ describe('HookIngest', () => {
       const i2 = new HookIngest(other.deps);
       i2.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: toolPayload }));
       i2.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
       expect(other.emitted.map((e) => e.data.decision)).toEqual(['activity', 'emit']);
     });
 
@@ -337,28 +383,123 @@ describe('HookIngest', () => {
   });
 
   describe('the Iron Rule, arbitrated locally', () => {
-    it('suppresses a detector emission that follows a hook within the window', () => {
-      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
-      expect(fixture.emitted[0].data.decision).toBe('emit');
+    it('collapses a detector repaint against a confirmed emit inside the dedup window', () => {
+      // Detector-ONLY pane: a hook-armed pane vetoes the detector before the
+      // alarm ever sees it (covered below), so the repaint collapse this test
+      // pins is the detector→detector one. 'running' is the working evidence.
+      ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'running' });
+      ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'complete' });
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted.at(-1)?.data.decision).toBe('emit');
+      // The next turn's working evidence re-arms the gate (clears `announced`)
+      // so the repaint can arbitrate at all — and inside the 10s window of the
+      // confirmed emit it lands as 'dedup' at ITS confirmation.
       fixture.advance(200);
-      expect(ingest.router.recordDetector('claude', 'agent.stop', 'pty-a', 10_200)).toBe('dedup');
+      ingest.notePaneWorking('pty-a', 'claude');
+      expect(ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'complete' }))
+        .toEqual({ source: 'detector', decision: 'pending' });
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted.at(-1)?.data.decision).toBe('dedup');
     });
 
-    it('still broadcasts a hook that arrives after the detector, marked decision:"dedup"', () => {
-      expect(ingest.router.recordDetector('claude', 'agent.stop', 'pty-a', 10_000)).toBe('emit');
+    it('replaces a pending detector window with the hook Stop — decision stays "emit", never a stale "dedup"', () => {
+      // detect-then-hook race: the detector's repaint leads by tens of ms,
+      // the hook's Stop replaces its provisional window (R2). The detector's
+      // stash never fires, and because ledger writes happen at CONFIRMATION
+      // (R1), the hook's recordHook runs against an empty ledger — 'emit'.
+      ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'running' });
+      ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'complete' });
       fixture.advance(50);
       expect(ingest.handle(makeSignal({ ptyId: 'pty-a' }))).toEqual({ ok: true });
-      // The event still goes out — a dedup'd hook is forensically interesting
-      // and main gates its own fan-out on `decision`.
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted).toHaveLength(0);
       expect(fixture.emitted).toHaveLength(1);
-      expect(fixture.emitted[0].data.decision).toBe('dedup');
+      expect(fixture.emitted[0].data.decision).toBe('emit');
     });
 
     it('lets a different kind through — a Stop after an awaiting_input is a distinct event', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.awaiting_input' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      // The user answers and the agent works again — that clears `announced`
+      // and re-arms the gate, so the turn's real end announces.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
       fixture.advance(100);
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
-      expect(fixture.emitted.map((e) => e.data.decision)).toEqual(['emit', 'emit']);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.map((e) => [e.data.hookKind, e.data.decision])).toEqual([
+        ['agent.awaiting_input', 'emit'],
+        ['agent.activity', 'activity'],
+        ['agent.stop', 'emit'],
+      ]);
+    });
+  });
+
+  describe('the verdict gate, end-to-end through handle()', () => {
+    it('rebuttal inside the window: no broadcast ever fires and the ledger stays clean', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+      expect(ingest.handle(makeSignal({ ptyId: 'pty-a' }))).toEqual({ ok: true });
+      // A tool call resumes inside the provisional window — the stop was a
+      // repaint, not a turn end.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Edit' } }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.stop')).toHaveLength(0);
+      // R1: a rebutted candidate wrote nothing to the dedup ledger — the turn's
+      // real Stop must still arbitrate against an empty ledger, not a ghost.
+      fixture.advance(100);
+      expect(ingest.router.recordDetector('claude', 'agent.stop', 'pty-a', 10_100)).toBe('emit');
+    });
+
+    it('a stop stamped with leftover background work drops immediately and arms the gate', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+      const res = ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        payload: { wmux_leftover_work: 2 },
+      }));
+      // Not held — the bridge is answered and the candidate is rejected NOW.
+      expect(res).toEqual({ ok: true });
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({
+        hookKind: 'agent.stop',
+        decision: 'internal',
+      });
+      // The leftover stop counts as WORKING evidence (the turn is still going),
+      // so a subsequent clean stop in the same turn may still announce.
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.at(-1)?.data.decision).toBe('emit');
+    });
+
+    it('an answered cue cancels a pending attention window before its broadcast', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.awaiting_input' }));
+      // The user answers in the TUI before the window expires: the bridge
+      // promotes the PostToolUse to input_answered, which must cancel the
+      // held broadcast — the question no longer exists.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.awaiting_input')).toHaveLength(0);
+    });
+
+    it('dropPty cancels an open provisional window — a reused id starts from an empty gate', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      ingest.dropPty('pty-a');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(fixture.emitted.filter((e) => e.data.hookKind === 'agent.stop')).toHaveLength(0);
+    });
+
+    it('a confirmed completion makes the same turn\'s next stop an internal repaint', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.at(-1)?.data.decision).toBe('emit');
+      // A second stop with no working evidence in between — `announced` is
+      // still set, so the alarm rejects it as a repaint of the SAME turn and
+      // it broadcasts immediately as internal (status dot only, no ledger).
+      expect(ingest.handle(makeSignal({ ptyId: 'pty-a' }))).toEqual({ ok: true });
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({
+        hookKind: 'agent.stop',
+        decision: 'internal',
+      });
     });
   });
 
@@ -546,9 +687,19 @@ describe('HookIngest', () => {
     const awaiting = { agent: 'Claude Code', status: 'awaiting_input' };
 
     it('tags a plain detector emission and records it in the shared ledger', () => {
-      expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'emit' });
-      // Same-kind repeat inside the window is the detector→detector collapse.
-      expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'dedup' });
+      // 'running' arms the turn gate — the only working evidence an
+      // ungoverned pane's alarm ever sees.
+      expect(ingest.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'running' }))
+        .toEqual({ source: 'detector' });
+      expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'pending' });
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted.at(-1)?.data.decision).toBe('emit');
+      // Same-kind repeat inside the dedup window is the detector→detector
+      // collapse — again held first, 'dedup' only at confirmation.
+      ingest.notePaneWorking('pty-a', 'claude');
+      expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'pending' });
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted.at(-1)?.data.decision).toBe('dedup');
     });
 
     it('vetoes rather than dedups a detector turn-end that follows a hook', () => {
@@ -557,7 +708,9 @@ describe('HookIngest', () => {
       // reaches recordDetector. 'dedup' would still suppress the toast, but it
       // would ALSO write the detector into the ledger and let a lifecycle tee
       // through — the veto is the stronger, hook-canonical outcome.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity' }));
       ingest.handle(makeSignal({ ptyId: 'pty-a' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
       fixture.advance(200);
       expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'veto' });
     });
@@ -567,14 +720,23 @@ describe('HookIngest', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity' }));
       expect(ingest.arbitrateDetector('pty-a', complete)).toEqual({ source: 'detector', decision: 'veto' });
       // awaiting_input has no hook for the common approval prompts — vetoing
-      // it would silence a genuinely blocked pane for the authority TTL.
-      expect(ingest.arbitrateDetector('pty-a', awaiting)).toEqual({ source: 'detector', decision: 'emit' });
+      // it would silence a genuinely blocked pane for the authority TTL. It is
+      // still HELD (attention window) before its broadcast.
+      expect(ingest.arbitrateDetector('pty-a', awaiting)).toEqual({ source: 'detector', decision: 'pending' });
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.detectorEmitted.at(-1)?.data).toMatchObject({
+        status: 'awaiting_input',
+        decision: 'emit',
+      });
     });
 
     it('leaves authority for one agent from vetoing a different one on the same pane', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity' }));
+      // The Codex turn DID work (byte-activity backstop), so its stop is
+      // merely held, not vetoed by Claude's authority.
+      ingest.notePaneWorking('pty-a', 'codex');
       expect(ingest.arbitrateDetector('pty-a', { agent: 'Codex CLI', status: 'complete' }))
-        .toEqual({ source: 'detector', decision: 'emit' });
+        .toEqual({ source: 'detector', decision: 'pending' });
     });
 
     it('carries no decision for statuses that never participated in dedup', () => {
