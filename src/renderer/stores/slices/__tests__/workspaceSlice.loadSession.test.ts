@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
@@ -27,6 +27,7 @@ type TestState = WorkspaceSlice & {
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
   notificationRingEnabled: boolean;
+  anthropicUsageEnabled: boolean;
   customKeybindings: unknown[];
   autoUpdateEnabled: boolean;
   sidebarMode: 'workspaces' | 'company';
@@ -77,6 +78,7 @@ function createTestStore() {
       notificationSoundEnabled: true,
       toastEnabled: true,
       notificationRingEnabled: true,
+      anthropicUsageEnabled: false,
       customKeybindings: [],
       autoUpdateEnabled: true,
       sidebarMode: 'workspaces',
@@ -106,6 +108,8 @@ function createTestStore() {
   );
 }
 
+const setUsageEnabled = vi.fn();
+
 // Stub Electron settings/i18n bridges so loadSession's optional side-effects
 // don't throw. Tests don't assert on these — they just need them to no-op.
 beforeAll(() => {
@@ -119,8 +123,15 @@ beforeAll(() => {
       setToastEnabled: () => undefined,
       setAutoUpdateEnabled: () => undefined,
     },
+    usage: {
+      setEnabled: setUsageEnabled,
+    },
   };
   // document is provided by jsdom in vitest; safe to call setAttribute.
+});
+
+beforeEach(() => {
+  setUsageEnabled.mockReset();
 });
 
 // Pane tree builder helper: nested split with two leaves at depth 2.
@@ -569,6 +580,63 @@ describe('loadSession — multiview arrangement (#746)', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWith('masonry'));
     expect(store.getState().multiviewArrangement).toBe('auto');
+  });
+});
+
+describe('loadSession — Anthropic usage meter (#896)', () => {
+  function sessionWith(enabled: unknown = undefined): SessionData {
+    const ws: Workspace = {
+      id: 'ws-usage',
+      name: 'Usage',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    const session = {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+    } as Record<string, unknown>;
+    if (enabled !== undefined) session.anthropicUsageEnabled = enabled;
+    return session as unknown as SessionData;
+  }
+
+  it('restores an enabled opt-in and starts main-process polling', () => {
+    const store = createTestStore();
+
+    store.getState().loadSession(sessionWith(true));
+
+    expect(store.getState().anthropicUsageEnabled).toBe(true);
+    expect(setUsageEnabled).toHaveBeenCalledOnce();
+    expect(setUsageEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('restores an explicit disabled value and stops main-process polling', () => {
+    const store = createTestStore();
+    store.setState({ anthropicUsageEnabled: true });
+
+    store.getState().loadSession(sessionWith(false));
+
+    expect(store.getState().anthropicUsageEnabled).toBe(false);
+    expect(setUsageEnabled).toHaveBeenCalledOnce();
+    expect(setUsageEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the safe default and does not touch main for an older session', () => {
+    const store = createTestStore();
+
+    store.getState().loadSession(sessionWith());
+
+    expect(store.getState().anthropicUsageEnabled).toBe(false);
+    expect(setUsageEnabled).not.toHaveBeenCalled();
+  });
+
+  it.each(['true', 1, null, {}])('ignores malformed persisted value %j', (enabled) => {
+    const store = createTestStore();
+
+    store.getState().loadSession(sessionWith(enabled));
+
+    expect(store.getState().anthropicUsageEnabled).toBe(false);
+    expect(setUsageEnabled).not.toHaveBeenCalled();
   });
 });
 

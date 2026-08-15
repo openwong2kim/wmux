@@ -939,6 +939,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);
       }
       if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
+      if (typeof data.anthropicUsageEnabled === 'boolean') {
+        state.anthropicUsageEnabled = data.anthropicUsageEnabled;
+        window.electronAPI.usage.setEnabled(data.anthropicUsageEnabled);
+      }
       if (data.customKeybindings) {
         // Merge saved keybindings with current built-in defaults (mirrors the
         // layoutTemplates merge below). Built-in defaults (id 'kb-default-*')

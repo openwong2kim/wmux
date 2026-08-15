@@ -868,12 +868,9 @@ export function useNotificationListener() {
     const unsubUsage = window.electronAPI.usage.onUpdate((state) => {
       useStore.getState().setAnthropicUsage(state);
     });
-    // Hydrate main from persisted opt-in. Main boots with the poller
-    // stopped; if the user had it enabled before app restart, the
-    // SessionData restore in workspaceSlice.loadSession sets
-    // `anthropicUsageEnabled` back to true, and we mirror that to
-    // main here so the poller starts again. Calling setEnabled on a
-    // poller already in the requested state is a no-op (idempotent).
+    // loadSession normally restores this opt-in and starts main's poller.
+    // Mirror it again after subscribing as a safe fallback if this listener
+    // mounts after hydration; UsagePoller.setEnabled is idempotent.
     if (useStore.getState().anthropicUsageEnabled) {
       window.electronAPI.usage.setEnabled(true);
     }

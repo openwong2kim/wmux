@@ -266,6 +266,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
+    anthropicUsageEnabled: state.anthropicUsageEnabled,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     autoUpdateEnabled: state.autoUpdateEnabled,
