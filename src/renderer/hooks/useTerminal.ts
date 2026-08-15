@@ -894,10 +894,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
-      // Enable xterm 6's Windows-aware ConPTY reflow path. ConPTY emits
-      // spurious row-change events on resize; the dedicated reflow logic
-      // suppresses them, which in turn keeps SelectionService from
-      // unconditionally clearing the user's selection mid-drag.
+      // Enable xterm 6's Windows-aware ConPTY handling. ConPTY emits spurious
+      // row-change events on resize; on a build where the reflow path is taken
+      // that logic suppresses them, which in turn keeps SelectionService from
+      // unconditionally clearing the user's selection mid-drag. Which path a
+      // machine takes now depends on its build number (below), so on Windows 10
+      // that suppression is NOT in play and the deferred-fit guard behind
+      // `claimFit` is what holds the selection through a resize.
       // macOS/Linux PTY는 ConPTY가 아니므로 이 reflow 경로를 켜면 오히려
       // focus/resize 시 줄바꿈이 어긋나 글자가 깨진다(좌측 팬 garble). win32 한정.
       //
