@@ -6,6 +6,7 @@ import type {
   SampleTaskStartPayload,
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
+import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
@@ -51,6 +52,20 @@ const electronAPI = {
   // directly under sandbox + contextIsolation, so expose it here.
   // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'
   platform: process.platform as NodeJS.Platform,
+  // The Windows build number (eg. 19045), or null off Windows / when it cannot
+  // be read. xterm needs this SYNCHRONOUSLY at Terminal construction to pick
+  // its ConPTY behaviour, so it is a static value here rather than an IPC call.
+  //
+  // `process.getSystemVersion()` and not `os.release()`: this preload IS
+  // sandboxed (measured — `process.sandboxed === true`, and `require('node:os')`
+  // throws "module not found"), and getSystemVersion is one of the process
+  // methods Electron keeps in the sandboxed subset. Measured on Win11 26200:
+  // both return the identical '10.0.26200'.
+  windowsBuildNumber: process.platform === 'win32'
+    ? parseWindowsBuildNumber(
+      typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : null,
+    )
+    : null,
   pty: {
     // `exec`/`supervision` (X8): set by the AppLayout funnel for a supervised
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
