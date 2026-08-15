@@ -1075,8 +1075,20 @@ describe('events.rpc — events.poll blocking', () => {
     }
   });
 
-  it('gives up at the budget and does not advance the cursor past unseen events', async () => {
-    // One event the caller is NOT scoped to see sits in the ring.
+  /**
+   * The cursor advances past events the caller's OWN filter skipped, and that
+   * is the documented contract, not an oversight — one cursor chain per filter
+   * combination.
+   *
+   * Rewinding is the obvious "fix" and does not work. Rewinding to the last
+   * delivered event still steps over non-matches interleaved before it (deliver
+   * seq 1 and 3, land on 3, seq 2 is gone regardless). Rewinding to the first
+   * dropped event is lossless but lets any other pane's traffic pin the cursor,
+   * so the caller re-receives its own matches forever. A scalar cursor cannot
+   * mean two filters at once. This test exists so the next person to notice the
+   * gap finds the reasoning instead of re-deriving the broken fix.
+   */
+  it('advances the cursor past filtered-out events (one cursor per filter)', async () => {
     eventBus.emit(lifecycle('pty-2', 'agent.stop'));
     const router = setupRouter();
     const res = await router.dispatch(
@@ -1088,10 +1100,14 @@ describe('events.rpc — events.poll blocking', () => {
       const r = res.result as { events: unknown[]; nextCursor: number; parked?: boolean };
       expect(r.events).toHaveLength(0);
       expect(r.parked).toBe(true);
-      // nextCursor is the ring position, not a rewind — the caller resumes
-      // after what the ring actually held, and never re-reads from 0 forever.
-      expect(r.nextCursor).toBeGreaterThanOrEqual(1);
+      // Scanned, not delivered — the caller resumes after it.
+      expect(r.nextCursor).toBe(1);
     }
+
+    // The other pane's event is still reachable from ITS OWN cursor chain,
+    // which is what the tool description tells callers to keep.
+    const viaOwnChain = await pollEvents(router, { cursor: 0, ptyId: 'pty-2' });
+    expect(viaOwnChain).toHaveLength(1);
   });
 
   it('narrows agent.lifecycle by kind, and leaves other types alone', async () => {
@@ -1279,10 +1295,67 @@ describe('events.rpc — blocking poll, review regressions', () => {
     // A parked poll holds a connection for its whole wait. Sized independently
     // of MAX_CONNECTIONS it can exhaust the server, and every OTHER MCP tool
     // then fails with what the client reports as "wmux is not running".
-    const { MAX_CONNECTIONS } = await import('../../PipeServer');
-    expect(Math.floor(MAX_CONNECTIONS / 4)).toBeLessThanOrEqual(MAX_CONNECTIONS / 4);
+    const { MAX_PIPE_CONNECTIONS } = await import('../../PipeServer');
     // The cap must leave the majority of the budget for ordinary
     // connect -> send -> close traffic.
-    expect(Math.floor(MAX_CONNECTIONS / 4)).toBeLessThan(MAX_CONNECTIONS / 2);
+    expect(Math.floor(MAX_PIPE_CONNECTIONS / 4)).toBeLessThan(MAX_PIPE_CONNECTIONS / 2);
+  });
+});
+
+/**
+ * Cancellation. A parked poll holds one of the pipe server's finite connection
+ * slots for its whole wait, so a client that times out, is cancelled, or
+ * crashes must not keep that slot until the handler's own deadline — enough of
+ * those and the server stops accepting, which every other caller reads as
+ * "wmux is not running".
+ */
+describe('events.rpc — blocking poll cancellation', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  it('returns promptly when the caller goes away mid-park', async () => {
+    const router = setupRouter();
+    const abort = new AbortController();
+    const started = Date.now();
+    const pending = router.dispatch(
+      { id: 'c1', method: 'events.poll', params: { blockMs: 30_000, ptyId: 'pty-gone' } },
+      { firstParty: true, signal: abort.signal },
+    );
+    setTimeout(() => abort.abort(), 20);
+
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    // Well inside the 30s budget it would otherwise have burned.
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it('does not park at all when the caller is already gone', async () => {
+    const router = setupRouter();
+    const abort = new AbortController();
+    abort.abort();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'c2', method: 'events.poll', params: { blockMs: 30_000, ptyId: 'pty-gone' } },
+      { firstParty: true, signal: abort.signal },
+    );
+    expect(res.ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('still parks normally when no signal is supplied', async () => {
+    // In-process surfaces have no socket to lose and pass nothing; absent must
+    // read as "not cancellable", not as "already cancelled".
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'c3', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-x' } },
+      { firstParty: true },
+    );
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-x',
+      kind: 'agent.stop', agent: 'claude', source: 'hook',
+    }), 20);
+    const res = await pending;
+    if (res.ok) expect((res.result as { events: unknown[] }).events).toHaveLength(1);
   });
 });

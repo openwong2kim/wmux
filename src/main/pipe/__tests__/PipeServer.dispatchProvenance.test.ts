@@ -78,17 +78,16 @@ describe('PipeServer dispatch provenance', () => {
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'authenticated', clientName: 'claude-code' }),
-      // The trust lane is still the only provenance marker. `signal` rides
-      // alongside it and carries no authority — it exists so a handler that
-      // WAITS can stop when the client hangs up, instead of holding one of the
-      // server's finite connection slots until its own deadline.
-      expect.objectContaining({ externalWire: true, signal: expect.any(AbortSignal) }),
+      // The trust lane is the ONLY provenance marker. Cancellation (`signal`)
+      // may ride alongside it but carries no authority, and it is absent here
+      // because this drives processLine directly — the controller belongs to a
+      // connection, and there is no connection in this test.
+      expect.objectContaining({ externalWire: true }),
     );
-    // Provenance must not be forgeable from the envelope, and adding `signal`
-    // must not have introduced a second way in.
-    const [, opts] = dispatch.mock.calls[0] as [unknown, Record<string, unknown>];
-    expect(opts.firstParty).toBeUndefined();
-    expect(opts.operator).toBeUndefined();
+    // Adding cancellation must not have introduced a second way to claim trust.
+    const opts = (dispatch.mock.calls[0] as unknown[])[1] as Record<string, unknown> | undefined;
+    expect(opts?.firstParty).toBeUndefined();
+    expect(opts?.operator).toBeUndefined();
   });
 
   it('does not dispatch an unauthenticated request', () => {

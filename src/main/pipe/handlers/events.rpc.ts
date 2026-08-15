@@ -13,7 +13,7 @@ import {
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
-import { MAX_CONNECTIONS } from '../PipeServer';
+import { MAX_PIPE_CONNECTIONS } from '../PipeServer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -53,7 +53,7 @@ const MAX_BLOCK_MS = 600_000;
  * exactly the pre-block behavior, and flag it so the caller can back off.
  *
  * DERIVED from the pipe server's connection budget rather than picked, because
- * the two are spending the same resource. A flat 32 against MAX_CONNECTIONS=50
+ * the two are spending the same resource. A flat 32 against MAX_PIPE_CONNECTIONS=50
  * leaves only 18 for everything else: parking a fleet plus ordinary traffic
  * exhausts the server, Node stops accepting, and EVERY other MCP tool starts
  * failing with what the client reports as "wmux is not running" — a self-inflicted
@@ -61,7 +61,7 @@ const MAX_BLOCK_MS = 600_000;
  * the majority of the budget for the connect → send → close traffic that is the
  * normal shape.
  */
-const MAX_PARKED_POLLS = Math.floor(MAX_CONNECTIONS / 4);
+const MAX_PARKED_POLLS = Math.floor(MAX_PIPE_CONNECTIONS / 4);
 
 let parkedPolls = 0;
 
@@ -92,24 +92,49 @@ function waitForEmit(
   interesting: (event: WmuxEvent) => boolean,
   signal?: AbortSignal,
 ): Promise<'event' | 'timeout' | 'aborted'> {
+  // Already gone: don't arm a timer or take an EventBus subscription just to
+  // tear both down a tick later. A client that hangs up mid-loop would pay that
+  // churn on every remaining iteration.
+  if (signal?.aborted) return Promise.resolve('aborted');
   return new Promise((resolve) => {
     let done = false;
+    // Declared before anything can call finish(), and armed first. EventBus's
+    // subscribe() only pushes today, so ordering these the other way happens to
+    // work — but if it ever replayed, or an emit re-entered during subscribe,
+    // finish() would touch `timer` in its temporal dead zone and throw. That
+    // throw lands inside EventBus's per-subscriber try/catch, so it would be
+    // SWALLOWED: the promise never settles, and the parkedPolls slot it holds
+    // is leaked for the life of the process. Enough of those and parking is
+    // silently off for everyone, with nothing in the logs pointing here. Cheap
+    // to make order-independent instead.
+    const teardown: {
+      timer?: ReturnType<typeof setTimeout>;
+      unsubscribe?: () => void;
+    } = {};
     const finish = (outcome: 'event' | 'timeout' | 'aborted'): void => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      if (teardown.timer !== undefined) clearTimeout(teardown.timer);
       signal?.removeEventListener('abort', onAbort);
-      queueMicrotask(unsubscribe);
+      if (teardown.unsubscribe) queueMicrotask(teardown.unsubscribe);
       resolve(outcome);
     };
     const onAbort = (): void => finish('aborted');
-    const unsubscribe = eventBus.subscribe((event) => {
+    teardown.timer = setTimeout(() => finish('timeout'), timeoutMs);
+    teardown.unsubscribe = eventBus.subscribe((event) => {
       if (done) return;
-      if (!interesting(event)) return;
-      finish('event');
+      // A throwing predicate would be swallowed by EventBus and cost this
+      // caller its whole budget waiting for a wake it already earned. Treat a
+      // failure as "might match" and let collect() — the authority — decide.
+      let match = true;
+      try {
+        match = interesting(event);
+      } catch {
+        match = true;
+      }
+      if (match) finish('event');
     });
-    const timer = setTimeout(() => finish('timeout'), timeoutMs);
-    // Already-aborted signals never fire the event, so check before listening.
+    // An already-aborted signal never fires the event, so check before listening.
     if (signal?.aborted) finish('aborted');
     else signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -458,6 +483,27 @@ export function registerEventsRpc(
         result.events = page;
       }
 
+      // NOTE on nextCursor and filters — deliberately NOT "fixed" here.
+      //
+      // EventBus advances nextCursor over everything it scanned, matched or not,
+      // so a filtered poller does not re-walk the ring each time. A cursor is one
+      // scalar, so it can only mean "everything up to here, under the filter you
+      // just used". Carry it to a poll with a DIFFERENT filter and the events the
+      // old filter skipped are already behind it. That is pre-existing behavior
+      // for `types`; `ptyId`/`kinds` join it.
+      //
+      // Rewinding looks like the fix and is not. Rewinding to the last delivered
+      // event still steps over non-matches interleaved BEFORE it (measured:
+      // deliver seq 1 and 3, cursor lands on 3, seq 2 is gone anyway). Rewinding
+      // to the first dropped event is genuinely lossless but then a steady stream
+      // of other panes' traffic pins the cursor, and the caller re-receives its
+      // own matches forever. Neither is better than saying what is true.
+      //
+      // So: one cursor chain per filter combination. A caller watching several
+      // panes keeps a cursor per pane, or polls unfiltered and narrows its own
+      // side. The tool description says this outright rather than promising a
+      // losslessness that a scalar cursor cannot deliver.
+
       // notifications.read opt-in gate (see allowsNotifications). Applied as
       // a post-poll filter — NOT by rewriting `types` — because EventBus
       // treats an empty types array as "no filter", so a types-rewrite that
@@ -485,6 +531,10 @@ export function registerEventsRpc(
       if (ptyId && (event as { ptyId?: unknown }).ptyId !== ptyId) return false;
       if (kinds && event.type === 'agent.lifecycle'
         && !kinds.has(String((event as { kind?: unknown }).kind))) return false;
+      // An unentitled caller has these stripped by collect() anyway, so waking
+      // for them is pure churn — and a caller that asked ONLY for them would
+      // wake on every one for its whole budget and deliver nothing.
+      if (!allowNotifications && event.type === 'notification.received') return false;
       return true;
     };
 
@@ -538,6 +588,11 @@ export function registerEventsRpc(
     } finally {
       parkedPolls--;
     }
+
+    // Nobody is reading. Skip the trust-DB read and the ring re-scan that only
+    // exist to shape a response the socket will discard — a fleet dying at once
+    // (app quit, crash) would otherwise pay both per dead caller.
+    if (ctx?.signal?.aborted) return { ...first, parked: true, aborted: true };
 
     // An entitlement can be revoked while a poll is parked; re-check before the
     // page is written, then re-collect so the gate is applied to it.
