@@ -5,6 +5,15 @@ import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
 import { getConnectionScope } from './connectionScope';
 
+/**
+ * Default per-call RPC deadline. Every tool gets this unless it asks for
+ * another — see `sendRpc`'s `timeoutMs`.
+ *
+ * This is a PER-CALL timer on a PER-CALL socket (`attemptRpc` opens its own
+ * connection), not a transport-wide contract, which is why one long-running
+ * method can be given a longer deadline without touching any other tool. The
+ * blocking `events.poll` is the only caller that does.
+ */
 const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
 const RETRY_DELAY_MS = 1000;
@@ -114,6 +123,7 @@ function attemptRpc(
   token: string,
   method: RpcMethod,
   params: Record<string, unknown>,
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
@@ -132,9 +142,9 @@ function attemptRpc(
       if (!settled) {
         settled = true;
         socket.destroy();
-        reject(new Error(`RPC timeout: ${method} (${TIMEOUT_MS}ms)`));
+        reject(new Error(`RPC timeout: ${method} (${timeoutMs}ms)`));
       }
-    }, TIMEOUT_MS);
+    }, timeoutMs);
 
     socket.on('connect', () => {
       socket.write(request);
@@ -195,6 +205,7 @@ function sleep(ms: number): Promise<void> {
 export async function sendRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<unknown> {
   const token = readAuthToken();
   if (!token) {
@@ -216,7 +227,7 @@ export async function sendRpc(
   for (const pipePath of pipePaths) {
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
-        return await attemptRpc(pipePath, token, method, params);
+        return await attemptRpc(pipePath, token, method, params, timeoutMs);
       } catch (err) {
         lastError = err as Error;
         const msg = lastError.message;
@@ -238,7 +249,7 @@ export async function sendRpc(
   // TCP localhost fallback — bypasses Windows named pipe ACL issues
   if (tcpPort) {
     try {
-      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params);
+      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
     } catch { /* fall through */ }
   }
 

@@ -33,6 +33,36 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     void block;
   });
 
+  /**
+   * This is the whole answer to "is this pane blocked on me?" without reading
+   * the terminal — the reason `pendingQuestion` was carried alongside
+   * AgentStatus rather than added to it (shared/types.ts). The test above locks
+   * the agents[] derivation but not the two properties that make the poll path
+   * actually work, and both have a silent failure mode:
+   *
+   *   - drop `pendingQuestion` and a poller sees `waiting` with no way to tell
+   *     "turn ended" from "turn ended ON A QUESTION". It goes back to scraping.
+   *   - narrow the emit rule to `if (!a) return []` and every pane whose agent
+   *     was never DETECTED drops out of the list entirely, taking its question
+   *     with it. A hook-sourced stop publishes the question but carries no
+   *     agent identity, so that is exactly the pane that needed to be listed.
+   *
+   * Neither shows up as a failing assertion anywhere else — the response stays
+   * well-formed, it just stops answering the question it exists to answer.
+   */
+  it('pane.list carries pendingQuestion, and lists a pane on EITHER signal', () => {
+    const mapBody = region("method === 'pane\\.list'", 'pane\\.focus');
+    // the question is read per-surface, keyed by the same ptyId as the agent
+    expect(mapBody).toMatch(/store\.surfacePendingQuestion\[s\.ptyId\]/);
+    // emitted on either signal — NOT `if (!a) return []`
+    expect(mapBody).toMatch(/if \(!a && !q\) return \[\]/);
+    // and it reaches the wire (omitted when absent, so old readers are unaffected)
+    expect(mapBody).toMatch(/\.\.\.\(q \? \{ pendingQuestion: q \} : \{\}\)/);
+    // the agent fields stay nullable — a question-only pane still lists
+    expect(mapBody).toMatch(/agentName: a\?\.name \?\? null/);
+    expect(mapBody).toMatch(/agentStatus: a\?\.status \?\? null/);
+  });
+
   it('a2a.discover returns per-pane addressable entries', () => {
     const block = region("method === 'a2a\\.discover'", "method === 'a2a\\.task\\.send'");
     expect(block).toMatch(/panes/);

@@ -994,3 +994,139 @@ describe('events.rpc — agent transport identity scoping (audit B3)', () => {
     expect(vi.mocked(sendToRenderer)).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Optional blocking poll (`blockMs`) + pane/kind narrowing.
+ *
+ * This is the primitive that replaces an orchestrator's `terminal_read` loop:
+ * "wait until this pane blocks, then read the question". The properties that
+ * matter are all about NOT losing an event:
+ *
+ *   - a caller that never passes `blockMs` must behave exactly as before;
+ *   - an event already in the ring must answer immediately (a park that waits
+ *     for the NEXT event after the one it was looking for is a lost wakeup);
+ *   - a wake caused by unrelated traffic must not end the wait early with an
+ *     empty page, or the caller is back to polling;
+ *   - an attempt that matches nothing must not advance the cursor.
+ */
+describe('events.rpc — events.poll blocking', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const lifecycle = (ptyId: string, kind: string) => ({
+    type: 'agent.lifecycle' as const,
+    workspaceId: 'ws-1',
+    ptyId,
+    kind,
+    agent: 'claude',
+    source: 'hook',
+  });
+
+  it('returns immediately when the ring already has a match (no park)', async () => {
+    eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input'));
+    const router = setupRouter();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'b1', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.parked).toBeUndefined(); // took the immediate path
+    }
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('parks, then wakes on a matching event emitted later', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'b2', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    // Emitted AFTER the poll is already parked.
+    setTimeout(() => eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input')), 20);
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: Array<{ ptyId: string }>; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.events[0].ptyId).toBe('pty-1');
+      expect(r.parked).toBe(true);
+    }
+  });
+
+  it('keeps waiting when the wake was another pane\'s traffic', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'b3', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    // Unrelated pane wakes the bus hook first; the poll must NOT return empty.
+    setTimeout(() => eventBus.emit(lifecycle('pty-2', 'agent.stop')), 10);
+    setTimeout(() => eventBus.emit(lifecycle('pty-1', 'agent.stop')), 40);
+    const res = await pending;
+    if (res.ok) {
+      const r = res.result as { events: Array<{ ptyId: string }> };
+      expect(r.events).toHaveLength(1);
+      expect(r.events[0].ptyId).toBe('pty-1');
+    }
+  });
+
+  it('gives up at the budget and does not advance the cursor past unseen events', async () => {
+    // One event the caller is NOT scoped to see sits in the ring.
+    eventBus.emit(lifecycle('pty-2', 'agent.stop'));
+    const router = setupRouter();
+    const res = await router.dispatch(
+      { id: 'b4', method: 'events.poll', params: { blockMs: 60, ptyId: 'pty-1', cursor: 0 } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; nextCursor: number; parked?: boolean };
+      expect(r.events).toHaveLength(0);
+      expect(r.parked).toBe(true);
+      // nextCursor is the ring position, not a rewind — the caller resumes
+      // after what the ring actually held, and never re-reads from 0 forever.
+      expect(r.nextCursor).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('narrows agent.lifecycle by kind, and leaves other types alone', async () => {
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input'));
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+
+    const router = setupRouter();
+    const events = await pollEvents(router, { kinds: ['agent.awaiting_input'] });
+    // the non-matching lifecycle is dropped; the unrelated type passes through
+    expect(events.map((e) => e.kind ?? e.type)).toEqual(['agent.awaiting_input', 'pane.created']);
+  });
+
+  it('drops events that carry no ptyId when a pane is named', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+
+    const router = setupRouter();
+    const events = await pollEvents(router, { ptyId: 'pty-1' });
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('agent.stop');
+  });
+
+  it('blockMs is clamped and a missing/zero value keeps the immediate path', async () => {
+    const router = setupRouter();
+    const started = Date.now();
+    // blockMs:0 and a negative value must both return at once on an empty ring.
+    for (const blockMs of [0, -5]) {
+      const res = await router.dispatch(
+        { id: `b7-${blockMs}`, method: 'events.poll', params: { blockMs } },
+        { firstParty: true },
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect((res.result as { parked?: boolean }).parked).toBeUndefined();
+    }
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});

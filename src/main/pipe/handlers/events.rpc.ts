@@ -34,6 +34,50 @@ const PRIVATE_EVENT_TYPES: ReadonlySet<WmuxEventType> = new Set<WmuxEventType>([
 ]);
 
 /**
+ * Ceiling on `blockMs`. Deliberately UNDER the MCP host's stdio idle window
+ * (30 min by default), so a single held poll can never be the thing that trips
+ * it even if the progress-notification keepalive is unavailable. A caller that
+ * wants to wait longer re-polls — the cursor makes that lossless.
+ */
+const MAX_BLOCK_MS = 600_000;
+
+/**
+ * How many polls may be parked at once, process-wide.
+ *
+ * A parked poll holds a pipe connection open (the MCP client opens one socket
+ * per call), so this IS the back-pressure knob: without it a fleet plus retries
+ * plus a buggy caller can pin main's pipe server. Over the cap we do not queue
+ * or reject — we answer immediately with whatever the ring has, which is
+ * exactly the pre-block behavior, and flag it so the caller can back off.
+ */
+const MAX_PARKED_POLLS = 32;
+
+let parkedPolls = 0;
+
+/**
+ * Park until the next event is emitted, or the deadline passes.
+ *
+ * Resolves `true` if an event woke us, `false` on timeout. The EventBus hook is
+ * synchronous and runs inside `emit()`, so the handler does nothing but resolve
+ * a promise there — no `emit()` re-entrancy (which the bus forbids), no work on
+ * the emitter's stack.
+ */
+function waitForEmit(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (woke: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(woke);
+    };
+    const unsubscribe = eventBus.subscribe(() => finish(true));
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+/**
  * Resolve the caller's OWN workspace from a verified `senderPtyId` — the same
  * anchor a2a.channel.* mutations use (resolved via the renderer's
  * `input.findOwnerWorkspace`, which owns the authoritative pane→workspace map).
@@ -164,6 +208,28 @@ export function registerEventsRpc(
       : undefined;
     const types = parseTypes(params['types']);
 
+    // ── Optional block + narrowing (additive; every default is the old behavior)
+    //
+    // `blockMs` absent or <= 0 keeps this an immediate-return poll, byte for
+    // byte. Only a caller that asks to wait ever parks.
+    const blockMs = typeof params['blockMs'] === 'number' && Number.isFinite(params['blockMs'])
+      ? Math.min(MAX_BLOCK_MS, Math.max(0, Math.floor(params['blockMs'])))
+      : 0;
+    // Narrow to one pane. Events that carry no ptyId are DROPPED when this is
+    // set — "events about this pty" cannot honestly include events that are not
+    // about any pty. Without it a caller waiting on one pane wakes on every
+    // pane's traffic and has to re-filter, which is the polling loop we are
+    // removing.
+    const ptyId = typeof params['ptyId'] === 'string' && params['ptyId'].length > 0
+      ? params['ptyId']
+      : undefined;
+    // Narrow `agent.lifecycle` by its `kind` (agent.stop / agent.subagent_stop /
+    // agent.awaiting_input). Applies ONLY to that type — every other type passes
+    // through untouched, so `kinds` never silently empties a mixed poll.
+    const kinds = Array.isArray(params['kinds'])
+      ? new Set((params['kinds'] as unknown[]).filter((k): k is string => typeof k === 'string'))
+      : undefined;
+
     // Workspace scoping is applied as a POST-filter here (placement B), NOT via
     // the EventBus wsFilter, for ONE load-bearing reason: an a2a.task's base
     // `workspaceId === from`, but the *receiver* (`caller === to`) must also
@@ -182,8 +248,12 @@ export function registerEventsRpc(
     // THEN truncate to the caller's page size and rewind nextCursor to the last
     // delivered event — so the next poll resumes exactly after it and no
     // matching event is ever skipped.
-    const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
-
+    // The ring read itself moved into `collect()` below so a parked poll can
+    // re-run it on wake WITHOUT redoing the scope resolution (which can cost a
+    // renderer round-trip). Scope is a property of the caller, not of the
+    // attempt, so resolving it once per call is both cheaper and more correct:
+    // a mid-park identity change cannot flip a private scope open.
+    //
     // ── Caller scope resolution (audit B3 — events.poll identity) ─────────────
     //
     // Two scopes, because the ring carries two classes of event with different
@@ -238,6 +308,32 @@ export function registerEventsRpc(
     }
     const privateScoped = privateSet.size > 0;
 
+    // notifications.read opt-in gate (see allowsNotifications). Resolved ONCE,
+    // before any collect: it depends only on the caller's identity, and a parked
+    // poll must not re-hit the trust DB on every wake.
+    let allowNotifications = true;
+    if (ctx?.clientName && trustLookup) {
+      let trust: PluginIdentityRecord | undefined;
+      try {
+        trust = await trustLookup(ctx.clientName);
+      } catch {
+        trust = undefined; // unreadable trust DB → grandfather, enforcer handles the rest
+      }
+      allowNotifications = allowsNotifications(trust);
+    }
+
+    /**
+     * One attempt: read the ring from `cursor`, apply every scope/narrowing
+     * filter, page it. Pure and synchronous, so a parked poll can re-run it on
+     * each wake for the cost of a ring scan.
+     *
+     * Always reads from the ORIGINAL `cursor`, never from the previous
+     * attempt's nextCursor — an attempt that matched nothing must not advance
+     * the caller past events it never received.
+     */
+    const collect = () => {
+      const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
+
     result.events = result.events.filter((e) => {
       if (e.type === 'a2a.task') {
         // Dual-party: visible to sender (`from`) and receiver (`to`) ONLY. The
@@ -284,40 +380,85 @@ export function registerEventsRpc(
       return clientScoped ? clientSet.has(e.workspaceId) : true;
     });
 
-    // Re-impose the caller's page size AFTER scoping (see the over-fetch note
-    // above). EventBus drained the ring for us, so if the scoped page still
-    // exceeds `max` we truncate here and rewind nextCursor to the last delivered
-    // event's seq — the next poll resumes right after it. seq is monotonic, so
-    // this never skips a withheld matching event (it only defers it one page).
-    const pageMax = max ?? POLL_DEFAULT_MAX;
-    if (result.events.length > pageMax) {
-      const page = result.events.slice(0, pageMax);
-      result.nextCursor = page[page.length - 1].seq;
-      result.events = page;
-    }
-
-    // notifications.read opt-in gate (see allowsNotifications). Applied as
-    // a post-poll filter — NOT by rewriting `types` — because EventBus
-    // treats an empty types array as "no filter", so a types-rewrite that
-    // drains to [] would deliver everything to an unentitled caller.
-    // Filtering the result keeps the cursor math intact (the caller's
-    // nextCursor still advances past withheld events; they can never see
-    // them anyway).
-    if (ctx?.clientName && trustLookup) {
-      let trust: PluginIdentityRecord | undefined;
-      try {
-        trust = await trustLookup(ctx.clientName);
-      } catch {
-        trust = undefined; // unreadable trust DB → grandfather, enforcer handles the rest
+      // pty / kind narrowing. AFTER scope, so it can only ever remove events
+      // the caller was already entitled to see — never widen.
+      if (ptyId) {
+        result.events = result.events.filter(
+          (e) => (e as { ptyId?: unknown }).ptyId === ptyId,
+        );
       }
-      if (!allowsNotifications(trust)) {
+      if (kinds) {
+        result.events = result.events.filter(
+          (e) => e.type !== 'agent.lifecycle'
+            || kinds.has(String((e as { kind?: unknown }).kind)),
+        );
+      }
+
+      // Re-impose the caller's page size AFTER scoping (see the over-fetch note
+      // above). EventBus drained the ring for us, so if the scoped page still
+      // exceeds `max` we truncate here and rewind nextCursor to the last delivered
+      // event's seq — the next poll resumes right after it. seq is monotonic, so
+      // this never skips a withheld matching event (it only defers it one page).
+      const pageMax = max ?? POLL_DEFAULT_MAX;
+      if (result.events.length > pageMax) {
+        const page = result.events.slice(0, pageMax);
+        result.nextCursor = page[page.length - 1].seq;
+        result.events = page;
+      }
+
+      // notifications.read opt-in gate (see allowsNotifications). Applied as
+      // a post-poll filter — NOT by rewriting `types` — because EventBus
+      // treats an empty types array as "no filter", so a types-rewrite that
+      // drains to [] would deliver everything to an unentitled caller.
+      // Filtering the result keeps the cursor math intact (the caller's
+      // nextCursor still advances past withheld events; they can never see
+      // them anyway).
+      if (!allowNotifications) {
         return {
           ...result,
           events: result.events.filter((e) => e.type !== 'notification.received'),
         };
       }
+
+      return result;
+    };
+
+    // ── Immediate path — unchanged behavior ───────────────────────────────────
+    // No `blockMs`, or the ring already has something for this caller: answer
+    // now. Every pre-existing caller lands here.
+    const first = collect();
+    if (blockMs <= 0 || first.events.length > 0) return first;
+
+    // ── Parked path ───────────────────────────────────────────────────────────
+    // Over the cap we degrade to the immediate answer rather than queueing:
+    // parking is a convenience, and a caller that cannot park is strictly better
+    // off polling than waiting behind 32 others for a connection slot.
+    if (parkedPolls >= MAX_PARKED_POLLS) {
+      return { ...first, parked: false, parkedCapReached: true };
     }
 
-    return result;
+    parkedPolls++;
+    try {
+      const deadline = Date.now() + blockMs;
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        // A wake is "some event was emitted", not "an event you care about" —
+        // the bus hook is global. So re-collect and keep waiting when the wake
+        // was someone else's traffic, instead of returning an empty page and
+        // making the caller re-poll (which is the loop this exists to remove).
+        const woke = await waitForEmit(remaining);
+        const next = collect();
+        if (next.events.length > 0) return { ...next, parked: true };
+        if (!woke) break;
+      }
+    } finally {
+      parkedPolls--;
+    }
+
+    // Waited the full budget with nothing to show. Collect once more rather than
+    // reusing `first`: an event may have landed between the last wake and here,
+    // and dropping it would be a lost wakeup of our own making.
+    return { ...collect(), parked: true };
   });
 }
