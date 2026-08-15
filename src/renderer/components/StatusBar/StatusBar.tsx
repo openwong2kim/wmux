@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { t } from '../../i18n';
 import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
@@ -47,8 +48,8 @@ export function formatBellContent(unreadCount: number): string | null {
 
 /** ARIA label, with correct singular/plural per a11y spec. */
 export function formatBellAriaLabel(unreadCount: number): string {
-  const noun = unreadCount === 1 ? 'notification' : 'notifications';
-  return `${unreadCount} unread ${noun}, click to open panel`;
+  const noun = unreadCount === 1 ? t('statusbar.notifSingular') : t('statusbar.notifPlural');
+  return t('statusbar.unreadAria', { count: unreadCount, noun });
 }
 
 interface NotificationBellBadgeProps {

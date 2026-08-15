@@ -83,6 +83,98 @@ export const zh = {
   'error.crashed': '崩溃：{message}',
   'error.retry': '重试',
 
+  // Toast
+  'toast.goToTerminal': '转到终端',
+  'toast.dismiss': '关闭',
+  'toast.notifications': '通知',
+
+  // Workspace multiview viewport
+  'workspaceViewport.removeFromMultiview': '从多视图移除',
+  'workspaceViewport.removeFromMultiviewFor': '将「{name}」从多视图移除',
+
+  // Notification panel
+  'notification.markWorkspaceRead': '标为已读',
+  'notification.close': '关闭通知',
+
+  // Onboarding overlay
+  'onboarding.step': '第 {n} 步',
+  'onboarding.skip': '跳过',
+  'onboarding.back': '返回',
+  'onboarding.done': '完成',
+  'onboarding.next': '下一步',
+
+  // Relative time / status bar
+  'timeAgo.justNow': '刚刚',
+  'timeAgo.minutes': '{n} 分钟前',
+  'timeAgo.hours': '{n} 小时前',
+  'timeAgo.days': '{n} 天前',
+  'statusbar.notifSingular': '通知',
+  'statusbar.notifPlural': '通知',
+  'statusbar.unreadAria': '{count} 条未读{noun}，点击打开面板',
+
+  // Usage meter (Anthropic 5h/7d widget)
+  'usage.tooltipSession': '5 小时：{pct}%',
+  'usage.tooltipWeekly': '7 天：{pct}%',
+  'usage.tooltipReset': '（{countdown} 后重置）',
+  'usage.tooltipPlan': '套餐：{plan}',
+  'usage.tooltipFetched': '获取于：{fetched}',
+
+  // Deck fleet roster
+  'deck.fleetShell': 'shell',
+  'deck.fleetPreferredRole': '首选角色 — 编排器会把匹配的工作路由到这里',
+  'deck.fleetRolePlaceholder': '角色…',
+  'deck.fleetRoleAria': '{label} 的角色',
+  'deck.orchestratorModelDefault': '默认',
+  'deck.orchestratorModelTitle': '编排器模型',
+  'fleet.agent': '智能体',
+
+  // Diff panel
+  'diff.title': '差异',
+  'diff.reload': '重新加载',
+  'diff.loading': '加载中…',
+
+  // Channels — create-channel modal
+  'channel.createDialogLabel': '创建新频道',
+  'channel.nameLabel': '频道名称',
+  'channel.nameRequired': '名称必填。',
+  'channel.nameTooLong': '名称超过 {max} 个字符。',
+  'channel.nameRules': '使用小写字母、数字和连字符（必须以字母或数字开头）。',
+  'channel.willBeSavedAs': '将保存为',
+  'channel.createFailed': '无法创建频道 — 该名称可能已被占用。',
+  'channel.create': '创建',
+  'channel.creating': '创建中…',
+
+  // Approval dialogs
+  'approval.unknownSender': '未知发送方',
+  'approval.unknownReceiver': '未知接收方',
+  'approval.fanoutTitle': '请求 Fan-out',
+  'approval.executeTitle': '请求后台执行',
+  'approval.fanoutIntro': '一个智能体想要进行 Fan-out',
+  'approval.fanoutCount': '{count} 个隔离任务',
+  'approval.fanoutDesc': '— 每个都会创建 git worktree + 分支，并在新工作区中生成自主智能体 CLI。',
+  'approval.sameWsWorkspace': '此工作区',
+  'approval.sameWsIntro': '智能体在',
+  'approval.sameWsMid': '想用',
+  'approval.sameWsEnd': '在同一工作区中生成另一个自主 Claude CLI。',
+  'approval.remoteIntro': '远程 A2A 调用方想要用',
+  'approval.remoteEnd': '在此工作区中生成 Claude CLI。',
+  'approval.caller': '调用方：',
+  'approval.repo': '仓库：',
+  'approval.tasks': '任务数：',
+  'approval.from': '来自：',
+  'approval.to': '目标：',
+  'approval.cwd': '工作目录：',
+  'approval.task': '任务：',
+  'approval.emptyMessage': '<空消息>',
+  'approval.fanoutAutoApproveHint': 'fan-out 始终会询问 — 自动批准不适用于它',
+  'approval.autoDeny': '{sec} 秒后自动拒绝',
+  'approval.deny': '拒绝',
+  'approval.approve': '批准',
+
+  // Permission approval dialog
+  'permission.pluginTitle': '插件请求权限',
+  'permission.pluginLabel': '插件：',
+
   // Workspace
   'workspace.agentRunning': '智能体运行中',
   'workspace.agentComplete': '智能体已完成',

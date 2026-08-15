@@ -210,7 +210,7 @@ export function DeckTabs({
                           : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
                       }`}
                     >
-                      <span>{o.label}</span>
+                      <span>{o.value === '' ? t('deck.orchestratorModelDefault') : o.label}</span>
                       {sel && (
                         <span aria-hidden="true" className="text-[var(--accent-blue)] text-[8px]" {...tokenAttrs('accent', 'text')}>
                           ●

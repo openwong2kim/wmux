@@ -90,6 +90,98 @@ export const en = {
   'error.crashed': 'Crashed: {message}',
   'error.retry': 'Retry',
 
+  // Toast
+  'toast.goToTerminal': 'Go to terminal',
+  'toast.dismiss': 'Dismiss',
+  'toast.notifications': 'Notifications',
+
+  // Workspace multiview viewport
+  'workspaceViewport.removeFromMultiview': 'Remove from multiview',
+  'workspaceViewport.removeFromMultiviewFor': 'Remove {name} from multiview',
+
+  // Notification panel
+  'notification.markWorkspaceRead': 'Mark workspace read',
+  'notification.close': 'Close notifications',
+
+  // Onboarding overlay
+  'onboarding.step': 'Step {n}',
+  'onboarding.skip': 'Skip',
+  'onboarding.back': 'Back',
+  'onboarding.done': 'Done',
+  'onboarding.next': 'Next',
+
+  // Relative time / status bar
+  'timeAgo.justNow': 'just now',
+  'timeAgo.minutes': '{n}m ago',
+  'timeAgo.hours': '{n}h ago',
+  'timeAgo.days': '{n}d ago',
+  'statusbar.notifSingular': 'notification',
+  'statusbar.notifPlural': 'notifications',
+  'statusbar.unreadAria': '{count} unread {noun}, click to open panel',
+
+  // Usage meter (Anthropic 5h/7d widget)
+  'usage.tooltipSession': '5h: {pct}%',
+  'usage.tooltipWeekly': '7d: {pct}%',
+  'usage.tooltipReset': '(reset {countdown})',
+  'usage.tooltipPlan': 'Plan: {plan}',
+  'usage.tooltipFetched': 'Fetched: {fetched}',
+
+  // Deck fleet roster
+  'deck.fleetShell': 'shell',
+  'deck.fleetPreferredRole': 'Preferred role — the orchestrator routes matching work here',
+  'deck.fleetRolePlaceholder': 'role…',
+  'deck.fleetRoleAria': '{label} role',
+  'deck.orchestratorModelDefault': 'Default',
+  'deck.orchestratorModelTitle': 'Orchestrator model',
+  'fleet.agent': 'agent',
+
+  // Diff panel
+  'diff.title': 'Diff',
+  'diff.reload': 'Reload',
+  'diff.loading': 'Loading...',
+
+  // Channels — create-channel modal
+  'channel.createDialogLabel': 'Create a new channel',
+  'channel.nameLabel': 'Channel name',
+  'channel.nameRequired': 'Name is required.',
+  'channel.nameTooLong': 'Name is longer than {max} characters.',
+  'channel.nameRules': 'Use lowercase letters, digits, and hyphens (must start with a letter or digit).',
+  'channel.willBeSavedAs': 'Will be saved as',
+  'channel.createFailed': 'Could not create the channel — that name may already be taken.',
+  'channel.create': 'Create',
+  'channel.creating': 'Creating…',
+
+  // Approval dialogs
+  'approval.unknownSender': 'unknown sender',
+  'approval.unknownReceiver': 'unknown receiver',
+  'approval.fanoutTitle': 'Fan-out requested',
+  'approval.executeTitle': 'Background execution requested',
+  'approval.fanoutIntro': 'An agent wants to fan out',
+  'approval.fanoutCount': '{count} isolated task(s)',
+  'approval.fanoutDesc': '— each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.',
+  'approval.sameWsWorkspace': 'this workspace',
+  'approval.sameWsIntro': 'An agent in',
+  'approval.sameWsMid': 'wants to spawn another autonomous Claude CLI with',
+  'approval.sameWsEnd': 'in the same workspace.',
+  'approval.remoteIntro': 'A remote A2A caller wants to spawn a Claude CLI with',
+  'approval.remoteEnd': 'in this workspace.',
+  'approval.caller': 'caller:',
+  'approval.repo': 'repo:',
+  'approval.tasks': 'tasks:',
+  'approval.from': 'from:',
+  'approval.to': 'to:',
+  'approval.cwd': 'cwd:',
+  'approval.task': 'task:',
+  'approval.emptyMessage': '<empty message>',
+  'approval.fanoutAutoApproveHint': 'fan-out always asks — auto-approve does not cover it',
+  'approval.autoDeny': 'auto-deny in {sec}s',
+  'approval.deny': 'Deny',
+  'approval.approve': 'Approve',
+
+  // Permission approval dialog
+  'permission.pluginTitle': 'Plugin requesting permissions',
+  'permission.pluginLabel': 'plugin:',
+
   // Workspace
   'workspace.agentRunning': 'Running',
   'workspace.agentComplete': 'Complete',

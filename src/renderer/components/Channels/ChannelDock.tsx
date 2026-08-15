@@ -58,10 +58,13 @@ export default function ChannelDock(): React.ReactElement {
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
   // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
+  const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
-  const commanderModelLabel = (MODEL_OPTIONS.find((o) => o.value === deckBrainModel) ?? MODEL_OPTIONS[0]).label;
-  const t = useT();
+  const commanderModelLabel = (() => {
+    const o = MODEL_OPTIONS.find((x) => x.value === deckBrainModel) ?? MODEL_OPTIONS[0];
+    return o.value === '' ? t('deck.orchestratorModelDefault') : o.label;
+  })();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
   // git 탭(오너 결정 2026-07-20 — 덱 복귀, Review는 Git 탭 하단 섹션으로 병합).
   const showGitView = activeDeckTab === 'git';

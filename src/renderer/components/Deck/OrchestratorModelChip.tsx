@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 
@@ -27,6 +28,7 @@ export const MODEL_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } = {}): React.ReactElement {
+  const t = useT();
   const model = useStore((s) => s.deckBrainModel);
   const setModel = useStore((s) => s.setDeckBrainModel);
   const [open, setOpen] = useState(false);
@@ -57,18 +59,18 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Orchestrator model"
+        title={t('deck.orchestratorModelTitle')}
         data-model-chip-button
         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-[var(--text-sub)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
         {...tokenAttrs('textSub', 'text')}
       >
-        <span>{current.label}</span>
+        <span>{current.value === '' ? t('deck.orchestratorModelDefault') : current.label}</span>
         <span aria-hidden="true" className="text-[9px] opacity-70">▾</span>
       </button>
       {open && (
         <div
           role="listbox"
-          aria-label="Orchestrator model"
+          aria-label={t('deck.orchestratorModelTitle')}
           // 컨트롤 바(하단)에 살 땐 위로 열어 composer를 덮지 않게 한다.
           className={`absolute right-0 ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'} z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]`}
           style={{ borderColor: 'var(--border-soft)' }}
@@ -92,7 +94,7 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
                     : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
                 }`}
               >
-                <span>{o.label}</span>
+                <span>{o.value === '' ? t('deck.orchestratorModelDefault') : o.label}</span>
                 {sel && (
                   <span
                     aria-hidden="true"

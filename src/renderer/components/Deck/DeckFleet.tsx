@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { t } from '../../i18n';
 import { tokenAttrs } from '../../themes';
 import {
   selectFleetPanes,
@@ -48,7 +49,7 @@ function rowLabel(p: FleetPane): string {
   // Plain shells carry the full exe path as their title — humanize it
   // ("C:\...\powershell.exe" → "PowerShell") like the pane tabs do.
   if (p.title) return p.title.includes('\\') || p.title.includes('/') ? shellDisplayName(p.title) : p.title;
-  return 'shell';
+  return t('deck.fleetShell');
 }
 
 /** Cheap fallback when the pane's agent emits no PostToolUse hooks. */
@@ -192,16 +193,16 @@ export default function DeckFleet({
                 </span>
               )}
               <select
-                aria-label={`${rowLabel(p)} role`}
+                aria-label={t('deck.fleetRoleAria', { label: rowLabel(p) })}
                 value={role}
                 onChange={(e) => {
                   void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
                 }}
                 className="shrink-0 h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
                 {...tokenAttrs('textMuted', 'text')}
-                title="Preferred role — the orchestrator routes matching work here"
+                title={t('deck.fleetPreferredRole')}
               >
-                <option value="">role…</option>
+                <option value="">{t('deck.fleetRolePlaceholder')}</option>
                 {roleOptions.map((r) => (
                   <option key={r} value={r}>{r}</option>
                 ))}

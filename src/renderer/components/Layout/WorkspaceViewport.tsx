@@ -82,6 +82,7 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   // switching auto→columns can push the active tile out of view without
   // `isActive` ever changing, which would strand the user on a tile they can't
   // see. Under `auto` the container doesn't scroll, so this is inert there.
+  const t = useT();
   const tileRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (isActive) tileRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -121,8 +122,8 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
             fontSize: 14,
             lineHeight: 1,
           }}
-          title="Remove from multiview"
-          aria-label={`Remove ${workspace.name} from multiview`}
+          title={t('workspaceViewport.removeFromMultiview')}
+          aria-label={t('workspaceViewport.removeFromMultiviewFor', { name: workspace.name })}
         >
           ✕
         </button>

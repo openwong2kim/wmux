@@ -6,6 +6,7 @@ import type { Task } from '../../../shared/types';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
+import { t } from '../../i18n';
 import { useStore } from '../../stores';
 
 // Compact, scan-friendly cwd: keep the last two path segments. Mirrors the
@@ -35,7 +36,7 @@ interface FleetCardProps {
 // TASK-6 — a bare process image ("claude.exe", "node.exe") shortened to a human
 // agent label for the chip. Falls back to the raw name minus a trailing .exe.
 function agentLabel(image: string | undefined): string {
-  if (!image) return 'agent';
+  if (!image) return t('fleet.agent');
   const base = image.replace(/\.exe$/i, '').toLowerCase();
   if (base === 'claude') return 'Claude';
   if (base === 'node') return 'Node';

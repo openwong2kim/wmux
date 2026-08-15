@@ -17,6 +17,7 @@
 
 import { type RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import { groupCapabilities } from './capabilityGrouping';
+import { t } from '../../i18n';
 
 // Re-export the grouping helpers so existing importers of these symbols from
 // the dialog module keep working — the canonical home is now the pure
@@ -95,12 +96,12 @@ export function PermissionApprovalDialogView(
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            Plugin requesting permissions
+            {t('permission.pluginTitle')}
           </p>
         </div>
 
         <div className="text-xs font-mono" style={{ color: 'var(--text-sub)' }}>
-          <span style={{ color: 'var(--text-subtle)' }}>plugin:</span>{' '}
+          <span style={{ color: 'var(--text-subtle)' }}>{t('permission.pluginLabel')}</span>{' '}
           <span style={{ color: 'var(--text-main)' }}>{props.clientName}</span>
         </div>
 
@@ -164,7 +165,7 @@ export function PermissionApprovalDialogView(
               color: 'var(--text-subtle)',
             }}
           >
-            Deny
+            {t('approval.deny')}
           </button>
           <button
             onClick={props.onApprove}
@@ -176,7 +177,7 @@ export function PermissionApprovalDialogView(
               color: 'var(--bg-base)',
             }}
           >
-            Approve
+            {t('approval.approve')}
           </button>
         </div>
       </div>

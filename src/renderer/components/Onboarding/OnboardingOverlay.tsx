@@ -135,7 +135,7 @@ export default function OnboardingOverlay({
                   textTransform: 'uppercase',
                 }}
               >
-                Step {stepLabel}
+                {t('onboarding.step', { n: stepLabel })}
               </span>
               {/* Dot indicators */}
               <div style={{ display: 'flex', gap: 4 }}>
@@ -202,7 +202,7 @@ export default function OnboardingOverlay({
                 }}
                 data-testid="onboarding-skip"
               >
-                Skip
+                {t('onboarding.skip')}
               </button>
 
               <div style={{ display: 'flex', gap: 8 }}>
@@ -223,7 +223,7 @@ export default function OnboardingOverlay({
                     }}
                     data-testid="onboarding-prev"
                   >
-                    Back
+                    {t('onboarding.back')}
                   </button>
                 )}
                 <button
@@ -242,7 +242,7 @@ export default function OnboardingOverlay({
                   }}
                   data-testid="onboarding-next"
                 >
-                  {isLast ? 'Done' : 'Next'}
+                  {isLast ? t('onboarding.done') : t('onboarding.next')}
                 </button>
               </div>
             </div>

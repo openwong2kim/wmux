@@ -68,6 +68,8 @@ const mkViewProps = (
   emptyLabel: 'No notifications',
   toggleHintLabel: 'Ctrl+I to toggle',
   markAllReadLabel: 'Mark all read',
+  markWorkspaceReadLabel: 'Mark workspace read',
+  closeLabel: 'Close notifications',
   clearLabel: 'Clear',
   onNotifClick: noop,
   onNotifKeyDown: noop,
