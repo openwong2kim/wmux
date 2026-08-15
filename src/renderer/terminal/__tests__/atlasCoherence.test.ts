@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { createAtlasModel } from '../atlasCoherenceModel';
 
@@ -42,5 +43,18 @@ describe('atlas coherence model', () => {
     atlas.clearTexture();
     expect(atlas.generation).not.toBe(a);
     expect(atlas.generation).not.toBe(b);
+  });
+
+  it('installed addon-webgl 0.19.0 still has the I1/I3 patch', () => {
+    const pkg = JSON.parse(
+      readFileSync('node_modules/@xterm/addon-webgl/package.json', 'utf8'),
+    ) as { version: string };
+    expect(pkg.version).toBe('0.19.0');
+    const src = readFileSync(
+      'node_modules/@xterm/addon-webgl/src/TextureAtlas.ts',
+      'utf8',
+    );
+    expect(src).toContain('I1 — clearTexture is total');
+    expect(src).toContain('clearModelGeneration');
   });
 });
