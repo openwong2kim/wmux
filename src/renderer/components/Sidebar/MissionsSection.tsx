@@ -21,6 +21,7 @@
 import { memo, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import type { WorkTask } from '../../../shared/workTask';
 import { IconChevron } from '../icons';
 import { FOCUS_RING } from '../focusRing';
@@ -75,6 +76,7 @@ function useLiveMissions(): WorkTask[] {
 }
 
 function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
+  const t = useT();
   // 자식 워크스페이스 존재 여부(존재할 때만 행 클릭으로 점프 가능).
   const childExists = useStore((s) =>
     task.paneGroupId ? s.workspaces.some((w) => w.id === task.paneGroupId) : false,
@@ -109,7 +111,7 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
       <span
         className="w-1.5 h-1.5 rounded-full flex-shrink-0"
         style={{ backgroundColor: statusColor }}
-        title={isOpen ? 'open' : 'closed'}
+        title={isOpen ? t('missions.open') : t('missions.closed')}
       />
       <span
         className={`flex-1 min-w-0 truncate text-caption font-mono ${
@@ -127,8 +129,8 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
           e.stopPropagation();
           openMissionChannel();
         }}
-        title={`Open mission channel`}
-        aria-label={`Open mission channel for ${task.title}`}
+        title={t('missions.openChannel')}
+        aria-label={t('missions.openChannelFor', { title: task.title })}
         data-mission-channel-link
       >
         #
@@ -138,6 +140,7 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
 }
 
 function MissionsSection(): React.ReactElement | null {
+  const t = useT();
   const missions = useLiveMissions();
   // Collapse for the whole section (expanded by default — open missions are the work
   // that is running right now).
@@ -167,7 +170,7 @@ function MissionsSection(): React.ReactElement | null {
         >
           <IconChevron size={9} />
         </span>
-        <span>Missions ({missions.length})</span>
+        <span>{t('missions.title', { count: missions.length })}</span>
       </button>
       {expanded && (
         <>
@@ -191,7 +194,7 @@ function MissionsSection(): React.ReactElement | null {
                 >
                   <IconChevron size={9} />
                 </span>
-                <span>Done ({done.length})</span>
+                <span>{t('missions.done', { count: done.length })}</span>
               </button>
               {doneExpanded && (
                 <div className="space-y-0.5 opacity-60">
