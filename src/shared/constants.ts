@@ -326,6 +326,10 @@ export const IPC = {
   // clears the on-disk marker, so a notice nobody received survives to the
   // next boot instead of being consumed by the attempt.
   UPDATE_TAKE_REFUSED_INSTALL: 'update:take-refused-install',
+  // #897 — read (do NOT clear) the update that is downloaded and waiting for
+  // the user. Pulled by an always-mounted surface for the same reason the
+  // refused-install notice is: the push fires once, into the Settings panel.
+  UPDATE_GET_PENDING_INSTALL: 'update:get-pending-install',
   // Settings sync (renderer → main)
   TOAST_ENABLED: 'settings:toast-enabled',
   // #516 — renderer mirrors the muted notification categories so the

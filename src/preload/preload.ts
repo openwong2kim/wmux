@@ -1101,6 +1101,12 @@ const electronAPI = {
     // version landed in a window whose only listener was the Settings panel.
     takeRefusedInstall: () =>
       ipcRenderer.invoke(IPC.UPDATE_TAKE_REFUSED_INSTALL) as Promise<string | null>,
+    // #897 — what is downloaded and waiting. A READ, not a take: still true
+    // after you look, and stays true until the install actually happens.
+    getPendingInstall: () =>
+      ipcRenderer.invoke(IPC.UPDATE_GET_PENDING_INSTALL) as Promise<
+        { version: string; currentVersion: string } | null
+      >,
     onUpdateAvailable: (callback: (data: { status: string; releaseName?: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { status: string; releaseName?: string }) =>
         callback(data);

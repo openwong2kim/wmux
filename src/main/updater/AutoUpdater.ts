@@ -181,6 +181,7 @@ export class AutoUpdater {
     // silently went missing in live dogfood. The constructor runs during
     // module evaluation, before the window exists at all.
     ipcMain.handle(IPC.UPDATE_TAKE_REFUSED_INSTALL, () => this.takeRefusedInstall());
+    ipcMain.handle(IPC.UPDATE_GET_PENDING_INSTALL, () => this.getPendingInstall());
   }
 
   start(): void {
@@ -231,6 +232,33 @@ export class AutoUpdater {
    * it does not come back: a sticky warning about a since-succeeded update
    * would be worse than none.
    */
+  /**
+   * The update that is downloaded, verified, and waiting for the user to say go.
+   *
+   * PULLED, not pushed, and for the same reason `takeRefusedInstall` is (#866):
+   * `UPDATE_AVAILABLE{downloaded}` fires once, at the moment the background
+   * download finishes, and the only listener is the Settings panel — which is
+   * mounted only while the user has Settings OPEN, i.e. almost never. So the
+   * app would sit on a verified installer and never say so. Two reporters and
+   * the maintainer hit exactly that on #897: "it downloads but nothing happens
+   * unless I press Check for updates".
+   *
+   * Note what is NOT changed here: a background poll still does not install by
+   * itself. Installing quits the app and every pane goes with it (see
+   * performInstall), so it stays a decision the user makes. The bug was never
+   * that we wait for them — it was that we never told them we were waiting.
+   *
+   * Unlike takeRefusedInstall this is a READ, not a take: the state is still
+   * true after you look at it, and stays true until the install happens.
+   */
+  private getPendingInstall(): { version: string; currentVersion: string } | null {
+    if (!this.downloadedPath || !this.pendingUpdate) return null;
+    return {
+      version: this.pendingUpdate.name,
+      currentVersion: app.getVersion(),
+    };
+  }
+
   private takeRefusedInstall(): string | null {
     const markerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
     const reason = readAbortMarker(markerPath);

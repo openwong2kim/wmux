@@ -331,6 +331,58 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
   }, [t]);
 }
 
+/**
+ * #897 — say that a downloaded update is waiting, somewhere the user will see.
+ *
+ * The install itself is deliberately NOT automatic: it quits the app and every
+ * pane goes with it, so it stays the user's call. What was missing is that we
+ * never told them there was a call to make. `UPDATE_AVAILABLE{downloaded}`
+ * fires once, when the background download finishes, and the only thing
+ * listening is the Settings panel — mounted only while Settings is open. So the
+ * app sat on a verified installer in silence. Two reporters and the maintainer
+ * described the same thing on #897: it downloads, nothing happens, and pressing
+ * "Check for updates" by hand is the only way through (that path sets a
+ * one-shot install intent; the background poll never does).
+ *
+ * Same shape as the refused-install notice above — pull from an always-mounted
+ * surface — with one difference that matters: this is a READ, not a take, and
+ * the toast is `persist`. The refusal is a past event, so a toast that fades is
+ * honest. "An update is ready" is still true five minutes later, and a notice
+ * that fades leaves the user exactly where they started.
+ */
+function usePendingInstallNotice(t: (key: string) => string): void {
+  useEffect(() => {
+    const read = window.electronAPI?.updater?.getPendingInstall;
+    const install = window.electronAPI?.updater?.installUpdate;
+    if (!read || !install) return; // tests / non-electron / stale preload
+    let cancelled = false;
+    void read()
+      .then((pending) => {
+        if (cancelled || !pending) return;
+        useStore.getState().pushToast({
+          level: 'info',
+          persist: true,
+          message: t('update.readyToInstall')
+            .replace('{version}', pending.version)
+            .replace('{current}', pending.currentVersion),
+          action: {
+            label: t('update.installNow'),
+            // Every pane closes with the app — the toast is the last warning,
+            // so the label says "install", not something softer.
+            onClick: () => { void install(); },
+          },
+        });
+      })
+      .catch((err) => {
+        // Same posture as the refusal notice: never break mount, never hide it.
+        // A silent catch here reads as "no update pending", which is the exact
+        // failure being fixed.
+        console.warn('[update] could not read a pending install:', err);
+      });
+    return () => { cancelled = true; };
+  }, [t]);
+}
+
 function useUiScaleSync(uiScale: number): void {
   useEffect(() => {
     const send = window.electronAPI?.window?.setUiScale;
@@ -438,6 +490,7 @@ export default function AppLayout() {
   const t = useT();
 
   useRefusedInstallNotice(t);
+  usePendingInstallNotice(t);
   useKeyboard();
   // NOTE: useActivePaneFocus() now runs inside <FocusManager> (a render-null
   // child), NOT here. Its focusKey subscription embeds activeWorkspaceId and
