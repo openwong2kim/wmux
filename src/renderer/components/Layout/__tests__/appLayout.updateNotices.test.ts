@@ -14,10 +14,16 @@
  * hand is the only way through (that path sets a one-shot install intent; the
  * background poll deliberately never does).
  *
- * This is the SECOND time this subsystem has made exactly this mistake — #866's
- * refused-install notice was a main-side push into the same Settings-only
- * listener. The fix pattern is the same, and these assertions are what stop a
- * third round.
+ * This subsystem has now made that mistake three times: #866's refused-install
+ * notice pushed into the same Settings-only listener, this notice did not exist
+ * at all, and the Settings widget itself only subscribed and never asked what
+ * was already true. Same fix each time — read from a surface that is actually
+ * mounted — so these assertions exist to stop a fourth round.
+ *
+ * Both halves are needed and neither is sufficient: the mount read covers "it
+ * was ready before you looked", the live subscription covers "it became ready
+ * while you were working". A poll finishing an hour into a session is the
+ * common case, and a mount-only fix would stay silent for it until restart.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -66,6 +72,27 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
     const body = hookBody('usePendingInstallNotice');
     expect(body).toMatch(/\{version\}/);
     expect(body).toMatch(/\{current\}/);
+  });
+
+  it('also fires when the update becomes ready DURING the session', () => {
+    // The mount read alone only covers "it was already ready before you
+    // looked". A background poll finishing an hour in would otherwise stay
+    // silent until the next restart — which is most of the reported experience.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/onUpdateAvailable/);
+    expect(body).toMatch(/data\.status !== 'downloaded'/);
+  });
+
+  it('announces once, whichever path gets there first', () => {
+    // The pull and the live event describe the SAME pending install. Without a
+    // guard, a download finishing shortly after boot posts the toast twice.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/announced/);
+    expect(body).toMatch(/if \(cancelled \|\| announced\) return;/);
+  });
+
+  it('unsubscribes the live listener on unmount', () => {
+    expect(hookBody('usePendingInstallNotice')).toMatch(/unsubscribe\?\.\(\)/);
   });
 
   it('never breaks mount, and never swallows the failure silently', () => {

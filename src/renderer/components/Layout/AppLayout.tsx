@@ -354,32 +354,58 @@ function usePendingInstallNotice(t: (key: string) => string): void {
   useEffect(() => {
     const read = window.electronAPI?.updater?.getPendingInstall;
     const install = window.electronAPI?.updater?.installUpdate;
+    const onAvailable = window.electronAPI?.updater?.onUpdateAvailable;
     if (!read || !install) return; // tests / non-electron / stale preload
+
     let cancelled = false;
+    // One notice per run. The pull and the live event describe the SAME
+    // pending install, and whichever lands first is the one that gets to say
+    // so — otherwise a download finishing shortly after boot posts it twice.
+    let announced = false;
+
+    const announce = (version: string, currentVersion: string): void => {
+      if (cancelled || announced) return;
+      announced = true;
+      useStore.getState().pushToast({
+        level: 'info',
+        persist: true,
+        message: t('update.readyToInstall')
+          .replace('{version}', version)
+          .replace('{current}', currentVersion),
+        action: {
+          label: t('update.installNow'),
+          // Every pane closes with the app — the toast is the last warning,
+          // so the label says "install", not something softer.
+          onClick: () => { void install(); },
+        },
+      });
+    };
+
+    // 1. What was ALREADY true when this mounted: a poll that finished before
+    //    the window existed (or before this surface did).
     void read()
-      .then((pending) => {
-        if (cancelled || !pending) return;
-        useStore.getState().pushToast({
-          level: 'info',
-          persist: true,
-          message: t('update.readyToInstall')
-            .replace('{version}', pending.version)
-            .replace('{current}', pending.currentVersion),
-          action: {
-            label: t('update.installNow'),
-            // Every pane closes with the app — the toast is the last warning,
-            // so the label says "install", not something softer.
-            onClick: () => { void install(); },
-          },
-        });
-      })
+      .then((pending) => { if (pending) announce(pending.version, pending.currentVersion); })
       .catch((err) => {
         // Same posture as the refusal notice: never break mount, never hide it.
         // A silent catch here reads as "no update pending", which is the exact
         // failure being fixed.
         console.warn('[update] could not read a pending install:', err);
       });
-    return () => { cancelled = true; };
+
+    // 2. What becomes true WHILE the app is in use. The mount read alone covers
+    //    only "it was ready before you looked" — a background poll finishing an
+    //    hour into the session would otherwise stay silent until the next
+    //    restart, which is most of the reported experience on #897. The version
+    //    for the running build comes from the same read so the two paths cannot
+    //    disagree about what "current" means.
+    const unsubscribe = onAvailable?.((data) => {
+      if (data.status !== 'downloaded') return;
+      void read()
+        .then((pending) => { if (pending) announce(pending.version, pending.currentVersion); })
+        .catch(() => { /* the event alone is not enough to name both versions */ });
+    });
+
+    return () => { cancelled = true; unsubscribe?.(); };
   }, [t]);
 }
 
