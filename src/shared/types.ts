@@ -723,6 +723,8 @@ export interface SessionData {
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;
+  /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
+  anthropicUsageEnabled?: boolean;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];
