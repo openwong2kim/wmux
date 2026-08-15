@@ -8,16 +8,39 @@ import { RpcRouter } from './RpcRouter';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
+/**
+ * Simultaneous client connections the server will accept, on the pipe and on
+ * the TCP fallback alike.
+ *
+ * Exported because it is a budget other code has to spend out of, not just an
+ * internal cap. A client that HOLDS a connection open (rather than the usual
+ * connect → send → close) is consuming this number for the whole time it
+ * waits, and once it is exhausted Node stops accepting — which every other MCP
+ * tool sees as ECONNREFUSED, and the client reports as "wmux is not running".
+ * So a long-holding feature that sizes its own limit independently can make
+ * the whole app look dead. See MAX_PARKED_POLLS in events.rpc.ts.
+ */
+export const MAX_PIPE_CONNECTIONS = 50;
+
 export class PipeServer {
   private server: net.Server | null = null;
   private tcpServer: net.Server | null = null;
   private readonly router: RpcRouter;
   private readonly connectedSockets = new Set<net.Socket>();
+  /**
+   * Per-connection cancellation, handed to handlers that WAIT.
+   *
+   * Keyed by socket rather than by request because "the client is gone" is a
+   * property of the connection, not of one request on it — and because a socket
+   * can carry several requests, so wiring close/error per request would stack
+   * listeners on the same socket and trip Node's max-listeners warning.
+   */
+  private readonly socketAborts = new WeakMap<net.Socket, AbortController>();
   private authToken: string;
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private retryCount = 0;
   private static readonly MAX_RETRIES = 5;
-  private static readonly MAX_CONNECTIONS = 50;
+  private static readonly MAX_CONNECTIONS = MAX_PIPE_CONNECTIONS;
   private static readonly GLOBAL_RATE_LIMIT = 200;
   // Cap on brand-new connections per second. Claude Code hooks connect once per
   // hook invocation (connect → send → close), so at fleet scale (30 sessions ×
@@ -248,6 +271,16 @@ export class PipeServer {
   private handleConnection(socket: net.Socket): void {
     console.log('[PipeServer] Client connected.');
 
+    // One controller for the life of this connection. A handler that parks
+    // (blocking events.poll) holds a slot out of MAX_CONNECTIONS for its whole
+    // wait, so it needs to hear about a client that hung up rather than run to
+    // its own deadline against a socket nobody is reading.
+    const abort = new AbortController();
+    this.socketAborts.set(socket, abort);
+    const cancel = (): void => abort.abort();
+    socket.once('close', cancel);
+    socket.once('error', cancel);
+
     let buffer = '';
 
     socket.setEncoding('utf8');
@@ -360,8 +393,11 @@ export class PipeServer {
       return;
     }
 
+    // Cancellation is per CONNECTION (see socketAborts), not per request.
+    const signal = this.socketAborts.get(socket)?.signal;
+
     this.router
-      .dispatch(request, { externalWire: true })
+      .dispatch(request, { externalWire: true, ...(signal ? { signal } : {}) })
       .then((response) => {
         if (!socket.destroyed) {
           socket.write(JSON.stringify(response) + '\n');

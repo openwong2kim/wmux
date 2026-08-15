@@ -76,10 +76,19 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
  * is the renderer bridge; `firstParty` is the in-process plugin host;
  * `externalWire` is the authenticated PipeServer boundary.
  */
-type RpcDispatchOptions =
+type RpcDispatchOptions = (
   | { operator: true; firstParty?: never; externalWire?: never }
   | { firstParty: true; operator?: never; externalWire?: never }
-  | { externalWire: true; operator?: never; firstParty?: never };
+  | { externalWire: true; operator?: never; firstParty?: never }
+) & {
+  /**
+   * Cancellation for handlers that WAIT (see RpcContext.signal). Supplied by
+   * the transport that owns the connection — PipeServer aborts it when the
+   * client's socket closes. Orthogonal to the trust lane above, hence the
+   * intersection rather than a fourth variant.
+   */
+  signal?: AbortSignal;
+};
 
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
@@ -227,6 +236,9 @@ export class RpcRouter {
     // Lift the optional identity envelope into the per-request context so
     // handlers don't reach back into PipeServer internals.
     const ctx: RpcContext = {
+      // Threaded verbatim; absent for the in-process surfaces, which have no
+      // socket that can go away underneath a waiting handler.
+      ...(opts?.signal ? { signal: opts.signal } : {}),
       // This router serves only the machine-local named pipe + loopback TCP, so
       // every request it dispatches is local by construction. The LanLink LAN
       // listener is a SEPARATE router that sets origin:'remote' (future PR), and

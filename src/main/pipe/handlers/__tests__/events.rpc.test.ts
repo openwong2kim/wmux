@@ -783,6 +783,34 @@ describe('events.rpc — workspaceIds union scoping (FIX-MULTI-WS)', () => {
     expect(events).toHaveLength(1);
   });
 
+  it('WAKES a parked poll on a channel.message it is only a RECIPIENT of', async () => {
+    // The wake pre-filter narrows by workspace so a parked poll is not woken by
+    // every workspace's traffic. It must not narrow the PRIVATE types the same
+    // way: a channel.message carries the SENDER in `workspaceId`, and the
+    // membership lives in `recipientWorkspaceIds`. Testing the base id against
+    // the caller's scope would skip this wake — and the event is already in the
+    // ring by then, so nothing re-announces it and the poll burns its whole
+    // budget before returning a page it should have had at once.
+    const router = setupRouter();
+    const pending = router.dispatch(
+      {
+        id: 'recipient-wake',
+        method: 'events.poll',
+        params: { workspaceId: 'ws-B', blockMs: 5_000, types: ['channel.message'] },
+      },
+      { firstParty: true },
+    );
+    // ws-C posts; ws-B is only a member, never the base workspaceId.
+    setTimeout(() => emitChannelMessage('ws-C', ['ws-B', 'ws-C']), 20);
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.parked).toBe(true);
+    }
+  });
+
   it('drops a channel.message with NO overlap against the union (third-party leak guard)', async () => {
     emitChannelMessage('ws-C', ['ws-C', 'ws-D']);
     const router = setupRouter();
@@ -992,5 +1020,428 @@ describe('events.rpc — agent transport identity scoping (audit B3)', () => {
     if (res.ok) expect((res.result as { events: unknown[] }).events).toHaveLength(1);
     // And the resolver was never consulted on the first-party path.
     expect(vi.mocked(sendToRenderer)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Optional blocking poll (`blockMs`) + pane/kind narrowing.
+ *
+ * This is the primitive that replaces an orchestrator's `terminal_read` loop:
+ * "wait until this pane blocks, then read the question". The properties that
+ * matter are all about NOT losing an event:
+ *
+ *   - a caller that never passes `blockMs` must behave exactly as before;
+ *   - an event already in the ring must answer immediately (a park that waits
+ *     for the NEXT event after the one it was looking for is a lost wakeup);
+ *   - a wake caused by unrelated traffic must not end the wait early with an
+ *     empty page, or the caller is back to polling;
+ *   - an attempt that matches nothing must not advance the cursor.
+ */
+describe('events.rpc — events.poll blocking', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const lifecycle = (ptyId: string, kind: string) => ({
+    type: 'agent.lifecycle' as const,
+    workspaceId: 'ws-1',
+    ptyId,
+    kind,
+    agent: 'claude',
+    source: 'hook',
+  });
+
+  it('returns immediately when the ring already has a match (no park)', async () => {
+    eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input'));
+    const router = setupRouter();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'b1', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.parked).toBeUndefined(); // took the immediate path
+    }
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('parks, then wakes on a matching event emitted later', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'b2', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    // Emitted AFTER the poll is already parked.
+    setTimeout(() => eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input')), 20);
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: Array<{ ptyId: string }>; parked?: boolean };
+      expect(r.events).toHaveLength(1);
+      expect(r.events[0].ptyId).toBe('pty-1');
+      expect(r.parked).toBe(true);
+    }
+  });
+
+  it('keeps waiting when the wake was another pane\'s traffic', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'b3', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    // Unrelated pane wakes the bus hook first; the poll must NOT return empty.
+    setTimeout(() => eventBus.emit(lifecycle('pty-2', 'agent.stop')), 10);
+    setTimeout(() => eventBus.emit(lifecycle('pty-1', 'agent.stop')), 40);
+    const res = await pending;
+    if (res.ok) {
+      const r = res.result as { events: Array<{ ptyId: string }> };
+      expect(r.events).toHaveLength(1);
+      expect(r.events[0].ptyId).toBe('pty-1');
+    }
+  });
+
+  /**
+   * The cursor advances past events the caller's OWN filter skipped, and that
+   * is the documented contract, not an oversight — one cursor chain per filter
+   * combination.
+   *
+   * Rewinding is the obvious "fix" and does not work. Rewinding to the last
+   * delivered event still steps over non-matches interleaved before it (deliver
+   * seq 1 and 3, land on 3, seq 2 is gone regardless). Rewinding to the first
+   * dropped event is lossless but lets any other pane's traffic pin the cursor,
+   * so the caller re-receives its own matches forever. A scalar cursor cannot
+   * mean two filters at once. This test exists so the next person to notice the
+   * gap finds the reasoning instead of re-deriving the broken fix.
+   */
+  it('advances the cursor past filtered-out events (one cursor per filter)', async () => {
+    eventBus.emit(lifecycle('pty-2', 'agent.stop'));
+    const router = setupRouter();
+    const res = await router.dispatch(
+      { id: 'b4', method: 'events.poll', params: { blockMs: 60, ptyId: 'pty-1', cursor: 0 } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: unknown[]; nextCursor: number; parked?: boolean };
+      expect(r.events).toHaveLength(0);
+      expect(r.parked).toBe(true);
+      // Scanned, not delivered — the caller resumes after it.
+      expect(r.nextCursor).toBe(1);
+    }
+
+    // The other pane's event is still reachable from ITS OWN cursor chain,
+    // which is what the tool description tells callers to keep.
+    const viaOwnChain = await pollEvents(router, { cursor: 0, ptyId: 'pty-2' });
+    expect(viaOwnChain).toHaveLength(1);
+  });
+
+  it('narrows agent.lifecycle by kind, and leaves other types alone', async () => {
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    eventBus.emit(lifecycle('pty-1', 'agent.awaiting_input'));
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+
+    const router = setupRouter();
+    const events = await pollEvents(router, { kinds: ['agent.awaiting_input'] });
+    // the non-matching lifecycle is dropped; the unrelated type passes through
+    expect(events.map((e) => e.kind ?? e.type)).toEqual(['agent.awaiting_input', 'pane.created']);
+  });
+
+  it('drops events that carry no ptyId when a pane is named', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+
+    const router = setupRouter();
+    const events = await pollEvents(router, { ptyId: 'pty-1' });
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('agent.stop');
+  });
+
+  it('blockMs is clamped and a missing/zero value keeps the immediate path', async () => {
+    const router = setupRouter();
+    const started = Date.now();
+    // blockMs:0 and a negative value must both return at once on an empty ring.
+    for (const blockMs of [0, -5]) {
+      const res = await router.dispatch(
+        { id: `b7-${blockMs}`, method: 'events.poll', params: { blockMs } },
+        { firstParty: true },
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect((res.result as { parked?: boolean }).parked).toBeUndefined();
+    }
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+/**
+ * The shape an orchestrator actually calls — the flow this whole feature
+ * exists to replace. Worth its own tests because the parts pass individually
+ * and can still fail together: the escape-hatch types have no ptyId semantics
+ * in common with agent.lifecycle, and `kinds` must not drop them.
+ */
+describe('events.rpc — the orchestrator wait shape', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const ORCHESTRATOR_CALL = {
+    blockMs: 5_000,
+    ptyId: 'pty-worker',
+    types: ['agent.lifecycle', 'pane.closed', 'process.exited'],
+    kinds: ['agent.awaiting_input', 'agent.stop'],
+  };
+
+  it('wakes on the worker blocking for input, and ignores its subagent noise', async () => {
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'e1', method: 'events.poll', params: ORCHESTRATOR_CALL },
+      { firstParty: true },
+    );
+    // A nested subagent returning is NOT the pane blocking — it is the exact
+    // signal that revived idle panes in the field (#733 family), so a wait
+    // filtered to stop/awaiting_input must sit through it.
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-worker',
+      kind: 'agent.subagent_stop', agent: 'claude', source: 'hook',
+    }), 10);
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-worker',
+      kind: 'agent.awaiting_input', agent: 'claude', source: 'hook',
+    }), 40);
+
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { events: Array<{ kind: string }> };
+      expect(r.events.map((e) => e.kind)).toEqual(['agent.awaiting_input']);
+    }
+  });
+
+  it('ends the wait when the pane dies instead of burning the full budget', async () => {
+    const router = setupRouter();
+    const started = Date.now();
+    const pending = router.dispatch(
+      { id: 'e2', method: 'events.poll', params: ORCHESTRATOR_CALL },
+      { firstParty: true },
+    );
+    // The documented escape hatch: without process.exited in `types`, a wait on
+    // a pane that just died runs to the full blockMs and reports nothing —
+    // indistinguishable from an agent that is simply still working.
+    setTimeout(() => eventBus.emit({
+      type: 'process.exited', workspaceId: 'ws-1', ptyId: 'pty-worker', exitCode: 1,
+    }), 20);
+
+    const res = await pending;
+    if (res.ok) {
+      const r = res.result as { events: Array<{ type: string }> };
+      expect(r.events.map((e) => e.type)).toEqual(['process.exited']);
+    }
+    // returned on the event, not on the 5s budget
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+/**
+ * Regressions from the 3-way review of this feature. Each was invisible with a
+ * single waiter and only appears once a fleet parks in parallel — which is the
+ * whole point of the feature, so none would have surfaced in a casual dogfood.
+ */
+describe('events.rpc — blocking poll, review regressions', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  const lifecycle = (ptyId: string, kind: string) => ({
+    type: 'agent.lifecycle' as const,
+    workspaceId: 'ws-1',
+    ptyId,
+    kind,
+    agent: 'claude',
+    source: 'hook',
+  });
+
+  it('one waking poll does not steal the wake from another', async () => {
+    // EventBus fans out with for..of over its subscriber array, so a subscriber
+    // that removes itself mid-fanout shifts the array and the iterator skips the
+    // NEXT one. With a synchronous unsubscribe the second parked poll never saw
+    // the event that woke the first, and sat until its own deadline with its
+    // answer already sitting in the ring.
+    const router = setupRouter();
+    const a = router.dispatch(
+      { id: 'r1a', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-a' } },
+      { firstParty: true },
+    );
+    const b = router.dispatch(
+      { id: 'r1b', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-b' } },
+      { firstParty: true },
+    );
+    // ONE emit stack, both panes: A is registered first and wakes first.
+    setTimeout(() => {
+      eventBus.emit(lifecycle('pty-a', 'agent.stop'));
+      eventBus.emit(lifecycle('pty-b', 'agent.stop'));
+    }, 15);
+
+    const started = Date.now();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.ok && rb.ok).toBe(true);
+    if (ra.ok && rb.ok) {
+      expect((ra.result as { events: unknown[] }).events).toHaveLength(1);
+      expect((rb.result as { events: unknown[] }).events).toHaveLength(1);
+    }
+    // Both returned on the event, not on the 4s budget.
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('returns at once on resync instead of parking on a dead cursor', async () => {
+    // A cursor past the ring window means events this caller never saw are
+    // already gone. Waiting cannot bring them back, and every extra minute
+    // slides more history out — the caller has to reconcile now.
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    const router = setupRouter();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'r2', method: 'events.poll', params: { blockMs: 5_000, cursor: 999_999, ptyId: 'pty-1' } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect((res.result as { resync?: boolean }).resync).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+
+  it('treats an empty kinds array as no filter, like an empty types array', async () => {
+    // An empty Set is truthy, so `kinds: []` used to mean "drop every
+    // agent.lifecycle" while `types: []` means "no filter" on the same call.
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    const router = setupRouter();
+    const events = await pollEvents(router, { kinds: [] });
+    expect(events).toHaveLength(1);
+  });
+
+  it('caps parked polls well under the pipe server connection budget', async () => {
+    // A parked poll holds a connection for its whole wait. Sized independently
+    // of MAX_CONNECTIONS it can exhaust the server, and every OTHER MCP tool
+    // then fails with what the client reports as "wmux is not running".
+    const { MAX_PIPE_CONNECTIONS } = await import('../../PipeServer');
+    // The cap must leave the majority of the budget for ordinary
+    // connect -> send -> close traffic.
+    expect(Math.floor(MAX_PIPE_CONNECTIONS / 4)).toBeLessThan(MAX_PIPE_CONNECTIONS / 2);
+  });
+
+  it('parks up to the cap and refuses to park past it', async () => {
+    // The arithmetic above says the cap is SIZED sanely. It does not say the
+    // cap is ENFORCED — delete the counter and it still passes. This does:
+    // fill every slot, then show the next caller is turned away immediately
+    // instead of queueing behind them, which is the whole back-pressure story.
+    const { MAX_PIPE_CONNECTIONS } = await import('../../PipeServer');
+    const cap = Math.floor(MAX_PIPE_CONNECTIONS / 4);
+    const router = setupRouter();
+
+    const parked = Array.from({ length: cap }, (_, i) => router.dispatch(
+      { id: `cap-${i}`, method: 'events.poll', params: { blockMs: 5_000, ptyId: `pty-park-${i}` } },
+      { firstParty: true },
+    ));
+    // Let every one of them reach the park (they only occupy a slot once the
+    // handler has run its immediate collect and decided to wait).
+    await new Promise((r) => setTimeout(r, 30));
+
+    const overflow = await router.dispatch(
+      { id: 'cap-over', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-overflow' } },
+      { firstParty: true },
+    );
+    expect(overflow.ok).toBe(true);
+    if (overflow.ok) {
+      const r = overflow.result as { parked?: boolean; parkedCapReached?: boolean };
+      expect(r.parkedCapReached).toBe(true);
+      expect(r.parked).toBe(false);
+    }
+
+    // The parked ones are still parked — the overflow answer did not disturb
+    // them — and each still wakes on its own pane.
+    for (let i = 0; i < cap; i++) {
+      eventBus.emit(lifecycle(`pty-park-${i}`, 'agent.stop'));
+    }
+    const settled = await Promise.all(parked);
+    for (const res of settled) {
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const r = res.result as { parked?: boolean; parkedCapReached?: boolean };
+        expect(r.parked).toBe(true);
+        expect(r.parkedCapReached).toBeUndefined();
+      }
+    }
+
+    // And the slots are given back, so the next caller can park again.
+    const after = router.dispatch(
+      { id: 'cap-after', method: 'events.poll', params: { blockMs: 5_000, ptyId: 'pty-after' } },
+      { firstParty: true },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    eventBus.emit(lifecycle('pty-after', 'agent.stop'));
+    const afterRes = await after;
+    if (afterRes.ok) {
+      const r = afterRes.result as { parked?: boolean; parkedCapReached?: boolean };
+      expect(r.parkedCapReached).toBeUndefined();
+      expect(r.parked).toBe(true);
+    }
+  });
+});
+
+/**
+ * Cancellation. A parked poll holds one of the pipe server's finite connection
+ * slots for its whole wait, so a client that times out, is cancelled, or
+ * crashes must not keep that slot until the handler's own deadline — enough of
+ * those and the server stops accepting, which every other caller reads as
+ * "wmux is not running".
+ */
+describe('events.rpc — blocking poll cancellation', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  it('returns promptly when the caller goes away mid-park', async () => {
+    const router = setupRouter();
+    const abort = new AbortController();
+    const started = Date.now();
+    const pending = router.dispatch(
+      { id: 'c1', method: 'events.poll', params: { blockMs: 30_000, ptyId: 'pty-gone' } },
+      { firstParty: true, signal: abort.signal },
+    );
+    setTimeout(() => abort.abort(), 20);
+
+    const res = await pending;
+    expect(res.ok).toBe(true);
+    // Well inside the 30s budget it would otherwise have burned.
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it('does not park at all when the caller is already gone', async () => {
+    const router = setupRouter();
+    const abort = new AbortController();
+    abort.abort();
+    const started = Date.now();
+    const res = await router.dispatch(
+      { id: 'c2', method: 'events.poll', params: { blockMs: 30_000, ptyId: 'pty-gone' } },
+      { firstParty: true, signal: abort.signal },
+    );
+    expect(res.ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('still parks normally when no signal is supplied', async () => {
+    // In-process surfaces have no socket to lose and pass nothing; absent must
+    // read as "not cancellable", not as "already cancelled".
+    const router = setupRouter();
+    const pending = router.dispatch(
+      { id: 'c3', method: 'events.poll', params: { blockMs: 4_000, ptyId: 'pty-x' } },
+      { firstParty: true },
+    );
+    setTimeout(() => eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-1', ptyId: 'pty-x',
+      kind: 'agent.stop', agent: 'claude', source: 'hook',
+    }), 20);
+    const res = await pending;
+    if (res.ok) expect((res.result as { events: unknown[] }).events).toHaveLength(1);
   });
 });

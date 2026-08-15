@@ -129,6 +129,22 @@ export interface RpcContext {
    */
   origin: 'local' | 'remote';
   /**
+   * Aborts when the client that made this request is no longer there to read
+   * the answer (socket closed or errored).
+   *
+   * Only matters to a handler that WAITS — a normal handler finishes long
+   * before anyone hangs up, and writing to a dead socket is already guarded.
+   * A waiting handler is different: it holds a connection out of the server's
+   * finite budget for its whole wait, so without this a client that times out,
+   * is cancelled, or crashes keeps its slot until the handler's own deadline.
+   * Enough of those and the server stops accepting, which every other caller
+   * sees as "wmux is not running".
+   *
+   * Optional because the in-process surfaces (renderer bridge, plugin host)
+   * have no socket to lose. Absent means "nothing can cancel this".
+   */
+  signal?: AbortSignal;
+  /**
    * True only for the trusted in-process renderer bridge: the human operator
    * surface that may intentionally act across local workspaces. Set by
    * `RpcRouter.dispatch(request, { operator: true })`, never from request JSON.

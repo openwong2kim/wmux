@@ -6,12 +6,14 @@ import {
   RING_CAPACITY,
   POLL_DEFAULT_MAX,
   type WmuxEventType,
+  type WmuxEvent,
   type A2aTaskEvent,
   type ChannelMessageEvent,
   type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { MAX_PIPE_CONNECTIONS } from '../PipeServer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -32,6 +34,111 @@ const PRIVATE_EVENT_TYPES: ReadonlySet<WmuxEventType> = new Set<WmuxEventType>([
   'channel.catalog',
   'channel.nudgeExhausted',
 ]);
+
+/**
+ * Ceiling on `blockMs`. Deliberately UNDER the MCP host's stdio idle window
+ * (30 min by default), so a single held poll can never be the thing that trips
+ * it even if the progress-notification keepalive is unavailable. A caller that
+ * wants to wait longer re-polls — the cursor makes that lossless.
+ */
+const MAX_BLOCK_MS = 600_000;
+
+/**
+ * How many polls may be parked at once, process-wide.
+ *
+ * A parked poll holds a pipe connection open (the MCP client opens one socket
+ * per call), so this IS the back-pressure knob: without it a fleet plus retries
+ * plus a buggy caller can pin main's pipe server. Over the cap we do not queue
+ * or reject — we answer immediately with whatever the ring has, which is
+ * exactly the pre-block behavior, and flag it so the caller can back off.
+ *
+ * DERIVED from the pipe server's connection budget rather than picked, because
+ * the two are spending the same resource. A flat 32 against MAX_PIPE_CONNECTIONS=50
+ * leaves only 18 for everything else: parking a fleet plus ordinary traffic
+ * exhausts the server, Node stops accepting, and EVERY other MCP tool starts
+ * failing with what the client reports as "wmux is not running" — a self-inflicted
+ * outage that looks like a crash and does not point back here. A quarter keeps
+ * the majority of the budget for the connect → send → close traffic that is the
+ * normal shape.
+ */
+const MAX_PARKED_POLLS = Math.floor(MAX_PIPE_CONNECTIONS / 4);
+
+let parkedPolls = 0;
+
+/**
+ * Park until an event this caller could care about is emitted, or the deadline
+ * passes. Resolves `true` if an event woke us, `false` on timeout.
+ *
+ * `interesting` is a CHEAP per-event pre-filter run inside the emitter's stack.
+ * Without it every emit wakes every parked poll and each one re-scans the whole
+ * 1024-entry ring through the full scope chain — O(parked × ring) of synchronous
+ * work in the main process per event, on a bus that ticks once per shell command
+ * under OSC 133. The predicate is deliberately allowed to be over-permissive:
+ * it exists to skip obvious non-matches, and `collect()` remains the authority.
+ *
+ * The unsubscribe is DEFERRED to a microtask, and that is load-bearing. EventBus
+ * fans out with `for (const sub of this.subscribers)`, so removing an entry from
+ * that array mid-iteration shifts the remaining ones and the iterator SKIPS the
+ * next subscriber. Unsubscribing synchronously here meant the first parked poll
+ * to wake silently stole the wake from the next one — measured: subscribers
+ * [A,B,C] with A self-removing fires A and C, never B. The skipped poll then sat
+ * until some later event or its full deadline, even though its event was already
+ * in the ring. Exactly the fleet case this feature is for, and invisible with a
+ * single waiter. `done` makes the extra callbacks that arrive before the
+ * microtask runs into no-ops.
+ */
+function waitForEmit(
+  timeoutMs: number,
+  interesting: (event: WmuxEvent) => boolean,
+  signal?: AbortSignal,
+): Promise<'event' | 'timeout' | 'aborted'> {
+  // Already gone: don't arm a timer or take an EventBus subscription just to
+  // tear both down a tick later. A client that hangs up mid-loop would pay that
+  // churn on every remaining iteration.
+  if (signal?.aborted) return Promise.resolve('aborted');
+  return new Promise((resolve) => {
+    let done = false;
+    // Declared before anything can call finish(), and armed first. EventBus's
+    // subscribe() only pushes today, so ordering these the other way happens to
+    // work — but if it ever replayed, or an emit re-entered during subscribe,
+    // finish() would touch `timer` in its temporal dead zone and throw. That
+    // throw lands inside EventBus's per-subscriber try/catch, so it would be
+    // SWALLOWED: the promise never settles, and the parkedPolls slot it holds
+    // is leaked for the life of the process. Enough of those and parking is
+    // silently off for everyone, with nothing in the logs pointing here. Cheap
+    // to make order-independent instead.
+    const teardown: {
+      timer?: ReturnType<typeof setTimeout>;
+      unsubscribe?: () => void;
+    } = {};
+    const finish = (outcome: 'event' | 'timeout' | 'aborted'): void => {
+      if (done) return;
+      done = true;
+      if (teardown.timer !== undefined) clearTimeout(teardown.timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (teardown.unsubscribe) queueMicrotask(teardown.unsubscribe);
+      resolve(outcome);
+    };
+    const onAbort = (): void => finish('aborted');
+    teardown.timer = setTimeout(() => finish('timeout'), timeoutMs);
+    teardown.unsubscribe = eventBus.subscribe((event) => {
+      if (done) return;
+      // A throwing predicate would be swallowed by EventBus and cost this
+      // caller its whole budget waiting for a wake it already earned. Treat a
+      // failure as "might match" and let collect() — the authority — decide.
+      let match = true;
+      try {
+        match = interesting(event);
+      } catch {
+        match = true;
+      }
+      if (match) finish('event');
+    });
+    // An already-aborted signal never fires the event, so check before listening.
+    if (signal?.aborted) finish('aborted');
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /**
  * Resolve the caller's OWN workspace from a verified `senderPtyId` — the same
@@ -164,6 +271,33 @@ export function registerEventsRpc(
       : undefined;
     const types = parseTypes(params['types']);
 
+    // ── Optional block + narrowing (additive; every default is the old behavior)
+    //
+    // `blockMs` absent or <= 0 keeps this an immediate-return poll, byte for
+    // byte. Only a caller that asks to wait ever parks.
+    const blockMs = typeof params['blockMs'] === 'number' && Number.isFinite(params['blockMs'])
+      ? Math.min(MAX_BLOCK_MS, Math.max(0, Math.floor(params['blockMs'])))
+      : 0;
+    // Narrow to one pane. Events that carry no ptyId are DROPPED when this is
+    // set — "events about this pty" cannot honestly include events that are not
+    // about any pty. Without it a caller waiting on one pane wakes on every
+    // pane's traffic and has to re-filter, which is the polling loop we are
+    // removing.
+    const ptyId = typeof params['ptyId'] === 'string' && params['ptyId'].length > 0
+      ? params['ptyId']
+      : undefined;
+    // Narrow `agent.lifecycle` by its `kind` (agent.stop / agent.subagent_stop /
+    // agent.awaiting_input). Applies ONLY to that type — every other type passes
+    // through untouched, so `kinds` never silently empties a mixed poll.
+    // An EMPTY array normalizes to "no filter", matching how `types` behaves on
+    // this same call (EventBus treats an empty type list as unfiltered). Left as
+    // an empty Set it would mean the opposite — drop every agent.lifecycle — so
+    // the same shape would widen one param and silently blind the other.
+    const kindList = Array.isArray(params['kinds'])
+      ? (params['kinds'] as unknown[]).filter((k): k is string => typeof k === 'string')
+      : [];
+    const kinds = kindList.length > 0 ? new Set(kindList) : undefined;
+
     // Workspace scoping is applied as a POST-filter here (placement B), NOT via
     // the EventBus wsFilter, for ONE load-bearing reason: an a2a.task's base
     // `workspaceId === from`, but the *receiver* (`caller === to`) must also
@@ -182,8 +316,12 @@ export function registerEventsRpc(
     // THEN truncate to the caller's page size and rewind nextCursor to the last
     // delivered event — so the next poll resumes exactly after it and no
     // matching event is ever skipped.
-    const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
-
+    // The ring read itself moved into `collect()` below so a parked poll can
+    // re-run it on wake WITHOUT redoing the scope resolution (which can cost a
+    // renderer round-trip). Scope is a property of the caller, not of the
+    // attempt, so resolving it once per call is both cheaper and more correct:
+    // a mid-park identity change cannot flip a private scope open.
+    //
     // ── Caller scope resolution (audit B3 — events.poll identity) ─────────────
     //
     // Two scopes, because the ring carries two classes of event with different
@@ -238,6 +376,41 @@ export function registerEventsRpc(
     }
     const privateScoped = privateSet.size > 0;
 
+    // notifications.read opt-in gate (see allowsNotifications). Resolved ONCE,
+    // before any collect: it depends only on the caller's identity, and a parked
+    // poll must not re-hit the trust DB on every wake.
+    let allowNotifications = true;
+    const refreshNotificationsGate = async (): Promise<void> => {
+      if (!ctx?.clientName || !trustLookup) return;
+      let trust: PluginIdentityRecord | undefined;
+      try {
+        trust = await trustLookup(ctx.clientName);
+      } catch {
+        trust = undefined; // unreadable trust DB → grandfather, enforcer handles the rest
+      }
+      // NARROW-ONLY. A park can last minutes, so an entitlement revoked during
+      // it must take effect before the page is written — but a grant that
+      // arrives mid-park must NOT retroactively open the page the caller was
+      // already waiting on. `&&` gives exactly that: this can turn true→false
+      // and never false→true. The private-workspace scope is deliberately NOT
+      // re-resolved (it costs a renderer round-trip per check, and unlike this
+      // it fails closed already), so its revocation lands on the next poll.
+      allowNotifications = allowNotifications && allowsNotifications(trust);
+    };
+    await refreshNotificationsGate();
+
+    /**
+     * One attempt: read the ring from `cursor`, apply every scope/narrowing
+     * filter, page it. Pure and synchronous, so a parked poll can re-run it on
+     * each wake for the cost of a ring scan.
+     *
+     * Always reads from the ORIGINAL `cursor`, never from the previous
+     * attempt's nextCursor — an attempt that matched nothing must not advance
+     * the caller past events it never received.
+     */
+    const collect = () => {
+      const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
+
     result.events = result.events.filter((e) => {
       if (e.type === 'a2a.task') {
         // Dual-party: visible to sender (`from`) and receiver (`to`) ONLY. The
@@ -284,40 +457,170 @@ export function registerEventsRpc(
       return clientScoped ? clientSet.has(e.workspaceId) : true;
     });
 
-    // Re-impose the caller's page size AFTER scoping (see the over-fetch note
-    // above). EventBus drained the ring for us, so if the scoped page still
-    // exceeds `max` we truncate here and rewind nextCursor to the last delivered
-    // event's seq — the next poll resumes right after it. seq is monotonic, so
-    // this never skips a withheld matching event (it only defers it one page).
-    const pageMax = max ?? POLL_DEFAULT_MAX;
-    if (result.events.length > pageMax) {
-      const page = result.events.slice(0, pageMax);
-      result.nextCursor = page[page.length - 1].seq;
-      result.events = page;
-    }
-
-    // notifications.read opt-in gate (see allowsNotifications). Applied as
-    // a post-poll filter — NOT by rewriting `types` — because EventBus
-    // treats an empty types array as "no filter", so a types-rewrite that
-    // drains to [] would deliver everything to an unentitled caller.
-    // Filtering the result keeps the cursor math intact (the caller's
-    // nextCursor still advances past withheld events; they can never see
-    // them anyway).
-    if (ctx?.clientName && trustLookup) {
-      let trust: PluginIdentityRecord | undefined;
-      try {
-        trust = await trustLookup(ctx.clientName);
-      } catch {
-        trust = undefined; // unreadable trust DB → grandfather, enforcer handles the rest
+      // pty / kind narrowing. AFTER scope, so it can only ever remove events
+      // the caller was already entitled to see — never widen.
+      if (ptyId) {
+        result.events = result.events.filter(
+          (e) => (e as { ptyId?: unknown }).ptyId === ptyId,
+        );
       }
-      if (!allowsNotifications(trust)) {
+      if (kinds) {
+        result.events = result.events.filter(
+          (e) => e.type !== 'agent.lifecycle'
+            || kinds.has(String((e as { kind?: unknown }).kind)),
+        );
+      }
+
+      // Re-impose the caller's page size AFTER scoping (see the over-fetch note
+      // above). EventBus drained the ring for us, so if the scoped page still
+      // exceeds `max` we truncate here and rewind nextCursor to the last delivered
+      // event's seq — the next poll resumes right after it. seq is monotonic, so
+      // this never skips a withheld matching event (it only defers it one page).
+      const pageMax = max ?? POLL_DEFAULT_MAX;
+      if (result.events.length > pageMax) {
+        const page = result.events.slice(0, pageMax);
+        result.nextCursor = page[page.length - 1].seq;
+        result.events = page;
+      }
+
+      // NOTE on nextCursor and filters — deliberately NOT "fixed" here.
+      //
+      // EventBus advances nextCursor over everything it scanned, matched or not,
+      // so a filtered poller does not re-walk the ring each time. A cursor is one
+      // scalar, so it can only mean "everything up to here, under the filter you
+      // just used". Carry it to a poll with a DIFFERENT filter and the events the
+      // old filter skipped are already behind it. That is pre-existing behavior
+      // for `types`; `ptyId`/`kinds` join it.
+      //
+      // Rewinding looks like the fix and is not. Rewinding to the last delivered
+      // event still steps over non-matches interleaved BEFORE it (measured:
+      // deliver seq 1 and 3, cursor lands on 3, seq 2 is gone anyway). Rewinding
+      // to the first dropped event is genuinely lossless but then a steady stream
+      // of other panes' traffic pins the cursor, and the caller re-receives its
+      // own matches forever. Neither is better than saying what is true.
+      //
+      // So: one cursor chain per filter combination. A caller watching several
+      // panes keeps a cursor per pane, or polls unfiltered and narrows its own
+      // side. The tool description says this outright rather than promising a
+      // losslessness that a scalar cursor cannot deliver.
+
+      // notifications.read opt-in gate (see allowsNotifications). Applied as
+      // a post-poll filter — NOT by rewriting `types` — because EventBus
+      // treats an empty types array as "no filter", so a types-rewrite that
+      // drains to [] would deliver everything to an unentitled caller.
+      // Filtering the result keeps the cursor math intact (the caller's
+      // nextCursor still advances past withheld events; they can never see
+      // them anyway).
+      if (!allowNotifications) {
         return {
           ...result,
           events: result.events.filter((e) => e.type !== 'notification.received'),
         };
       }
+
+      return result;
+    };
+
+    // Cheap pre-filter for the parked path (see waitForEmit). Mirrors the
+    // narrowing filters only — never the scope filters, which is why it can be
+    // over-permissive without being wrong: a false positive costs one extra
+    // collect(), a false NEGATIVE would be a missed wake, so anything uncertain
+    // must pass.
+    const interesting = (event: WmuxEvent): boolean => {
+      if (types && !types.includes(event.type)) return false;
+      if (ptyId && (event as { ptyId?: unknown }).ptyId !== ptyId) return false;
+      if (kinds && event.type === 'agent.lifecycle'
+        && !kinds.has(String((event as { kind?: unknown }).kind))) return false;
+      // Workspace scope, for the lifecycle types ONLY — the ones collect()
+      // actually decides with `clientSet`. Without this a poll that named no
+      // pane and no types (which the tool allows) has nothing to filter on, so
+      // every event on the bus wakes it, costs a full ring re-scan through the
+      // whole scope chain, yields an empty page and parks again. Under OSC 133
+      // the bus ticks once per shell command, so at fleet scale that is
+      // O(parked × ring) of synchronous main-process work per command.
+      //
+      // The PRIVATE types are deliberately exempt and must stay that way: they
+      // are scoped per RECIPIENT, not by the base workspaceId. A
+      // channel.message carries the SENDER in `workspaceId` and the member set
+      // in `recipientWorkspaceIds`; a2a.task is dual-party; channel.catalog can
+      // carry a '*' broadcast. Testing `clientSet` against `workspaceId` on any
+      // of those would skip a wake the caller is entitled to — and a missed
+      // wake is the single failure this pre-filter must never introduce, since
+      // the event is already in the ring and nothing will re-announce it.
+      if (clientScoped
+        && !PRIVATE_EVENT_TYPES.has(event.type)
+        && !clientSet.has(event.workspaceId)) return false;
+      // An unentitled caller has these stripped by collect() anyway, so waking
+      // for them is pure churn — and a caller that asked ONLY for them would
+      // wake on every one for its whole budget and deliver nothing.
+      if (!allowNotifications && event.type === 'notification.received') return false;
+      return true;
+    };
+
+    // ── Immediate path — unchanged behavior ───────────────────────────────────
+    // No `blockMs`, or the ring already has something for this caller: answer
+    // now. Every pre-existing caller lands here.
+    //
+    // `resync` also short-circuits: it means the cursor fell out of the ring, so
+    // events this caller never saw are already gone. Parking on that waits up to
+    // ten more minutes to deliver a page that cannot contain them — the caller
+    // needs to reconcile via pane_list NOW, and every extra minute is more
+    // history sliding out of the window.
+    const first = collect();
+    if (blockMs <= 0 || first.events.length > 0 || first.resync) return first;
+
+    // ── Parked path ───────────────────────────────────────────────────────────
+    // Over the cap we degrade to the immediate answer rather than queueing:
+    // parking is a convenience, and a caller that cannot park is strictly better
+    // off polling than waiting behind others for a connection slot.
+    if (parkedPolls >= MAX_PARKED_POLLS) {
+      return { ...first, parked: false, parkedCapReached: true };
     }
 
-    return result;
+    parkedPolls++;
+    try {
+      // Monotonic, not wall-clock: a backward system clock step (NTP correction,
+      // a VM resuming) would inflate `remaining` off Date.now() and hold the
+      // socket past the client's own deadline — the client gives up, the slot
+      // stays taken. The remaining time is also re-clamped to the original
+      // budget so no single wait can exceed what the caller asked for.
+      const startedAt = performance.now();
+      for (;;) {
+        // The client is gone — stop holding its connection slot. Collect once
+        // more below anyway: the response write is already no-op'd on a dead
+        // socket, and bailing early keeps the exit path single.
+        if (ctx?.signal?.aborted) break;
+        const remaining = Math.min(blockMs, blockMs - (performance.now() - startedAt));
+        if (remaining <= 0) break;
+        // A wake means "an event that passed the cheap pre-filter" — collect()
+        // is still the authority, so re-collect and keep waiting when the wake
+        // turns out not to match after full scoping, instead of returning an
+        // empty page and making the caller re-poll (the loop this removes).
+        const outcome = await waitForEmit(remaining, interesting, ctx?.signal);
+        if (outcome === 'aborted') break;
+        const next = collect();
+        // Same reasoning as above: a mid-park resync is terminal, not a reason
+        // to keep waiting.
+        if (next.events.length > 0 || next.resync) break;
+        if (outcome === 'timeout') break;
+      }
+    } finally {
+      parkedPolls--;
+    }
+
+    // Nobody is reading. Skip the trust-DB read and the ring re-scan that only
+    // exist to shape a response the socket will discard — a fleet dying at once
+    // (app quit, crash) would otherwise pay both per dead caller.
+    if (ctx?.signal?.aborted) return { ...first, parked: true, aborted: true };
+
+    // An entitlement can be revoked while a poll is parked; re-check before the
+    // page is written, then re-collect so the gate is applied to it.
+    await refreshNotificationsGate();
+
+    // One final collect for BOTH exits (matched, or budget spent). Re-reading
+    // from the original cursor is idempotent, so this cannot lose the page the
+    // loop just found, and it picks up anything that landed between the last
+    // wake and here — a lost wakeup of our own making otherwise.
+    return { ...collect(), parked: true };
   });
 }

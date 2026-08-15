@@ -25,10 +25,15 @@ type ProcessLineAccess = {
 };
 
 function fakeSocket(): net.Socket {
+  // `once` is real net.Socket surface, not decoration: processLine subscribes
+  // to close/error to cancel a waiting handler when the client hangs up. A
+  // double without it makes the suite fail on the wiring rather than on what it
+  // is asserting.
   return {
     destroyed: false,
     write: vi.fn(),
     destroy: vi.fn(),
+    once: vi.fn(),
   } as unknown as net.Socket;
 }
 
@@ -73,8 +78,16 @@ describe('PipeServer dispatch provenance', () => {
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'authenticated', clientName: 'claude-code' }),
-      { externalWire: true },
+      // The trust lane is the ONLY provenance marker. Cancellation (`signal`)
+      // may ride alongside it but carries no authority, and it is absent here
+      // because this drives processLine directly — the controller belongs to a
+      // connection, and there is no connection in this test.
+      expect.objectContaining({ externalWire: true }),
     );
+    // Adding cancellation must not have introduced a second way to claim trust.
+    const opts = (dispatch.mock.calls[0] as unknown[])[1] as Record<string, unknown> | undefined;
+    expect(opts?.firstParty).toBeUndefined();
+    expect(opts?.operator).toBeUndefined();
   });
 
   it('does not dispatch an unauthenticated request', () => {

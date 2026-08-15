@@ -169,6 +169,25 @@ const WMUX_SEARCH_PANES_SHAPE = {
   searchTailLines: z.number().int().min(1).optional().describe('How many of the NEWEST scrollback lines to scan per pane. Default 5000; raise (capped at 20000) to search deeper history. A pane holding more lines than the window reports truncated=true.'),
 };
 
+/**
+ * Slack added to a blocking poll's client-side RPC deadline.
+ *
+ * The client's clock starts when the call is made; main's `blockMs` budget does
+ * not start until AFTER it has resolved the caller's scope and entitlements —
+ * and scope resolution can cost a renderer round-trip. So this margin covers
+ * two things, not one: that pre-park work, plus the wake → collect → serialize →
+ * write that follows. Sized against a renderer that is slow rather than idle:
+ * this repo has a MEASURED 120 s renderer freeze on the permission-gate path, so
+ * anything under that turns a poll which answered correctly into a transport
+ * error the agent reads as "wmux is broken" — the exact failure the margin
+ * exists to prevent. Sized above the measurement rather than near it.
+ *
+ * Erring large is cheap here: this only applies to a call that is already
+ * long-running by request, and the deadline is a backstop for a response that
+ * IS coming, not a liveness check.
+ */
+const EVENTS_POLL_BLOCK_MARGIN_MS = 150_000;
+
 const WMUX_EVENTS_POLL_SHAPE = {
   cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
   types: z
@@ -187,6 +206,9 @@ const WMUX_EVENTS_POLL_SHAPE = {
     .optional()
     .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence. `a2a.task` fires on agent-to-agent task lifecycle and carries taskId, from (sender workspaceId), to (receiver workspaceId), kind (created|updated|cancelled), state (submitted|working|input-required|completed|failed|canceled), and an optional messagePreview (≤200 chars). On completed/failed transitions it additionally carries verifiedItemCount (count of verified completion-evidence items; 0 = unverified completion). It is a POINTER, not the payload — the body is omitted by default; follow up with a2a_task_query to fetch it. UNLIKE every other event type (scoped strictly to the calling workspace), `a2a.task` is DUAL-PARTY: visible to BOTH the sending (from) and receiving (to) workspace, and to no third workspace. An unscoped poll receives zero a2a.task events.'),
   max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
+  blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait this long (ms) for a match instead of returning an empty page; 0 (default) = immediate. With ptyId+kinds it replaces a terminal_read loop waiting for a pane to block. Add process.exited to types so the wait ends if the pane dies (pane.closed is paneId-keyed, so ptyId drops it). parkedCapReached=true means it did NOT wait; back off. Use one cursor chain per filter combination — nextCursor passes events your filter skipped.'),
+  ptyId: z.string().optional().describe('Only events about this pane. Events without a ptyId are excluded, which is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
+  kinds: z.array(z.string()).optional().describe('Narrow agent.lifecycle by kind; other types pass through. agent.subagent_stop is a nested subagent returning, not the pane\'s own turn ending.'),
 };
 
 const A2A_TASK_QUERY_SHAPE = {
@@ -446,10 +468,13 @@ function isStaleIdentityResult(value: unknown): boolean {
 async function callRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
+  timeoutMs?: number,
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
   const pinnedRouteAtDispatch = getPinnedRoute();
   try {
-    const result = await sendRpc(method, params);
+    const result = timeoutMs === undefined
+      ? await sendRpc(method, params)
+      : await sendRpc(method, params, timeoutMs);
     if (isStaleIdentityResult(result)) invalidateStaleRoute(pinnedRouteAtDispatch);
     const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     return { content: [{ type: 'text', text }] };
@@ -1131,7 +1156,7 @@ server.tool(
   'wmux_events_poll',
   'Poll the wmux EventBus for pane, process, agent, notification, and A2A task lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace — EXCEPT `a2a.task`, which is dual-party (visible to both the sending and receiving workspace; see the `types` field for details).',
   WMUX_EVENTS_POLL_SHAPE,
-  async ({ cursor, types, max }) => {
+  async ({ cursor, types, max, blockMs, ptyId, kinds }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
     // Forward our OWN PID-walked senderPtyId so the main-side events.poll handler
@@ -1149,6 +1174,18 @@ server.tool(
     if (cursor !== undefined) params['cursor'] = cursor;
     if (types !== undefined) params['types'] = types;
     if (max !== undefined) params['max'] = max;
+    if (ptyId !== undefined) params['ptyId'] = ptyId;
+    if (kinds !== undefined) params['kinds'] = kinds;
+    // A blocking poll parks in main for up to `blockMs`, which is longer than
+    // the default per-call RPC deadline — so raise the deadline for THIS call
+    // only (sendRpc takes it per call; every other tool keeps the default).
+    // The margin covers main's own wake + collect + write; without it the
+    // client would time out just as the answer was being produced, and the
+    // caller would see a transport error instead of an empty page.
+    if (blockMs !== undefined && blockMs > 0) {
+      params['blockMs'] = blockMs;
+      return callRpc('events.poll', params, blockMs + EVENTS_POLL_BLOCK_MARGIN_MS);
+    }
     return callRpc('events.poll', params);
   },
 );

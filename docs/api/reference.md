@@ -315,7 +315,7 @@ typed in `src/shared/events.ts`.
 |---|---|---|
 | Event ring capacity (`RING_CAPACITY`) | 1024 | `src/shared/events.ts` |
 | Default poll page (`POLL_DEFAULT_MAX`) | 256 | `src/shared/events.ts` |
-| Max concurrent connections (`MAX_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (private static) |
+| Max concurrent connections (`MAX_PIPE_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (exported) |
 | Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` |
 | Global RPC rate limit (`GLOBAL_RATE_LIMIT`) | 200 / s | `src/main/pipe/PipeServer.ts` (private static) |
 | New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 120 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
