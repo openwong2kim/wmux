@@ -2,16 +2,18 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import {
   currentPlatform,
-  isConptyDllLoadError,
   isLinux,
   isMac,
   isUnix,
   isWindows,
   parseWindowsBuildNumber,
   platformChoice,
+} from '../platform';
+import {
+  isConptyDllLoadError,
   shouldUseBundledConpty,
   xtermWindowsBuildNumber,
-} from '../platform';
+} from '../conptyWindows';
 
 describe('platform constants', () => {
   it('exactly one of isWindows / isMac / isLinux is true on supported OS', () => {
@@ -169,6 +171,10 @@ describe('isConptyDllLoadError', () => {
     expect(isConptyDllLoadError('Failed to get conpty.node module file name')).toBe(true);
     expect(isConptyDllLoadError('Cannot find conpty.dll at C:\\app\\conpty\\conpty.dll')).toBe(true);
     expect(isConptyDllLoadError('Failed to load conpty.dll')).toBe(true);
+    // conpty.cc:307 — DLL loaded but pseudoconsole creation failed (e.g. the
+    // bundled OpenConsole.exe blocked by antivirus). Without this match a
+    // damaged install would hard-fail the shell instead of falling back.
+    expect(isConptyDllLoadError('Cannot launch conpty')).toBe(true);
   });
 
   it('does not match transient spawn failures like ConPTY error 87', () => {

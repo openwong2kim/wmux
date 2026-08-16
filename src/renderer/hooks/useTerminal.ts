@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
-import { xtermWindowsBuildNumber } from '../../shared/platform';
+import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';

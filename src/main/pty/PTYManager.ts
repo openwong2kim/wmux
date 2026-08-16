@@ -10,7 +10,8 @@ import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
 import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
-import { isWindows, parseWindowsBuildNumber, shouldUseBundledConpty, isConptyDllLoadError } from '../../shared/platform';
+import { isWindows, parseWindowsBuildNumber } from '../../shared/platform';
+import { shouldUseBundledConpty, isConptyDllLoadError } from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
@@ -232,18 +233,27 @@ export class PTYManager {
         useConpty: true,
         ...(useConptyDll ? { useConptyDll: true } : {}),
       });
+      if (useConptyDll) {
+        // #910 dogfood: see the matching log in DaemonSessionManager.
+        console.log(`[PTYManager] pane ${id}: ConPTY backend = bundled conpty.dll`);
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       if (useConptyDll && isConptyDllLoadError(detail)) {
         console.error(`[PTYManager] bundled conpty.dll failed to load (${detail}); falling back to in-box ConPTY`);
-        ptyProcess = pty.spawn(shell, hookInjection.args, {
-          name: 'xterm-256color',
-          cols: options?.cols || 80,
-          rows: options?.rows || 24,
-          cwd,
-          env: hookInjection.env,
-          useConpty: true,
-        });
+        try {
+          ptyProcess = pty.spawn(shell, hookInjection.args, {
+            name: 'xterm-256color',
+            cols: options?.cols || 80,
+            rows: options?.rows || 24,
+            cwd,
+            env: hookInjection.env,
+            useConpty: true,
+          });
+        } catch (retryErr) {
+          const retryDetail = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          throw new Error(`Failed to start shell "${shell}" in "${cwd}" (in-box ConPTY retry): ${retryDetail}`);
+        }
       } else {
         throw new Error(`Failed to start shell "${shell}" in "${cwd}": ${detail}`);
       }
