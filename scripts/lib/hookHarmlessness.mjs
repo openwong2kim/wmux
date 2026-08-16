@@ -402,6 +402,19 @@ export function deadDaemonAddress(sandbox, label) {
 }
 
 /**
+ * Is this an address the harness owns?
+ *
+ * Lives here rather than in the test so the naming has ONE home: the two
+ * platforms deliberately differ (`wmux-harness-` in the Windows pipe
+ * namespace, the short `wmh-` under tmpdir because a unix socket path is
+ * capped near 104 bytes on macOS), and a test that restated either prefix
+ * would pass on one platform and fail on the other.
+ */
+export function isHarnessAddress(address) {
+  return /(^|[\\/])wmux-harness-|(^|[\\/])wmh-/.test(String(address));
+}
+
+/**
  * A stand-in daemon that answers the bridges' RPC.
  *
  * `reply(request)` returns the object to send back, or null to stay silent.

@@ -38,6 +38,7 @@ import {
   writeFixtureHooks,
   writeMutatedBridge,
   writeTranscriptFixture,
+  isHarnessAddress,
   runHookCase,
   classifyDecision,
 } from '../lib/hookHarmlessness.mjs';
@@ -258,6 +259,25 @@ describe('the matrix covers what wmux actually installs', () => {
   // daemon, not ours. Every instance therefore carries an explicit hint in the
   // harness namespace. This pins that: a run must never post harness
   // envelopes into a daemon someone is actually using.
+  // The predicate the check below leans on, pinned against both platforms'
+  // real spellings AND the derived names it exists to reject — otherwise a
+  // regex that matched everything would make that check vacuous.
+  it('recognises harness addresses on either platform and rejects real ones', () => {
+    for (const ours of [
+      '\\\\.\\pipe\\wmux-harness-1234-0-noverdict',
+      '\\\\.\\pipe\\wmux-harness-1234-0-down-never-bound',
+      '/var/folders/g3/abc/T/wmh-44488-0-notinstalled.sock-never-bound',
+      '/tmp/wmh-1-0-silent.sock',
+    ]) expect(isHarnessAddress(ours), ours).toBe(true);
+
+    for (const theirs of [
+      '\\\\.\\pipe\\wmux-daemon-rizz',
+      '\\\\.\\pipe\\wmux-rizz',
+      '/home/someone/.wmux/daemon.sock',
+      '/Users/someone/.wmux/daemon.sock',
+    ]) expect(isHarnessAddress(theirs), theirs).toBe(false);
+  });
+
   it('points every instance at the harness namespace, never a real daemon', () => {
     const homes = new Set(scenarios.map((s) => s.env.HOME));
     expect(homes.size, 'scenarios share a home — they would see each other').toBe(
@@ -273,10 +293,11 @@ describe('the matrix covers what wmux actually installs', () => {
       for (const dir of ['.wmux', ...suffixedDirs]) {
         const hint = join(home, dir, 'daemon-pipe');
         expect(existsSync(hint), `${dir}: no daemon-pipe hint — the bridge would derive one`).toBe(true);
+        const address = readFileSync(hint, 'utf8').trim();
         expect(
-          readFileSync(hint, 'utf8'),
-          `${dir}: hint escapes the harness namespace`,
-        ).toContain('harness');
+          isHarnessAddress(address),
+          `${dir}: hint escapes the harness namespace → ${address}`,
+        ).toBe(true);
       }
     }
   });
