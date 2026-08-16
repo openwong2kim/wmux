@@ -119,6 +119,21 @@ export const HOST_CONTRACTS = {
     if (exitCode !== 0) return 'nonzero-exit-ignored-by-host';
     return 'none';
   },
+
+  // Kiro CLI. Measured live on 2.15.1 (2026-08-16): a hook that writes JSON to
+  // stdout and one that writes stderr and exits 2 BOTH left the turn completely
+  // unaffected — the agent answered normally either way. So Kiro is permissive,
+  // and its neutral is the same "no output, exit 0" as Claude Code's.
+  //
+  // The classifier is still strict about both. "The host tolerates it" is not
+  // the property under test: the claim is that a wmux hook is indistinguishable
+  // from one with no opinion, and a hook that prints or fails is distinguishable
+  // whether or not this particular host currently cares.
+  kiroHook(exitCode, stdout) {
+    if (stdout !== '') return 'stdout-noise';
+    if (exitCode !== 0) return 'nonzero-exit-tolerated-by-host';
+    return 'none';
+  },
 };
 
 // ----- Case manifest ------------------------------------------------------
@@ -160,6 +175,7 @@ export function discoverHookManifests() {
 // wired into the gate, and the coverage test says so rather than passing.
 export const NON_MANIFEST_INTEGRATIONS = {
   codex: 'notify program registered in config.toml; payload arrives as argv, covered explicitly',
+  kiro: 'hooks live inside a wmux-owned agent config, not a hooks.json; covered explicitly',
   opencode: 'in-process plugin, not a spawned hook; measured separately',
   shared: 'not an agent — shared type declarations',
 };
@@ -308,6 +324,34 @@ export function buildCases(payloadOpts) {
       args: [],
       stdin: 'none',
       argvPayload: payload,
+      payload,
+    });
+  }
+
+  // Kiro's hooks live inside a wmux-owned agent config rather than a hooks.json
+  // manifest, so its triggers are spelled out here too. These are the payloads
+  // kiro-cli 2.15.1 actually sends, captured live — including the content
+  // fields (`prompt`, `assistant_response`) the bridge must never forward, so
+  // the harness exercises the real shape rather than a sanitized one.
+  const kiroScript = join(REPO_ROOT, 'integrations', 'kiro', 'bin', 'wmux-kiro-bridge.mjs');
+  const kiroCwd = payloadOpts?.cwd ?? '/tmp/harness';
+  for (const [label, payload] of [
+    ['stop', { hook_event_name: 'stop', cwd: kiroCwd, assistant_response: 'the model said this' }],
+    ['agentSpawn', { hook_event_name: 'agentSpawn', cwd: kiroCwd }],
+    // Triggers wmux deliberately does not map. "Ignored" must still mean silent
+    // and fast, not a slow no-op.
+    ['userPromptSubmit', { hook_event_name: 'userPromptSubmit', cwd: kiroCwd, prompt: 'the user typed this' }],
+    ['postToolUse', { hook_event_name: 'postToolUse', cwd: kiroCwd }],
+  ]) {
+    cases.push({
+      agent: 'kiro',
+      contract: 'kiroHook',
+      id: `kiro:${label}`,
+      event: label,
+      matcher: label,
+      script: kiroScript,
+      args: [],
+      stdin: 'json',
       payload,
     });
   }
