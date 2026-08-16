@@ -43,7 +43,7 @@
 // Agents are listed as `unsupported` rather than quietly omitted: a missing
 // row is a measurement nobody has taken, not a pass.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
@@ -102,7 +102,14 @@ const AGENTS = {
       try {
         const parsed = JSON.parse(stdout);
         return {
-          denials: (parsed.permission_denials ?? []).map((d) => d.tool_name ?? String(d)).sort(),
+          // ABSENT is not EMPTY. A CLI that does not emit the field at all
+          // (older builds) would otherwise compare `[]` against `[]` and read
+          // as "criterion 1 measured, both arms clean" — a pass this run never
+          // earned. `null` routes to the unmeasured path, same as unparseable
+          // output does below.
+          denials: parsed.permission_denials === undefined
+            ? null
+            : parsed.permission_denials.map((d) => d.tool_name ?? String(d)).sort(),
           agentReportedError: parsed.is_error === true,
         };
       } catch {
@@ -157,7 +164,22 @@ function runAgent(profile, { cwd, settingsPath, env }) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, AGENT_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // With `shell: true` the child is cmd.exe and the agent is its GRANDchild,
+      // so TerminateProcess on the child leaves the CLI running — still burning
+      // tokens, still holding the inherited stdio that 'close' waits on. Kill
+      // the tree. `taskkill` failing (already exited, race) is not actionable,
+      // and the SIGKILL below still reaps the direct child either way.
+      if (useShell && process.platform === 'win32' && child.pid) {
+        try {
+          spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        } catch {
+          // Fall through to the direct kill.
+        }
+      }
+      child.kill('SIGKILL');
+    }, AGENT_TIMEOUT_MS);
     child.stdout.on('data', (c) => { stdout += c.toString('utf8'); });
     child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
     child.on('error', (err) => {

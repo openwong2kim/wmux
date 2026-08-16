@@ -164,7 +164,7 @@ export const NON_MANIFEST_INTEGRATIONS = {
   shared: 'not an agent — shared type declarations',
 };
 
-function casesFromHooksJson({ agent, manifestPath, pluginRoot, contract }) {
+function casesFromHooksJson({ agent, manifestPath, pluginRoot, contract, payloadOpts }) {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const cases = [];
   for (const [event, entries] of Object.entries(manifest.hooks ?? {})) {
@@ -192,7 +192,7 @@ function casesFromHooksJson({ agent, manifestPath, pluginRoot, contract }) {
           script: argv[1],
           args: argv.slice(2),
           stdin: 'json',
-          payload: payloadFor(event, entry.matcher),
+          payload: payloadFor(event, entry.matcher, payloadOpts),
         });
       }
     }
@@ -200,13 +200,51 @@ function casesFromHooksJson({ agent, manifestPath, pluginRoot, contract }) {
   return cases;
 }
 
+/**
+ * Write a transcript the bridges will actually READ.
+ *
+ * `transcript_path` used to name a file that never existed, so
+ * `extractUsageFromTranscript` and the permission-mode walk both returned at
+ * their `existsSync` guard. That left the largest block of work a Stop /
+ * SubagentStop / SessionStart hook does — tail-read plus JSONL parse, the part
+ * that can actually throw on a real payload — outside the measurement, in
+ * every scenario.
+ *
+ * Shaped to the records the parsers look for: an assistant entry carrying
+ * `message.usage`, a dedicated `permission-mode` record, and a truncated line
+ * (transcripts are appended live, so a half-written tail is normal) that the
+ * parsers are supposed to skip rather than die on.
+ */
+export function writeTranscriptFixture(sandboxHome) {
+  const path = join(sandboxHome, 'harness-session.jsonl');
+  const lines = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, permissionMode: 'default' }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        usage: {
+          input_tokens: 120,
+          cache_creation_input_tokens: 8,
+          cache_read_input_tokens: 4096,
+          output_tokens: 64,
+        },
+      },
+    }),
+    JSON.stringify({ type: 'permission-mode', permissionMode: 'bypassPermissions' }),
+    '{"type":"assistant","message":{"usage":{"input_toke',
+  ];
+  writeFileSync(path, lines.join('\n') + '\n', 'utf8');
+  return path;
+}
+
 // Representative host payloads. Shape matters (the bridge reads tool_name,
 // transcript_path, session_id); content does not.
-function payloadFor(event, matcher) {
+function payloadFor(event, matcher, { transcriptPath, cwd } = {}) {
   const base = {
     session_id: 'harness-session',
-    transcript_path: '/tmp/harness/harness-session.jsonl',
-    cwd: '/tmp/harness',
+    transcript_path: transcriptPath ?? '/tmp/harness/harness-session.jsonl',
+    cwd: cwd ?? '/tmp/harness',
     hook_event_name: event,
   };
   if (event === 'PreToolUse') {
@@ -224,10 +262,17 @@ function payloadFor(event, matcher) {
 // grade it against the wrong rules.
 const CONTRACT_OVERRIDES = {};
 
-export function buildCases() {
+/**
+ * @param {{transcriptPath?: string, cwd?: string}} [payloadOpts] Point the
+ *   payloads at a transcript that EXISTS (writeTranscriptFixture) so the
+ *   bridges' tail-read + JSONL parse is inside the measurement rather than
+ *   short-circuited at their `existsSync` guard.
+ */
+export function buildCases(payloadOpts) {
   const cases = discoverHookManifests().flatMap((manifest) => casesFromHooksJson({
     ...manifest,
     contract: CONTRACT_OVERRIDES[manifest.agent] ?? 'claudeCode',
+    payloadOpts,
   }));
   // Codex takes its payload as the LAST argv token, not on stdin, and is
   // registered in config.toml rather than a hooks manifest — so it is spelled
@@ -245,8 +290,8 @@ export function buildCases() {
     }],
     ['legacy', {
       session_id: 'harness-session',
-      transcript_path: '/tmp/harness/harness-session.jsonl',
-      cwd: '/tmp/harness',
+      transcript_path: payloadOpts?.transcriptPath ?? '/tmp/harness/harness-session.jsonl',
+      cwd: payloadOpts?.cwd ?? '/tmp/harness',
       hook_event_name: 'Stop',
     }],
     // A type Codex emits that wmux deliberately ignores. "Ignored" must still
@@ -292,15 +337,40 @@ export function makeSandbox() {
 // lived in, so it would pass a bridge with #898 reintroduced. (Measured:
 // the mutation check below fails without this.)
 export function provisionInstance(sandbox, { token = false, daemonPipeName = null } = {}) {
-  const suffix = `-harness-${process.pid}-${sandbox.seq++}`;
-  const wmuxHome = join(sandbox.home, `.wmux${suffix}`);
-  mkdirSync(wmuxHome, { recursive: true });
+  const seq = sandbox.seq++;
+  const suffix = `-harness-${process.pid}-${seq}`;
+  // Each instance gets its OWN home, not a shared one keyed by suffix.
+  //
+  // Not every bridge honours WMUX_DATA_SUFFIX: the openclaude fork reads the
+  // UNSUFFIXED `~/.wmux/daemon-auth-token` and `~/.wmux-auth-token` (its own
+  // source says so: "Same ~/.wmux (no data-suffix) limitation"). Provisioning
+  // only the suffixed layout meant every openclaude case returned at
+  // `no-auth-token` — exit 0, no output, fast — which passes every criterion
+  // in this file while measuring nothing about the hook. That is the same
+  // early-bail trap the mutation check exists to catch, one bridge over.
+  //
+  // Writing the unsuffixed layout into a SHARED home would fix that case and
+  // break scenario isolation instead: `not-installed` would see the token
+  // `installed-daemon-down` wrote. A home per instance lets both layouts be
+  // furnished without either scenario seeing the other's.
+  const home = join(sandbox.home, `inst-${seq}`);
+  const suffixedWmux = join(home, `.wmux${suffix}`);
+  const plainWmux = join(home, '.wmux');
+  mkdirSync(suffixedWmux, { recursive: true });
+  mkdirSync(plainWmux, { recursive: true });
   if (token) {
-    writeFileSync(join(wmuxHome, 'daemon-auth-token'), 'harness-daemon-token', 'utf8');
-    writeFileSync(join(sandbox.home, `.wmux${suffix}-auth-token`), 'harness-main-token', 'utf8');
+    for (const dir of [suffixedWmux, plainWmux]) {
+      writeFileSync(join(dir, 'daemon-auth-token'), 'harness-daemon-token', 'utf8');
+    }
+    writeFileSync(join(home, `.wmux${suffix}-auth-token`), 'harness-main-token', 'utf8');
+    writeFileSync(join(home, '.wmux-auth-token'), 'harness-main-token', 'utf8');
   }
-  if (daemonPipeName) writeFileSync(join(wmuxHome, 'daemon-pipe'), daemonPipeName, 'utf8');
-  return suffix;
+  if (daemonPipeName) {
+    for (const dir of [suffixedWmux, plainWmux]) {
+      writeFileSync(join(dir, 'daemon-pipe'), daemonPipeName, 'utf8');
+    }
+  }
+  return { suffix, home };
 }
 
 export function fakeDaemonAddress(sandbox, label) {
@@ -408,20 +478,29 @@ export async function setupScenarios(sandbox) {
   // a pre-gate daemon, a non-gated tool, or the broker deferring to the
   // session's own permission flow. Silence is the only faithful encoding.
   const noVerdictAddress = fakeDaemonAddress(sandbox, 'noverdict');
-  const noVerdictServer = await startFakeDaemon(noVerdictAddress, (request) => ({
-    ok: true,
-    result: { ok: true, received: request.method },
-  }));
+  // Counted, not just answered. "The daemon-furnished scenario reached the
+  // daemon" is otherwise unobservable: a broken pipe hint, a renamed token
+  // path, a layout the bridge does not read — each makes the bridge behave
+  // exactly like `installed-daemon-down` (fast, silent, exit 0) and the
+  // scenario still passes. Asserting a non-zero count is what turns "these
+  // hooks were measured against a live daemon" from a label into a fact.
+  let noVerdictRequests = 0;
+  const noVerdictServer = await startFakeDaemon(noVerdictAddress, (request) => {
+    noVerdictRequests += 1;
+    return { ok: true, result: { ok: true, received: request.method } };
+  });
   cleanups.push(() => noVerdictServer.close());
   const installedNoVerdict = provisionInstance(sandbox, {
     token: true,
     daemonPipeName: noVerdictAddress,
   });
 
-  const env = (suffix, extra) => ({
-    USERPROFILE: sandbox.home,
-    HOME: sandbox.home,
-    WMUX_DATA_SUFFIX: suffix,
+  const env = (instance, extra) => ({
+    // Per-instance home: see provisionInstance for why the suffix alone is
+    // not enough to isolate a scenario.
+    USERPROFILE: instance.home,
+    HOME: instance.home,
+    WMUX_DATA_SUFFIX: instance.suffix,
     CLAUDE_CODE_ENTRYPOINT: 'cli',
     ...extra,
   });
@@ -472,6 +551,12 @@ export async function setupScenarios(sandbox) {
   return {
     scenarios,
     wedgedDaemonEnv: env(installedSilent, { WMUX_PTY_ID: 'harness-pty-1' }),
+    /** Requests the no-verdict daemon has actually served. The positive
+     *  control: see the comment where it is incremented. */
+    daemonRequests: () => noVerdictRequests,
+    /** Scenarios furnished with that daemon — the ones whose name claims a
+     *  daemon was reached, and so the ones the control applies to. */
+    daemonFurnishedScenarioIds: ['installed-daemon-no-verdict'],
     dispose: async () => { for (const fn of cleanups) await fn(); },
   };
 }

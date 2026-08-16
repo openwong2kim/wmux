@@ -37,6 +37,7 @@ import {
   makeSandbox,
   writeFixtureHooks,
   writeMutatedBridge,
+  writeTranscriptFixture,
   runHookCase,
   classifyDecision,
 } from '../lib/hookHarmlessness.mjs';
@@ -61,13 +62,24 @@ let fixtures;
 let scenarios;
 let wedgedDaemonEnv;
 let disposeScenarios;
+let daemonRequests;
+let daemonFurnishedScenarioIds;
 let cases;
 
 beforeAll(async () => {
   sandbox = makeSandbox();
   fixtures = writeFixtureHooks(sandbox.home);
-  ({ scenarios, wedgedDaemonEnv, dispose: disposeScenarios } = await setupScenarios(sandbox));
-  cases = buildCases();
+  const transcriptPath = writeTranscriptFixture(sandbox.home);
+  ({
+    scenarios,
+    wedgedDaemonEnv,
+    daemonRequests,
+    daemonFurnishedScenarioIds,
+    dispose: disposeScenarios,
+  } = await setupScenarios(sandbox));
+  // Payloads name a transcript that EXISTS, so the tail-read + JSONL parse is
+  // measured instead of returning at the bridges' `existsSync` guard.
+  cases = buildCases({ transcriptPath, cwd: sandbox.home });
 }, 60_000);
 
 afterAll(async () => {
@@ -94,6 +106,13 @@ function violations(id, result, decision, control) {
   // Exit 2 is Claude Code's "block this action". No observation hook may reach
   // it, however it fails internally.
   if (result.exitCode !== 0) found.push(`${id}: exit=${result.exitCode}`);
+  // stderr counts too. Claude Code puts a hook's stderr in the transcript even
+  // on exit 0, and the codex `notify` host logs it — so "an observation hook
+  // writes zero bytes" is a claim about BOTH streams. Checking only stdout let
+  // a hook narrate every invocation into the user's session and still pass.
+  if ((result.stderr ?? '') !== '') {
+    found.push(`${id}: stderr=${JSON.stringify(result.stderr).slice(0, 160)}`);
+  }
 
   // Criterion 2 — completion and added latency.
   if (result.timedOut) found.push(`${id}: timed out`);
@@ -229,6 +248,50 @@ describe('the matrix covers what wmux actually installs', () => {
         .toBe(declared.length);
     }
   });
+
+  // The positive control. Everything else here is an assertion that nothing
+  // happened, and a hook that never runs satisfies all of it: exit 0, no
+  // output, fast, no survivor. This is the one check that fails when the
+  // scenarios stop reaching the thing they claim to be testing against.
+  //
+  // It has already earned its place. Provisioning wrote only the SUFFIXED
+  // token layout, and the openclaude bridge reads the unsuffixed one, so all
+  // five of its cases returned at `no-auth-token` in all five scenarios —
+  // 25 of the 70 cells measuring an early bail. Nothing in the suite went
+  // red. This would have.
+  it('actually reaches the daemon in the scenarios that furnish one', async () => {
+    const before = daemonRequests();
+    const scenario = scenarios.find((s) => daemonFurnishedScenarioIds.includes(s.id));
+    expect(scenario, 'no daemon-furnished scenario in the matrix').toBeTruthy();
+
+    const served = new Map();
+    for (const testCase of cases) {
+      const at = daemonRequests();
+      await runHookCase({ ...testCase, env: scenario.env, budgetMs: KILL_BUDGET_MS });
+      served.set(testCase.id, daemonRequests() - at);
+    }
+
+    expect(
+      daemonRequests() - before,
+      `${scenario.id} served no daemon requests — the hooks bailed before the endpoint`,
+    ).toBeGreaterThan(0);
+
+    // Per AGENT, not per case: some events are deliberately dropped before any
+    // RPC (the codex ignored-type case is one), so requiring every case to
+    // talk would pin behaviour this file has no opinion about. Requiring every
+    // agent to talk at least once is what rules out a whole bridge silently
+    // sitting out the matrix.
+    const byAgent = new Map();
+    for (const testCase of cases) {
+      byAgent.set(testCase.agent, (byAgent.get(testCase.agent) ?? 0) + served.get(testCase.id));
+    }
+    const mute = [...byAgent].filter(([, n]) => n === 0).map(([agent]) => agent);
+    expect(
+      mute,
+      'agent(s) whose every case bailed before the daemon — their cells measure an early '
+      + 'return, not the hook. Check the token/pipe layout each bridge actually reads.',
+    ).toEqual([]);
+  }, 180_000);
 
   // The teeth. Adding integrations/<agent>/ without either a hook manifest or
   // an entry in NON_MANIFEST_INTEGRATIONS fails here, which is the only thing
