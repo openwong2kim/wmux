@@ -30,7 +30,7 @@ jobs:
       - name: Install
         run: npm install
       - name: Compile shared helpers
-        run: npx tsc -p tsconfig.json --noEmit false
+        run: npx esbuild src/shared/conptyWindows.ts --format=cjs --platform=node --outfile=dist/shared/conptyWindows.js
       - name: Spawns succeed against the bundled conpty.dll
         shell: pwsh
         run: |
@@ -38,6 +38,7 @@ jobs:
             const os = require('os');
             const pty = require('node-pty');
             const { shouldUseBundledConpty } = require('./dist/shared/conptyWindows.js');
+            if (typeof shouldUseBundledConpty !== 'function') { console.error('import shape unexpected'); process.exit(1); }
             const build = parseInt(os.release().split('.')[2], 10);
             const useDll = shouldUseBundledConpty('win32', build);
             console.log('build=' + build + ' gate=' + useDll);
