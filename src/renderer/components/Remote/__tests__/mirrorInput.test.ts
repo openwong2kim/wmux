@@ -47,9 +47,31 @@ describe('decideMirrorKey — the four conveniences #895 asked for', () => {
     expect(d).toEqual({ kind: 'paste' });
   });
 
-  it('sends the newline byte on Shift+Enter rather than letting xterm submit', () => {
-    const d = decideMirrorKey(key({ key: 'Enter', code: 'Enter', shiftKey: true }), opts());
+  // Shift+Enter is the one newline key whose byte is a NEGOTIATED encoding.
+  // `\x1b[13;2u` means "newline" only to an app that asked for kitty; to any
+  // other it is Escape followed by `[13;2u`, which in vim's insert mode leaves
+  // insert and runs the rest as normal-mode input. A local pane can send it
+  // blind because it and the TUI share one xterm; a mirror cannot.
+  it('sends the CSI-u newline on Shift+Enter once the remote has asked for it', () => {
+    const d = decideMirrorKey(
+      key({ key: 'Enter', code: 'Enter', shiftKey: true }),
+      opts({ remoteAcceptsCsiU: true }),
+    );
     expect(d).toEqual({ kind: 'write', data: '\x1b[13;2u' });
+  });
+
+  it('hands Shift+Enter back to xterm when the remote never negotiated', () => {
+    // `pass` is the pre-#924 behaviour: xterm encodes the legacy CR, which is
+    // what every non-negotiating app expects.
+    const d = decideMirrorKey(key({ key: 'Enter', code: 'Enter', shiftKey: true }), opts());
+    expect(d).toEqual({ kind: 'pass' });
+  });
+
+  // Ctrl+Enter and Ctrl+J send a bare LF, which needs no negotiation at all —
+  // the gate above must not swallow them along with the CSI-u one.
+  it('still sends LF on Ctrl+Enter without any negotiation', () => {
+    const d = decideMirrorKey(key({ key: 'Enter', code: 'Enter', ctrlKey: true }), opts());
+    expect(d).toEqual({ kind: 'write', data: '\n' });
   });
 
   it('sends LF on Ctrl+J, the same byte a local pane emits', () => {

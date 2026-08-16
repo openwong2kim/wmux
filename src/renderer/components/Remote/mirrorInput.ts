@@ -36,6 +36,13 @@ export interface MirrorKeyOptions {
   readOnly: boolean;
   /** The user bound Ctrl+J themselves — see newlineKeys.ts. */
   hasCustomCtrlJBinding?: boolean;
+  /**
+   * The remote app asked for kitty CSI-u key encodings (observed in its own
+   * output — see keyboardProtocol.ts). Defaults to false, which is the
+   * conservative side: an app that never negotiated gets what xterm would
+   * have encoded.
+   */
+  remoteAcceptsCsiU?: boolean;
 }
 
 export type MirrorKeyDecision =
@@ -75,7 +82,21 @@ export function decideMirrorKey(
     hasCustomCtrlJBinding: opts.hasCustomCtrlJBinding,
   });
   if (newlineByte !== null) {
-    return opts.readOnly ? { kind: 'swallow' } : { kind: 'write', data: newlineByte };
+    // A read-only host takes no bytes at all, negotiated or not — decided here
+    // rather than left to the write path so the table says so.
+    if (opts.readOnly) return { kind: 'swallow' };
+    // The CSI-u byte only means "newline" to an app that asked for kitty
+    // encodings. A local pane can send it blind because it and the TUI share
+    // this xterm; a mirror is talking to an app it never negotiated with, and
+    // there `\x1b[13;2u` reads as Escape followed by normal-mode input — in
+    // vim's insert mode that leaves insert and runs the rest as commands.
+    // Un-negotiated, hand the key back to xterm and let it encode the legacy
+    // CR: what the mirror did before it had a key table at all.
+    //
+    // Ctrl+Enter and Ctrl+J are unaffected — a bare LF needs no negotiation.
+    const isCsiU = newlineByte.startsWith('\x1b');
+    if (isCsiU && !opts.remoteAcceptsCsiU) return { kind: 'pass' };
+    return { kind: 'write', data: newlineByte };
   }
 
   const { isMac } = opts;

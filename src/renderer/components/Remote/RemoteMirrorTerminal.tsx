@@ -4,6 +4,7 @@ import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { decideMirrorKeyWithRepeat } from './mirrorInput';
+import { foldRemoteKeyboardState, acceptsCsiU, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { createAutoSelectionCopy } from '../../utils/autoSelectionCopy';
@@ -97,6 +98,12 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   // flip (allowInput probe resolving after mount) doesn't tear down and
   // re-subscribe the whole attach — only paneWrite needs the live value.
   const readOnlyRef = useRef(readOnly);
+  /**
+   * What the remote app has asked for in the way of key encodings, folded from
+   * its own output. A ref, not state: the key handler reads it synchronously
+   * and nothing renders from it.
+   */
+  const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
   readOnlyRef.current = readOnly;
   // Same reason: the key handler is installed once, at mount, and needs the
   // CURRENT attach to write to. Listing `attachId` in that effect's deps would
@@ -402,6 +409,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
         isMac,
         hasSelection: term.hasSelection(),
         readOnly: readOnlyRef.current === true,
+        remoteAcceptsCsiU: acceptsCsiU(remoteKeyboardRef.current),
         hasCustomCtrlJBinding: useStore.getState().customKeybindings.some(
           (kb) => kb.key === 'Ctrl+J',
         ),
@@ -504,7 +512,12 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       term.resize(e.cols, e.rows);
       repaintDepthRef.current += 1;
       try {
-        term.write(decodeBase64Bytes(e.snapshotB64), () => {
+        const snapshot = decodeBase64Bytes(e.snapshotB64);
+        // A re-attach replays the pane's screen, negotiation included — reset
+        // first so a protocol the app turned off before we attached does not
+        // survive as a stale `true`.
+        remoteKeyboardRef.current = foldRemoteKeyboardState(INITIAL_REMOTE_KEYBOARD_STATE, snapshot);
+        term.write(snapshot, () => {
           repaintDepthRef.current = Math.max(0, repaintDepthRef.current - 1);
         });
       } catch {
@@ -532,7 +545,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       if (e.attachId !== attachId) return;
       const term = termRef.current;
       if (!term) return;
-      term.write(decodeBase64Bytes(e.dataB64));
+      const data = decodeBase64Bytes(e.dataB64);
+      // Watch the remote's own output for a keyboard-protocol negotiation, the
+      // same way the paste path reads xterm's parse of DECSET 2004. xterm
+      // exposes nothing for this one, and without it the mirror cannot tell an
+      // app that wants CSI-u from one that would read it as Escape + garbage.
+      remoteKeyboardRef.current = foldRemoteKeyboardState(remoteKeyboardRef.current, data);
+      term.write(data);
     });
     const offExit = remote.onPaneExit((e) => {
       if (e.attachId !== attachId) return;

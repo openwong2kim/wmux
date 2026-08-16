@@ -627,7 +627,29 @@ describe('RemoteMirrorTerminal', () => {
       unmount();
     });
 
-    it('Shift+Enter sends the newline byte to the live attach', async () => {
+    // The CSI-u newline is a NEGOTIATED encoding, so the mirror has to have
+    // seen the remote ask for it. It learns that the same way it learns
+    // bracketed paste: from the remote's own output.
+    it('Shift+Enter sends the CSI-u newline once the remote enables kitty keys', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      await act(async () => {
+        // CSI > 1 u — the remote pushes a kitty flag set.
+        for (const h of dataHandlers) {
+          h({ attachId: 'a1', dataB64: btoa('\x1b[>1u') });
+        }
+      });
+      await act(async () => {
+        press(term, { key: 'Enter', code: 'Enter', shiftKey: true });
+      });
+
+      expect(paneWrite).toHaveBeenCalledWith('a1', '\x1b[13;2u');
+
+      unmount();
+    });
+
+    it('Shift+Enter goes through xterm while the remote has not asked', async () => {
       const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
       const term = termInstances[0]!;
 
@@ -635,7 +657,10 @@ describe('RemoteMirrorTerminal', () => {
         press(term, { key: 'Enter', code: 'Enter', shiftKey: true });
       });
 
-      expect(paneWrite).toHaveBeenCalledWith('a1', '\x1b[13;2u');
+      // No direct write: xterm encodes the legacy CR, which is what an app
+      // that never negotiated expects. Injecting the escape form here is what
+      // would leave vim's insert mode and run the remainder as commands.
+      expect(paneWrite).not.toHaveBeenCalledWith('a1', '\x1b[13;2u');
 
       unmount();
     });
