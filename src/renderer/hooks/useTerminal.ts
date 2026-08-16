@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
+import { xtermWindowsBuildNumber } from '../../shared/platform';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
@@ -917,15 +918,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // back to reflow-enabled, which is exactly the behaviour this code had
       // before, so an unreadable version changes nothing rather than flipping
       // every install to the opposite branch.
+      //
+      // #910: when the PTY is running against the bundled conpty.dll (Win10,
+      // decided by the SAME predicate the spawn sites use — see
+      // xtermWindowsBuildNumber), report a modern build: reflow behaviour
+      // comes from OpenConsole, not the kernel, so 22621 is a capability
+      // token here, not an OS claim.
       ...(window.electronAPI.platform === 'win32'
-        ? {
-          windowsPty: {
-            backend: 'conpty' as const,
-            ...(window.electronAPI.windowsBuildNumber != null
-              ? { buildNumber: window.electronAPI.windowsBuildNumber }
-              : {}),
-          },
-        }
+        ? (() => {
+          const buildNumber = xtermWindowsBuildNumber(window.electronAPI.platform, window.electronAPI.windowsBuildNumber);
+          return {
+            windowsPty: {
+              backend: 'conpty' as const,
+              ...(buildNumber != null ? { buildNumber } : {}),
+            },
+          };
+        })()
         : {}),
     });
 

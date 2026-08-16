@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import {
   currentPlatform,
+  isConptyDllLoadError,
   isLinux,
   isMac,
   isUnix,
   isWindows,
   parseWindowsBuildNumber,
   platformChoice,
+  shouldUseBundledConpty,
+  xtermWindowsBuildNumber,
 } from '../platform';
 
 describe('platform constants', () => {
@@ -113,5 +116,66 @@ describe('parseWindowsBuildNumber', () => {
   it('tolerates the trailing forms a version string can arrive in', () => {
     expect(parseWindowsBuildNumber(' 10.0.19045 ')).toBe(19045);
     expect(parseWindowsBuildNumber('10.0.19045.3803')).toBe(19045);
+  });
+});
+
+describe('shouldUseBundledConpty', () => {
+  it('bundles below Windows 11, in-box at Windows 11 and above', () => {
+    // #910: Win10's in-box ConPTY drops mouse DECSETs; the bundled OpenConsole
+    // has the fix. 22000 is a product cut — Server 2022 (20348) bundles too,
+    // early Win11 22000 does not (its in-box already relays mouse).
+    expect(shouldUseBundledConpty('win32', 19045)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 20348)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 21999)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 22000)).toBe(false);
+    expect(shouldUseBundledConpty('win32', 26200)).toBe(false);
+  });
+
+  it('never bundles off Windows or without a readable build', () => {
+    // null build = "could not read it" — keep the in-box default rather than
+    // act on a number that was never read.
+    expect(shouldUseBundledConpty('darwin', 19045)).toBe(false);
+    expect(shouldUseBundledConpty('linux', 19045)).toBe(false);
+    expect(shouldUseBundledConpty('win32', null)).toBe(false);
+  });
+});
+
+describe('xtermWindowsBuildNumber', () => {
+  it('reports a modern build when the bundled DLL drives the PTY', () => {
+    // The bundled OpenConsole, not the kernel, decides reflow behaviour, so
+    // 22621 is a capability token — NOT a claim about the user's OS. It keeps
+    // xterm on the >= 21376 reflow side while the OS is 19045.
+    expect(xtermWindowsBuildNumber('win32', 19045)).toBe(22621);
+    expect(xtermWindowsBuildNumber('win32', 20348)).toBe(22621);
+  });
+
+  it('passes the real build through when in-box ConPTY drives the PTY', () => {
+    expect(xtermWindowsBuildNumber('win32', 22000)).toBe(22000);
+    expect(xtermWindowsBuildNumber('win32', 26200)).toBe(26200);
+  });
+
+  it('returns null off Windows or unreadable, so the caller omits the field', () => {
+    // Omitting buildNumber keeps xterm's default (reflow enabled) — the
+    // pre-#900 behaviour, unchanged.
+    expect(xtermWindowsBuildNumber('darwin', 19045)).toBeNull();
+    expect(xtermWindowsBuildNumber('win32', null)).toBeNull();
+  });
+});
+
+describe('isConptyDllLoadError', () => {
+  it('matches every error LoadConptyDll throws for a missing/corrupt DLL', () => {
+    // Strings from node-pty src/win/conpty.cc — re-check on node-pty upgrades.
+    expect(isConptyDllLoadError('Failed to get conpty.node module handle')).toBe(true);
+    expect(isConptyDllLoadError('Failed to get conpty.node module file name')).toBe(true);
+    expect(isConptyDllLoadError('Cannot find conpty.dll at C:\\app\\conpty\\conpty.dll')).toBe(true);
+    expect(isConptyDllLoadError('Failed to load conpty.dll')).toBe(true);
+  });
+
+  it('does not match transient spawn failures like ConPTY error 87', () => {
+    // A broad match would let one transient 87 silently demote the pane to
+    // mouse-less in-box ConPTY forever — PaneSupervisor exists to absorb those.
+    expect(isConptyDllLoadError('Failed to start shell: The parameter is incorrect (87)')).toBe(false);
+    expect(isConptyDllLoadError('Cannot find module')).toBe(false);
+    expect(isConptyDllLoadError('')).toBe(false);
   });
 });

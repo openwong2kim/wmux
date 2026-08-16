@@ -10,7 +10,7 @@ import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
 import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
-import { isWindows } from '../../shared/platform';
+import { isWindows, parseWindowsBuildNumber, shouldUseBundledConpty, isConptyDllLoadError } from '../../shared/platform';
 import { ShellDetector } from '../../shared/ShellDetector';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
@@ -214,7 +214,14 @@ export class PTYManager {
     // unreadable cwd (common on macOS/Linux where the shell path differs from
     // Windows). Surface an actionable error instead of the raw node-pty throw.
     // (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
+    //
+    // #910: below Windows 11 the in-box ConPTY never forwards mouse-mode
+    // DECSETs (see shared/platform.ts shouldUseBundledConpty), so local-mode
+    // spawns take the bundled conpty.dll there too. DLL-load failures fall
+    // back to in-box exactly once; anything else keeps failing so transient
+    // ConPTY errors reach the supervisor's restart backoff.
     let ptyProcess: ReturnType<typeof pty.spawn>;
+    const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
     try {
       ptyProcess = pty.spawn(shell, hookInjection.args, {
         name: 'xterm-256color',
@@ -223,10 +230,23 @@ export class PTYManager {
         cwd,
         env: hookInjection.env,
         useConpty: true,
+        ...(useConptyDll ? { useConptyDll: true } : {}),
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to start shell "${shell}" in "${cwd}": ${detail}`);
+      if (useConptyDll && isConptyDllLoadError(detail)) {
+        console.error(`[PTYManager] bundled conpty.dll failed to load (${detail}); falling back to in-box ConPTY`);
+        ptyProcess = pty.spawn(shell, hookInjection.args, {
+          name: 'xterm-256color',
+          cols: options?.cols || 80,
+          rows: options?.rows || 24,
+          cwd,
+          env: hookInjection.env,
+          useConpty: true,
+        });
+      } else {
+        throw new Error(`Failed to start shell "${shell}" in "${cwd}": ${detail}`);
+      }
     }
 
     const instance: PTYInstance = {
