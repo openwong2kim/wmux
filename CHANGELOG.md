@@ -1,3 +1,223 @@
+## [3.43.0] — 2026-08-16
+
+### Added
+
+- A2A thread round cap: replies past 5 completed round trips — or past a per-side
+  message ceiling that catches one-sided monologues — are refused with a
+  `cap_reached` error so two agents cannot ping-pong unattended forever.
+
+- `a2a_discover` responses include `elapsedMs` (measured at the MCP tool entry)
+  to separate server latency from client-side stalls.
+
+- **A glyph rail where the collapsed deck was.** Collapsing the deck leaves a
+  36px column of the same icons on its edge instead of nothing at all; pressing
+  one reopens the deck straight onto that tab, and the rail marks the tab it
+  will return to.
+
+- **The orchestrator can fan work out into isolated worktrees.** Its only
+  worker used to be a pane split into the same checkout, so two workers editing
+  at once overwrote each other and shared one branch — and with no shell, it
+  could not create a worktree any other way. `fanout_start` is now on the
+  commander surface: one call, N tasks, each on its own `wtask/` branch with its
+  own workspace, agent pane and mission channel. The user is still asked to
+  approve before anything spawns, and never auto-approved. (#891)
+
+- **Fan-out tasks can run on different agents and models.** Each task takes an
+  optional role — Builder, Reviewer, Tester, Planner — and launches on whatever
+  agent and model you bound that role to in Settings. Review work can run on
+  Codex, or a cheaper model, while the build tasks in the same fan-out run on
+  Claude. The approval prompt now spells out what each role resolves to, so the
+  text you approve is the command that runs. Available from the Multi Task
+  dialog as well. (#891)
+
+- **wmux now tells you when the plugin is the thing that is broken.** If a
+  Claude Code plugin install is still running the hook that forces a prompt,
+  a notice appears with the exact update command, and it stays up until you
+  dismiss it. Version numbers could not answer this question — the plugin's
+  version did not change across the release that introduced the permission
+  gate, so `claude plugin update` reported "already at the latest version" for
+  broken and healthy installs alike — so wmux runs the installed hook on a path
+  that touches nothing and watches what it answers. wmux reads the plugin
+  directory and never writes to it: repairing another tool's cache would leave
+  content that does not match the version on the directory, and could downgrade
+  a plugin newer than the app. (#898)
+
+- **An orchestrator can wait for a pane instead of watching it.** `wmux_events_poll`
+  takes `blockMs` to wait for an event rather than returning an empty page, plus
+  `ptyId` and `kinds` to narrow it to one pane and one kind of signal. Until now
+  the only way to notice that another agent had stopped on a question was to read
+  its terminal on a timer and guess from the text — and a question an agent
+  *printed* looks exactly like one it is *waiting on*, which is where most false
+  "this agent is stuck" reports came from. A wait now ends the moment that pane
+  actually blocks, and a nested subagent returning no longer counts as the pane
+  becoming free. Existing callers are unaffected: every new parameter defaults to
+  the old behavior. (#903)
+
+### Changed
+
+- **The deck's tabs are icons.** The deck's header used to read
+  `Agent (Default) | Git | Channels` — three text labels across the top of a
+  column barely 250px wide. They are 36px glyphs now; the tab's name, and the
+  orchestrator's current model, are in the tooltip.
+
+- **Agent, Git, Channels and web left the sidebar.** The deck sits on the
+  opposite edge from the workspace list, so as labeled rows at that list's foot
+  they cost 144px pointing the wrong way — and vanished whenever the sidebar was
+  collapsed. All four are glyphs on the deck's own strip now (the first three
+  select a tab, web opens its popover as before), and the workspace list got the
+  space back.
+
+- The sidebar **+ menu** and Settings (Accounts, MCP servers, Theme) now
+  respect the selected locale instead of showing hardcoded English (#911).
+
+### Fixed
+
+- **Prefix-action labels for Rename/Kill workspace and Show cheat sheet now
+  translate.** Three `settings.prefix.*` keys were missing from both `en.ts`
+  and `zh.ts`, so the Settings → Shortcuts → Prefix bindings rows rendered raw
+  key strings; they now show proper English and Simplified Chinese. (#886)
+
+- A2A replies no longer fail silently: `a2a_task_send` now returns a `delivery`
+  field (`stored` / `notified` / `reason` / `hint`) that says whether the other
+  party was actually nudged and, if not, why and what to do about it. A reply
+  whose nudge is withheld also emits the task pointer event, so a polling
+  receiver still learns the thread moved.
+
+- **The IME candidate window now anchors to where you are typing, not where the
+  agent's redraw parked the cursor.** The v3.42.0 fix pinned the candidate list
+  in place for a whole composition, but it pinned it to wherever the terminal
+  cursor happened to sit at the instant the composition started — and while a
+  TUI like Claude Code repaints, the cursor transiently rides along with the
+  redraw. Start typing Chinese, Japanese, or Korean in that instant and the
+  candidate list landed on the status line or the agent's streaming row instead
+  of the input box. wmux now tracks the cell the cursor actually rests on
+  between repaints and anchors compositions there, so the candidate list stays
+  on your caret even when a composition starts mid-redraw. (#874)
+
+- **The web popover stays on screen.** Opened from low on the rail in a short
+  window it used to run past the bottom edge, taking the Stop button with it.
+
+- Counts on the deck's glyphs (unread channels, dirty worktrees) are announced
+  to screen readers again — as icons they had become badges with no spoken
+  equivalent.
+
+- **You can scroll the browser terminal with your finger.** On a phone there was
+  no way to reach scrollback at all: a swipe did nothing, the thin scrollbar
+  could not be dragged by touch, and a soft keyboard has no `Shift+PageUp`. The
+  only history a phone ever showed was whatever was on screen when it connected.
+  Swiping now scrolls, and on a pane running a full-screen app — where there is
+  no scrollback to move — the swipe scrolls that app instead. (#890)
+
+- **The mouse wheel reaches scrollback again.** One notch moved exactly one line
+  in the browser terminal, so a few hundred lines of history meant a few hundred
+  notches. This affects any device with a wheel, not only phones.
+
+- The browser terminal's scrollbar is toned into the chrome again. It had been
+  drawing xterm's default light bar since the terminal upgrade moved where the
+  scrollbar lives.
+
+- **The Claude Code plugin no longer asks permission for everything.** With the
+  plugin installed, a session started with bypass-permissions was asked to
+  approve every single tool call — even reading a file. Restarting did not help,
+  changing the permission mode did not help, and turning the gate off with
+  `WMUX_GATE=0` did not help either, so there was no way out short of
+  uninstalling. The permission gate was answering "ask the user" whenever wmux
+  had no opinion — the gate switched off, no daemon reachable, a tool wmux does
+  not gate at all — on the understanding that it meant "I have no opinion".
+  It does not: it forces a prompt and overrides the permission mode you chose.
+  The gate now stays silent unless there is a real verdict, which is what
+  actually hands the call back to Claude Code's own permission flow. (#898)
+
+  **If you installed the plugin through Claude Code, run `/plugin update` after
+  updating wmux.** The hook that was answering "ask" is a file inside the
+  plugin's own directory, and updating the app does not touch it — a wmux update
+  alone leaves the prompting exactly where it was. Installations made with
+  `wmux setup-hooks` need nothing: that copy is refreshed the next time the app
+  starts. (#898)
+
+- **Lines no longer misalign when you resize a pane on Windows 10.** The
+  terminal told xterm that every Windows machine was running a recent ConPTY,
+  by passing the exact build number xterm uses as its cut-off rather than the
+  build the machine is actually on. That turns on reflow and turns off the
+  compensation for older ConPTY at the same time, which is the wrong half of
+  both on Windows 10. wmux now reads the real build number.
+
+  Windows 10 therefore moves onto xterm's older-ConPTY path, which is what that
+  build actually needs, and reflow is off there instead of on. Reflow being on
+  was also suppressing the spurious row-change events ConPTY emits on resize,
+  which helped keep a drag-selection alive while the pane was being resized, so
+  on Windows 10 that selection is now held by the resize guard alone. Windows 11
+  is unaffected — it was already on the branch it is on now. (#897)
+
+- **A long CJK or TUI session no longer leaves its panes permanently
+  slower.** Terminals sharing a font share one WebGL glyph atlas. Once
+  that atlas had to reclaim space it set a "rebuild your render model"
+  flag that nothing ever cleared, so from then on every pane sharing it
+  rebuilt its entire model on every frame, for the rest of the run. Each
+  pane now rebuilds once per reclaim instead of once per frame.
+
+  Two defects in the reclaim itself go with it: clearing the atlas gave up
+  as soon as its first page looked untouched, so an atlas whose first page
+  happened to be idle while the rest were full cleared nothing at all; and
+  it could hand the shader more pages than the shader is able to sample.
+  The safety net that has been covering for this still runs, and should
+  now almost never have to.
+
+- **The Anthropic 5h / 7d utilization setting now survives app restarts.**
+  The toggle used to update only the running app, so every new launch silently
+  turned the status-bar meter off again. wmux now remembers the explicit opt-in
+  and resumes usage polling after restoring the session. Older or malformed
+  session files still default safely to off. (#906)
+
+- **The "work finished" alarm now fires only when a turn has actually ended.**
+  Previously the completion toast fired on raw stop-shaped signals the moment
+  they arrived — a `Stop` hook while a background build was still running, a
+  subagent finishing, a TUI repaint — telling you work was done when it
+  wasn't. Every alarm path now runs a verdict machine: signals are normalized
+  (working / attention / stop / session boundary), pass a turn gate (did the
+  agent actually work this turn?), and survive a ~1.5s provisional window that
+  a follow-up tool call or new output can rebut. The hook bridge also counts
+  background tasks the agent started but that have not reported completion,
+  and holds the alarm while they run. (#907)
+
+- **Subagent finishes no longer toast.** A nested subagent returning to its
+  parent was indistinguishable from the pane's lead turn ending; it is now
+  trace-only. (#907)
+
+- **Resize repaints cannot swallow a real completion alarm.** A pane
+  switch/split used to trigger a full TUI redraw that could cancel a pending
+  completion window; repaint bursts are now flagged and excluded from the
+  alarm's working-evidence feed (status dots still update as before). (#907)
+
+- **wmux now tells you when an update is ready to install.** It downloaded
+  updates in the background and then said nothing, so the only way anyone found
+  out was to open Settings and press "Check for updates" — which is why it
+  looked like auto-update was broken on both Windows and macOS. A notice now
+  appears in the bottom-right corner the moment an update is ready, names the
+  version you are on and the one you would move to, and installs with one click.
+  It stays put until you act on it rather than fading away. Settings shows the
+  same two versions on their own lines, and its button says what it does
+  ("Install now") instead of repeating the status. Installing still ends live
+  sessions, and it still only happens when you say so. (#897)
+
+- **An install that cannot proceed says so.** Pressing "Install now" and having
+  it refuse — no space, an installer already consumed, a dev build — used to
+  report only into the Settings panel, which is closed by definition whenever
+  the notice is what you are looking at. So the button did nothing visible,
+  which is the same silence the notice exists to end. (#897)
+
+- **The Settings update widget no longer forgets a downloaded update.** A
+  background check re-announces the same release every poll, and the widget
+  took that as "available again" — so a ready-to-install update turned back
+  into a "Check for updates" button within the hour and stayed that way. (#897)
+
+- **The update notice is translated.** The sentence warning that installing
+  closes every pane now ships in all 23 languages rather than only English,
+  Korean and Chinese. (#897)
+
+- Chinese (zh) locale catches up with the `fanout.roleLabel` /
+  `fanout.roleNone` keys added in #891 (#911).
+
 ## [3.42.0] — 2026-08-14
 
 ### Added
