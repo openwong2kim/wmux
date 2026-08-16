@@ -131,7 +131,7 @@ export default function Sidebar() {
             type="text"
             value={wsSearch}
             onChange={(e) => setWsSearch(e.target.value)}
-            placeholder="Search workspaces…"
+            placeholder={t('sidebar.searchPlaceholder')}
             className="w-full px-2 py-1 text-xs bg-[var(--bg-surface)] text-[var(--text-main)] border border-[var(--bg-surface)] rounded outline-none focus:border-[var(--text-muted)] placeholder:text-[var(--text-muted)]"
           />
         </div>

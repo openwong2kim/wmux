@@ -179,6 +179,7 @@ function CreateChannelModal({
   onCreate,
   anchorRef,
 }: CreateChannelModalProps): React.ReactElement {
+  const t = useT();
   const [name, setName] = useState('');
   const [visibility] = useState<ChannelVisibility>('public');
   const [submitAttempted, setSubmitAttempted] = useState(false);
@@ -209,10 +210,10 @@ function CreateChannelModal({
   const field = computeNameFieldState(name);
   const showInlineError = submitAttempted && !field.valid;
   const errorMessage = !field.canonical
-    ? 'Name is required.'
+    ? t('channel.nameRequired')
     : field.canonical.length > CHANNEL_NAME_MAX
-      ? `Name is longer than ${CHANNEL_NAME_MAX} characters.`
-      : 'Use lowercase letters, digits, and hyphens (must start with a letter or digit).';
+      ? t('channel.nameTooLong', { max: CHANNEL_NAME_MAX })
+      : t('channel.nameRules');
 
   // Close on outside click — same delayed mousedown pattern as PresetPicker.
   useEffect(() => {
@@ -256,7 +257,7 @@ function CreateChannelModal({
       } else {
         // Don't fail silently — the daemon rejected it (most often the name is
         // already taken). Surface it so the user knows the click did something.
-        setSubmitError('Could not create the channel — that name may already be taken.');
+        setSubmitError(t('channel.createFailed'));
       }
     } finally {
       setCreating(false);
@@ -291,14 +292,14 @@ function CreateChannelModal({
     <div
       ref={ref}
       role="dialog"
-      aria-label="Create a new channel"
+      aria-label={t('channel.createDialogLabel')}
       data-create-channel-modal
       className="fixed z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-3 px-3 text-xs font-mono"
       style={{ top: pos.top, right: pos.right }}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-2">
         <label className="flex flex-col gap-1">
-          <span className="text-[var(--text-muted)]">Channel name</span>
+          <span className="text-[var(--text-muted)]">{t('channel.nameLabel')}</span>
           <input
             type="text"
             autoFocus
@@ -320,7 +321,7 @@ function CreateChannelModal({
           />
           {field.raw && field.canonical !== field.raw.trim().toLowerCase() && (
             <span className="text-[var(--text-muted)] text-[10px]">
-              Will be saved as <span className="text-[var(--text-main)]">#{field.canonical}</span>
+              {t('channel.willBeSavedAs')} <span className="text-[var(--text-main)]">#{field.canonical}</span>
             </span>
           )}
         </label>
@@ -351,7 +352,7 @@ function CreateChannelModal({
             className={`px-2 py-0.5 text-caption rounded text-[var(--text-subtle)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
             onClick={onClose}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             type="submit"
@@ -359,7 +360,7 @@ function CreateChannelModal({
             className={`px-2 py-0.5 text-caption rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${FOCUS_RING}`}
             disabled={!field.valid || creating}
           >
-            {creating ? 'Creating…' : 'Create'}
+            {creating ? t('channel.creating') : t('channel.create')}
           </button>
         </div>
       </form>

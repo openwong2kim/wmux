@@ -742,7 +742,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     >
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-surface)] border-b border-[var(--bg-mantle)] shrink-0 text-xs">
-        <span className="text-[var(--text-main)] font-semibold">Diff</span>
+        <span className="text-[var(--text-main)] font-semibold">{t('diff.title')}</span>
         {meta && <span className="text-[var(--text-muted)] text-[10px]">{meta.branch}</span>}
         {/* 워크스페이스 모드 — 브랜치는 스냅샷에서(태스크 meta 없음). */}
         {!isTask && data && (
@@ -753,7 +753,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           className={`px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED}`}
           onClick={() => void load()}
         >
-          Reload
+          {t('diff.reload')}
         </button>
         {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
         {isTask && (
@@ -799,7 +799,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       <div className="flex-1 flex overflow-hidden">
         {loading && (
           <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
-            Loading...
+            {t('diff.loading')}
           </div>
         )}
         {!loading && error && (

@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
-import { t } from '../../i18n';
+import { renderSentence } from '../../i18n/renderSentence';
+import { useT } from '../../hooks/useT';
 
 /**
  * Approval prompt for `a2a_task_send` requests with `execute: true`.
@@ -11,6 +12,10 @@ import { t } from '../../i18n';
  * Claude CLI in `--permission-mode bypassPermissions` mode in our workspace.
  */
 export default function ExecuteApprovalDialog() {
+  // useT(), not the module-level `t`: this dialog can be on screen when the
+  // locale changes, and it is one the user cannot dismiss and reopen to pick
+  // up the new language.
+  const t = useT();
   const approval = useStore((s) => s.pendingExecuteApproval);
   // A1: id→name 해석만 필요 — {id,name} 투영만 구독해 metadata/surface 변경에
   // 리렌더되지 않게 한다.
@@ -27,8 +32,8 @@ export default function ExecuteApprovalDialog() {
 
   if (!approval) return null;
 
-  const senderName = workspaces.find((w) => w.id === approval.senderWorkspaceId)?.name ?? approval.senderWorkspaceId ?? 'unknown sender';
-  const receiverName = workspaces.find((w) => w.id === approval.receiverWorkspaceId)?.name ?? approval.receiverWorkspaceId ?? 'unknown receiver';
+  const senderName = workspaces.find((w) => w.id === approval.senderWorkspaceId)?.name ?? approval.senderWorkspaceId ?? t('approval.unknownSender');
+  const receiverName = workspaces.find((w) => w.id === approval.receiverWorkspaceId)?.name ?? approval.receiverWorkspaceId ?? t('approval.unknownReceiver');
   // Same-workspace execute (an agent asking to spawn an autonomous agent in its
   // OWN workspace). The default "remote A2A caller … in this workspace" wording
   // implies an inter-workspace handoff and reads as harmless; be explicit so the
@@ -67,27 +72,29 @@ export default function ExecuteApprovalDialog() {
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            {fanout ? 'Fan-out requested' : 'Background execution requested'}
+            {fanout ? t('approval.fanoutTitle') : t('approval.executeTitle')}
           </p>
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
           {fanout ? (
-            <>
-              An agent wants to fan out{' '}
-              <span style={{ color: 'var(--accent-red)' }}>{fanout.taskCount} isolated task{fanout.taskCount === 1 ? '' : 's'}</span>
-              {' '}— each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.
-            </>
+            renderSentence(t('approval.fanoutSentence'), {
+              tasks: (
+                <span style={{ color: 'var(--accent-red)' }}>
+                  {fanout.taskCount === 1
+                    ? t('approval.fanoutTasks', { count: fanout.taskCount })
+                    : t('approval.fanoutTasksPlural', { count: fanout.taskCount })}
+                </span>
+              ),
+            })
           ) : sameWs ? (
-            <>
-              An agent in <span style={{ color: 'var(--accent-red)' }}>this workspace</span> wants to spawn
-              another autonomous Claude CLI with{' '}
-              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> in the same workspace.
-            </>
+            renderSentence(t('approval.sameWsSentence'), {
+              workspace: <span style={{ color: 'var(--accent-red)' }}>{t('approval.sameWsWorkspace')}</span>,
+              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
+            })
           ) : (
-            <>
-              A remote A2A caller wants to spawn a Claude CLI with{' '}
-              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> in this workspace.
-            </>
+            renderSentence(t('approval.remoteSentence'), {
+              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
+            })
           )}
         </p>
         <div
@@ -96,18 +103,18 @@ export default function ExecuteApprovalDialog() {
         >
           {fanout ? (
             <>
-              <div><span style={{ color: 'var(--text-subtle)' }}>caller:</span> {senderName}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>repo:</span> {fanout.repoPath}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>tasks:</span> {fanout.taskCount}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.repo')}</span> {fanout.repoPath}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.tasks')}</span> {fanout.taskCount}</div>
             </>
           ) : (
             <>
-              <div><span style={{ color: 'var(--text-subtle)' }}>from:</span> {senderName}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>to:</span> {receiverName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.from')}</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.to')}</span> {receiverName}</div>
               {approval.cwd ? (
-                <div><span style={{ color: 'var(--text-subtle)' }}>cwd:</span> {approval.cwd}</div>
+                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.cwd')}</span> {approval.cwd}</div>
               ) : null}
-              <div><span style={{ color: 'var(--text-subtle)' }}>task:</span> {approval.taskId}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.task')}</span> {approval.taskId}</div>
             </>
           )}
         </div>
@@ -124,7 +131,7 @@ export default function ExecuteApprovalDialog() {
             overflowY: 'auto',
           }}
         >
-          {approval.messagePreview || '<empty message>'}
+          {approval.messagePreview || t('approval.emptyMessage')}
         </div>
         <div className="flex items-center justify-between">
           {fanout ? (
@@ -132,7 +139,7 @@ export default function ExecuteApprovalDialog() {
             // A2A background execution and fan-out deliberately does not ride
             // it, so offering it here would promise something it does not do.
             <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-              fan-out always asks — auto-approve does not cover it
+              {t('approval.fanoutAutoApproveHint')}
             </span>
           ) : (
             <label className="flex items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
@@ -147,7 +154,7 @@ export default function ExecuteApprovalDialog() {
         </div>
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-            auto-deny in {remainingSec}s
+            {t('approval.autoDeny', { sec: remainingSec })}
           </span>
           <div className="flex gap-2">
             <button
@@ -155,14 +162,14 @@ export default function ExecuteApprovalDialog() {
               className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
             >
-              Deny
+              {t('approval.deny')}
             </button>
             <button
               onClick={() => resolveExecuteApproval(approval.approvalId, true)}
               className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
             >
-              Approve
+              {t('approval.approve')}
             </button>
           </div>
         </div>

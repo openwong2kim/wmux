@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import type { Department, TeamMember } from '../../../shared/types';
 import CompanyMemberItem from '../../../company/renderer/components/CompanyMemberItem';
 import AddMemberDialog from '../../../company/renderer/components/AddMemberDialog';
@@ -9,6 +10,7 @@ import { spawnMember, destroyCompanyWithCleanup } from '../../../company/rendere
 // ─── Department section ──────────────────────────────────────────────────────
 
 function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts: Record<string, number> }) {
+  const t = useT();
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const removeDepartment = useStore((s) => s.removeDepartment);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -30,7 +32,7 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
       <div
         className="flex items-center justify-between px-3 py-1 cursor-pointer select-none group"
         onContextMenu={(e) => { e.preventDefault(); setConfirmDelete(true); }}
-        title="Right-click to remove"
+        title={t('company.deptRemoveHint')}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>{'├─'}</span>
@@ -43,13 +45,13 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
         </div>
         <div className="flex items-center gap-1.5">
           {activeCount > 0 && (
-            <span className="text-[8px] font-mono" style={{ color: 'var(--accent-blue)' }}>Active</span>
+            <span className="text-[8px] font-mono" style={{ color: 'var(--accent-blue)' }}>{t('company.active')}</span>
           )}
           <button
             className="text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
             style={{ color: 'var(--accent-green)' }}
             onClick={() => setAddMemberOpen(true)}
-            title="Add member"
+            title={t('company.addMember')}
           >
             +
           </button>
@@ -60,7 +62,7 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
       {confirmDelete && (
         <div className="mx-2 mb-1 px-2 py-1.5 rounded" style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid rgba(243,139,168,0.3)' }}>
           <p className="text-[9px] font-mono mb-1.5" style={{ color: 'var(--accent-red)' }}>
-            Remove "{dept.name}"?
+            {t('company.removeDeptConfirm', { name: dept.name })}
           </p>
           <div className="flex gap-1.5">
             <button
@@ -68,14 +70,14 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
               onClick={() => { removeDepartment(dept.id); setConfirmDelete(false); }}
             >
-              Remove
+              {t('common.remove')}
             </button>
             <button
               className="flex-1 text-[9px] font-mono rounded py-0.5 transition-colors"
               style={{ color: 'var(--text-muted)', border: '1px solid var(--text-muted)' }}
               onClick={() => setConfirmDelete(false)}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -139,6 +141,7 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
 // ─── CEO row ─────────────────────────────────────────────────────────────────
 
 function CeoRow({ ceoWorkspaceId }: { ceoWorkspaceId?: string }) {
+  const t = useT();
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const workspace = useStore((s) => s.workspaces.find((w) => w.id === ceoWorkspaceId));
   const isProvisioned = !!ceoWorkspaceId && !!workspace;
@@ -164,7 +167,7 @@ function CeoRow({ ceoWorkspaceId }: { ceoWorkspaceId?: string }) {
         CEO
       </span>
       <span className="ml-auto text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
-        {isProvisioned ? 'Active' : 'Idle'}
+        {isProvisioned ? t('company.active') : t('company.idle')}
       </span>
     </button>
   );
@@ -173,6 +176,7 @@ function CeoRow({ ceoWorkspaceId }: { ceoWorkspaceId?: string }) {
 // ─── Main CompanyPanel ───────────────────────────────────────────────────────
 
 export default function CompanyPanel() {
+  const t = useT();
   const company = useStore((s) => s.company);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   const messageQueue = useStore((s) => s.messageQueue);
@@ -189,14 +193,14 @@ export default function CompanyPanel() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-4 text-center gap-3">
         <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-          No company created yet.
+          {t('company.empty')}
         </p>
         <button
           onClick={() => setCompanyViewVisible(true)}
           className="px-4 py-1.5 text-[11px] font-mono font-bold rounded transition-opacity hover:opacity-90"
           style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-base)' }}
         >
-          Create Company
+          {t('company.create')}
         </button>
       </div>
     );
@@ -218,7 +222,7 @@ export default function CompanyPanel() {
               {company.name}
             </p>
             <p className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
-              {company.departments.length} depts / {provisionedCount}/{totalMembers} active
+              {t('company.stats', { depts: company.departments.length, provisioned: provisionedCount, total: totalMembers })}
             </p>
           </div>
           <div className="flex items-center gap-1.5">
@@ -226,13 +230,13 @@ export default function CompanyPanel() {
               onClick={() => setCompanyViewVisible(true)}
               className="text-[9px] font-mono transition-colors"
               style={{ color: 'var(--accent-blue)' }}
-              title="Manage company"
+              title={t('company.manageTitle')}
             >
-              Manage
+              {t('company.manage')}
             </button>
             <button
               onClick={() => {
-                if (confirm('Destroy company and all teams?')) {
+                if (confirm(t('company.destroyConfirm'))) {
                   // M6 TODOS #4 — fire-and-forget the async helper here
                   // (no surrounding UI we need to flip after). The
                   // internal Promise.all on pty.dispose guards the store
@@ -244,7 +248,7 @@ export default function CompanyPanel() {
               style={{ color: 'var(--text-muted)' }}
               onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-red)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-              title="Destroy company"
+              title={t('company.destroyTitle')}
             >
               {'\u2715'}
             </button>
@@ -260,7 +264,7 @@ export default function CompanyPanel() {
         <div className="px-1 pb-2">
           {company.departments.length === 0 && (
             <p className="text-[9px] font-mono px-2 py-1" style={{ color: 'var(--text-subtle)' }}>
-              No departments yet.
+              {t('company.noDepts')}
             </p>
           )}
           {company.departments.map((dept) => (
@@ -277,7 +281,7 @@ export default function CompanyPanel() {
             onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-blue)'; e.currentTarget.style.borderColor = 'var(--accent-blue)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--bg-surface)'; }}
           >
-            + Add Department
+            {t('company.addDept')}
           </button>
         </div>
       </div>

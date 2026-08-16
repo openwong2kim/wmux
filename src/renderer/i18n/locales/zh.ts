@@ -35,6 +35,144 @@ export const zh = {
   'preset.grid-4.name': '2×2 网格',
   'preset.grid-4.description': '四个面板网格排列',
 
+  // Sidebar — workspace search
+  'sidebar.searchPlaceholder': '搜索工作区…',
+
+  // Sidebar — Missions (fan-out tasks)
+  'missions.open': '进行中',
+  'missions.closed': '已关闭',
+  'missions.openChannel': '打开任务频道',
+  'missions.openChannelFor': '为「{title}」打开任务频道',
+  'missions.title': '任务（{count}）',
+  'missions.done': '已完成（{count}）',
+
+  // Sidebar — Company mode
+  'company.deptRemoveHint': '右键移除',
+  'company.active': '活跃',
+  'company.idle': '空闲',
+  'company.addMember': '添加成员',
+  'company.removeDeptConfirm': '移除「{name}」？',
+  'company.empty': '尚未创建公司。',
+  'company.create': '创建公司',
+  'company.stats': '{depts} 个部门 / {provisioned}/{total} 活跃',
+  'company.manageTitle': '管理公司',
+  'company.manage': '管理',
+  'company.destroyConfirm': '销毁公司及所有团队？',
+  'company.destroyTitle': '销毁公司',
+  'company.noDepts': '还没有部门。',
+  'company.addDept': '+ 添加部门',
+
+  // Editor / file-tree / error surfaces
+  'editor.unableToRead': '无法读取文件',
+  'editor.reloadTitle': '重新加载文件',
+  'editor.reload': '重新加载',
+  'editor.modeLabel': '编辑器模式',
+  'editor.switchToView': '切换到查看模式',
+  'editor.view': '查看',
+  'editor.switchToEdit': '切换到编辑模式',
+  'editor.edit': '编辑',
+  'editor.loading': '加载中…',
+  'filetree.noDirectory': '无目录',
+  'filetree.noCwd': '无 CWD',
+  'filetree.refresh': '刷新',
+  'filetree.empty': '为空或不可用',
+  'filetree.noCwdDetected': '未检测到工作目录',
+  'filetree.closePreview': '关闭预览',
+  'filetree.loading': '加载中…',
+  'filetree.readFailed': '无法读取文件。文件读取 API 不可用。',
+  'error.crashed': '崩溃：{message}',
+  'error.retry': '重试',
+
+  // Toast
+  'toast.goToTerminal': '转到终端',
+  'toast.dismiss': '关闭',
+  'toast.notifications': '通知',
+
+  // Workspace multiview viewport
+  'workspaceViewport.removeFromMultiview': '从多视图移除',
+  'workspaceViewport.removeFromMultiviewFor': '将「{name}」从多视图移除',
+
+  // Notification panel
+  'notification.markWorkspaceRead': '标为已读',
+  'notification.close': '关闭通知',
+
+  // Onboarding overlay
+  'onboarding.step': '第 {n} 步',
+  'onboarding.skip': '跳过',
+  'onboarding.back': '返回',
+  'onboarding.done': '完成',
+  'onboarding.next': '下一步',
+
+  // Relative time / status bar
+  'timeAgo.justNow': '刚刚',
+  'timeAgo.minutes': '{n} 分钟前',
+  'timeAgo.hours': '{n} 小时前',
+  'timeAgo.days': '{n} 天前',
+  'statusbar.notifSingular': '通知',
+  'statusbar.notifPlural': '通知',
+  'statusbar.unreadAria': '{count} 条未读{noun}，点击打开面板',
+
+  // Usage meter (Anthropic 5h/7d widget)
+  'usage.tooltipSession': '5 小时：{pct}%',
+  'usage.tooltipWeekly': '7 天：{pct}%',
+  'usage.tooltipReset': '（{countdown} 后重置）',
+  'usage.tooltipPlan': '套餐：{plan}',
+  'usage.tooltipFetched': '获取于：{fetched}',
+
+  // Deck fleet roster
+  'deck.fleetShell': '终端',
+  'deck.fleetPreferredRole': '首选角色 — 编排器会把匹配的工作路由到这里',
+  'deck.fleetRolePlaceholder': '角色…',
+  'deck.fleetRoleAria': '{label} 的角色',
+  'deck.orchestratorModelDefault': '默认',
+  'deck.orchestratorModelTitle': '编排器模型',
+  'fleet.agent': '智能体',
+
+  // Diff panel
+  'diff.title': '差异',
+  'diff.reload': '重新加载',
+  'diff.loading': '加载中…',
+
+  // Channels — create-channel modal
+  'channel.createDialogLabel': '创建新频道',
+  'channel.nameLabel': '频道名称',
+  'channel.nameRequired': '名称必填。',
+  'channel.nameTooLong': '名称超过 {max} 个字符。',
+  'channel.nameRules': '使用小写字母、数字和连字符（必须以字母或数字开头）。',
+  'channel.willBeSavedAs': '将保存为',
+  'channel.createFailed': '无法创建频道 — 该名称可能已被占用。',
+  'channel.create': '创建',
+  'channel.creating': '创建中…',
+
+  // Approval dialogs
+  'approval.unknownSender': '未知发送方',
+  'approval.unknownReceiver': '未知接收方',
+  'approval.fanoutTitle': '请求 Fan-out',
+  'approval.executeTitle': '请求后台执行',
+  'approval.fanoutSentence': '一个智能体想要 Fan-out {tasks} — 每个都会创建 git worktree + 分支，并在新工作区中生成自主智能体 CLI。',
+  // 中文无单复数之分，两个键内容相同。
+  'approval.fanoutTasks': '{count} 个隔离任务',
+  'approval.fanoutTasksPlural': '{count} 个隔离任务',
+  'approval.sameWsWorkspace': '此工作区',
+  'approval.sameWsSentence': '{workspace} 中的一个智能体想要用 {mode} 在同一工作区中生成另一个自主 Claude CLI。',
+  'approval.remoteSentence': '远程 A2A 调用方想要用 {mode} 在此工作区中生成 Claude CLI。',
+  'approval.caller': '调用方：',
+  'approval.repo': '仓库：',
+  'approval.tasks': '任务数：',
+  'approval.from': '来自：',
+  'approval.to': '目标：',
+  'approval.cwd': '工作目录：',
+  'approval.task': '任务：',
+  'approval.emptyMessage': '<空消息>',
+  'approval.fanoutAutoApproveHint': 'fan-out 始终会询问 — 自动批准不适用于它',
+  'approval.autoDeny': '{sec} 秒后自动拒绝',
+  'approval.deny': '拒绝',
+  'approval.approve': '批准',
+
+  // Permission approval dialog
+  'permission.pluginTitle': '插件请求权限',
+  'permission.pluginLabel': '插件：',
+
   // Workspace
   'workspace.agentRunning': '智能体运行中',
   'workspace.agentComplete': '智能体已完成',
@@ -190,6 +328,11 @@ export const zh = {
   'accounts.ageMinutes': '{n} 分钟前',
   'accounts.ageHours': '{n} 小时前',
   'accounts.unregisterTitle': '注销（不会删除目录）',
+  'accounts.claudeAccount': 'Claude 账号',
+  'accounts.codexAccount': 'Codex 账号',
+  'accounts.defaultAccount': '默认账号',
+  'accounts.notLoggedIn': '未登录',
+  'accounts.newTerminalsNote': '仅对新终端生效；正在运行的终端保持原账号。',
   'settings.shortcuts': '键盘快捷键',
   'settings.tabGeneral': '常规',
   'settings.tabAppearance': '外观',

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
 
@@ -271,6 +272,7 @@ function TreeItem({
 }
 
 export default function FileTreePanel({ position }: FileTreePanelProps) {
+  const t = useT();
   // A1: 활성 ws OBJECT만 구독(cwd/pane 트리 파생) — 배경 ws churn 무시.
   const activeWorkspace = useStore(selectActiveWorkspace);
 
@@ -452,15 +454,15 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--bg-surface)] shrink-0">
         <span
           className="text-[var(--text-sub)] truncate flex-1 mr-2"
-          title={cwd ?? 'No directory'}
+          title={cwd ?? t('filetree.noDirectory')}
           {...tokenAttrs('textSub', 'text')}
         >
-          {cwd ? shortenPath(cwd) : 'No CWD'}
+          {cwd ? shortenPath(cwd) : t('filetree.noCwd')}
         </span>
         <button
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors text-sm"
           onClick={() => setRefreshKey((k) => k + 1)}
-          title="Refresh"
+          title={t('filetree.refresh')}
           {...tokenAttrs('textMuted', 'text')}
         >
           &#x21BB;
@@ -471,12 +473,12 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       <div className={`overflow-y-auto overflow-x-hidden py-1 ${previewFile ? 'flex-1 min-h-0' : 'flex-1'}`}>
         {tree.length === 0 && cwd && (
           <div className="px-3 py-2 text-[var(--text-muted)] text-[10px]">
-            Empty or not available
+            {t('filetree.empty')}
           </div>
         )}
         {!cwd && (
           <div className="px-3 py-2 text-[var(--text-muted)] text-[10px]">
-            No working directory detected
+            {t('filetree.noCwdDetected')}
           </div>
         )}
         {tree.map((node) => (
@@ -501,7 +503,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
             <button
               className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors text-xs leading-none px-1"
               onClick={closePreview}
-              title="Close preview"
+              title={t('filetree.closePreview')}
             >
               &#x2715;
             </button>
@@ -509,11 +511,11 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
           {/* Preview Content */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-1.5 text-[11px] leading-relaxed">
             {previewLoading && (
-              <div className="text-[var(--text-muted)] text-[10px] py-2">Loading...</div>
+              <div className="text-[var(--text-muted)] text-[10px] py-2">{t('filetree.loading')}</div>
             )}
             {!previewLoading && previewContent === null && (
               <div className="text-[var(--text-muted)] text-[10px] py-2">
-                Unable to read file. File read API not available.
+                {t('filetree.readFailed')}
               </div>
             )}
             {!previewLoading && previewContent !== null && renderedMarkdown}

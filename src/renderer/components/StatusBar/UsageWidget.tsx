@@ -15,6 +15,7 @@
 
 import type { ReactElement } from 'react';
 import { useT } from '../../hooks/useT';
+import { t } from '../../i18n';
 
 export type UsageStatus =
   | 'idle'
@@ -73,12 +74,12 @@ export function formatFetchedAgo(fetchedAtMs: number, nowMs: number): string {
   if (!fetchedAtMs) return '';
   const ageMs = Math.max(0, nowMs - fetchedAtMs);
   const ageMin = Math.floor(ageMs / 60_000);
-  if (ageMin <= 0) return 'just now';
-  if (ageMin < 60) return `${ageMin}m ago`;
+  if (ageMin <= 0) return t('timeAgo.justNow');
+  if (ageMin < 60) return t('timeAgo.minutes', { n: ageMin });
   const ageHr = Math.floor(ageMin / 60);
-  if (ageHr < 24) return `${ageHr}h ago`;
+  if (ageHr < 24) return t('timeAgo.hours', { n: ageHr });
   const ageDay = Math.floor(ageHr / 24);
-  return `${ageDay}d ago`;
+  return t('timeAgo.days', { n: ageDay });
 }
 
 /**
@@ -168,10 +169,10 @@ function buildOkTooltip(args: {
   const weekly = formatResetCountdown(args.weeklyResetEpochSec, args.nowMs);
   const fetched = formatFetchedAgo(args.fetchedAtMs, args.nowMs);
   const lines = [
-    `5h: ${args.sessionPct}%${session ? ` (reset ${session})` : ''}`,
-    `7d: ${args.weeklyPct}%${weekly ? ` (reset ${weekly})` : ''}`,
+    t('usage.tooltipSession', { pct: args.sessionPct }) + (session ? ` ${t('usage.tooltipReset', { countdown: session })}` : ''),
+    t('usage.tooltipWeekly', { pct: args.weeklyPct }) + (weekly ? ` ${t('usage.tooltipReset', { countdown: weekly })}` : ''),
   ];
-  if (args.subscriptionType) lines.push(`Plan: ${args.subscriptionType}`);
-  if (fetched) lines.push(`Fetched: ${fetched}`);
+  if (args.subscriptionType) lines.push(t('usage.tooltipPlan', { plan: args.subscriptionType }));
+  if (fetched) lines.push(t('usage.tooltipFetched', { fetched }));
   return lines.join(' · ');
 }

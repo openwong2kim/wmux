@@ -9,6 +9,7 @@
  */
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import type { Toast, ToastLevel } from '../../stores/slices/toastSlice';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 
@@ -41,6 +42,7 @@ function ToastItem({
   target?: Toast['target'];
   persist?: boolean;
 }) {
+  const t = useT();
   const dismissToast = useStore((s) => s.dismissToast);
 
   useEffect(() => {
@@ -81,7 +83,7 @@ function ToastItem({
         <button
           type="button"
           onClick={jumpToTarget}
-          title="Go to terminal"
+          title={t('toast.goToTerminal')}
           className="flex-1 leading-snug text-left cursor-pointer bg-transparent border-0 p-0 text-inherit hover:underline"
         >
           {message}
@@ -109,7 +111,7 @@ function ToastItem({
       )}
       <button
         type="button"
-        aria-label="Dismiss"
+        aria-label={t('toast.dismiss')}
         onClick={() => dismissToast(id)}
         className="text-[color:var(--text-muted)] hover:text-[color:var(--text-main)] transition-colors flex-shrink-0"
       >
@@ -120,6 +122,7 @@ function ToastItem({
 }
 
 export default function ToastContainer() {
+  const t = useT();
   const toasts = useStore((s) => s.toasts);
 
   if (toasts.length === 0) return null;
@@ -127,17 +130,19 @@ export default function ToastContainer() {
   return (
     <div
       className="fixed bottom-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none"
-      aria-label="Notifications"
+      aria-label={t('toast.notifications')}
     >
-      {toasts.map((t) => (
-        <div key={t.id} className="pointer-events-auto">
+      {/* `toast`, not `t` — the translator is in scope here now, and shadowing
+          it makes the next t('…') added inside this map a TypeError. */}
+      {toasts.map((toast) => (
+        <div key={toast.id} className="pointer-events-auto">
           <ToastItem
-            id={t.id}
-            message={t.message}
-            level={t.level}
-            action={t.action}
-            target={t.target}
-            persist={t.persist}
+            id={toast.id}
+            message={toast.message}
+            level={toast.level}
+            action={toast.action}
+            target={toast.target}
+            persist={toast.persist}
           />
         </div>
       ))}

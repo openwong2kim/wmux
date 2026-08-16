@@ -42,6 +42,147 @@ export const en = {
   'preset.grid-4.name': '2x2 Grid',
   'preset.grid-4.description': 'Four panes in a grid',
 
+  // Sidebar — workspace search
+  'sidebar.searchPlaceholder': 'Search workspaces…',
+
+  // Sidebar — Missions (fan-out tasks)
+  'missions.open': 'open',
+  'missions.closed': 'closed',
+  'missions.openChannel': 'Open mission channel',
+  'missions.openChannelFor': 'Open mission channel for {title}',
+  'missions.title': 'Missions ({count})',
+  'missions.done': 'Done ({count})',
+
+  // Sidebar — Company mode
+  'company.deptRemoveHint': 'Right-click to remove',
+  'company.active': 'Active',
+  'company.idle': 'Idle',
+  'company.addMember': 'Add member',
+  'company.removeDeptConfirm': 'Remove "{name}"?',
+  'company.empty': 'No company created yet.',
+  'company.create': 'Create Company',
+  'company.stats': '{depts} depts / {provisioned}/{total} active',
+  'company.manageTitle': 'Manage company',
+  'company.manage': 'Manage',
+  'company.destroyConfirm': 'Destroy company and all teams?',
+  'company.destroyTitle': 'Destroy company',
+  'company.noDepts': 'No departments yet.',
+  'company.addDept': '+ Add Department',
+
+  // Editor / file-tree / error surfaces
+  'editor.unableToRead': 'Unable to read file',
+  'editor.reloadTitle': 'Reload file',
+  'editor.reload': 'Reload',
+  'editor.modeLabel': 'Editor mode',
+  'editor.switchToView': 'Switch to view mode',
+  'editor.view': 'View',
+  'editor.switchToEdit': 'Switch to edit mode',
+  'editor.edit': 'Edit',
+  'editor.loading': 'Loading...',
+  'filetree.noDirectory': 'No directory',
+  'filetree.noCwd': 'No CWD',
+  'filetree.refresh': 'Refresh',
+  'filetree.empty': 'Empty or not available',
+  'filetree.noCwdDetected': 'No working directory detected',
+  'filetree.closePreview': 'Close preview',
+  'filetree.loading': 'Loading...',
+  'filetree.readFailed': 'Unable to read file. File read API not available.',
+  'error.crashed': 'Crashed: {message}',
+  'error.retry': 'Retry',
+
+  // Toast
+  'toast.goToTerminal': 'Go to terminal',
+  'toast.dismiss': 'Dismiss',
+  'toast.notifications': 'Notifications',
+
+  // Workspace multiview viewport
+  'workspaceViewport.removeFromMultiview': 'Remove from multiview',
+  'workspaceViewport.removeFromMultiviewFor': 'Remove {name} from multiview',
+
+  // Notification panel
+  'notification.markWorkspaceRead': 'Mark workspace read',
+  'notification.close': 'Close notifications',
+
+  // Onboarding overlay
+  'onboarding.step': 'Step {n}',
+  'onboarding.skip': 'Skip',
+  'onboarding.back': 'Back',
+  'onboarding.done': 'Done',
+  'onboarding.next': 'Next',
+
+  // Relative time / status bar
+  'timeAgo.justNow': 'just now',
+  'timeAgo.minutes': '{n}m ago',
+  'timeAgo.hours': '{n}h ago',
+  'timeAgo.days': '{n}d ago',
+  'statusbar.notifSingular': 'notification',
+  'statusbar.notifPlural': 'notifications',
+  'statusbar.unreadAria': '{count} unread {noun}, click to open panel',
+
+  // Usage meter (Anthropic 5h/7d widget)
+  'usage.tooltipSession': '5h: {pct}%',
+  'usage.tooltipWeekly': '7d: {pct}%',
+  'usage.tooltipReset': '(reset {countdown})',
+  'usage.tooltipPlan': 'Plan: {plan}',
+  'usage.tooltipFetched': 'Fetched: {fetched}',
+
+  // Deck fleet roster
+  'deck.fleetShell': 'shell',
+  'deck.fleetPreferredRole': 'Preferred role — the orchestrator routes matching work here',
+  'deck.fleetRolePlaceholder': 'role…',
+  'deck.fleetRoleAria': '{label} role',
+  'deck.orchestratorModelDefault': 'Default',
+  'deck.orchestratorModelTitle': 'Orchestrator model',
+  'fleet.agent': 'agent',
+
+  // Diff panel
+  'diff.title': 'Diff',
+  'diff.reload': 'Reload',
+  'diff.loading': 'Loading...',
+
+  // Channels — create-channel modal
+  'channel.createDialogLabel': 'Create a new channel',
+  'channel.nameLabel': 'Channel name',
+  'channel.nameRequired': 'Name is required.',
+  'channel.nameTooLong': 'Name is longer than {max} characters.',
+  'channel.nameRules': 'Use lowercase letters, digits, and hyphens (must start with a letter or digit).',
+  'channel.willBeSavedAs': 'Will be saved as',
+  'channel.createFailed': 'Could not create the channel — that name may already be taken.',
+  'channel.create': 'Create',
+  'channel.creating': 'Creating…',
+
+  // Approval dialogs
+  'approval.unknownSender': 'unknown sender',
+  'approval.unknownReceiver': 'unknown receiver',
+  'approval.fanoutTitle': 'Fan-out requested',
+  'approval.executeTitle': 'Background execution requested',
+  // Whole sentences, with the emphasised parts as {slots} rendered by
+  // renderSentence(). Split into Intro/Mid/End keys these could not be
+  // translated at all: the word order lived in the JSX, and verb-final
+  // languages cannot be produced by filling fixed slots in English order.
+  'approval.fanoutSentence': 'An agent wants to fan out {tasks} — each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.',
+  'approval.fanoutTasks': '{count} isolated task',
+  'approval.fanoutTasksPlural': '{count} isolated tasks',
+  'approval.sameWsWorkspace': 'this workspace',
+  'approval.sameWsSentence': 'An agent in {workspace} wants to spawn another autonomous Claude CLI with {mode} in the same workspace.',
+  'approval.remoteSentence': 'A remote A2A caller wants to spawn a Claude CLI with {mode} in this workspace.',
+  'approval.caller': 'caller:',
+  'approval.repo': 'repo:',
+  'approval.tasks': 'tasks:',
+  'approval.from': 'from:',
+  'approval.to': 'to:',
+  'approval.cwd': 'cwd:',
+  'approval.task': 'task:',
+  'approval.emptyMessage': '<empty message>',
+  'approval.fanoutAutoApproveHint': 'fan-out always asks — auto-approve does not cover it',
+  'approval.autoDeny': 'auto-deny in {sec}s',
+  'approval.deny': 'Deny',
+  'approval.approve': 'Approve',
+
+  // Permission approval dialog
+  'permission.pluginTitle': 'Plugin requesting permissions',
+  'permission.pluginLabel': 'plugin:',
+
   // Workspace
   'workspace.agentRunning': 'Running',
   'workspace.agentComplete': 'Complete',
@@ -471,6 +612,11 @@ export const en = {
   'accounts.ageMinutes': '{n}m ago',
   'accounts.ageHours': '{n}h ago',
   'accounts.unregisterTitle': 'Unregister (does not delete the directory)',
+  'accounts.claudeAccount': 'Claude account',
+  'accounts.codexAccount': 'Codex account',
+  'accounts.defaultAccount': 'Default account',
+  'accounts.notLoggedIn': 'not logged in',
+  'accounts.newTerminalsNote': 'Applies to new terminals; running ones keep their account.',
   'settings.shortcuts': 'Keyboard Shortcuts',
   'settings.tabGeneral': 'General',
   'settings.tabTerminal': 'Terminal',

@@ -114,7 +114,13 @@ export function t(key: TranslationKey | (string & {}), vars?: Record<string, str
 
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
-      str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+      // Replacer FUNCTION, not a replacement string: `String.replace` reads
+      // `$&`, `$$`, "$`" and `$'` in a replacement string as patterns, so a
+      // value containing one would splice the match back into the result
+      // (`{message}` reappearing verbatim) instead of being inserted. Values
+      // used to be counts and names; they are now raw `Error.message`,
+      // agent-authored titles and pane titles carrying paths.
+      str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), () => String(v));
     }
   }
 

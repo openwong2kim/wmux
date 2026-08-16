@@ -2,7 +2,10 @@ import { createLeafPane, type Pane, type PaneBranch } from './types';
 
 export interface LayoutPreset {
   id: string;
+  /** English fallback label. The sidebar + menu renders `t(\`preset.${id}.name\`)`
+   *  instead; this raw value is still used by agent-facing persona text. */
   name: string;
+  /** English fallback description (see `name`). */
   description: string;
   /** Factory that creates a fresh pane tree each time */
   createRootPane: () => Pane;

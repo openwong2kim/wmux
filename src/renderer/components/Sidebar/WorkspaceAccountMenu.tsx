@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { IconChevron } from '../icons';
+import { useT } from '../../hooks/useT';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
 
@@ -22,6 +23,7 @@ export default function WorkspaceAccountMenu({
   workspaceId: string;
   flipLeft: boolean;
 }): React.ReactElement | null {
+  const t = useT();
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [bindings, setBindings] = useState<Partial<Record<Vendor, string>>>({});
   const [openVendor, setOpenVendor] = useState<Vendor | null>(null);
@@ -52,7 +54,7 @@ export default function WorkspaceAccountMenu({
 
   const submenuPos = flipLeft ? 'right-full mr-0.5' : 'left-full ml-0.5';
 
-  const vendorLabel: Record<Vendor, string> = { claude: 'Claude account', codex: 'Codex account' };
+  const vendorLabelKey: Record<Vendor, string> = { claude: 'accounts.claudeAccount', codex: 'accounts.codexAccount' };
 
   return (
     <>
@@ -71,7 +73,7 @@ export default function WorkspaceAccountMenu({
               className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}
             >
-              <span>{vendorLabel[vendor]}</span>
+              <span>{t(vendorLabelKey[vendor])}</span>
               {boundId && (
                 <span className="text-[10px] text-[var(--accent-amber)] truncate max-w-[90px]">
                   {vendorRows.find((r) => r.id === boundId)?.name ?? ''}
@@ -91,7 +93,7 @@ export default function WorkspaceAccountMenu({
                   onClick={() => bind(vendor, undefined)}
                 >
                   <span className="w-3 text-[var(--accent-amber)]">{!boundId ? '●' : ''}</span>
-                  <span className="text-[var(--text-muted)]">Default account</span>
+                  <span className="text-[var(--text-muted)]">{t('accounts.defaultAccount')}</span>
                 </button>
                 {vendorRows.map((r) => (
                   <button
@@ -100,13 +102,13 @@ export default function WorkspaceAccountMenu({
                     style={{ color: 'var(--text-main)' }}
                     onClick={() => bind(vendor, r.id)}
                     title={r.status.loggedIn
-                      ? (r.status.subscriptionType ? `${r.status.subscriptionType}` : 'logged in')
-                      : 'not logged in'}
+                      ? (r.status.subscriptionType ? `${r.status.subscriptionType}` : t('accounts.loggedIn'))
+                      : t('accounts.notLoggedIn')}
                   >
                     <span className="w-3 text-[var(--accent-amber)]">{boundId === r.id ? '●' : ''}</span>
                     <span className="truncate flex-1">{r.name}</span>
                     {!r.status.loggedIn && (
-                      <span className="text-[10px] text-[var(--accent-red)] shrink-0">logged out</span>
+                      <span className="text-[10px] text-[var(--accent-red)] shrink-0">{t('accounts.loggedOut')}</span>
                     )}
                     {r.status.subscriptionType && (
                       <span className="text-[10px] text-[var(--text-subtle)] shrink-0">{r.status.subscriptionType}</span>
@@ -114,7 +116,7 @@ export default function WorkspaceAccountMenu({
                   </button>
                 ))}
                 <div className="px-3 pt-1 mt-1 border-t border-[var(--bg-overlay)] text-[10px] text-[var(--text-muted)] leading-snug">
-                  Applies to new terminals; running ones keep their account.
+                  {t('accounts.newTerminalsNote')}
                 </div>
               </div>
             )}

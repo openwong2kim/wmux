@@ -46,6 +46,6 @@ describe('Sidebar — company mode wiring (regression guard)', () => {
   // can't silently regress to orphaned again.
 
   it('CompanyPanel still exposes its no-company empty state (the surface that was invisible)', () => {
-    expect(companyPanelSrc).toContain('No company created yet');
+    expect(companyPanelSrc).toContain("t('company.empty')");
   });
 });

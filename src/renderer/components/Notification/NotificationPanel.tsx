@@ -90,6 +90,8 @@ export interface NotificationPanelViewProps {
   emptyLabel: string;                // t('notification.empty')
   toggleHintLabel: string;           // t('notification.toggle')
   markAllReadLabel: string;          // t('notification.markAllRead')
+  markWorkspaceReadLabel: string;    // t('notification.markWorkspaceRead')
+  closeLabel: string;                // t('notification.close')
   clearLabel: string;                // t('notification.clear')
   onNotifClick: (notif: Notification) => void;
   onNotifKeyDown: (e: React.KeyboardEvent, notif: Notification) => void;
@@ -110,7 +112,7 @@ export interface NotificationPanelViewProps {
 export function NotificationPanelView(props: NotificationPanelViewProps): ReactElement {
   const {
     notifications, unreadCount, dialogLabel, emptyLabel, toggleHintLabel,
-    markAllReadLabel, clearLabel,
+    markAllReadLabel, markWorkspaceReadLabel, clearLabel, closeLabel,
     onNotifClick, onNotifKeyDown, onClose,
     onMarkAllRead, onMarkWorkspaceRead, onClear,
     firstUnreadRef, markAllReadBtnRef, listRef, onListScroll,
@@ -144,7 +146,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
                 ref={markAllReadBtnRef}
                 className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
                 onClick={onMarkAllRead}
-                aria-label="Mark all read"
+                aria-label={markAllReadLabel}
               >
                 {markAllReadLabel}
               </button>
@@ -152,9 +154,9 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
               <button
                 className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
                 onClick={onMarkWorkspaceRead}
-                aria-label="Mark workspace read"
+                aria-label={markWorkspaceReadLabel}
               >
-                Mark workspace read
+                {markWorkspaceReadLabel}
               </button>
               <button
                 className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors"
@@ -168,7 +170,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
           <button
             className="text-[var(--text-subtle)] hover:text-[var(--text-main)] text-sm transition-colors"
             onClick={onClose}
-            aria-label="Close notifications"
+            aria-label={closeLabel}
           >
             ✕
           </button>
@@ -382,6 +384,8 @@ export default function NotificationPanel() {
       emptyLabel={t('notification.empty')}
       toggleHintLabel={t('notification.toggle')}
       markAllReadLabel={t('notification.markAllRead')}
+      markWorkspaceReadLabel={t('notification.markWorkspaceRead')}
+      closeLabel={t('notification.close')}
       clearLabel={t('notification.clear')}
       onNotifClick={handleNotifClick}
       onNotifKeyDown={handleNotifKey}
