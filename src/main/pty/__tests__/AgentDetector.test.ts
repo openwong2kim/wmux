@@ -278,6 +278,63 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('Grok CLI (live capture 2026-08-16)', () => {
+    it('opens the gate on the version banner and reports waiting on the footer', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Grok 4.6 is here!\n');
+      expect(det.getLastAgent()).toBe('Grok');
+      const agents = cb.mock.calls.map((c) => (c[0] as { agent: string }).agent);
+      expect(agents).toContain('Grok');
+      const statuses = cb.mock.calls.map((c) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('waiting');
+    });
+
+    it('opens the gate on Help improve Grok (startup menu footer)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Help improve Grok                    [Opt out] [Opt in]\n');
+      expect(det.getLastAgent()).toBe('Grok');
+    });
+
+    it('does not open the gate on a bare Grok mention', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('we should compare this against Grok later\n');
+      expect(det.getLastAgent()).toBeNull();
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('opens the gate on the live composer footer (Grok N.N (high) always-approve)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('  ╰───────────────────────────── Grok 4.6 (high) · always-approve ─╯  \n');
+      expect(det.getLastAgent()).toBe('Grok');
+    });
+
+    it('does not flip to Claude when the Grok pane dumps this repo\'s detector source', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('  Help improve Grok                               [Opt out] [Opt in]  \n');
+      expect(det.getLastAgent()).toBe('Grok');
+      cb.mockClear();
+      // Exact shapes that live in AgentDetector.ts — a coding agent reading
+      // this file used to open Claude's compound gate and steal the pane.
+      det.feed("    agent: 'Claude Code',\n");
+      det.feed('const CLAUDE_PROMPT_RE = /bypass permissions on|shift\\+tab to cycle/;\n');
+      det.feed('      det.feed(\'  shift+tab to cycle\\n\');\n');
+      expect(det.getLastAgent()).toBe('Grok');
+      expect(det.getActiveAgents()).not.toContain('Claude Code');
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('feed() line splitting', () => {
     it('splits on \\n', () => {
       const det = new AgentDetector();
@@ -591,6 +648,17 @@ describe('AgentDetector', () => {
       // A waiting prompt opens it
       det.feed('  shift+tab to cycle\n');
       expect(det.getLastAgent()).toBe('Claude Code');
+    });
+
+    it('source quoting both Claude signals does NOT open the gate (Grok-reading-this-repo)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed("    agent: 'Claude Code',\n");
+      det.feed('const CLAUDE_PROMPT_RE = /bypass permissions on|shift\\+tab to cycle/;\n');
+      det.feed('      { regex: /shift\\+tab to cycle/,            status: \'waiting\' },\n');
+      expect(cb).not.toHaveBeenCalled();
+      expect(det.getLastAgent()).toBeNull();
     });
 
     it('a process monitor mentioning "claude-code" without prompts does NOT activate', () => {

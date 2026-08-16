@@ -53,6 +53,7 @@ export const AGENT_IDENTITIES = [
   { slug: 'copilot', display: 'GitHub Copilot CLI' },
   { slug: 'openclaude', display: 'OpenClaude' },
   { slug: 'kiro', display: 'Kiro CLI' },
+  { slug: 'grok', display: 'Grok' },
 ] as const;
 
 /** SLUG-form agent identifier. Derived, so it can never drift from the table. */

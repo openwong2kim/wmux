@@ -31,6 +31,7 @@ import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
+import { attachAltScreenWheel } from '../terminal/altScreenWheel';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1003,6 +1004,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // cell-shifted against the live screen.
     applyUnicodeWidthModel(terminal);
     terminal.open(container);
+
+    // Grok (and other fullscreen TUIs) live on the alt screen. xterm has no
+    // scrollback there and would turn the wheel into Up/Down, which Grok's
+    // prompt-focused view treats as history — not conversation scroll.
+    // PageUp/PageDown is what Grok documents for that case.
+    const detachAltScreenWheel = attachAltScreenWheel(terminal, container, (seq) => {
+      const id = ptyIdRef.current;
+      if (id) window.electronAPI.pty.write(id, seq);
+    });
 
     // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
     // 아래 Cmd+V/Ctrl+V/Ctrl+Shift+V 핸들러와 겹칠 때만 캡처 단계에서 차단한다. wmux는
@@ -2188,6 +2198,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
+      detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();
