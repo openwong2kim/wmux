@@ -3,8 +3,12 @@ import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
+import { decideMirrorKey } from './mirrorInput';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
+import { createAutoSelectionCopy } from '../../utils/autoSelectionCopy';
+import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { copySelectionWithFeedback } from '../../hooks/useTerminal';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
 import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 
@@ -94,6 +98,11 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   // re-subscribe the whole attach — only paneWrite needs the live value.
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
+  // Same reason: the key handler is installed once, at mount, and needs the
+  // CURRENT attach to write to. Listing `attachId` in that effect's deps would
+  // re-create the terminal on every reconnect and drop the mirrored scrollback.
+  const attachIdRef = useRef(attachId);
+  attachIdRef.current = attachId;
 
   /**
    * How many snapshot repaints are currently being fed to the parser. Second
@@ -311,7 +320,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   // font change would drop the mirrored scrollback, and the remote only
   // repaints on a fresh attach.
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
     const term = new Terminal({
       convertEol: false,
       scrollback: 2000,
@@ -342,7 +352,94 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     // leaking the instance (DOM, listeners, buffers) on every mount attempt.
     termRef.current = term;
     applyUnicodeWidthModel(term);
-    term.open(containerRef.current);
+    term.open(container);
+
+    // ---- Local editing conveniences (#895) --------------------------------
+    //
+    // Everything below acts on the LOCAL selection and the LOCAL clipboard, so
+    // none of it is the remote app's business — which is why a mirror can have
+    // it without becoming a second owner of anything. See mirrorInput.ts for
+    // the chord table and for what is deliberately still forwarded raw.
+
+    const isMac = window.electronAPI?.platform === 'darwin';
+
+    /** Bytes straight to the remote pane, bypassing xterm's encoder.
+     *  Read-only hosts are checked here as well as in the decision table: this
+     *  is the only function that can reach `paneWrite`, so the gate belongs on
+     *  it rather than only on its callers. */
+    const writeToRemote = (data: string): void => {
+      const id = attachIdRef.current;
+      if (!id || readOnlyRef.current) return;
+      window.electronAPI?.remote?.paneWrite(id, data);
+    };
+
+    // macOS only, and for the same reason useTerminal.ts registers it (see the
+    // long note there): ⌘V arrives as an NSMenu key equivalent that
+    // `preventDefault()` cannot suppress, so xterm's own native paste listener
+    // would race the async clipboard read below and both would write. The
+    // window keeps menu-bar Edit>Paste and synthetic paste events — which never
+    // run the keydown handler — working through xterm's own pipeline.
+    let lastPasteKeydownAt = 0;
+    const NATIVE_PASTE_RACE_WINDOW_MS = 300;
+    const blockNativePaste = (ev: Event): void => {
+      if (Date.now() - lastPasteKeydownAt > NATIVE_PASTE_RACE_WINDOW_MS) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    if (isMac) container.addEventListener('paste', blockNativePaste, true);
+
+    // Auto-copy on selection, debounced exactly like a local pane's. Silent on
+    // failure: the explicit Ctrl+C path surfaces its own error when retried.
+    const autoCopy = createAutoSelectionCopy({
+      write: (text) => window.clipboardAPI.writeText(text),
+    });
+    const selectionDisposable = term.onSelectionChange(() => {
+      autoCopy.onSelection(term.getSelection());
+    });
+
+    term.attachCustomKeyEventHandler((ev) => {
+      const decision = decideMirrorKey(ev, {
+        isMac,
+        hasSelection: term.hasSelection(),
+        readOnly: readOnlyRef.current === true,
+        hasCustomCtrlJBinding: useStore.getState().customKeybindings.some(
+          (kb) => kb.key === 'Ctrl+J',
+        ),
+      });
+      switch (decision.kind) {
+        case 'pass':
+          return true;
+        case 'copy':
+          void copySelectionWithFeedback(term, term.getSelection());
+          return false;
+        case 'write':
+          ev.preventDefault();
+          writeToRemote(decision.data);
+          return false;
+        case 'paste':
+          ev.preventDefault();
+          if (isMac) lastPasteKeydownAt = Date.now();
+          void (async () => {
+            const text = await window.clipboardAPI.readText();
+            if (!text) return;
+            // Text only. A local pane also pastes an image by writing the temp
+            // file's PATH, and that path names a file on THIS machine — on the
+            // other end of an attach it resolves to nothing, so the mirror
+            // stays quiet rather than typing a broken path into a live shell.
+            //
+            // `modes` is the mirror's own parse of the remote app's DECSET
+            // 2004, so bracketed paste is bracketed for the app that asked.
+            const modes = (term as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+            await pastePtyChunked((d) => writeToRemote(d), text, modes);
+          })().catch(() => { /* clipboard unavailable — nothing to recover */ });
+          return false;
+        case 'swallow':
+        default:
+          ev.preventDefault();
+          return false;
+      }
+    });
+
     // Painted on the BOX, not on the container xterm opened into. Once the fit
     // shrinks the grid below its cell, the container no longer covers the cell
     // and the letterbox margin would show `--bg-base` next to the terminal's
@@ -352,6 +449,11 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     // dispose the terminal and drop everything the remote has already sent.
     scheduleFitRef.current();
     return () => {
+      if (isMac) container.removeEventListener('paste', blockNativePaste, true);
+      selectionDisposable.dispose();
+      // Cancels a debounced write that would otherwise fire against a disposed
+      // terminal's last selection.
+      autoCopy.dispose();
       term.dispose();
       termRef.current = null;
     };
