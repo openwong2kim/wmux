@@ -156,15 +156,16 @@ export const en = {
   'approval.unknownReceiver': 'unknown receiver',
   'approval.fanoutTitle': 'Fan-out requested',
   'approval.executeTitle': 'Background execution requested',
-  'approval.fanoutIntro': 'An agent wants to fan out',
-  'approval.fanoutCount': '{count} isolated task(s)',
-  'approval.fanoutDesc': '— each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.',
+  // Whole sentences, with the emphasised parts as {slots} rendered by
+  // renderSentence(). Split into Intro/Mid/End keys these could not be
+  // translated at all: the word order lived in the JSX, and verb-final
+  // languages cannot be produced by filling fixed slots in English order.
+  'approval.fanoutSentence': 'An agent wants to fan out {tasks} — each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.',
+  'approval.fanoutTasks': '{count} isolated task',
+  'approval.fanoutTasksPlural': '{count} isolated tasks',
   'approval.sameWsWorkspace': 'this workspace',
-  'approval.sameWsIntro': 'An agent in',
-  'approval.sameWsMid': 'wants to spawn another autonomous Claude CLI with',
-  'approval.sameWsEnd': 'in the same workspace.',
-  'approval.remoteIntro': 'A remote A2A caller wants to spawn a Claude CLI with',
-  'approval.remoteEnd': 'in this workspace.',
+  'approval.sameWsSentence': 'An agent in {workspace} wants to spawn another autonomous Claude CLI with {mode} in the same workspace.',
+  'approval.remoteSentence': 'A remote A2A caller wants to spawn a Claude CLI with {mode} in this workspace.',
   'approval.caller': 'caller:',
   'approval.repo': 'repo:',
   'approval.tasks': 'tasks:',

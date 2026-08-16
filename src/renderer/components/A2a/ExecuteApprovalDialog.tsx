@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
-import { t } from '../../i18n';
+import { renderSentence } from '../../i18n/renderSentence';
+import { useT } from '../../hooks/useT';
 
 /**
  * Approval prompt for `a2a_task_send` requests with `execute: true`.
@@ -11,6 +12,10 @@ import { t } from '../../i18n';
  * Claude CLI in `--permission-mode bypassPermissions` mode in our workspace.
  */
 export default function ExecuteApprovalDialog() {
+  // useT(), not the module-level `t`: this dialog can be on screen when the
+  // locale changes, and it is one the user cannot dismiss and reopen to pick
+  // up the new language.
+  const t = useT();
   const approval = useStore((s) => s.pendingExecuteApproval);
   // A1: id→name 해석만 필요 — {id,name} 투영만 구독해 metadata/surface 변경에
   // 리렌더되지 않게 한다.
@@ -72,22 +77,24 @@ export default function ExecuteApprovalDialog() {
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
           {fanout ? (
-            <>
-              {t('approval.fanoutIntro')}{' '}
-              <span style={{ color: 'var(--accent-red)' }}>{t('approval.fanoutCount', { count: fanout.taskCount })}</span>
-              {' '}{t('approval.fanoutDesc')}
-            </>
+            renderSentence(t('approval.fanoutSentence'), {
+              tasks: (
+                <span style={{ color: 'var(--accent-red)' }}>
+                  {fanout.taskCount === 1
+                    ? t('approval.fanoutTasks', { count: fanout.taskCount })
+                    : t('approval.fanoutTasksPlural', { count: fanout.taskCount })}
+                </span>
+              ),
+            })
           ) : sameWs ? (
-            <>
-              {t('approval.sameWsIntro')} <span style={{ color: 'var(--accent-red)' }}>{t('approval.sameWsWorkspace')}</span>{' '}
-              {t('approval.sameWsMid')}{' '}
-              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> {t('approval.sameWsEnd')}
-            </>
+            renderSentence(t('approval.sameWsSentence'), {
+              workspace: <span style={{ color: 'var(--accent-red)' }}>{t('approval.sameWsWorkspace')}</span>,
+              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
+            })
           ) : (
-            <>
-              {t('approval.remoteIntro')}{' '}
-              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> {t('approval.remoteEnd')}
-            </>
+            renderSentence(t('approval.remoteSentence'), {
+              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
+            })
           )}
         </p>
         <div
