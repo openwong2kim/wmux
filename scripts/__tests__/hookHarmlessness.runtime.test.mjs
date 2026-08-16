@@ -230,7 +230,7 @@ describe('the matrix covers what wmux actually installs', () => {
     const agents = new Set(cases.map((c) => c.agent));
     // opencode is absent by design: it is an in-process plugin, not a spawned
     // hook, so it gets its own measurement below rather than a silent skip.
-    expect([...agents].sort()).toEqual(['claude', 'codex', 'openclaude']);
+    expect([...agents].sort()).toEqual(['claude', 'codex', 'kiro', 'openclaude']);
     for (const c of cases) expect(c.script).toMatch(/\.mjs$/);
     // The permission gate — the surface #898 lived on — must be in the matrix.
     expect(cases.some((c) => c.args.includes('--permission-gate'))).toBe(true);
