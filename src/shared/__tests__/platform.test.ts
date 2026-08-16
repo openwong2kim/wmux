@@ -10,7 +10,8 @@ import {
   platformChoice,
 } from '../platform';
 import {
-  isConptyDllLoadError,
+  classifyConptySpawnError,
+  spawnWithConptyPolicy,
   shouldUseBundledConpty,
   xtermWindowsBuildNumber,
 } from '../conptyWindows';
@@ -164,24 +165,95 @@ describe('xtermWindowsBuildNumber', () => {
   });
 });
 
-describe('isConptyDllLoadError', () => {
-  it('matches every error LoadConptyDll throws for a missing/corrupt DLL', () => {
-    // Strings from node-pty src/win/conpty.cc — re-check on node-pty upgrades.
-    expect(isConptyDllLoadError('Failed to get conpty.node module handle')).toBe(true);
-    expect(isConptyDllLoadError('Failed to get conpty.node module file name')).toBe(true);
-    expect(isConptyDllLoadError('Cannot find conpty.dll at C:\\app\\conpty\\conpty.dll')).toBe(true);
-    expect(isConptyDllLoadError('Failed to load conpty.dll')).toBe(true);
-    // conpty.cc:307 — DLL loaded but pseudoconsole creation failed (e.g. the
-    // bundled OpenConsole.exe blocked by antivirus). Without this match a
-    // damaged install would hard-fail the shell instead of falling back.
-    expect(isConptyDllLoadError('Cannot launch conpty')).toBe(true);
+describe('classifyConptySpawnError', () => {
+  // Every string here is copied from node-pty src/win/conpty.cc. The previous
+  // version of this suite asserted against
+  // `'Failed to start shell: The parameter is incorrect (87)'`, which node-pty
+  // never throws — so the case named "error 87 does not fall back" proved
+  // nothing, six lines under an assertion that DID make the real 87 message
+  // fall back. Re-check these on node-pty upgrades.
+
+  it('demotes immediately when the bundled DLL itself cannot load', () => {
+    for (const message of [
+      'Failed to get conpty.node module handle',
+      'Failed to get conpty.node module file name',
+      'Cannot find conpty.dll at C:\\app\\conpty\\conpty.dll',
+      'Failed to load conpty.dll',
+    ]) {
+      // A file that is absent stays absent; retrying buys nothing.
+      expect(classifyConptySpawnError(message, false), message).toBe('demote-to-inbox');
+      expect(classifyConptySpawnError(message, true), message).toBe('demote-to-inbox');
+    }
   });
 
-  it('does not match transient spawn failures like ConPTY error 87', () => {
-    // A broad match would let one transient 87 silently demote the pane to
-    // mouse-less in-box ConPTY forever — PaneSupervisor exists to absorb those.
-    expect(isConptyDllLoadError('Failed to start shell: The parameter is incorrect (87)')).toBe(false);
-    expect(isConptyDllLoadError('Cannot find module')).toBe(false);
-    expect(isConptyDllLoadError('')).toBe(false);
+  // conpty.cc:307 throws this for ANY failed HRESULT out of
+  // CreateNamedPipesAndPseudoConsole — a blocked OpenConsole.exe, but equally
+  // named-pipe exhaustion or ConPTY error 87. The message cannot separate
+  // them, so persistence does.
+  it('retries the bundled backend once before demoting on a pseudoconsole failure', () => {
+    expect(classifyConptySpawnError('Cannot launch conpty', false)).toBe('retry-bundled');
+    expect(classifyConptySpawnError('Cannot launch conpty', true)).toBe('demote-to-inbox');
+  });
+
+  it('rethrows anything else so the supervisor backoff still sees it', () => {
+    // The shape wmux itself treats as transient (daemon/index.ts checks
+    // `error code: 87`) must never reach the fallback.
+    for (const message of [
+      'Cannot create process, error code: 87',
+      'CreateProcess failed, error code: 5',
+      'Cannot find module',
+      '',
+    ]) {
+      expect(classifyConptySpawnError(message, false), message).toBe('rethrow');
+      expect(classifyConptySpawnError(message, true), message).toBe('rethrow');
+    }
+  });
+});
+
+describe('spawnWithConptyPolicy', () => {
+  it('reports the backend that actually started, on every spawn', () => {
+    const notices: string[] = [];
+    spawnWithConptyPolicy(() => 'pty', false, (_l, m) => notices.push(m));
+    expect(notices).toEqual(['ConPTY backend = in-box']);
+  });
+
+  it('recovers a one-off pseudoconsole failure without losing the bundled backend', () => {
+    let attempt = 0;
+    const notices: string[] = [];
+    const result = spawnWithConptyPolicy(
+      (useBundled) => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('Cannot launch conpty');
+        return useBundled ? 'bundled' : 'inbox';
+      },
+      true,
+      (_l, m) => notices.push(m),
+    );
+    // The whole point: a blip costs a retry, not this pane's mouse.
+    expect(result).toBe('bundled');
+    expect(attempt).toBe(2);
+    expect(notices.some((m) => m.includes('retrying once'))).toBe(true);
+  });
+
+  it('demotes once the failure proves persistent, and says so', () => {
+    const notices: string[] = [];
+    const result = spawnWithConptyPolicy(
+      (useBundled) => {
+        if (useBundled) throw new Error('Cannot launch conpty');
+        return 'inbox';
+      },
+      true,
+      (_l, m) => notices.push(m),
+    );
+    expect(result).toBe('inbox');
+    expect(notices.some((m) => m.includes('no mouse reporting'))).toBe(true);
+  });
+
+  it('lets a transient spawn error through to the caller', () => {
+    expect(() => spawnWithConptyPolicy(
+      () => { throw new Error('Cannot create process, error code: 87'); },
+      true,
+      () => {},
+    )).toThrow('error code: 87');
   });
 });

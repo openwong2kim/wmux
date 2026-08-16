@@ -13,7 +13,7 @@ import { expandTilde } from '../shared/expandTilde';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
-import { shouldUseBundledConpty, isConptyDllLoadError } from '../shared/conptyWindows';
+import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
@@ -432,45 +432,29 @@ export class DaemonSessionManager extends EventEmitter {
     let ptyProcess: IPty;
     const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
     try {
-      ptyProcess = pty.spawn(cmd, spawnArgs, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd,
-        env,
-        useConpty: true,
-        ...(useConptyDll ? { useConptyDll: true } : {}),
-      });
-      if (useConptyDll) {
-        // #910 dogfood: without this line there is no way to tell whether a
-        // "shipped, still broken" report means the gate never fired or the
-        // bundled backend itself failed on that machine.
-        console.log(`[DaemonSessionManager] session ${params.id}: ConPTY backend = bundled conpty.dll`);
-      }
+      // #910 dogfood: the notices below are what makes a "shipped, still
+      // broken" report diagnosable — they say which backend actually started,
+      // on every spawn, and name any demotion.
+      ptyProcess = spawnWithConptyPolicy(
+        (useBundled) => pty.spawn(cmd, spawnArgs, {
+          name: 'xterm-256color',
+          cols,
+          rows,
+          cwd,
+          env,
+          useConpty: true,
+          ...(useBundled ? { useConptyDll: true } : {}),
+        }),
+        useConptyDll,
+        (level, message) => {
+          const line = `[DaemonSessionManager] session ${params.id}: ${message}`;
+          if (level === 'warn') console.error(line);
+          else console.log(line);
+        },
+      );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      if (useConptyDll && isConptyDllLoadError(detail)) {
-        // Packaging-level failure: the install cannot load the DLL it shipped.
-        // Log loudly so a "still broken" report is diagnosable, then retry
-        // once against the in-box backend (mouse stays broken, but the shell
-        // starts — same behaviour as before this fix).
-        console.error(`[DaemonSessionManager] bundled conpty.dll failed to load (${detail}); falling back to in-box ConPTY`);
-        try {
-          ptyProcess = pty.spawn(cmd, spawnArgs, {
-            name: 'xterm-256color',
-            cols,
-            rows,
-            cwd,
-            env,
-            useConpty: true,
-          });
-        } catch (retryErr) {
-          const retryDetail = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          throw new Error(`Failed to start shell "${cmd}" in "${cwd}" (in-box ConPTY retry): ${retryDetail}`);
-        }
-      } else {
-        throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
-      }
+      throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
     }
 
     const now = new Date().toISOString();

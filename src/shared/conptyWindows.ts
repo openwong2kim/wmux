@@ -61,30 +61,101 @@ export function xtermWindowsBuildNumber(platform: string, buildNumber: number | 
 }
 
 /**
- * Error fragments thrown by node-pty's LoadConptyDll when the BUNDLED
- * conpty.dll cannot be loaded (missing/corrupt in this install). Only these
- * justify demoting a spawn to the in-box ConPTY: a transient ConPTY failure
- * (error 87, which PaneSupervisor's restart backoff exists to absorb) must
- * keep failing, or one blip would silently disable the mouse fix for that
- * pane forever.
- *
- * Matched with `includes` against `err.message` (node-pty src/win/conpty.cc:
- * "Failed to get conpty.node module handle", "Failed to get conpty.node
- * module file name", "Cannot find conpty.dll at ...", "Failed to load
- * conpty.dll"). "Cannot launch conpty" (conpty.cc:307) is also matched: the
- * DLL loaded but the pseudoconsole could not be created — e.g. the bundled
- * OpenConsole.exe blocked by antivirus — which without the fallback would
- * leave the shell unable to start at all, strictly worse than before this
- * fix. Re-check on node-pty upgrades.
+ * Fragments that mean the BUNDLED conpty.dll itself could not be loaded —
+ * missing or corrupt in this install (node-pty src/win/conpty.cc: the
+ * module-handle / module-file-name lookups, "Cannot find conpty.dll at ...",
+ * and the LoadLibrary failure). A file that is not there will not be there on
+ * a retry, so these demote to the in-box backend immediately.
  */
 const CONPTY_DLL_LOAD_ERROR_FRAGMENTS = [
   'Failed to get conpty.node module handle',
   'Failed to get conpty.node module file name',
   'Cannot find conpty.dll',
   'Failed to load conpty.dll',
-  'Cannot launch conpty',
 ];
 
-export function isConptyDllLoadError(message: string): boolean {
-  return CONPTY_DLL_LOAD_ERROR_FRAGMENTS.some((fragment) => message.includes(fragment));
+/**
+ * "Cannot launch conpty" (conpty.cc:307) is thrown whenever
+ * `CreateNamedPipesAndPseudoConsole` returns a failed HRESULT. That covers a
+ * bundled OpenConsole.exe blocked by antivirus — where refusing to fall back
+ * would leave the shell unable to start at all — but it equally covers a
+ * TRANSIENT failure (named-pipe exhaustion, ConPTY error 87), which must not
+ * quietly cost this pane its mouse for the rest of its life.
+ *
+ * The string cannot tell those apart. Persistence can: a blip clears on the
+ * next attempt, a blocked binary does not. So this class means "try the
+ * bundled backend once more", and only a second failure demotes.
+ */
+const CONPTY_PSEUDOCONSOLE_ERROR_FRAGMENT = 'Cannot launch conpty';
+
+/** What a caller should do after a bundled-ConPTY spawn threw. */
+export type ConptySpawnRecovery = 'demote-to-inbox' | 'retry-bundled' | 'rethrow';
+
+/**
+ * Classify a bundled-ConPTY spawn failure.
+ *
+ * `alreadyRetried` is the caller's memory of having taken `retry-bundled`
+ * once for THIS spawn; it is what turns a persistent pseudoconsole failure
+ * into a demotion instead of a loop.
+ */
+export function classifyConptySpawnError(
+  message: string,
+  alreadyRetried: boolean,
+): ConptySpawnRecovery {
+  if (CONPTY_DLL_LOAD_ERROR_FRAGMENTS.some((fragment) => message.includes(fragment))) {
+    return 'demote-to-inbox';
+  }
+  if (message.includes(CONPTY_PSEUDOCONSOLE_ERROR_FRAGMENT)) {
+    return alreadyRetried ? 'demote-to-inbox' : 'retry-bundled';
+  }
+  // Everything else — notably `..., error code: 87` from the spawn path the
+  // daemon already treats as transient — keeps failing, so the supervisor's
+  // restart backoff sees it.
+  return 'rethrow';
+}
+
+/**
+ * Spawn against the bundled ConPTY, applying the recovery policy above.
+ *
+ * Lives here, next to the policy, because the two spawn sites (daemon
+ * `DaemonSessionManager`, local `PTYManager`) had ~40 duplicated lines of
+ * try/fallback each — the shape where one site gets a fix and the other keeps
+ * the bug. `spawn` takes the backend it should use so this module never
+ * imports node-pty (it is loaded by the sandboxed renderer too).
+ *
+ * `onNotice` reports which backend actually started, and every demotion, so
+ * "the mouse stopped working on this pane" is answerable from the log.
+ */
+export function spawnWithConptyPolicy<T>(
+  spawn: (useBundled: boolean) => T,
+  useBundled: boolean,
+  onNotice: (level: 'info' | 'warn', message: string) => void,
+): T {
+  if (!useBundled) {
+    onNotice('info', 'ConPTY backend = in-box');
+    return spawn(false);
+  }
+  let retried = false;
+  for (;;) {
+    try {
+      const result = spawn(true);
+      onNotice('info', `ConPTY backend = bundled conpty.dll${retried ? ' (after one retry)' : ''}`);
+      return result;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const action = classifyConptySpawnError(detail, retried);
+      if (action === 'retry-bundled') {
+        retried = true;
+        onNotice('warn', `bundled ConPTY failed to start (${detail}); retrying once before demoting`);
+        continue;
+      }
+      if (action === 'demote-to-inbox') {
+        onNotice('warn', `bundled ConPTY unusable (${detail}); falling back to in-box ConPTY — this pane has no mouse reporting`);
+        const result = spawn(false);
+        onNotice('info', 'ConPTY backend = in-box (after bundled demotion)');
+        return result;
+      }
+      throw err;
+    }
+  }
 }
