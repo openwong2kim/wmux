@@ -98,6 +98,9 @@ export const en = {
   'pane.splitDown': 'Split down',
   'pane.newTerminal': 'New terminal',
   'pane.newBrowser': 'New browser',
+  // Label for the tab-strip `+` and its menu. "tab" not "surface": the UI
+  // calls them tabs everywhere the user can see (cf. surface.closeTab).
+  'pane.addSurface': 'New tab',
   'pane.maxLeavesReached': 'Pane limit reached ({count}). Close a pane before splitting again.',
 
   // Surface
