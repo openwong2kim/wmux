@@ -1,11 +1,7 @@
 // @vitest-environment jsdom
 //
-// Dynamic verification for the pane-header action cluster (split right /
-// split down / new browser / zoom).
-//
-// The "new terminal (tab in this pane)" button was removed by owner decision
-// (one pane = one terminal); Ctrl+T still adds a surface via the keyboard path.
-//
+// Dynamic verification for the pane-header action cluster and the new-terminal
+// tab action (split right / split down / new browser / zoom).
 // Mounts the REAL SurfaceTabs against the REAL zustand store, wiring the
 // action callbacks to the same store actions Pane.tsx wires them to, then
 // clicks each button and asserts the store effect:
@@ -63,6 +59,7 @@ function mount(paneId: string): void {
         onClose: () => undefined,
         onSplitHorizontal: () => useStore.getState().splitPane(paneId, 'horizontal', ws.id),
         onSplitVertical: () => useStore.getState().splitPane(paneId, 'vertical', ws.id),
+        onAddTerminal: () => useStore.getState().addSurface(paneId, 'test-pty', 'Terminal', 'D:/repo', ws.id),
         onAddBrowser: () => useStore.getState().addBrowserSurface(paneId, undefined, undefined, ws.id),
       }),
     );
@@ -77,11 +74,22 @@ function click(action: string): void {
   });
 }
 
+/** The new-terminal `+` is opt-in, so a test that wants to press it has to
+ *  turn the experimental setting on. The store drives the render, so flipping
+ *  it inside `act` is enough — no remount. */
+function clickNewTerminal(): void {
+  act(() => {
+    useStore.getState().setPaneNewTerminalButton(true);
+  });
+  click('new-terminal');
+}
+
 beforeEach(() => {
   const state = useStore.getState();
   for (const w of [...state.workspaces]) state.removeWorkspace(w.id);
   state.addWorkspace();
   state.setPaneActionsVisible(true);
+  state.setPaneNewTerminalButton(false);
 });
 
 afterEach(() => {
@@ -92,19 +100,76 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders the action buttons in order (no new-terminal button)', () => {
+  // #451's rule, pinned: the pane offers no visible way to add a SECOND
+  // terminal to itself. Splitting is the answer, and it has two buttons here.
+  it('shows no new-terminal button by default', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
-    expect(actions).toEqual([
-      'split-right',
-      'split-down',
-      'new-browser',
-      'zoom',
-    ]);
-    // The removed "new terminal" button must not reappear.
+    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'zoom']);
     expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
+  });
+
+  it('shows the + only once the experimental setting is on', () => {
+    act(() => {
+      useStore.getState().setPaneNewTerminalButton(true);
+    });
+    mount(rootLeafId());
+    const actions = Array.from(
+      container.querySelectorAll('[data-pane-action]'),
+    ).map((el) => el.getAttribute('data-pane-action'));
+    // On the tab strip, BEFORE the cluster — it adds a surface, it does not
+    // act on the pane.
+    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'zoom']);
+    const btn = container.querySelector('[data-pane-action="new-terminal"]');
+    // One click, no menu — with the browser back in the cluster there is only
+    // one thing left for it to do.
+    expect(btn?.getAttribute('aria-haspopup')).toBeNull();
+    // The keyboard path stays advertised even to someone using the button.
+    expect(btn?.getAttribute('title')).toContain('Ctrl+T');
+  });
+
+  it('Add terminal invokes the callback without selecting a tab', () => {
+    const paneId = rootLeafId();
+    let addTerminalCalls = 0;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const ws = activeWs();
+    act(() => {
+      root.render(
+        React.createElement(SurfaceTabs, {
+          surfaces: [],
+          activeSurfaceId: '',
+          workspace: ws,
+          paneId,
+          paneActive: true,
+          onSelect: () => { throw new Error('onSelect should not run'); },
+          onClose: () => undefined,
+          onSplitHorizontal: () => undefined,
+          onSplitVertical: () => undefined,
+          onAddTerminal: () => { addTerminalCalls += 1; },
+          onAddBrowser: () => undefined,
+        }),
+      );
+    });
+
+    clickNewTerminal();
+
+    expect(addTerminalCalls).toBe(1);
+  });
+
+  it('Add terminal creates a terminal surface in this pane', () => {
+    const paneId = rootLeafId();
+    mount(paneId);
+
+    clickNewTerminal();
+
+    const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
+    const terminals = leaf.surfaces.filter((s) => s.ptyId === 'test-pty');
+    expect(terminals).toHaveLength(1);
+    expect(leaf.activeSurfaceId).toBe(terminals[0].id);
   });
 
   it('Split right splits the pane horizontally (side-by-side columns)', () => {
@@ -159,12 +224,24 @@ describe('SurfaceTabs pane action cluster', () => {
     mount(rootLeafId());
 
     expect(container.querySelector('[data-pane-actions]')).toBeNull();
+    // Nothing left: the cluster is hidden and the `+` is off by default. That
+    // is the minimal-chrome setup working as asked, not a missing affordance —
+    // every action here still has a key.
     expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(0);
-    // NOTE: when the cluster is off, Pane.tsx falls back to its absolute corner
-    // maximize/restore control. That lives on Pane.tsx (not SurfaceTabs), and
-    // mounting the full Pane pulls in Terminal/xterm + the SplitSurfaceView tree
-    // — too heavy for this focused SurfaceTabs unit. The fallback's render
-    // condition (`!paneActionsVisible && …`) is verified by code review; the
-    // PaneContainer.zoom.test.tsx suite covers the zoom state machine itself.
+  });
+
+  // The two toggles are independent: hiding the cluster must not take away a
+  // `+` the user explicitly turned on, and vice versa.
+  it('keeps the opt-in + when the cluster is hidden', () => {
+    act(() => {
+      useStore.getState().setPaneActionsVisible(false);
+      useStore.getState().setPaneNewTerminalButton(true);
+    });
+    mount(rootLeafId());
+
+    expect(container.querySelector('[data-pane-actions]')).toBeNull();
+    const actions = Array.from(container.querySelectorAll('[data-pane-action]'))
+      .map((el) => el.getAttribute('data-pane-action'));
+    expect(actions).toEqual(['new-terminal']);
   });
 });

@@ -673,6 +673,8 @@ export interface SessionData {
    *  terminal / split right / split down / new browser). Default true —
    *  hideable for minimal-chrome setups. */
   paneActionsVisible?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
+  paneNewTerminalButton?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

@@ -406,7 +406,19 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ─── D-exclusive: inspect mode suppresses every global shortcut ───────────────
+describe('useKeyboard handler — Ctrl+T terminal creation', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'useKeyboard.ts'),
+    'utf-8',
+  );
+
+  it('routes Ctrl+T through the shared terminal-surface helper', () => {
+    const shortcut = src.slice(src.indexOf("key === 't'"), src.indexOf("key === 'w'"));
+    expect(shortcut).toContain('createTerminalSurface({');
+    expect(shortcut).not.toContain('window.electronAPI.pty.create(');
+  });
+});
+
 // The capture keydown handler lives inside useKeyboard's effect closure (it
 // touches `window` / the live store and can't be invoked under node-env vitest),
 // so we assert the suppression structurally — the same fs-read approach the
