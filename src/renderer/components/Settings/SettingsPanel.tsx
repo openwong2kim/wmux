@@ -39,10 +39,14 @@ import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, type SettingsTabId } from '../../settings/catalog';
+import { matchSettings, tabHitCount } from '../../settings/searchSettings';
+import { CursorShapePicker } from './CursorShapePicker';
+import { SettingsSearchResults } from './SettingsSearchResults';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TabId = 'general' | 'terminal' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'agents' | 'lanlink' | 'about';
+type TabId = SettingsTabId;
 type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Card primitive ────────────────────────────────────────────────────────────
@@ -314,16 +318,27 @@ function Toggle({ checked, onChange, label, disabled }: ToggleProps) {
 // ─── Row layout helper ────────────────────────────────────────────────────────
 
 function SettingRow({
+  id,
   label,
   description,
+  highlight,
   children,
 }: {
+  id?: string;
   label: string;
   description?: string;
+  highlight?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <Card className="flex items-center justify-between px-3 py-2.5">
+    <Card
+      data-setting-id={id}
+      className="flex items-center justify-between px-3 py-2.5 scroll-mt-4"
+      style={highlight ? {
+        borderColor: 'var(--accent-blue)',
+        boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent)',
+      } : undefined}
+    >
       <div className="min-w-0 mr-3">
         <p className="text-sm text-[color:var(--text-main)]">{label}</p>
         {description && <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{description}</p>}
@@ -2010,7 +2025,7 @@ function TabGeneral() {
   return (
     <div className="flex flex-col gap-4">
       {/* Language */}
-      <div>
+      <div data-setting-id="language" className="scroll-mt-4">
         <SectionLabel label={t('settings.language')} />
         <div className="grid grid-cols-2 gap-2">
           {LOCALE_OPTIONS.map(({ value, label }) => (
@@ -2123,7 +2138,7 @@ function TabTerminal() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.terminal')} />
-        <SettingRow label={t('settings.defaultShell')}>
+        <SettingRow id="shell" label={t('settings.defaultShell')}>
           <SettingSelect
             label={t('settings.defaultShell')}
             value={defaultShell}
@@ -2131,7 +2146,7 @@ function TabTerminal() {
             options={shellOptions}
           />
         </SettingRow>
-        <SettingRow label={t('settings.startupDirectory')} description={t('settings.startupDirectoryDesc')}>
+        <SettingRow id="startdir" label={t('settings.startupDirectory')} description={t('settings.startupDirectoryDesc')}>
           <SettingPathInput
             label={t('settings.startupDirectory')}
             value={startupDirectory}
@@ -2139,35 +2154,35 @@ function TabTerminal() {
             placeholder={t('settings.startupDirectoryPlaceholder')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.splitInheritsCwd')} description={t('settings.splitInheritsCwdDesc')}>
+        <SettingRow id="splitcwd" label={t('settings.splitInheritsCwd')} description={t('settings.splitInheritsCwdDesc')}>
           <Toggle
             checked={splitInheritsCwd}
             onChange={setSplitInheritsCwd}
             label={t('settings.splitInheritsCwd')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.imeResidueGuard')} description={t('settings.imeResidueGuardDesc')}>
+        <SettingRow id="ime" label={t('settings.imeResidueGuard')} description={t('settings.imeResidueGuardDesc')}>
           <Toggle
             checked={imeResidueGuardEnabled}
             onChange={setImeResidueGuardEnabled}
             label={t('settings.imeResidueGuard')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.hiddenPaneRetention')} description={t('settings.hiddenPaneRetentionDesc')}>
+        <SettingRow id="retention" label={t('settings.hiddenPaneRetention')} description={t('settings.hiddenPaneRetentionDesc')}>
           <Toggle
             checked={hiddenPaneRetentionEnabled}
             onChange={setHiddenPaneRetentionEnabled}
             label={t('settings.hiddenPaneRetention')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.coldPark')} description={t('settings.coldParkDesc')}>
+        <SettingRow id="coldpark" label={t('settings.coldPark')} description={t('settings.coldParkDesc')}>
           <Toggle
             checked={coldParkEnabled}
             onChange={setColdParkEnabled}
             label={t('settings.coldPark')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.browserBackend')} description={t('settings.browserBackendDesc')}>
+        <SettingRow id="browserbackend" label={t('settings.browserBackend')} description={t('settings.browserBackendDesc')}>
           <SettingSelect
             label={t('settings.browserBackend')}
             value={browserBackend}
@@ -2181,7 +2196,7 @@ function TabTerminal() {
             ]}
           />
         </SettingRow>
-        <SettingRow label={t('settings.browserLightweight')} description={t('settings.browserLightweightDesc')}>
+        <SettingRow id="browserlight" label={t('settings.browserLightweight')} description={t('settings.browserLightweightDesc')}>
           <Toggle
             checked={browserLightweightMode}
             onChange={setBrowserLightweightMode}
@@ -2197,7 +2212,7 @@ function TabTerminal() {
             />
           </SettingRow>
         )}
-        <SettingRow label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>
+        <SettingRow id="scrollback" label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>
           <SettingNumberInput
             label={t('settings.scrollbackLines')}
             value={scrollbackLines}
@@ -2206,7 +2221,7 @@ function TabTerminal() {
             max={100000}
           />
         </SettingRow>
-        <SettingRow label={t('settings.scrollbackRestore')} description={t('settings.scrollbackRestoreDesc')}>
+        <SettingRow id="restore" label={t('settings.scrollbackRestore')} description={t('settings.scrollbackRestoreDesc')}>
           <Toggle
             checked={scrollbackRestoreEnabled}
             onChange={setScrollbackRestoreEnabled}
@@ -2236,7 +2251,7 @@ function TabAgents() {
       {/* A2A execution */}
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.a2aExecution')} />
-        <SettingRow label={t('settings.a2aAutoApproveExecute')} description={t('settings.a2aAutoApproveExecuteDesc')}>
+        <SettingRow id="a2a" label={t('settings.a2aAutoApproveExecute')} description={t('settings.a2aAutoApproveExecuteDesc')}>
           <Toggle
             checked={a2aAutoApproveExecute}
             onChange={setA2aAutoApproveExecute}
@@ -2248,7 +2263,7 @@ function TabAgents() {
       {/* Agent toolbar */}
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.agentToolbar')} />
-        <SettingRow label={t('settings.agentToolbarShow')} description={t('settings.agentToolbarShowDesc')}>
+        <SettingRow id="toolbar" label={t('settings.agentToolbarShow')} description={t('settings.agentToolbarShowDesc')}>
           <Toggle
             checked={agentToolbarEnabled}
             onChange={setAgentToolbarEnabled}
@@ -3467,6 +3482,8 @@ function TabAppearance() {
   const t = useT();
   const terminalFontSize    = useStore((s) => s.terminalFontSize);
   const setTerminalFontSize = useStore((s) => s.setTerminalFontSize);
+  const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
+  const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle);
 
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
@@ -3497,7 +3514,7 @@ function TabAppearance() {
   return (
     <div className="flex flex-col gap-4">
       {/* Theme */}
-      <div className="flex flex-col gap-2">
+      <div data-setting-id="theme" className="flex flex-col gap-2 scroll-mt-4">
         <SectionLabel label={t('settings.theme')} />
         <style>{THEME_CARD_STYLE}</style>
         <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t('settings.theme')}>
@@ -3545,7 +3562,7 @@ function TabAppearance() {
 
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.terminal')} />
-        <SettingRow label={t('settings.fontSize')} description={`${terminalFontSize}px — ${t('settings.fontSizeRange')}`}>
+        <SettingRow id="fontsize" label={t('settings.fontSize')} description={`${terminalFontSize}px — ${t('settings.fontSizeRange')}`}>
           <div className="flex items-center gap-2">
             <input
               type="range"
@@ -3559,17 +3576,22 @@ function TabAppearance() {
             <span className="text-xs font-mono tabular-nums text-[color:var(--text-sub)] w-6 text-right">{terminalFontSize}</span>
           </div>
         </SettingRow>
-        <SettingRow label={t('settings.fontFamily')} description={t('settings.fontFamilyDesc')}>
+        <SettingRow id="fontfamily" label={t('settings.fontFamily')} description={t('settings.fontFamilyDesc')}>
           <FontFamilyField />
         </SettingRow>
+        <Card data-setting-id="cursorshape" className="flex flex-col px-3 py-2.5 scroll-mt-4">
+          <p className="text-sm text-[color:var(--text-main)]">{t('settings.cursorShape')}</p>
+          <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{t('settings.cursorShapeDesc')}</p>
+          <CursorShapePicker value={terminalCursorStyle} onChange={setTerminalCursorStyle} t={t} />
+        </Card>
       </div>
 
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.layout')} />
-        <SettingRow label={t('settings.chromePreset')} description={t('settings.chromePresetDesc')}>
+        <SettingRow id="chrome" label={t('settings.chromePreset')} description={t('settings.chromePresetDesc')}>
           <ChromePresetActionsView onApply={applyChromePresetWithFeedback} />
         </SettingRow>
-        <SettingRow label={t('settings.sidebarPosition')} description={t('settings.sidebarPositionDesc')}>
+        <SettingRow id="sidebarpos" label={t('settings.sidebarPosition')} description={t('settings.sidebarPositionDesc')}>
           <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
             {(['left', 'right'] as const).map((pos) => (
               <button
@@ -3587,6 +3609,7 @@ function TabAppearance() {
           </div>
         </SettingRow>
         <SettingRow
+          id="multiview"
           label={t('settings.multiviewArrangement')}
           description={t('settings.multiviewArrangementDesc')}
         >
@@ -3625,7 +3648,7 @@ function TabAppearance() {
             label={t('settings.paneActionsVisible')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.uiScale')} description={t('settings.uiScaleDesc')}>
+        <SettingRow id="uiscale" label={t('settings.uiScale')} description={t('settings.uiScaleDesc')}>
           <div className="flex items-center gap-2">
             <input
               type="range"
@@ -4712,7 +4735,36 @@ export default function SettingsPanel() {
   const showBar = shouldShowInspectBar(inspectMinimized, hasTarget, dismissedTarget);
 
   const [activeTab, setActiveTab] = useState<TabId>('general');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [highlightId, setHighlightId] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const searchHits = useMemo(
+    () => matchSettings(searchQuery, t, SETTINGS_CATALOG),
+    [searchQuery, t],
+  );
+  const searching = searchQuery.trim().length > 0;
+
+  const jumpTo = useCallback((id: string) => {
+    const entry = SETTINGS_CATALOG.find((item) => item.id === id);
+    if (!entry) return;
+    setSearchQuery('');
+    setActiveTab(entry.tab);
+    setHighlightId(id);
+  }, []);
+
+  useEffect(() => {
+    if (!highlightId || searching) return;
+    const el = panelRef.current?.querySelector<HTMLElement>(`[data-setting-id="${highlightId}"]`);
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el?.classList.add('settings-flash');
+    const timer = window.setTimeout(() => {
+      el?.classList.remove('settings-flash');
+      setHighlightId(null);
+    }, 1600);
+    return () => window.clearTimeout(timer);
+  }, [highlightId, searching, activeTab]);
 
   // When a target arrives while collapsed, surface the editor on the Appearance
   // tab so the auto-opened TokenRow / xterm slot is actually on screen.
@@ -4720,17 +4772,17 @@ export default function SettingsPanel() {
     if (hasTarget && !dismissedTarget) setActiveTab('appearance');
   }, [hasTarget, dismissedTarget]);
 
-  const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
-    { id: 'general',            label: t('settings.tabGeneral'),         icon: <IconGeneral /> },
-    { id: 'terminal',           label: t('settings.tabTerminal'),        icon: <IconTerminal /> },
-    { id: 'appearance',         label: t('settings.tabAppearance'),      icon: <IconAppearance /> },
-    { id: 'notifications',      label: t('settings.tabNotifications'),   icon: <IconNotifications /> },
-    { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: <IconShortcuts /> },
-    { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: <IconClaude /> },
-    { id: 'agents',             label: t('settings.tabAgents'),          icon: <IconAgents /> },
-    { id: 'lanlink',            label: t('settings.lanlinkTab'),         icon: <IconLanLink /> },
-    { id: 'about',              label: t('settings.tabAbout'),           icon: <IconAbout /> },
-  ];
+  const TAB_META: Record<TabId, { label: string; icon: ReactNode }> = {
+    general:            { label: t('settings.tabGeneral'),      icon: <IconGeneral /> },
+    terminal:           { label: t('settings.tabTerminal'),     icon: <IconTerminal /> },
+    appearance:         { label: t('settings.tabAppearance'),   icon: <IconAppearance /> },
+    notifications:      { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
+    shortcuts:          { label: t('settings.tabShortcuts'),    icon: <IconShortcuts /> },
+    'claude-integration': { label: t('settings.tabAccounts'),   icon: <IconClaude /> },
+    agents:             { label: t('settings.tabAgents'),      icon: <IconAgents /> },
+    lanlink:            { label: t('settings.tabNetwork'),     icon: <IconLanLink /> },
+    about:              { label: t('settings.tabAbout'),       icon: <IconAbout /> },
+  };
 
   // Close on Escape (D-esc). While inspect is active the overlay owns ESC
   // (ESC → exitInspect, leaving Settings mounted), so this handler MUST NOT
@@ -4739,16 +4791,27 @@ export default function SettingsPanel() {
   useEffect(() => {
     if (!visible) return;
     const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        e.stopPropagation();
+        searchRef.current?.focus();
+        return;
+      }
       if (e.key === 'Escape') {
         // suppressed while inspect active — overlay handles ESC (D-esc).
         if (!shouldEscCloseSettings(inspectModeActive)) return;
+        if (searchQuery.trim()) {
+          e.stopPropagation();
+          setSearchQuery('');
+          return;
+        }
         e.stopPropagation();
         setVisible(false);
       }
     };
     window.addEventListener('keydown', handler, { capture: true });
     return () => window.removeEventListener('keydown', handler, { capture: true });
-  }, [visible, setVisible, inspectModeActive]);
+  }, [visible, setVisible, inspectModeActive, searchQuery]);
 
   if (!visible) return null;
 
@@ -4812,34 +4875,80 @@ export default function SettingsPanel() {
         <div className="flex flex-1 min-h-0">
           {/* Left tab navigation */}
           <nav
-            className="flex flex-col gap-0.5 py-3 px-2 shrink-0"
+            className="flex flex-col shrink-0"
             style={{
-              width: 160,
+              width: 200,
               borderRight: '1px solid var(--bg-surface)',
               backgroundColor: 'var(--bg-mantle)',
             }}
           >
-            {tabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors text-[12px] ${!isActive ? 'hover:bg-[color:var(--bg-surface)]' : ''} ${FOCUS_RING}`}
-                  style={{
-                    backgroundColor: isActive ? 'var(--bg-surface)' : 'transparent',
-                    color: isActive ? 'var(--text-main)' : 'var(--text-subtle)',
-                    fontWeight: isActive ? 600 : 400,
-                  }}
-                >
-                  <span className="inline-flex items-center leading-none shrink-0" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
-                    {tab.icon}
-                  </span>
-                  {tab.label}
-                </button>
-              );
-            })}
+            <div className="px-2.5 pt-2.5 pb-1.5">
+              <input
+                ref={searchRef}
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t('settings.searchPlaceholder')}
+                aria-label={t('settings.searchPlaceholder')}
+                data-testid="settings-search"
+                className={`w-full h-7 px-2.5 rounded-md text-xs ${FOCUS_RING}`}
+                style={{
+                  backgroundColor: 'color-mix(in srgb, var(--bg-base) 80%, #000)',
+                  color: 'var(--text-main)',
+                  border: '1px solid transparent',
+                  boxShadow: 'inset 0 1px 2px rgba(0,0,0,.28)',
+                }}
+              />
+              <p className="h-4 mt-1 px-0.5 text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                {searching
+                  ? (searchHits.length
+                    ? t('settings.searchMatches', { n: searchHits.length })
+                    : t('settings.searchNoMatches', { query: searchQuery.trim() }))
+                  : ''}
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto px-2 pb-3">
+              {SETTINGS_NAV_GROUPS.map((group) => (
+                <div key={group.id} className="mt-2 first:mt-0">
+                  <div
+                    className="px-2 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.09em]"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {t(group.labelKey)}
+                  </div>
+                  {group.tabs.map((tabId) => {
+                    const tab = TAB_META[tabId];
+                    const isActive = !searching && activeTab === tabId;
+                    const hits = searching ? tabHitCount(tabId, searchHits) : 0;
+                    return (
+                      <button
+                        key={tabId}
+                        onClick={() => {
+                          setSearchQuery('');
+                          setActiveTab(tabId);
+                        }}
+                        aria-current={isActive ? 'page' : undefined}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors text-[12px] ${!isActive ? 'hover:bg-[color:var(--bg-surface)]' : ''} ${FOCUS_RING}`}
+                        style={{
+                          backgroundColor: isActive ? 'var(--bg-surface)' : 'transparent',
+                          color: isActive ? 'var(--text-main)' : 'var(--text-subtle)',
+                          fontWeight: isActive ? 600 : 400,
+                          opacity: searching && hits === 0 ? 0.38 : 1,
+                        }}
+                      >
+                        <span className="inline-flex items-center leading-none shrink-0" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
+                          {tab.icon}
+                        </span>
+                        <span className="flex-1 truncate">{tab.label}</span>
+                        {searching && hits > 0 && (
+                          <span className="font-mono text-[10px]" style={{ color: 'var(--accent-blue)' }}>{hits}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </nav>
 
           {/* Right content — scrolls full-width, but the content column is
@@ -4847,15 +4956,28 @@ export default function SettingsPanel() {
               toggle rows across the whole screen. */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
             <div className="mx-auto w-full max-w-[820px]">
-              {activeTab === 'general'            && <TabGeneral />}
-              {activeTab === 'terminal'           && <TabTerminal />}
-              {activeTab === 'appearance'         && <TabAppearance />}
-              {activeTab === 'notifications'      && <TabNotifications />}
-              {activeTab === 'shortcuts'          && <TabShortcuts />}
-              {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /></>}
-              {activeTab === 'agents'             && <TabAgents />}
-              {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
-              {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}
+              <style>{`.settings-flash{border-color:var(--accent-blue)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-blue) 22%,transparent)!important}`}</style>
+              {searching ? (
+                <SettingsSearchResults
+                  query={searchQuery}
+                  hits={searchHits}
+                  tabLabel={(tab) => TAB_META[tab].label}
+                  t={t}
+                  onJump={jumpTo}
+                />
+              ) : (
+                <>
+                  {activeTab === 'general'            && <TabGeneral />}
+                  {activeTab === 'terminal'           && <TabTerminal />}
+                  {activeTab === 'appearance'         && <TabAppearance />}
+                  {activeTab === 'notifications'      && <TabNotifications />}
+                  {activeTab === 'shortcuts'          && <TabShortcuts />}
+                  {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /></>}
+                  {activeTab === 'agents'             && <TabAgents />}
+                  {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
+                  {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}
+                </>
+              )}
             </div>
           </div>
         </div>
