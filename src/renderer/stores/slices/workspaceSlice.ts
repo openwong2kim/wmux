@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
+import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
@@ -150,6 +151,13 @@ export interface WorkspaceSlice {
    * to clear. Applies to NEW panes only; existing PTYs are untouched.
    */
   setWorkspaceProfile: (id: string, profile: WorkspaceProfile | undefined) => void;
+  /**
+   * Set (or clear with undefined) the workspace's visual color tag. Purely a
+   * sidebar label — no process, agent or git meaning is attached, so this
+   * deliberately publishes no metadata event. Unknown ids are dropped by
+   * normalizeWorkspaceColor rather than stored.
+   */
+  setWorkspaceColor: (id: string, color: WorkspaceColorId | undefined) => void;
   reorderWorkspace: (fromIndex: number, toIndex: number) => void;
   loadSession: (data: SessionData) => void;
   /**
@@ -594,6 +602,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     }),
 
+    setWorkspaceColor: (id, color) => set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === id);
+      if (!ws) return;
+      const normalized = normalizeWorkspaceColor(color);
+      if (normalized) {
+        ws.color = normalized;
+      } else {
+        delete ws.color;
+      }
+    }),
+
     reorderWorkspace: (fromIndex, toIndex) => set((state: StoreState) => {
       if (fromIndex === toIndex) return;
       if (fromIndex < 0 || fromIndex >= state.workspaces.length) return;
@@ -759,6 +778,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         }
       }
       state.nextWorkspaceOrdinal = nextWs;
+
+      // Color tags: session.json is user-editable and may come from a newer
+      // build, so an unknown id is dropped rather than rendered. Dropping (not
+      // rejecting the load) keeps a stray value from costing the user a session.
+      for (const ws of state.workspaces) {
+        const color = normalizeWorkspaceColor(ws.color);
+        if (color) ws.color = color;
+        else delete ws.color;
+      }
 
       // Restore user preferences. Migrate legacy 37-field customThemeColors
       // shape to the new 10-token + xtermPaletteId form (idempotent).
