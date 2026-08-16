@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
-import { decideMirrorKey } from './mirrorInput';
+import { decideMirrorKeyWithRepeat } from './mirrorInput';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { createAutoSelectionCopy } from '../../utils/autoSelectionCopy';
@@ -398,7 +398,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     });
 
     term.attachCustomKeyEventHandler((ev) => {
-      const decision = decideMirrorKey(ev, {
+      const decision = decideMirrorKeyWithRepeat(ev, {
         isMac,
         hasSelection: term.hasSelection(),
         readOnly: readOnlyRef.current === true,
@@ -410,6 +410,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
         case 'pass':
           return true;
         case 'copy':
+          // preventDefault like every other acting branch: returning false only
+          // stops xterm, and the browser's own copy would still fire off any
+          // DOM selection, racing this write for the clipboard.
+          ev.preventDefault();
           void copySelectionWithFeedback(term, term.getSelection());
           return false;
         case 'write':

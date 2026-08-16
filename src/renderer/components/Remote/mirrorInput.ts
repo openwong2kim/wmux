@@ -24,6 +24,8 @@ import { resolveNewlineKeyByte, type NewlineKeyEventLike } from '../../terminal/
 export interface MirrorKeyEventLike extends NewlineKeyEventLike {
   /** Only `keydown` decides anything; keyup/keypress always pass. */
   type: string;
+  /** True for the auto-repeat keydowns a held key produces. */
+  repeat?: boolean;
 }
 
 export interface MirrorKeyOptions {
@@ -78,7 +80,13 @@ export function decideMirrorKey(
 
   const { isMac } = opts;
   const bareMeta = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
-  const bareCtrl = e.ctrlKey && !e.shiftKey;
+  // `!e.altKey` is load-bearing, not symmetry for its own sake. Windows reports
+  // AltGr as Ctrl+Alt, so without it the European layouts that map a character
+  // onto AltGr+C / AltGr+V (Polish ć, among others) cannot type that character
+  // into the remote at all — it would be read as copy/paste. It also keeps
+  // emacs' C-M-v (scroll-other-window) from being taken as a paste.
+  const bareCtrl = e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey;
+  const ctrlShift = e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey;
 
   // macOS: ⌘C copies and ⌘V pastes, so Ctrl+C stays SIGINT unconditionally and
   // Ctrl+V stays readline's quoted-insert. Both fall through to the remote.
@@ -102,12 +110,34 @@ export function decideMirrorKey(
   }
 
   // Ctrl+Shift+C / Ctrl+Shift+V — the explicit forms, on every platform.
-  if (e.ctrlKey && e.shiftKey && isLetter(e, 'c', 'KeyC')) {
+  if (ctrlShift && isLetter(e, 'c', 'KeyC')) {
     return opts.hasSelection ? { kind: 'copy' } : { kind: 'swallow' };
   }
-  if (e.ctrlKey && e.shiftKey && isLetter(e, 'v', 'KeyV')) {
+  if (ctrlShift && isLetter(e, 'v', 'KeyV')) {
     return opts.readOnly ? { kind: 'swallow' } : { kind: 'paste' };
   }
 
   return { kind: 'pass' };
+}
+
+/**
+ * `decideMirrorKey`, with auto-repeat suppressed for the clipboard actions.
+ *
+ * A held Ctrl+V repeats about every 30ms once the OS starts repeating, and
+ * each repeat is a fresh clipboard read written into a LIVE remote shell —
+ * the clipboard arriving a dozen times is not what holding a key means.
+ *
+ * Applied AFTER the decision, not before, so it only touches the branches that
+ * act: holding Ctrl+C with no selection still repeats SIGINT, which is a thing
+ * people do on purpose, and every pass-through key keeps repeating normally.
+ */
+export function decideMirrorKeyWithRepeat(
+  e: MirrorKeyEventLike,
+  opts: MirrorKeyOptions,
+): MirrorKeyDecision {
+  const decision = decideMirrorKey(e, opts);
+  if (e.repeat && (decision.kind === 'copy' || decision.kind === 'paste')) {
+    return { kind: 'swallow' };
+  }
+  return decision;
 }

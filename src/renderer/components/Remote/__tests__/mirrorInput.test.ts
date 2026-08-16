@@ -11,7 +11,12 @@
 // read-only host must never see a byte no matter which chord produced it.
 
 import { describe, it, expect } from 'vitest';
-import { decideMirrorKey, type MirrorKeyEventLike, type MirrorKeyOptions } from '../mirrorInput';
+import {
+  decideMirrorKey,
+  decideMirrorKeyWithRepeat,
+  type MirrorKeyEventLike,
+  type MirrorKeyOptions,
+} from '../mirrorInput';
 
 function key(over: Partial<MirrorKeyEventLike> = {}): MirrorKeyEventLike {
   return {
@@ -182,5 +187,50 @@ describe('decideMirrorKey — the explicit Ctrl+Shift forms', () => {
       opts(),
     );
     expect(d).toEqual({ kind: 'paste' });
+  });
+
+  // Windows reports AltGr as Ctrl+Alt. Without excluding altKey the layouts
+  // that put a character on AltGr+C / AltGr+V cannot type it into the remote
+  // at all, and emacs' C-M-v arrives as a paste.
+  describe('AltGr and other modifier combinations belong to the remote', () => {
+    for (const [name, ev] of [
+      ['AltGr+C', { key: 'ć', code: 'KeyC', ctrlKey: true, altKey: true }],
+      ['AltGr+V', { key: 'w', code: 'KeyV', ctrlKey: true, altKey: true }],
+      ['Ctrl+Alt+Shift+C', { key: 'C', code: 'KeyC', ctrlKey: true, altKey: true, shiftKey: true }],
+      ['Ctrl+Alt+Shift+V', { key: 'V', code: 'KeyV', ctrlKey: true, altKey: true, shiftKey: true }],
+      ['Ctrl+Meta+V', { key: 'v', code: 'KeyV', ctrlKey: true, metaKey: true }],
+    ] as const) {
+      it(`${name} passes through even with a selection`, () => {
+        expect(
+          decideMirrorKey(key(ev as Partial<MirrorKeyEventLike>), opts({ hasSelection: true })),
+          name,
+        ).toEqual({ kind: 'pass' });
+      });
+    }
+  });
+
+  describe('a held key does not repeat a clipboard action', () => {
+    it('swallows repeated paste instead of injecting the clipboard again', () => {
+      const held = key({ key: 'v', code: 'KeyV', ctrlKey: true, repeat: true });
+      expect(decideMirrorKey(held, opts())).toEqual({ kind: 'paste' });
+      expect(decideMirrorKeyWithRepeat(held, opts())).toEqual({ kind: 'swallow' });
+    });
+
+    it('swallows repeated copy', () => {
+      const held = key({ key: 'c', code: 'KeyC', ctrlKey: true, repeat: true });
+      expect(decideMirrorKeyWithRepeat(held, opts({ hasSelection: true }))).toEqual({ kind: 'swallow' });
+    });
+
+    // Holding Ctrl+C to send repeated SIGINTs is deliberate, so the repeat
+    // guard must not touch a decision that was already passing through.
+    it('still repeats Ctrl+C to the remote when there is nothing to copy', () => {
+      const held = key({ key: 'c', code: 'KeyC', ctrlKey: true, repeat: true });
+      expect(decideMirrorKeyWithRepeat(held, opts())).toEqual({ kind: 'pass' });
+    });
+
+    it('still repeats ordinary keys', () => {
+      const held = key({ key: 'a', code: 'KeyA', repeat: true });
+      expect(decideMirrorKeyWithRepeat(held, opts())).toEqual({ kind: 'pass' });
+    });
   });
 });
