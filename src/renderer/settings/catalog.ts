@@ -87,7 +87,11 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'prefix', tab: 'shortcuts', labelKey: 'settings.prefixKey', synonyms: 'prefix tmux ctrl+b leader' },
   { id: 'customkeys', tab: 'shortcuts', labelKey: 'settings.customKeybindings', synonyms: 'hotkey shortcut keymap bind 단축키' },
 
-  { id: 'plugin', tab: 'claude-integration', labelKey: 'claudeIntegration.tab', synonyms: 'integration hook plugin setup install claude' },
+  // Labelled by the tab's CURRENT name. `claudeIntegration.tab` still says
+  // "Claude Integration", which this PR renamed the tab away from — a result
+  // row naming a tab that no longer exists by that name sends the user looking
+  // for the wrong thing.
+  { id: 'plugin', tab: 'claude-integration', labelKey: 'settings.tabAccounts', synonyms: 'integration hook plugin setup install claude 계정' },
   { id: 'claudeacct', tab: 'claude-integration', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
 
   { id: 'brain', tab: 'agents', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },

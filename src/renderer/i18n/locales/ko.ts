@@ -351,7 +351,6 @@ export const ko = {
   'settings.channelsTabVisibleDesc':
     '도크에 채널 탭(사람용 채널 UI)을 표시합니다. 꺼도 에이전트·agent의 채널 통신은 그대로 동작합니다 — 원문을 직접 확인하고 싶을 때만 켜세요.',
   // LanLink 제어 평면 (PR-3)
-  'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN 에이전트 메시징)',
   'settings.lanlinkEnable': 'LanLink 켜기',
   'settings.lanlinkEnableDesc': '같은 LAN의 다른 PC 에이전트가 이 PC에 닿을 수 있게 합니다. 기본은 꺼짐입니다.',

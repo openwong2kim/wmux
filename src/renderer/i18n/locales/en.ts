@@ -738,7 +738,6 @@ export const en = {
   'settings.channelsTabVisibleDesc':
     'Show the Channels tab (the human channel UI) in the dock. Agent and orchestrator channel traffic keeps working either way — turn this on only when you want to inspect the raw messages.',
   // LanLink control plane (PR-3)
-  'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN agent messaging)',
   'settings.lanlinkEnable': 'Enable LanLink',
   'settings.lanlinkEnableDesc': 'Let agents on other machines on your LAN reach this one. Off by default.',

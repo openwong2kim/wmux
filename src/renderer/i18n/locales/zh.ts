@@ -978,7 +978,6 @@ export const zh = {
   'settings.autoWakeDesc': '在面板停止或等待输入时唤醒编排器进行总结。每次唤醒都是一次真实回合，会消耗令牌 — 关闭此选项可停止这些未经请求的总结。运行中的循环无论如何都会持续唤醒。',
   'settings.channelsTabVisible': '显示频道标签页',
   'settings.channelsTabVisibleDesc': '在停靠栏中显示频道标签页（人类频道 UI）。智能体和编排器的频道流量无论是否显示都保持工作 — 仅当你想检查原始消息时才开启此项。',
-  'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink（局域网智能体消息）',
   'settings.lanlinkEnable': '启用 LanLink',
   'settings.lanlinkEnableDesc': '允许局域网内其他机器上的智能体访问本机。默认关闭。',

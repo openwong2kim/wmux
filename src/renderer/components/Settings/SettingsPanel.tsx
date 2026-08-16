@@ -463,9 +463,20 @@ function SettingPathInput({
 
 // ─── Section divider label ────────────────────────────────────────────────────
 
-function SectionLabel({ label }: { label: string }) {
+/**
+ * `id` makes the heading a jump target for settings search. Several catalog
+ * entries name a whole section (custom keybindings, MCP servers, LanLink
+ * pairing) rather than one row, and without an anchor `jumpTo`'s
+ * `querySelector(...)?.scrollIntoView()` optional-chains into a silent no-op:
+ * the tab switches and nothing else happens. `scroll-mt-4` matches SettingRow
+ * so a jumped-to heading is not flush against the panel edge.
+ */
+function SectionLabel({ id, label }: { id?: string; label: string }) {
   return (
-    <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2 mt-1 px-1">
+    <p
+      data-setting-id={id}
+      className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2 mt-1 px-1 scroll-mt-4"
+    >
       {label}
     </p>
   );
@@ -574,7 +585,7 @@ function ResetSection() {
 
   return (
     <div>
-      <SectionLabel label={t('settings.reset')} />
+      <SectionLabel id="reset" label={t('settings.reset')} />
       <div
         className="px-3 py-2.5 rounded-lg flex items-center justify-between"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
@@ -730,7 +741,7 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
   };
 
   return (
-    <Card className="flex flex-col gap-2 px-3 py-2.5">
+    <Card data-setting-id="roles" className="flex flex-col gap-2 px-3 py-2.5 scroll-mt-4">
       <div className="min-w-0">
         <p className="text-sm text-[color:var(--text-main)]">{t('settings.roleBindings')}</p>
         <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{t('settings.roleBindingsDesc')}</p>
@@ -885,7 +896,7 @@ function OrchestratorSection() {
   return (
     <div className="flex flex-col gap-3 mt-4" data-testid="orchestrator-section">
       <SectionLabel label={t('settings.orchestrator')} />
-      <SettingRow
+      <SettingRow id="brain"
         label={t('settings.orchestratorBrain')}
         description={t('settings.orchestratorBrainDesc')}
       >
@@ -902,7 +913,7 @@ function OrchestratorSection() {
           label={t('settings.orchestratorBrain')}
         />
       </SettingRow>
-      <SettingRow
+      <SettingRow id="model"
         label={t('settings.orchestratorModel')}
         description={t('settings.orchestratorModelDesc')}
       >
@@ -935,7 +946,7 @@ function OrchestratorSection() {
           disabled={deckBrainVendor !== 'claude'}
         />
       </SettingRow>
-      <SettingRow
+      <SettingRow id="autowake"
         label={t('settings.autoWake')}
         description={t('settings.autoWakeDesc')}
       >
@@ -1125,7 +1136,7 @@ function McpStatusSection() {
 
   return (
     <div className="flex flex-col gap-3">
-      <SectionLabel label={t('settings.mcpServers')} />
+      <SectionLabel id="mcp" label={t('settings.mcpServers')} />
       {loading ? (
         <div
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
@@ -1268,10 +1279,10 @@ export function LanLinkView({
   return (
     <div className="flex flex-col gap-3" data-testid="lanlink-section">
       <SectionLabel label={t('settings.lanlink')} />
-      <SettingRow label={t('settings.lanlinkEnable')} description={t('settings.lanlinkEnableDesc')}>
+      <SettingRow id="lanenable" label={t('settings.lanlinkEnable')} description={t('settings.lanlinkEnableDesc')}>
         <Toggle checked={enabled} onChange={onToggleEnabled} label={t('settings.lanlinkEnable')} />
       </SettingRow>
-      <SettingRow label={t('settings.lanlinkNic')} description={t('settings.lanlinkNicDesc')}>
+      <SettingRow id="lannic" label={t('settings.lanlinkNic')} description={t('settings.lanlinkNicDesc')}>
         <SettingSelect
           value={selectedValue}
           onChange={onChangeNic}
@@ -1455,7 +1466,7 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
   if (!enabled) {
     return (
       <div className="flex flex-col gap-3" data-testid="lanlink-pairing-section">
-        <SectionLabel label={t('settings.lanlinkPair')} />
+        <SectionLabel id="lanpair" label={t('settings.lanlinkPair')} />
         <div
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
@@ -2004,7 +2015,7 @@ function StartupSection() {
   return (
     <div className="flex flex-col gap-2">
       <SectionLabel label={t('settings.startup')} />
-      <SettingRow label={t('settings.startOnLogin')} description={t('settings.startOnLoginDesc')}>
+      <SettingRow id="startup" label={t('settings.startOnLogin')} description={t('settings.startOnLoginDesc')}>
         <Toggle checked={enabled} onChange={onChange} label={t('settings.startOnLogin')} />
       </SettingRow>
     </div>
@@ -2047,9 +2058,9 @@ function TabGeneral() {
       </div>
 
       {/* Updates */}
-      <div className="flex flex-col gap-2">
+      <div data-setting-id="checkupdate" className="flex flex-col gap-2 scroll-mt-4">
         <SectionLabel label={t('settings.updates')} />
-        <SettingRow label={t('settings.autoUpdate')} description={t('settings.autoUpdateDesc')}>
+        <SettingRow id="autoupdate" label={t('settings.autoUpdate')} description={t('settings.autoUpdateDesc')}>
           <Toggle
             checked={autoUpdateEnabled}
             onChange={setAutoUpdateEnabled}
@@ -2067,7 +2078,7 @@ function TabGeneral() {
       {/* Tutorial */}
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.tutorial')} />
-        <SettingRow label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
+        <SettingRow id="tutorial" label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
           <Button
             variant="secondary"
             className="shrink-0"
@@ -3745,21 +3756,21 @@ export function NotificationsView(props: NotificationsViewProps) {
       {/* Global behavior */}
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.notificationBehavior')} />
-        <SettingRow label={t('settings.sound')} description={t('settings.soundDesc')}>
+        <SettingRow id="sound" label={t('settings.sound')} description={t('settings.soundDesc')}>
           <Toggle
             checked={notificationSoundEnabled}
             onChange={() => onToggleNotificationSound()}
             label={t('settings.sound')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.toast')} description={t('settings.toastDesc')}>
+        <SettingRow id="toast" label={t('settings.toast')} description={t('settings.toastDesc')}>
           <Toggle
             checked={toastEnabled}
             onChange={onChangeToastEnabled}
             label={t('settings.toast')}
           />
         </SettingRow>
-        <SettingRow label={t('settings.ring')} description={t('settings.ringDesc')}>
+        <SettingRow id="osnotify" label={t('settings.ring')} description={t('settings.ringDesc')}>
           <Toggle
             checked={notificationRingEnabled}
             onChange={onChangeNotificationRingEnabled}
@@ -3847,7 +3858,7 @@ export function NotificationsView(props: NotificationsViewProps) {
 
       {/* #516 — Per-category mute. Muted categories still reach the
           notification panel; only toast/sound/ring/flash are suppressed. */}
-      <div className="flex flex-col gap-2" data-testid="notification-category-section">
+      <div className="flex flex-col gap-2" data-setting-id="catmute" data-testid="notification-category-section">
         <SectionLabel label={t('settings.notificationCategories')} />
         <p className="text-[11px] text-[color:var(--text-muted)] px-1">
           {t('settings.notificationCategoriesDesc')}
@@ -3868,7 +3879,7 @@ export function NotificationsView(props: NotificationsViewProps) {
       </div>
 
       {/* T12 — Per-workspace mute list */}
-      <div className="flex flex-col gap-2" data-testid="per-workspace-mute-section">
+      <div className="flex flex-col gap-2" data-setting-id="wsmute" data-testid="per-workspace-mute-section">
         <SectionLabel label={t('settings.perWorkspaceNotifications')} />
         <p className="text-[11px] text-[color:var(--text-muted)] px-1">
           {t('settings.perWorkspaceNotificationsDesc')}
@@ -4148,7 +4159,7 @@ function TabShortcuts() {
         className="flex items-center gap-3 px-3 py-2.5 rounded-lg"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
-        <span className="text-[11px] text-[color:var(--text-sub)] font-mono flex-1">
+        <span data-setting-id="prefix" className="text-[11px] text-[color:var(--text-sub)] font-mono flex-1 scroll-mt-4">
           {t('settings.prefixKey')}
         </span>
         <span className="text-[10px] text-[color:var(--text-muted)]">{t('settings.prefixKeyDesc')}</span>
@@ -4267,7 +4278,7 @@ function TabShortcuts() {
       )}
 
       {/* Custom keybindings */}
-      <SectionLabel label={t('settings.customKeybindings')} />
+      <SectionLabel id="customkeys" label={t('settings.customKeybindings')} />
 
       {/* macOS 기본 설정에서 F1–F12는 미디어 키로 동작해 F키 단독 바인딩이 발동하지 않음 → 안내 */}
       {window.electronAPI.platform === 'darwin' && hasBareFunctionKeyBinding(customKeybindings) && (
@@ -4443,7 +4454,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
     <div className="flex flex-col gap-4" data-testid="first-run-setup-section">
       {/* Status */}
       <div className="flex flex-col gap-2">
-        <SectionLabel label={t('settings.firstRunSetup')} />
+        <SectionLabel id="firstrun" label={t('settings.firstRunSetup')} />
 
         <div
           className="px-3 py-2.5 rounded-lg"
@@ -4566,7 +4577,7 @@ function TabAbout() {
             <span className="text-base font-semibold font-mono tracking-wide text-[color:var(--text-main)]">wmux</span>
             <span className="text-[11px] font-mono tabular-nums text-[color:var(--accent-blue)]">v{__APP_VERSION__}</span>
           </div>
-          <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5 truncate">
+          <p data-setting-id="version" className="text-[11px] text-[color:var(--text-muted)] mt-0.5 truncate scroll-mt-4">
             {t('settings.aboutTagline')}
           </p>
         </div>
