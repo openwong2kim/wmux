@@ -1,0 +1,61 @@
+# Temporary verification for #910: run the bundled-ConPTY spawn path on a
+# pre-Windows-11 build (windows-2022 = build 20348, below the 22000 gate) so
+# the DLL-backend code path gets exercised on real hardware before merge.
+# Lives on a scratch branch, not the PR branch — delete after #910 verifies.
+name: Verify ConPTY 910
+
+on:
+  push:
+    branches: [verify/conpty-910]
+
+jobs:
+  bundled-conpty-spawn:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Record runner build number
+        shell: pwsh
+        run: |
+          $build = [System.Environment]::OSVersion.Version.Build
+          Write-Output "Runner build: $build"
+          if ($build -ge 22000) {
+            Write-Output "::error::Runner is build $build (>= 22000) — gate would NOT fire; this run proves nothing."
+            exit 1
+          }
+      - name: Install
+        run: npm install
+      - name: Spawns succeed against the bundled conpty.dll
+        shell: pwsh
+        run: |
+          node -e "
+            const os = require('os');
+            const pty = require('node-pty');
+            const { shouldUseBundledConpty } = require('./dist/shared/conptyWindows.js');
+            const build = parseInt(os.release().split('.')[2], 10);
+            const useDll = shouldUseBundledConpty('win32', build);
+            console.log('build=' + build + ' gate=' + useDll);
+            if (!useDll) { console.error('gate did not fire on build ' + build); process.exit(1); }
+            const p1 = pty.spawn('powershell.exe', [], { name: 'xterm-256color', cols: 80, rows: 24, useConpty: true, useConptyDll: true });
+            let saw = '';
+            p1.onData((d) => { saw += d; });
+            p1.onExit(({ exitCode }) => {
+              try {
+                const p2 = pty.spawn('powershell.exe', [], { name: 'xterm-256color', cols: 80, rows: 8, useConptyDll: true });
+                p2.onExit(({ exitCode: c2 }) => {
+                  const ok1 = saw.length > 0;
+                  console.log('spawn1 output=' + ok1 + ' exit=' + exitCode);
+                  console.log('spawn2 exit=' + c2);
+                  process.exit(ok1 && exitCode === 0 && c2 === 0 ? 0 : 1);
+                });
+                p2.write('exit\r');
+              } catch (e) { console.error('spawn2 failed: ' + e.message); process.exit(1); }
+            });
+            p1.write('exit\r');
+          "
+      - name: Unit tests for the gate (run on this pre-22000 runner)
+        run: npx vitest run src/shared/__tests__/platform.test.ts --reporter=basic
