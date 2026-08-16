@@ -432,8 +432,11 @@ export const ko = {
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
+  'settings.currentVersion': '현재 버전',
+  'settings.latestVersion': '최신 버전',
   'settings.updateReady': '업데이트 준비 완료',
   'settings.updateEndsSessions': '설치하면 실행 중인 세션이 모두 종료됩니다.',
+  'update.installFailed': '업데이트를 설치하지 못했습니다. {error}',
   'settings.checkFailed': '확인 실패',
   'settings.unknownError': '알 수 없는 오류',
   'settings.notificationBehavior': '알림 동작',
@@ -813,6 +816,9 @@ export const ko = {
     '백그라운드 데몬을 이 버전으로 업데이트하는 중입니다 — 판이 잠시 멈췄다가 자동으로 복원될 수 있습니다.',
   'update.refusedInstall':
     '지난 업데이트가 설치되지 않았습니다: 무언가가 wmux 설치 폴더를 계속 사용 중이어서, 반쯤 교체되는 대신 그대로 두었습니다. 다시 시도하거나, wmux를 종료한 뒤 릴리스 페이지의 설치 프로그램을 실행하세요.',
+  'update.readyToInstall':
+    'wmux {version} 설치 준비가 끝났습니다. 현재 {current}을(를) 사용 중입니다. 설치하면 모든 판이 닫힙니다.',
+  'update.installNow': '지금 설치',
   'channels.alreadyMemberToast': '{workspace}은(는) 이미 #{channel}에 있습니다',
   'channels.joinFailedToast': '{workspace} 추가에 실패했습니다',
   'channels.leftToast': '#{channel}에서 나갔습니다',

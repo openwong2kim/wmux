@@ -1768,6 +1768,11 @@ function UpdateStatus() {
   const t = useT();
   const [state, setState] = useState<UpdateState>('idle');
   const [releaseName, setReleaseName] = useState<string>('');
+  // The subscription effect runs once, so its closure would hold the mount-time
+  // releaseName forever. The comparison that decides whether an `available`
+  // event is the release we already staged has to read the live value.
+  const releaseNameRef = useRef<string>('');
+  useEffect(() => { releaseNameRef.current = releaseName; }, [releaseName]);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [percent, setPercent] = useState<number | null>(null);
   // Updater-not-configured in dev is expected; don't spam toasts for UNKNOWN.
@@ -1779,7 +1784,24 @@ function UpdateStatus() {
         setState('downloaded');
         if (data.releaseName) setReleaseName(data.releaseName);
       } else {
-        setState('available');
+        // NOT an unconditional demotion. Every background poll re-announces
+        // `available` for a release it already downloaded, and downloadUpdate
+        // returns early once a staged path is held — so no second `downloaded`
+        // ever follows to undo this. Demoting turned the Install button back
+        // into "Check for updates" within the poll interval and left it that
+        // way, on the exact state this panel was just taught to read on mount.
+        //
+        // Held only while it is the SAME release, though. A superseding
+        // release unlinks the staged artifact and announces the new version
+        // before re-downloading it; holding `downloaded` through that would
+        // offer an Install button for a file main just deleted. The version
+        // is what distinguishes "we already have this one" from "this is a
+        // different one" — so track it either way.
+        const next = data.releaseName;
+        setState((prev) => (prev === 'downloaded' && (!next || next === releaseNameRef.current)
+          ? prev
+          : 'available'));
+        if (next) setReleaseName(next);
       }
     });
     const removeProgress = window.electronAPI.updater.onUpdateProgress((data) => {
@@ -1794,6 +1816,30 @@ function UpdateStatus() {
       setErrorMsg(data.message || '');
     });
     return () => { removeAvailable(); removeProgress(); removeNotAvailable(); removeError(); };
+  }, []);
+
+  // #897 — ask what is already true, instead of only listening for what happens
+  // next. Subscribing alone means this panel knows nothing on mount: a
+  // background poll that downloaded an update BEFORE Settings was opened fired
+  // its one event into a component that did not exist yet, so the panel showed
+  // a bare version number and a "check for updates" button while a verified
+  // installer sat on disk. That is the same push-only mistake as #866's refused
+  // notice and the missing ready-toast — third time in this subsystem, so the
+  // read is a pull.
+  useEffect(() => {
+    const read = window.electronAPI?.updater?.getPendingInstall;
+    if (!read) return; // stale preload / tests
+    let cancelled = false;
+    void read()
+      .then((pending) => {
+        if (cancelled || !pending) return;
+        // Only fills an unknown state — a live event that arrived first is
+        // fresher than this snapshot and must not be stomped.
+        setState((prev) => (prev === 'idle' ? 'downloaded' : prev));
+        setReleaseName((prev) => prev || pending.version);
+      })
+      .catch(() => { /* the widget still works from live events */ });
+    return () => { cancelled = true; };
   }, []);
 
   const handleCheck = async () => {
@@ -1819,7 +1865,12 @@ function UpdateStatus() {
         ? t('settings.checkUpdate') + '…'
         : `${t('settings.checkUpdate')}… ${percent}%`;
       case 'available': return t('settings.updateAvailable');
-      case 'downloaded': return t('settings.updateReady') + (releaseName ? ` (${releaseName})` : '');
+      // No `(releaseName)` suffix here: the Latest line above already prints
+      // the version, and appending it produced "Latest 3.43.0 — Update ready
+      // (3.43.0)". The suffix only ever existed for the case where there is no
+      // Latest line to print, which the `!releaseName && statusText` branch
+      // below already covers.
+      case 'downloaded': return t('settings.updateReady');
       case 'not-available': return t('settings.upToDate');
       case 'error': return t('settings.updateFailed');
       default: return '';
@@ -1843,9 +1894,23 @@ function UpdateStatus() {
     >
       <div>
         <p className="text-sm text-[color:var(--text-main)]">{t('settings.wmuxUpdates')}</p>
-        <p className="text-[11px] mt-0.5" style={{ color: statusText ? statusColor : 'var(--text-muted)' }}>
-          v{__APP_VERSION__}{statusText ? ` — ${statusText}` : ''}
+        {/* Current and latest on their own lines. The old copy put the running
+            version and a status word on one line and never named the version
+            you would be moving TO, so "update ready" could not be reconciled
+            against anything — #897's reporters were comparing exactly those two
+            numbers by hand (winget list vs the app). */}
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          {t('settings.currentVersion')} v{__APP_VERSION__}
         </p>
+        {releaseName && (
+          <p className="text-[11px] mt-0.5" style={{ color: statusColor }}>
+            {t('settings.latestVersion')} {releaseName}
+            {statusText ? ` — ${statusText}` : ''}
+          </p>
+        )}
+        {!releaseName && statusText && (
+          <p className="text-[11px] mt-0.5" style={{ color: statusColor }}>{statusText}</p>
+        )}
         {state === 'error' && errorMsg && (
           <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{errorMsg}</p>
         )}
@@ -1877,7 +1942,10 @@ function UpdateStatus() {
             onClick={handleInstall}
             style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
           >
-            {t('settings.updateReady')}
+            {/* An action, not a status. This said "Update ready", which is what
+                the line above already reports — a button labelled with a state
+                does not tell you what pressing it does. */}
+            {t('update.installNow')}
           </Button>
         ) : (
           <Button

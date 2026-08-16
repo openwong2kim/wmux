@@ -680,8 +680,11 @@ export const en = {
   'settings.multiviewRows': 'Rows',
   'settings.paneActionsVisible': 'Pane action buttons',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
+  'settings.currentVersion': 'Current',
+  'settings.latestVersion': 'Latest',
   'settings.updateReady': 'Update ready',
   'settings.updateEndsSessions': 'Installing closes your running sessions.',
+  'update.installFailed': 'The update could not be installed. {error}',
   'settings.checkFailed': 'Check failed',
   'settings.unknownError': 'Unknown error',
   'settings.notificationBehavior': 'Notification behavior',
@@ -1101,6 +1104,9 @@ export const en = {
     'Updating the background daemon to this version — panes may pause briefly and restore automatically.',
   'update.refusedInstall':
     'The last update did not install: something was still using the wmux install folder, so it was left untouched rather than half-replaced. Try again, or close wmux and run the installer from the releases page.',
+  'update.readyToInstall':
+    'wmux {version} is ready to install. You are running {current}. Installing closes every pane.',
+  'update.installNow': 'Install now',
   'channels.alreadyMemberToast': '{workspace} is already in #{channel}',
   'channels.joinFailedToast': "Couldn't add {workspace} to the channel",
   'channels.leftToast': 'Left #{channel}',

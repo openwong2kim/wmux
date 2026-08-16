@@ -332,6 +332,148 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
   }, [t]);
 }
 
+/**
+ * #897 — say that a downloaded update is waiting, somewhere the user will see.
+ *
+ * The install itself is deliberately NOT automatic: it quits the app and every
+ * pane goes with it, so it stays the user's call. What was missing is that we
+ * never told them there was a call to make. `UPDATE_AVAILABLE{downloaded}`
+ * fires once, when the background download finishes, and the only thing
+ * listening is the Settings panel — mounted only while Settings is open. So the
+ * app sat on a verified installer in silence. Two reporters and the maintainer
+ * described the same thing on #897: it downloads, nothing happens, and pressing
+ * "Check for updates" by hand is the only way through (that path sets a
+ * one-shot install intent; the background poll never does).
+ *
+ * Same shape as the refused-install notice above — pull from an always-mounted
+ * surface — with one difference that matters: this is a READ, not a take, and
+ * the toast is `persist`. The refusal is a past event, so a toast that fades is
+ * honest. "An update is ready" is still true five minutes later, and a notice
+ * that fades leaves the user exactly where they started.
+ */
+/** How long after a user-requested install an UPDATE_ERROR is still that
+ *  install's. performInstall's refusals are decided before it launches
+ *  anything, so they land almost immediately; a background check or download
+ *  failure arriving outside this window belongs to Settings, not here. */
+const INSTALL_ERROR_WINDOW_MS = 30_000;
+
+function usePendingInstallNotice(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): void {
+  useEffect(() => {
+    const read = window.electronAPI?.updater?.getPendingInstall;
+    const install = window.electronAPI?.updater?.installUpdate;
+    const onAvailable = window.electronAPI?.updater?.onUpdateAvailable;
+    const onError = window.electronAPI?.updater?.onUpdateError;
+    if (!read || !install) return; // tests / non-electron / stale preload
+
+    let cancelled = false;
+    // The version this run has already announced, not a bare "did we". An app
+    // left open for days can see a second release supersede the first: main
+    // replaces the staged installer and re-fires `downloaded`, and a boolean
+    // would leave the OLD version named in a persistent toast whose button
+    // installs the NEW one. Re-announcing on a version change keeps the
+    // sentence and the button describing the same thing.
+    let announcedVersion: string | null = null;
+
+    // The toast currently on screen, so a superseding release can replace it
+    // rather than stack on top. Leaving the old one up would leave a clickable
+    // sentence naming version A over a button that installs the staged B.
+    let announcedToastId: string | null = null;
+    // Set while an install the USER asked for is in flight — see the error
+    // subscription below for why an unfiltered UPDATE_ERROR is not usable.
+    let installRequestedAt = 0;
+
+    const announce = (version: string, currentVersion: string): void => {
+      if (cancelled || announcedVersion === version) return;
+      announcedVersion = version;
+      if (announcedToastId) useStore.getState().dismissToast(announcedToastId);
+      announcedToastId = useStore.getState().pushToast({
+        level: 'info',
+        persist: true,
+        // t() interpolates; a hand-rolled `.replace()` chain substitutes only
+        // the FIRST occurrence of each placeholder, so a locale that names a
+        // version twice would silently ship a raw `{version}`.
+        message: t('update.readyToInstall', { version, current: currentVersion }),
+        action: {
+          label: t('update.installNow'),
+          // Every pane closes with the app — the toast is the last warning,
+          // so the label says "install", not something softer.
+          onClick: () => {
+            installRequestedAt = Date.now();
+            announcedToastId = null; // the action dismisses this toast itself
+            void install();
+          },
+        },
+      });
+    };
+
+    // 1. What was ALREADY true when this mounted: a poll that finished before
+    //    the window existed (or before this surface did).
+    void read()
+      .then((pending) => { if (pending) announce(pending.version, pending.currentVersion); })
+      .catch((err) => {
+        // Same posture as the refusal notice: never break mount, never hide it.
+        // A silent catch here reads as "no update pending", which is the exact
+        // failure being fixed.
+        console.warn('[update] could not read a pending install:', err);
+      });
+
+    // 2. What becomes true WHILE the app is in use. The mount read alone covers
+    //    only "it was ready before you looked" — a background poll finishing an
+    //    hour into the session would otherwise stay silent until the next
+    //    restart, which is most of the reported experience on #897. The version
+    //    for the running build comes from the same read so the two paths cannot
+    //    disagree about what "current" means.
+    const unsubscribe = onAvailable?.((data) => {
+      if (data.status !== 'downloaded') return;
+      void read()
+        .then((pending) => { if (pending) announce(pending.version, pending.currentVersion); })
+        .catch((err) => {
+          // NOT silent: `downloaded` does not fire twice for the same staged
+          // installer (downloadUpdate returns early once a path is held), so
+          // swallowing this loses the notice for the rest of the session —
+          // the very shape of the bug being fixed. The event names the new
+          // version and the renderer already knows its own, so announce from
+          // those rather than give up.
+          console.warn('[update] pending-install read failed on the live event:', err);
+          if (data.releaseName) announce(data.releaseName, __APP_VERSION__);
+        });
+    });
+
+    // An install that cannot proceed must say so HERE. The action button
+    // dismisses its own toast on click, and every refusal path inside
+    // performInstall (a staged path already consumed, no disk space, a dev
+    // build, one already running) reports through UPDATE_ERROR — whose only
+    // other listener is the Settings panel, which is closed by definition
+    // whenever this toast is the thing the user is looking at. Without this,
+    // pressing "Install now" and having it fail looks exactly like #897 again:
+    // you press the button and nothing happens.
+    //
+    // CORRELATED to the click, not subscribed outright. UPDATE_ERROR is not an
+    // install channel: it also carries a failed background check (the first
+    // one runs ~15s after launch) and a failed download, so an offline machine
+    // would post "the update could not be installed" on startup and again
+    // every poll — a sentence that is false, on a toast that never fades, in a
+    // list that evicts its OLDEST entry, which is the ready-notice this whole
+    // feature exists to keep on screen. Only a failure that lands while an
+    // install the user asked for is outstanding is one this surface can
+    // honestly name.
+    const unsubscribeError = onError?.((data) => {
+      if (cancelled) return;
+      if (Date.now() - installRequestedAt > INSTALL_ERROR_WINDOW_MS) return;
+      installRequestedAt = 0; // one report per request
+      useStore.getState().pushToast({
+        level: 'error',
+        persist: true,
+        message: t('update.installFailed', { error: data.message || '' }),
+      });
+    });
+
+    return () => { cancelled = true; unsubscribe?.(); unsubscribeError?.(); };
+  }, [t]);
+}
+
 function useUiScaleSync(uiScale: number): void {
   useEffect(() => {
     const send = window.electronAPI?.window?.setUiScale;
@@ -439,6 +581,7 @@ export default function AppLayout() {
   const t = useT();
 
   useRefusedInstallNotice(t);
+  usePendingInstallNotice(t);
   useKeyboard();
   // NOTE: useActivePaneFocus() now runs inside <FocusManager> (a render-null
   // child), NOT here. Its focusKey subscription embeds activeWorkspaceId and
