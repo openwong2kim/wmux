@@ -841,6 +841,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;
       }
+      // Opt-in `+` — default OFF, so only an explicit true shows it. A session
+      // written before this setting existed has no field, and must not be read
+      // as consent to break one pane = one terminal.
+      if (typeof data.paneNewTerminalButton === 'boolean') {
+        state.paneNewTerminalButton = data.paneNewTerminalButton;
+      }
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
       // Fail closed: only an explicit boolean is applied. A corrupted /

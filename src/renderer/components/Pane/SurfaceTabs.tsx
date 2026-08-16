@@ -11,26 +11,28 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 import { displayPath } from '../../utils/displayPath';
-import SurfaceAddMenu from './SurfaceAddMenu';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below
- *  (split-right, split-down, zoom — new-browser moved to the tab-strip `+`
- *  menu, since it adds a surface rather than acting on the pane):
+ *  (split-right, split-down, new-browser, zoom):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
- *    3 × w-6 buttons (24 each) ...................................... 72
- *    2 × gap-0.5 (2 each, between the 3 flex children) ............... 4
+ *    4 × w-6 buttons (24 each) ...................................... 96
+ *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
  *    zoom wrapper  ml-0.5 2 + border-l 1 + pl-1 4 ................... 7
  *    outer div  pr-0.5 2 ............................................. 2
- *                                                              total = 90
- *  (The button gaps + the wrapper's own ml-0.5 both apply between the last
- *  split button and the divider — flex `gap` and `margin` stack.) Exported so
+ *                                                             total = 116
+ *  (The button gaps + the wrapper's own ml-0.5 both apply between the browser
+ *  button and the divider — flex `gap` and `margin` stack.) Exported so
  *  Pane.tsx can offset the absolute supervision badge just left of the cluster
  *  instead of hardcoding a magic pixel guess. Keep in sync with the cluster
- *  markup below if the button count, padding, or divider spacing changes. */
-export const PANE_ACTIONS_CLUSTER_WIDTH = 90;
+ *  markup below if the button count, padding, or divider spacing changes.
+ *
+ *  The tab-strip `+` is NOT part of this cluster and does not affect the
+ *  width: it is opt-in (see the note at its render site) and lives on the
+ *  left, with the tabs. */
+export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
@@ -115,14 +117,12 @@ export default function SurfaceTabs({
   // subscription) — subscribing to the whole map here re-rendered every tab
   // strip on any pane's status change.
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
-  // Add-surface menu behind the tab-strip `+`. The anchor is the trigger's
-  // viewport rect, read when it opens — the panel is fixed-positioned to escape
-  // this strip's horizontal scroll clipping.
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [addMenuAnchor, setAddMenuAnchor] = useState<{ left: number; bottom: number } | null>(null);
-  const addTriggerRef = useRef<HTMLButtonElement>(null);
-  // Right-aligned pane action cluster (split right / split down / zoom).
-  // Gated by a Settings toggle (default ON) for minimal-chrome setups.
+  // Opt-in `+` for a second terminal in THIS pane. Off unless the user turned
+  // it on — see the note at its render site and the experimental label in
+  // Settings.
+  const newTerminalButtonVisible = useStore((s) => s.paneNewTerminalButton);
+  // Right-aligned pane action cluster (split right / split down / new browser
+  // / zoom). Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
@@ -358,40 +358,26 @@ export default function SurfaceTabs({
           </button>
         </div>
       ))}
-      {/* Add-surface affordance. A menu rather than a bare `+`: see
-          SurfaceAddMenu for why the one-click form was not the shape we
-          wanted. */}
-      <div className="shrink-0">
+      {/* OFF by default, and deliberately so. #451 removed the discoverable
+          new-terminal button because one pane = one terminal is the shape we
+          recommend — splitting is the answer to "I want another terminal", and
+          it already has two buttons in the cluster. A second terminal in the
+          SAME pane stays reachable (Ctrl+T, now listed in the shortcuts panel)
+          without being offered on the surface.
+          This opt-in exists for the people who asked for it and is labelled
+          experimental in Settings for exactly that reason: turning it on is
+          choosing to break the rule for your own layout. */}
+      {newTerminalButtonVisible && (
         <button
-          ref={addTriggerRef}
           className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
-          onClick={(e) => {
-            e.stopPropagation();
-            // Capture the trigger's viewport rect at open time — the panel is
-            // `fixed` (see SurfaceAddMenu) because this strip scrolls and would
-            // otherwise clip it.
-            const r = e.currentTarget.getBoundingClientRect();
-            setAddMenuAnchor({ left: r.left, bottom: r.bottom });
-            setAddMenuOpen((open) => !open);
-          }}
-          title={t('pane.addSurface')}
-          aria-label={t('pane.addSurface')}
-          aria-haspopup="menu"
-          aria-expanded={addMenuOpen}
-          data-pane-action="add-surface"
+          onClick={(e) => { e.stopPropagation(); onAddTerminal(); }}
+          title={withShortcut(t('pane.newTerminal'), SC_NEW_TERMINAL)}
+          aria-label={t('pane.newTerminal')}
+          data-pane-action="new-terminal"
         >
           +
         </button>
-        {addMenuOpen && addMenuAnchor && (
-          <SurfaceAddMenu
-            terminalShortcut={SC_NEW_TERMINAL}
-            anchor={addMenuAnchor}
-            onAddTerminal={onAddTerminal}
-            onAddBrowser={onAddBrowser}
-            onClose={() => setAddMenuOpen(false)}
-          />
-        )}
-      </div>
+      )}
       </div>
 
       {/* Right-aligned pane action cluster. Native next to the per-tab close
@@ -422,11 +408,16 @@ export default function SurfaceTabs({
           >
             <IconSplitDown size={14} />
           </button>
-          {/* New-browser used to sit here. It creates a SURFACE in this pane,
-              same as new-terminal, so both now live together in the `+` menu
-              on the tab strip; the cluster keeps only actions that act on the
-              pane itself (split, zoom). */}
-          {/* Zoom/maximize — third action, visually separated from the surface
+          <button
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
+            onClick={(e) => { e.stopPropagation(); onAddBrowser(); }}
+            title={t('pane.newBrowser')}
+            aria-label={t('pane.newBrowser')}
+            data-pane-action="new-browser"
+          >
+            <IconBrowser size={14} />
+          </button>
+          {/* Zoom/maximize — fourth action, visually separated from the surface
               actions by the same border-l divider the cluster uses against the
               tabs. Consolidates the old absolute-positioned corner maximize/
               restore controls (Pane.tsx) that overlapped this cluster. Pressed

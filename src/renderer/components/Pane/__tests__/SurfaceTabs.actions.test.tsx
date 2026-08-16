@@ -74,15 +74,14 @@ function click(action: string): void {
   });
 }
 
-/** Surface creation lives behind the tab-strip `+` menu, so reaching a
- *  new-terminal / new-browser item means opening it first. */
-function clickInAddMenu(action: string): void {
-  click('add-surface');
-  expect(
-    container.querySelector('[data-testid="surface-add-menu"]'),
-    'the + menu should be open',
-  ).not.toBeNull();
-  click(action);
+/** The new-terminal `+` is opt-in, so a test that wants to press it has to
+ *  turn the experimental setting on. The store drives the render, so flipping
+ *  it inside `act` is enough — no remount. */
+function clickNewTerminal(): void {
+  act(() => {
+    useStore.getState().setPaneNewTerminalButton(true);
+  });
+  click('new-terminal');
 }
 
 beforeEach(() => {
@@ -90,6 +89,7 @@ beforeEach(() => {
   for (const w of [...state.workspaces]) state.removeWorkspace(w.id);
   state.addWorkspace();
   state.setPaneActionsVisible(true);
+  state.setPaneNewTerminalButton(false);
 });
 
 afterEach(() => {
@@ -100,51 +100,34 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders the add-surface trigger after the final tab and pane actions after it', () => {
+  // #451's rule, pinned: the pane offers no visible way to add a SECOND
+  // terminal to itself. Splitting is the answer, and it has two buttons here.
+  it('shows no new-terminal button by default', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
-    // At rest the strip advertises ONE add affordance and the cluster holds
-    // only actions that act on the pane itself. Surface creation is a menu
-    // behind the `+` — not a bare button, and not duplicated in the cluster.
-    expect(actions).toEqual(['add-surface', 'split-right', 'split-down', 'zoom']);
-    const trigger = container.querySelector('[data-pane-action="add-surface"]');
-    expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
-    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-testid="surface-add-menu"]')).toBeNull();
+    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'zoom']);
+    expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
   });
 
-  it('opens the add menu with both surface kinds, terminal carrying its shortcut', () => {
-    mount(rootLeafId());
-    click('add-surface');
-
-    const menu = container.querySelector('[data-testid="surface-add-menu"]');
-    expect(menu).not.toBeNull();
-    expect(
-      container.querySelector('[data-pane-action="add-surface"]')?.getAttribute('aria-expanded'),
-    ).toBe('true');
-    const items = Array.from(menu!.querySelectorAll('[data-pane-action]'))
-      .map((el) => el.getAttribute('data-pane-action'));
-    expect(items).toEqual(['new-terminal', 'new-browser']);
-    // The keyboard path is the one that already existed; the menu advertises
-    // it rather than hiding that this is reachable without the mouse.
-    expect(menu!.textContent).toContain('Ctrl+T');
-  });
-
-  it('closes the add menu on Escape without creating anything', () => {
-    const paneId = rootLeafId();
-    mount(paneId);
-    click('add-surface');
-    expect(container.querySelector('[data-testid="surface-add-menu"]')).not.toBeNull();
-
+  it('shows the + only once the experimental setting is on', () => {
     act(() => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      useStore.getState().setPaneNewTerminalButton(true);
     });
-
-    expect(container.querySelector('[data-testid="surface-add-menu"]')).toBeNull();
-    const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
-    expect(leaf.surfaces).toHaveLength(0);
+    mount(rootLeafId());
+    const actions = Array.from(
+      container.querySelectorAll('[data-pane-action]'),
+    ).map((el) => el.getAttribute('data-pane-action'));
+    // On the tab strip, BEFORE the cluster — it adds a surface, it does not
+    // act on the pane.
+    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'zoom']);
+    const btn = container.querySelector('[data-pane-action="new-terminal"]');
+    // One click, no menu — with the browser back in the cluster there is only
+    // one thing left for it to do.
+    expect(btn?.getAttribute('aria-haspopup')).toBeNull();
+    // The keyboard path stays advertised even to someone using the button.
+    expect(btn?.getAttribute('title')).toContain('Ctrl+T');
   });
 
   it('Add terminal invokes the callback without selecting a tab', () => {
@@ -172,7 +155,7 @@ describe('SurfaceTabs pane action cluster', () => {
       );
     });
 
-    clickInAddMenu('new-terminal');
+    clickNewTerminal();
 
     expect(addTerminalCalls).toBe(1);
   });
@@ -181,7 +164,7 @@ describe('SurfaceTabs pane action cluster', () => {
     const paneId = rootLeafId();
     mount(paneId);
 
-    clickInAddMenu('new-terminal');
+    clickNewTerminal();
 
     const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
     const terminals = leaf.surfaces.filter((s) => s.ptyId === 'test-pty');
@@ -214,7 +197,7 @@ describe('SurfaceTabs pane action cluster', () => {
     const paneId = rootLeafId();
     mount(paneId);
 
-    clickInAddMenu('new-browser');
+    click('new-browser');
 
     const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
     const browsers = leaf.surfaces.filter((s) => s.surfaceType === 'browser');
@@ -241,10 +224,24 @@ describe('SurfaceTabs pane action cluster', () => {
     mount(rootLeafId());
 
     expect(container.querySelector('[data-pane-actions]')).toBeNull();
-    // The `+` is not part of the cluster, so the toggle must not take surface
-    // creation away with it — that would leave the pane with no mouse path to
-    // a new tab at all.
-    expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(1);
-    expect(container.querySelector('[data-pane-action="add-surface"]')).not.toBeNull();
+    // Nothing left: the cluster is hidden and the `+` is off by default. That
+    // is the minimal-chrome setup working as asked, not a missing affordance —
+    // every action here still has a key.
+    expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(0);
+  });
+
+  // The two toggles are independent: hiding the cluster must not take away a
+  // `+` the user explicitly turned on, and vice versa.
+  it('keeps the opt-in + when the cluster is hidden', () => {
+    act(() => {
+      useStore.getState().setPaneActionsVisible(false);
+      useStore.getState().setPaneNewTerminalButton(true);
+    });
+    mount(rootLeafId());
+
+    expect(container.querySelector('[data-pane-actions]')).toBeNull();
+    const actions = Array.from(container.querySelectorAll('[data-pane-action]'))
+      .map((el) => el.getAttribute('data-pane-action'));
+    expect(actions).toEqual(['new-terminal']);
   });
 });

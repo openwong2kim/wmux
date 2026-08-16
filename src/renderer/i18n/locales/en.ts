@@ -612,6 +612,9 @@ export const en = {
   'settings.multiviewColumns': 'Columns',
   'settings.multiviewRows': 'Rows',
   'settings.paneActionsVisible': 'Pane action buttons',
+  'settings.paneNewTerminalButton': 'New-terminal button on the tab strip',
+  'settings.paneNewTerminalButtonDesc':
+    'Adds a + that puts a SECOND terminal in this pane. wmux is built around one pane = one terminal — splitting is the usual way to get another — so this is off by default. Ctrl+T does the same thing without the button.',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
   'settings.updateReady': 'Update ready',
   'settings.updateEndsSessions': 'Installing closes your running sessions.',
@@ -654,6 +657,7 @@ export const en = {
   'settings.sc.splitHorizontal': 'Split pane horizontal',
   'settings.sc.splitVertical': 'Split pane vertical',
   'settings.sc.newWorkspace': 'New workspace',
+  'settings.sc.newTerminalInPane': 'New terminal in this pane',
   'settings.sc.closeSurface': 'Close active tab',
   'settings.sc.closePane': 'Close split pane',
   'settings.sc.searchTerminal': 'Search in terminal',

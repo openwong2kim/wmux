@@ -3406,6 +3406,8 @@ function TabAppearance() {
 
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
+  const paneNewTerminalButton = useStore((s) => s.paneNewTerminalButton);
+  const setPaneNewTerminalButton = useStore((s) => s.setPaneNewTerminalButton);
   const applyChromePreset = useStore((s) => s.applyChromePreset);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -3555,6 +3557,28 @@ function TabAppearance() {
             onChange={setPaneActionsVisible}
             label={t('settings.paneActionsVisible')}
           />
+        </SettingRow>
+        {/* Labelled experimental on purpose: this is the one toggle here that
+            changes what wmux RECOMMENDS, not just what it shows. See the
+            uiSlice note. */}
+        <SettingRow
+          label={t('settings.paneNewTerminalButton')}
+          description={t('settings.paneNewTerminalButtonDesc')}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="text-[9px] px-1 py-0.5 rounded"
+              style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
+              title={t('settings.paneNewTerminalButtonDesc')}
+            >
+              experimental
+            </span>
+            <Toggle
+              checked={paneNewTerminalButton}
+              onChange={setPaneNewTerminalButton}
+              label={t('settings.paneNewTerminalButton')}
+            />
+          </div>
         </SettingRow>
         <SettingRow label={t('settings.uiScale')} description={t('settings.uiScaleDesc')}>
           <div className="flex items-center gap-2">
