@@ -12,7 +12,8 @@ import { buildSpawnInjection, classifyShell } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
-import { isMac } from '../shared/platform';
+import { isMac, parseWindowsBuildNumber } from '../shared/platform';
+import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
@@ -420,16 +421,37 @@ export class DaemonSessionManager extends EventEmitter {
     // shell path differs from Windows. Surface an actionable message instead of
     // letting the raw node-pty error propagate as an opaque session-create
     // failure. (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
+    //
+    // #910: below Windows 11 the in-box ConPTY never forwards mouse-mode
+    // DECSETs, so vim `set mouse=a` gets no events. Those builds spawn against
+    // node-pty's bundled conpty.dll instead. If the bundled DLL itself is
+    // missing/corrupt (a packaging failure), fall back to in-box exactly once —
+    // any other failure keeps failing, because PaneSupervisor's restart backoff
+    // exists to absorb transient ConPTY errors (87) and a broad fallback would
+    // silently demote the pane to mouse-less forever.
     let ptyProcess: IPty;
+    const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
     try {
-      ptyProcess = pty.spawn(cmd, spawnArgs, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd,
-        env,
-        useConpty: true,
-      });
+      // #910 dogfood: the notices below are what makes a "shipped, still
+      // broken" report diagnosable — they say which backend actually started,
+      // on every spawn, and name any demotion.
+      ptyProcess = spawnWithConptyPolicy(
+        (useBundled) => pty.spawn(cmd, spawnArgs, {
+          name: 'xterm-256color',
+          cols,
+          rows,
+          cwd,
+          env,
+          useConpty: true,
+          ...(useBundled ? { useConptyDll: true } : {}),
+        }),
+        useConptyDll,
+        (level, message) => {
+          const line = `[DaemonSessionManager] session ${params.id}: ${message}`;
+          if (level === 'warn') console.error(line);
+          else console.log(line);
+        },
+      );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
