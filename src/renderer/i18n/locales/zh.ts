@@ -120,7 +120,7 @@ export const zh = {
   'usage.tooltipFetched': '获取于：{fetched}',
 
   // Deck fleet roster
-  'deck.fleetShell': 'shell',
+  'deck.fleetShell': '终端',
   'deck.fleetPreferredRole': '首选角色 — 编排器会把匹配的工作路由到这里',
   'deck.fleetRolePlaceholder': '角色…',
   'deck.fleetRoleAria': '{label} 的角色',
