@@ -77,6 +77,10 @@ export default function PluginFrame({
     let disposed = false;
     let unregisterFrame: (() => void) | null = null;
 
+    /**
+     * Unsolicited traffic (palette commands, forwarded events) goes to
+     * whatever port is CURRENT — that is the document on screen.
+     */
     const post = (msg: unknown) => {
       try {
         portRef.current?.postMessage(msg);
@@ -84,7 +88,19 @@ export default function PluginFrame({
         /* port may be closed mid-flight during unmount */
       }
     };
-    const respond = (msg: BridgeResponse) => post(msg);
+    /**
+     * A response goes back to the port the REQUEST came in on, not the current
+     * one. An rpc started before a reload resolves after it, and answering on
+     * the new port hands the fresh document a response to an id it never sent.
+     * Closed ports throw, which is the correct outcome: the asker is gone.
+     */
+    const respondOn = (port: MessagePort, msg: BridgeResponse) => {
+      try {
+        port.postMessage(msg);
+      } catch {
+        /* the document that asked is gone; nothing to deliver to */
+      }
+    };
 
     const onLoad = () => {
       portRef.current?.close();
@@ -100,9 +116,9 @@ export default function PluginFrame({
           .then((raw) => {
             const resp = raw as { ok?: boolean; result?: unknown; error?: string } | null;
             if (resp && resp.ok === true) {
-              respond({ v: PLUGIN_BRIDGE_VERSION, id: req.id, kind: 'response', result: resp.result });
+              respondOn(port, { v: PLUGIN_BRIDGE_VERSION, id: req.id, kind: 'response', result: resp.result });
             } else {
-              respond({
+              respondOn(port, {
                 v: PLUGIN_BRIDGE_VERSION,
                 id: req.id,
                 kind: 'response',
@@ -111,7 +127,7 @@ export default function PluginFrame({
             }
           })
           .catch((err: unknown) => {
-            respond({
+            respondOn(port, {
               v: PLUGIN_BRIDGE_VERSION,
               id: req.id,
               kind: 'response',
@@ -137,6 +153,12 @@ export default function PluginFrame({
       unregisterFrame = null;
       portRef.current?.close();
       portRef.current = null;
+      // Back to "no bridge". Without this the invariant only holds until the
+      // first teardown: a pluginName/entry change nulls the port but leaves
+      // the epoch at >= 1, so the poll effect restarts immediately and spends
+      // the window before the new `load` posting into a null port — events
+      // dropped, silently, with nothing to notice it.
+      setBridgeEpoch(0);
     };
   }, [pluginName, entry]);
 

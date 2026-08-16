@@ -114,6 +114,70 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
       .toMatchObject({ kind: 'response', id: 'after' });
   });
 
+  // A response belongs to the document that ASKED. The reload window is what
+  // makes that observable: an rpc started on the old port resolves after the
+  // new one exists, and answering on the current port hands the fresh document
+  // a response to an id it never sent.
+  //
+  // The rpc is held open deliberately — resolving it before the reload would
+  // make this pass no matter which port the answer went to.
+  it('does not deliver a pre-reload response to the reloaded document', async () => {
+    let settleFirst: ((v: unknown) => void) | null = null;
+    rpc.mockImplementation(() => new Promise((resolve) => { settleFirst = resolve; }));
+
+    act(() => {
+      root.render(React.createElement(PluginFrame, {
+        pluginName: 'demo',
+        entry: 'index.html',
+        forwardEvents: false,
+      }));
+    });
+    const iframe = container.querySelector('iframe')!;
+    const framePostMessage = vi.fn();
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      get: () => ({ postMessage: framePostMessage }),
+    });
+
+    await act(async () => { iframe.dispatchEvent(new Event('load')); });
+    const firstPort = pluginPort(framePostMessage);
+    firstPort.start();
+
+    // Ask on the OLD port. The host's rpc is now pending.
+    firstPort.postMessage({ v: PLUGIN_BRIDGE_VERSION, id: 'stale', kind: 'request', method: 'workspace.current' });
+    await act(async () => { await Promise.resolve(); });
+    expect(settleFirst, 'the host never called rpc for the pre-reload request').not.toBeNull();
+
+    // The frame reloads; the host mints a second port for the new document.
+    framePostMessage.mockClear();
+    await act(async () => { iframe.dispatchEvent(new Event('load')); });
+    const secondPort = pluginPort(framePostMessage);
+    const onSecond = vi.fn();
+    secondPort.addEventListener('message', onSecond);
+    secondPort.start();
+
+    // NOW the old request resolves.
+    await act(async () => {
+      settleFirst!({ ok: true, result: { id: 'ws-1' } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 양성 통제: 새 포트가 정상 요청에는 응답을 받는가
+    rpc.mockImplementation(() => Promise.resolve({ ok: true, result: {} }));
+    secondPort.postMessage({ v: PLUGIN_BRIDGE_VERSION, id: 'live', kind: 'request', method: 'workspace.current' });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+    const allIds = onSecond.mock.calls.map((c) => (c[0] as MessageEvent).data?.id);
+    expect(allIds, '새 포트가 아무것도 못 받음 — 리스너 배선 문제').toContain('live');
+    const idsSeen = allIds;
+    expect(
+      idsSeen,
+      'the reloaded document was handed a response to an id it never sent',
+    ).not.toContain('stale');
+  });
+
   // The reason #719 put activeWorkspaceId on the effect in the first place. It
   // has to keep holding once the bridge stops depending on the workspace,
   // otherwise the poll would keep reading the workspace that was active at
@@ -150,6 +214,54 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
         .slice(rpc.mock.calls.findIndex((c) => c[2]?.workspaceId === 'ws-2'))
         .filter((c) => c[1] === 'events.poll');
       expect(pollsAfterSwitch.every((c) => c[2]?.workspaceId === 'ws-2')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // `bridgeEpoch === 0` is the poll's "there is nowhere to deliver" gate. It
+  // has to go back to 0 when the bridge is torn down, or the gate only works
+  // once: swapping the plugin nulls the port but leaves the epoch high, and
+  // the loop spends the window before the new `load` polling into nothing —
+  // events fetched from the ring and dropped, with no way to notice.
+  it('stops polling between a plugin swap and the new frame load', async () => {
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(PluginFrame, {
+          pluginName: 'demo',
+          entry: 'index.html',
+          forwardEvents: true,
+        }));
+      });
+      const iframe = container.querySelector('iframe')!;
+      Object.defineProperty(iframe, 'contentWindow', {
+        configurable: true,
+        get: () => ({ postMessage: vi.fn() }),
+      });
+      rpc.mockResolvedValue({ ok: true, result: { events: [], nextCursor: 7 } });
+
+      await act(async () => { iframe.dispatchEvent(new Event('load')); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-1' });
+
+      // Swap the plugin: the bridge effect tears down and the new frame has
+      // not loaded yet, so there is no port.
+      rpc.mockClear();
+      act(() => {
+        root.render(React.createElement(PluginFrame, {
+          pluginName: 'other',
+          entry: 'index.html',
+          forwardEvents: true,
+        }));
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+      const polls = rpc.mock.calls.filter((c) => c[1] === 'events.poll');
+      expect(
+        polls,
+        'polled while no port existed — the events it fetched went nowhere',
+      ).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }
