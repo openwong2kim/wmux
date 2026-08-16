@@ -61,4 +61,4 @@ jobs:
             p1.write('exit\r');
           "
       - name: Unit tests for the gate (run on this pre-22000 runner)
-        run: npx vitest run src/shared/__tests__/platform.test.ts --reporter=basic
+        run: npx vitest run src/shared/__tests__/platform.test.ts
