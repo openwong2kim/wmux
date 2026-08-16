@@ -50,12 +50,12 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 ├───────────┬──────────────────────────────────┬──────────────┤
 │ sidebar   │  terminal grid  (THE HERO,       │ mission      │
 │ 240px     │  largest area; focused pane =    │ control      │
-│ workspaces│  amber top edge; tab strip       │ ~326px       │
-│ ONLY      │  with amber underline)           │ ┌ tabs ────┐ │
+│ workspaces│  steel tab-strip underline)      │ ~326px       │
+│ ONLY      │                                  │ ┌ tabs ────┐ │
 │ (mantle)  │                                  │ │icon tabs │ │
 │           │                                  │ ├ Fleet ───┤ │
 │           │                                  │ ├ Orch ────┤ │
-│           │  [agent toolbar, text-first]     │ └ busy bar ┘ │
+│           │                                  │ └ busy bar ┘ │
 └───────────┴──────────────────────────────────┴──────────────┘
 ```
 
@@ -138,9 +138,11 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 ## Spacing & Geometry
 
 - **36px chrome module.** Every horizontal chrome row — titlebar, sidebar
-  header/footer, pane tab strip, deck tabs, agent toolbar — is exactly 36px
+  header/footer, pane tab strip, deck tabs — is exactly 36px
   (`h-9`) so hairlines across the three columns land on the same y. A new
-  chrome row must justify deviating from the module.
+  chrome row must justify deviating from the module. The workspace-spanning
+  agent toolbar was removed (2026-08-15): pane verbs live on the focused tab
+  cluster, fleet spawn on the selected workspace card.
 - Base unit 4px. Density: compact-leaning (rows 26–30px).
 - Radii: **5px buttons/controls · 6px inputs · 7px cards/panels**. Never larger
   on chrome. Full-round only for status dots and count badges.
@@ -211,3 +213,4 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-07-20 | fan-out은 에이전트 툴바로 복귀(2026-07-19 "toolbar→control bar" 결정 되돌림), 오케스트레이터 모델 선택은 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동 | fan-out 버튼을 툴바 우측(New chat 왼쪽)에 되돌려 함대 스폰 진입을 터미널 크롬에서 바로; 모델 선택은 탭 라벨 `Agent (모델)`을 활성 상태에서 재클릭해 여는 인라인 메뉴로 통합해 컨트롤 바를 Mode·Loop·Schedules로 정리 |
 | 2026-07-20 | Git·Review=워크스페이스 헤더 탭(중앙 상단 행 우측)+중앙 전체 표면, 페인 탭=터미널·브라우저(·diff·editor) 전용 (같은 날 시안 A 페인-탭 결정을 대체) | Git·Review는 워크스페이스 단위 데이터인데 페인 surface 탭에 붙여 어색한 동작이 연쇄됐다(세트가 첫 터미널에 붙음, 분할 시 한쪽만, 다른 페인에서 점프, 좁은 탭 잘림). 헤더 탭으로 승격해 워크스페이스 스코프와 맞추고, 클릭 시 페인 그리드를 덮는 중앙 표면(GitTab/ReviewTab, max-w-720)으로 연다. 페인 그리드는 display로만 숨겨 터미널 PTY를 살린다. GitTab은 cwd prop 없이 활성 페인 cwd를 라이브로 따라간다 |
 | 2026-08-14 | Deck header = icon strip (Agent · Git · Channels · web, 36px glyphs); collapsed deck = a 36px vertical glyph rail on the deck's edge; the Agent · Git · Channels · web rows at the sidebar's foot are gone | Three text tabs ate the entire header of a 248–320px column. The entry points sat on the opposite edge (the sidebar's foot) and disappeared outright when the sidebar was collapsed (MiniSidebar never carried them) — what opens the deck lives on the deck's edge. The tab name and the current orchestrator model moved to the tooltip / accessible name |
+| 2026-08-15 | Agent verbs leave the workspace-spanning 36px toolbar and go home: compose (⌘G) + attach + new-conversation on the focused pane tab cluster; Broadcast is a compose target (This pane / All N terminals, All N armed 4s); Multi Task / Start agents on the selected workspace card (deck header only when the sidebar is collapsed). No titlebar verbs, no hover bar, no bottom strip | Chrome must match blast radius. A pane verb owned by both panes in a split lied; a fleet spawn that unmounted at 0 agents could not start a fleet; the 36px strip stole a chrome module from the terminals |

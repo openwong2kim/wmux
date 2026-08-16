@@ -29,3 +29,11 @@ export async function injectText(ptyId: string, text: string, submit: boolean): 
   await pastePtyChunked(write, text, modesFor(ptyId));
   if (submit) write('\r');
 }
+
+/** OS file picker → quoted paths pasted into the pane (no Enter). */
+export async function attachFilesToPty(ptyId: string): Promise<void> {
+  if (!ptyId) return;
+  const paths = await window.electronAPI.dialog.pickFile();
+  if (paths.length === 0) return;
+  await injectText(ptyId, quotePathsForPrompt(paths), false);
+}

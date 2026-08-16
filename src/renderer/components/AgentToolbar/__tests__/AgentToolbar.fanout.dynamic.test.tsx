@@ -1,11 +1,8 @@
 // @vitest-environment jsdom
 //
-// Dynamic test for the agent toolbar's Multi Task (fan-out) button. fan-out moved back
-// from the deck control bar to the toolbar (DESIGN.md Decisions Log 2026-07-20) — the
-// old control-bar empty-fleet test was moved here. Mounts a real <AgentToolbar/> via
-// react-dom/client and verifies that fanout-button renders and that clicking it toggles
-// the FanOutDialog above the toolbar. The packaged Electron UI can't be automated, so
-// this jsdom harness is the verification surface.
+// Dynamic test for Multi Task (fan-out) on a workspace card. Spawn must exist
+// at zero agents — FanOutTrigger is not gated on the roster. ComposeHost
+// portals FanOutDialog so it never mounts inside the sidebar scroller.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -18,7 +15,8 @@ vi.mock('../inject', () => ({
 }));
 
 import { useStore } from '../../../stores';
-import AgentToolbar from '../AgentToolbar';
+import FanOutTrigger from '../FanOutTrigger';
+import ComposeHost from '../ComposeHost';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -27,7 +25,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => useStore.setState({ toolbarPopover: null }));
+  act(() => useStore.setState({ toolbarPopover: null, fanOutWorkspaceId: null, agentToolbarEnabled: true }));
 });
 
 afterEach(() => {
@@ -36,18 +34,23 @@ afterEach(() => {
 });
 
 function mount(): void {
-  act(() => root.render(createElement(AgentToolbar)));
+  act(() => root.render(createElement(
+    'div',
+    null,
+    createElement(FanOutTrigger, { workspaceId: 'ws-empty', variant: 'start' }),
+    createElement(ComposeHost),
+  )));
 }
 
 const fanoutButton = (): HTMLButtonElement =>
   container.querySelector('[data-testid="fanout-button"]') as HTMLButtonElement;
 
-describe('AgentToolbar — fan-out', () => {
+describe('FanOutTrigger — empty-fleet spawn', () => {
   it('renders the fan-out button even with no active workspace (spawn a fleet from zero)', () => {
     mount();
     expect(fanoutButton()).not.toBeNull();
-    // The dialog starts closed.
-    expect(container.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
+    expect(fanoutButton().getAttribute('data-fanout-kind')).toBe('start');
+    expect(document.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
   });
 
   it('toggles the FanOutDialog open and closed on click', () => {
@@ -55,10 +58,10 @@ describe('AgentToolbar — fan-out', () => {
     act(() => {
       fanoutButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="fanout-dialog"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="fanout-dialog"]')).not.toBeNull();
     act(() => {
       fanoutButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
   });
 });

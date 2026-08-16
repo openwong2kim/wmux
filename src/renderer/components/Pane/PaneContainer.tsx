@@ -156,8 +156,8 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
             {i > 0 && (
               <Separator
                 className={`${
-                  orientation === 'horizontal' ? 'w-1.5' : 'h-1.5'
-                } bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors ${
+                  orientation === 'horizontal' ? 'w-px' : 'h-px'
+                } bg-[var(--border-soft)] hover:bg-[var(--accent-blue)] transition-colors ${
                   zoomInSubtree ? 'wmux-zoom-hidden' : ''
                 }`}
               />

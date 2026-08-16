@@ -70,7 +70,7 @@ import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
-import AgentToolbar from '../AgentToolbar/AgentToolbar';
+import ComposeHost from '../AgentToolbar/ComposeHost';
 import Titlebar from '../Titlebar/Titlebar';
 import {
   createDeadPaneRecovery,
@@ -532,7 +532,6 @@ export default function AppLayout() {
   const clearAllPtyState = useStore((s) => s.clearAllPtyState);
 
   const prefixMode = useStore((s) => s.prefixMode);
-  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
   // Gate the cross-pane SearchResultsPanel mount at the layout level so its
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
@@ -1649,11 +1648,9 @@ export default function AppLayout() {
             instead of the ~1300-line chrome (2026-07-13 switch-lag fix). */}
         <EmptyLeafFunnel />
         <FocusManager />
-        {agentToolbarEnabled && (
-          <ErrorBoundary name="AgentToolbar">
-            <AgentToolbar />
-          </ErrorBoundary>
-        )}
+        <ErrorBoundary name="ComposeHost">
+          <ComposeHost />
+        </ErrorBoundary>
       </div>
       </ErrorBoundary>
       {/* A2A channel dock (Approach A). A flex sibling on the OPPOSITE edge

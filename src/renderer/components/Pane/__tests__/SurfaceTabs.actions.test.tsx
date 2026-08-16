@@ -168,3 +168,64 @@ describe('SurfaceTabs pane action cluster', () => {
     // PaneContainer.zoom.test.tsx suite covers the zoom state machine itself.
   });
 });
+
+function mountWithTerminal(paneId: string, paneActive = true): void {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const ws = activeWs();
+  const leaf = getLeafPanes(ws.rootPane).find((l) => l.id === paneId)!;
+  const surfaces = leaf.surfaces.length > 0
+    ? leaf.surfaces
+    : [{ id: 's1', ptyId: 'pty-1', title: 't', shell: 'bash', cwd: '/x', surfaceType: 'terminal' as const }];
+  act(() => {
+    root.render(
+      React.createElement(SurfaceTabs, {
+        surfaces,
+        activeSurfaceId: surfaces[0].id,
+        workspace: ws,
+        paneId,
+        paneActive,
+        onSelect: () => undefined,
+        onClose: () => undefined,
+        onSplitHorizontal: () => undefined,
+        onSplitVertical: () => undefined,
+        onAddBrowser: () => undefined,
+      }),
+    );
+  });
+}
+
+describe('SurfaceTabs inject cluster', () => {
+  it('shows attach / compose / new-conversation only on the focused pane', () => {
+    act(() => { useStore.getState().setAgentToolbarEnabled(true); });
+    mountWithTerminal(rootLeafId(), true);
+    expect(container.querySelector('[data-pane-action="attach"]')).not.toBeNull();
+    expect(container.querySelector('[data-pane-action="compose"]')).not.toBeNull();
+    expect(container.querySelector('[data-pane-action="new-conversation"]')).not.toBeNull();
+    act(() => root.unmount());
+    container.remove();
+    mountWithTerminal(rootLeafId(), false);
+    expect(container.querySelector('[data-pane-action="attach"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="compose"]')).toBeNull();
+  });
+
+  it('keeps inject glyphs when pane actions are hidden', () => {
+    act(() => {
+      useStore.getState().setAgentToolbarEnabled(true);
+      useStore.getState().setPaneActionsVisible(false);
+    });
+    mountWithTerminal(rootLeafId(), true);
+    expect(container.querySelector('[data-pane-action="attach"]')).not.toBeNull();
+    expect(container.querySelector('[data-pane-action="compose"]')).not.toBeNull();
+    expect(container.querySelector('[data-pane-action="split-right"]')).toBeNull();
+  });
+
+  it('hides inject glyphs when inject chrome is off', () => {
+    act(() => { useStore.getState().setAgentToolbarEnabled(false); });
+    mountWithTerminal(rootLeafId(), true);
+    expect(container.querySelector('[data-pane-action="attach"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="compose"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="split-right"]')).not.toBeNull();
+  });
+});
