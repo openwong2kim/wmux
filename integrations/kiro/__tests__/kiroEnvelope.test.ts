@@ -98,15 +98,34 @@ describe('buildKiroEnvelope', () => {
 });
 
 describe('shouldTryNextTarget', () => {
-  // Same no-double-fire rule the Codex bridge uses: only advance when the
-  // request PROVABLY never reached a server, or a fallback could deliver a
-  // second turn boundary for one turn.
+  // The walk stops at an answered call, and at an ambiguous write — unless
+  // re-delivering that kind is harmless. `agent.stop` and
+  // `agent.session_start` assert a state rather than append a record, and the
+  // server dedups a repeat inside its window, so for those the cost of
+  // stopping (a pane that reads as still-working until hook authority ages
+  // out) is worse than the cost of a duplicate (nothing).
   it('stops on an answered call', () => {
-    expect(shouldTryNextTarget({ ok: true })).toBe(false);
+    expect(shouldTryNextTarget({ ok: true }, 'agent.stop')).toBe(false);
   });
 
-  it('stops when the bytes were written but no answer came back', () => {
+  it('stops on an ambiguous write for a kind that is not idempotent', () => {
     expect(shouldTryNextTarget({ ok: false, error: 'timeout', retryable: false })).toBe(false);
+    expect(
+      shouldTryNextTarget({ ok: false, error: 'timeout', retryable: false }, 'agent.activity'),
+    ).toBe(false);
+  });
+
+  it('keeps walking on an ambiguous write for an idempotent kind', () => {
+    for (const kind of ['agent.stop', 'agent.session_start']) {
+      expect(
+        shouldTryNextTarget({ ok: false, error: 'timeout', retryable: false }, kind),
+        kind,
+      ).toBe(true);
+      expect(
+        shouldTryNextTarget({ ok: false, error: 'closed-without-response', retryable: false }, kind),
+        kind,
+      ).toBe(true);
+    }
   });
 
   it('advances on a connect failure that never wrote', () => {
@@ -115,5 +134,17 @@ describe('shouldTryNextTarget', () => {
 
   it('advances on an explicit refusal from an older endpoint', () => {
     expect(shouldTryNextTarget({ ok: false, error: 'Unknown method' })).toBe(true);
+  });
+
+  // A trigger name that resolves through Object.prototype used to sail past
+  // the `!kind` guard and produce an envelope whose kind was a function or
+  // `{}`, which then went to the daemon instead of being dropped.
+  it('drops trigger names that only exist on the prototype chain', () => {
+    for (const trigger of ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty']) {
+      expect(
+        buildKiroEnvelope({ hook_event_name: trigger, cwd: 'C:/x' }, { env: { WMUX_PTY_ID: 'p1' }, now: 1 }),
+        trigger,
+      ).toBeNull();
+    }
   });
 });

@@ -411,7 +411,8 @@ describe('every installed hook is indistinguishable from a no-op', () => {
 // 3. stdin drain.
 //
 // A hook that stops reading stdin leaves the host writing into a pipe with no
-// reader. The bridges cap stdin at 1MB by design and drop the signal past it;
+// reader. The bridges cap stdin by design (1MB for the Claude family, 256KB
+// for Kiro, whose payloads carry whole assistant replies) and drop past it;
 // that is a delivery choice, not a harmlessness one. What must hold is that
 // the host's write SETTLES — errored is fine, wedged is not — and that the
 // hook still exits 0 and silently.

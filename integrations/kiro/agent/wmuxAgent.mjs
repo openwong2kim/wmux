@@ -53,7 +53,17 @@ export const INTENDED_DIFFERENCES = ['name', 'description', 'prompt', 'hooks'];
  * to be generated per machine rather than hardcoded. The separators below
  * reproduce what Kiro itself writes.
  */
-export function buildKiroAgentConfig(bridgeScript, home, { sep = '\\' } = {}) {
+export function buildKiroAgentConfig(
+  bridgeScript,
+  home,
+  // Default from the PLATFORM, not a constant. A hardcoded `\\` bakes
+  // backslash resources on POSIX whenever a caller omits the option, and Kiro
+  // drops a resource path it cannot resolve without saying so — the same
+  // silent loss of skills and steering this file exists to prevent. Callers
+  // that need the other separator still pass it explicitly (the equivalence
+  // check does).
+  { sep = process.platform === 'win32' ? '\\' : '/' } = {},
+) {
   const command = `node "${bridgeScript}"`;
   const hook = [{ command, timeout_ms: KIRO_HOOK_TIMEOUT_MS }];
   const kiroHome = `${home}${sep}.kiro`;

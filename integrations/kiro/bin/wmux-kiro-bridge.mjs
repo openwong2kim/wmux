@@ -27,8 +27,11 @@
 //     There is NO session id. Two consequences, both deliberate:
 //       - pane attribution comes from WMUX_PTY_ID only, and a payload with no
 //         pty id is DROPPED rather than guessed at;
-//       - resume binding is impossible, so unlike the Codex bridge this one has
-//         no spool. Nothing durable is lost by a failed send.
+//       - resume binding is impossible, so unlike the Codex bridge this one
+//         has no spool — that spool carries a session id + launch command,
+//         and there is none to write. A failed send still costs the turn
+//         boundary itself; see the send path for what that means and why the
+//         idempotent kinds keep walking.
 //   * The payload carries CONTENT: `prompt` is the user's full input and
 //     `assistant_response` is the model's full reply. wmux's bridges are
 //     metadata-only, so those fields are never read, logged, or forwarded. The
@@ -45,7 +48,7 @@
 // below untestable except through a subprocess. The OpenCode plugin is
 // shebang-free for the same reason and its tests import it directly.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -290,24 +293,46 @@ async function sendRpcWithRetry(pipePath, request, deadline = Date.now() + HOOK_
   }
 }
 
-// Advance to the next endpoint only when the request PROVABLY never reached a
-// server. An answered call owns the signal; a written-but-unanswered one is
-// ambiguous and re-sending risks a duplicate turn boundary.
-export function shouldTryNextTarget(result) {
+// Signals whose re-delivery cannot corrupt anything: each asserts a state
+// ("this turn ended", "this session began") rather than appending a record, and
+// wmux's HookSignalRouter keeps a dedup ledger, so a duplicate that lands
+// inside its window is dropped before any user-visible dispatch.
+//
+// That matters because the alternative is not "one lost signal". Once ANY
+// bridge signal reaches wmux the pane is hook-governed, and while that
+// authority is fresh the detector's turn-end emissions are vetoed
+// (HookIngest) — so a dropped `stop` is not re-derived from the screen, and
+// the pane reads as still-working until the next signal lands or the authority
+// ages out. Trading a possible duplicate (deduped) for a possible stall
+// (minutes) is the right side of that bargain for these two kinds.
+const IDEMPOTENT_KINDS = new Set(['agent.stop', 'agent.session_start']);
+
+// Advance to the next endpoint when the request provably never reached a
+// server — or when re-sending is harmless. An answered call owns the signal;
+// a written-but-unanswered one is ambiguous, and for anything NOT in
+// IDEMPOTENT_KINDS the ambiguity is where the walk stops.
+export function shouldTryNextTarget(result, kind) {
   if (result && result.ok === true) return false;
-  if (result && result.retryable === false) return false;
+  if (result && result.retryable === false) return IDEMPOTENT_KINDS.has(kind);
   return true;
 }
 
-async function sendToTargets(targets, buildRequest) {
+async function sendToTargets(targets, buildRequest, kind) {
   const deadline = Date.now() + HOOK_TIMEOUT_MS;
   let result = { ok: false, error: 'no-target' };
   let target = null;
-  for (const candidate of targets) {
-    if (Date.now() >= deadline) break;
+  for (let i = 0; i < targets.length; i++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const candidate = targets[i];
     target = candidate;
-    result = await sendRpcWithRetry(candidate.pipe, buildRequest(candidate), deadline);
-    if (!shouldTryNextTarget(result)) break;
+    // Per-target slice, not the whole remaining budget: a pipe that accepts
+    // the connection and then hangs would otherwise spend every millisecond
+    // here and the fallback endpoint would never be tried at all — the walk
+    // would exist on paper only.
+    const slice = Math.max(1, Math.floor(remaining / (targets.length - i)));
+    result = await sendRpcWithRetry(candidate.pipe, buildRequest(candidate), Date.now() + slice);
+    if (!shouldTryNextTarget(result, kind)) break;
   }
   return { result, target };
 }
@@ -333,7 +358,14 @@ function nonEmptyStr(v) {
 export function buildKiroEnvelope(payload, { env = process.env, now = Date.now() } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const trigger = nonEmptyStr(payload.hook_event_name);
-  const kind = trigger ? TRIGGER_TO_KIND[trigger] : undefined;
+  // hasOwn, not a bare index: `constructor` / `toString` / `__proto__` resolve
+  // through the prototype chain to truthy values, sail past a `!kind` guard,
+  // and produce an envelope whose `kind` is a function or `{}` — sent to the
+  // daemon instead of being dropped. Measured before the fix:
+  //   constructor -> kind=undefined (serialized), __proto__ -> kind={}
+  const kind = trigger && Object.hasOwn(TRIGGER_TO_KIND, trigger)
+    ? TRIGGER_TO_KIND[trigger]
+    : undefined;
   if (!kind) return null;
 
   const ptyId = nonEmptyStr(env.WMUX_PTY_ID);
@@ -372,8 +404,9 @@ async function main() {
     // Two reasons, and the log distinguishes them without echoing content: an
     // event wmux does not act on, or a pane we cannot identify.
     const trigger = nonEmptyStr(payload?.hook_event_name);
-    logEvent(trigger && TRIGGER_TO_KIND[trigger] ? 'no-pty-id' : 'ignored-trigger', {
-      trigger: trigger && TRIGGER_TO_KIND[trigger] ? trigger : undefined,
+    const known = Boolean(trigger) && Object.hasOwn(TRIGGER_TO_KIND, trigger);
+    logEvent(known ? 'no-pty-id' : 'ignored-trigger', {
+      trigger: known ? trigger : undefined,
     });
     return;
   }
@@ -392,16 +425,27 @@ async function main() {
     method: t.method,
     params: envelope,
     token: t.token,
-  }));
+  }), envelope.kind);
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 
   if (innerOk) {
     logEvent('ok', { kind: envelope.kind, target: target?.name });
   } else {
-    // Nothing to spool: with no session id there is no durable binding a later
-    // daemon boot could reconcile. A lost turn boundary is re-derived by the
-    // detector, which is where kiro panes lived before this bridge existed.
+    // Nothing to spool: the existing spool carries a RESUME BINDING (session
+    // id + launch command) for the daemon to reconcile at boot, and Kiro gives
+    // no session id, so there is no such record to write.
+    //
+    // What a dropped signal costs, stated accurately: once any bridge signal
+    // has reached wmux the pane is hook-governed, and while that authority is
+    // fresh the detector's turn-end emissions are vetoed — so a lost `stop` is
+    // NOT re-derived from the screen. The pane reads as still-working until
+    // the next signal lands, the daemon restarts (authority is in-memory), or
+    // the authority TTL expires. That bound is deliberate and shared with
+    // every bridge (HOOK_AUTHORITY_TTL_MS: "short enough that a bridge killed
+    // with -9 eventually returns the pane to the detector backstop"), but it
+    // is minutes, not instant — which is why the walk above re-tries an
+    // idempotent kind rather than stopping at the first ambiguous write.
     logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
       kind: envelope.kind,
       target: target?.name,
@@ -422,7 +466,19 @@ function invokedAsScript() {
     if (!process.argv[1]) return true;
     const self = fileURLToPath(import.meta.url);
     const entry = resolve(process.argv[1]);
-    const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+    // realpath both sides before comparing. A textual match fails on a
+    // symlinked install, an 8.3 short path, or a `subst` drive — and the only
+    // symptom would be a bridge that silently never runs, which is the one
+    // outcome this guard must not produce. realpathSync throws if the path is
+    // gone; that lands in the catch, which fails OPEN by design.
+    const real = (p) => {
+      try {
+        return realpathSync.native ? realpathSync.native(p) : realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    const norm = (p) => (process.platform === 'win32' ? real(p).toLowerCase() : real(p));
     return norm(self) === norm(entry);
   } catch {
     return true;
@@ -430,6 +486,17 @@ function invokedAsScript() {
 }
 
 if (invokedAsScript()) {
+  // Self-enforced hard stop. The header promises "exits 0 ALWAYS, under a hard
+  // timeout", but HOOK_TIMEOUT_MS only bounds the SEND — a stdin that never
+  // reaches EOF would hang before that, leaving the invariant resting entirely
+  // on the host's own kill. Kiro was measured tolerating a hook that fails; it
+  // was not measured killing one that hangs, so the bridge bounds itself.
+  // `unref` so this never keeps the process alive on the normal path.
+  const watchdog = setTimeout(() => {
+    logEvent('watchdog-exit');
+    process.exit(0);
+  }, HOOK_TIMEOUT_MS * 2);
+  watchdog.unref?.();
   main()
     .catch((err) => logEvent('uncaught', { error: String(err) }))
     // `process.exit(0)`, not just a resolved promise: this bridge never writes

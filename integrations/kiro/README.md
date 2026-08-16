@@ -73,6 +73,15 @@ that happens to carry content fails it too.
 
 3. Launch Kiro panes with `kiro-cli chat --agent wmux`.
 
+Replace **both** placeholders with absolute paths, and use forward slashes so
+the JSON needs no escaping:
+
+- `<path>` — the directory holding `wmux-kiro-bridge.mjs`.
+- `<home>` — your home directory (`C:/Users/you`, `/Users/you`, `/home/you`).
+  Kiro does not expand `~` or `<home>` here: a literal one resolves to nothing
+  and the skills and steering entries are dropped **without an error**, which
+  looks exactly like having no skills.
+
 Confirm Kiro picked it up with `kiro-cli agent list` — it appears under
 `Global`, and the `*` stays on `kiro_default`, because this does not change
 your default agent.
