@@ -132,15 +132,17 @@ export default function ToastContainer() {
       className="fixed bottom-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none"
       aria-label={t('toast.notifications')}
     >
-      {toasts.map((t) => (
-        <div key={t.id} className="pointer-events-auto">
+      {/* `toast`, not `t` — the translator is in scope here now, and shadowing
+          it makes the next t('…') added inside this map a TypeError. */}
+      {toasts.map((toast) => (
+        <div key={toast.id} className="pointer-events-auto">
           <ToastItem
-            id={t.id}
-            message={t.message}
-            level={t.level}
-            action={t.action}
-            target={t.target}
-            persist={t.persist}
+            id={toast.id}
+            message={toast.message}
+            level={toast.level}
+            action={toast.action}
+            target={toast.target}
+            persist={toast.persist}
           />
         </div>
       ))}

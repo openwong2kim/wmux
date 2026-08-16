@@ -17,7 +17,7 @@
 
 import { type RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import { groupCapabilities } from './capabilityGrouping';
-import { t } from '../../i18n';
+import { useT } from '../../hooks/useT';
 
 // Re-export the grouping helpers so existing importers of these symbols from
 // the dialog module keep working — the canonical home is now the pure
@@ -61,6 +61,10 @@ function severityAccent(severity: RiskClassCopy['severity']): string {
 export function PermissionApprovalDialogView(
   props: PermissionApprovalDialogProps,
 ) {
+  // useT(), not the module-level `t`: a locale change while this is on screen
+  // must re-render it. The user cannot dismiss and reopen an approval prompt
+  // to pick up the new language.
+  const t = useT();
   const groups = groupCapabilities(props.declaredCapabilities);
   const hasCritical = groups.some((g) => g.copy.severity === 'critical');
   return (
