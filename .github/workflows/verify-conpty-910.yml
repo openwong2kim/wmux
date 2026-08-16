@@ -68,3 +68,25 @@ jobs:
         # mouse tracking is on. A pty echo round trip proves the bundled DLL
         # relays them where the in-box one drops them.
         run: node scripts/probe-decset-relay-910.js
+
+  windows-installer:
+    # Reporter-facing dogfood build: the gate fires at RUNTIME on their Win10
+    # machine, so this artifact is just the standard installer carrying the
+    # fix. Saves them from needing a Node toolchain to verify #910.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build installer
+        run: npm run make
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wmux-910-Setup
+          path: out/make/squirrel.windows/x64/*.Setup.exe
