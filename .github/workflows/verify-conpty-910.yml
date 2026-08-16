@@ -67,32 +67,4 @@ jobs:
         # the mouse-mode DECSETs a TUI writes, so the terminal never learns
         # mouse tracking is on. A pty echo round trip proves the bundled DLL
         # relays them where the in-box one drops them.
-        shell: pwsh
-        run: |
-          node -e "
-            const pty = require('node-pty');
-            const DECSETS = '\x1b[?1000h\x1b[?1002h\x1b[?1006h';
-            function probe(label, opts, done) {
-              const p = pty.spawn('powershell.exe', [], Object.assign({ name: 'xterm-256color', cols: 80, rows: 24 }, opts));
-              let out = '';
-              p.onData((d) => { out += d; });
-              p.onExit(() => {
-                const relayed = ['1000h', '1002h', '1006h'].every((s) => out.includes('\x1b[?' + s));
-                console.log(label + ' relayed=' + relayed);
-                p.kill();
-                done(relayed);
-              });
-              setTimeout(() => { p.write('Write-Host -NoNewline ([char]27 + \"[?1000h\" + \"[?1002h\" + \"[?1006h\")\r'); }, 1500);
-              setTimeout(() => { try { p.kill(); } catch (e) {} }, 8000);
-            }
-            const dll = (cb) => probe('dll:', { useConpty: true, useConptyDll: true }, cb);
-            const inbox = (cb) => probe('inbox:', { useConpty: true }, cb);
-            dll((dllOk) => {
-              inbox((inboxOk) => {
-                console.log('RESULT dll=' + dllOk + ' inbox=' + inboxOk);
-                // Pass requires the bundled path to relay. The in-box result is
-                // informational: 20348 may carry the fix (2022 Server LTSC).
-                process.exit(dllOk ? 0 : 1);
-              });
-            });
-          "
+        run: node scripts/probe-decset-relay-910.js
