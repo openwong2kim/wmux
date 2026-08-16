@@ -29,6 +29,8 @@ jobs:
           }
       - name: Install
         run: npm install
+      - name: Compile shared helpers
+        run: npx tsc -p tsconfig.json --noEmit false
       - name: Spawns succeed against the bundled conpty.dll
         shell: pwsh
         run: |
