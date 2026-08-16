@@ -115,8 +115,12 @@ export default function SurfaceTabs({
   // subscription) — subscribing to the whole map here re-rendered every tab
   // strip on any pane's status change.
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
-  // Add-surface menu behind the tab-strip `+`.
+  // Add-surface menu behind the tab-strip `+`. The anchor is the trigger's
+  // viewport rect, read when it opens — the panel is fixed-positioned to escape
+  // this strip's horizontal scroll clipping.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [addMenuAnchor, setAddMenuAnchor] = useState<{ left: number; bottom: number } | null>(null);
+  const addTriggerRef = useRef<HTMLButtonElement>(null);
   // Right-aligned pane action cluster (split right / split down / zoom).
   // Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
@@ -357,10 +361,19 @@ export default function SurfaceTabs({
       {/* Add-surface affordance. A menu rather than a bare `+`: see
           SurfaceAddMenu for why the one-click form was not the shape we
           wanted. */}
-      <div className="relative shrink-0">
+      <div className="shrink-0">
         <button
+          ref={addTriggerRef}
           className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
-          onClick={(e) => { e.stopPropagation(); setAddMenuOpen((open) => !open); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            // Capture the trigger's viewport rect at open time — the panel is
+            // `fixed` (see SurfaceAddMenu) because this strip scrolls and would
+            // otherwise clip it.
+            const r = e.currentTarget.getBoundingClientRect();
+            setAddMenuAnchor({ left: r.left, bottom: r.bottom });
+            setAddMenuOpen((open) => !open);
+          }}
           title={t('pane.addSurface')}
           aria-label={t('pane.addSurface')}
           aria-haspopup="menu"
@@ -369,9 +382,10 @@ export default function SurfaceTabs({
         >
           +
         </button>
-        {addMenuOpen && (
+        {addMenuOpen && addMenuAnchor && (
           <SurfaceAddMenu
             terminalShortcut={SC_NEW_TERMINAL}
+            anchor={addMenuAnchor}
             onAddTerminal={onAddTerminal}
             onAddBrowser={onAddBrowser}
             onClose={() => setAddMenuOpen(false)}

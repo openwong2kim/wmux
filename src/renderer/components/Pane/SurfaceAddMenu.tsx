@@ -4,6 +4,8 @@ import { useT } from '../../hooks/useT';
 interface SurfaceAddMenuProps {
   /** Keyboard shortcut shown next to "New terminal", already OS-mapped. */
   terminalShortcut: string;
+  /** Viewport rect of the `+` button, used to place the fixed panel under it. */
+  anchor: { left: number; bottom: number };
   onAddTerminal: () => void;
   onAddBrowser: () => void;
   onClose: () => void;
@@ -26,6 +28,7 @@ interface SurfaceAddMenuProps {
  */
 export default function SurfaceAddMenu({
   terminalShortcut,
+  anchor,
   onAddTerminal,
   onAddBrowser,
   onClose,
@@ -53,6 +56,16 @@ export default function SurfaceAddMenu({
     };
   }, [onClose]);
 
+  // Clamp into the viewport, same as ContextMenu: the `+` of a right-hand pane
+  // sits near the window edge, and a fixed panel does not reflow on its own.
+  useEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.right > window.innerWidth) el.style.left = `${Math.max(4, window.innerWidth - r.width - 4)}px`;
+    if (r.bottom > window.innerHeight) el.style.top = `${Math.max(4, window.innerHeight - r.height - 4)}px`;
+  }, [anchor.left, anchor.bottom]);
+
   const run = (action: () => void) => {
     action();
     onClose();
@@ -64,8 +77,16 @@ export default function SurfaceAddMenu({
       role="menu"
       aria-label={t('pane.addSurface')}
       data-testid="surface-add-menu"
-      className="absolute top-full left-0 mt-0.5 z-[var(--z-popover-top)] min-w-[176px] p-[5px]"
+      // `fixed`, positioned from the trigger — not `absolute` inside the strip.
+      // The tab list scrolls horizontally (`overflow: auto`), and an ancestor
+      // with a non-visible overflow CLIPS an absolutely-positioned descendant:
+      // the panel had a valid box, z-index 9999 and `visibility: visible`, and
+      // was still invisible in the running app. jsdom has no layout, so the
+      // unit tests could not have caught it. Same escape ContextMenu uses.
+      className="fixed z-[var(--z-popover-top)] min-w-[176px] p-[5px]"
       style={{
+        left: anchor.left,
+        top: anchor.bottom + 2,
         background: 'var(--bg-surface)',
         border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',
         borderRadius: 8,
