@@ -13,12 +13,13 @@ import * as path from 'node:path';
  * user never granted it. The fix sends the active workspaceId on every poll and
  * re-subscribes when the active workspace changes.
  *
- * PluginFrame renders an iframe and opens a MessagePort, and the default vitest
- * environment here is `node`, so the component cannot be mounted in this suite.
- * These are source-structural guards — the same pattern used by
- * useRpcBridge.focus.test.ts / useRpcBridge.browserClose.test.ts for renderer
- * wiring that can't be imported under vitest. The server-side filter behaviour
- * itself is covered by events.rpc.test.ts.
+ * These are source-structural guards on the poll's params, which a behavioural
+ * test cannot pin as precisely. The re-subscribe itself is now asserted by
+ * mounting the component — see PluginFrame.bridge.dynamic.test.tsx, which also
+ * covers the constraint that came out of it: the bridge port must NOT be torn
+ * down by a workspace switch, so the two concerns live on separate effects and
+ * the poll's dependency list is no longer the whole component's. The
+ * server-side filter behaviour itself is covered by events.rpc.test.ts.
  */
 describe('PluginFrame — events.poll workspace scoping', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'PluginFrame.tsx'), 'utf-8');
@@ -46,6 +47,13 @@ describe('PluginFrame — events.poll workspace scoping', () => {
   it('re-runs the subscribe effect when the active workspace changes', () => {
     // Without activeWorkspaceId in the deps the loop would keep polling the
     // workspace that was active at mount after the user switched away.
-    expect(src).toMatch(/\}, \[pluginName, entry, forwardEvents, activeWorkspaceId\]\);/);
+    expect(src).toMatch(/\}, \[pluginName, forwardEvents, activeWorkspaceId, bridgeEpoch\]\);/);
+  });
+
+  it('keeps the bridge effect off the active workspace', () => {
+    // The port is created once, in the iframe's `load` handler, and `load` does
+    // not fire again for an unchanged src. A workspace switch that re-runs this
+    // effect therefore closes the port with nothing left to rebuild it.
+    expect(src).toMatch(/\}, \[pluginName, entry\]\);/);
   });
 });

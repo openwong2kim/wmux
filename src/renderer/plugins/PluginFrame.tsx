@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores';
 import {
   PLUGIN_BRIDGE_VERSION,
@@ -41,6 +41,14 @@ const EVENT_POLL_INTERVAL_MS = 1000;
  * as `kind:'event'` envelopes. The cursor starts at the current ring head —
  * plugins see events from mount time, not a history replay. A rejected poll
  * stops the loop (the plugin didn't declare events.subscribe).
+ *
+ * Two effects, deliberately: the port is created once per iframe `load`, and
+ * `load` does not fire again for a frame whose `src` never changed. So the
+ * bridge effect may only depend on what identifies the frame. The poll must
+ * re-subscribe when the user switches workspace (#719); when that dependency
+ * lived on the single combined effect, the switch tore the port down with no
+ * `load` left to rebuild it and every later plugin request went unanswered.
+ * `bridgeEpoch` is how the poll effect waits for — and follows — the port.
  */
 export default function PluginFrame({
   pluginName,
@@ -54,74 +62,36 @@ export default function PluginFrame({
   className?: string;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const portRef = useRef<MessagePort | null>(null);
+  // Bumped every time a fresh port is handed to the frame. Zero means no
+  // bridge yet, so the poll effect has nowhere to deliver events.
+  const [bridgeEpoch, setBridgeEpoch] = useState(0);
   // Fix: scope events.poll to the active workspace so plugins cannot observe
   // other workspaces' lifecycle events (TODOS: "Unscoped plugin events.poll").
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 
+  // ── Bridge: port lifetime, request forwarding, palette commands ──────────
   useEffect(() => {
     const iframe = frameRef.current;
     if (!iframe) return;
-    let port: MessagePort | null = null;
     let disposed = false;
     let unregisterFrame: (() => void) | null = null;
-    let eventTimer: ReturnType<typeof setInterval> | null = null;
 
     const post = (msg: unknown) => {
       try {
-        port?.postMessage(msg);
+        portRef.current?.postMessage(msg);
       } catch {
         /* port may be closed mid-flight during unmount */
       }
     };
     const respond = (msg: BridgeResponse) => post(msg);
 
-    const stopEventLoop = () => {
-      if (eventTimer !== null) {
-        clearInterval(eventTimer);
-        eventTimer = null;
-      }
-    };
-
-    const startEventLoop = () => {
-      stopEventLoop();
-      let cursor: number | null = null; // null until the head is established
-      let inFlight = false;
-      eventTimer = setInterval(() => {
-        if (disposed || inFlight) return;
-        inFlight = true;
-        window.electronAPI.plugins
-          .rpc(pluginName, 'events.poll', cursor === null
-            ? { workspaceId: activeWorkspaceId }
-            : { cursor, workspaceId: activeWorkspaceId })
-          .then((raw) => {
-            const resp = raw as { ok?: boolean; result?: { events?: unknown[]; nextCursor?: number } } | null;
-            if (!resp || resp.ok !== true || !resp.result) {
-              // Rejected (capability missing) or malformed — stop polling.
-              stopEventLoop();
-              return;
-            }
-            const head = typeof resp.result.nextCursor === 'number' ? resp.result.nextCursor : 0;
-            if (cursor === null) {
-              // First poll establishes the head; its (historical) events
-              // are discarded so plugins start at "now".
-              cursor = head;
-              return;
-            }
-            cursor = head;
-            for (const event of resp.result.events ?? []) {
-              post({ v: PLUGIN_BRIDGE_VERSION, id: null, kind: 'event', event });
-            }
-          })
-          .catch(() => stopEventLoop())
-          .finally(() => { inFlight = false; });
-      }, EVENT_POLL_INTERVAL_MS);
-    };
-
     const onLoad = () => {
-      port?.close();
+      portRef.current?.close();
       unregisterFrame?.();
       const channel = new MessageChannel();
-      port = channel.port1;
+      const port = channel.port1;
+      portRef.current = port;
       port.onmessage = (e: MessageEvent) => {
         const req = parseBridgeRequest(e.data);
         if (!req || disposed) return;
@@ -156,20 +126,73 @@ export default function PluginFrame({
         post({ v: PLUGIN_BRIDGE_VERSION, id: null, kind: 'command', command });
       });
 
-      if (forwardEvents) startEventLoop();
+      setBridgeEpoch((n) => n + 1);
     };
 
     iframe.addEventListener('load', onLoad);
     return () => {
       disposed = true;
-      stopEventLoop();
       iframe.removeEventListener('load', onLoad);
       unregisterFrame?.();
       unregisterFrame = null;
-      port?.close();
-      port = null;
+      portRef.current?.close();
+      portRef.current = null;
     };
-  }, [pluginName, entry, forwardEvents, activeWorkspaceId]);
+  }, [pluginName, entry]);
+
+  // ── Event forwarding: re-subscribes when the active workspace changes ────
+  useEffect(() => {
+    if (!forwardEvents || bridgeEpoch === 0) return;
+    let cursor: number | null = null; // null until the head is established
+    let inFlight = false;
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const stopEventLoop = () => {
+      stopped = true;
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    timer = setInterval(() => {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      window.electronAPI.plugins
+        .rpc(pluginName, 'events.poll', cursor === null
+          ? { workspaceId: activeWorkspaceId }
+          : { cursor, workspaceId: activeWorkspaceId })
+        .then((raw) => {
+          const resp = raw as { ok?: boolean; result?: { events?: unknown[]; nextCursor?: number } } | null;
+          if (!resp || resp.ok !== true || !resp.result) {
+            // Rejected (capability missing) or malformed — stop polling.
+            stopEventLoop();
+            return;
+          }
+          const head = typeof resp.result.nextCursor === 'number' ? resp.result.nextCursor : 0;
+          if (cursor === null) {
+            // First poll establishes the head; its (historical) events
+            // are discarded so plugins start at "now".
+            cursor = head;
+            return;
+          }
+          cursor = head;
+          if (stopped) return;
+          for (const event of resp.result.events ?? []) {
+            try {
+              portRef.current?.postMessage({ v: PLUGIN_BRIDGE_VERSION, id: null, kind: 'event', event });
+            } catch {
+              /* port may be closed mid-flight during unmount */
+            }
+          }
+        })
+        .catch(() => stopEventLoop())
+        .finally(() => { inFlight = false; });
+    }, EVENT_POLL_INTERVAL_MS);
+
+    return stopEventLoop;
+  }, [pluginName, forwardEvents, activeWorkspaceId, bridgeEpoch]);
 
   return (
     <iframe
