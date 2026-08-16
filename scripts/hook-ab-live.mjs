@@ -107,9 +107,9 @@ const AGENTS = {
           // as "criterion 1 measured, both arms clean" — a pass this run never
           // earned. `null` routes to the unmeasured path, same as unparseable
           // output does below.
-          denials: parsed.permission_denials === undefined
-            ? null
-            : parsed.permission_denials.map((d) => d.tool_name ?? String(d)).sort(),
+          denials: Array.isArray(parsed.permission_denials)
+            ? parsed.permission_denials.map((d) => d.tool_name ?? String(d)).sort()
+            : null,
           agentReportedError: parsed.is_error === true,
         };
       } catch {

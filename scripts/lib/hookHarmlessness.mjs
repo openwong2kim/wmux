@@ -284,7 +284,7 @@ export function buildCases(payloadOpts) {
       type: 'agent-turn-complete',
       'thread-id': 'harness-thread',
       'turn-id': 'harness-turn',
-      cwd: '/tmp/harness',
+      cwd: payloadOpts?.cwd ?? '/tmp/harness',
       'input-messages': ['hi'],
       'last-assistant-message': 'done',
     }],
@@ -386,6 +386,22 @@ export function fakeDaemonAddress(sandbox, label) {
 }
 
 /**
+ * An address in the harness namespace that nothing will ever bind.
+ *
+ * "Daemon down" has to be furnished, not left blank. With no `daemon-pipe`
+ * hint the bridges fall back to a DERIVED name, and the openclaude fork
+ * derives `\\.\pipe\wmux-daemon-<username>` — no data suffix, so that is the
+ * real daemon's pipe on a developer machine. A furnished token plus a blank
+ * hint would therefore point the harness at the operator's live daemon, and
+ * on a refusal it walks on to the main pipe too. Handing it a dead address in
+ * our own namespace keeps "down" meaning ENOENT, deterministically, whatever
+ * is running on the box.
+ */
+export function deadDaemonAddress(sandbox, label) {
+  return `${fakeDaemonAddress(sandbox, label)}-never-bound`;
+}
+
+/**
  * A stand-in daemon that answers the bridges' RPC.
  *
  * `reply(request)` returns the object to send back, or null to stay silent.
@@ -471,8 +487,16 @@ export function startFakeDaemon(address, reply) {
 export async function setupScenarios(sandbox) {
   const cleanups = [];
 
-  const notInstalled = provisionInstance(sandbox, { token: false });
-  const installedDown = provisionInstance(sandbox, { token: true });
+  // Both get a dead hint so no instance can fall back to a derived name and
+  // find the operator's real daemon — see deadDaemonAddress.
+  const notInstalled = provisionInstance(sandbox, {
+    token: false,
+    daemonPipeName: deadDaemonAddress(sandbox, 'notinstalled'),
+  });
+  const installedDown = provisionInstance(sandbox, {
+    token: true,
+    daemonPipeName: deadDaemonAddress(sandbox, 'down'),
+  });
 
   // A daemon that answers, successfully, with no verdict about this call —
   // a pre-gate daemon, a non-gated tool, or the broker deferring to the

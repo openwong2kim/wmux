@@ -25,7 +25,7 @@
 // every bridge bailed before reaching the decision path at all.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { rmSync, readdirSync, readFileSync } from 'node:fs';
+import { rmSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -249,6 +249,38 @@ describe('the matrix covers what wmux actually installs', () => {
     }
   });
 
+  // Nothing in the sandbox may address a real endpoint.
+  //
+  // Furnishing the unsuffixed token layout (needed so the openclaude cases
+  // reach a decision at all) also made every instance capable of CONNECTING,
+  // and a bridge with no `daemon-pipe` hint derives its address — openclaude
+  // derives `\\.\pipe\wmux-daemon-<username>`, which is the operator's live
+  // daemon, not ours. Every instance therefore carries an explicit hint in the
+  // harness namespace. This pins that: a run must never post harness
+  // envelopes into a daemon someone is actually using.
+  it('points every instance at the harness namespace, never a real daemon', () => {
+    const homes = new Set(scenarios.map((s) => s.env.HOME));
+    expect(homes.size, 'scenarios share a home — they would see each other').toBe(
+      new Set(scenarios.map((s) => s.env.WMUX_DATA_SUFFIX)).size,
+    );
+
+    for (const home of homes) {
+      // Both layouts, because the two bridge families read different ones.
+      // Directories only: the suffixed auth-token FILE shares the prefix.
+      const suffixedDirs = readdirSync(home, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && e.name.startsWith('.wmux-harness'))
+        .map((e) => e.name);
+      for (const dir of ['.wmux', ...suffixedDirs]) {
+        const hint = join(home, dir, 'daemon-pipe');
+        expect(existsSync(hint), `${dir}: no daemon-pipe hint — the bridge would derive one`).toBe(true);
+        expect(
+          readFileSync(hint, 'utf8'),
+          `${dir}: hint escapes the harness namespace`,
+        ).toContain('harness');
+      }
+    }
+  });
+
   // The positive control. Everything else here is an assertion that nothing
   // happened, and a hook that never runs satisfies all of it: exit 0, no
   // output, fast, no survivor. This is the one check that fails when the
@@ -264,11 +296,15 @@ describe('the matrix covers what wmux actually installs', () => {
     const scenario = scenarios.find((s) => daemonFurnishedScenarioIds.includes(s.id));
     expect(scenario, 'no daemon-furnished scenario in the matrix').toBeTruthy();
 
-    const served = new Map();
-    for (const testCase of cases) {
+    // Keyed by INDEX, not by `testCase.id`: two manifest entries with the same
+    // event + matcher produce the same id, and a Map keyed on it would drop
+    // one of their counts — turning the only case that talks into a phantom
+    // "this agent never reached the daemon" failure.
+    const served = cases.map(() => 0);
+    for (const [i, testCase] of cases.entries()) {
       const at = daemonRequests();
       await runHookCase({ ...testCase, env: scenario.env, budgetMs: KILL_BUDGET_MS });
-      served.set(testCase.id, daemonRequests() - at);
+      served[i] = daemonRequests() - at;
     }
 
     expect(
@@ -282,8 +318,8 @@ describe('the matrix covers what wmux actually installs', () => {
     // agent to talk at least once is what rules out a whole bridge silently
     // sitting out the matrix.
     const byAgent = new Map();
-    for (const testCase of cases) {
-      byAgent.set(testCase.agent, (byAgent.get(testCase.agent) ?? 0) + served.get(testCase.id));
+    for (const [i, testCase] of cases.entries()) {
+      byAgent.set(testCase.agent, (byAgent.get(testCase.agent) ?? 0) + served[i]);
     }
     const mute = [...byAgent].filter(([, n]) => n === 0).map(([agent]) => agent);
     expect(
