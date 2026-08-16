@@ -9,6 +9,7 @@ import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { workspaceColorHex } from '../../../shared/workspaceColors';
 
 export default function MiniSidebar() {
   const t = useT();
@@ -76,6 +77,7 @@ export default function MiniSidebar() {
           // Initial + position so workspaces with identical prefixes (W, W, W…)
           // remain distinguishable in the 48px rail.
           const label = `${ws.name.charAt(0).toUpperCase()}${i + 1}`;
+          const railColor = workspaceColorHex(ws.color);
 
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
             // Suppress click that fires immediately after a drag.
@@ -134,6 +136,16 @@ export default function MiniSidebar() {
 
           return (
             <div key={ws.id} className="relative w-8">
+              {/* Color tag rail — in the 48px rail the label is 2 characters,
+                  so color is the only thing that tells "CTO" from "CSO" at a
+                  glance. Shifts right of the multiview border when both apply. */}
+              {railColor && (
+                <div
+                  className="absolute top-1 bottom-1 w-[3px] rounded-full z-[1] pointer-events-none"
+                  style={{ left: isMultiview ? 2 : 0, background: railColor }}
+                  aria-hidden="true"
+                />
+              )}
               {showIndicator && dropIndicator.side === 'above' && (
                 <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px" />
               )}
