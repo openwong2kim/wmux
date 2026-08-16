@@ -253,7 +253,7 @@ describe('spawnWithConptyPolicy', () => {
     expect(() => spawnWithConptyPolicy(
       () => { throw new Error('Cannot create process, error code: 87'); },
       true,
-      () => {},
+      () => { /* notices are not the subject here */ },
     )).toThrow('error code: 87');
   });
 });
