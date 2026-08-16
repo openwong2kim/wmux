@@ -15,7 +15,7 @@ import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceAgentRoster from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
-import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex } from '../../../shared/workspaceColors';
+import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -553,6 +553,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', onKey);
+      // The color submenu is hover-driven, so dismissing the menu by an
+      // outside click or Escape unmounts the subtree before onMouseLeave can
+      // fire. Without this the flag stays true and the picker is already open
+      // the next time the menu is summoned. Resetting here covers every close
+      // path at once rather than each menu item individually.
+      setColorOpen(false);
     };
   }, [menuPos]);
 
@@ -840,9 +846,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                       <button
                         key={id}
                         type="button"
-                        aria-label={t(`workspace.color.${id}`)}
+                        aria-label={t(workspaceColorLabelKey(id))}
                         aria-pressed={selected}
-                        title={t(`workspace.color.${id}`)}
+                        title={t(workspaceColorLabelKey(id))}
                         className="w-4 h-4 rounded-full transition-transform hover:scale-110"
                         style={{
                           background: WORKSPACE_COLOR_HEX[id],

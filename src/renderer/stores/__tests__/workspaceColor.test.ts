@@ -54,6 +54,20 @@ describe('setWorkspaceColor', () => {
   it('ignores an unknown workspace id', () => {
     expect(() => useStore.getState().setWorkspaceColor('nope', 'red')).not.toThrow();
   });
+
+  // Owner decision (2026-08-17): a duplicate starts untagged. The tag is there
+  // to tell workspaces apart, so cloning it onto the copy — which lands right
+  // next to its source — would erase the very distinction it encodes. Pinned
+  // here because the omission is invisible in the duplicate path otherwise and
+  // reads as an oversight to anyone auditing the field list.
+  it('does NOT carry the tag onto a duplicated workspace', () => {
+    useStore.getState().setWorkspaceColor('ws-1', 'orange');
+    useStore.getState().duplicateWorkspace('ws-1');
+    const copy = useStore.getState().workspaces.find((w) => w.id !== 'ws-1' && w.name.includes('Alpha'));
+    expect(copy).toBeDefined();
+    expect(copy).not.toHaveProperty('color');
+    expect(wsById('ws-1')?.color).toBe('orange');
+  });
 });
 
 describe('loadSession color normalization', () => {

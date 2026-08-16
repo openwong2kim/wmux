@@ -332,6 +332,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // alias the source's.
         nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
         ...(profile ? { profile } : {}),
+        // `color` is deliberately NOT carried over (owner decision, 2026-08-17).
+        // The tag exists to tell workspaces apart; handing the copy the same one
+        // would make the two rows identical at the exact moment they sit next to
+        // each other, which defeats the label. The copy starts untagged and the
+        // user assigns it — unlike `profile` above, which is configuration the
+        // duplicate genuinely needs in order to behave like its source.
       };
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
