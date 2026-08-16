@@ -618,6 +618,8 @@ export interface SessionData {
   /** Whole-interface zoom multiplier (1 = 100%). Absent = no zoom. */
   uiScale?: number;
   terminalFontFamily?: string;
+  /** xterm.js cursorStyle. Absent = block (the historical default). */
+  terminalCursorStyle?: 'block' | 'bar' | 'underline';
   defaultShell?: string;
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */

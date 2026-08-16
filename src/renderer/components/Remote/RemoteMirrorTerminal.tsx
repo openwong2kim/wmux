@@ -125,6 +125,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
    */
   const terminalFontSize = useStore((s) => s.terminalFontSize);
   const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
   const theme = useStore((s) => s.theme) as ThemeId;
   const customThemeColors = useStore((s) => s.customThemeColors);
   // Memoised on identity, not just value. `extractXtermColors` builds a new
@@ -155,6 +156,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
   terminalFontSizeRef.current = terminalFontSize;
   const terminalFontFamilyRef = useRef(terminalFontFamily);
   terminalFontFamilyRef.current = terminalFontFamily;
+  const terminalCursorStyleRef = useRef(terminalCursorStyle);
+  terminalCursorStyleRef.current = terminalCursorStyle;
   const xtermThemeRef = useRef(xtermTheme);
   xtermThemeRef.current = xtermTheme;
   const minimumContrastRatioRef = useRef(minimumContrastRatio);
@@ -318,6 +321,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       disableStdin: false,
       fontSize: terminalFontSizeRef.current,
       fontFamily: terminalFontFamilyCss(terminalFontFamilyRef.current),
+      cursorBlink: true,
+      cursorStyle: terminalCursorStyleRef.current,
       theme: xtermThemeRef.current,
       minimumContrastRatio: minimumContrastRatioRef.current,
       // REQUIRED by the width model below. `Unicode11Addon.activate` reads
@@ -371,6 +376,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     const term = termRef.current;
     if (!term) return;
     term.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
+    term.options.cursorStyle = terminalCursorStyle;
     term.options.theme = xtermTheme;
     term.options.minimumContrastRatio = minimumContrastRatio;
     if (boxRef.current) {
@@ -378,7 +384,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     }
     // The font FAMILY changes cell metrics too, so this covers both inputs.
     scheduleFit();
-  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio, scheduleFit]);
+  }, [terminalFontSize, terminalFontFamily, terminalCursorStyle, xtermTheme, minimumContrastRatio, scheduleFit]);
 
   // Subscribe/attach lifecycle keyed on attachId. Every onPaneMeta (fresh
   // attach OR reconnect) means "reset terminal, resize, repaint", never a

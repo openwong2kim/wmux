@@ -237,6 +237,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontSize: state.terminalFontSize,
     uiScale: state.uiScale,
     terminalFontFamily: state.terminalFontFamily,
+    terminalCursorStyle: state.terminalCursorStyle,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
     orchestratorRoleBindings:
