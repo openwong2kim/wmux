@@ -74,6 +74,23 @@ describe('resolveAgentSlug', () => {
     expect(resolveAgentSlug('node /work/claude-notes/server.mjs')).toBeUndefined();
   });
 
+  it('a BARE script-slot name is the user\'s own file, never an agent', () => {
+    // Claude panel #919: `node claude.js` / `python aider.py` used to
+    // attribute by bare basename. The script slot must be a path —
+    // `node /usr/local/bin/claude` (npm global bin via env shebang) still is.
+    expect(resolveAgentSlug('node claude.js')).toBeUndefined();
+    expect(resolveAgentSlug('python aider.py')).toBeUndefined();
+    expect(resolveAgentSlug('node /usr/local/bin/claude')).toBe('claude');
+  });
+
+  it('runtime flags before the script do not lose the identity', () => {
+    // Claude panel #919: a launcher that injects node flags ahead of the
+    // script (`--max-old-space-size`) used to leave the pane unresolved.
+    expect(
+      resolveAgentSlug('node --max-old-space-size=4096 /x/node_modules/@anthropic-ai/claude-code/cli.js'),
+    ).toBe('claude');
+  });
+
   it('never resolves a scoped name by basename or a non-segment node_modules', () => {
     // @acme/claude is NOT claude — scoped spellings match exact alias keys only
     expect(resolveAgentSlug('node /x/node_modules/@acme/claude/index.js')).toBeUndefined();

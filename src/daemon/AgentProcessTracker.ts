@@ -157,10 +157,14 @@ function lookupForm(token: string): string {
 
 /**
  * Resolve a runtime-hosted process (`node …`, `python …`) to an agent slug
- * from its command line. Token discipline (#919 panel): ONLY these
+ * from its command line. Token discipline (#919 panels): ONLY these
  * candidates are ever matched —
- *   • the script token right after the runtime (`argv[1]`),
- *   • the first non-flag token after a package runner or `python -m`,
+ *   • the script token right after the runtime (`argv[1]`, or the first
+ *     non-flag token when runtime flags precede it) — PATH FORM ONLY: a
+ *     bare `claude.js`/`aider.py` in the script slot is the user's own
+ *     file, never an agent,
+ *   • the first non-flag token after a package runner or `python -m`
+ *     (that slot names a PACKAGE — `npx -y gemini` — so bare is fine),
  *   • the `node_modules/<pkg>` / `node_modules/@scope/<pkg>` boundary of any
  *     of the above.
  * Arbitrary ancestor directories NEVER match: `node /work/claude/scratch.js`
@@ -173,7 +177,6 @@ export function resolveAgentSlug(cmdline: string | undefined): AgentSlug | undef
   if (!cmdline) return undefined;
   const argv = tokenizeCmdline(cmdline);
   if (argv.length < 2) return undefined;
-  const candidates: string[] = [argv[1]];
   const form0 = lookupForm(argv[0]);
   const form1 = lookupForm(argv[1]);
   // Package runners and `python -m`: the agent name rides the next non-flag
@@ -184,21 +187,34 @@ export function resolveAgentSlug(cmdline: string | undefined): AgentSlug | undef
     RUNNER_STEMS.has(form0) || form0 === '-m' ? 1
       : RUNNER_STEMS.has(form1) || form1 === '-m' ? 2
         : -1;
+  // Script slot: argv[1], or the first non-flag beyond it when the launcher
+  // prefixed runtime flags (`node --max-old-space-size=… cli.js` used to
+  // lose its identity entirely — Claude panel #919). `bare` marks a name
+  // with no path separator, which in THIS slot never matches.
+  const scriptToken = argv[1].startsWith('-')
+    ? argv.slice(2).find((t) => !t.startsWith('-'))
+    : argv[1];
+  const candidates: Array<{ token: string; bare: boolean }> = [];
+  if (scriptToken) candidates.push({ token: scriptToken, bare: !/[/\\]/.test(scriptToken) });
   if (scanFrom >= 0) {
     const next = argv.slice(scanFrom).find((t) => !t.startsWith('-'));
-    if (next) candidates.push(next);
+    if (next) candidates.push({ token: next, bare: false });
   }
-  for (const c of [...candidates]) {
+  for (const { token } of [...candidates]) {
     // Exact path SEGMENT only: `not_node_modules` or a directory literally
     // named `xnode_modulesx` must not open a boundary (review: lastIndexOf
     // substring-matched both).
-    const segs = c.split(/[\\/]/).filter(Boolean);
+    const segs = token.split(/[\\/]/).filter(Boolean);
     const idx = segs.indexOf('node_modules');
     if (idx === -1 || idx + 1 >= segs.length) continue;
-    const pkg = segs[idx + 1]!;
-    candidates.push(pkg.startsWith('@') && idx + 2 < segs.length ? `${pkg}/${segs[idx + 2]}` : pkg);
+    const pkg = segs[idx + 1];
+    candidates.push({
+      token: pkg.startsWith('@') && idx + 2 < segs.length ? `${pkg}/${segs[idx + 2]}` : pkg,
+      bare: false,
+    });
   }
-  for (const c of candidates) {
+  for (const { token: c, bare } of candidates) {
+    if (bare) continue;
     // Scoped-package spellings never basename-match: `@acme/claude` must not
     // resolve claude (lookupForm unwraps the scope, so it cannot be trusted
     // here). Only an exact alias entry may speak for a scoped name.
