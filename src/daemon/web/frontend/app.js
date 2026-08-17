@@ -134,11 +134,15 @@
   var fleetTimer = null;
   var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
 
-  // Copy text to the clipboard. `navigator.clipboard` needs a secure context,
-  // which a cleartext `--expose` page is not — fall back to the legacy
-  // textarea+execCommand trick so Ctrl+C still copies there. Auto-copy on
-  // selection is best-effort: the browser may refuse a non-gesture write, and
-  // that failure is silent (Ctrl+C remains the reliable path).
+  /**
+   * Copy text to the clipboard. `navigator.clipboard` needs a secure context,
+   * which a cleartext `--expose` page is not — fall back to the legacy
+   * textarea+execCommand trick so Ctrl+C still copies there. Auto-copy on
+   * selection is best-effort: the browser may refuse a non-gesture write, and
+   * that failure is silent (Ctrl+C remains the reliable path).
+   *
+   * @param {string} text the selection (or other text) to copy.
+   */
   function copyToClipboard(text) {
     if (!text) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -147,6 +151,13 @@
       legacyCopy(text);
     }
   }
+
+  /**
+   * Legacy clipboard fallback for a non-secure context: park the text in an
+   * off-screen textarea, select it, and run `document.execCommand('copy')`.
+   *
+   * @param {string} text the text to copy.
+   */
   function legacyCopy(text) {
     var ta = document.createElement('textarea');
     ta.value = text;
