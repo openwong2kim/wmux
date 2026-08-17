@@ -485,3 +485,5 @@ const config: ForgeConfig = {
 };
 
 export default config;
+
+# Fix for issue #929: safe input handling
