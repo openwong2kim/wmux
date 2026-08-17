@@ -132,4 +132,39 @@ describe('ProcessMonitor — PID reuse detection (watch loop)', () => {
     expect(onDead).not.toHaveBeenCalled();
     monitor.unwatchAll();
   });
+
+  it('a stale batch never removes a REPLACED watch (identity guard)', async () => {
+    // A cycle that snapshotted watch A must not unwatch/fire when the entry
+    // was replaced by watch B while the death re-verify was in flight.
+    const onDeadOld = vi.fn();
+    const onDeadNew = vi.fn();
+    const monitor = new ProcessMonitor(60_000);
+    let alive = new Set([100]);
+    vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed').mockImplementation(async () => ({
+      alive,
+      images: new Map([[100, 'pwsh.exe']]),
+    }));
+    let releaseDeath: () => void = () => undefined;
+    const deathGate = new Promise<void>((r) => { releaseDeath = r; });
+    vi.spyOn(ProcessMonitor, 'isDefinitelyDead').mockImplementation(async () => {
+      await deathGate; // hold the re-verify open so the watch can be replaced
+      return true;
+    });
+
+    monitor.watch('sess-1', 100, onDeadOld); // binds the image
+    await settle();
+    alive = new Set(); // pid 100 gone in the next batch snapshot
+    await tick(monitor); // collects apparentlyDead, gates on the re-verify
+    monitor.watch('sess-1', 200, onDeadNew); // re-probe replaced the watch
+    releaseDeath(); // the STALE cycle now confirms 100 dead
+    await settle();
+
+    expect(onDeadOld).not.toHaveBeenCalled(); // stale entry: no fire
+    expect(onDeadNew).not.toHaveBeenCalled(); // and no collateral fire
+    // The replacement watch survives — the stale cycle must not unwatch it.
+    const watched = (monitor as unknown as { watchedPids: Map<string, { pid: number }> })
+      .watchedPids.get('sess-1');
+    expect(watched?.pid).toBe(200);
+    monitor.unwatchAll();
+  });
 });

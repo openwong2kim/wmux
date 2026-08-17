@@ -64,10 +64,42 @@ describe('resolveCanonicalAgentIdentity (#919 tier rule)', () => {
   });
 
   it('residue veto: a confirmed-dead same-slug screen read is not an agent', () => {
+    // No live hook backs the residue — the death edge expired the authority,
+    // so the strongest voice left is the detector's sticky banner.
     expect(
       resolveCanonicalAgentIdentity({
         proc: proc('claude', false),
-        auth: auth('claude', 30_000),
+        screenSlug: 'claude',
+      }),
+    ).toBeUndefined();
+    // A cwd-guessed authority cannot stand alone — and must not rescue the
+    // screen read from the veto either.
+    expect(
+      resolveCanonicalAgentIdentity({
+        proc: proc('claude', false),
+        auth: auth('claude', 30_000, false),
+        screenSlug: 'claude',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('a fresh exact hook rescues the same-slug screen read from the veto (relaunch inside the arm backoff)', () => {
+    // GLM panel #919: same-slug relaunch within the 30s failure backoff —
+    // the tracker entry is stale-dead, but a live bridge just re-signaled
+    // from this exact ptyId. That is the relaunch, not residue; without the
+    // rescue the pane's label nulls for up to the backoff window.
+    expect(
+      resolveCanonicalAgentIdentity({
+        proc: proc('claude', false),
+        auth: auth('claude', 5_000),
+        screenSlug: 'claude',
+      }),
+    ).toEqual({ slug: 'claude', source: 'hook' });
+    // Past IDENTITY_TTL the hook can no longer vouch: residue again.
+    expect(
+      resolveCanonicalAgentIdentity({
+        proc: proc('claude', false),
+        auth: auth('claude', IDENTITY_TTL_MS + 1),
         screenSlug: 'claude',
       }),
     ).toBeUndefined();

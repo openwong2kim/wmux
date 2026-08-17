@@ -91,6 +91,17 @@ const ALIAS_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map([
   ['@anthropic-ai/claude-code', 'claude'],
   ['gemini-cli', 'gemini'],
   ['@google/gemini-cli', 'gemini'],
+  // The Kiro integration ships a `kiro-cli` executable (see KNOWN_AGENT_STEMS
+  // in orchestratorRole.ts); its slug in the identity table is `kiro`.
+  ['kiro-cli', 'kiro'],
+]);
+
+/** Native executable stems whose binary name differs from the slug — the
+ *  selectAgentProcess image-stem check consults this alongside the slug set
+ *  (a `kiro-cli` process IS the kiro agent even though `kiro-cli` is not a
+ *  slug). */
+const NATIVE_STEM_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map([
+  ['kiro-cli', 'kiro'],
 ]);
 
 /** How long an unattributable/failed probe keeps `arm()` from re-enumerating
@@ -178,16 +189,25 @@ export function resolveAgentSlug(cmdline: string | undefined): AgentSlug | undef
     if (next) candidates.push(next);
   }
   for (const c of [...candidates]) {
-    const idx = c.lastIndexOf('node_modules');
-    if (idx === -1) continue;
-    const segs = c.slice(idx + 'node_modules'.length).split(/[\\/]/).filter(Boolean);
-    if (segs.length > 0) {
-      candidates.push(
-        segs[0].startsWith('@') && segs.length > 1 ? `${segs[0]}/${segs[1]}` : segs[0],
-      );
-    }
+    // Exact path SEGMENT only: `not_node_modules` or a directory literally
+    // named `xnode_modulesx` must not open a boundary (review: lastIndexOf
+    // substring-matched both).
+    const segs = c.split(/[\\/]/).filter(Boolean);
+    const idx = segs.indexOf('node_modules');
+    if (idx === -1 || idx + 1 >= segs.length) continue;
+    const pkg = segs[idx + 1]!;
+    candidates.push(pkg.startsWith('@') && idx + 2 < segs.length ? `${pkg}/${segs[idx + 2]}` : pkg);
   }
   for (const c of candidates) {
+    // Scoped-package spellings never basename-match: `@acme/claude` must not
+    // resolve claude (lookupForm unwraps the scope, so it cannot be trusted
+    // here). Only an exact alias entry may speak for a scoped name.
+    const scoped = c.startsWith('@') || /[/\\]@[^/\\]+[\\/]/.test(c);
+    if (scoped) {
+      const alias = ALIAS_TO_SLUG.get(c.replace(/\\/g, '/').toLowerCase());
+      if (alias) return alias;
+      continue;
+    }
     const form = lookupForm(c);
     if (AGENT_SLUG_SET.has(form)) return form as AgentSlug;
     const alias = ALIAS_TO_SLUG.get(form);
@@ -289,9 +309,8 @@ export function selectAgentProcess(
       const stem = imageStem(child.name);
       const slug = AGENT_SLUG_SET.has(stem)
         ? (stem as AgentSlug)
-        : RUNTIME_STEMS.has(stem)
-          ? resolveAgentSlug(child.cmdline)
-          : undefined;
+        : NATIVE_STEM_TO_SLUG.get(stem) ??
+          (RUNTIME_STEMS.has(stem) ? resolveAgentSlug(child.cmdline) : undefined);
       if (slug) {
         if (!attributed || childDepth < attributed.depth) {
           attributed = { pid: child.pid, depth: childDepth, slug };
@@ -477,9 +496,13 @@ export class AgentProcessTracker {
         this.lastFailedAt.set(sessionId, Date.now());
       } finally {
         this.inFlight.delete(sessionId);
+        // Replay a queued forced rearm DIRECTLY — routing it through rearm()
+        // again would hit the cooldown already paid when the rearm queued it
+        // (lastRearmAt was set seconds ago, so rearm() no-opped and the forced
+        // probe was lost). forceQueued is a single bit: no self-retrigger.
         if (this.forceQueued.delete(sessionId)) {
           const pid = this.shellPids.get(sessionId);
-          if (pid !== undefined) this.rearm(sessionId, pid);
+          if (pid !== undefined) this.probe(sessionId, pid);
         }
       }
     })();

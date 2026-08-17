@@ -73,6 +73,17 @@ describe('resolveAgentSlug', () => {
     expect(resolveAgentSlug('node demo.js claude')).toBeUndefined();
     expect(resolveAgentSlug('node /work/claude-notes/server.mjs')).toBeUndefined();
   });
+
+  it('never resolves a scoped name by basename or a non-segment node_modules', () => {
+    // @acme/claude is NOT claude — scoped spellings match exact alias keys only
+    expect(resolveAgentSlug('node /x/node_modules/@acme/claude/index.js')).toBeUndefined();
+    // `not_node_modules` is not a path segment boundary
+    expect(resolveAgentSlug('node /x/not_node_modules/claude/index.js')).toBeUndefined();
+  });
+
+  it('resolves launcher spellings whose name differs from the slug (kiro)', () => {
+    expect(resolveAgentSlug('node /x/node_modules/kiro-cli/dist/cli.js')).toBe('kiro');
+  });
 });
 
 describe('selectAgentProcess', () => {
@@ -128,6 +139,11 @@ describe('selectAgentProcess', () => {
       entry(SHELL, 300, 'pwsh.exe'), // cycle back to the shell
     ];
     expect(selectAgentProcess(table, SHELL)).toEqual({ pid: 300, slug: 'claude' });
+  });
+
+  it('maps a native stem that is not itself a slug (kiro-cli → kiro)', () => {
+    const table = [entry(200, SHELL, 'kiro-cli')];
+    expect(selectAgentProcess(table, SHELL)).toEqual({ pid: 200, slug: 'kiro' });
   });
 });
 
@@ -208,6 +224,24 @@ describe('AgentProcessTracker', () => {
     await flush();
     expect(enumerate).toHaveBeenCalledTimes(1);
     tracker.rearm('s1', SHELL);
+    await flush();
+    expect(enumerate).toHaveBeenCalledTimes(2);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
+  });
+
+  it('a rearm queued behind an in-flight probe replays as a probe (cooldown already paid)', async () => {
+    // Review bug: the replay used to route through rearm() again, which hit
+    // the 10s cooldown the QUEUING rearm had just paid — the forced probe was
+    // silently dropped and the stale pick kept winning.
+    const watcher = makeWatcher();
+    let table = [entry(200, SHELL, 'claude.exe')];
+    const enumerate = vi.fn(async () => table);
+    const tracker = new AgentProcessTracker(watcher, enumerate);
+
+    tracker.arm('s1', SHELL); // probe A in flight
+    table = [entry(300, SHELL, 'codex')];
+    tracker.rearm('s1', SHELL); // queues the forced probe behind A
+    await flush();
     await flush();
     expect(enumerate).toHaveBeenCalledTimes(2);
     expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });

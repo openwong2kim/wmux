@@ -58,7 +58,10 @@ export interface CanonicalAgentIdentity {
  *
  *  1. Residue veto — the tracked agent is CONFIRMED DEAD and the screen still
  *     says the same slug: that is the detector's sticky residue, not a live
- *     agent. No identity (a genuine relaunch re-arms the tracker first).
+ *     agent. No identity — UNLESS a fresh exact-routed hook backs the same
+ *     slug: that is the relaunch itself (a live bridge fired from this very
+ *     ptyId; the tracked entry is merely stale because the relaunch's arm()
+ *     can sit out the failure backoff), and row 3 must be allowed to answer.
  *  2. Corroborated hook — a live same-slug process backs the authority.
  *     Age and routing are irrelevant here: the process IS the evidence.
  *  3. Fresh exact-routed hook, uncontradicted — the bridge signaled within
@@ -80,7 +83,10 @@ export function resolveCanonicalAgentIdentity(inputs: {
   const ttl = inputs.identityTtlMs ?? IDENTITY_TTL_MS;
   const { proc, auth, screenSlug } = inputs;
 
-  if (proc?.slug && !proc.alive && proc.slug === screenSlug) return undefined;
+  if (
+    proc?.slug && !proc.alive && proc.slug === screenSlug
+    && !(auth?.exact && auth.ageMs <= ttl)
+  ) return undefined;
   if (auth && proc?.slug === auth.slug && proc.alive) {
     return { slug: auth.slug, source: 'hook' };
   }

@@ -4483,9 +4483,15 @@ function wireEvents(
     const activeCanonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, activeScreenSlug);
     if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
       payload.sessionId,
+      // Canonical undefined + a mappable screen slug IS the residue veto
+      // (confirmed-dead same-slug read) — falling back to the persisted
+      // lastDetectedAgent there would feed the DEAD agent's slug to the
+      // alarm as if it were working (review #4). The legacy fallback only
+      // applies when the burst named no known agent at all.
       activeCanonical?.slug
-        ?? sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent
-        ?? undefined,
+        ?? (activeScreenSlug ? undefined
+          : sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent
+          ?? undefined),
     );
     const event: DaemonEvent = {
       type: 'activity.active',
@@ -4523,7 +4529,12 @@ function wireEvents(
       // stale "alive" state.
       if (managed) {
         const tracked = agentProcessTracker.identityFor(payload.sessionId);
-        if (tracked?.slug !== undefined && tracked.slug !== slug) {
+        // Only a LIVE conflicting pick needs the forced probe — a tracked
+        // pick that already DIED is exactly the case plain arm() handles
+        // (alive=false lets it re-probe), and rearm() would burn its 10s
+        // cooldown for nothing, potentially blocking the real launch probe
+        // moments later (review #3).
+        if (tracked?.slug !== undefined && tracked.slug !== slug && tracked.alive) {
           agentProcessTracker.rearm(payload.sessionId, managed.meta.pid);
         } else {
           agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
