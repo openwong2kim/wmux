@@ -32,7 +32,7 @@
    *
    * @param ev KeyboardEvent-like ({ type, key, code, ctrlKey, shiftKey, altKey,
    *            metaKey, isComposing })
-   * @param opts { isMac, hasSelection, readOnly }
+   * @param opts { isMac, hasSelection, readOnly, remoteAcceptsCsiU }
    * @returns null to pass through to xterm/browser; or
    *          { action: 'copy' } — copy the selection to the clipboard;
    *          { action: 'newline', data } — send the newline byte to the pane;
@@ -43,12 +43,22 @@
     var isMac = !!opts.isMac;
     var hasSelection = !!opts.hasSelection;
     var readOnly = !!opts.readOnly;
+    // The pane accepted the kitty keyboard protocol (it emitted a CSI-u push /
+    // set). Only then does `\x1b[13;2u` read as Shift+Enter. A pane that never
+    // negotiated (bash, vim) reads it as ESC followed by `[13;2u` — in vim's
+    // insert mode that leaves insert and runs the rest as normal-mode input.
+    // Un-negotiated, hand the key back to xterm and let it encode the legacy
+    // CR (mirrorInput.ts does the same for the attach mirror, #924).
+    var remoteAcceptsCsiU = !!opts.remoteAcceptsCsiU;
 
     // Shift+Enter → CSI u (`ESC [ 13 ; 2 u`): kitty-protocol apps (Claude Code,
     // codex) insert a newline instead of submitting. Same byte #924's mirror
-    // sends; a read-only host takes nothing.
+    // sends; a read-only host takes nothing; a non-negotiating pane gets the
+    // legacy CR from xterm instead of a byte it would misread.
     if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.isComposing) {
-      return readOnly ? { action: 'swallow' } : { action: 'newline', data: '\x1b[13;2u' };
+      if (readOnly) return { action: 'swallow' };
+      if (!remoteAcceptsCsiU) return null;
+      return { action: 'newline', data: '\x1b[13;2u' };
     }
 
     // Ctrl+Enter → LF, same "insert newline, don't submit" intent as Ctrl+J.
@@ -95,12 +105,6 @@
     // default, not a secure-context API. (macOS ⌘V above is already left to
     // the browser and works, because xterm never intercepts a bare meta key.)
     if (!isMac && bareCtrl && isLetter(ev, 'v', 'KeyV')) return { action: 'paste' };
-    // Ctrl+D on Windows/Linux: the desktop maps it to split-right, so it never
-    // reaches the PTY — but xterm would encode it as EOF (\x04), exiting the
-    // shell and "closing" the pane on a key the user pressed by accident.
-    // App.js swallows it (preventDefault + do nothing), so an errant Ctrl+D
-    // can never kill a browser pane or trigger a browser action.
-    if (!isMac && bareCtrl && isLetter(ev, 'd', 'KeyD')) return { action: 'swallow' };
 
     // Ctrl+Shift+C — the explicit copy form, on every platform. With no
     // selection it is swallowed rather than forwarded (there is nothing to copy

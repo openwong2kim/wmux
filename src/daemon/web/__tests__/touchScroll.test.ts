@@ -778,6 +778,6 @@ describe('source invariants', () => {
     expect(html).toContain('/*__TOUCH_SCROLL_JS__*/');
     const build = readFileSync(join(__dirname, '..', '..', '..', '..', 'scripts', 'build-daemon-web.mjs'), 'utf8');
     expect(build).toContain("inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs)");
-    expect(build).toContain('blocks.scripts.length !== 6');
+    expect(build).toContain('blocks.scripts.length !== 7');
   });
 });

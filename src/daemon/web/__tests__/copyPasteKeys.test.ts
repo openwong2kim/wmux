@@ -51,15 +51,21 @@ const kd = (partial: Partial<KeyLike>): KeyLike => ({
 });
 
 describe('newline keys', () => {
-  it('Shift+Enter emits the CSI-u newline byte (kitty protocol)', () => {
-    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), {})).toEqual({
+  it('Shift+Enter emits the CSI-u newline byte when the pane negotiated kitty', () => {
+    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), { remoteAcceptsCsiU: true })).toEqual({
       action: 'newline',
       data: '\x1b[13;2u',
     });
   });
 
-  it('Shift+Enter on a read-only host is swallowed', () => {
-    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), { readOnly: true })).toEqual({
+  it('Shift+Enter passes through to xterm when the pane never negotiated kitty', () => {
+    // bash / vim read `\x1b[13;2u` as ESC + `[13;2u`, not as Shift+Enter, so a
+    // non-negotiating pane must get the legacy CR from xterm instead.
+    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), {})).toBeNull();
+  });
+
+  it('Shift+Enter on a read-only host is swallowed even when kitty is on', () => {
+    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), { readOnly: true, remoteAcceptsCsiU: true })).toEqual({
       action: 'swallow',
     });
   });
@@ -110,10 +116,8 @@ describe('copy (Windows/Linux)', () => {
     });
   });
 
-  it('Ctrl+D is swallowed so a browser pane cannot be killed by an errant EOF', () => {
-    expect(decideWebKey(kd({ key: 'd', code: 'KeyD', ctrlKey: true }), {})).toEqual({
-      action: 'swallow',
-    });
+  it('Ctrl+D passes through so xterm can send EOF, like any other terminal', () => {
+    expect(decideWebKey(kd({ key: 'd', code: 'KeyD', ctrlKey: true }), {})).toBeNull();
   });
 
   it('Ctrl+Shift+C copies with a selection, swallows without', () => {
