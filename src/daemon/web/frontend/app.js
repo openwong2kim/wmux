@@ -292,7 +292,21 @@
             readOnly: !allowInput
           });
           if (!decision) return true;
-          if (decision.action === 'copy') { copyToClipboard(term.getSelection()); return false; }
+          // Copy: an explicit Ctrl+C must cancel any pending debounced
+          // auto-copy. The user selecting then pressing Ctrl+C within the 150ms
+          // debounce window would otherwise start TWO clipboard writes — the
+          // explicit one now, and the timer's a moment later — and that
+          // concurrent write is exactly the burst that makes Chromium reject
+          // and fall into the blocking legacyCopy path (see the onSelectionChange
+          // comment below). The explicit copy is authoritative; drop the timer.
+          if (decision.action === 'copy') {
+            if (selectionCopyTimer) {
+              clearTimeout(selectionCopyTimer);
+              selectionCopyTimer = null;
+            }
+            copyToClipboard(term.getSelection());
+            return false;
+          }
           // Newline keys (Shift+Enter / Ctrl+Enter / Ctrl+J). preventDefault is
           // required — returning false alone only stops xterm's keydown handler,
           // and the browser's own Shift+Enter default (a newline in the hidden
