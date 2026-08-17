@@ -21,7 +21,7 @@ type KeyLike = {
   isComposing?: boolean;
 };
 
-type Decide = (ev: KeyLike, opts: { isMac?: boolean; hasSelection?: boolean; readOnly?: boolean }) => {
+type Decide = (ev: KeyLike, opts: { isMac?: boolean; hasSelection?: boolean; readOnly?: boolean; remoteAcceptsCsiU?: boolean }) => {
   action: string;
   data?: string;
 } | null;

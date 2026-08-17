@@ -21,7 +21,7 @@ let INITIAL_STATE: { kitty: boolean; modifyOtherKeys: number };
 
 const frontend = (name: string) => join(__dirname, '..', 'frontend', name);
 
-const bytes = (s: string): Uint8Array => Array.from(s, (c) => c.charCodeAt(0));
+const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 beforeAll(() => {
   const src = readFileSync(frontend('keyboardProtocol.js'), 'utf8');

@@ -1568,12 +1568,15 @@
         if (tile.repaints > 0) return; // parser reply to a replayed query
         sendTo(tile.sessionId, d);
       });
-      // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
-      // selection must copy here too, never SIGINT the tile's process. Sends go
-      // to THIS tile's pane, not whichever one is focused. Focus policy stays
-      // local (a tile never grabs focus), which is why this is a caller arg.
-      attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); });
     }
+    // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
+    // selection must copy here too, never SIGINT the tile's process. Sends go
+    // to THIS tile's pane, not whichever one is focused. Focus policy stays
+    // local (a tile never grabs focus), which is why this is a caller arg.
+    // OUTSIDE `if (allowInput)`: a read-only split tile still needs copy —
+    // select-to-copy and Ctrl+C-with-selection must work there, only typing is
+    // gated on allowInput (the readOnly flag passed here decides newline/paste).
+    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); });
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 
