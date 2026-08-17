@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
+import { createTerminalSurface } from '../../utils/createTerminalSurface';
+import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
@@ -262,6 +264,7 @@ export function planRecoveryPillType(args: {
 
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false }: PaneProps) {
   const t = useT();
+  const { invoke: ipcInvoke } = useIpc();
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
@@ -269,6 +272,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const splitPane = useStore((s) => s.splitPane);
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
+  const addSurface = useStore((s) => s.addSurface);
   const markRead = useStore((s) => s.markRead);
   const setPaneNotificationRing = useStore((s) => s.setPaneNotificationRing);
 
@@ -367,6 +371,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const handleSplitVertical = useCallback(() => {
     splitPane(pane.id, 'vertical', workspace.id);
   }, [splitPane, pane.id, workspace.id]);
+  const handleAddTerminal = useCallback(() => {
+    const state = useStore.getState();
+    void createTerminalSurface({
+      workspaceId: workspace.id,
+      paneId: pane.id,
+      paneGate: state.paneGate,
+      workspaces: state.workspaces,
+      startupDirectory: state.startupDirectory,
+      defaultShell: state.defaultShell,
+      ipcInvoke,
+      ptyCreate: window.electronAPI.pty.create,
+      addSurface,
+    });
+  }, [addSurface, ipcInvoke, pane.id, workspace.id]);
+
   const handleAddBrowser = useCallback(() => {
     // #517 external backend: send the open to the OS browser instead of
     // mounting an embedded webview pane. No url here → the default homepage.
@@ -894,6 +913,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onClose={handleCloseSurface}
         onSplitHorizontal={handleSplitHorizontal}
         onSplitVertical={handleSplitVertical}
+        onAddTerminal={handleAddTerminal}
         onAddBrowser={handleAddBrowser}
       />
 

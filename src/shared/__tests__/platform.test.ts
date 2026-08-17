@@ -9,6 +9,12 @@ import {
   parseWindowsBuildNumber,
   platformChoice,
 } from '../platform';
+import {
+  classifyConptySpawnError,
+  spawnWithConptyPolicy,
+  shouldUseBundledConpty,
+  xtermWindowsBuildNumber,
+} from '../conptyWindows';
 
 describe('platform constants', () => {
   it('exactly one of isWindows / isMac / isLinux is true on supported OS', () => {
@@ -113,5 +119,141 @@ describe('parseWindowsBuildNumber', () => {
   it('tolerates the trailing forms a version string can arrive in', () => {
     expect(parseWindowsBuildNumber(' 10.0.19045 ')).toBe(19045);
     expect(parseWindowsBuildNumber('10.0.19045.3803')).toBe(19045);
+  });
+});
+
+describe('shouldUseBundledConpty', () => {
+  it('bundles below Windows 11, in-box at Windows 11 and above', () => {
+    // #910: Win10's in-box ConPTY drops mouse DECSETs; the bundled OpenConsole
+    // has the fix. 22000 is a product cut — Server 2022 (20348) bundles too,
+    // early Win11 22000 does not (its in-box already relays mouse).
+    expect(shouldUseBundledConpty('win32', 19045)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 20348)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 21999)).toBe(true);
+    expect(shouldUseBundledConpty('win32', 22000)).toBe(false);
+    expect(shouldUseBundledConpty('win32', 26200)).toBe(false);
+  });
+
+  it('never bundles off Windows or without a readable build', () => {
+    // null build = "could not read it" — keep the in-box default rather than
+    // act on a number that was never read.
+    expect(shouldUseBundledConpty('darwin', 19045)).toBe(false);
+    expect(shouldUseBundledConpty('linux', 19045)).toBe(false);
+    expect(shouldUseBundledConpty('win32', null)).toBe(false);
+  });
+});
+
+describe('xtermWindowsBuildNumber', () => {
+  it('reports a modern build when the bundled DLL drives the PTY', () => {
+    // The bundled OpenConsole, not the kernel, decides reflow behaviour, so
+    // 22621 is a capability token — NOT a claim about the user's OS. It keeps
+    // xterm on the >= 21376 reflow side while the OS is 19045.
+    expect(xtermWindowsBuildNumber('win32', 19045)).toBe(22621);
+    expect(xtermWindowsBuildNumber('win32', 20348)).toBe(22621);
+  });
+
+  it('passes the real build through when in-box ConPTY drives the PTY', () => {
+    expect(xtermWindowsBuildNumber('win32', 22000)).toBe(22000);
+    expect(xtermWindowsBuildNumber('win32', 26200)).toBe(26200);
+  });
+
+  it('returns null off Windows or unreadable, so the caller omits the field', () => {
+    // Omitting buildNumber keeps xterm's default (reflow enabled) — the
+    // pre-#900 behaviour, unchanged.
+    expect(xtermWindowsBuildNumber('darwin', 19045)).toBeNull();
+    expect(xtermWindowsBuildNumber('win32', null)).toBeNull();
+  });
+});
+
+describe('classifyConptySpawnError', () => {
+  // Every string here is copied from node-pty src/win/conpty.cc. The previous
+  // version of this suite asserted against
+  // `'Failed to start shell: The parameter is incorrect (87)'`, which node-pty
+  // never throws — so the case named "error 87 does not fall back" proved
+  // nothing, six lines under an assertion that DID make the real 87 message
+  // fall back. Re-check these on node-pty upgrades.
+
+  it('demotes immediately when the bundled DLL itself cannot load', () => {
+    for (const message of [
+      'Failed to get conpty.node module handle',
+      'Failed to get conpty.node module file name',
+      'Cannot find conpty.dll at C:\\app\\conpty\\conpty.dll',
+      'Failed to load conpty.dll',
+    ]) {
+      // A file that is absent stays absent; retrying buys nothing.
+      expect(classifyConptySpawnError(message, false), message).toBe('demote-to-inbox');
+      expect(classifyConptySpawnError(message, true), message).toBe('demote-to-inbox');
+    }
+  });
+
+  // conpty.cc:307 throws this for ANY failed HRESULT out of
+  // CreateNamedPipesAndPseudoConsole — a blocked OpenConsole.exe, but equally
+  // named-pipe exhaustion or ConPTY error 87. The message cannot separate
+  // them, so persistence does.
+  it('retries the bundled backend once before demoting on a pseudoconsole failure', () => {
+    expect(classifyConptySpawnError('Cannot launch conpty', false)).toBe('retry-bundled');
+    expect(classifyConptySpawnError('Cannot launch conpty', true)).toBe('demote-to-inbox');
+  });
+
+  it('rethrows anything else so the supervisor backoff still sees it', () => {
+    // The shape wmux itself treats as transient (daemon/index.ts checks
+    // `error code: 87`) must never reach the fallback.
+    for (const message of [
+      'Cannot create process, error code: 87',
+      'CreateProcess failed, error code: 5',
+      'Cannot find module',
+      '',
+    ]) {
+      expect(classifyConptySpawnError(message, false), message).toBe('rethrow');
+      expect(classifyConptySpawnError(message, true), message).toBe('rethrow');
+    }
+  });
+});
+
+describe('spawnWithConptyPolicy', () => {
+  it('reports the backend that actually started, on every spawn', () => {
+    const notices: string[] = [];
+    spawnWithConptyPolicy(() => 'pty', false, (_l, m) => notices.push(m));
+    expect(notices).toEqual(['ConPTY backend = in-box']);
+  });
+
+  it('recovers a one-off pseudoconsole failure without losing the bundled backend', () => {
+    let attempt = 0;
+    const notices: string[] = [];
+    const result = spawnWithConptyPolicy(
+      (useBundled) => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('Cannot launch conpty');
+        return useBundled ? 'bundled' : 'inbox';
+      },
+      true,
+      (_l, m) => notices.push(m),
+    );
+    // The whole point: a blip costs a retry, not this pane's mouse.
+    expect(result).toBe('bundled');
+    expect(attempt).toBe(2);
+    expect(notices.some((m) => m.includes('retrying once'))).toBe(true);
+  });
+
+  it('demotes once the failure proves persistent, and says so', () => {
+    const notices: string[] = [];
+    const result = spawnWithConptyPolicy(
+      (useBundled) => {
+        if (useBundled) throw new Error('Cannot launch conpty');
+        return 'inbox';
+      },
+      true,
+      (_l, m) => notices.push(m),
+    );
+    expect(result).toBe('inbox');
+    expect(notices.some((m) => m.includes('no mouse reporting'))).toBe(true);
+  });
+
+  it('lets a transient spawn error through to the caller', () => {
+    expect(() => spawnWithConptyPolicy(
+      () => { throw new Error('Cannot create process, error code: 87'); },
+      true,
+      () => { /* notices are not the subject here */ },
+    )).toThrow('error code: 87');
   });
 });

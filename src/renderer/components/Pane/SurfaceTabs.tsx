@@ -18,8 +18,7 @@ import FileExplorerPopover from '../AgentToolbar/FileExplorerPopover';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser / zoom).
  *  Deterministic because every child is fixed-size. Tracing the markup below
- *  (4 buttons after the new-terminal button was removed — split-right,
- *  split-down, new-browser, zoom):
+ *  (split-right, split-down, new-browser, zoom):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
  *    4 × w-6 buttons (24 each) ...................................... 96
  *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
@@ -30,7 +29,11 @@ import FileExplorerPopover from '../AgentToolbar/FileExplorerPopover';
  *  button and the divider — flex `gap` and `margin` stack.) Exported so
  *  Pane.tsx can offset the absolute supervision badge just left of the cluster
  *  instead of hardcoding a magic pixel guess. Keep in sync with the cluster
- *  markup below if the button count, padding, or divider spacing changes. */
+ *  markup below if the button count, padding, or divider spacing changes.
+ *
+ *  The tab-strip `+` is NOT part of this cluster and does not affect the
+ *  width: it is opt-in (see the note at its render site) and lives on the
+ *  left, with the tabs. */
 export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
 
 /** Extra width when the focused pane shows attach / compose / new-conversation.
@@ -63,6 +66,8 @@ function withShortcut(label: string, keys: string): string {
 }
 const SC_SPLIT_RIGHT = IS_MAC ? '⌘D' : 'Ctrl+D';
 const SC_SPLIT_DOWN = IS_MAC ? '⇧⌘D' : 'Ctrl+Shift+D';
+/** Mirrors the `cmdOrCtrl && key === 't'` binding in useKeyboard.ts. */
+const SC_NEW_TERMINAL = IS_MAC ? '⌘T' : 'Ctrl+T';
 
 /** B8: dot color for a completed/awaiting surface tab. Status-dot vocabulary
  *  (DESIGN.md): green = complete, red = needs-you (awaiting/waiting). */
@@ -107,6 +112,8 @@ interface SurfaceTabsProps {
   onSplitHorizontal: () => void;
   /** Split this pane stacked (a new pane below — 'vertical'). */
   onSplitVertical: () => void;
+  /** New terminal surface (tab) in this pane. */
+  onAddTerminal: () => void;
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
 }
@@ -121,6 +128,7 @@ export default function SurfaceTabs({
   onClose,
   onSplitHorizontal,
   onSplitVertical,
+  onAddTerminal,
   onAddBrowser,
 }: SurfaceTabsProps) {
   const t = useT();
@@ -131,8 +139,12 @@ export default function SurfaceTabs({
   // subscription) — subscribing to the whole map here re-rendered every tab
   // strip on any pane's status change.
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
-  // Right-aligned pane action cluster (new terminal / split / new browser).
-  // Gated by a Settings toggle (default ON) for minimal-chrome setups.
+  // Opt-in `+` for a second terminal in THIS pane. Off unless the user turned
+  // it on — see the note at its render site and the experimental label in
+  // Settings.
+  const newTerminalButtonVisible = useStore((s) => s.paneNewTerminalButton);
+  // Right-aligned pane action cluster (split right / split down / new browser
+  // / zoom). Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const injectEnabled = useStore((s) => s.agentToolbarEnabled);
   const composeOpen = useStore((s) => s.toolbarPopover === 'rich');
@@ -380,6 +392,26 @@ export default function SurfaceTabs({
           </button>
         </div>
       ))}
+      {/* OFF by default, and deliberately so. #451 removed the discoverable
+          new-terminal button because one pane = one terminal is the shape we
+          recommend — splitting is the answer to "I want another terminal", and
+          it already has two buttons in the cluster. A second terminal in the
+          SAME pane stays reachable (Ctrl+T, now listed in the shortcuts panel)
+          without being offered on the surface.
+          This opt-in exists for the people who asked for it and is labelled
+          experimental in Settings for exactly that reason: turning it on is
+          choosing to break the rule for your own layout. */}
+      {newTerminalButtonVisible && (
+        <button
+          className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
+          onClick={(e) => { e.stopPropagation(); onAddTerminal(); }}
+          title={withShortcut(t('pane.newTerminal'), SC_NEW_TERMINAL)}
+          aria-label={t('pane.newTerminal')}
+          data-pane-action="new-terminal"
+        >
+          +
+        </button>
+      )}
       </div>
 
       {/* Right-aligned pane action cluster. Native next to the per-tab close
@@ -396,6 +428,7 @@ export default function SurfaceTabs({
           className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
           data-pane-actions
         >
+
           {showInject && (
             <>
               <div className="relative">
@@ -489,11 +522,10 @@ export default function SurfaceTabs({
               ? 'flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1 gap-0.5'
               : 'contents'}
             >
-          {/* The "new terminal (tab in this pane)" button was removed by owner
-              decision: one pane = one terminal is the product concept, so adding
-              a second terminal surface to the same pane doesn't belong in the
-              header. The Ctrl+T keyboard path is intentionally kept (power-user
-              escape hatch); only the discoverable button is gone. */}
+          {/* The "new terminal (tab in this pane)" button is not here: it lives
+              in the tab strip above, behind the opt-in paneNewTerminalButton
+              setting, because a second terminal in one pane breaks the one pane
+              = one terminal concept. Ctrl+T stays bound either way. */}
           <button
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}

@@ -15,6 +15,10 @@ import type {
   InboxMessage as _InboxMessage,
 } from '../company/types';
 import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
+// Type-only: the workspace color tag id set lives with its palette + the
+// normalize boundary in ./workspaceColors, so the values and the type cannot
+// drift apart.
+import type { WorkspaceColorId } from './workspaceColors';
 // Type-only import (erased at build). AgentSlug is canonically declared in
 // ./events; the reverse type-only edge (events → types) makes this a type-level
 // cycle, which TypeScript resolves without any runtime import.
@@ -165,6 +169,13 @@ export interface Workspace {
   profile?: WorkspaceProfile;
   companyRole?: 'ceo' | 'lead' | 'member';
   companyDeptName?: string;
+  /**
+   * Optional user-assigned color tag (see shared/workspaceColors.ts). Purely a
+   * visual label for telling workspaces apart at a glance — it never carries
+   * agent/git/state meaning, which keep their own indicators. Undefined = no
+   * tag, which is the default and renders exactly as today.
+   */
+  color?: WorkspaceColorId;
   /**
    * P2 — stable workspace number for the `w<wsOrdinal>` prefix of pane auto
    * names. Allocated from the global high-water `nextWorkspaceOrdinal` at
@@ -662,6 +673,8 @@ export interface SessionData {
    *  terminal / split right / split down / new browser). Default true —
    *  hideable for minimal-chrome setups. */
   paneActionsVisible?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
+  paneNewTerminalButton?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

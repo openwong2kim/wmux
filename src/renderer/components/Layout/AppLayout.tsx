@@ -251,6 +251,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     deckBrainVendorMigrated: state.deckBrainVendorMigrated,
     channelsTabVisible: state.channelsTabVisible,
     paneActionsVisible: state.paneActionsVisible,
+    paneNewTerminalButton: state.paneNewTerminalButton,
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,

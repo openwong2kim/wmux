@@ -16,6 +16,7 @@ import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceAgentRoster from './WorkspaceAgentRoster';
 import { EmptyFleetFanOut } from '../AgentToolbar/FanOutTrigger';
 import { displayPath } from '../../utils/displayPath';
+import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -259,6 +260,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
+  const [colorOpen, setColorOpen] = useState(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -270,6 +272,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   );
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
+  const setWorkspaceColor = useStore((s) => s.setWorkspaceColor);
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
@@ -551,6 +554,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', onKey);
+      // The color submenu is hover-driven, so dismissing the menu by an
+      // outside click or Escape unmounts the subtree before onMouseLeave can
+      // fire. Without this the flag stays true and the picker is already open
+      // the next time the menu is summoned. Resetting here covers every close
+      // path at once rather than each menu item individually.
+      setColorOpen(false);
     };
   }, [menuPos]);
 
@@ -573,6 +582,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   if (!workspace) return null;
 
   const hasProfile = workspace.profile !== undefined;
+  // Color tag (optional). Undefined → every style below falls back to exactly
+  // the pre-feature rendering, so an untagged workspace is pixel-identical.
+  const tagColor = workspaceColorHex(workspace.color);
 
   return (
     <div
@@ -587,6 +599,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           e.preventDefault();
         }
       }}>
+      {/* Color tag rail. Sits inside the row's rounded box, so it reads as part
+          of the row rather than as a separate divider. When the workspace is
+          also in multiview it shifts 2px right, clearing the blue multiview
+          border instead of covering it — the two signals mean different things
+          and must both stay visible. pointer-events-none so it never eats a
+          click or a drag hit-test. */}
+      {tagColor && (
+        <div
+          className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full z-[1] pointer-events-none"
+          style={{ left: isMultiview ? 2 : 0, background: tagColor }}
+          aria-hidden="true"
+        />
+      )}
+
       {/* 드롭 인디케이터 - 위. pointer-events-none so it never participates
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'above' && (
@@ -790,6 +816,74 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.duplicate')}
           </button>
+          {/* Color tag — hover to reveal the swatch row. A single row of eight
+              swatches plus "None" keeps the whole picker one click deep; a
+              modal would be heavier than the decision it holds. */}
+          <div
+            className="relative"
+            onMouseEnter={() => setColorOpen(true)}
+            onMouseLeave={() => setColorOpen(false)}
+          >
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+            >
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{
+                  background: tagColor ?? 'transparent',
+                  border: tagColor ? 'none' : '1px solid var(--text-muted)',
+                }}
+              />
+              <span>{t('workspace.colorTag')}</span>
+              <span className="text-[var(--text-muted)] ml-auto"><IconChevron /></span>
+            </button>
+            {colorOpen && (
+              <div
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} py-1.5 px-2 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              >
+                <div className="flex items-center gap-1">
+                  {WORKSPACE_COLOR_IDS.map((id) => {
+                    const selected = workspace.color === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-label={t(workspaceColorLabelKey(id))}
+                        aria-pressed={selected}
+                        title={t(workspaceColorLabelKey(id))}
+                        className="w-4 h-4 rounded-full transition-transform hover:scale-110"
+                        style={{
+                          background: WORKSPACE_COLOR_HEX[id],
+                          // Selection is a ring, not a checkmark: a glyph on a
+                          // 16px swatch is unreadable and would tint the color
+                          // the user is trying to judge.
+                          boxShadow: selected ? '0 0 0 2px var(--bg-surface), 0 0 0 3px var(--text-main)' : 'none',
+                        }}
+                        onClick={() => { setMenuPos(null); setColorOpen(false); setWorkspaceColor(workspaceId, id); }}
+                      />
+                    );
+                  })}
+                  <button
+                    type="button"
+                    aria-label={t('workspace.colorNone')}
+                    aria-pressed={!workspace.color}
+                    title={t('workspace.colorNone')}
+                    className="w-4 h-4 rounded-full text-[10px] leading-none flex items-center justify-center transition-transform hover:scale-110"
+                    style={{
+                      border: '1px solid var(--text-muted)',
+                      color: 'var(--text-muted)',
+                      boxShadow: !workspace.color ? '0 0 0 2px var(--bg-surface), 0 0 0 3px var(--text-main)' : 'none',
+                    }}
+                    onClick={() => { setMenuPos(null); setColorOpen(false); setWorkspaceColor(workspaceId, undefined); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           {/* Open with — hover to reveal detected folder-opening apps (Explorer,
               VS Code, Terminal, etc.). Closes on click so focus returns to sidebar. */}
           <div

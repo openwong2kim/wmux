@@ -17,6 +17,7 @@
 
 import type { StoreState } from '../index';
 import type { AgentStatus, Workspace } from '../../../shared/types';
+import type { WorkspaceColorId } from '../../../shared/workspaceColors';
 
 /**
  * 배열 투영의 참조 캐시 팩토리. `project`가 만든 원소를 이전 호출의 같은 id
@@ -74,6 +75,8 @@ export interface WorkspaceRailSummary {
   name: string;
   agentStatus: AgentStatus | undefined;
   agentName: string | undefined;
+  /** Optional color tag — the rail is where a 2-letter label needs it most. */
+  color: WorkspaceColorId | undefined;
 }
 
 export const selectWorkspaceRailSummary = makeCachedListProjection<WorkspaceRailSummary>(
@@ -82,8 +85,10 @@ export const selectWorkspaceRailSummary = makeCachedListProjection<WorkspaceRail
     name: w.name,
     agentStatus: w.metadata?.agentStatus,
     agentName: w.metadata?.agentName,
+    color: w.color,
   }),
-  (a, b) => a.name === b.name && a.agentStatus === b.agentStatus && a.agentName === b.agentName,
+  (a, b) => a.name === b.name && a.agentStatus === b.agentStatus && a.agentName === b.agentName
+    && a.color === b.color,
 );
 
 /** 활성 워크스페이스의 표시 요약(이름 + git 브랜치) — StatusBar 좌측용.

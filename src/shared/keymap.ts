@@ -52,7 +52,12 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   // ── Advertised in Settings → Shortcuts (order is the render order) ────────
   { combo: 'Ctrl+D', descriptionKey: 'settings.sc.splitHorizontal' },
   { combo: 'Ctrl+Shift+D', descriptionKey: 'settings.sc.splitVertical' },
-  { combo: 'Ctrl+T', descriptionKey: 'settings.sc.newWorkspace' },
+  // Ctrl+T adds a SURFACE to the active pane (useKeyboard.ts → addSurface);
+  // the key that makes a workspace is Ctrl+N (addWorkspace), listed below.
+  // This row said "New workspace" and pointed users at the wrong key while
+  // hiding the right one — the cheat-sheet overlay had it right all along.
+  { combo: 'Ctrl+T', descriptionKey: 'settings.sc.newTerminalInPane' },
+  { combo: 'Ctrl+N', descriptionKey: 'settings.sc.newWorkspace' },
   { combo: 'Ctrl+W', descriptionKey: 'settings.sc.closeSurface' },
   { combo: 'Ctrl+Shift+Q', descriptionKey: 'settings.sc.closePane' },
   { combo: 'Ctrl+F', descriptionKey: 'settings.sc.searchTerminal' },
@@ -64,7 +69,6 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+`', descriptionKey: 'settings.sc.floatingPane' },
 
   // ── Bound but not advertised in the Settings list ─────────────────────────
-  { combo: 'Ctrl+N', descriptionKey: null },
   { combo: 'Ctrl+M', literalCtrl: true, descriptionKey: null },
   { combo: 'Ctrl+B', literalCtrl: true, descriptionKey: null },
   { combo: 'Ctrl+Shift+B', literalCtrl: true, descriptionKey: null },
