@@ -80,11 +80,27 @@
     // Windows/Linux: Ctrl+C copies ONLY when there is a selection. With an
     // empty selection it must still interrupt the remote process — the whole
     // point of the key, and #895 asks for the selection case, not for SIGINT to
-    // be taken away. Ctrl+V is left to the browser's paste path.
+    // be taken away.
     if (!isMac && bareCtrl && isLetter(ev, 'c', 'KeyC')) {
       return hasSelection ? { action: 'copy' } : null;
     }
-    if (!isMac && bareCtrl && isLetter(ev, 'v', 'KeyV')) return null;
+    // Ctrl+V on Windows/Linux: xterm's keydown path ENCODES Ctrl+V as the SYN
+    // control byte (\x16) and preventDefaults — the browser's native paste
+    // event never fires, so "leave it to the browser" silently does nothing.
+    // Returning { action: 'paste' } makes app.js return false, which xterm
+    // treats as "do not process this key": it neither sends \x16 nor
+    // preventDefaults, so the browser's own Ctrl+V paste lands on the focused
+    // xterm textarea and xterm's native paste listener feeds it to the PTY.
+    // That path works on cleartext pages too — native paste is a browser
+    // default, not a secure-context API. (macOS ⌘V above is already left to
+    // the browser and works, because xterm never intercepts a bare meta key.)
+    if (!isMac && bareCtrl && isLetter(ev, 'v', 'KeyV')) return { action: 'paste' };
+    // Ctrl+D on Windows/Linux: the desktop maps it to split-right, so it never
+    // reaches the PTY — but xterm would encode it as EOF (\x04), exiting the
+    // shell and "closing" the pane on a key the user pressed by accident.
+    // App.js swallows it (preventDefault + do nothing), so an errant Ctrl+D
+    // can never kill a browser pane or trigger a browser action.
+    if (!isMac && bareCtrl && isLetter(ev, 'd', 'KeyD')) return { action: 'swallow' };
 
     // Ctrl+Shift+C — the explicit copy form, on every platform. With no
     // selection it is swallowed rather than forwarded (there is nothing to copy

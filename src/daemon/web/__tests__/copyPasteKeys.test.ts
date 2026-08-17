@@ -104,8 +104,16 @@ describe('copy (Windows/Linux)', () => {
     });
   });
 
-  it('Ctrl+V is left to the browser paste path', () => {
-    expect(decideWebKey(kd({ key: 'v', code: 'KeyV', ctrlKey: true }), {})).toBeNull();
+  it('Ctrl+V asks app.js to step aside so the browser can paste natively', () => {
+    expect(decideWebKey(kd({ key: 'v', code: 'KeyV', ctrlKey: true }), {})).toEqual({
+      action: 'paste',
+    });
+  });
+
+  it('Ctrl+D is swallowed so a browser pane cannot be killed by an errant EOF', () => {
+    expect(decideWebKey(kd({ key: 'd', code: 'KeyD', ctrlKey: true }), {})).toEqual({
+      action: 'swallow',
+    });
   });
 
   it('Ctrl+Shift+C copies with a selection, swallows without', () => {

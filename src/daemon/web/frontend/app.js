@@ -293,20 +293,48 @@
           });
           if (!decision) return true;
           if (decision.action === 'copy') { copyToClipboard(term.getSelection()); return false; }
-          if (decision.action === 'newline') { sendInput(decision.data); return false; }
-          if (decision.action === 'swallow') return false;
+          // Newline keys (Shift+Enter / Ctrl+Enter / Ctrl+J). preventDefault is
+          // required — returning false alone only stops xterm's keydown handler,
+          // and the browser's own Shift+Enter default (a newline in the hidden
+          // textarea) would fire xterm's `input` handler, which sends the
+          // textarea content to the PTY. That appended \n after our CSI-u byte
+          // makes bash submit `;2u` and report a syntax error — the exact bug
+          // the desktop avoids by calling preventDefault (useTerminal.ts).
+          if (decision.action === 'newline') { ev.preventDefault(); sendInput(decision.data); return false; }
+          // 'swallow': consume the key entirely. preventDefault is required so
+          // the browser's own default (Ctrl+D → bookmark dialog) does not fire
+          // on top of our no-op — returning false alone only stops xterm.
+          if (decision.action === 'swallow') { ev.preventDefault(); return false; }
+          // 'paste': xterm must NOT process Ctrl+V (it would encode SYN and
+          // swallow the browser's paste). Returning false tells xterm to step
+          // aside entirely, so the browser's own paste event lands on the
+          // focused xterm textarea — whose native paste listener already sends
+          // it to the pane. Works on cleartext pages, no secure-context API.
+          if (decision.action === 'paste') return false;
           return true;
         } catch (e) {
           console.error('[wmux-web-keys] decision failed:', e);
           return true; // never break normal keys
         }
       });
-      // Select-to-copy, like a local wmux pane: any selection lands on the
-      // clipboard. Best-effort on a cleartext page (the browser may refuse a
-      // non-gesture clipboard write) — Ctrl+C remains the reliable path there.
+      // Select-to-copy, like a local wmux pane. xterm fires onSelectionChange
+      // once per CELL during a drag — a 50-char selection is 50 events — so a
+      // raw per-event copy issues a burst of concurrent writeText calls.
+      // Chromium serializes clipboard writes; the stragglers reject and their
+      // legacyCopy execCommand('copy') blocks synchronously on the clipboard
+      // lock, freezing the page for tens of seconds (select → Ctrl+C → Ctrl+V
+      // repro). Debounce to the settled selection, matching the desktop's
+      // autoSelectionCopy.ts. Best-effort on a cleartext page (the browser may
+      // refuse a non-gesture clipboard write) — Ctrl+C remains the reliable
+      // path there.
+      var selectionCopyTimer = null;
       term.onSelectionChange(function () {
         var sel = term.getSelection();
-        if (sel) copyToClipboard(sel);
+        if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+        selectionCopyTimer = setTimeout(function () {
+          selectionCopyTimer = null;
+          if (sel) copyToClipboard(sel);
+        }, 150);
       });
       // Auto-focus so typing and Ctrl+V work without a click first — a browser
       // only delivers the paste event to the focused xterm textarea.
