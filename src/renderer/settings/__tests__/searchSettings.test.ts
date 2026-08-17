@@ -44,4 +44,22 @@ describe('matchSettings', () => {
   it('indexes every catalog entry against a translator without throwing', () => {
     expect(() => matchSettings('a', t, SETTINGS_CATALOG)).not.toThrow();
   });
+
+  // The reported failure: the label is "Auto-update", so a query typed with a
+  // space had a hyphen sitting exactly where the space was and matched nothing.
+  it('finds a hyphenated setting when the query uses a space', () => {
+    const label = (key: string) =>
+      key === 'settings.autoUpdate' ? 'Auto-update'
+      : key === 'settings.autoUpdateDesc' ? 'Automatically check for and install updates'
+      : key;
+    const hits = matchSettings('auto update', label, SETTINGS_CATALOG);
+    expect(hits.map((h) => h.entry.id)).toContain('autoupdate');
+  });
+
+  it('requires every term, in any order', () => {
+    const both = matchSettings('shape cursor', t);
+    expect(both.map((h) => h.entry.id)).toContain('cursorshape');
+    // "cursor" hits, "zzz" cannot — so the pair must not.
+    expect(matchSettings('cursor zzz', t)).toEqual([]);
+  });
 });

@@ -19,17 +19,28 @@ export function catalogHaystack(
   return normalize(pieces.join(' '));
 }
 
+/**
+ * Split a query into search terms. Every term has to appear somewhere in the
+ * haystack, but they do not have to appear together or in order — matching the
+ * whole query as one contiguous string makes punctuation decide the outcome.
+ * "auto update" found nothing because the label is written "Auto-update", so
+ * the hyphen sat exactly where the user typed a space.
+ */
+function terms(query: string): string[] {
+  return normalize(query).split(/\s+/).filter(Boolean);
+}
+
 export function matchSettings(
   query: string,
   t: (key: TranslationKey) => string,
   catalog: SettingsCatalogEntry[] = SETTINGS_CATALOG,
 ): SettingsSearchHit[] {
-  const needle = normalize(query);
-  if (!needle) return [];
+  const needles = terms(query);
+  if (needles.length === 0) return [];
   const hits: SettingsSearchHit[] = [];
   for (const entry of catalog) {
     const haystack = catalogHaystack(entry, t);
-    if (haystack.includes(needle)) hits.push({ entry, haystack });
+    if (needles.every((needle) => haystack.includes(needle))) hits.push({ entry, haystack });
   }
   return hits;
 }
