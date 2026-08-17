@@ -132,6 +132,33 @@
   var BASE_TITLE = document.title;
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var fleetTimer = null;
+  var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+
+  // Copy text to the clipboard. `navigator.clipboard` needs a secure context,
+  // which a cleartext `--expose` page is not — fall back to the legacy
+  // textarea+execCommand trick so Ctrl+C still copies there. Auto-copy on
+  // selection is best-effort: the browser may refuse a non-gesture write, and
+  // that failure is silent (Ctrl+C remains the reliable path).
+  function copyToClipboard(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { legacyCopy(text); });
+    } else {
+      legacyCopy(text);
+    }
+  }
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* no clipboard in this context */ }
+    document.body.removeChild(ta);
+  }
 
   function newTerm(cols, rows) {
     return new Terminal({
@@ -183,6 +210,15 @@
     try { t.focus(); } catch (e) { /* torn down mid-tap */ }
   }
   if (termHost) termHost.addEventListener('click', function () { focusFromGesture(term); });
+  // Any click on the page (not just the terminal canvas) keeps the xterm
+  // textarea focused, so browser paste (Ctrl+V) — which needs that textarea to
+  // receive the paste event — still lands after touching chrome. Skip real
+  // inputs so their own focus isn't stolen.
+  document.addEventListener('click', function (e) {
+    var tag = e.target && e.target.tagName ? e.target.tagName : '';
+    if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(tag)) return;
+    focusFromGesture(term);
+  }, true);
 
   // Repaint gate: how many snapshots are currently being fed to the parser.
   //
@@ -232,6 +268,38 @@
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
       });
+      // Copy / newline decisions for a browser terminal (see copyPasteKeys.js).
+      // xterm exposes this as a METHOD, not a constructor option — attach it
+      // here so Ctrl+C-with-a-selection copies instead of SIGINT, and
+      // Shift+Enter / Ctrl+Enter insert a newline. Ctrl+V is left to the
+      // browser's own paste path once the terminal is focused.
+      term.attachCustomKeyEventHandler(function (ev) {
+        try {
+          var decision = window.wmuxWebKeys.decideWebKey(ev, {
+            isMac: isMac,
+            hasSelection: term.hasSelection(),
+            readOnly: !allowInput
+          });
+          if (!decision) return true;
+          if (decision.action === 'copy') { copyToClipboard(term.getSelection()); return false; }
+          if (decision.action === 'newline') { sendInput(decision.data); return false; }
+          if (decision.action === 'swallow') return false;
+          return true;
+        } catch (e) {
+          console.error('[wmux-web-keys] decision failed:', e);
+          return true; // never break normal keys
+        }
+      });
+      // Select-to-copy, like a local wmux pane: any selection lands on the
+      // clipboard. Best-effort on a cleartext page (the browser may refuse a
+      // non-gesture clipboard write) — Ctrl+C remains the reliable path there.
+      term.onSelectionChange(function () {
+        var sel = term.getSelection();
+        if (sel) copyToClipboard(sel);
+      });
+      // Auto-focus so typing and Ctrl+V work without a click first — a browser
+      // only delivers the paste event to the focused xterm textarea.
+      if (allowInput) term.focus();
     } else if (cols && rows) {
       term.resize(cols, rows);
     }
@@ -1234,6 +1302,9 @@
         }
         hideOverlay();
         setConn('live', 'live');
+        // The pane is now visible and interactive — focus it so typing / paste
+        // need no click (a browser only delivers paste to the focused xterm).
+        if (allowInput && term) term.focus();
       },
       data: function (bytes) { if (term) term.write(bytes); },
       exit: function () { setConn('ended', 'ended'); },
