@@ -31,7 +31,7 @@ import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
-import { attachAltScreenWheel } from '../terminal/altScreenWheel';
+import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1005,14 +1005,27 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     applyUnicodeWidthModel(terminal);
     terminal.open(container);
 
-    // Grok (and other fullscreen TUIs) live on the alt screen. xterm has no
-    // scrollback there and would turn the wheel into Up/Down, which Grok's
-    // prompt-focused view treats as history — not conversation scroll.
-    // PageUp/PageDown is what Grok documents for that case.
-    const detachAltScreenWheel = attachAltScreenWheel(terminal, container, (seq) => {
-      const id = ptyIdRef.current;
-      if (id) window.electronAPI.pty.write(id, seq);
-    });
+    // Grok lives on the alt screen, where xterm has no scrollback and turns the
+    // wheel into Up/Down — which Grok's prompt-focused view reads as history,
+    // not conversation scroll. PageUp/PageDown is what Grok documents instead.
+    // Deliberately NOT applied to every fullscreen TUI: arrows are the correct
+    // wheel behaviour in vim, less and htop, so the gate below asks who is
+    // actually running in this pane, on every event (the answer changes as the
+    // user starts and exits programs).
+    const detachAltScreenWheel = attachAltScreenWheel(
+      terminal,
+      container,
+      (seq) => {
+        const id = ptyIdRef.current;
+        if (id) window.electronAPI.pty.write(id, seq);
+      },
+      () => {
+        const id = ptyIdRef.current;
+        if (!id) return false;
+        const slug = useStore.getState().surfaceAgent[id]?.slug;
+        return slug !== undefined && PAGE_SCROLL_AGENTS.has(slug);
+      },
+    );
 
     // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
     // 아래 Cmd+V/Ctrl+V/Ctrl+Shift+V 핸들러와 겹칠 때만 캡처 단계에서 차단한다. wmux는

@@ -24,6 +24,7 @@ export default function ComposePopover({ paneId, ptyId }: ComposePopoverProps) {
   const setRichDraft = useStore((s) => s.setRichDraft);
   const clearRichDraft = useStore((s) => s.clearRichDraft);
   const closeCompose = useStore((s) => s.closeCompose);
+  const pushToast = useStore((s) => s.pushToast);
   const target = useStore((s) => s.composeTarget);
   const setComposeTarget = useStore((s) => s.setComposeTarget);
   const snippets = useStore((s) => s.toolbarSnippets);
@@ -38,7 +39,6 @@ export default function ComposePopover({ paneId, ptyId }: ComposePopoverProps) {
   const [armed, setArmed] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [result, setResult] = useState<{ ok: number; fail: number } | null>(null);
 
   const ptyIds = useMemo(
     () => (activeWorkspace ? collectBroadcastPtyIds(activeWorkspace) : []),
@@ -50,7 +50,6 @@ export default function ComposePopover({ paneId, ptyId }: ComposePopoverProps) {
 
   useEffect(() => {
     setArmed(false);
-    setResult(null);
   }, [target]);
 
   useEffect(() => {
@@ -98,8 +97,17 @@ export default function ComposePopover({ paneId, ptyId }: ComposePopoverProps) {
     try {
       const settled = await Promise.allSettled(ptyIds.map((id) => injectText(id, body, true)));
       const ok = settled.filter((r) => r.status === 'fulfilled').length;
-      setResult({ ok, fail: settled.length - ok });
+      const fail = settled.length - ok;
       clearRichDraft(ptyId);
+      // Report through the toast, not the popover: closing it on the next line
+      // unmounts the inline result before a single frame can paint it, so a
+      // broadcast that reached 3 of 8 panes used to look exactly like one that
+      // reached all 8. A broadcast also spans panes the user cannot see, so
+      // even the all-clear is worth saying out loud.
+      pushToast({
+        level: fail > 0 ? 'warn' : 'info',
+        message: t('toolbar.broadcastResult', { ok, fail }),
+      });
       closeCompose();
     } finally {
       sendingRef.current = false;
@@ -268,11 +276,9 @@ export default function ComposePopover({ paneId, ptyId }: ComposePopoverProps) {
             {t('toolbar.newConversation')}
           </button>
           <div className="flex items-center gap-2">
-            {result && (
-              <span className="text-[10px] text-[var(--text-muted)]" data-testid="compose-result">
-                {t('toolbar.broadcastResult', { ok: result.ok, fail: result.fail })}
-              </span>
-            )}
+            {/* The broadcast result is reported by a toast, not here: this
+                popover closes in the same tick that the result arrives, so an
+                inline span could never paint. See dispatchAll. */}
             {target === 'pane' && (
               <Button
                 variant="secondary"

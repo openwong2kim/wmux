@@ -1,16 +1,21 @@
 /**
- * Wheel on the alternate screen (fullscreen TUIs: Grok, vim, less).
+ * Wheel on the alternate screen, for the few agents whose prompt eats arrows.
  *
  * The alt buffer has no xterm scrollback. xterm.js turns the wheel into
- * Up/Down arrows there (xterm.js#1007). That is right for `less`, but Grok's
- * default focus is the prompt: arrows open prompt history, they do not move
- * the conversation. Grok's own docs (keyboard-shortcuts.md) say PageUp /
- * PageDown scroll the transcript even while the prompt is focused.
+ * Up/Down arrows there (xterm.js#1007). That is right for `less`, `vim` and
+ * `htop` — arrows are exactly how you move in them — so this must NOT fire for
+ * every fullscreen TUI. Grok is the exception: its default focus is the
+ * prompt, where arrows open prompt history instead of moving the conversation,
+ * and its own docs (keyboard-shortcuts.md) name PageUp / PageDown as the keys
+ * that scroll the transcript while the prompt holds focus.
  *
- * We take the wheel on the alt screen and emit those page keys instead.
- * Capture + preventDefault so a TUI that enabled mouse tracking cannot
- * swallow the event as unused button-64/65 reports (xterm.js wheel-dead
- * reports on mouse-mode panes).
+ * So the wheel is only re-mapped when the pane is running an agent known to
+ * behave that way. The gate is evaluated per event, not at attach time: one
+ * pane runs grok, then vim, then grok again over its life.
+ *
+ * Capture + preventDefault so a TUI that enabled mouse tracking cannot swallow
+ * the event as unused button-64/65 reports (xterm.js wheel-dead reports on
+ * mouse-mode panes).
  */
 
 const PAGE_UP = '\x1b[5~';
@@ -62,14 +67,29 @@ function clampPages(n: number): number {
   return n === 0 ? 0 : n;
 }
 
+/**
+ * Agents whose alt-screen prompt swallows arrows, so the wheel has to be sent
+ * as page keys instead. Keep this list evidence-based — an entry belongs here
+ * only when that agent documents (or is measured to use) PageUp / PageDown for
+ * transcript scrolling. Everything absent keeps xterm's arrow behaviour, which
+ * is what a normal fullscreen TUI wants.
+ */
+export const PAGE_SCROLL_AGENTS: ReadonlySet<string> = new Set(['grok']);
+
 export function attachAltScreenWheel(
   term: AltScreenWheelTerm,
   host: HTMLElement,
   sendKeys: (seq: string) => void,
+  /** Per-event gate. Returns false → the wheel is left entirely to xterm. */
+  shouldPage: () => boolean,
 ): () => void {
   let accum = 0;
   const onWheel = (e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!shouldPage()) {
+      accum = 0;
+      return;
+    }
     if (!isAltScreen(term)) {
       accum = 0;
       return;

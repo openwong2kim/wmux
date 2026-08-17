@@ -5,6 +5,7 @@ import {
   pageKeyFor,
   wheelDeltaToPages,
   attachAltScreenWheel,
+  PAGE_SCROLL_AGENTS,
 } from '../altScreenWheel';
 
 describe('isAltScreen', () => {
@@ -59,7 +60,7 @@ describe('attachAltScreenWheel', () => {
   it('does not steal the wheel on the normal buffer', () => {
     const send = vi.fn();
     const el = host();
-    const detach = attachAltScreenWheel({ buffer: { active: { type: 'normal' } } }, el, send);
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'normal' } } }, el, send, () => true);
     const ev = fire(el, { deltaY: -120, deltaMode: 1 });
     expect(send).not.toHaveBeenCalled();
     expect(ev.defaultPrevented).toBe(false);
@@ -70,7 +71,7 @@ describe('attachAltScreenWheel', () => {
   it('sends PageUp on the alt screen for an upward notch', () => {
     const send = vi.fn();
     const el = host();
-    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send);
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send, () => true);
     const ev = fire(el, { deltaY: -1, deltaMode: 1 });
     expect(send).toHaveBeenCalledWith('\x1b[5~');
     expect(ev.defaultPrevented).toBe(true);
@@ -81,7 +82,7 @@ describe('attachAltScreenWheel', () => {
   it('sends PageDown for a downward notch', () => {
     const send = vi.fn();
     const el = host();
-    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send);
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send, () => true);
     fire(el, { deltaY: 1, deltaMode: 1 });
     expect(send).toHaveBeenCalledWith('\x1b[6~');
     detach();
@@ -91,11 +92,45 @@ describe('attachAltScreenWheel', () => {
   it('leaves ctrl/meta/alt chords alone (font zoom, browser)', () => {
     const send = vi.fn();
     const el = host();
-    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send);
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send, () => true);
     fire(el, { deltaY: -1, deltaMode: 1, ctrlKey: true });
     fire(el, { deltaY: -1, deltaMode: 1, metaKey: true });
     expect(send).not.toHaveBeenCalled();
     detach();
     el.remove();
+  });
+
+  // vim / less / htop are on the alt screen too, and arrows are what they want.
+  // Without this gate the wheel paged through every fullscreen TUI in the app.
+  it('leaves the wheel to xterm when the pane is not running a paging agent', () => {
+    const send = vi.fn();
+    const el = host();
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send, () => false);
+    const ev = fire(el, { deltaY: -1, deltaMode: 1 });
+    expect(send).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+    detach();
+    el.remove();
+  });
+
+  it('re-reads the gate per event, so exiting the agent restores arrows', () => {
+    const send = vi.fn();
+    const el = host();
+    let paging = true;
+    const detach = attachAltScreenWheel({ buffer: { active: { type: 'alternate' } } }, el, send, () => paging);
+    fire(el, { deltaY: -1, deltaMode: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
+    paging = false;
+    fire(el, { deltaY: -1, deltaMode: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
+    detach();
+    el.remove();
+  });
+
+  it('only lists agents documented to page-scroll', () => {
+    expect(PAGE_SCROLL_AGENTS.has('grok')).toBe(true);
+    for (const other of ['claude', 'codex', 'gemini', 'aider']) {
+      expect(PAGE_SCROLL_AGENTS.has(other)).toBe(false);
+    }
   });
 });

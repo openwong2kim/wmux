@@ -140,6 +140,50 @@ describe('ComposePopover', () => {
     }
   });
 
+  // The popover closes in the same tick the result lands, so an inline result
+  // could never paint: a broadcast that reached 1 of 2 panes looked exactly
+  // like one that reached both. The toast outlives the popover.
+  it('reports a partly failed broadcast through a toast', async () => {
+    useStore.setState({ toasts: [] });
+    injectText.mockImplementation((ptyId: string) =>
+      ptyId === 'pty-2' ? Promise.reject(new Error('dead pty')) : Promise.resolve());
+    mount();
+    type('hello fleet');
+    act(() => {
+      q('[data-testid="compose-target-all"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    act(() => {
+      q('[data-testid="compose-send"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    act(() => {
+      q('[data-testid="compose-send"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const toasts = useStore.getState().toasts;
+    expect(toasts.length).toBe(1);
+    expect(toasts[0].level).toBe('warn');
+    expect(toasts[0].message).toContain('1');
+  });
+
+  it('reports a fully successful broadcast too (panes may be off-screen)', async () => {
+    useStore.setState({ toasts: [] });
+    mount();
+    type('hello fleet');
+    act(() => {
+      q('[data-testid="compose-target-all"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    act(() => {
+      q('[data-testid="compose-send"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    act(() => {
+      q('[data-testid="compose-send"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const toasts = useStore.getState().toasts;
+    expect(toasts.length).toBe(1);
+    expect(toasts[0].level).toBe('info');
+  });
+
   it('snippets insert into the draft and never send', () => {
     act(() => {
       useStore.getState().addSnippet('Fix', 'please fix this');
