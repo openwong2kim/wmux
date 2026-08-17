@@ -200,6 +200,16 @@ export const en = {
   'workspace.rename': 'Rename workspace',
   'workspace.configureProfile': 'Configure profile…',
   'workspace.duplicate': 'Duplicate workspace',
+  'workspace.colorTag': 'Color tag',
+  'workspace.colorNone': 'No color',
+  'workspace.color.red': 'Red',
+  'workspace.color.orange': 'Orange',
+  'workspace.color.yellow': 'Yellow',
+  'workspace.color.green': 'Green',
+  'workspace.color.teal': 'Teal',
+  'workspace.color.blue': 'Blue',
+  'workspace.color.purple': 'Purple',
+  'workspace.color.pink': 'Pink',
   'workspace.workingDirs': 'Working directories',
   'workspace.noWorkingDirs': 'No terminals in this workspace',
   'workspace.copyPath': 'Copy directory',
@@ -264,6 +274,9 @@ export const en = {
   'pane.splitDown': 'Split down',
   'pane.newTerminal': 'New terminal',
   'pane.newBrowser': 'New browser',
+  // Label for the tab-strip `+` and its menu. "tab" not "surface": the UI
+  // calls them tabs everywhere the user can see (cf. surface.closeTab).
+  'pane.addSurface': 'New tab',
   'pane.maxLeavesReached': 'Pane limit reached ({count}). Close a pane before splitting again.',
 
   // Surface
@@ -837,6 +850,9 @@ export const en = {
   'settings.multiviewColumns': 'Columns',
   'settings.multiviewRows': 'Rows',
   'settings.paneActionsVisible': 'Pane action buttons',
+  'settings.paneNewTerminalButton': 'New-terminal button on the tab strip',
+  'settings.paneNewTerminalButtonDesc':
+    'Adds a + that puts a SECOND terminal in this pane. wmux is built around one pane = one terminal — splitting is the usual way to get another — so this is off by default. Ctrl+T does the same thing without the button.',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
   'settings.currentVersion': 'Current',
   'settings.latestVersion': 'Latest',
@@ -882,6 +898,7 @@ export const en = {
   'settings.sc.splitHorizontal': 'Split pane horizontal',
   'settings.sc.splitVertical': 'Split pane vertical',
   'settings.sc.newWorkspace': 'New workspace',
+  'settings.sc.newTerminalInPane': 'New terminal in this pane',
   'settings.sc.closeSurface': 'Close active tab',
   'settings.sc.closePane': 'Close split pane',
   'settings.sc.searchTerminal': 'Search in terminal',

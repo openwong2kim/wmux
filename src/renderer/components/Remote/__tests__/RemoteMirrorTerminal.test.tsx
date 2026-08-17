@@ -67,6 +67,22 @@ class FakeTerminal {
     this.onDataHandler = cb;
     return { dispose: vi.fn() };
   }
+
+  /** Selection + key plumbing the #895 editing conveniences hang off. Set
+   *  `selection` to stand in for a user drag, then drive `keyHandler`. */
+  selection = '';
+  selectionHandler: (() => void) | null = null;
+  keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
+  clearSelectionCalls = 0;
+  onSelectionChange(cb: () => void): { dispose: () => void } {
+    this.selectionHandler = cb;
+    return { dispose: vi.fn() };
+  }
+  getSelection(): string { return this.selection; }
+  hasSelection(): boolean { return this.selection.length > 0; }
+  clearSelection(): void { this.clearSelectionCalls++; this.selection = ''; }
+  attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean): void { this.keyHandler = cb; }
+
   dispose(): void { this.disposed = true; }
 }
 
@@ -108,6 +124,8 @@ describe('RemoteMirrorTerminal', () => {
   let errorHandlers: Handler[];
   let paneDetach: ReturnType<typeof vi.fn>;
   let paneWrite: ReturnType<typeof vi.fn>;
+  let clipboardWrite: ReturnType<typeof vi.fn>;
+  let clipboardRead: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     setupLog.length = 0;
@@ -146,10 +164,18 @@ describe('RemoteMirrorTerminal', () => {
         paneWrite,
       },
     };
+
+    clipboardWrite = vi.fn(() => Promise.resolve());
+    clipboardRead = vi.fn(() => Promise.resolve(''));
+    (window as unknown as { clipboardAPI: unknown }).clipboardAPI = {
+      writeText: clipboardWrite,
+      readText: clipboardRead,
+    };
   });
 
   afterEach(() => {
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+    delete (window as unknown as { clipboardAPI?: unknown }).clipboardAPI;
   });
 
   it('meta event resets, resizes, and repaints the decoded snapshot', () => {
@@ -553,6 +579,175 @@ describe('RemoteMirrorTerminal', () => {
 
       expect(term.options['fontSize']).not.toBe(22);
       expect(term.options['fontSize'] ?? constructed).toBe(constructed);
+
+      unmount();
+    });
+  });
+
+  // #895 — the mirror forwarded EVERY keystroke raw, so the editing
+  // conveniences that operate on the LOCAL selection and the LOCAL clipboard
+  // were simply absent: a drag copied nothing, Ctrl+C interrupted the remote
+  // instead of copying, Ctrl+V did nothing, Shift+Enter submitted.
+  //
+  // The chord table is covered by mirrorInput.test.ts, which needs no DOM.
+  // These are about the WIRING it hangs on: that a copy never reaches
+  // `paneWrite`, that a direct write carries the live attach, and that a
+  // read-only host still receives nothing.
+  describe('local editing conveniences', () => {
+    function press(term: FakeTerminal, over: Record<string, unknown>): boolean {
+      const ev = {
+        type: 'keydown',
+        key: 'a',
+        code: 'KeyA',
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        isComposing: false,
+        preventDefault: vi.fn(),
+        ...over,
+      } as unknown as KeyboardEvent;
+      return term.keyHandler?.(ev) ?? true;
+    }
+
+    it('★ Ctrl+C over a selection copies locally and sends nothing to the remote', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      term.selection = 'npm run build';
+
+      let handled = true;
+      await act(async () => {
+        handled = press(term, { key: 'c', code: 'KeyC', ctrlKey: true });
+      });
+
+      expect(clipboardWrite).toHaveBeenCalledWith('npm run build');
+      // The whole point: this used to arrive on the remote as SIGINT.
+      expect(paneWrite).not.toHaveBeenCalled();
+      expect(handled).toBe(false); // consumed here — xterm must not encode it
+
+      unmount();
+    });
+
+    it('★ Ctrl+C with nothing selected still interrupts the remote', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      let handled = false;
+      await act(async () => {
+        handled = press(term, { key: 'c', code: 'KeyC', ctrlKey: true });
+      });
+
+      expect(handled).toBe(true); // xterm encodes it → onData → paneWrite
+      expect(clipboardWrite).not.toHaveBeenCalled();
+
+      unmount();
+    });
+
+    // The CSI-u newline is a NEGOTIATED encoding, so the mirror has to have
+    // seen the remote ask for it. It learns that the same way it learns
+    // bracketed paste: from the remote's own output.
+    it('Shift+Enter sends the CSI-u newline once the remote enables kitty keys', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      await act(async () => {
+        // CSI > 1 u — the remote pushes a kitty flag set.
+        for (const h of dataHandlers) {
+          h({ attachId: 'a1', dataB64: btoa('\x1b[>1u') });
+        }
+      });
+      await act(async () => {
+        press(term, { key: 'Enter', code: 'Enter', shiftKey: true });
+      });
+
+      expect(paneWrite).toHaveBeenCalledWith('a1', '\x1b[13;2u');
+
+      unmount();
+    });
+
+    it('Shift+Enter goes through xterm while the remote has not asked', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      await act(async () => {
+        press(term, { key: 'Enter', code: 'Enter', shiftKey: true });
+      });
+
+      // No direct write: xterm encodes the legacy CR, which is what an app
+      // that never negotiated expects. Injecting the escape form here is what
+      // would leave vim's insert mode and run the remainder as commands.
+      expect(paneWrite).not.toHaveBeenCalledWith('a1', '\x1b[13;2u');
+
+      unmount();
+    });
+
+    it('Ctrl+V writes the clipboard text to the remote pane', async () => {
+      clipboardRead.mockResolvedValue('echo hello');
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      await act(async () => {
+        press(term, { key: 'v', code: 'KeyV', ctrlKey: true });
+        await Promise.resolve();
+      });
+
+      const sent = paneWrite.mock.calls.map((c) => c[1]).join('');
+      expect(sent).toContain('echo hello');
+      expect(paneWrite.mock.calls.every((c) => c[0] === 'a1')).toBe(true);
+
+      unmount();
+    });
+
+    it('auto-copies a finished selection, debounced', () => {
+      vi.useFakeTimers();
+      try {
+        const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+        const term = termInstances[0]!;
+        term.selection = 'copied by drag';
+
+        act(() => { term.selectionHandler?.(); });
+        // Mid-drag: onSelectionChange fires once per cell, so nothing is
+        // written until the user stops moving.
+        expect(clipboardWrite).not.toHaveBeenCalled();
+
+        act(() => { vi.advanceTimersByTime(200); });
+        expect(clipboardWrite).toHaveBeenCalledWith('copied by drag');
+
+        unmount();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // `--allow-input` is off on the host. The remote would refuse the write, so
+    // the mirror must not send one — including down the direct-write path,
+    // which does not pass through the `onData` gate that already handles this.
+    it('★ a read-only host receives nothing from a paste or a newline key', async () => {
+      clipboardRead.mockResolvedValue('rm -rf /');
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" readOnly />);
+      const term = termInstances[0]!;
+
+      await act(async () => {
+        press(term, { key: 'Enter', code: 'Enter', shiftKey: true });
+        press(term, { key: 'v', code: 'KeyV', ctrlKey: true });
+        await Promise.resolve();
+      });
+
+      expect(paneWrite).not.toHaveBeenCalled();
+
+      unmount();
+    });
+
+    it('a read-only host can still copy — the selection is local', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" readOnly />);
+      const term = termInstances[0]!;
+      term.selection = 'read me';
+
+      await act(async () => {
+        press(term, { key: 'c', code: 'KeyC', ctrlKey: true });
+      });
+
+      expect(clipboardWrite).toHaveBeenCalledWith('read me');
 
       unmount();
     });

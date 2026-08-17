@@ -218,6 +218,22 @@ export interface UISlice {
   paneActionsVisible: boolean;
   setPaneActionsVisible: (visible: boolean) => void;
 
+  /**
+   * EXPERIMENTAL, default OFF: a `+` on the pane's tab strip that adds a
+   * SECOND terminal to that pane.
+   *
+   * #451 removed the discoverable form of this on purpose — one pane = one
+   * terminal is the shape wmux recommends, and splitting is the answer to "I
+   * want another terminal" (it has two buttons in the cluster already). The
+   * capability itself was kept on Ctrl+T, which is now listed in the shortcuts
+   * panel. This toggle exists for the people who asked for the button back;
+   * turning it on is choosing to break that rule for your own layout, which is
+   * why Settings labels it experimental rather than presenting it as a
+   * neutral preference.
+   */
+  paneNewTerminalButton: boolean;
+  setPaneNewTerminalButton: (visible: boolean) => void;
+
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
@@ -988,6 +1004,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setPaneActionsVisible: (visible) => set((state) => {
     state.paneActionsVisible = visible;
+  }),
+
+  // Off unless asked for — see the interface note.
+  paneNewTerminalButton: false,
+
+  setPaneNewTerminalButton: (visible) => set((state) => {
+    state.paneNewTerminalButton = visible;
   }),
 
   splitInheritsCwd: true,

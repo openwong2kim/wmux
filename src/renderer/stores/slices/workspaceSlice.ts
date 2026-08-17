@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
+import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
@@ -151,6 +152,13 @@ export interface WorkspaceSlice {
    * to clear. Applies to NEW panes only; existing PTYs are untouched.
    */
   setWorkspaceProfile: (id: string, profile: WorkspaceProfile | undefined) => void;
+  /**
+   * Set (or clear with undefined) the workspace's visual color tag. Purely a
+   * sidebar label — no process, agent or git meaning is attached, so this
+   * deliberately publishes no metadata event. Unknown ids are dropped by
+   * normalizeWorkspaceColor rather than stored.
+   */
+  setWorkspaceColor: (id: string, color: WorkspaceColorId | undefined) => void;
   reorderWorkspace: (fromIndex: number, toIndex: number) => void;
   loadSession: (data: SessionData) => void;
   /**
@@ -325,6 +333,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // alias the source's.
         nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
         ...(profile ? { profile } : {}),
+        // `color` is deliberately NOT carried over (owner decision, 2026-08-17).
+        // The tag exists to tell workspaces apart; handing the copy the same one
+        // would make the two rows identical at the exact moment they sit next to
+        // each other, which defeats the label. The copy starts untagged and the
+        // user assigns it — unlike `profile` above, which is configuration the
+        // duplicate genuinely needs in order to behave like its source.
       };
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
@@ -595,6 +609,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     }),
 
+    setWorkspaceColor: (id, color) => set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === id);
+      if (!ws) return;
+      const normalized = normalizeWorkspaceColor(color);
+      if (normalized) {
+        ws.color = normalized;
+      } else {
+        delete ws.color;
+      }
+    }),
+
     reorderWorkspace: (fromIndex, toIndex) => set((state: StoreState) => {
       if (fromIndex === toIndex) return;
       if (fromIndex < 0 || fromIndex >= state.workspaces.length) return;
@@ -761,6 +786,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       state.nextWorkspaceOrdinal = nextWs;
 
+      // Color tags: session.json is user-editable and may come from a newer
+      // build, so an unknown id is dropped rather than rendered. Dropping (not
+      // rejecting the load) keeps a stray value from costing the user a session.
+      for (const ws of state.workspaces) {
+        const color = normalizeWorkspaceColor(ws.color);
+        if (color) ws.color = color;
+        else delete ws.color;
+      }
+
       // Restore user preferences. Migrate legacy 37-field customThemeColors
       // shape to the new 10-token + xtermPaletteId form (idempotent).
       const migratedCustomTheme = data.customThemeColors
@@ -844,6 +878,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Pane action cluster — default ON; only an explicit false hides it.
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;
+      }
+      // Opt-in `+` — default OFF, so only an explicit true shows it. A session
+      // written before this setting existed has no field, and must not be read
+      // as consent to break one pane = one terminal.
+      if (typeof data.paneNewTerminalButton === 'boolean') {
+        state.paneNewTerminalButton = data.paneNewTerminalButton;
       }
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;

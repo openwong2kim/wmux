@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
+import { useIpc } from './useIpc';
 import { findLeaf, getLeafPanes } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
-import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
-import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
+import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
@@ -515,22 +515,16 @@ export function useKeyboard() {
         if (state.paneGate !== 'ready') return;
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
-          // Wrap pty.create through useIpc so that a rejected promise (most
-          // notably MAX_SESSIONS cap reached → RESOURCE_EXHAUSTED) surfaces
-          // an actionable toast instead of being silently dropped — the
-          // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
-          // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
-          const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
-          void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
-            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, state.defaultShell), ws.profile))
-          ).then((result) => {
-            if (result.ok) {
-              // #515: adopt the cwd main actually spawned in so the surface
-              // tracks its real dir from the start (was '' → later splits seed
-              // from an empty cwd and fall back to home).
-              store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
-            }
-            // On failure useIpc already surfaced a toast — nothing to do here.
+          void createTerminalSurface({
+            workspaceId: ws.id,
+            paneId: ws.activePaneId,
+            paneGate: state.paneGate,
+            workspaces: state.workspaces,
+            startupDirectory: state.startupDirectory,
+            defaultShell: state.defaultShell,
+            ipcInvoke: ipcInvokeRef.current,
+            ptyCreate: window.electronAPI.pty.create,
+            addSurface: state.addSurface,
           });
         }
         return;

@@ -740,6 +740,7 @@ export const zh = {
   'pane.dragGrip': '拖动以移动此面板',
   'pane.newTerminal': '新建终端',
   'pane.newBrowser': '新建浏览器',
+  'pane.addSurface': '新建标签页',
   'pane.maxLeavesReached': '已达到面板数量上限（{count}）。请先关闭一个面板再分割。',
   'palette.cmd.movePane.left': '将面板左移',
   'palette.cmd.movePane.right': '将面板右移',
