@@ -10,11 +10,38 @@ export interface ToolbarSnippet {
 }
 
 export type ToolbarPopover = 'explorer' | 'snippets' | 'rich' | null;
+export type ComposeTarget = 'pane' | 'workspace';
+
+export interface ComposeContext {
+  paneId: string;
+  ptyId: string;
+}
+
+export interface FanOutAnchor {
+  top: number;
+  left: number;
+}
 
 export interface AgentToolbarSlice {
-  /** Whether the bottom toolbar mounts. Persisted (default true). */
+  /** Whether inject chrome (compose / attach / Multi Task) mounts. Persisted (default true). */
   agentToolbarEnabled: boolean;
   setAgentToolbarEnabled: (enabled: boolean) => void;
+
+  /** Compose blast radius. Transient — reset to 'pane' on every open. */
+  composeTarget: ComposeTarget;
+  setComposeTarget: (target: ComposeTarget) => void;
+
+  /** Focused pane + pty the open compose popover writes to. Transient. */
+  composeContext: ComposeContext | null;
+  setComposeContext: (ctx: ComposeContext | null) => void;
+  openCompose: (ctx: ComposeContext) => void;
+  closeCompose: () => void;
+
+  /** Fan-out dialog target. Transient; null = closed. */
+  fanOutWorkspaceId: string | null;
+  fanOutAnchor: FanOutAnchor | null;
+  openFanOut: (workspaceId: string, anchor?: FanOutAnchor | null) => void;
+  closeFanOut: () => void;
 
   /** User-saved reusable prompts. Persisted (user-authored). */
   toolbarSnippets: ToolbarSnippet[];
@@ -67,6 +94,43 @@ export const createAgentToolbarSlice: StateCreator<
   }),
   clearRichDraft: (ptyId) => set((draft: StoreState) => {
     if (draft.richDraftByPane[ptyId] !== undefined) delete draft.richDraftByPane[ptyId];
+  }),
+
+  composeTarget: 'pane',
+  setComposeTarget: (target) => set((draft: StoreState) => {
+    draft.composeTarget = target;
+  }),
+
+  composeContext: null,
+  setComposeContext: (ctx) => set((draft: StoreState) => {
+    draft.composeContext = ctx;
+  }),
+  openCompose: (ctx) => set((draft: StoreState) => {
+    draft.composeContext = ctx;
+    draft.composeTarget = 'pane';
+    draft.toolbarPopover = 'rich';
+  }),
+  closeCompose: () => set((draft: StoreState) => {
+    draft.toolbarPopover = null;
+    draft.composeContext = null;
+    draft.composeTarget = 'pane';
+  }),
+
+  fanOutWorkspaceId: null,
+  fanOutAnchor: null,
+  openFanOut: (workspaceId, anchor) => set((draft: StoreState) => {
+    if (draft.fanOutWorkspaceId === workspaceId) {
+      draft.fanOutWorkspaceId = null;
+      draft.fanOutAnchor = null;
+      return;
+    }
+    draft.fanOutWorkspaceId = workspaceId;
+    draft.fanOutAnchor = anchor ?? null;
+    draft.toolbarPopover = null;
+  }),
+  closeFanOut: () => set((draft: StoreState) => {
+    draft.fanOutWorkspaceId = null;
+    draft.fanOutAnchor = null;
   }),
 
   toolbarPopover: null,

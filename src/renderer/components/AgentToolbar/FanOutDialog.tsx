@@ -55,16 +55,21 @@ function previewSlug(title: string): string {
 
 interface FanOutDialogProps {
   onClose: () => void;
+  /** Workspace this spawn belongs to. Falls back to the active workspace. */
+  workspaceId?: string;
   /** 앵커 정렬 — 좁은 덱 컨트롤 바에서는 우측 정렬해 왼쪽 오버플로를 막는다. */
   align?: 'left' | 'right';
 }
 
-export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogProps) {
+export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: FanOutDialogProps) {
   const t = useT();
-  const activeWorkspace = useStore(selectActiveWorkspace);
+  const workspace = useStore((s) => {
+    if (workspaceId) return s.workspaces.find((w) => w.id === workspaceId);
+    return selectActiveWorkspace(s);
+  });
   const pushToast = useStore((s) => s.pushToast);
 
-  const defaultRepo = activeWorkspace?.metadata?.cwd ?? '';
+  const defaultRepo = workspace?.metadata?.cwd ?? '';
 
   // 'compete' = 같은 작업 N번(경쟁 — 공통 프롬프트만), 'parallel' = 서로 다른 작업
   // N개(병렬 — 태스크별 프롬프트). 상호배타 UI는 아니고(서비스는 항상 공통+개별을
@@ -197,17 +202,17 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
         // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
         // (스펙 §5.1 born-owned=createdBy)라 활성 워크스페이스로 고정한다. CEO 자동
         // 승격은 하지 않는다(생성자 소유권을 CEO로 뭉개면 born-owned 계약 위반).
-        verifiedWorkspaceId: activeWorkspace?.id ?? '',
+        verifiedWorkspaceId: workspace?.id ?? '',
       });
       // Remember the command that actually launched (next dialog prefills it).
       // Only when a task really started: a preflight rejection launches nothing,
       // and overwriting the memory with it would lose a working command.
       if (didLaunch(res)) saveLastAgentCmd(effectiveAgentCmd);
-      // owner(부모) ws id = fan-out을 실행한 활성 워크스페이스(§5.1 born-owned).
-      reportResult(res, pushToast, activeWorkspace?.id ?? '');
+      // owner(부모) ws id = fan-out을 실행한 대상 워크스페이스(§5.1 born-owned).
+      reportResult(res, pushToast, workspace?.id ?? '');
       // fan-out 완료 직후 미션 캐시 즉시 refetch(순수 pull이라 push가 없다 —
       // 배경 폴링을 기다리지 않고 사이드바 "Missions" 섹션을 바로 채운다).
-      const parentId = activeWorkspace?.id;
+      const parentId = workspace?.id;
       if (parentId) void useStore.getState().refreshMissions(parentId);
       onClose();
     } catch (err) {
@@ -215,14 +220,14 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, workspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
   return (
     <div
-      // 420px 고정 폭은 248–320px 덱 컨트롤 바에서 잘린다 → 뷰포트 클램프.
-      className={`absolute bottom-full mb-2 ${align === 'right' ? 'right-2' : 'left-2'} z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
+      // Portaled by ComposeHost — relative so the host's fixed position owns placement.
+      className={`${align === 'right' ? 'ml-auto' : ''} relative z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
       style={{ width: 'min(420px, calc(100vw - 24px))' }}
       data-testid="fanout-dialog"
     >

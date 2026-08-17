@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { parsePorcelain, type GitStatusCode } from '../../../shared/gitStatus';
 import { findActiveLeaf } from '../../utils/focusedSurface';
+import { injectText, quotePathsForPrompt } from './inject';
+import { placePopover } from './placePopover';
 
 interface Entry { name: string; path: string; isDirectory: boolean; isSymlink: boolean; }
 
@@ -16,17 +19,22 @@ const BADGE_COLOR: Record<GitStatusCode, string> = {
   R: 'var(--accent-blue)',
 };
 
-export default function FileExplorerPopover() {
+interface FileExplorerPopoverProps {
+  /** Pane surface cwd. Falls back to the active workspace cwd. */
+  cwd?: string;
+  ptyId: string;
+  onClose: () => void;
+}
+
+export default function FileExplorerPopover({ cwd: cwdProp, ptyId, onClose }: FileExplorerPopoverProps) {
   const t = useT();
-  const addEditorSurface = useStore((s) => s.addEditorSurface);
-  const setPopover = useStore((s) => s.setToolbarPopover);
 
   // A1: 활성 ws OBJECT만 구독한다. 셀렉터는 새 객체를 만들지 않고 immer가
   // 관리하는 ws 참조를 그대로 돌려주므로 Object.is 스냅샷 검사를 통과한다(무한
   // 루프 없음). 배경 ws의 metadata/surface churn에는 리렌더되지 않는다.
   const ws = useStore(selectActiveWorkspace);
-  const activePaneId = ws?.activePaneId;
-  let cwd: string | undefined = ws?.metadata?.cwd;
+  let cwd: string | undefined = cwdProp;
+  if (!cwd) cwd = ws?.metadata?.cwd;
   if (ws && !cwd) {
     const leaf = findActiveLeaf(ws);
     cwd = leaf?.surfaces.find((surf) => surf.id === leaf.activeSurfaceId)?.cwd || undefined;
@@ -34,6 +42,14 @@ export default function FileExplorerPopover() {
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [statusByRel, setStatusByRel] = useState<Record<string, GitStatusCode>>({});
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     if (!cwd) {
@@ -76,14 +92,18 @@ export default function FileExplorerPopover() {
     return undefined;
   }, [statusByRel]);
 
-  const openFile = (path: string) => {
-    if (activePaneId) addEditorSurface(activePaneId, path);
-    setPopover(null);
+  const insertPath = (path: string) => {
+    if (ptyId) void injectText(ptyId, quotePathsForPrompt([path]), false);
+    onClose();
   };
 
-  return (
+  const anchor = document.querySelector('[data-pane-action="attach"]')?.getBoundingClientRect() ?? null;
+  const pos = placePopover(anchor, { width: 320, height: 320 });
+
+  return createPortal(
     <div
-      className="absolute bottom-full left-24 mb-1 w-80 max-h-80 overflow-y-auto rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-1 font-mono text-xs"
+      className="fixed w-80 max-h-80 overflow-y-auto rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl p-1 font-mono text-xs"
+      style={{ top: pos.top, left: pos.left, zIndex: 'var(--z-popover-top)' }}
       data-testid="file-explorer"
     >
       {!cwd && (
@@ -95,7 +115,7 @@ export default function FileExplorerPopover() {
           <button
             key={e.path}
             className="flex items-center w-full text-left px-2 py-0.5 rounded hover:bg-[var(--bg-surface)] text-[var(--text-sub)] hover:text-[var(--text-main)] disabled:opacity-60"
-            onClick={() => { if (!e.isDirectory) openFile(e.path); }}
+            onClick={() => { if (!e.isDirectory) insertPath(e.path); }}
             disabled={e.isDirectory}
             title={e.path}
           >
@@ -107,6 +127,7 @@ export default function FileExplorerPopover() {
           </button>
         );
       })}
-    </div>
+    </div>,
+    document.body,
   );
 }

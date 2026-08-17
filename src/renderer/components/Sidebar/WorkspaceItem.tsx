@@ -14,6 +14,7 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceAgentRoster from './WorkspaceAgentRoster';
+import { EmptyFleetFanOut } from '../AgentToolbar/FanOutTrigger';
 import { displayPath } from '../../utils/displayPath';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
@@ -431,7 +432,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // on a nested button is not enough. Reject a drag whose pointer originated
     // over the roster; clicks still handle disclosure and exact agent focus.
     const pointerTarget = document.elementFromPoint(e.clientX, e.clientY);
-    if (pointerTarget?.closest('[data-workspace-agent-roster]')) {
+    if (pointerTarget?.closest('[data-workspace-agent-roster], [data-workspace-fanout]')) {
       e.preventDefault();
       return;
     }
@@ -774,7 +775,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         </button>
         </div>
         {!editing && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} isActive={isActive} />
+          <>
+            <WorkspaceAgentRoster workspaceId={workspaceId} isActive={isActive} />
+            {isActive && <EmptyFleetFanOut workspaceId={workspaceId} />}
+          </>
         )}
       </div>
 

@@ -10,6 +10,9 @@
 
 import { CRITICAL_PATTERNS } from '../../shared/criticalPatterns';
 import type { AgentStatus } from '../../shared/types';
+import type { AgentSlug } from '../../shared/agentIdentity';
+export type { AgentSlug };
+export { agentDisplayToSlug } from '../../shared/agentIdentity';
 
 // C0 controls, DEL and C1 controls. Built via RegExp(...) with hex escapes so
 // the source stays pure-ASCII while still stripping the bytes at runtime —
@@ -58,14 +61,6 @@ export interface CriticalEvent {
 type AgentEventCallback = (event: AgentEvent) => void;
 type CriticalEventCallback = (event: CriticalEvent) => void;
 
-// SLUG-form agent identifier. Lowercase, no whitespace. Used as the
-// canonical key shared with hook-based signals (integrations/<agent>/).
-// HookSignalRouter dedup matches AgentDetector emissions against bridge
-// signals on this slug, so the two MUST stay in lock-step. New agents
-// added here must also be added to integrations/shared/signal-types.ts
-// (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude' | 'kiro';
-
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
   agent: string;
@@ -75,25 +70,6 @@ interface AgentPattern {
   // previously matched in this session, confirming the agent is active.
   gate?: RegExp;
   patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
-}
-
-/**
- * Map display name → slug. Used by consumers that have an AgentEvent in
- * hand (which carries the display name) and need to derive the canonical
- * slug for dedup against hook signals.
- */
-export function agentDisplayToSlug(display: string): AgentSlug | undefined {
-  switch (display) {
-    case 'Claude Code': return 'claude';
-    case 'Codex CLI': return 'codex';
-    case 'Gemini CLI': return 'gemini';
-    case 'Aider': return 'aider';
-    case 'OpenCode': return 'opencode';
-    case 'GitHub Copilot CLI': return 'copilot';
-    case 'OpenClaude': return 'openclaude';
-    case 'Kiro CLI': return 'kiro';
-    default: return undefined;
-  }
 }
 
 /**
@@ -141,13 +117,20 @@ const KIRO_CHROME_LINE = /^(?:Kiro\s*CLI(?:\s+v?\d[\w.-]*)?|Trust\s*All\s*Tools\
 const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s*task\s*↵?\s*$/i;
 
 // #850: Claude compound gate — two independent signals, same model as Kiro.
-// Signal A (banner): the startup banner or OSC window-title mention.
-// Signal B (prompt): a Claude-specific prompt fragment proving the TUI is live.
-const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/;
-// Claude-specific TUI footer text that a process monitor would never display.
-// Only the idle-prompt fragments — approval keywords are excluded because they
-// appear in conversational text and would false-positive the gate (#850 CI).
+// Signal A (banner): a TUI/OSC chrome LINE, not a substring anywhere in the
+// 4 KB probe. Agents working this repo print `Claude Code` and
+// `shift+tab to cycle` from source; treating the blob as one string opened
+// the gate on a live Grok pane (2026-08-16).
+// Signal B (prompt): the same fragments, but only as TUI footer chrome.
 const CLAUDE_PROMPT_RE = /bypass permissions on|shift\+tab to cycle/;
+// Cheap `ap.gate` hint only — checkGates does not use this on the 4 KB
+// probe. Line-level `isClaudeBannerChrome` is the real banner signal.
+const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code/;
+// Box / spinner / whitespace — stripped so a framed splash collapses to
+// `Claude Code` while a btop row (`3304  Claude Code  43%`) does not.
+const CHROME_NOISE_RE = /[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·✳*⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▀▄█▌▐░▒▓]/g;
+// JS/TS (and test-dump) syntax that means this line is source, not chrome.
+const SOURCE_LINE_RE = /[=;{}]|const |let |var |function |det\.feed|\/(?:bypass|shift)\\?\+?tab|\/\/|\/\*/;
 // The waiting patterns the ordinary pattern pass runs, in the SAME array order,
 // so the gate's replay can store the text that pass will produce. Derived below
 // from AGENT_PATTERNS rather than duplicated — a second hand-written copy is
@@ -352,6 +335,24 @@ const AGENT_PATTERNS: AgentPattern[] = [
       { regex: /^copilot>\s*$/,                  status: 'waiting',   message: 'Waiting for input' },
     ],
   },
+
+  // ── Grok (xAI CLI) ───────────────────────────────────────────────────────
+  // Captured from a live grok TUI on 2026-08-16 (startup menu: "Grok 4.6 is
+  // here!", "Help improve Grok", "Select 'Grok 4.6' under /model."). A bare
+  // "Grok" mention is not enough — other agents' logs talk about Grok.
+  {
+    agent: 'Grok',
+    slug: 'grok',
+    // Line-level chrome only — see isGrokChrome. The regex here is the
+    // cheap hint checkGates uses before walking lines; the slug === 'grok'
+    // branch is what actually opens the gate.
+    gate: /Grok\s+\d+(?:\.\d+)?\s+is here|Help improve Grok|Select ['']Grok|Grok\s+\d+(?:\.\d+)?\s+\([^)]+\)\s*·\s*always-approve/,
+    patterns: [
+      { regex: /Help improve Grok/,                    status: 'waiting', message: 'Ready for input' },
+      { regex: /Grok\s+\d+(?:\.\d+)?\s+is here/,       status: 'waiting', message: 'Ready for input' },
+      { regex: /Grok\s+\d+(?:\.\d+)?\s+\([^)]+\)\s*·\s*always-approve/, status: 'waiting', message: 'Ready for input' },
+    ],
+  },
 ];
 
 // Derive the Claude waiting patterns from the table above so the gate replay
@@ -376,6 +377,61 @@ const MAX_BUFFER = 16 * 1024;
 // occasionally breaking pattern matching.
 // eslint-disable-next-line no-control-regex
 const ANSI_STRIP = /\x1b(?:\[[0-9;?<=>]*[a-zA-Z@]|\][^\x07]*\x07|\([A-Z])/g;
+
+/** Complete lines in `text`, or `[text]` itself when it is still a tail. */
+function candidateLines(text: string): string[] {
+  if (!/[\r\n]/.test(text)) return [text];
+  return text.split(/\r\n|\n|\r/).filter((l) => l.length > 0);
+}
+
+function stripAnsi(line: string): string {
+  return line.includes('\u001b') ? line.replace(ANSI_STRIP, '') : line;
+}
+
+function visibleChrome(line: string): string {
+  return stripAnsi(line).replace(CHROME_NOISE_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** OSC title, or a line whose visible text *starts* with `Claude Code`. */
+function isClaudeBannerChrome(line: string): boolean {
+  if (/\x1b\]0;[^\x07]*(?<!Open)(?<!Open\s)Claude/.test(line)) return true;
+  const stripped = stripAnsi(line);
+  if (SOURCE_LINE_RE.test(stripped)) return false;
+  const v = visibleChrome(stripped);
+  // Prefix, not substring: btop's `3304  Claude Code  43%` must not count.
+  // Suffix is allowed (`Claude Code starting`, `Claude Code v2.1.172`).
+  return /^Claude\s*Code\b/i.test(v);
+}
+
+/** Idle-footer fragment that is not a source/comment/regex dump of that fragment. */
+function isClaudePromptChrome(line: string): boolean {
+  const stripped = stripAnsi(line);
+  if (!CLAUDE_PROMPT_RE.test(stripped)) return false;
+  return !SOURCE_LINE_RE.test(stripped);
+}
+
+function isGrokChrome(line: string): boolean {
+  const stripped = stripAnsi(line);
+  const v = visibleChrome(stripped);
+  if (/^Grok\s+\d+(?:\.\d+)?\s+is here/i.test(v)) return true;
+  if (/Help improve Grok/i.test(v) && /\[Opt\s+(?:out|in)\]/i.test(v)) {
+    return !SOURCE_LINE_RE.test(stripped);
+  }
+  if (/Select ['\u2018\u2019]Grok/i.test(v)) {
+    return !SOURCE_LINE_RE.test(stripped);
+  }
+  // Live composer, 2026-08-16: `╰──── Grok 4.6 (high) · always-approve ─╯`
+  // Require the box so a source comment quoting the phrase does not match.
+  if (
+    /Grok\s+\d+(?:\.\d+)?\s+\([^)]+\)/i.test(v)
+    && /always-approve/i.test(v)
+    && /[╰╯─]/.test(stripped)
+    && !SOURCE_LINE_RE.test(stripped)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 export class AgentDetector {
   private callbacks: AgentEventCallback[] = [];
@@ -553,16 +609,10 @@ export class AgentDetector {
     // prompt evidence independently; gate opens only when both are present.
     const claudeIsActive = this.activeAgents.has('Claude Code');
     if (!claudeIsActive && (!this.claudeBannerSeen || !this.claudePromptSeen)) {
-      // Bound the probe and gate it behind a cheap literal, exactly like the
-      // Kiro block above. While the gate is closed these regexes would
-      // otherwise run over the FULL candidate on every checkGates call — and
-      // checkGates runs up to four times per chunk, one of them on the whole
-      // lineBuffer. For a non-Claude pane the gate never opens, so that cost
-      // repeats for the pane's entire lifetime. CLAUDE_BANNER_RE's
-      // `╭.*(?<!Open)Claude` alternative is the expensive part: on a
-      // box-drawing line with no "Claude" the `.*` backtracks the whole line,
-      // which is precisely the shape a full-screen TUI like btop emits —
-      // measured 10-57x the bounded form on 10-40 KB frames.
+      // Bound the probe and gate it behind a cheap literal, then walk lines.
+      // A blob-level `╭.*Claude` used to backtrack the whole 4 KB probe on
+      // every full-screen TUI frame (btop); line-level chrome is both cheaper
+      // and the thing that stops another agent from inheriting Claude's name.
       const probe = clean.length > 4096 ? clean.slice(-4096) : clean;
       const mayContainBanner = !this.claudeBannerSeen && (
         probe.includes('Claude') || probe.includes('claude')
@@ -571,31 +621,32 @@ export class AgentDetector {
         probe.includes('bypass permissions') || probe.includes('shift+tab')
       );
 
-      if (mayContainBanner && CLAUDE_BANNER_RE.test(probe)) {
-        this.claudeBannerSeen = true;
-      }
-      if (mayContainPrompt) {
-        const m = probe.match(CLAUDE_PROMPT_RE);
-        if (m) {
-          this.claudePromptSeen = true;
-          // Store the value the ordinary pattern pass will produce, not this
-          // regex's — same requirement the Kiro replay documents above.
-          // CLAUDE_PROMPT_RE is an alternation and matches at the earliest
-          // POSITION, while the pattern pass tries CLAUDE_PATTERNS in ARRAY
-          // order. On a footer carrying both fragments with "shift+tab to
-          // cycle" first, the two disagree and the same prompt emits two
-          // 'waiting' events, because the dedup key is keyed on match text.
-          const replayText = CLAUDE_WAITING_PATTERNS
-            .map((re) => probe.match(re)?.[0])
-            .find((t): t is string => t !== undefined) ?? m[0];
-          // CLAUDE_PROMPT_RE only matches waiting-prompt fragments, so the
-          // replay is always 'waiting'. Approval patterns are excluded from
-          // the gate evidence to avoid conversational false positives.
-          this.claudePromptEvidence = {
-            text: replayText,
-            status: 'waiting',
-            message: 'Ready for input',
-          };
+      if (mayContainBanner || mayContainPrompt) {
+        for (const line of candidateLines(probe)) {
+          if (mayContainBanner && !this.claudeBannerSeen && isClaudeBannerChrome(line)) {
+            this.claudeBannerSeen = true;
+          }
+          if (mayContainPrompt && !this.claudePromptSeen && isClaudePromptChrome(line)) {
+            const stripped = stripAnsi(line);
+            const m = stripped.match(CLAUDE_PROMPT_RE);
+            if (!m) continue;
+            this.claudePromptSeen = true;
+            // Store the value the ordinary pattern pass will produce, not this
+            // regex's — same requirement the Kiro replay documents above.
+            // CLAUDE_PROMPT_RE is an alternation and matches at the earliest
+            // POSITION, while the pattern pass tries CLAUDE_PATTERNS in ARRAY
+            // order. On a footer carrying both fragments with "shift+tab to
+            // cycle" first, the two disagree and the same prompt emits two
+            // 'waiting' events, because the dedup key is keyed on match text.
+            const replayText = CLAUDE_WAITING_PATTERNS
+              .map((re) => stripped.match(re)?.[0])
+              .find((t): t is string => t !== undefined) ?? m[0];
+            this.claudePromptEvidence = {
+              text: replayText,
+              status: 'waiting',
+              message: 'Ready for input',
+            };
+          }
         }
       }
     }
@@ -609,7 +660,9 @@ export class AgentDetector {
         ? this.kiroChromeSeen && this.kiroPromptSeen
         : ap.slug === 'claude'
           ? this.claudeBannerSeen && this.claudePromptSeen
-          : ap.gate.test(clean);
+          : ap.slug === 'grok'
+            ? candidateLines(clean).some(isGrokChrome)
+            : ap.gate.test(clean);
       if (!gateMatched) continue;
 
       this.activeAgents.add(ap.agent);
@@ -689,9 +742,13 @@ export class AgentDetector {
     // agentName이 확정된다.
     this.checkGates(clean);
 
-    // Only check patterns for agents that are confirmed active (gate matched)
+    // Only check patterns for the agent that currently owns this PTY.
+    // Multiple gates can be in activeAgents (Grok reading this file will
+    // still mention Claude chrome as source), but status patterns must not
+    // flip lastAgent back to the other one.
     for (const ap of AGENT_PATTERNS) {
       if (ap.gate && !this.activeAgents.has(ap.agent)) continue;
+      if (this.lastAgent && ap.agent !== this.lastAgent) continue;
 
       for (const p of ap.patterns) {
         const match = clean.match(p.regex);

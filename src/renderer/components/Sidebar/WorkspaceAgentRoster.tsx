@@ -8,6 +8,7 @@ import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
 import { IconChevron } from '../icons';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import FanOutTrigger from '../AgentToolbar/FanOutTrigger';
 
 interface WorkspaceAgentRosterProps {
   workspaceId: string;
@@ -41,15 +42,10 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
   if (roster.agentCount === 0) return null;
 
   const countLabel = t('workspace.agentCount', { count: roster.agentCount });
-  const attentionLabel = roster.needsAttentionCount > 0
-    ? t('workspace.agentNeedsAttention', { count: roster.needsAttentionCount })
-    : undefined;
   const disclosureLabel = open
     ? t('workspace.hideAgents')
     : t('workspace.showAgents');
-  const disclosureAriaLabel = [countLabel, attentionLabel, disclosureLabel]
-    .filter(Boolean)
-    .join(', ');
+  const disclosureAriaLabel = [countLabel, disclosureLabel].join(', ');
 
   return (
     <div
@@ -63,10 +59,11 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
+      <div className="flex max-w-full items-center gap-1">
       <button
         type="button"
         draggable={false}
-        className="flex max-w-full items-center gap-1 rounded px-0.5 py-0.5 text-[9px] font-mono text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)]"
+        className="flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 py-0.5 text-[9px] font-mono text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)]"
         aria-expanded={open}
         aria-label={disclosureAriaLabel}
         title={disclosureAriaLabel}
@@ -86,12 +83,9 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
           <IconChevron size={8} />
         </span>
         <span className="truncate">{countLabel}</span>
-        {attentionLabel && (
-          <span className="flex-shrink-0 text-[var(--accent-red)]">
-            · {attentionLabel}
-          </span>
-        )}
       </button>
+      {isActive && <FanOutTrigger workspaceId={workspaceId} variant="multi" compact />}
+      </div>
 
       {open && (
         <div className="mt-0.5 ml-1 border-l border-[var(--border-soft)] pl-1.5">

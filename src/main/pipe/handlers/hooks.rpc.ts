@@ -66,6 +66,7 @@ import {
   type AgentSignal,
   type HookSignalResponse,
 } from '../../../../integrations/shared/signal-types';
+import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -1361,14 +1362,5 @@ function bodyFor(signal: AgentSignal): string {
 }
 
 function agentDisplayName(slug: AgentSignal['agent']): string {
-  switch (slug) {
-    case 'claude': return 'Claude Code';
-    case 'codex': return 'Codex CLI';
-    case 'gemini': return 'Gemini CLI';
-    case 'aider': return 'Aider';
-    case 'opencode': return 'OpenCode';
-    case 'copilot': return 'GitHub Copilot CLI';
-    case 'openclaude': return 'OpenClaude';
-    case 'kiro': return 'Kiro CLI';
-  }
+  return agentSlugToDisplay(slug);
 }
