@@ -9,6 +9,7 @@ import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n'
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
+import { sanitizeTerminalCursorStyle } from '../../../shared/terminalCursor';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
@@ -831,6 +832,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // sink that forgets to re-sanitize.
       if (data.terminalFontFamily) {
         state.terminalFontFamily = sanitizeFontFamily(data.terminalFontFamily) || 'Cascadia Code';
+      }
+      if (data.terminalCursorStyle !== undefined) {
+        state.terminalCursorStyle = sanitizeTerminalCursorStyle(data.terminalCursorStyle);
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;

@@ -267,7 +267,20 @@ export const ko = {
   'settings.tabNotifications': '알림',
   'settings.tabShortcuts': '단축키',
   'settings.tabAgents': '에이전트',
+  'settings.tabAccounts': '계정',
+  'settings.tabNetwork': '네트워크',
   'settings.tabAbout': '정보',
+  'settings.navGroupApp': '앱',
+  'settings.navGroupAgents': '에이전트',
+  'settings.navGroupSystem': '시스템',
+  'settings.searchPlaceholder': '설정 검색',
+  'settings.searchMatches': '{n}개 일치',
+  'settings.searchNoMatches': '“{query}”와 맞는 설정이 없습니다.',
+  'settings.cursorShape': '커서 모양',
+  'settings.cursorShapeDesc': '블록, 밑줄, 막대. 기본값은 블록. 색은 테마를 따릅니다.',
+  'settings.cursorBlock': '블록',
+  'settings.cursorBar': '막대',
+  'settings.cursorUnderline': '밑줄',
   // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
   // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
   'settings.orchestrator': 'agent',
@@ -338,7 +351,6 @@ export const ko = {
   'settings.channelsTabVisibleDesc':
     '도크에 채널 탭(사람용 채널 UI)을 표시합니다. 꺼도 에이전트·agent의 채널 통신은 그대로 동작합니다 — 원문을 직접 확인하고 싶을 때만 켜세요.',
   // LanLink 제어 평면 (PR-3)
-  'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN 에이전트 메시징)',
   'settings.lanlinkEnable': 'LanLink 켜기',
   'settings.lanlinkEnableDesc': '같은 LAN의 다른 PC 에이전트가 이 PC에 닿을 수 있게 합니다. 기본은 꺼짐입니다.',

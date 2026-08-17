@@ -59,6 +59,11 @@ import {
   type TokenRole,
 } from '../../themes';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
+import {
+  DEFAULT_TERMINAL_CURSOR_STYLE,
+  sanitizeTerminalCursorStyle,
+  type TerminalCursorStyle,
+} from '../../../shared/terminalCursor';
 
 // String-valued tokens only. xtermOverrides is an object handled by separate
 // setXtermOverride / clearXtermOverrides actions below.
@@ -158,6 +163,9 @@ export interface UISlice {
 
   terminalFontFamily: string;
   setTerminalFontFamily: (family: string) => void;
+
+  terminalCursorStyle: TerminalCursorStyle;
+  setTerminalCursorStyle: (style: TerminalCursorStyle) => void;
 
   defaultShell: string;
   setDefaultShell: (shell: string) => void;
@@ -923,6 +931,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setTerminalFontFamily: (family) => set((state) => {
     const safe = sanitizeFontFamily(family);
     state.terminalFontFamily = safe || 'Cascadia Code';
+  }),
+
+  terminalCursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
+
+  setTerminalCursorStyle: (style) => set((state) => {
+    state.terminalCursorStyle = sanitizeTerminalCursorStyle(style);
   }),
 
   defaultShell: 'powershell',

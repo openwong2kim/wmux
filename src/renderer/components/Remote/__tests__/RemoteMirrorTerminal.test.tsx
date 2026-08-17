@@ -521,6 +521,7 @@ describe('RemoteMirrorTerminal', () => {
       expect(opts['fontFamily']).not.toBe('monospace');
       expect(opts['theme']).toBeTruthy();
       expect(typeof opts['minimumContrastRatio']).toBe('number');
+      expect(opts['cursorStyle']).toBe(useStore.getState().terminalCursorStyle);
 
       unmount();
     });
@@ -539,6 +540,21 @@ describe('RemoteMirrorTerminal', () => {
       expect(termInstances).toHaveLength(before);
       expect(term.disposed).toBe(false);
       expect(String(term.options['fontFamily'])).toContain('IBM Plex Mono');
+
+      unmount();
+    });
+
+    it('applies a cursor-style change without recreating the terminal', async () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      const before = termInstances.length;
+
+      await act(async () => {
+        useStore.setState({ terminalCursorStyle: 'bar' });
+      });
+
+      expect(termInstances).toHaveLength(before);
+      expect(term.options['cursorStyle']).toBe('bar');
 
       unmount();
     });

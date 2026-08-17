@@ -619,6 +619,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   onContextMenuRef.current = onContextMenu;
   const terminalFontSize = useStore((s) => s.terminalFontSize);
   const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
   const theme = useStore((s) => s.theme) as ThemeId;
   const customThemeColors = useStore((s) => s.customThemeColors);
@@ -888,6 +889,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     const terminal = new Terminal({
       cursorBlink: true,
+      cursorStyle: terminalCursorStyle,
       fontSize: terminalFontSize,
       scrollback: scrollbackLines,
       scrollOnUserInput: false,
@@ -2354,6 +2356,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (!terminalRef.current) return;
     terminalRef.current.options.fontSize = terminalFontSize;
     terminalRef.current.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
+    terminalRef.current.options.cursorStyle = terminalCursorStyle;
     terminalRef.current.options.theme = xtermTheme;
     terminalRef.current.options.minimumContrastRatio = minimumContrastRatio;
     // Keep the container backdrop in sync with the new theme background (see the
@@ -2382,7 +2385,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return;
     }
     fitAddonRef.current?.fit();
-  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio, containerRef]);
+  }, [terminalFontSize, terminalFontFamily, terminalCursorStyle, xtermTheme, minimumContrastRatio, containerRef]);
 
   // Manage WebGL lifecycle based on visibility.
   // Load WebGL when visible (GPU-accelerated rendering), dispose when hidden

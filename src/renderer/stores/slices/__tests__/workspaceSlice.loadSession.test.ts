@@ -19,6 +19,7 @@ type TestState = WorkspaceSlice & {
   terminalFontSize: number;
   uiScale: number;
   terminalFontFamily: string;
+  terminalCursorStyle: 'block' | 'bar' | 'underline';
   defaultShell: string;
   scrollbackLines: number;
   a2aAutoApproveExecute: boolean;
@@ -70,6 +71,7 @@ function createTestStore() {
       terminalFontSize: 14,
       uiScale: 1,
       terminalFontFamily: 'Cascadia Code',
+      terminalCursorStyle: 'block',
       defaultShell: 'powershell',
       scrollbackLines: 10000,
       a2aAutoApproveExecute: false,
@@ -681,6 +683,42 @@ describe('loadSession — UI scale (#822)', () => {
     expect(store.getState().uiScale).toBe(1.6);
     store.getState().loadSession(sessionWith(-3));
     expect(store.getState().uiScale).toBe(0.8);
+  });
+});
+
+describe('WorkspaceSlice.loadSession — terminalCursorStyle', () => {
+  function sessionWith(style: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'WS',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      terminalCursorStyle: style,
+    } as unknown as SessionData;
+  }
+
+  it('restores a saved bar cursor', () => {
+    const store = createTestStore();
+    expect(store.getState().terminalCursorStyle).toBe('block');
+    store.getState().loadSession(sessionWith('bar'));
+    expect(store.getState().terminalCursorStyle).toBe('bar');
+  });
+
+  it('falls back to block when the saved value is garbage', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith('beam'));
+    expect(store.getState().terminalCursorStyle).toBe('block');
+  });
+
+  it('keeps the default when the field is absent (pre-cursor sessions)', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith(undefined));
+    expect(store.getState().terminalCursorStyle).toBe('block');
   });
 });
 

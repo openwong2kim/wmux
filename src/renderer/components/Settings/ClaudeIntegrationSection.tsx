@@ -117,7 +117,7 @@ export function ClaudeIntegrationSection() {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div data-setting-id="plugin" className="flex flex-col gap-3 scroll-mt-4">
       <Card>
         <CardHeader title={t('claudeIntegration.signalHealth.title')} />
         {cardState.kind === 'unknown' && (

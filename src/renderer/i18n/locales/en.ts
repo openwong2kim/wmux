@@ -637,7 +637,20 @@ export const en = {
   'settings.tabNotifications': 'Notifications',
   'settings.tabShortcuts': 'Shortcuts',
   'settings.tabAgents': 'Agents',
+  'settings.tabAccounts': 'Accounts',
+  'settings.tabNetwork': 'Network',
   'settings.tabAbout': 'About',
+  'settings.navGroupApp': 'App',
+  'settings.navGroupAgents': 'Agents',
+  'settings.navGroupSystem': 'System',
+  'settings.searchPlaceholder': 'Search settings',
+  'settings.searchMatches': '{n} matches',
+  'settings.searchNoMatches': 'No settings match “{query}”.',
+  'settings.cursorShape': 'Cursor shape',
+  'settings.cursorShapeDesc': 'Block, underline, or bar. Block is the default. Color follows the theme.',
+  'settings.cursorBlock': 'Block',
+  'settings.cursorBar': 'Bar',
+  'settings.cursorUnderline': 'Underline',
   // Orchestrator (command deck brain) settings
   'settings.orchestrator': 'Orchestrator',
   'settings.orchestratorBrain': 'Orchestrator brain',
@@ -738,7 +751,6 @@ export const en = {
   'settings.channelsTabVisibleDesc':
     'Show the Channels tab (the human channel UI) in the dock. Agent and orchestrator channel traffic keeps working either way — turn this on only when you want to inspect the raw messages.',
   // LanLink control plane (PR-3)
-  'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN agent messaging)',
   'settings.lanlinkEnable': 'Enable LanLink',
   'settings.lanlinkEnableDesc': 'Let agents on other machines on your LAN reach this one. Off by default.',

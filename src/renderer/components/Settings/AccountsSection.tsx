@@ -335,7 +335,7 @@ export function AccountsSection(): React.ReactElement | null {
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-1">{t('accounts.title')}</div>
+      <div data-setting-id="claudeacct" className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-1 scroll-mt-4">{t('accounts.title')}</div>
       {removeNotice && <div className="text-[10px] text-[var(--accent-amber)] mb-1">{removeNotice}</div>}
       {loaded && rows.length === 0 && !adding && (
         <div className="text-xs text-[var(--text-muted)]">{t('accounts.empty')}</div>
