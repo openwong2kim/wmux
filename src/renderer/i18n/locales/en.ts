@@ -1383,6 +1383,7 @@ export const en = {
   'git.diffDesc': 'Open the diff view for this worktree',
   'deck.collapseDock': 'Collapse dock',
   'deck.expandDock': 'Expand dock',
+  'deck.hasSignal': 'something in here needs you',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
     'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',

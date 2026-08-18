@@ -932,6 +932,7 @@ export const ko = {
   'git.diffDesc': '이 워크트리의 diff 뷰 열기',
   'deck.collapseDock': '도크 접기',
   'deck.expandDock': '도크 펼치기',
+  'deck.hasSignal': '확인할 것이 있음',
   'web.running': '실행 중',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':

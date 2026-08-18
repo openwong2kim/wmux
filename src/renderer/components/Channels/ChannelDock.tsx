@@ -99,8 +99,7 @@ export default function ChannelDock(): React.ReactElement {
         onCommanderModelSelect={setDeckBrainModel}
         // wmux web — the fourth glyph on the strip. Not a tab (it opens a
         // popover, not a deck view), so it rides alongside the tablist rather
-        // than inside it. Same glyph, same place, whether the deck is open or
-        // collapsed into DeckMiniRail.
+        // than inside it.
         afterTabs={<WebToggle />}
         rightSlot={
           <>

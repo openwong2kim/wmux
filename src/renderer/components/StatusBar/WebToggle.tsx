@@ -568,9 +568,9 @@ export function WebPopoverBody({
 
 /**
  * The web toggle is a glyph on the deck's icon strip (owner decision
- * 2026-08-14) — horizontal in DeckTabs while the deck is open, vertical in
- * DeckMiniRail while it is collapsed. Both are 36px cells, so one rendition
- * serves both; the popover anchors under the button either way.
+ * 2026-08-14), horizontal in DeckTabs. Collapsed there is no strip at all
+ * (2026-08-18) — the deck reopens from the titlebar and this glyph comes back
+ * with it. The popover anchors under the button.
  */
 export default function WebToggle() {
   const t = useT();

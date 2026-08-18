@@ -11,6 +11,7 @@ import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import DeckToggle from '../Deck/DeckToggle';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -237,6 +238,10 @@ export default function StatusBar() {
         >
           <IconGear size={13} />
         </button>
+        {/* Deck open/close. Last in the row, past Settings: both are app-wide
+            chrome switches, and grouping them here is what let the collapsed
+            deck stop costing the terminals a 36px column (2026-08-18). */}
+        <DeckToggle />
       </div>
     </div>
   );

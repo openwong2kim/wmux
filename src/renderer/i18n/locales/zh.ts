@@ -1314,6 +1314,7 @@ export const zh = {
   'git.diffDesc': '打开此工作树的差异视图',
   'deck.collapseDock': '折叠停靠栏',
   'deck.expandDock': '展开停靠栏',
+  'deck.hasSignal': '这里有需要处理的内容',
   'deck.commanderPlaceholder': '向编排器下达指令，或 @提及面板…',
   'deck.commanderEmpty': '请编排器运行你的智能体，或 @提及智能体面板以直接命令它们。',
   'deck.jumpToPane': '跳转到此面板',

@@ -55,15 +55,17 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 │ (mantle)  │                                  │ │icon tabs │ │
 │           │                                  │ ├ Fleet ───┤ │
 │           │                                  │ ├ Orch ────┤ │
-│           │ [agent bar — overlay, on hover]   │ └ busy bar ┘ │
+│           │ [agent bar — overlay, on hover]  │ └ busy bar ┘ │
 └───────────┴──────────────────────────────────┴──────────────┘
+     (deck collapsed → that column is gone; reopen from the titlebar)
 ```
 
 - **Left sidebar = navigation only** (workspaces). Agents do NOT live here —
   and neither do the deck's entry points: Agent · Git · Channels · web are
-  glyphs on the deck's own edge (its 36px header strip while open, a 36px
-  vertical rail while collapsed), never labeled rows at the sidebar's foot
-  (owner decision 2026-08-14).
+  glyphs on the deck's own 36px header strip, never labeled rows at the
+  sidebar's foot (owner decision 2026-08-14). **Collapsed, the deck renders
+  nothing on that edge at all** — one toggle beside Settings in the titlebar
+  opens it (2026-08-18).
 - **Right column = mission control** (one pillar): **Fleet** (agent roster:
   status dot + name + mono activity line + jump `→`), then **Orchestrator**
   thread, busy bar at bottom. Channels is a sibling tab. Rationale: agents ↔
@@ -227,3 +229,4 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-08-14 | Deck header = icon strip (Agent · Git · Channels · web, 36px glyphs); collapsed deck = a 36px vertical glyph rail on the deck's edge; the Agent · Git · Channels · web rows at the sidebar's foot are gone | Three text tabs ate the entire header of a 248–320px column. The entry points sat on the opposite edge (the sidebar's foot) and disappeared outright when the sidebar was collapsed (MiniSidebar never carried them) — what opens the deck lives on the deck's edge. The tab name and the current orchestrator model moved to the tooltip / accessible name |
 | 2026-08-15 | Agent verbs leave the workspace-spanning 36px toolbar and go home: compose (⌘G) + attach + new-conversation on the focused pane tab cluster; Broadcast is a compose target (This pane / All N terminals, All N armed 4s); Multi Task / Start agents on the selected workspace card (deck header only when the sidebar is collapsed). No titlebar verbs, no hover bar, no bottom strip | Chrome must match blast radius. A pane verb owned by both panes in a split lied; a fleet spawn that unmounted at 0 agents could not start a fleet; the 36px strip stole a chrome module from the terminals |
 | 2026-08-18 | Reverts 2026-08-15. The agent verbs are one workspace-spanning bar again (attach · files · snippets · rich input ⌘G · Broadcast · Multi Task · new conversation), but it OVERLAYS the workspace column and is revealed on approach rather than always on. The pane tab cluster keeps split · browser · zoom only; the sidebar card and deck header carry no fan-out trigger. A pin toggle restores the always-on strip per operator | Owner call: the split homes cost more than the ownership precision bought. Three entry points for one verb (empty card / roster header / deck header, each with its own label and visibility rule) meant no muscle memory, and a 420px form opened from a 240px column covered the hero. Overlaying answers the objection the removal was built on — the bar spends no chrome module, so the terminals lose nothing — while the reveal is guarded so it cannot fight the prompt line it sits over: a dwell delay, suppressed under a held pointer button (drag-select) and on keystrokes, and a keep-alive band the height of the bar so it does not retreat from the cursor reaching for it |
+| 2026-08-18 | The collapsed deck's 36px vertical glyph rail is gone. Reopening moves to a single `«`/`»` toggle in the titlebar's right cluster, beside Settings, carrying one aggregate dot when the collapsed deck holds unread channels or dirty worktrees. Tab selection stays in the deck's own header | The rail spent a full-height column on four glyphs and a chevron with ~85% of it empty, and the terminals paid for it. One command deserves one button, and the deck's state is app-global (no workspace scope), so the app-wide titlebar row is where it belongs — the same row that already carries Settings and the fleet vitals. This satisfies the 2026-08-14 decision's REASON better than the rail did: the entry point had to stop vanishing with the sidebar, and the titlebar never collapses. The dot is a boolean, not a total — unread messages and dirty worktrees are different kinds of thing and summing them would invent a number that means nothing; at zero there is no dot, per the no-dead-gauges rule. Cost accepted: opening a SPECIFIC tab is now two steps (open, pick) where the rail did it in one; ⌘K carries per-tab commands |
