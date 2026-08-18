@@ -43,6 +43,15 @@ describe('roster row labels', () => {
     expect(rosterSecondaryLabel(r)).toBe('w2-127');
   });
 
+  it('treats an empty title as titleless, so a row never loses both names', () => {
+    // The row type allows ''. The trailer tests truthiness, so a `??` fallback
+    // in the primary label left the row with no name at all: an empty lead and
+    // a trailer that withheld the vendor as "already shown above".
+    const r = row({ surfaceTitle: '' });
+    expect(rosterPrimaryLabel(r)).toBe('Claude Code');
+    expect(rosterSecondaryLabel(r)).toBe('w2-127');
+  });
+
   it('keeps the tab position when the leaf holds several surfaces', () => {
     expect(rosterSecondaryLabel(row({ surfaceTitle: 'AI', surfaceIndex: 1, surfaceCount: 3 })))
       .toBe('Claude Code · w2-127 · #2/3');

@@ -28,7 +28,11 @@ interface WorkspaceAgentRosterProps {
  * single-surface panes that make up most workspaces never showed it at all.
  */
 export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
-  return row.surfaceTitle ?? row.agentName;
+  // Truthiness, not `??`: the row type allows an empty title, and `??` would
+  // let `''` win the lead. The trailer already tests truthiness, so `??` here
+  // meant an empty title erased BOTH labels — no name led the row and the
+  // vendor was withheld from the trailer as "already shown".
+  return row.surfaceTitle ? row.surfaceTitle : row.agentName;
 }
 
 /**
@@ -145,8 +149,9 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
                     className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${statusIcon.glowClass}`}
                     style={{ backgroundColor: statusIcon.dotVar }}
                   />
-                  {/* 이름·위치를 한 줄에. 제목이 먼저 잘리고, 좌표(w85-1 등)는
-                      최대 40%까지만 차지한 뒤 말줄임된다. */}
+                  {/* Name and location on one line. The title truncates first;
+                      the coordinate (w85-1 etc.) takes at most 40% before it
+                      ellipses too. */}
                   <span className="flex min-w-0 flex-1 items-baseline gap-1">
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
