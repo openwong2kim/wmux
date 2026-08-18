@@ -15,12 +15,37 @@ interface WorkspaceAgentRosterProps {
   isActive: boolean;
 }
 
-function locationLabel(row: WorkspaceAgentRosterRow): string {
-  if (row.surfaceCount <= 1) return row.paneName;
-  const position = `#${row.surfaceIndex + 1}/${row.surfaceCount}`;
-  return row.surfaceTitle
-    ? `${row.paneName} · ${row.surfaceTitle} · ${position}`
-    : `${row.paneName} · ${position}`;
+/**
+ * What the row leads with. The surface title is the one thing that differs
+ * between rows in the common case — a workspace running several sessions of
+ * the SAME vendor renders "Claude Code · w2-127", "Claude Code · w2-131", …,
+ * where every readable word is identical and only an opaque coordinate varies.
+ * The title ("Zwroty", "Scalar SINOTKEN") is what the user actually calls that
+ * pane, so it leads; the vendor name moves to the muted line, which is where
+ * it still answers "which agent is this" for mixed-vendor workspaces.
+ *
+ * Previously the title was rendered ONLY when a leaf had 2+ surfaces, so the
+ * single-surface panes that make up most workspaces never showed it at all.
+ */
+export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
+  // Truthiness, not `??`: the row type allows an empty title, and `??` would
+  // let `''` win the lead. The trailer already tests truthiness, so `??` here
+  // meant an empty title erased BOTH labels — no name led the row and the
+  // vendor was withheld from the trailer as "already shown".
+  return row.surfaceTitle ? row.surfaceTitle : row.agentName;
+}
+
+/**
+ * The muted trailer: vendor (only when the title took the lead, so it is never
+ * printed twice), pane coordinate, and the tab position when the leaf holds
+ * more than one surface.
+ */
+export function rosterSecondaryLabel(row: WorkspaceAgentRosterRow): string {
+  const parts: string[] = [];
+  if (row.surfaceTitle) parts.push(row.agentName);
+  parts.push(row.paneName);
+  if (row.surfaceCount > 1) parts.push(`#${row.surfaceIndex + 1}/${row.surfaceCount}`);
+  return parts.join(' · ');
 }
 
 function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterProps) {
@@ -92,9 +117,10 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
           {roster.rows.map((row) => {
             const statusIcon = AGENT_STATUS_ICON[row.status];
             const statusLabel = t(statusIcon.labelKey);
-            const location = locationLabel(row);
+            const primary = rosterPrimaryLabel(row);
+            const secondary = rosterSecondaryLabel(row);
             const detail = row.pendingQuestion ?? row.activity;
-            const rowAriaLabel = [row.agentName, location, statusLabel, detail]
+            const rowAriaLabel = [primary, secondary, statusLabel, detail]
               .filter(Boolean)
               .join(', ');
             return (
@@ -123,14 +149,16 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
                     className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${statusIcon.glowClass}`}
                     style={{ backgroundColor: statusIcon.dotVar }}
                   />
-                  {/* 이름·위치를 한 줄에. 이름은 고정, 위치(w85-1 등)만 말줄임. */}
+                  {/* Name and location on one line. The title truncates first;
+                      the coordinate (w85-1 etc.) takes at most 40% before it
+                      ellipses too. */}
                   <span className="flex min-w-0 flex-1 items-baseline gap-1">
-                    <span className="flex-none text-[10px] font-semibold text-[var(--text-main)]">
-                      {row.agentName}
+                    <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
+                      {primary}
                     </span>
                     <span className="flex-none text-[8px] text-[var(--text-muted)]">·</span>
-                    <span className="min-w-0 truncate text-[8px] font-mono text-[var(--text-muted)]">
-                      {location}
+                    <span className="max-w-[40%] flex-none truncate text-[8px] font-mono text-[var(--text-muted)]">
+                      {secondary}
                     </span>
                   </span>
                   <span
