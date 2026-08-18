@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import FanOutDialog from './FanOutDialog';
 import { placePopover } from './placePopover';
@@ -16,6 +17,19 @@ export default function ComposeHost() {
   const fanOutWorkspaceId = useStore((s) => s.fanOutWorkspaceId);
   const fanOutAnchor = useStore((s) => s.fanOutAnchor);
   const closeFanOut = useStore((s) => s.closeFanOut);
+
+  // Position is derived from the viewport, so it goes stale the moment the
+  // window changes size under an open dialog (a snap layout, a display
+  // change) — the anchor it was placed against has moved and the dialog can
+  // end up clipped or off screen entirely. Re-render on resize while it is
+  // open; the listener costs nothing when it is closed.
+  const [, bumpOnResize] = useState(0);
+  useEffect(() => {
+    if (!fanOutWorkspaceId) return;
+    const onResize = () => bumpOnResize((n) => n + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [fanOutWorkspaceId]);
 
   // Height must match what the dialog can actually take (`max-h-[70vh]`), not a
   // fixed 560: guessing short let placePopover keep a top that the taller

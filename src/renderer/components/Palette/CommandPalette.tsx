@@ -278,6 +278,12 @@ export default function CommandPalette() {
         label: t('palette.cmd.multiTask'),
         action: () => {
           const state = useStore.getState();
+          // Same guard ToolbarHost applies: fan-out targets the LOCAL active
+          // workspace, so firing it while a remote view is on screen would dig
+          // worktrees in a repo the user is not looking at. Suppressing the
+          // toolbar for remote views and then adding an unguarded keyboard
+          // route would have reopened the hole from the other side.
+          if (state.activeRemoteKey != null) { setVisible(false); return; }
           if (state.activeWorkspaceId) state.openFanOut(state.activeWorkspaceId, null);
           setVisible(false);
         },

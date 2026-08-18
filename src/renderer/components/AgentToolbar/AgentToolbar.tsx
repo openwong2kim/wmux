@@ -41,7 +41,8 @@ interface AgentToolbarProps {
 
 export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFocusEnter }: AgentToolbarProps) {
   const t = useT();
-  // A1: 활성 ws의 포커스 pty만 필요 — 활성 ws OBJECT만 구독(배경 ws churn 무시).
+  // Only the active workspace's focused pty is needed here, so subscribe to
+  // the active workspace OBJECT and ignore churn in background workspaces.
   const activeWorkspace = useStore(selectActiveWorkspace);
   const popover = useStore((s) => s.toolbarPopover);
   const setPopover = useStore((s) => s.setToolbarPopover);
@@ -227,8 +228,8 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
-      {/* Multi Task(fan-out) — 함대 스폰 명령이라 에이전트 툴바에 산다. 우측
-          그룹에서 New chat 왼쪽. */}
+      {/* Multi Task (fan-out) — a fleet-spawn command, so it lives on the
+          agent toolbar, in the right-hand group left of New chat. */}
       <button
         className={`${btn} ${fanOutOpen ? active : idle}`}
         onClick={handleFanOut}

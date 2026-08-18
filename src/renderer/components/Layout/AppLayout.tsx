@@ -70,7 +70,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
-import ToolbarHost from '../AgentToolbar/ToolbarHost';
+import ToolbarHost, { AGENT_TOOLBAR_HEIGHT } from '../AgentToolbar/ToolbarHost';
 import Titlebar from '../Titlebar/Titlebar';
 import {
   createDeadPaneRecovery,
@@ -1656,9 +1656,22 @@ export default function AppLayout() {
         <ErrorBoundary name="ComposeHost">
           <ComposeHost />
         </ErrorBoundary>
-        <ErrorBoundary name="AgentToolbar">
-          <ToolbarHost />
-        </ErrorBoundary>
+        {/* ToolbarHost is layout-neutral (it renders an absolute overlay), but
+            ErrorBoundary's fallback is a plain `height:100%` block — as a flex
+            child it would join the column's flow and squeeze the pane grid. So
+            the BOUNDARY is the absolutely-positioned thing: a crash costs the
+            bar's own 36px strip, never the terminals' height. ToolbarHost's
+            own `inset-0` fills this box, so the trigger band still measures to
+            the column's bottom edge. */}
+        <div
+          className="absolute inset-x-0 bottom-0"
+          style={{ height: AGENT_TOOLBAR_HEIGHT }}
+          data-agent-toolbar-strip
+        >
+          <ErrorBoundary name="AgentToolbar">
+            <ToolbarHost />
+          </ErrorBoundary>
+        </div>
       </div>
       </ErrorBoundary>
       {/* A2A channel dock (Approach A). A flex sibling on the OPPOSITE edge

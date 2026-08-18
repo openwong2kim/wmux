@@ -57,14 +57,20 @@ export default function DeckToggle() {
   const label = visible
     ? (t('deck.collapseDock') || 'Collapse dock')
     : (t('deck.expandDock') || 'Expand dock');
+  // The dot is aria-hidden decoration, so the signal has to reach the
+  // accessible name or a screen-reader user is told only "Expand dock" while
+  // sighted users can see there is a reason to.
+  const accessibleName = signal
+    ? `${label} — ${t('deck.hasSignal') || 'something in here needs you'}`
+    : label;
 
   return (
     <button
       type="button"
       onClick={() => setChannelDockVisible(!visible)}
       className="relative flex items-center justify-center w-5 h-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
-      title={signal ? `${label} — ${t('deck.hasSignal') || 'something needs you in here'}` : label}
-      aria-label={label}
+      title={accessibleName}
+      aria-label={accessibleName}
       aria-expanded={visible}
       data-deck-toggle
       data-deck-signal={signal ? 'true' : 'false'}
