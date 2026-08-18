@@ -6,13 +6,14 @@
 // ChannelView overlay that covered the terminals — the dock is a flex sibling
 // in AppLayout's root row, so it reflows the panes instead of floating over
 // them. Mounted only when `channelDockVisible` (uiSlice); auto-opens when a
-// channel is selected (channelsSlice.setActiveChannel), collapses via the
-// list header's collapse button, and reopens from the StatusBar channel toggle.
+// channel is selected (channelsSlice.setActiveChannel), and opens AND closes
+// from the titlebar's DeckToggle (2026-08-18) — this component carries no
+// collapse control of its own, because one command deserves one button and a
+// chevron here was that command a second time.
 //
-// Header: the dock has NO header of its own. The collapse affordance lives in
-// ChannelsPanel's section header (it owns the single "Channels" title + unread
-// total + new-channel + collapse), so the title shows ONCE instead of being
-// duplicated by a separate dock header.
+// Header: the dock has NO header of its own. ChannelsPanel's section header
+// owns the single "Channels" title + unread total + new-channel, so the title
+// shows ONCE instead of being duplicated by a separate dock header.
 //
 // Width: clamped (not a hard 320px) so a narrow window doesn't crush the
 // terminals down to per-character wrapping. The dock gives back space when the
@@ -34,7 +35,6 @@ import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import WebToggle from '../StatusBar/WebToggle';
-import { FOCUS_RING } from '../focusRing';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -55,7 +55,6 @@ export default function ChannelDock(): React.ReactElement {
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
-  const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
   // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
   const t = useT();
@@ -101,26 +100,11 @@ export default function ChannelDock(): React.ReactElement {
         // popover, not a deck view), so it rides alongside the tablist rather
         // than inside it.
         afterTabs={<WebToggle />}
-        rightSlot={
-          <>
-            {/* Collapse the whole dock (terminals reclaim the width); reopen
-                from the StatusBar dock toggle. Arrow points toward the edge the
-                dock sits on. */}
-            <button
-              type="button"
-              onClick={() => setChannelDockVisible(false)}
-              title={t('deck.collapseDock') || 'Collapse dock'}
-              aria-label={t('deck.collapseDock') || 'Collapse dock'}
-              data-deck-collapse
-              className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
-              {...tokenAttrs('textMuted', 'text')}
-            >
-              <span aria-hidden="true" className="text-[13px] leading-none">
-                {dockOnRight ? '»' : '«'}
-              </span>
-            </button>
-          </>
-        }
+        /* No collapse button here any more. The titlebar's DeckToggle closes
+           the deck as well as opening it (2026-08-18), so a second chevron in
+           this header was the same command twice, ~30px apart. One control in
+           one fixed place beats two that move depending on whether the deck
+           happens to be open. */
         t={t}
       />
 
