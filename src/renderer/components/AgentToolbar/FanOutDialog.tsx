@@ -227,7 +227,10 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   return (
     <div
       // Portaled by ComposeHost — relative so the host's fixed position owns placement.
-      className={`${align === 'right' ? 'ml-auto' : ''} relative z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
+      // overflow-x-hidden is explicit: the sticky footer's `-mx-3` reaches past
+      // the padding box, and `overflow-y-auto` alone computes overflow-x to
+      // `auto` — which would hand a 420px dialog a horizontal scrollbar.
+      className={`${align === 'right' ? 'ml-auto' : ''} relative z-50 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
       style={{ width: 'min(420px, calc(100vw - 24px))' }}
       data-testid="fanout-dialog"
     >
@@ -295,9 +298,17 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
       <div className="space-y-2 mb-2">
         {Array.from({ length: n }, (_, k) => (
           <div key={k} className="rounded-[5px] border border-[var(--bg-overlay)] p-1.5">
+            {/* Title + role on one row, the derived branch name on its own line
+                below. All three competed for a 420px dialog: the title Input
+                was `flex-1` WITHOUT `min-w-0` (so its `min-width: auto` refused
+                to shrink), the role select sizes to its longest option text,
+                and the slug was `shrink-0` — the row overflowed the card, the
+                title field collapsed to a sliver, and the slug left the dialog
+                entirely. The slug is derived feedback, not an input, so it does
+                not belong in the same competition. */}
             <div className="flex items-center gap-2 mb-1">
               <Input
-                className="flex-1 text-[12px]"
+                className="min-w-0 flex-1 text-[12px]"
                 value={titles[k] ?? ''}
                 onChange={(e) => setTitleAt(k, e.target.value)}
                 data-testid={`fanout-title-${k}`}
@@ -308,10 +319,12 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
                   how one fan-out puts its review task on a different CLI than
                   its build tasks. Unbound roles stay selectable — the task then
                   launches on the command above, unchanged. */}
+              {/* Capped: a bound role reads "Reviewer — claude", which would
+                  otherwise size the select wide enough to squeeze the title. */}
               <select
                 aria-label={t('fanout.roleLabel', { k: k + 1 })}
                 className="ui-input shrink-0 text-[11px] py-0.5"
-                style={{ minWidth: 92 }}
+                style={{ minWidth: 92, maxWidth: 148 }}
                 value={roles[k] ?? ''}
                 onChange={(e) => setRoleAt(k, e.target.value)}
                 data-testid={`fanout-role-${k}`}
@@ -323,9 +336,13 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
                   </option>
                 ))}
               </select>
-              <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
-                wtask/{previewSlug(titles[k] ?? '') || '…'}
-              </span>
+            </div>
+            <div
+              className="mb-1 truncate text-[9px] text-[var(--text-muted)] font-mono"
+              title={`wtask/${previewSlug(titles[k] ?? '')}`}
+              data-testid={`fanout-slug-${k}`}
+            >
+              wtask/{previewSlug(titles[k] ?? '') || '…'}
             </div>
             {mode === 'parallel' && (
               <>
@@ -410,7 +427,13 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
         )}
       </code>
 
-      <div className="flex items-center justify-end gap-2">
+      {/* Pinned footer. The dialog is a 70vh scroll container, so with the
+          actions in normal flow the primary action sat below the fold — you
+          had to scroll a form to find out how to submit it. Sticky keeps
+          Launch reachable at every scroll position; the negative margins undo
+          the dialog's own padding so the bar spans the full width and content
+          scrolls under it rather than beside it. */}
+      <div className="sticky bottom-0 -mx-3 -mb-3 flex items-center justify-end gap-2 border-t border-[var(--bg-overlay)] bg-[var(--bg-mantle)] px-3 py-2">
         <Button variant="secondary" onClick={onClose}>
           {t('fanout.cancel')}
         </Button>

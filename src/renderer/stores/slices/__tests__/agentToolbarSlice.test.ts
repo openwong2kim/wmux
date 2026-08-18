@@ -8,8 +8,6 @@ describe('agentToolbarSlice', () => {
       toolbarSnippets: [],
       richDraftByPane: {},
       toolbarPopover: null,
-      composeTarget: 'pane',
-      composeContext: null,
       fanOutWorkspaceId: null,
       newConversationCommand: '/clear',
     });
@@ -48,16 +46,14 @@ describe('agentToolbarSlice', () => {
     expect(useStore.getState().newConversationCommand).toBe('/reset');
   });
 
-  it('openCompose resets the target to this pane', () => {
-    useStore.getState().setComposeTarget('workspace');
-    useStore.getState().openCompose({ paneId: 'p1', ptyId: 'pty-1' });
-    expect(useStore.getState().toolbarPopover).toBe('rich');
-    expect(useStore.getState().composeTarget).toBe('pane');
-    expect(useStore.getState().composeContext).toEqual({ paneId: 'p1', ptyId: 'pty-1' });
+  it('openFanOut closes any toolbar popover — the two must not stack', () => {
+    useStore.getState().setToolbarPopover('rich');
+    useStore.getState().openFanOut('ws-1', { top: 10, left: 20, right: 120, bottom: 46 });
+    expect(useStore.getState().toolbarPopover).toBeNull();
   });
 
   it('openFanOut toggles the same workspace closed', () => {
-    useStore.getState().openFanOut('ws-1', { top: 10, left: 20 });
+    useStore.getState().openFanOut('ws-1', { top: 10, left: 20, right: 120, bottom: 46 });
     expect(useStore.getState().fanOutWorkspaceId).toBe('ws-1');
     useStore.getState().openFanOut('ws-1');
     expect(useStore.getState().fanOutWorkspaceId).toBeNull();

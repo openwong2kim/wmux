@@ -36,7 +36,6 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import ChannelDock from '../Channels/ChannelDock';
-import DeckMiniRail from '../Deck/DeckMiniRail';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -71,6 +70,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
+import ToolbarHost, { AGENT_TOOLBAR_HEIGHT } from '../AgentToolbar/ToolbarHost';
 import Titlebar from '../Titlebar/Titlebar';
 import {
   createDeadPaneRecovery,
@@ -288,6 +288,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     layoutTemplates: state.layoutTemplates.filter((t) => !t.builtin),
     recentCommands: state.recentCommands.length > 0 ? state.recentCommands : undefined,
     agentToolbarEnabled: state.agentToolbarEnabled,
+    agentToolbarPinned: state.agentToolbarPinned,
     agentToolbarSnippets: state.toolbarSnippets.length > 0 ? state.toolbarSnippets : undefined,
     agentToolbarNewCommand: state.newConversationCommand,
   };
@@ -1634,7 +1635,9 @@ export default function AppLayout() {
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
       <ErrorBoundary name="Main">
-      <div className="flex-1 min-w-0 flex flex-col">
+      {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
+          rather than taking a row, so revealing it never resizes a PTY. */}
+      <div className="flex-1 min-w-0 flex flex-col relative">
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}
@@ -1653,6 +1656,22 @@ export default function AppLayout() {
         <ErrorBoundary name="ComposeHost">
           <ComposeHost />
         </ErrorBoundary>
+        {/* ToolbarHost is layout-neutral (it renders an absolute overlay), but
+            ErrorBoundary's fallback is a plain `height:100%` block — as a flex
+            child it would join the column's flow and squeeze the pane grid. So
+            the BOUNDARY is the absolutely-positioned thing: a crash costs the
+            bar's own 36px strip, never the terminals' height. ToolbarHost's
+            own `inset-0` fills this box, so the trigger band still measures to
+            the column's bottom edge. */}
+        <div
+          className="absolute inset-x-0 bottom-0"
+          style={{ height: AGENT_TOOLBAR_HEIGHT }}
+          data-agent-toolbar-strip
+        >
+          <ErrorBoundary name="AgentToolbar">
+            <ToolbarHost />
+          </ErrorBoundary>
+        </div>
       </div>
       </ErrorBoundary>
       {/* A2A channel dock (Approach A). A flex sibling on the OPPOSITE edge
@@ -1660,23 +1679,16 @@ export default function AppLayout() {
           the sidebar is docked right) puts this on the correct edge, so it
           reflows the panes instead of the old fixed overlay that covered them.
           Holds the channel list + active conversation; collapsible. */}
-      {channelDockVisible ? (
+      {/* Collapsed, the deck renders NOTHING here — the terminals take the
+          whole width. The way back is the titlebar's DeckToggle beside
+          Settings (owner decision 2026-08-18, replacing the 36px glyph rail).
+          The rail spent a full-height column on four glyphs and an expand
+          chevron, ~85% of it empty; one button on a row that already exists
+          costs the terminals nothing. */}
+      {channelDockVisible && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
         </ErrorBoundary>
-      ) : (
-        // Collapsed deck — the 36px glyph rail stands in for it so the way
-        // back is on the deck's own edge (owner decision 2026-08-14). The old
-        // reopen affordance lived at the foot of the workspace sidebar, the
-        // opposite edge, and disappeared with the sidebar. The width lives on
-        // this wrapper, not only inside the rail, so a crash renders the
-        // boundary's fallback in 36px instead of letting its error text shove
-        // the panes aside.
-        <div className="shrink-0 overflow-hidden" style={{ width: 36 }}>
-          <ErrorBoundary name="DeckMiniRail">
-            <DeckMiniRail />
-          </ErrorBoundary>
-        </div>
       )}
       {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 파동2 사이클 A에서 전체화면 모달을
           상시 크롬으로 전환. ChannelDock과 같은 flex 형제 패턴으로 워크스페이스

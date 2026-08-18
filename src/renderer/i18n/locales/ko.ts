@@ -88,6 +88,8 @@ export const ko = {
   'palette.cmd.openSettings': '설정 열기',
   'palette.cmd.openBrowser': '브라우저 열기',
   'palette.cmd.openFleetView': 'Fleet View 열기',
+  'palette.cmd.multiTask': '병렬 작업 — 에이전트 여러 개 띄우기',
+  'palette.cmd.toggleToolbarPin': '에이전트 툴바 고정 / 해제',
   'palette.cmd.openWorktaskCleanup': '태스크 정리 목록 열기',
   'palette.cmd.showGitDiff': 'Git Diff 보기',
   // J3 — 태스크 정리 목록(WorktaskCleanupView)
@@ -784,6 +786,8 @@ export const ko = {
   'toolbar.fanOutMultiTask': '병렬 작업',
   'toolbar.new': '새로',
   'toolbar.newChat': '새 대화',
+  'toolbar.pin': '툴바 고정',
+  'toolbar.unpin': '고정 해제 — 커서가 아래로 갈 때만 표시',
   'toolbar.send': '보내기',
   'toolbar.addToPrompt': '프롬프트에 추가',
   'toolbar.close': '닫기',
@@ -928,6 +932,7 @@ export const ko = {
   'git.diffDesc': '이 워크트리의 diff 뷰 열기',
   'deck.collapseDock': '도크 접기',
   'deck.expandDock': '도크 펼치기',
+  'deck.hasSignal': '확인할 것이 있음',
   'web.running': '실행 중',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':

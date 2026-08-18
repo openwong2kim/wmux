@@ -1042,6 +1042,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.recentCommands) state.recentCommands = data.recentCommands;
       if (data.agentToolbarEnabled != null) state.agentToolbarEnabled = data.agentToolbarEnabled;
+      // Typed, not just non-null: session.json is hand-editable, and `"false"`
+      // or `{}` would pin the bar open with no way to read why.
+      if (typeof data.agentToolbarPinned === 'boolean') {
+        state.agentToolbarPinned = data.agentToolbarPinned;
+      }
       if (data.agentToolbarSnippets != null) state.toolbarSnippets = data.agentToolbarSnippets;
       if (data.agentToolbarNewCommand != null) state.newConversationCommand = data.agentToolbarNewCommand;
       if (data.prefixConfig) {

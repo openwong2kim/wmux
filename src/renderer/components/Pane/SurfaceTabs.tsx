@@ -11,10 +11,8 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconPaperclip, IconKeyboard } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 import { displayPath } from '../../utils/displayPath';
-import { attachFilesToPty, injectText } from '../AgentToolbar/inject';
-import FileExplorerPopover from '../AgentToolbar/FileExplorerPopover';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser / zoom).
  *  Deterministic because every child is fixed-size. Tracing the markup below
@@ -36,24 +34,10 @@ import FileExplorerPopover from '../AgentToolbar/FileExplorerPopover';
  *  left, with the tabs. */
 export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
 
-/** Extra width when the focused pane shows attach / compose / new-conversation.
- *    3 × w-6 buttons .............................................. 72
- *    2 × gap-0.5 .................................................. 4
- *    inject|actions divider  ml-0.5 2 + border-l 1 + pl-1 4 ...... 7
- *                                                             total = 83 */
-export const PANE_INJECT_CLUSTER_EXTRA = 83;
-
-/** Cluster width for the current chrome matrix. Inject glyphs only paint on
- *  the focused pane; unfocused panes keep the 116 action cluster. */
-export function paneClusterWidth(opts: {
-  paneActionsVisible: boolean;
-  showInject: boolean;
-}): number {
-  const { paneActionsVisible, showInject } = opts;
-  if (!paneActionsVisible && !showInject) return 0;
-  if (paneActionsVisible && showInject) return PANE_ACTIONS_CLUSTER_WIDTH + PANE_INJECT_CLUSTER_EXTRA;
-  if (showInject) return 83;
-  return PANE_ACTIONS_CLUSTER_WIDTH;
+/** Cluster width for the current chrome matrix. The agent verbs went back to
+ *  the bottom toolbar (2026-08-18), so the cluster is the action half only. */
+export function paneClusterWidth(opts: { paneActionsVisible: boolean }): number {
+  return opts.paneActionsVisible ? PANE_ACTIONS_CLUSTER_WIDTH : 0;
 }
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
@@ -146,12 +130,6 @@ export default function SurfaceTabs({
   // Right-aligned pane action cluster (split right / split down / new browser
   // / zoom). Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
-  const injectEnabled = useStore((s) => s.agentToolbarEnabled);
-  const composeOpen = useStore((s) => s.toolbarPopover === 'rich');
-  const newCommand = useStore((s) => s.newConversationCommand);
-  const [attachMenu, setAttachMenu] = useState(false);
-  const [pathPicker, setPathPicker] = useState(false);
-  const [newArmed, setNewArmed] = useState(false);
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -266,12 +244,6 @@ export default function SurfaceTabs({
     e.dataTransfer.effectAllowed = 'copy';
     setTerminalTextDropDragActive(true);
   };
-
-  useEffect(() => {
-    if (!newArmed) return;
-    const id = window.setTimeout(() => setNewArmed(false), 4000);
-    return () => window.clearTimeout(id);
-  }, [newArmed]);
 
   const handleTabClick = (surfaceId: string) => {
     // Suppress click-after-dragend so a drop on an external surface does not
@@ -419,109 +391,11 @@ export default function SurfaceTabs({
           hover, a keyboard-focus ring, and monochrome line icons from the
           shared system. Each button drives an EXISTING store action and its
           tooltip carries the same shortcut the keyboard already binds. */}
-      {(() => {
-        const showInject = injectEnabled && paneActive && !!activeSurfacePtyId;
-        if (!paneActionsVisible && !showInject) return null;
-        const scCompose = IS_MAC ? '⌘G' : 'Ctrl+G';
-        return (
+      {paneActionsVisible && (
         <div
           className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
           data-pane-actions
         >
-
-          {showInject && (
-            <>
-              <div className="relative">
-                <button
-                  className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${attachMenu || pathPicker ? 'ui-icon-btn-active' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); setAttachMenu((v) => !v); setPathPicker(false); }}
-                  title={t('toolbar.attach')}
-                  aria-label={t('toolbar.attach')}
-                  data-pane-action="attach"
-                  data-pane-id={paneId}
-                >
-                  <IconPaperclip size={13} />
-                </button>
-                {attachMenu && (
-                  <div
-                    className="absolute top-full right-0 mt-1 z-50 min-w-[160px] py-1 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] shadow-xl"
-                    data-testid="attach-menu"
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      className="w-full text-left px-3 py-1.5 text-[11px] text-[var(--text-main)] hover:bg-[var(--bg-overlay)]"
-                      data-testid="attach-files"
-                      onClick={() => {
-                        setAttachMenu(false);
-                        void attachFilesToPty(activeSurfacePtyId!);
-                      }}
-                    >
-                      {t('toolbar.attachFiles')}
-                    </button>
-                    <button
-                      type="button"
-                      className="w-full text-left px-3 py-1.5 text-[11px] text-[var(--text-main)] hover:bg-[var(--bg-overlay)]"
-                      data-testid="insert-path"
-                      onClick={() => {
-                        setAttachMenu(false);
-                        setPathPicker(true);
-                      }}
-                    >
-                      {t('toolbar.insertPath')}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <button
-                className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${composeOpen ? 'ui-icon-btn-active' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const st = useStore.getState();
-                  if (st.toolbarPopover === 'rich') st.closeCompose();
-                  else st.openCompose({ paneId, ptyId: activeSurfacePtyId! });
-                }}
-                title={withShortcut(t('toolbar.compose'), scCompose)}
-                aria-label={t('toolbar.compose')}
-                data-pane-action="compose"
-                data-pane-id={paneId}
-              >
-                <IconKeyboard size={13} />
-              </button>
-              <button
-                className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${newArmed ? 'ui-icon-btn-active' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!newArmed) {
-                    setNewArmed(true);
-                    return;
-                  }
-                  void injectText(activeSurfacePtyId!, newCommand, true);
-                  setNewArmed(false);
-                }}
-                title={newArmed
-                  ? t('toolbar.newConversationConfirm')
-                  : `${t('toolbar.newConversation')} (${newCommand})`}
-                aria-label={t('toolbar.newConversation')}
-                data-pane-action="new-conversation"
-                data-testid="new-conversation"
-              >
-                <span aria-hidden="true" className="font-mono text-[13px] leading-none">↻</span>
-              </button>
-              {pathPicker && (
-                <FileExplorerPopover
-                  cwd={activeSurface?.cwd}
-                  ptyId={activeSurfacePtyId!}
-                  onClose={() => setPathPicker(false)}
-                />
-              )}
-            </>
-          )}
-          {paneActionsVisible && (
-            <div className={showInject
-              ? 'flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1 gap-0.5'
-              : 'contents'}
-            >
           {/* The "new terminal (tab in this pane)" button is not here: it lives
               in the tab strip above, behind the opt-in paneNewTerminalButton
               setting, because a second terminal in one pane breaks the one pane
@@ -574,11 +448,8 @@ export default function SurfaceTabs({
               </span>
             </button>
           </div>
-            </div>
-          )}
         </div>
-        );
-      })()}
+      )}
     </div>
   );
 }

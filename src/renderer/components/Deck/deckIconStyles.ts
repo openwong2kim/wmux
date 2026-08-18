@@ -5,8 +5,8 @@ import { FOCUS_RING } from '../focusRing';
  * the deck header stopped being a text tab strip — `Agent (Default) | Git |
  * Channels` — and became icons, orca-style).
  *
- * Two surfaces use it: DeckTabs (horizontal, deck open) and DeckMiniRail
- * (vertical, deck collapsed). WebToggle is a button on BOTH, and it lives
+ * One surface uses it: DeckTabs (horizontal, deck open) — the collapsed
+ * vertical rail is gone (2026-08-18). WebToggle is a button on it, and it lives
  * under StatusBar/, so the classes sit in their own module rather than being
  * imported back out of either component.
  */

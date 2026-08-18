@@ -51,7 +51,7 @@ export default function RichInput({ ptyId }: { ptyId: string }) {
 
   return (
     <div
-      className="absolute bottom-full right-2 mb-1 w-[30rem] rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 font-mono text-xs"
+      className="pointer-events-auto absolute bottom-full right-2 mb-1 w-[30rem] rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 font-mono text-xs"
       style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
       data-testid="rich-input"
     >

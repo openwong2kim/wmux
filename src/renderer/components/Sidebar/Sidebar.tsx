@@ -207,8 +207,9 @@ export default function Sidebar() {
       <PluginPanels />
 
       {/* Agent · Git · Channels · web moved onto the deck's own icon strip
-          (Deck/DeckTabs.tsx while it is open, Deck/DeckMiniRail.tsx while it
-          is collapsed) — owner decision 2026-08-14. They all command the
+          (Deck/DeckTabs.tsx; collapsed, the deck is reopened from the
+          titlebar's DeckToggle) — owner decisions 2026-08-14 / 2026-08-18.
+          They all command the
           right-hand deck, and as rows here they cost 144px of the workspace
           list and vanished entirely when the sidebar collapsed. */}
 

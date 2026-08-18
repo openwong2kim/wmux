@@ -8,7 +8,6 @@ import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
 import { IconChevron } from '../icons';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import FanOutTrigger from '../AgentToolbar/FanOutTrigger';
 
 interface WorkspaceAgentRosterProps {
   workspaceId: string;
@@ -109,7 +108,6 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
         </span>
         <span className="truncate">{countLabel}</span>
       </button>
-      {isActive && <FanOutTrigger workspaceId={workspaceId} variant="multi" compact />}
       </div>
 
       {open && (

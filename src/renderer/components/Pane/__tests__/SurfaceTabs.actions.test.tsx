@@ -274,36 +274,32 @@ function mountWithTerminal(paneId: string, paneActive = true): void {
   });
 }
 
-describe('SurfaceTabs inject cluster', () => {
-  it('shows attach / compose / new-conversation only on the focused pane', () => {
+// The agent verbs went back to the bottom toolbar (2026-08-18), so the pane
+// cluster carries split / browser / zoom only. These guard that they did not
+// come back: a verb here is owned by one pane in a split, which is what the
+// workspace-spanning bar exists to avoid claiming.
+describe('SurfaceTabs pane cluster', () => {
+  it('carries no agent verbs on the focused pane', () => {
     act(() => { useStore.getState().setAgentToolbarEnabled(true); });
     mountWithTerminal(rootLeafId(), true);
-    expect(container.querySelector('[data-pane-action="attach"]')).not.toBeNull();
-    expect(container.querySelector('[data-pane-action="compose"]')).not.toBeNull();
-    expect(container.querySelector('[data-pane-action="new-conversation"]')).not.toBeNull();
-    act(() => root.unmount());
-    container.remove();
-    mountWithTerminal(rootLeafId(), false);
     expect(container.querySelector('[data-pane-action="attach"]')).toBeNull();
     expect(container.querySelector('[data-pane-action="compose"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="new-conversation"]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="split-right"]')).not.toBeNull();
   });
 
-  it('keeps inject glyphs when pane actions are hidden', () => {
+  it('renders nothing when pane actions are hidden', () => {
     act(() => {
       useStore.getState().setAgentToolbarEnabled(true);
       useStore.getState().setPaneActionsVisible(false);
     });
     mountWithTerminal(rootLeafId(), true);
-    expect(container.querySelector('[data-pane-action="attach"]')).not.toBeNull();
-    expect(container.querySelector('[data-pane-action="compose"]')).not.toBeNull();
-    expect(container.querySelector('[data-pane-action="split-right"]')).toBeNull();
+    expect(container.querySelector('[data-pane-actions]')).toBeNull();
   });
 
-  it('hides inject glyphs when inject chrome is off', () => {
+  it('is unaffected by the inject-chrome setting', () => {
     act(() => { useStore.getState().setAgentToolbarEnabled(false); });
     mountWithTerminal(rootLeafId(), true);
-    expect(container.querySelector('[data-pane-action="attach"]')).toBeNull();
-    expect(container.querySelector('[data-pane-action="compose"]')).toBeNull();
     expect(container.querySelector('[data-pane-action="split-right"]')).not.toBeNull();
   });
 });

@@ -97,7 +97,13 @@ export default function FileExplorerPopover({ cwd: cwdProp, ptyId, onClose }: Fi
     onClose();
   };
 
-  const anchor = document.querySelector('[data-pane-action="attach"]')?.getBoundingClientRect() ?? null;
+  // Anchor off whichever trigger opened it. The toolbar's File button is the
+  // only home now (2026-08-18); the pane-cluster attach glyph is kept in the
+  // selector so a stale mount still lands somewhere sensible rather than
+  // centring itself.
+  const anchor = document
+    .querySelector('[data-toolbar-action="file-explorer"], [data-pane-action="attach"]')
+    ?.getBoundingClientRect() ?? null;
   const pos = placePopover(anchor, { width: 320, height: 320 });
 
   return createPortal(
@@ -105,6 +111,11 @@ export default function FileExplorerPopover({ cwd: cwdProp, ptyId, onClose }: Fi
       className="fixed w-80 max-h-80 overflow-y-auto rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl p-1 font-mono text-xs"
       style={{ top: pos.top, left: pos.left, zIndex: 'var(--z-popover-top)' }}
       data-testid="file-explorer"
+      // This portal lives on document.body, outside the toolbar's DOM. The
+      // marker tells the toolbar's outside-click test that a click in here is
+      // still "inside" — without it the popover unmounted on mousedown and the
+      // row's own click never ran.
+      data-toolbar-owned=""
     >
       {!cwd && (
         <p className="text-[var(--text-muted)] px-2 py-2">{t('toolbar.noWorkingDir')}</p>

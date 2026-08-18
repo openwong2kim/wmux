@@ -115,14 +115,13 @@ export function enforcedModelBadgeOffset(opts: {
   paneActionsVisible: boolean;
   isZoomed: boolean;
   supervised: boolean;
-  showInject?: boolean;
 }): number {
-  const { paneActionsVisible, isZoomed, supervised, showInject = false } = opts;
+  const { paneActionsVisible, isZoomed, supervised } = opts;
   /** Rendered width of the supervision badge (10px glyph + 6px side padding). */
   const SUPERVISION_W = 28;
   /** Rendered width of a corner icon button plus its 6px gutter. */
   const CORNER_BTN_W = 26;
-  const cluster = paneClusterWidth({ paneActionsVisible, showInject });
+  const cluster = paneClusterWidth({ paneActionsVisible });
   if (cluster > 0) {
     return cluster + 6 + (supervised ? SUPERVISION_W : 0);
   }
@@ -404,8 +403,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // below are then redundant AND overlap the cluster, so they render only when
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
-  const injectEnabled = useStore((s) => s.agentToolbarEnabled);
-  const showInject = injectEnabled && isActive && !!activeSurfacePtyId;
 
   // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
   // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
@@ -419,7 +416,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     paneActionsVisible,
     isZoomed,
     supervised: !!supervision,
-    showInject,
   });
 
   // X6 ②/③ resume pill. A pane recovered-this-boot that was running an agent
@@ -532,7 +528,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           style={{
             position: 'absolute',
             top: 4,
-            right: showInject ? paneClusterWidth({ paneActionsVisible: false, showInject: true }) + 6 : 6,
+            right: 6,
             zIndex: 20,
             padding: '0 5px',
             height: 16,
@@ -566,11 +562,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             position: 'absolute',
             top: 4,
             // Sit left of the supervision badge when present (it owns right:6 on
-            // an un-zoomed pane); otherwise take the corner. Inject glyphs on
-            // the focused strip push both further left.
-            right: (supervision ? 32 : 6) + (showInject
-              ? paneClusterWidth({ paneActionsVisible: false, showInject: true })
-              : 0),
+            // an un-zoomed pane); otherwise take the corner.
+            right: supervision ? 32 : 6,
             zIndex: 20,
             padding: '0 5px',
             height: 16,
@@ -607,8 +600,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             // avoid overlap — using the exported constant beside the cluster
             // rather than a hardcoded pixel guess. Cluster-off keeps the prior
             // behaviour: sit left of the ZOOM badge when both are present.
-            right: paneClusterWidth({ paneActionsVisible, showInject }) > 0
-              ? paneClusterWidth({ paneActionsVisible, showInject }) + 6
+            right: paneClusterWidth({ paneActionsVisible }) > 0
+              ? paneClusterWidth({ paneActionsVisible }) + 6
               : isZoomed
                 ? 54
                 : 6,

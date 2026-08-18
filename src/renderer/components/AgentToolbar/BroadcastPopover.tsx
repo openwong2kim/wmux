@@ -107,7 +107,7 @@ export default function BroadcastPopover({ onClose, triggerRef }: BroadcastPopov
       role="dialog"
       aria-label={t('toolbar.broadcastTitle')}
       data-testid="broadcast-popover"
-      className="absolute bottom-full right-2 mb-2 z-50 w-80 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl"
+      className="pointer-events-auto absolute bottom-full right-2 mb-2 z-50 w-80 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl"
     >
       <div className="flex items-center justify-between mb-2">
         <span className="text-[12px] font-semibold text-[var(--text-main)]">{t('toolbar.broadcastTitle')}</span>

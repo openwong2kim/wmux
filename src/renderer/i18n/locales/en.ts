@@ -326,6 +326,8 @@ export const en = {
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.openBrowser': 'Open Browser',
   'palette.cmd.openFleetView': 'Open Fleet View',
+  'palette.cmd.multiTask': 'Multi Task — spawn parallel agents',
+  'palette.cmd.toggleToolbarPin': 'Pin / unpin the agent toolbar',
   'palette.cmd.openWorktaskCleanup': 'Open Task Cleanup List',
   'palette.cmd.showGitDiff': 'Show Git Diff',
   // J3 — task cleanup list (WorktaskCleanupView)
@@ -1235,6 +1237,8 @@ export const en = {
   'toolbar.fanOutMultiTask': 'Multi Task',
   'toolbar.new': 'New',
   'toolbar.newChat': 'New chat',
+  'toolbar.pin': 'Keep the toolbar open',
+  'toolbar.unpin': 'Hide the toolbar until the pointer nears the bottom edge',
   'toolbar.send': 'Send',
   'toolbar.addToPrompt': 'Add to prompt',
   'toolbar.close': 'Close',
@@ -1379,6 +1383,7 @@ export const en = {
   'git.diffDesc': 'Open the diff view for this worktree',
   'deck.collapseDock': 'Collapse dock',
   'deck.expandDock': 'Expand dock',
+  'deck.hasSignal': 'something in here needs you',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
     'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',
