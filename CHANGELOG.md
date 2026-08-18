@@ -1,3 +1,189 @@
+## [3.44.0] — 2026-08-18
+
+### Added
+
+- **An opt-in `+` for a second terminal in the same pane.** Settings → Terminal
+  → "New-terminal button on the tab strip", off by default and labelled
+  experimental: wmux is built around one pane = one terminal, and splitting is
+  the usual way to get another. Turning it on is choosing to work differently,
+  which is why it is a setting rather than new chrome for everyone (#909).
+
+- **Grok is a first-class agent.** The detector recognizes the Grok TUI (startup banner, Help improve Grok, live composer `Grok 4.6 (high) · always-approve`) and the roster / pane names show Grok instead of a generic terminal. (#916)
+
+- **Settings has a search field.** Type a label, a description, or a synonym (`커서`, `언어`, `mcp`) and jump to the control instead of walking the nine tabs. Esc clears the query first, then closes Settings. (#921, #925)
+
+- **Terminal cursor shape is a setting.** Settings → Appearance offers Block, Underline, or Bar. Block stays the default. The change applies live and survives restart. (#920, #925)
+
+- Workspaces can carry an optional color tag (right-click a workspace →
+  **Color tag**). The color shows as a rail on the sidebar row and on the 48px
+  mini-rail, so a long list of same-shaped names stays scannable. Purely
+  visual — the agent status dot, git lights and badges keep their meanings.
+
+- The wmux web browser terminal now supports select-to-copy, Ctrl+C-with-selection
+  copy, Ctrl+V paste, and Shift+Enter / Ctrl+Enter newline, matching the local
+  terminal and the attach mirror (#924, #931).
+
+- Copy/paste/newline handling now works in the split view as well as the 1-up
+  view — both share the same key-decision wiring, so Ctrl+C with a selection
+  copies in a tile instead of SIGINT'ing that pane's process (#931).
+
+### Changed
+
+- The sidebar company panel, Missions section, workspace account submenu,
+  workspace search, editor/file-tree panels, and the error boundary now
+  respect the selected locale instead of showing hardcoded English (#912).
+
+- Toast, notification panel, onboarding overlay, status bar, usage meter,
+  deck fleet, diff panel, channel-create modal, the multiview close button,
+  the orchestrator model chip, and the approval dialogs now respect the
+  selected locale instead of showing hardcoded English (#913).
+
+- Relative timestamps ("5m ago") are localised along with the rest of the
+  interface (#913).
+
+- **Agent verbs left the bottom toolbar.** Compose (`⌘G`), attach, and new conversation live on the focused pane's tab cluster. Broadcast is a compose target (`This pane` / `All N terminals`, with a 4-second arm on All N). Multi Task sits on the selected workspace card (`Start agents` when the fleet is empty; the Agent deck header only when the sidebar is collapsed). The 36px workspace-spanning strip is gone. (#916)
+
+- **Settings tabs are grouped and renamed.** The same nine tabs, now under App / Agents / System. Claude Integration is labeled Accounts; LAN Link is labeled Network. Existing controls are unchanged — language is still the full locale list. (#925)
+
+- The workspace agent roster now leads with each session's terminal title
+  instead of the vendor name, so a workspace running several Claude Code
+  sessions no longer renders as a column of identical "Claude Code · w2-1xx"
+  rows. The vendor moves to the muted trailer next to the pane coordinate, and
+  a session whose terminal has no title still leads with the vendor name as
+  before.
+
+- **The agent verbs are one toolbar again, and it appears when you reach for
+  it.** Attach, files, snippets, rich input (⌘G), Broadcast, Multi Task, and
+  new conversation are back on a single bar instead of split across the pane
+  tab cluster and the workspace card. The bar overlays the terminals rather
+  than taking a row from them, so nothing shrinks and no terminal is resized
+  when it appears — it slides up when the pointer nears the bottom edge and
+  retreats when you go back to typing. It will not appear while you are
+  dragging out a selection, and it stays put once your cursor is on it. Pin it
+  from the lock button (or ⌘K) to keep it open all the time. (#937)
+
+- **The collapsed deck no longer costs a column.** The vertical strip of icons
+  on the right edge is gone; one `«` / `»` button beside Settings opens and
+  closes the deck, and the terminals now run to the window edge while it is
+  closed. A dot appears on that button when the closed deck holds unread
+  channels or dirty worktrees. (#937)
+
+### Fixed
+
+- The Shortcuts list said `Ctrl+T` was "New workspace". It is not — `Ctrl+T`
+  adds a terminal to the pane you are in, and the key that makes a workspace is
+  `Ctrl+N`, which the list did not mention at all. Both rows now say what the
+  keys do (#909).
+
+- **Mouse clicks and wheel now reach vim and other TUIs on Windows 10.** The in-box ConPTY on Windows 10 (and Server 2022) never forwards the escape sequences that turn on mouse reporting, so `set mouse=a` in vim silently did nothing — the wheel scrolled wmux's own scrollback instead. Those builds now spawn their panes against the OpenConsole build bundled with wmux, which forwards mouse events correctly. Windows 11 is untouched. Every spawn logs which ConPTY backend actually started. If the bundled one cannot start, wmux retries once and then falls back to the previous behaviour — the shell still opens, and the log says the pane has no mouse reporting.
+
+- A translated string whose interpolated value contained `$&`, `$$`, ``$` `` or
+  `$'` came out corrupted — the placeholder reappeared verbatim instead of
+  being replaced. Crash messages carry a raw `Error.message` and channel names
+  carry agent-authored titles, so any of those could reach it (#913).
+
+- An approval prompt or crash screen already on display now follows a locale
+  change instead of staying in the previous language (#913).
+
+- **Grok panes no longer show up as Claude Code.** A Grok TUI that reads this repo (or any file quoting Claude's banner/footer) used to trip Claude's compound gate. Identity now requires per-line TUI chrome, and another agent's status patterns cannot steal the pane back. (#916)
+
+- **Grok's transcript scrolls with the wheel.** Grok runs in the alt screen, so xterm had no scrollback. The wheel now sends PageUp/PageDown, which is how Grok itself scrolls. (#916)
+
+- **A mirrored remote pane now copies, pastes, and inserts newlines like any
+  other terminal.** Attaching to a remote wmux gave you a pane that forwarded
+  every keystroke straight through, so the editing habits that never leave your
+  own machine stopped working: selecting text copied nothing, `Ctrl+C` over a
+  selection interrupted the remote process instead of copying it, `Ctrl+V` did
+  nothing at all, and `Shift+Enter` submitted where a local pane would have
+  added a line. All four now behave the way they do in a local pane — including
+  `⌘C` / `⌘V` on macOS — while an empty-selection `Ctrl+C` still interrupts the
+  remote process, and a host started without `--allow-input` still receives
+  nothing. `Shift+Enter` sends the newline form the remote app actually asked
+  for: apps that enable the kitty keyboard protocol get it, and anything else
+  keeps the plain carriage return it has always received. (#924)
+
+- **A plugin no longer goes silent when you switch workspace.** The host hands
+  each plugin iframe a message port once, when the frame loads. Re-subscribing
+  the plugin event feed on a workspace switch also tore that port down, and
+  there is no second load to rebuild it — so from the first switch onward the
+  plugin's requests were dropped and its palette commands stopped arriving. It
+  affected every mounted plugin, not only the ones receiving events; sidebar
+  panels came back if you collapsed and re-opened them, while status-bar
+  widgets stayed broken for the rest of the session. The port now outlives the
+  switch, and the event feed still follows the workspace you are in. (#928)
+
+- Web terminal paste actually works now: xterm's keydown handler used to encode
+  Ctrl+V as the SYN control byte and preventDefault, so the browser's native
+  paste event never fired. The key now steps aside so the browser's own paste
+  path delivers the text (#931).
+
+- A select followed by Ctrl+C then an immediate Ctrl+V no longer freezes the
+  page for tens of seconds. xterm fires `onSelectionChange` once per cell during
+  a drag, so select-to-copy was issuing a burst of concurrent clipboard writes;
+  the write is now debounced to the settled selection like the desktop's
+  `autoSelectionCopy.ts`. An explicit Ctrl+C also cancels any pending auto-copy
+  so the two never race (#931).
+
+- Ctrl+D now behaves like a real terminal again: it sends EOF (exits a shell,
+  ends `cat > file`), matching the desktop and every other terminal, instead of
+  being swallowed by the browser page (#931).
+
+- Shift+Enter no longer corrupts apps that never negotiated the kitty keyboard
+  protocol. The CSI-u byte (`\x1b[13;2u`) only means "newline" to an app that
+  asked for kitty encodings; the browser now watches each pane's output for the
+  negotiation and falls back to a plain Enter for panes that did not — so vim
+  no longer exits insert mode and runs `u` as undo (#931, same gate as the
+  attach mirror in #924).
+
+- Shift+Enter / Ctrl+Enter / Ctrl+J no longer cause a `bash: syntax error` in a
+  shell that does not speak the kitty keyboard protocol. The newline decision
+  now `preventDefault`s the browser's own newline, which xterm's `input` handler
+  would otherwise forward to the PTY right after the newline byte (#931).
+
+- Copying no longer steals keyboard focus: the legacy clipboard fallback restores
+  the previously focused element, and a click on any page control (buttons wrap
+  their label/icon in a SPAN or SVG) no longer yanks focus into the terminal
+  (#931).
+
+- **A pane's agent label now prefers process truth over screen text.** The
+  label, roster entry, and status events for a pane are decided by a
+  precedence of signals — a corroborated or fresh hook self-report first, then
+  the live attributed agent process, and only then what the terminal happened
+  to print. Screen text still names the pane when nothing stronger is
+  available, which is what remote and SSH panes rely on. A confirmed-dead
+  same-slug read on screen is treated as sticky residue instead of relabeling
+  the dead agent "alive". This fixes the class of mislabels where a Grok pane
+  was shown as Claude: the screen gates cannot tell an agent from a sentence
+  about an agent, and until now they were the only identity source. (#932)
+
+- **Detector notifications contradicted by a live agent of another kind are
+  suppressed.** A screen-detected "agent finished" that disagrees with the
+  pane's hook- or process-backed identity no longer notifies, and the pane's
+  label self-heals on the next output burst. A banner this build cannot map to
+  a known agent is not treated as a disagreement, so an unrecognised name never
+  costs a pane its status updates. The 30-minute detector veto is scoped to the
+  agent launch that earned it and expires when that process is seen to die, so
+  a relaunched agent with broken hooks gets its completions through. (#932)
+
+- **The file browser inserted nothing.** Clicking a file closed the popover
+  before the click could take effect, so picking a path silently did nothing.
+  (#937)
+
+- **Multi Task's dialog no longer overflows its own card.** The per-task row
+  squeezed the title field to a sliver and pushed the branch name outside the
+  dialog; the dialog also opened against the left edge of the window instead of
+  under the button, and was tall enough to cut off the repo field and the
+  Launch button. Launch now stays pinned while the form scrolls. (#937)
+
+- **New conversation asks twice.** The button sends `/clear`, which discards
+  the agent's conversation, and a single stray click was enough to fire it.
+  (#937)
+
+- **⌘G opened two compose boxes at once.** (#937)
+
+- **The toolbar no longer floats over a remote workspace view**, where its
+  buttons would have typed into a local terminal you could not see. (#937)
+
 ## [3.43.0] — 2026-08-16
 
 ### Added
