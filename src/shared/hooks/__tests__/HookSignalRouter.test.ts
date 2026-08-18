@@ -251,5 +251,41 @@ describe('HookSignalRouter', () => {
       router.resetForTests();
       expect(router.isGovernedFor('p1', 'claude', 1100)).toBe(false);
     });
+
+    it('#919 authorityAgentFor reports slug, age and routing provenance', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      router.touchAuthority('p2', 'codex', 1000, false); // cwd-fallback routed
+      expect(router.authorityAgentFor('p1', 4000)).toEqual({ slug: 'claude', ageMs: 3000, exact: true });
+      expect(router.authorityAgentFor('p2', 4000)).toEqual({ slug: 'codex', ageMs: 3000, exact: false });
+      expect(router.authorityAgentFor('p3', 4000)).toBeUndefined();
+      // Non-slug agents (unknown future spellings) carry no identity weight.
+      expect(router.touchAuthority('p4', 'agent-nine', 1000)).toBeUndefined();
+      expect(router.authorityAgentFor('p4', 4000)).toBeUndefined();
+    });
+
+    it('#919 authorityAgentFor expires with the map TTL', () => {
+      router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.authorityAgentFor('p1', 5_999)).toBeDefined();
+      expect(router.authorityAgentFor('p1', 6_000)).toBeUndefined();
+    });
+
+    it('#919 expireAuthorityFor clears the veto on confirmed process death', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      router.expireAuthorityFor('p1', 'claude');
+      // A relaunched same-slug agent with broken hooks must get its detector
+      // completions through — the veto died with the old launch.
+      expect(router.isGovernedFor('p1', 'claude', 1100)).toBe(false);
+      expect(router.authorityAgentFor('p1', 1100)).toBeUndefined();
+    });
+
+    it('#919 expireAuthorityFor scoped to another agent leaves the entry intact', () => {
+      router.touchAuthority('p1', 'codex', 1000);
+      router.expireAuthorityFor('p1', 'claude'); // claude's death, not codex's
+      expect(router.isGovernedFor('p1', 'codex', 1100)).toBe(true);
+      // Unscoped expiry (slugless pick) clears whatever is there.
+      router.expireAuthorityFor('p1');
+      expect(router.isGovernedFor('p1', 'codex', 1100)).toBe(false);
+    });
   });
 });

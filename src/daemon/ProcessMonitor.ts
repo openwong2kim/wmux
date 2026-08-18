@@ -272,7 +272,11 @@ export class ProcessMonitor {
         const reuseSuspects: Array<[string, { pid: number; onDead: () => void; imageName?: string }]> = [];
         for (const entry of entries) {
           const [sessionId, info] = entry;
-          if (!this.watchedPids.has(sessionId)) continue;
+          // Identity guard, not just membership: this batch snapshot can be
+          // stale by the time we act on it — if a re-probe replaced this
+          // session's watch while the batch ran, this cycle holds the OLD
+          // entry object and must not touch (or unwatch) the NEW one.
+          if (this.watchedPids.get(sessionId) !== info) continue;
           if (!aliveSet.has(info.pid)) {
             apparentlyDead.push(entry);
             continue;
@@ -294,7 +298,7 @@ export class ProcessMonitor {
         // Re-verify reuse suspects with an independent per-PID probe before
         // declaring death — same unknown-is-never-dead discipline as below.
         for (const [sessionId, info] of reuseSuspects) {
-          if (!this.watchedPids.has(sessionId)) continue;
+          if (this.watchedPids.get(sessionId) !== info) continue;
           try {
             const probe = await ProcessMonitor.probeWindowsPid(info.pid);
             if (!probe.present) {
@@ -308,7 +312,7 @@ export class ProcessMonitor {
             ) {
               // Confirmed: same PID, different process. The watched process
               // is gone — fire onDead exactly as a confirmed death.
-              if (!this.watchedPids.has(sessionId)) continue;
+              if (this.watchedPids.get(sessionId) !== info) continue;
               this.unwatch(sessionId);
               info.onDead();
             }
@@ -320,9 +324,11 @@ export class ProcessMonitor {
 
         if (apparentlyDead.length === 0) return;
 
-        for (const [sessionId, { pid, onDead }] of apparentlyDead) {
-          // Skip if unwatched during async re-verification
-          if (!this.watchedPids.has(sessionId)) continue;
+        for (const [sessionId, info] of apparentlyDead) {
+          const { pid, onDead } = info;
+          // Skip if this cycle's entry went stale during async
+          // re-verification — superseded by a newer watch (see above)
+          if (this.watchedPids.get(sessionId) !== info) continue;
 
           let confirmedDead = false;
           try {
@@ -343,7 +349,7 @@ export class ProcessMonitor {
           }
 
           if (!confirmedDead) continue;
-          if (!this.watchedPids.has(sessionId)) continue;
+          if (this.watchedPids.get(sessionId) !== info) continue;
           this.unwatch(sessionId);
           onDead();
         }

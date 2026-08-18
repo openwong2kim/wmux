@@ -53,6 +53,7 @@ import {
   agentSlugToDisplay,
   type AgentSignal,
   type AgentSignalKind,
+  type AgentSlug,
   type HookSignalResponse,
 } from '../../shared/hooks/signal-types';
 import { ENV_KEYS } from '../../shared/constants';
@@ -222,6 +223,17 @@ export interface HookIngestDeps {
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
   emitDetectorEvent?: (sessionId: string, data: DetectorHeldEventData) => void;
+  /**
+   * #919 — fired after every resolved signal touches hook authority (both the
+   * `handle()` path and the permission-gate interceptor). Gives the daemon a
+   * single wiring point to ARM the process tracker for bannerless metadata
+   * hooks: a quiet claude mid-tool-call must not wait for a detector banner to
+   * become corroborable. The session is resolved; the callback owes the caller
+   * nothing back and its failure is non-fatal.
+   *
+   * Optional: only the daemon supplies it.
+   */
+  onAuthorityTouched?: (sessionId: string) => void;
 }
 
 /**
@@ -560,7 +572,13 @@ export class HookIngest {
     }
 
     // Touch authority on every gate signal — the bridge is alive on this pane.
-    this.router.touchAuthority(sessionId, signal.agent, this.now());
+    // `exact` (#919): only exact-ptyId routing may decide identity alone.
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    try {
+      this.deps.onAuthorityTouched?.(sessionId);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
+    }
 
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
     // interceptor routes awaiting_permission straight here — so this is the
@@ -682,8 +700,14 @@ export class HookIngest {
     // this agent, including the non-emit kinds (SessionStart, per-tool
     // activity) — freshness tracks "the bridge is alive on this pane", not
     // "a toast just fired". The detector-emission site consults
-    // isGovernedFor before fanning out its own notifications.
-    this.router.touchAuthority(sessionId, signal.agent, this.now());
+    // isGovernedFor before fanning out its own notifications. `exact` (#919):
+    // a cwd-prefix-resolved signal may corroborate identity but never stand alone.
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    try {
+      this.deps.onAuthorityTouched?.(sessionId);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
+    }
 
     // User answered a pending approval locally — no turn boundary, just expire the request.
     // The alarm is fed FIRST: an `answered` cue cancels a pending ATTENTION
@@ -995,6 +1019,30 @@ export class HookIngest {
     const outcome = this.alarm.observe(sessionId, slug, cue, resume);
     if (outcome === 'hold') return { source, decision: 'pending' };
     return { source, decision: 'internal' };
+  }
+
+  /**
+   * #919 — hook-tier identity input for the canonical tier rule. Thin delegate:
+   * the ingest owns the router; daemon/index.ts never touches it directly.
+   * Undefined when no authority is on record (or past the 30-min map TTL) —
+   * the caller applies the shorter IDENTITY_TTL and the `exact` gate on the
+   * uncorroborated path only.
+   */
+  authorityAgentFor(
+    sessionId: string,
+  ): { slug: AgentSlug; ageMs: number; exact: boolean } | undefined {
+    return this.router.authorityAgentFor(sessionId);
+  }
+
+  /**
+   * #919 — expire the pane's authority on CONFIRMED process death. The 30-min
+   * detector veto belongs to the dead launch's generation: left alone it keeps
+   * suppressing every completion of a relaunched same-slug agent whose hooks
+   * are broken. `onlyAgent` scopes the expiry so a death of process A never
+   * strips process B's authority.
+   */
+  expireAuthorityFor(sessionId: string, onlyAgent?: string): void {
+    this.router.expireAuthorityFor(sessionId, onlyAgent);
   }
 
   /**

@@ -49,6 +49,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
+import { resolveCanonicalAgentIdentity, detectorSuppressedBy, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -136,6 +137,37 @@ let deviceStore: DeviceStore | null = null;
 // construction sites, one of which is a module-level function. Null until
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
+
+/**
+ * #919 — canonical pane-agent identity for one pane, right now. Folds the
+ * three signals (hook self-report, attributed process, screen chrome) through
+ * the tier rule in src/daemon/canonicalAgent.ts. EVERY raw emission/feed site
+ * routes through here — any site left reading the screen name directly
+ * re-asserts the mislabel this exists to fix (#916: a Grok pane labelled
+ * Claude by its own output text).
+ *
+ * Module-level like `hookIngest` because its two callers (registerRpcHandlers'
+ * detector re-emission, wireEvents' session handlers) live in separate
+ * functions; both also receive the tracker as a parameter. Both identity maps
+ * are boot-local (tracker state, hook authority), so nothing persisted can
+ * leak into this answer across a reboot.
+ */
+function canonicalIdentityFor(
+  agentProcessTracker: AgentProcessTracker,
+  sessionId: string,
+  screenSlug?: AgentSlug,
+): CanonicalAgentIdentity | undefined {
+  const proc = agentProcessTracker.identityFor(sessionId);
+  const auth = hookIngest?.authorityAgentFor(sessionId);
+  return resolveCanonicalAgentIdentity({
+    ...(proc ? { proc } : {}),
+    ...(auth ? { auth } : {}),
+    ...(screenSlug ? { screenSlug } : {}),
+  });
+}
+
+/* detectorSuppressedBy lives in canonicalAgent.ts beside the tier rule it
+   guards — it is pure, and that module is where the rule is unit tested. */
 
 /**
  * The one device roster in this process. A second instance would be a second
@@ -2937,10 +2969,25 @@ function registerRpcHandlers(
       // the handler performs, minus what already ran before arbitration
       // (lastDetectedAgent persistence, resume-chip arm).
       emitDetectorEvent: (sessionId, data) => {
+        // #919 — same canonical rule as the live `session:agent` site: a held
+        // completion contradicted by the pane's tier-1/2 identity must not
+        // broadcast (or drive phone liveness) when its window expires either.
+        const screenSlug = agentDisplayToSlug(data.agent);
+        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return;
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status as AgentEventStatus);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+      },
+      // #919 (Codex #8) — every resolved hook signal proves the bridge is
+      // alive on this pane RIGHT NOW, banner or not. Arming here means a quiet
+      // claude mid-tool-call (only PreToolUse/activity hooks firing) becomes
+      // process-corroborated without waiting for a detector banner. arm() is
+      // a no-op while a live agent is tracked and backoff-bounded otherwise,
+      // so the hot path stays cheap.
+      onAuthorityTouched: (sessionId) => {
+        const managed = sessionManager.getSession(sessionId);
+        if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
       },
     });
   }
@@ -3097,7 +3144,20 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.getAgentName', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const session = id ? sessionManager.getSession(id) : undefined;
-    return { agentName: session?.bridge.getLastAgent() ?? null };
+    // #919 — answer canonically, not raw: the detector's getLastAgent is
+    // sticky screen truth, which mislabels exactly when this RPC is consulted
+    // (post-exit, agent swapped). Both canonical inputs are boot-local, so a
+    // rebooted daemon answers from the screen tier until evidence arrives —
+    // no persisted slug can claim a fresh shell. Canonical undefined WITH a
+    // mappable screen slug is the residue veto (confirmed-dead same slug):
+    // report no agent instead of resurrecting the label.
+    const rawName = session?.bridge.getLastAgent();
+    if (!session || !rawName) return { agentName: rawName ?? null };
+    const screenSlug = agentDisplayToSlug(rawName);
+    const canonical = canonicalIdentityFor(agentProcessTracker, id, screenSlug);
+    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug) };
+    if (screenSlug) return { agentName: null };
+    return { agentName: rawName };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
@@ -4406,19 +4466,36 @@ function wireEvents(
     // DaemonPTYBridge already protects the detector dedup from). The loose
     // status-dot broadcast below still runs — only the strict alarm feed
     // skips repaint-flagged bursts.
+    // #919 — compute canonical identity ONCE for this burst and use it for
+    // both feeds below. Leaving either on the raw screen name would re-assert
+    // the detector's sticky label on every output burst, undoing whatever the
+    // canonical rule had corrected (Codex #5).
+    const activeScreenSlug = agentDisplayToSlug(payload.agentName ?? '');
+    const activeCanonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, activeScreenSlug);
     if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
       payload.sessionId,
-      agentDisplayToSlug(payload.agentName ?? '')
-        ?? sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent
-        ?? undefined,
+      // Canonical undefined + a mappable screen slug IS the residue veto
+      // (confirmed-dead same-slug read) — falling back to the persisted
+      // lastDetectedAgent there would feed the DEAD agent's slug to the
+      // alarm as if it were working (review #4). The legacy fallback only
+      // applies when the burst named no known agent at all.
+      activeCanonical?.slug
+        ?? (activeScreenSlug ? undefined
+          : sessionManager.getSession(payload.sessionId)?.meta.lastDetectedAgent
+          ?? undefined),
     );
     const event: DaemonEvent = {
       type: 'activity.active',
       sessionId: payload.sessionId,
-      // gate로 확정된 에이전트 이름을 data에 실어 main으로 전달한다(없으면 null).
-      // daemon mode running 상태에 agentName을 채우는 경로(local mode는
-      // PTYBridge가 getLastAgent로 직접 처리).
-      data: payload.agentName ?? null,
+      // Canonical agent name (or null) rides data to main — the daemon-mode
+      // path that fills running-state agentName (local mode stays on
+      // PTYBridge's getLastAgent). Undefined canonical with a mappable screen
+      // slug is the residue veto: null, not the dead agent's sticky label.
+      data: activeCanonical
+        ? agentSlugToDisplay(activeCanonical.slug)
+        : activeScreenSlug
+          ? null
+          : payload.agentName ?? null,
     };
     pipeServer.broadcast(event);
   });
@@ -4428,21 +4505,8 @@ function wireEvents(
     // reboot knows this interactive pane was an agent. agentDisplayToSlug maps
     // the AgentDetector display name ('Claude Code') → canonical slug ('claude').
     const slug = agentDisplayToSlug(payload.event.agent);
+    const managed = sessionManager.getSession(payload.sessionId);
     if (slug) {
-      const managed = sessionManager.getSession(payload.sessionId);
-      if (managed && managed.meta.lastDetectedAgent !== slug) {
-        managed.meta.lastDetectedAgent = slug;
-        // X6 ②: persist IMMEDIATELY, not debounced. lastDetectedAgent is the
-        // SOLE basis for the post-reboot resume offer (resumeOfferForRecovered
-        // reads it off the persisted session). A real OS reboot SIGKILLs the
-        // daemon — flush()/process.on('exit') never run — so a 30s debounce
-        // (or the periodic snapshot) can drop a fresh detection that has no
-        // other state-changing event to opportunistically flush it. The
-        // !== slug guard above bounds this to one sync write per agent
-        // transition (effectively once per idle agent pane), so the cost is
-        // negligible vs. the durability it buys.
-        stateWriter.saveImmediate(buildState(sessionManager));
-      }
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
       recoveredResumeBindings.delete(payload.sessionId);
@@ -4450,7 +4514,44 @@ function wireEvents(
       // right now — attach the process watch so the chip can hide on process
       // truth and reappear exactly on the agent's exit edge. Covers codex,
       // which has no hooks (the setResumeBinding arm never fires for it).
-      if (managed) agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
+      // #919: a banner naming a DIFFERENT slug than the tracked one is launch
+      // evidence — the old pick's death poll can lag a fresh launch by up to
+      // one monitor cadence, so force the probe instead of no-op'ing on the
+      // stale "alive" state.
+      if (managed) {
+        const tracked = agentProcessTracker.identityFor(payload.sessionId);
+        // Only a LIVE conflicting pick needs the forced probe — a tracked
+        // pick that already DIED is exactly the case plain arm() handles
+        // (alive=false lets it re-probe), and rearm() would burn its 10s
+        // cooldown for nothing, potentially blocking the real launch probe
+        // moments later (review #3).
+        if (tracked?.slug !== undefined && tracked.slug !== slug && tracked.alive) {
+          agentProcessTracker.rearm(payload.sessionId, managed.meta.pid);
+        } else {
+          agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
+        }
+      }
+    }
+    // #919 — canonical identity decides what the pane IS. The screen tier
+    // (nothing stronger known) keeps today's behavior exactly: persist the
+    // detected slug. Hook/process tiers correct it; the residue veto
+    // (canonical undefined on a confirmed-dead same-slug read) persists
+    // nothing. arm() above is fire-and-forget, so the FIRST banner on an
+    // unarmed pane still resolves screen-tier — corrected on the tracker's
+    // attribution callback or the next event once the probe lands.
+    const canonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, slug);
+    if (canonical && managed && managed.meta.lastDetectedAgent !== canonical.slug) {
+      managed.meta.lastDetectedAgent = canonical.slug;
+      // X6 ②: persist IMMEDIATELY, not debounced. lastDetectedAgent is the
+      // SOLE basis for the post-reboot resume offer (resumeOfferForRecovered
+      // reads it off the persisted session). A real OS reboot SIGKILLs the
+      // daemon — flush()/process.on('exit') never run — so a 30s debounce
+      // (or the periodic snapshot) can drop a fresh detection that has no
+      // other state-changing event to opportunistically flush it. The
+      // !== slug guard above bounds this to one sync write per agent
+      // transition (effectively once per idle agent pane), so the cost is
+      // negligible vs. the durability it buys.
+      stateWriter.saveImmediate(buildState(sessionManager));
     }
     // M1: the daemon owns hook-vs-detector arbitration now — the hook lands
     // here, not in main, so main can no longer run it and reads the outcome
@@ -4466,10 +4567,21 @@ function wireEvents(
     // and stays: lastDetectedAgent persistence, resume-chip arm, the
     // recovered-set deletes.
     if (arbitration.decision === 'pending') return;
+    // #919 — a detector event contradicted by a tier-1/2 canonical identity
+    // is a false detection: suppress the broadcast entirely (data.agent is
+    // NEVER rewritten — main keys notification dedup off it and the
+    // arbitration stamp describes the raw detection).
+    if (detectorSuppressedBy(canonical, slug)) return;
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,
-      data: { ...payload.event, ...arbitration },
+      data: {
+        ...payload.event,
+        ...arbitration,
+        // #919 — additive identity stamp for future consumers; main ignores
+        // unknown fields today.
+        ...(canonical ? { identity: { slug: canonical.slug, source: canonical.source } } : {}),
+      },
     };
     pipeServer.broadcast(event);
   });
@@ -5556,6 +5668,31 @@ async function main(): Promise<void> {
   // interactive panes so the chip can gate on process truth instead of the
   // decaying activity heuristic. Rides processMonitor's existing batch.
   const agentProcessTracker = new AgentProcessTracker(processMonitor);
+  // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
+  // inputs change (attribution completes; a watched process dies) while no
+  // detector event is in flight, and a wrong label would otherwise sit in
+  // lastDetectedAgent until the next unrelated event. On the death edge the
+  // pane's hook authority ALSO expires — the 30-min detector veto belongs to
+  // the dead launch's generation, and left alone it would keep suppressing
+  // every completion of a relaunched same-slug agent whose hooks are broken
+  // (Codex #12). No identity-flip agent.event is fabricated (its lifecycle
+  // status semantics would invent completions); the label self-heals through
+  // activity.active / getAgentName on the next output burst.
+  agentProcessTracker.setStateChangeListener((sessionId, state) => {
+    if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) return;
+    const screenSlug = managed.bridge.getLastAgent();
+    const canonical = canonicalIdentityFor(
+      agentProcessTracker,
+      sessionId,
+      screenSlug ? agentDisplayToSlug(screenSlug) : undefined,
+    );
+    if (canonical && managed.meta.lastDetectedAgent !== canonical.slug) {
+      managed.meta.lastDetectedAgent = canonical.slug;
+      stateWriter.saveImmediate(buildState(sessionManager));
+    }
+  });
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
   // counters, never the control pipe's = G1) bound to the configured NIC, with

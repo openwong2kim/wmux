@@ -34,6 +34,7 @@ import type {
   AgentSignalKind,
   AgentSlug,
 } from './signal-types';
+import { isAgentSlug } from '../agentIdentity';
 import type { SignalLatencyMeter } from './SignalLatencyMeter';
 
 /** Default dedup window. 10s chosen by eng review 2026-05-22 after measuring
@@ -91,8 +92,14 @@ export class HookSignalRouter {
   private readonly windowMs: number;
   private readonly authorityTtlMs: number;
   /** ptyId → last bridge signal for that pane (any kind, incl. non-emit
-   *  SessionStart/activity). Drives the detector veto — see HOOK_AUTHORITY_TTL_MS. */
-  private readonly authority = new Map<string, { agent: string; lastSignalAt: number }>();
+   *  SessionStart/activity). Drives the detector veto — see HOOK_AUTHORITY_TTL_MS —
+   *  and (daemon-side, #919) the canonical identity tier. `exact` records
+   *  whether the signal was routed by exact ptyId or via the cwd-prefix
+   *  fallback: only exact-routed authority may decide identity alone. */
+  private readonly authority = new Map<
+    string,
+    { agent: string; lastSignalAt: number; exact: boolean }
+  >();
 
   constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number; authorityTtlMs?: number }) {
     this.latencyMeter = deps.latencyMeter;
@@ -105,9 +112,50 @@ export class HookSignalRouter {
    * Called by hooks.rpc on every resolved signal — including the non-emit
    * kinds (SessionStart, agent.activity) — so authority freshness tracks
    * "the bridge is alive for this pane", not "a toast just fired".
+   *
+   * `exact` (default true) marks signals routed by exact ptyId; the daemon's
+   * cwd-prefix fallback passes false — #919 lets only exact-routed authority
+   * decide identity uncorroborated, since a cwd guess can attach to a
+   * neighboring pane.
    */
-  touchAuthority(ptyId: string, agent: string, now: number = Date.now()): void {
-    this.authority.set(ptyId, { agent, lastSignalAt: now });
+  touchAuthority(
+    ptyId: string,
+    agent: string,
+    now: number = Date.now(),
+    exact = true,
+  ): void {
+    this.authority.set(ptyId, { agent, lastSignalAt: now, exact });
+  }
+
+  /**
+   * #919 — the pane's hook authority within the map TTL, as identity input:
+   * which agent's bridge signaled, how long ago, and with which routing
+   * provenance. Undefined past the 30-min TTL (the caller applies the much
+   * shorter identity TTL to `ageMs` on the uncorroborated path only).
+   */
+  authorityAgentFor(
+    ptyId: string,
+    now: number = Date.now(),
+  ): { slug: AgentSlug; ageMs: number; exact: boolean } | undefined {
+    const entry = this.authority.get(ptyId);
+    if (!entry || !isAgentSlug(entry.agent)) return undefined;
+    const ageMs = now - entry.lastSignalAt;
+    if (ageMs >= this.authorityTtlMs) return undefined;
+    return { slug: entry.agent, ageMs, exact: entry.exact };
+  }
+
+  /**
+   * #919 — expire the pane's authority on CONFIRMED process death. The 30-min
+   * veto belongs to the dead launch's generation: left alone it suppresses
+   * every detector completion of a relaunched same-slug agent whose hooks are
+   * broken. `onlyAgent` scopes the expiry to that agent's entry so a death of
+   * process A never strips process B's authority.
+   */
+  expireAuthorityFor(ptyId: string, onlyAgent?: string): void {
+    const entry = this.authority.get(ptyId);
+    if (!entry) return;
+    if (onlyAgent !== undefined && entry.agent !== onlyAgent) return;
+    this.authority.delete(ptyId);
   }
 
   /**
