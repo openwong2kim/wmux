@@ -55,7 +55,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 │ (mantle)  │                                  │ │icon tabs │ │
 │           │                                  │ ├ Fleet ───┤ │
 │           │                                  │ ├ Orch ────┤ │
-│           │                                  │ └ busy bar ┘ │
+│           │ [agent bar — overlay, on hover]   │ └ busy bar ┘ │
 └───────────┴──────────────────────────────────┴──────────────┘
 ```
 
@@ -74,6 +74,14 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   They render ONLY when nonzero — no dead gauges, no extra chrome row.
   (Owner decision 2026-07-12: the always-on bottom instrument strip read as
   dead chrome at "0 running" and was removed the same day it landed.)
+- **Agent verbs = one workspace-spanning bar, overlaid on the grid's bottom
+  edge and revealed on approach** (owner decision 2026-08-18, reverting the
+  2026-08-15 split). It answers "does this shrink the hero?" with *no*: it
+  takes no layout row, so no PTY is resized when it appears. Because it sits
+  exactly where the terminal's prompt line lives, the reveal is guarded — a
+  dwell delay, suppressed under a held pointer button and on keystrokes, and a
+  keep-alive band as tall as the bar. A pin toggle makes it the plain always-on
+  strip for operators who want that.
 - The terminal grid always gets the largest area. Any new surface must justify
   itself against "does this shrink the hero?"
 
@@ -141,8 +149,9 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   header/footer, pane tab strip, deck tabs — is exactly 36px
   (`h-9`) so hairlines across the three columns land on the same y. A new
   chrome row must justify deviating from the module. The workspace-spanning
-  agent toolbar was removed (2026-08-15): pane verbs live on the focused tab
-  cluster, fleet spawn on the selected workspace card.
+  agent toolbar keeps the module but **spends none of it**: it overlays the
+  workspace column instead of taking a row (2026-08-18), so the terminals
+  never lose the height and no PTY is resized when it appears.
 - Base unit 4px. Density: compact-leaning (rows 26–30px).
 - Radii: **5px buttons/controls · 6px inputs · 7px cards/panels**. Never larger
   on chrome. Full-round only for status dots and count badges.
@@ -214,3 +223,4 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-07-20 | Git·Review=워크스페이스 헤더 탭(중앙 상단 행 우측)+중앙 전체 표면, 페인 탭=터미널·브라우저(·diff·editor) 전용 (같은 날 시안 A 페인-탭 결정을 대체) | Git·Review는 워크스페이스 단위 데이터인데 페인 surface 탭에 붙여 어색한 동작이 연쇄됐다(세트가 첫 터미널에 붙음, 분할 시 한쪽만, 다른 페인에서 점프, 좁은 탭 잘림). 헤더 탭으로 승격해 워크스페이스 스코프와 맞추고, 클릭 시 페인 그리드를 덮는 중앙 표면(GitTab/ReviewTab, max-w-720)으로 연다. 페인 그리드는 display로만 숨겨 터미널 PTY를 살린다. GitTab은 cwd prop 없이 활성 페인 cwd를 라이브로 따라간다 |
 | 2026-08-14 | Deck header = icon strip (Agent · Git · Channels · web, 36px glyphs); collapsed deck = a 36px vertical glyph rail on the deck's edge; the Agent · Git · Channels · web rows at the sidebar's foot are gone | Three text tabs ate the entire header of a 248–320px column. The entry points sat on the opposite edge (the sidebar's foot) and disappeared outright when the sidebar was collapsed (MiniSidebar never carried them) — what opens the deck lives on the deck's edge. The tab name and the current orchestrator model moved to the tooltip / accessible name |
 | 2026-08-15 | Agent verbs leave the workspace-spanning 36px toolbar and go home: compose (⌘G) + attach + new-conversation on the focused pane tab cluster; Broadcast is a compose target (This pane / All N terminals, All N armed 4s); Multi Task / Start agents on the selected workspace card (deck header only when the sidebar is collapsed). No titlebar verbs, no hover bar, no bottom strip | Chrome must match blast radius. A pane verb owned by both panes in a split lied; a fleet spawn that unmounted at 0 agents could not start a fleet; the 36px strip stole a chrome module from the terminals |
+| 2026-08-18 | Reverts 2026-08-15. The agent verbs are one workspace-spanning bar again (attach · files · snippets · rich input ⌘G · Broadcast · Multi Task · new conversation), but it OVERLAYS the workspace column and is revealed on approach rather than always on. The pane tab cluster keeps split · browser · zoom only; the sidebar card and deck header carry no fan-out trigger. A pin toggle restores the always-on strip per operator | Owner call: the split homes cost more than the ownership precision bought. Three entry points for one verb (empty card / roster header / deck header, each with its own label and visibility rule) meant no muscle memory, and a 420px form opened from a 240px column covered the hero. Overlaying answers the objection the removal was built on — the bar spends no chrome module, so the terminals lose nothing — while the reveal is guarded so it cannot fight the prompt line it sits over: a dwell delay, suppressed under a held pointer button (drag-select) and on keystrokes, and a keep-alive band the height of the bar so it does not retreat from the cursor reaching for it |

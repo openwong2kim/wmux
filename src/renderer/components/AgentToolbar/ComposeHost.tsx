@@ -1,18 +1,18 @@
-import { useComposeShortcut } from '../../hooks/useComposeShortcut';
 import { useStore } from '../../stores';
-import ComposePopover from './ComposePopover';
 import FanOutDialog from './FanOutDialog';
 import { placePopover } from './placePopover';
 import { createPortal } from 'react-dom';
 
 /**
- * Layout-level host. Always mounted so ⌘G / Ctrl+G survives inject-chrome
- * being hidden, and so FanOutDialog never lives inside the sidebar scroller.
+ * Layout-level portal host for FanOutDialog, so the dialog never lives inside
+ * the toolbar's stacking context (or, before that, the sidebar scroller).
+ *
+ * It no longer hosts a compose popover: with the agent toolbar restored
+ * (2026-08-18) ⌘G belongs to the toolbar's Rich Input again. Keeping both
+ * meant one keypress opened two popovers — the toolbar's own and this host's —
+ * since both watched `toolbarPopover === 'rich'`.
  */
 export default function ComposeHost() {
-  useComposeShortcut();
-  const popover = useStore((s) => s.toolbarPopover);
-  const ctx = useStore((s) => s.composeContext);
   const fanOutWorkspaceId = useStore((s) => s.fanOutWorkspaceId);
   const fanOutAnchor = useStore((s) => s.fanOutAnchor);
   const closeFanOut = useStore((s) => s.closeFanOut);
@@ -27,21 +27,16 @@ export default function ComposeHost() {
     ? placePopover(fanOutAnchor, { width: 420, height: fanOutHeight })
     : null;
 
-  return (
-    <>
-      {popover === 'rich' && ctx && (
-        <ComposePopover paneId={ctx.paneId} ptyId={ctx.ptyId} />
-      )}
-      {fanOutWorkspaceId && fanOutPos && createPortal(
-        <div
-          data-testid="fanout-host"
-          className="fixed"
-          style={{ top: fanOutPos.top, left: fanOutPos.left, zIndex: 'var(--z-popover-top)' }}
-        >
-          <FanOutDialog workspaceId={fanOutWorkspaceId} onClose={closeFanOut} />
-        </div>,
-        document.body,
-      )}
-    </>
+  if (!fanOutWorkspaceId || !fanOutPos) return null;
+
+  return createPortal(
+    <div
+      data-testid="fanout-host"
+      className="fixed"
+      style={{ top: fanOutPos.top, left: fanOutPos.left, zIndex: 'var(--z-popover-top)' }}
+    >
+      <FanOutDialog workspaceId={fanOutWorkspaceId} onClose={closeFanOut} />
+    </div>,
+    document.body,
   );
 }

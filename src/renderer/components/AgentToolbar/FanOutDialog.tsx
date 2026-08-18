@@ -295,9 +295,17 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
       <div className="space-y-2 mb-2">
         {Array.from({ length: n }, (_, k) => (
           <div key={k} className="rounded-[5px] border border-[var(--bg-overlay)] p-1.5">
+            {/* Title + role on one row, the derived branch name on its own line
+                below. All three competed for a 420px dialog: the title Input
+                was `flex-1` WITHOUT `min-w-0` (so its `min-width: auto` refused
+                to shrink), the role select sizes to its longest option text,
+                and the slug was `shrink-0` — the row overflowed the card, the
+                title field collapsed to a sliver, and the slug left the dialog
+                entirely. The slug is derived feedback, not an input, so it does
+                not belong in the same competition. */}
             <div className="flex items-center gap-2 mb-1">
               <Input
-                className="flex-1 text-[12px]"
+                className="min-w-0 flex-1 text-[12px]"
                 value={titles[k] ?? ''}
                 onChange={(e) => setTitleAt(k, e.target.value)}
                 data-testid={`fanout-title-${k}`}
@@ -308,10 +316,12 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
                   how one fan-out puts its review task on a different CLI than
                   its build tasks. Unbound roles stay selectable — the task then
                   launches on the command above, unchanged. */}
+              {/* Capped: a bound role reads "Reviewer — claude", which would
+                  otherwise size the select wide enough to squeeze the title. */}
               <select
                 aria-label={t('fanout.roleLabel', { k: k + 1 })}
                 className="ui-input shrink-0 text-[11px] py-0.5"
-                style={{ minWidth: 92 }}
+                style={{ minWidth: 92, maxWidth: 148 }}
                 value={roles[k] ?? ''}
                 onChange={(e) => setRoleAt(k, e.target.value)}
                 data-testid={`fanout-role-${k}`}
@@ -323,9 +333,13 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
                   </option>
                 ))}
               </select>
-              <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
-                wtask/{previewSlug(titles[k] ?? '') || '…'}
-              </span>
+            </div>
+            <div
+              className="mb-1 truncate text-[9px] text-[var(--text-muted)] font-mono"
+              title={`wtask/${previewSlug(titles[k] ?? '')}`}
+              data-testid={`fanout-slug-${k}`}
+            >
+              wtask/{previewSlug(titles[k] ?? '') || '…'}
             </div>
             {mode === 'parallel' && (
               <>
