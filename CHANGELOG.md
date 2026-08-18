@@ -3,7 +3,7 @@
 ### Added
 
 - **An opt-in `+` for a second terminal in the same pane.** Settings → Terminal
-  → "New-terminal button on the tab strip", off by default and labelled
+  → "New-terminal button on the tab strip", off by default and labeled
   experimental: wmux is built around one pane = one terminal, and splitting is
   the usual way to get another. Turning it on is choosing to work differently,
   which is why it is a setting rather than new chrome for everyone (#909).
@@ -40,8 +40,6 @@
 
 - Relative timestamps ("5m ago") are localised along with the rest of the
   interface (#913).
-
-- **Agent verbs left the bottom toolbar.** Compose (`⌘G`), attach, and new conversation live on the focused pane's tab cluster. Broadcast is a compose target (`This pane` / `All N terminals`, with a 4-second arm on All N). Multi Task sits on the selected workspace card (`Start agents` when the fleet is empty; the Agent deck header only when the sidebar is collapsed). The 36px workspace-spanning strip is gone. (#916)
 
 - **Settings tabs are grouped and renamed.** The same nine tabs, now under App / Agents / System. Claude Integration is labeled Accounts; LAN Link is labeled Network. Existing controls are unchanged — language is still the full locale list. (#925)
 
@@ -2064,7 +2062,7 @@ Thanks to the external contributors in this release:
 
 ### Changed
 
-- **Command deck cleanup.** The orchestrator tab is now labelled **Agent (model)** — e.g. `Agent (Sonnet 5)` — and clicking it while it's already active opens an inline model picker right there, so switching the orchestrator's model no longer needs a separate chip. The Multi Task/fan-out button lives on the agent toolbar (left of New chat), next to Broadcast, so a fleet can be spawned from the terminal chrome. The deck tabs also get a lighter look (truncating labels that survive a narrow deck, rounded count badges, a steel active underline).
+- **Command deck cleanup.** The orchestrator tab is now labeled **Agent (model)** — e.g. `Agent (Sonnet 5)` — and clicking it while it's already active opens an inline model picker right there, so switching the orchestrator's model no longer needs a separate chip. The Multi Task/fan-out button lives on the agent toolbar (left of New chat), next to Broadcast, so a fleet can be spawned from the terminal chrome. The deck tabs also get a lighter look (truncating labels that survive a narrow deck, rounded count badges, a steel active underline).
 - **Daemon/session sockets moved from `~/.wmux-*.sock` into `~/.wmux/`.** One shared path helper now feeds the daemon, main, and CLI (they each computed the path separately before), keeps `sun_path` under the macOS 104-byte limit, and stops littering the home directory. A live pre-upgrade daemon keeps working: the control pipe rides the existing hint file, session connects fall back to the legacy path once on ENOENT, and a stored legacy default pipe name migrates in config load.
 - **Terminal font fallback chain now covers macOS** (Menlo, SF Mono, Monaco, Apple SD Gothic Neo) ahead of the generic monospace it used to fall straight to; UI font stack leads with `system-ui` instead of unbundled Inter/Segoe UI.
 
@@ -2098,7 +2096,7 @@ Thanks to the external contributors in this release:
 ### Changed
 
 - **A driving loop now proposes its own completion instead of idling to the budget.** When an autonomous (Continue) loop judges its objective met — the done-when checklist all passing, or the goal plainly achieved with no checklist — it now raises a confirm-completion decision (`Mark done` / `Keep going`) and stops, rather than continuing to auto-wake until the iteration budget runs out. Because a pending decision halts every wake, a finished overnight loop pauses for your confirmation instead of burning the rest of its budget doing nothing. You still have the final say; the brain never marks itself done.
-- **The loop's iteration budget reads as "pause after N auto-wakes" now.** The bare "iterations: 25" field never said what an iteration was; it's now labelled `pause after [25] auto-wakes` with a plain-language tooltip (one wake ≈ one iteration; raise it for long unattended runs), so the number means something when you set it.
+- **The loop's iteration budget reads as "pause after N auto-wakes" now.** The bare "iterations: 25" field never said what an iteration was; it's now labeled `pause after [25] auto-wakes` with a plain-language tooltip (one wake ≈ one iteration; raise it for long unattended runs), so the number means something when you set it.
 - **The loop setup dialog now shows what the loop will actually be allowed to do, and defaults to acting instead of just watching.** Because a loop's real authority is `min(workspace mode, tier)` and the approval-press capability lives on the workspace *mode* (Auto), the modal previously hid a trap: you could configure a "Continue" loop expecting unattended approvals, then it would stall on the first prompt because the workspace was only Assist. The dialog now reads the workspace mode and spells out the effective authority (`drive panes` / `press approvals`, each ✓/✗) with a one-line hint — "raise the workspace to Auto to press approvals unattended", or a warning when the mode is Off. The tier also defaults to **Continue** now (was Report-only), since "Start a loop" that only observes read as inert on first use; the dangerous caps stay gated on the mode, so the active default is safe.
 - **Fan-out is now Multi Task (한국어: 병렬 작업) — and it can run N *different* jobs in parallel.** The dialog previously sent one shared prompt to every spawned task, which only covered the "same work, N attempts" scenario. Each task row now has its own prompt field: fill the shared prompt for common context, the per-task prompt for that task's actual job, or both (they're combined). A Compete/Parallel toggle makes the two use cases explicit — Compete collapses the dialog to just the shared prompt, Parallel shows per-task fields. Task count is now a row of click targets (1–8) instead of a slider. A task can also have no prompt at all: it opens with just the worktree and an idle agent pane for you to type into by hand, instead of being rejected.
 - **A running loop's authority now composes with the workspace mode instead of overriding it.** Loop caps were a blanket write that forced approval-press off, so raising the workspace to `auto` and starting a loop paradoxically *lost* approval authority — the most autonomous mode plus a mission was weaker than the mode alone. Loop caps are now `min(mode ceiling, tier)`: the mode is the standing trust ceiling, the loop tier narrows it. A `report` loop only observes; a `continue` loop drives panes and — only when the workspace mode is `auto` — presses approvals, making `auto` + loop the true unattended supervisor while `assist` + loop stays notify-on-approval. The dangerous press capability now lives solely on the workspace mode (a deliberate standing choice), never on a per-loop dropdown. Changing the mode mid-loop re-narrows the new ceiling by the loop's tier rather than blowing the tier away.
