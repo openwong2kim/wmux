@@ -99,3 +99,26 @@ export function resolveCanonicalAgentIdentity(inputs: {
   if (screenSlug) return { slug: screenSlug, source: 'screen' };
   return undefined;
 }
+
+/**
+ * #919 — the suppression test shared by both detector-emission sites: a
+ * DETECTOR-origin event whose screen slug is contradicted by a tier-1/2
+ * (hook/process) canonical identity must not broadcast at all — a false
+ * detection should not notify, which also beats relabeling it. Screen-tier
+ * canonical (nothing stronger than the screen itself) and unconstrained
+ * events (canonical undefined) broadcast unchanged.
+ *
+ * An ABSENT screen slug is not a contradiction. A display name this build
+ * cannot map (a new agent, a renamed banner) says nothing about identity, and
+ * these events carry status and liveness as well as a label — suppressing them
+ * would cost the pane its running/idle updates over a name we merely failed to
+ * parse. resolveCanonicalAgentIdentity already treats an absent slug as "no
+ * constraint"; this test has to agree with it.
+ */
+export function detectorSuppressedBy(
+  canonical: CanonicalAgentIdentity | undefined,
+  screenSlug?: AgentSlug,
+): boolean {
+  if (screenSlug === undefined) return false;
+  return canonical !== undefined && canonical.source !== 'screen' && canonical.slug !== screenSlug;
+}

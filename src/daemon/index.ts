@@ -49,7 +49,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
-import { resolveCanonicalAgentIdentity, type CanonicalAgentIdentity } from './canonicalAgent';
+import { resolveCanonicalAgentIdentity, detectorSuppressedBy, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -166,17 +166,8 @@ function canonicalIdentityFor(
   });
 }
 
-/**
- * #919 — the suppression test shared by both detector-emission sites: a
- * DETECTOR-origin event whose screen slug is contradicted by a tier-1/2
- * (hook/process) canonical identity must not broadcast at all — a false
- * detection should not notify, which also beats relabeling it. Screen-tier
- * canonical (nothing stronger than the screen itself) and unconstrained
- * events (canonical undefined) broadcast unchanged.
- */
-function detectorSuppressedBy(canonical: CanonicalAgentIdentity | undefined, screenSlug?: AgentSlug): boolean {
-  return canonical !== undefined && canonical.source !== 'screen' && canonical.slug !== screenSlug;
-}
+/* detectorSuppressedBy lives in canonicalAgent.ts beside the tier rule it
+   guards — it is pure, and that module is where the rule is unit tested. */
 
 /**
  * The one device roster in this process. A second instance would be a second
