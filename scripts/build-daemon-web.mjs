@@ -73,6 +73,12 @@ const pairQueryJs = read(join(frontendDir, 'pairQuery.js'));
 // actually goes wrong — is unit-tested against the exact bytes the phone runs,
 // without evaluating the whole app IIFE.
 const touchScrollJs = read(join(frontendDir, 'touchScroll.js'));
+// Kitty keyboard-protocol negotiation fold. Separate so the state machine is
+// unit tested against the exact bytes the pane emits, without a DOM or xterm.
+const keyboardProtocolJs = read(join(frontendDir, 'keyboardProtocol.js'));
+// Copy / paste / newline key decisions. Separate so the chord table is unit
+// tested against the exact bytes the phone runs, without a DOM or xterm.
+const copyPasteKeysJs = read(join(frontendDir, 'copyPasteKeys.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -81,6 +87,8 @@ html = inject(html, '/*__XTERM_JS__*/', xtermJs);
 html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
 html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
+html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
+html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -129,14 +137,17 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines five scripts (xterm, attentionFormat, pairQuery,
-// touchScroll, app) and one style block (xterm css + our css). A count that
-// moved means index.html grew or lost a block and nobody re-read this gate;
-// refuse rather than guess which. Raised 3 → 4 when pairQuery.js was added for
-// QR pairing, 4 → 5 when touchScroll.js was added for #890: the policy itself
-// is derived from the served bytes, so an extra block is hashed like the others
-// — the count is here to make the change deliberate, not to cap it.
-if (blocks.scripts.length !== 5) fail(`expected 5 inline <script> blocks, found ${blocks.scripts.length}`);
+// The page inlines seven scripts (xterm, attentionFormat, pairQuery, touchScroll,
+// keyboardProtocol, copyPasteKeys, app) and one style block (xterm css + our
+// css). A count that moved means index.html grew or lost a block and nobody
+// re-read this gate; refuse rather than guess which. Raised 3 → 4 when
+// pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
+// for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
+// 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate: the
+// policy itself is derived from the served bytes, so an extra block is hashed
+// like the others — the count is here to make the change deliberate, not to cap
+// it.
+if (blocks.scripts.length !== 7) fail(`expected 7 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(

@@ -132,6 +132,51 @@
   var BASE_TITLE = document.title;
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var fleetTimer = null;
+  var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+
+  /**
+   * Copy text to the clipboard. `navigator.clipboard` needs a secure context,
+   * which a cleartext `--expose` page is not — fall back to the legacy
+   * textarea+execCommand trick so Ctrl+C still copies there. Auto-copy on
+   * selection is best-effort: the browser may refuse a non-gesture write, and
+   * that failure is silent (Ctrl+C remains the reliable path).
+   *
+   * @param {string} text the selection (or other text) to copy.
+   */
+  function copyToClipboard(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { legacyCopy(text); });
+    } else {
+      legacyCopy(text);
+    }
+  }
+
+  /**
+   * Legacy clipboard fallback for a non-secure context: park the text in an
+   * off-screen textarea, select it, and run `document.execCommand('copy')`.
+   *
+   * @param {string} text the text to copy.
+   */
+  function legacyCopy(text) {
+    // Focusing the temp textarea moves focus off the terminal; when it is
+    // removed, focus lands on <body> and subsequent typing/paste goes nowhere
+    // until the user clicks. Stash the owner and hand focus back when done —
+    // debounced select-to-copy fires this on every settled selection on a
+    // cleartext page, so the leak would be constant there.
+    var owner = document.activeElement;
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* no clipboard in this context */ }
+    document.body.removeChild(ta);
+    if (owner && owner.focus && owner !== document.body) { try { owner.focus(); } catch (e) { /* torn down */ } }
+  }
 
   function newTerm(cols, rows) {
     return new Terminal({
@@ -183,6 +228,18 @@
     try { t.focus(); } catch (e) { /* torn down mid-tap */ }
   }
   if (termHost) termHost.addEventListener('click', function () { focusFromGesture(term); });
+  // Any click on the page (not just the terminal canvas) keeps the xterm
+  // textarea focused, so browser paste (Ctrl+V) — which needs that textarea to
+  // receive the paste event — still lands after touching chrome. Skip real
+  // inputs so their own focus isn't stolen. Matching `tagName` misses every
+  // button here, since each one wraps its label/icon in a SPAN or SVG; a
+  // closest() walk past the content node is the reliable test.
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || typeof t.closest !== 'function') { focusFromGesture(term); return; }
+    if (t.closest('button, input, textarea, select, a, label, [contenteditable]')) return;
+    focusFromGesture(term);
+  }, true);
 
   // Repaint gate: how many snapshots are currently being fed to the parser.
   //
@@ -217,6 +274,136 @@
     }
   }
 
+  /**
+   * Per-session kitty-keyboard-protocol state (see keyboardProtocol.js). Each
+   * pane negotiates independently — an app that pushes kitty on (codex, some
+   * editors) vs one that never does (bash) — so the fold is keyed by session,
+   * not global. Filled from the pane stream: snapshot resets (a re-attach
+   * replays the pane's screen, negotiation included — a protocol the app turned
+   * off before we attached must not survive as stale), data folds
+   * incrementally.
+   *
+   * NOTE this fold is a *fallback*, not the primary signal: Claude Code never
+   * emits a kitty push, yet understands `\x1b[13;2u` — the desktop relies on
+   * that (newlineKeys.ts sends the byte unconditionally). So an agent pane
+   * (session.agent) is treated as accepting CSI-u outright; the fold only
+   * decides for plain shells, where a kitty push is the one safe signal (bash
+   * reads `\x1b[13;2u` as ESC + `[13;2u` and a stray `;` — see #931).
+   */
+  var keyboardStates = {};
+  function foldKeyboardState(sessionId, bytes, isSnapshot) {
+    var kb = window.wmuxKeyboardProtocol;
+    if (!kb) return;
+    var prev = (isSnapshot || !keyboardStates[sessionId])
+      ? kb.INITIAL_STATE
+      : keyboardStates[sessionId];
+    keyboardStates[sessionId] = kb.foldRemoteKeyboardState(prev, bytes);
+  }
+  /** Whether a pane understands the CSI-u Shift+Enter byte. */
+  function paneAcceptsCsiU(sessionId) {
+    // Claude Code (and any other detected agent) accepts CSI-u by contract —
+    // it is why the desktop sends the byte unconditionally. A shell's claim is
+    // decided by the kitty fold instead.
+    var s = sessions.filter(function (x) { return x.id === sessionId; })[0];
+    if (s && s.agent) return true;
+    var kb = window.wmuxKeyboardProtocol;
+    if (!kb) return false;
+    return kb.acceptsCsiU(keyboardStates[sessionId] || kb.INITIAL_STATE);
+  }
+
+  /**
+   * Copy / newline / paste / swallow key decisions for ONE terminal, plus
+   * debounced select-to-copy — shared by the 1-up view (`ensureTerm`) and every
+   * split tile (`makeTile`), so a browser pane behaves the same in both. Focus
+   * policy stays with the caller: a tile never grabs focus, a 1-up pane does.
+   *
+   * @param {Terminal} term the xterm instance to wire.
+   * @param {function(string): void} send sends bytes to THIS terminal's pane
+   *        (a tile must not send to whichever pane is currently focused).
+   * @param {boolean} readOnly whether the pane is read-only (newline keys and
+   *        paste become no-ops; copy still works).
+   * @param {function(): boolean} acceptsCsiU whether THIS pane negotiated the
+   *        kitty keyboard protocol (drives the Shift+Enter byte; see
+   *        keyboardProtocol.js). A tile must query ITS session's state.
+   */
+  function attachTerminalKeys(term, send, readOnly, acceptsCsiU) {
+    // xterm exposes the custom key handler as a METHOD, not a constructor
+    // option. Wired here so Ctrl+C-with-a-selection copies instead of SIGINT,
+    // Shift+Enter / Ctrl+Enter insert a newline, and Ctrl+V / Ctrl+D fall back
+    // to the browser / xterm default.
+    var selectionCopyTimer = null;
+    term.attachCustomKeyEventHandler(function (ev) {
+      try {
+        var decision = window.wmuxWebKeys.decideWebKey(ev, {
+          isMac: isMac,
+          hasSelection: term.hasSelection(),
+          readOnly: readOnly,
+          remoteAcceptsCsiU: acceptsCsiU ? acceptsCsiU() : false
+        });
+        if (!decision) return true;
+        // Copy: an explicit Ctrl+C must cancel any pending debounced auto-copy.
+        // The user selecting then pressing Ctrl+C within the 150ms debounce
+        // window would otherwise start TWO clipboard writes — the explicit one
+        // now, and the timer's a moment later — and that concurrent write is
+        // exactly the burst that makes Chromium reject and fall into the
+        // blocking legacyCopy path (see the onSelectionChange comment below).
+        // The explicit copy is authoritative; drop the timer.
+        if (decision.action === 'copy') {
+          if (selectionCopyTimer) {
+            clearTimeout(selectionCopyTimer);
+            selectionCopyTimer = null;
+          }
+          // preventDefault like every other acting branch: returning false
+          // only stops xterm, and the browser's own copy would still fire off
+          // any DOM selection, racing this write for the clipboard.
+          ev.preventDefault();
+          copyToClipboard(term.getSelection());
+          return false;
+        }
+        // Newline keys (Shift+Enter / Ctrl+Enter / Ctrl+J). preventDefault is
+        // required — returning false alone only stops xterm's keydown handler,
+        // and the browser's own Shift+Enter default (a newline in the hidden
+        // textarea) would fire xterm's `input` handler, which sends the
+        // textarea content to the PTY. That appended \n after our CSI-u byte
+        // makes bash submit `;2u` and report a syntax error — the exact bug
+        // the desktop avoids by calling preventDefault (useTerminal.ts).
+        if (decision.action === 'newline') { ev.preventDefault(); send(decision.data); return false; }
+        // 'swallow': consume the key entirely. preventDefault is required so
+        // the browser's own default (e.g. a bookmark dialog) does not fire on
+        // top of our no-op — returning false alone only stops xterm.
+        if (decision.action === 'swallow') { ev.preventDefault(); return false; }
+        // 'paste': xterm must NOT process Ctrl+V (it would encode SYN and
+        // swallow the browser's paste). Returning false tells xterm to step
+        // aside entirely, so the browser's own paste event lands on the
+        // focused xterm textarea — whose native paste listener already sends
+        // it to the pane. Works on cleartext pages, no secure-context API.
+        if (decision.action === 'paste') return false;
+        return true;
+      } catch (e) {
+        console.error('[wmux-web-keys] decision failed:', e);
+        return true; // never break normal keys
+      }
+    });
+    // Select-to-copy, like a local wmux pane. xterm fires onSelectionChange
+    // once per CELL during a drag — a 50-char selection is 50 events — so a
+    // raw per-event copy issues a burst of concurrent writeText calls.
+    // Chromium serializes clipboard writes; the stragglers reject and their
+    // legacyCopy execCommand('copy') blocks synchronously on the clipboard
+    // lock, freezing the page for tens of seconds (select → Ctrl+C → Ctrl+V
+    // repro). Debounce to the settled selection, matching the desktop's
+    // autoSelectionCopy.ts. Best-effort on a cleartext page (the browser may
+    // refuse a non-gesture clipboard write) — Ctrl+C remains the reliable
+    // path there.
+    term.onSelectionChange(function () {
+      var sel = term.getSelection();
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionCopyTimer = setTimeout(function () {
+        selectionCopyTimer = null;
+        if (sel) copyToClipboard(sel);
+      }, 150);
+    });
+  }
+
   function ensureTerm(cols, rows) {
     if (!term) {
       term = newTerm(cols, rows);
@@ -232,6 +419,10 @@
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
       });
+      attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); });
+      // Auto-focus so typing and Ctrl+V work without a click first — a browser
+      // only delivers the paste event to the focused xterm textarea.
+      if (allowInput) term.focus();
     } else if (cols && rows) {
       term.resize(cols, rows);
     }
@@ -1227,6 +1418,10 @@
       attention: true,
       meta: function (m) { ensureTerm(m.cols, m.rows); },
       snapshot: function (bytes) {
+        // Snapshot replays the pane's screen, kitty negotiation included —
+        // reset before folding so a protocol the app turned off earlier does
+        // not survive as stale.
+        foldKeyboardState(sessionId, bytes, true);
         if (term) {
           repaint(term, bytes,
             function () { termRepaints += 1; },
@@ -1234,8 +1429,14 @@
         }
         hideOverlay();
         setConn('live', 'live');
+        // The pane is now visible and interactive — focus it so typing / paste
+        // need no click (a browser only delivers paste to the focused xterm).
+        if (allowInput && term) term.focus();
       },
-      data: function (bytes) { if (term) term.write(bytes); },
+      data: function (bytes) {
+        foldKeyboardState(sessionId, bytes, false);
+        if (term) term.write(bytes);
+      },
       exit: function () { setConn('ended', 'ended'); },
       open: function () { setConn('live', 'live'); },
       error: function () { setConn('reconnect', 'reconnecting…'); diagnoseStreamError(); }
@@ -1368,6 +1569,14 @@
         sendTo(tile.sessionId, d);
       });
     }
+    // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
+    // selection must copy here too, never SIGINT the tile's process. Sends go
+    // to THIS tile's pane, not whichever one is focused. Focus policy stays
+    // local (a tile never grabs focus), which is why this is a caller arg.
+    // OUTSIDE `if (allowInput)`: a read-only split tile still needs copy —
+    // select-to-copy and Ctrl+C-with-selection must work there, only typing is
+    // gated on allowInput (the readOnly flag passed here decides newline/paste).
+    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); });
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 
@@ -1378,6 +1587,9 @@
         rescale();
       },
       snapshot: function (bytes) {
+        // Snapshot replays the pane's screen, kitty negotiation included —
+        // reset before folding (see connect()'s snapshot for the rationale).
+        foldKeyboardState(tile.sessionId, bytes, true);
         if (tile.term) {
           repaint(tile.term, bytes,
             function () { tile.repaints += 1; },
@@ -1386,7 +1598,10 @@
         rescale();
         if (tile.sessionId === currentSession) setConn('live', 'live');
       },
-      data: function (bytes) { if (tile.term) tile.term.write(bytes); },
+      data: function (bytes) {
+        foldKeyboardState(tile.sessionId, bytes, false);
+        if (tile.term) tile.term.write(bytes);
+      },
       exit: function () {
         tile.ended = true;
         renderTileHead(tile);
