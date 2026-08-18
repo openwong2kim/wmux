@@ -1181,6 +1181,8 @@ export const zh = {
   'toolbar.fanOutMultiTask': '多任务',
   'toolbar.new': '新建',
   'toolbar.newChat': '新对话',
+  'toolbar.pin': '固定工具栏',
+  'toolbar.unpin': '取消固定 — 指针靠近底边时才显示',
   'toolbar.send': '发送',
   'toolbar.addToPrompt': '添加到提示词',
   'toolbar.close': '关闭',

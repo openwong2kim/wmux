@@ -17,11 +17,14 @@ export default function ComposeHost() {
   const fanOutAnchor = useStore((s) => s.fanOutAnchor);
   const closeFanOut = useStore((s) => s.closeFanOut);
 
+  // Height must match what the dialog can actually take (`max-h-[70vh]`), not a
+  // fixed 560: guessing short let placePopover keep a top that the taller
+  // dialog then overflowed, clipping its repo field and Launch button.
+  const fanOutHeight = typeof window === 'undefined'
+    ? 560
+    : Math.round(window.innerHeight * 0.7);
   const fanOutPos = fanOutWorkspaceId
-    ? placePopover(
-      fanOutAnchor ? { top: fanOutAnchor.top, left: fanOutAnchor.left, right: fanOutAnchor.left, bottom: fanOutAnchor.top } : null,
-      { width: 420, height: 560 },
-    )
+    ? placePopover(fanOutAnchor, { width: 420, height: fanOutHeight })
     : null;
 
   return (

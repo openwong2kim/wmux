@@ -71,6 +71,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
+import ToolbarHost from '../AgentToolbar/ToolbarHost';
 import Titlebar from '../Titlebar/Titlebar';
 import {
   createDeadPaneRecovery,
@@ -288,6 +289,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     layoutTemplates: state.layoutTemplates.filter((t) => !t.builtin),
     recentCommands: state.recentCommands.length > 0 ? state.recentCommands : undefined,
     agentToolbarEnabled: state.agentToolbarEnabled,
+    agentToolbarPinned: state.agentToolbarPinned,
     agentToolbarSnippets: state.toolbarSnippets.length > 0 ? state.toolbarSnippets : undefined,
     agentToolbarNewCommand: state.newConversationCommand,
   };
@@ -1634,7 +1636,9 @@ export default function AppLayout() {
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
       <ErrorBoundary name="Main">
-      <div className="flex-1 min-w-0 flex flex-col">
+      {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
+          rather than taking a row, so revealing it never resizes a PTY. */}
+      <div className="flex-1 min-w-0 flex flex-col relative">
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}
@@ -1652,6 +1656,9 @@ export default function AppLayout() {
         <FocusManager />
         <ErrorBoundary name="ComposeHost">
           <ComposeHost />
+        </ErrorBoundary>
+        <ErrorBoundary name="AgentToolbar">
+          <ToolbarHost />
         </ErrorBoundary>
       </div>
       </ErrorBoundary>

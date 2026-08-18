@@ -1042,6 +1042,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.recentCommands) state.recentCommands = data.recentCommands;
       if (data.agentToolbarEnabled != null) state.agentToolbarEnabled = data.agentToolbarEnabled;
+      if (data.agentToolbarPinned != null) state.agentToolbarPinned = data.agentToolbarPinned;
       if (data.agentToolbarSnippets != null) state.toolbarSnippets = data.agentToolbarSnippets;
       if (data.agentToolbarNewCommand != null) state.newConversationCommand = data.agentToolbarNewCommand;
       if (data.prefixConfig) {

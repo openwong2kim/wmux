@@ -57,7 +57,7 @@ describe('agentToolbarSlice', () => {
   });
 
   it('openFanOut toggles the same workspace closed', () => {
-    useStore.getState().openFanOut('ws-1', { top: 10, left: 20 });
+    useStore.getState().openFanOut('ws-1', { top: 10, left: 20, right: 120, bottom: 46 });
     expect(useStore.getState().fanOutWorkspaceId).toBe('ws-1');
     useStore.getState().openFanOut('ws-1');
     expect(useStore.getState().fanOutWorkspaceId).toBeNull();

@@ -784,6 +784,8 @@ export const ko = {
   'toolbar.fanOutMultiTask': '병렬 작업',
   'toolbar.new': '새로',
   'toolbar.newChat': '새 대화',
+  'toolbar.pin': '툴바 고정',
+  'toolbar.unpin': '고정 해제 — 커서가 아래로 갈 때만 표시',
   'toolbar.send': '보내기',
   'toolbar.addToPrompt': '프롬프트에 추가',
   'toolbar.close': '닫기',

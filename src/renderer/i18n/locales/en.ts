@@ -1235,6 +1235,8 @@ export const en = {
   'toolbar.fanOutMultiTask': 'Multi Task',
   'toolbar.new': 'New',
   'toolbar.newChat': 'New chat',
+  'toolbar.pin': 'Keep the toolbar open',
+  'toolbar.unpin': 'Hide the toolbar until the pointer nears the bottom edge',
   'toolbar.send': 'Send',
   'toolbar.addToPrompt': 'Add to prompt',
   'toolbar.close': 'Close',

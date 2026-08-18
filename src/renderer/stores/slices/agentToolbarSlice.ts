@@ -17,15 +17,24 @@ export interface ComposeContext {
   ptyId: string;
 }
 
+/** Trigger rect in viewport coords. `right`/`bottom` are required: placePopover
+ *  right-aligns the dialog against `right`, so a synthesised rect that reused
+ *  `left` for it drove the dialog into the viewport's left pad. */
 export interface FanOutAnchor {
   top: number;
   left: number;
+  right: number;
+  bottom: number;
 }
 
 export interface AgentToolbarSlice {
   /** Whether inject chrome (compose / attach / Multi Task) mounts. Persisted (default true). */
   agentToolbarEnabled: boolean;
   setAgentToolbarEnabled: (enabled: boolean) => void;
+
+  /** Pinned = always-on strip; unpinned = reveal on approach. Persisted (default false). */
+  agentToolbarPinned: boolean;
+  setAgentToolbarPinned: (pinned: boolean) => void;
 
   /** Compose blast radius. Transient — reset to 'pane' on every open. */
   composeTarget: ComposeTarget;
@@ -72,6 +81,11 @@ export const createAgentToolbarSlice: StateCreator<
   agentToolbarEnabled: CHROME_PRESET_VALUES.standard.agentToolbarEnabled,
   setAgentToolbarEnabled: (enabled) => set((draft: StoreState) => {
     draft.agentToolbarEnabled = enabled;
+  }),
+
+  agentToolbarPinned: false,
+  setAgentToolbarPinned: (pinned) => set((draft: StoreState) => {
+    draft.agentToolbarPinned = pinned;
   }),
 
   toolbarSnippets: [],

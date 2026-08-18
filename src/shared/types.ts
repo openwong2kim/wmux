@@ -762,6 +762,7 @@ export interface SessionData {
   // Agent toolbar (2026-06-14). Non-sensitive prefs only — rich-input drafts
   // and transcript content are never persisted.
   agentToolbarEnabled?: boolean;
+  agentToolbarPinned?: boolean;
   agentToolbarSnippets?: { id: string; label: string; text: string }[];
   agentToolbarNewCommand?: string;
 }

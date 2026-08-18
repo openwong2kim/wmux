@@ -97,7 +97,13 @@ export default function FileExplorerPopover({ cwd: cwdProp, ptyId, onClose }: Fi
     onClose();
   };
 
-  const anchor = document.querySelector('[data-pane-action="attach"]')?.getBoundingClientRect() ?? null;
+  // Anchor off whichever trigger opened it. The toolbar's File button is the
+  // only home now (2026-08-18); the pane-cluster attach glyph is kept in the
+  // selector so a stale mount still lands somewhere sensible rather than
+  // centring itself.
+  const anchor = document
+    .querySelector('[data-toolbar-action="file-explorer"], [data-pane-action="attach"]')
+    ?.getBoundingClientRect() ?? null;
   const pos = placePopover(anchor, { width: 320, height: 320 });
 
   return createPortal(
