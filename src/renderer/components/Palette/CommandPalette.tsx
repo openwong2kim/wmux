@@ -271,6 +271,28 @@ export default function CommandPalette() {
         action: () => { useStore.getState().setFleetViewVisible(true); setVisible(false); },
       },
       {
+        // The keyboard route to fan-out. Its only other entry point is a button
+        // on the agent toolbar, which a minimal chrome preset switches off
+        // entirely — leaving the one path that creates task worktrees
+        // unreachable. This command does not care whether the bar exists.
+        label: t('palette.cmd.multiTask'),
+        action: () => {
+          const state = useStore.getState();
+          if (state.activeWorkspaceId) state.openFanOut(state.activeWorkspaceId, null);
+          setVisible(false);
+        },
+      },
+      {
+        // Pin/unpin the agent toolbar. Unpinned it is pointer-summoned, so
+        // without this a keyboard-only user has no way to make it stay.
+        label: t('palette.cmd.toggleToolbarPin'),
+        action: () => {
+          const state = useStore.getState();
+          state.setAgentToolbarPinned(!state.agentToolbarPinned);
+          setVisible(false);
+        },
+      },
+      {
         // J3 §1 — 태스크 정리 목록(전용 루트 디스크 정본 스캔).
         label: t('palette.cmd.openWorktaskCleanup'),
         action: () => { useStore.getState().setWorktaskCleanupVisible(true); setVisible(false); },

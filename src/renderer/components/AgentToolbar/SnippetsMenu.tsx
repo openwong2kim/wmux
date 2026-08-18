@@ -20,7 +20,7 @@ export default function SnippetsMenu({ ptyId }: { ptyId: string }) {
 
   return (
     <div
-      className="absolute bottom-full left-2 mb-1 w-72 rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-2 font-mono text-xs"
+      className="pointer-events-auto absolute bottom-full left-2 mb-1 w-72 rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-2 font-mono text-xs"
       data-testid="snippets-menu"
     >
       <div className="max-h-48 overflow-y-auto">

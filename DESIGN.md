@@ -76,12 +76,15 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   dead chrome at "0 running" and was removed the same day it landed.)
 - **Agent verbs = one workspace-spanning bar, overlaid on the grid's bottom
   edge and revealed on approach** (owner decision 2026-08-18, reverting the
-  2026-08-15 split). It answers "does this shrink the hero?" with *no*: it
-  takes no layout row, so no PTY is resized when it appears. Because it sits
-  exactly where the terminal's prompt line lives, the reveal is guarded — a
-  dwell delay, suppressed under a held pointer button and on keystrokes, and a
-  keep-alive band as tall as the bar. A pin toggle makes it the plain always-on
-  strip for operators who want that.
+  2026-08-15 split). It takes no layout row, so no PTY is resized when it
+  appears and the grid keeps its full height. Because it sits exactly where the
+  terminal's prompt line lives, the reveal is guarded — a dwell delay,
+  suppressed under a held pointer button and on keystrokes, and a keep-alive
+  band as tall as the bar. The bar's own background is `pointer-events: none`
+  and only its controls claim a hit area, so the two terminal rows it floats
+  over keep their clicks and text selection. A pin toggle makes it the plain
+  always-on strip; ⌘K carries the fan-out and pin commands so a minimal chrome
+  preset (bar off) still reaches them.
 - The terminal grid always gets the largest area. Any new surface must justify
   itself against "does this shrink the hero?"
 

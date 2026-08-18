@@ -227,7 +227,10 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   return (
     <div
       // Portaled by ComposeHost — relative so the host's fixed position owns placement.
-      className={`${align === 'right' ? 'ml-auto' : ''} relative z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
+      // overflow-x-hidden is explicit: the sticky footer's `-mx-3` reaches past
+      // the padding box, and `overflow-y-auto` alone computes overflow-x to
+      // `auto` — which would hand a 420px dialog a horizontal scrollbar.
+      className={`${align === 'right' ? 'ml-auto' : ''} relative z-50 max-h-[70vh] overflow-y-auto overflow-x-hidden rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
       style={{ width: 'min(420px, calc(100vw - 24px))' }}
       data-testid="fanout-dialog"
     >
@@ -424,7 +427,13 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
         )}
       </code>
 
-      <div className="flex items-center justify-end gap-2">
+      {/* Pinned footer. The dialog is a 70vh scroll container, so with the
+          actions in normal flow the primary action sat below the fold — you
+          had to scroll a form to find out how to submit it. Sticky keeps
+          Launch reachable at every scroll position; the negative margins undo
+          the dialog's own padding so the bar spans the full width and content
+          scrolls under it rather than beside it. */}
+      <div className="sticky bottom-0 -mx-3 -mb-3 flex items-center justify-end gap-2 border-t border-[var(--bg-overlay)] bg-[var(--bg-mantle)] px-3 py-2">
         <Button variant="secondary" onClick={onClose}>
           {t('fanout.cancel')}
         </Button>

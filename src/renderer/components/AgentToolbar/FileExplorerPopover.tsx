@@ -111,6 +111,11 @@ export default function FileExplorerPopover({ cwd: cwdProp, ptyId, onClose }: Fi
       className="fixed w-80 max-h-80 overflow-y-auto rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl p-1 font-mono text-xs"
       style={{ top: pos.top, left: pos.left, zIndex: 'var(--z-popover-top)' }}
       data-testid="file-explorer"
+      // This portal lives on document.body, outside the toolbar's DOM. The
+      // marker tells the toolbar's outside-click test that a click in here is
+      // still "inside" — without it the popover unmounted on mousedown and the
+      // row's own click never ran.
+      data-toolbar-owned=""
     >
       {!cwd && (
         <p className="text-[var(--text-muted)] px-2 py-2">{t('toolbar.noWorkingDir')}</p>

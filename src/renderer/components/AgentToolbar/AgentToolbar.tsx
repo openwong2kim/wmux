@@ -3,7 +3,7 @@ import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
-import { injectText, quotePathsForPrompt } from './inject';
+import { attachFilesToPty, injectText } from './inject';
 import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
@@ -12,6 +12,11 @@ import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers,
 
 /** Bar height — also the travel distance of the reveal transform. */
 export const AGENT_TOOLBAR_HEIGHT = 36;
+
+/** Marks a surface that BELONGS to the toolbar even though it renders through
+ *  a portal. The outside-click test consults it, so a portalled popover is not
+ *  mistaken for a click elsewhere and torn down before it can act. */
+export const TOOLBAR_OWNED_ATTR = 'data-toolbar-owned';
 
 /**
  * The workspace-spanning agent toolbar (restored 2026-08-18, owner call).
@@ -30,9 +35,11 @@ interface AgentToolbarProps {
   revealed: boolean;
   /** Signals "a popover is open" so the host can hold the bar visible. */
   onHoldChange: (hold: boolean) => void;
+  /** Focus reached a control — reveal so it is visible while focused. */
+  onFocusEnter: () => void;
 }
 
-export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: AgentToolbarProps) {
+export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFocusEnter }: AgentToolbarProps) {
   const t = useT();
   // A1: 활성 ws의 포커스 pty만 필요 — 활성 ws OBJECT만 구독(배경 ws churn 무시).
   const activeWorkspace = useStore(selectActiveWorkspace);
@@ -48,30 +55,55 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
   const containerRef = useRef<HTMLDivElement>(null);
   const broadcastBtnRef = useRef<HTMLButtonElement>(null);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [newArmed, setNewArmed] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const disabled = !ptyId;
 
   // Anything open below the bar must keep it on screen — a popover whose
   // trigger vanished under the pointer is the failure mode hover bars are
-  // notorious for.
-  const hold = popover !== null || showBroadcast || fanOutOpen;
+  // notorious for. `toolbarPopover` is global and the popovers themselves are
+  // gated on `ptyId`, so a pane closing under an open popover left the state
+  // set with nothing rendered — and the bar held open forever. Hold only for
+  // popovers that can actually be on screen.
+  const popoverOnScreen = popover !== null && !!ptyId;
+  const hold = popoverOnScreen || showBroadcast || fanOutOpen;
   useEffect(() => { onHoldChange(hold); }, [hold, onHoldChange]);
 
-  const handleAttach = useCallback(async () => {
+  // Losing the focused terminal invalidates every popover here; clear the
+  // global flag too so nothing else reads a popover that cannot render.
+  useEffect(() => {
+    if (!ptyId && popover !== null) setPopover(null);
+  }, [ptyId, popover, setPopover]);
+
+  const handleAttach = useCallback(() => {
     if (!ptyId) return;
-    const paths = await window.electronAPI.dialog.pickFile();
-    if (paths.length === 0) return;
-    await injectText(ptyId, quotePathsForPrompt(paths), false);
+    void attachFilesToPty(ptyId);
   }, [ptyId]);
 
+  // Two-step, like the pane cluster's button was: the default command is
+  // `/clear`, which discards the agent's conversation. A single stray click on
+  // a bar that appears under the pointer must not be able to do that.
   const handleNew = useCallback(() => {
     if (!ptyId) return;
+    if (!newArmed) { setNewArmed(true); return; }
     void injectText(ptyId, newCommand, true);
-  }, [ptyId, newCommand]);
+    setNewArmed(false);
+  }, [ptyId, newCommand, newArmed]);
 
-  const togglePopover = (name: 'explorer' | 'snippets' | 'rich') =>
+  useEffect(() => {
+    if (!newArmed) return;
+    const id = window.setTimeout(() => setNewArmed(false), 4000);
+    return () => window.clearTimeout(id);
+  }, [newArmed]);
+
+  // Every open path closes the others. Fan-out already cleared these; without
+  // the reverse the two dialogs could sit on top of each other.
+  const togglePopover = (name: 'explorer' | 'snippets' | 'rich') => {
+    if (fanOutOpen) closeFanOut();
+    setShowBroadcast(false);
     setPopover(popover === name ? null : name);
+  };
 
   // Fan-out opens through the store so its dialog portals out of this bar's
   // stacking context. The anchor is the button's REAL rect: placePopover
@@ -91,10 +123,17 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); setPopover(null); }
     };
+    // "Outside" cannot be decided by the bar's DOM alone: FileExplorerPopover
+    // portals to document.body, so a click on one of its rows is outside
+    // containerRef. Closing on that mousedown unmounted the popover before its
+    // own click could run — the explorer looked alive and inserted nothing.
+    // Portalled children of this bar count as inside.
     const onDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setPopover(null);
-      }
+      const target = e.target as HTMLElement | null;
+      if (!containerRef.current || !target) return;
+      if (containerRef.current.contains(target)) return;
+      if (target.closest?.(`[${TOOLBAR_OWNED_ATTR}]`)) return;
+      setPopover(null);
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
@@ -104,34 +143,16 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
     };
   }, [popover, setPopover]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
-        // Don't hijack Ctrl/Cmd+G while the user is typing in the toolbar's own
-        // editable fields (Rich Input textarea, Snippet inputs). Editable
-        // elements OUTSIDE the toolbar (notably the focused terminal's xterm
-        // textarea) must still toggle Rich Input — that's the primary entry.
-        const el = e.target as HTMLElement | null;
-        if (el && containerRef.current && containerRef.current.contains(el)) {
-          const tag = el.tagName;
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return;
-        }
-        const state = useStore.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (!focusedTerminalPtyId(ws)) return;
-        e.preventDefault();
-        const cur = useStore.getState().toolbarPopover;
-        setPopover(cur === 'rich' ? null : 'rich');
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [setPopover]);
+  /* ⌘G is owned by ToolbarHost (useComposeShortcut), which mounts above the
+     enabled gate so the binding survives the bar being switched off. */
 
   // Quiet chrome (design-system cohesion): buttons are text-first with no box
   // until hovered/active — the toolbar reads as part of the frame, not a row
   // of widgets competing with the terminals.
-  const btn = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[5px] border border-transparent text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  // `pointer-events-auto` on every control: the bar's own background stays
+  // transparent to the terminal underneath (see the container style), so each
+  // interactive child has to claim its own hit area.
+  const btn = 'pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[5px] border border-transparent text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const idle = 'ui-ghost';
   const active = 'ui-ghost-active';
 
@@ -148,13 +169,27 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
       className="wmux-toolbar absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 h-9 px-2.5 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)] transition-transform duration-150 ease-out"
       style={{
         transform: revealed ? 'translateY(0)' : `translateY(${AGENT_TOOLBAR_HEIGHT}px)`,
-        // The host is pointer-events:none so the grid keeps its clicks; the bar
-        // opts back in, but only once it is actually on screen.
-        pointerEvents: revealed ? 'auto' : 'none',
+        // The bar's own background never takes pointer events: it covers the
+        // bottom ~2 rows of the terminal, and claiming them would steal the
+        // clicks and drag-selection that belong to the text underneath —
+        // permanently, once pinned. Only the controls opt in (`.ui-toolbar-hit`
+        // below), so the gaps between them stay transparent to the terminal.
+        pointerEvents: 'none',
       }}
-      // Hidden from AT while off-screen; the palette commands remain the
-      // keyboard route either way.
-      aria-hidden={!revealed}
+      // `inert` (not just aria-hidden) while off-screen: aria-hidden alone left
+      // eight buttons in the tab order, so Tab walked into invisible controls
+      // and focus could be trapped inside an aria-hidden subtree.
+      //
+      // `hold` is OR-ed in because it is computed here, synchronously, while
+      // `revealed` arrives from the host one render later. Without it ⌘G
+      // mounted Rich Input inside a still-inert bar, where its autofocus was
+      // silently dropped — focus stayed on the terminal, and Escape then went
+      // to xterm instead of closing the popover.
+      inert={!revealed && !hold}
+      aria-hidden={!revealed && !hold}
+      // Keyboard users get here by focus, not by pointer: focusing any control
+      // reveals the bar so it is visible while it has focus.
+      onFocusCapture={onFocusEnter}
       data-testid="agent-toolbar"
       data-revealed={revealed ? 'true' : 'false'}
     >
@@ -202,8 +237,20 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
       >
         <IconSparkles size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.fanOut')}</span>
       </button>
-      <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.newChat')}>
-        <IconPlus size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.newChat')}</span>
+      <button
+        className={`${btn} ${newArmed ? active : idle}`}
+        disabled={disabled}
+        onClick={handleNew}
+        title={newArmed
+          ? t('toolbar.newConversationConfirm')
+          : `${t('toolbar.newChat')} (${newCommand})`}
+        data-testid="new-conversation"
+        data-armed={newArmed ? 'true' : 'false'}
+      >
+        <IconPlus size={13} />
+        <span className="wmux-toolbar-label whitespace-nowrap">
+          {newArmed ? t('toolbar.newConversationConfirm') : t('toolbar.newChat')}
+        </span>
       </button>
       {/* Pin — the escape hatch from reveal-on-approach. Pinned, this is the
           plain always-on strip; unpinned it stays out of the terminal's way. */}
@@ -217,6 +264,9 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange }: Ag
         <IconLock size={12} />
       </button>
 
+      {/* These three render INSIDE the bar, which is pointer-events:none, so
+          each claims its own hit area at its root (FileExplorerPopover portals
+          to document.body and is therefore unaffected). */}
       {popover === 'explorer' && ptyId && (
         <FileExplorerPopover ptyId={ptyId} onClose={() => setPopover(null)} />
       )}

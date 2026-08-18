@@ -326,6 +326,8 @@ export const en = {
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.openBrowser': 'Open Browser',
   'palette.cmd.openFleetView': 'Open Fleet View',
+  'palette.cmd.multiTask': 'Multi Task — spawn parallel agents',
+  'palette.cmd.toggleToolbarPin': 'Pin / unpin the agent toolbar',
   'palette.cmd.openWorktaskCleanup': 'Open Task Cleanup List',
   'palette.cmd.showGitDiff': 'Show Git Diff',
   // J3 — task cleanup list (WorktaskCleanupView)

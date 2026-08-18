@@ -747,6 +747,8 @@ export const zh = {
   'palette.cmd.movePane.up': '将面板上移',
   'palette.cmd.movePane.down': '将面板下移',
   'palette.cmd.openFleetView': '打开舰队视图',
+  'palette.cmd.multiTask': '多任务 — 启动并行智能体',
+  'palette.cmd.toggleToolbarPin': '固定 / 取消固定智能体工具栏',
   'palette.cmd.openWorktaskCleanup': '打开任务清理列表',
   'palette.cmd.showGitDiff': '显示 Git 差异',
   'worktask.cleanup.title': '任务清理列表',

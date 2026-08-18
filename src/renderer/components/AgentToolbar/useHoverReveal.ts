@@ -31,6 +31,8 @@ interface HoverReveal {
     onPointerEnter: () => void;
     onPointerLeave: () => void;
   };
+  /** Reveal because focus arrived — the keyboard route in. */
+  revealForFocus: () => void;
 }
 
 /**
@@ -93,14 +95,29 @@ export function useHoverReveal({ pinned, hold, hostRef, keepAlivePx }: HoverReve
   // Pointer position watch + the two suppressors. All three live on one effect
   // so they share the same capture-phase registration order.
   useEffect(() => {
+    // The host rect is cached and refreshed by ResizeObserver instead of being
+    // read per event: getBoundingClientRect() on every pointermove forces a
+    // synchronous layout in the same frame xterm is painting.
+    let rect: DOMRect | null = null;
+    const measure = () => { rect = hostRef.current?.getBoundingClientRect() ?? null; };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ro && hostRef.current) ro.observe(hostRef.current);
+    window.addEventListener('resize', measure);
+    // The column also moves when chrome around it opens or closes without the
+    // host itself resizing (sidebar/deck toggles), so re-measure on scroll too.
+    document.addEventListener('scroll', measure, true);
+
     const onMove = (e: PointerEvent) => {
       // A move re-arms the typing guard: the user reached for the mouse, so the
       // chrome is wanted again.
       typingRef.current = false;
+      // Self-heal: a move with no button held proves the drag is over, whatever
+      // happened to its pointerup.
+      if (draggingRef.current && e.buttons === 0) draggingRef.current = false;
       if (draggingRef.current) return;
-      const host = hostRef.current;
-      if (!host) return;
-      const rect = host.getBoundingClientRect();
+      if (!rect) measure();
+      if (!rect) return;
       const insideX = e.clientX >= rect.left && e.clientX <= rect.right;
       // Hysteresis: a hidden bar needs the thin arming band, a revealed one
       // holds across its whole height so the pointer can reach its buttons.
@@ -110,11 +127,21 @@ export function useHoverReveal({ pinned, hold, hostRef, keepAlivePx }: HoverReve
       else scheduleHide();
     };
     const onDown = () => { draggingRef.current = true; };
+    // Every way a press can END, not just the happy one. A pointerup that
+    // never arrives — released outside the window, swallowed by a native
+    // context menu, cancelled by a touch gesture — used to leave the flag set
+    // forever, and onMove returns early while it is, so the bar could never
+    // appear again for the rest of the session.
     const onUp = () => { draggingRef.current = false; };
+    const onBlur = () => { draggingRef.current = false; };
     const onKeyDown = (e: KeyboardEvent) => {
       // Modifier-only presses are not "typing" — ⌘/Ctrl chords reach the bar's
       // own shortcuts and must not make it flinch.
       if (e.key === 'Control' || e.key === 'Meta' || e.key === 'Alt' || e.key === 'Shift') return;
+      // Typing INTO the bar (Rich Input, snippet fields) is not a reason to
+      // hide the bar you are typing into.
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.('[data-testid="agent-toolbar"], [data-toolbar-owned]')) return;
       typingRef.current = true;
       clearTimers();
       setHovering(false);
@@ -122,11 +149,18 @@ export function useHoverReveal({ pinned, hold, hostRef, keepAlivePx }: HoverReve
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('pointerup', onUp, true);
+    document.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('blur', onBlur);
     document.addEventListener('keydown', onKeyDown, true);
     return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+      document.removeEventListener('scroll', measure, true);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerdown', onDown, true);
       document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('blur', onBlur);
       document.removeEventListener('keydown', onKeyDown, true);
     };
   }, [hostRef, keepAlivePx, scheduleReveal, scheduleHide, clearTimers]);
@@ -140,8 +174,17 @@ export function useHoverReveal({ pinned, hold, hostRef, keepAlivePx }: HoverReve
   }, []);
   const onBarLeave = useCallback(() => { scheduleHide(); }, [scheduleHide]);
 
+  // Focus is the keyboard's way in: Tab reaching a control must bring the bar
+  // on screen, not leave the user driving something they cannot see.
+  const revealForFocus = useCallback(() => {
+    typingRef.current = false;
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+    setHovering(true);
+  }, []);
+
   return {
     revealed: pinned || hold || hovering,
     barHandlers: { onPointerEnter: onBarEnter, onPointerLeave: onBarLeave },
+    revealForFocus,
   };
 }
