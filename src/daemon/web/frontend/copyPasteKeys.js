@@ -35,6 +35,9 @@
    * @param opts { isMac, hasSelection, readOnly, remoteAcceptsCsiU }
    * @returns null to pass through to xterm/browser; or
    *          { action: 'copy' } — copy the selection to the clipboard;
+   *          { action: 'paste' } — decline the key so xterm neither encodes
+   *            nor preventDefaults it, leaving the browser's own paste to land
+   *            on the focused textarea (see the Ctrl+V branch);
    *          { action: 'newline', data } — send the newline byte to the pane;
    *          { action: 'swallow' } — consume the key, do nothing.
    */
