@@ -207,7 +207,7 @@ export function renderConfirmationMarkdown({ plan, verdicts, original, reproduce
   lines.push('');
   lines.push(
     reproduced
-      ? '**Reproduced — the gate stands red.** The same metric failed on a second, independent measurement of the same code.'
+      ? '**Reproduced on the same runner — the gate stands red.** The same metric failed on a second measurement of the same code, taken on the machine that produced the first one. That separates a transient tail spike from a repeatable one; it cannot distinguish a code regression from a runner degraded for its whole lifetime (#940).'
       : '**Not reproduced — the gate is cleared.** Every failing metric came back within bounds on a second measurement of the same code. The first run\'s numbers are still in the trend and in this run\'s artifact; if this keeps happening on one metric, that is a calibration problem worth its own issue rather than a re-run.',
   );
   lines.push('');
@@ -408,7 +408,7 @@ export function confirmGate({
 
   if (outcome.reproduced) {
     const which = outcome.unresolved.map((v) => `${v.label} (${v.status})`).join(', ');
-    deps.log(`::error::Perf gate: the failure reproduced on a re-run — ${which}\n`);
+    deps.log(`::error::Perf gate: the failure reproduced on the same runner — ${which}\n`);
     return { cleared: false };
   }
   // A green earned through this re-run must not report LESS than a plain green
