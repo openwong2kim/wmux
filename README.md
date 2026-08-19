@@ -274,6 +274,6 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 <div align="center"><sub>⭐ Star history</sub><br>
 
-[![Star History](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
+[![Star History](https://star-history.dera.page/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.dera.page/#openwong2kim/wmux&Date)
 
 </div>
