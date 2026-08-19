@@ -468,12 +468,14 @@ describe('#942 inline preedit (Korean IME) — the pin never drags the preedit',
     expect(dom.textarea.style.transform).toBe('');
     expect(dom.compView.style.transform).toBe('');
 
-    // Echo arrives: cursor advances past the pinned cell, cells repaint.
+    // Echo arrives: cursor advances past the pinned cell, cells repaint. The
+    // render-path correction touches only the textarea; the preedit stays
+    // where xterm put it until the next composition event, exactly like stock
+    // xterm (following the per-frame cursor would chase mid-repaint
+    // transients — see syncPreedit).
     Object.assign(t.state, { cursorX: 25 });
     t.onRender.fire(undefined);
-    // The preedit is corrected forward onto the live caret even before xterm's
-    // next reposition; the pinned textarea has nothing to move yet.
-    expect(translateOf(dom.compView)?.dx).toBeCloseTo(2 * 10, 6);
+    expect(dom.compView.style.transform).toBe('');
     expect(dom.textarea.style.transform).toBe('');
 
     // Next compositionupdate: xterm re-anchors both children to the live caret.
@@ -520,29 +522,49 @@ describe('#942 inline preedit (Korean IME) — the pin never drags the preedit',
     expect(diag).toHaveBeenCalledTimes(1);
     expect(diag.mock.calls[0][0]).toMatchObject({ phase: 'start', dx: 0, dy: 0, preeditDx: 0, preeditDy: 0 });
 
+    // The echo alone changes nothing observable (the pin holds, the preedit
+    // waits for the next composition event) — no record burned.
     Object.assign(t.state, { cursorX: 25 });
     t.onRender.fire(undefined);
-    expect(diag).toHaveBeenCalledTimes(2);
-    expect(diag.mock.calls[1][0]).toMatchObject({ phase: 'update', dx: 0 });
-    expect(diag.mock.calls[1][0].preeditDx).toBeCloseTo(2 * 10, 6);
+    expect(diag).toHaveBeenCalledTimes(1);
 
+    // The compositionupdate that follows develops the pin offset — recorded.
     positionChildren(30, 25);
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
-    expect(diag).toHaveBeenCalledTimes(3);
-    expect(diag.mock.calls[2][0]).toMatchObject({ phase: 'update', preeditDx: 0 });
-    expect(diag.mock.calls[2][0].dx).toBeCloseTo(-2 * 10, 6);
+    expect(diag).toHaveBeenCalledTimes(2);
+    expect(diag.mock.calls[1][0]).toMatchObject({ phase: 'update', preeditDx: 0 });
+    expect(diag.mock.calls[1][0].dx).toBeCloseTo(-2 * 10, 6);
 
     // A quiet frame adds no record.
     t.onRender.fire(undefined);
-    expect(diag).toHaveBeenCalledTimes(3);
+    expect(diag).toHaveBeenCalledTimes(2);
 
     dom.textarea.dispatchEvent(new Event('compositionend'));
-    expect(diag).toHaveBeenCalledTimes(4);
-    expect(diag.mock.calls[3][0]).toMatchObject({ phase: 'end', dx: 0, dy: 0, preeditDx: 0, preeditDy: 0 });
+    expect(diag).toHaveBeenCalledTimes(3);
+    expect(diag.mock.calls[2][0]).toMatchObject({ phase: 'end', dx: 0, dy: 0, preeditDx: 0, preeditDy: 0 });
 
     // Post-composition renders never report.
     t.onRender.fire(undefined);
-    expect(diag).toHaveBeenCalledTimes(4);
+    expect(diag).toHaveBeenCalledTimes(3);
+    handle.dispose();
+  });
+
+  it('an agent streaming mid-composition never drags the preedit to transient cursors', () => {
+    // The 2-model panel finding on the first cut of this fix: a per-frame
+    // preedit follow re-opens cause 3 for the preedit. While a TUI repaints,
+    // the buffer cursor parks mid-frame on real JS turns; renders during a
+    // composition must leave the preedit where xterm put it.
+    const { dom, t, handle, positionChildren } = composeAt(30, 23);
+    positionChildren(30, 23);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(dom.compView.style.transform).toBe('');
+    // TUI repaint parks the cursor far away for a frame, then puts it back.
+    Object.assign(t.state, { cursorY: 5, cursorX: 100 });
+    t.onRender.fire(undefined);
+    expect(dom.compView.style.transform).toBe('');
+    Object.assign(t.state, { cursorY: 30, cursorX: 23 });
+    t.onRender.fire(undefined);
+    expect(dom.compView.style.transform).toBe('');
     handle.dispose();
   });
 

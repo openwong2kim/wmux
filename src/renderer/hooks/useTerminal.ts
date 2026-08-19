@@ -1120,13 +1120,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // (#942's field log was all zeros because the drag developed after the
     // start-only diagnostic had fired). Capped: the first few are all anyone
     // needs to diagnose, and the cap keeps it from filling main-*.log for the
-    // rest of the session. Remove the whole diagnostic once #874/#942 are
-    // confirmed fixed in the field.
-    let imeAnchorLogsLeft = 20;
+    // rest of the session. Budgeted per phase so one long composition's
+    // update/end records cannot burn the start budget (or vice versa) and
+    // silence the diagnostic for the rest of the session.
+    // Remove the whole diagnostic once #874/#942 are confirmed fixed in the
+    // field.
+    const imeAnchorLogsLeft = { start: 20, mid: 20 };
     const imeAnchor = attachImeAnchor(terminal, {
       onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, selY, selX }) => {
-        if (imeAnchorLogsLeft <= 0) return;
-        imeAnchorLogsLeft -= 1;
+        const budget = phase === 'start' ? 'start' : 'mid';
+        if (imeAnchorLogsLeft[budget] <= 0) return;
+        imeAnchorLogsLeft[budget] -= 1;
         // Mirrored into the main-side log file by src/main/index.ts's
         // console-message listener, so the user can share it. The "3" in the
         // tag marks the split-surface build so a shared log is unambiguous
@@ -1140,7 +1144,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src} held=${held.toFixed(0)}ms ` +
           `restAge=${restAge.toFixed(0)}ms cellHeight=${cellHeight.toFixed(2)} pin=(${dx.toFixed(1)},${dy.toFixed(1)}) ` +
           `preedit=(${preeditDx.toFixed(1)},${preeditDy.toFixed(1)})` +
-          (imeAnchorLogsLeft === 0 ? ' (last one, diagnostic capped)' : ''),
+          (imeAnchorLogsLeft[budget] === 0 ? ` (last ${budget} record, diagnostic capped)` : ''),
         );
       },
     });

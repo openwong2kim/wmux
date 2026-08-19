@@ -83,9 +83,10 @@
  * transform and the WebGL repaint restored the real cells, which is why the
  * buffer was never wrong, only the paint. So the pin applies to the textarea
  * alone, and the preedit gets the same anchor math against the live cursor,
- * never frozen — it still lands on the painted caret when the viewport is
- * scrolled (cause 1 applies to it too), and it follows the caret as commits
- * echo back mid-composition.
+ * never frozen — applied at xterm's own composition-event cadence (not per
+ * render frame, see syncPreedit) so it lands on the painted caret when the
+ * viewport is scrolled (cause 1 applies to it too) without chasing mid-repaint
+ * transient cursors.
  *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
@@ -478,8 +479,13 @@ export function attachImeAnchor(
   };
 
   /** Write-elided transform setter. #942 split the correction per child, so
-   *  each child carries its own last-applied pair. */
-  const makeTransformApplier = (el: HTMLElement): { set(dx: number, dy: number): void } => {
+   *  each child carries its own last-applied pair; `get` exposes it so the
+   *  diagnostic reports what is actually on the element, not a recomputed
+   *  value that may be zero while a stale transform persists. */
+  const makeTransformApplier = (el: HTMLElement): {
+    set(dx: number, dy: number): void;
+    get(): ImeAnchorCorrection;
+  } => {
     let lastDx = 0;
     let lastDy = 0;
     return {
@@ -489,13 +495,13 @@ export function attachImeAnchor(
         lastDy = dy;
         el.style.transform = dx === 0 && dy === 0 ? '' : `translate(${dx}px, ${dy}px)`;
       },
+      get(): ImeAnchorCorrection {
+        return { dx: lastDx, dy: lastDy };
+      },
     };
   };
   const textareaTransform = makeTransformApplier(textarea);
   const preeditTransform = compositionView ? makeTransformApplier(compositionView) : null;
-  // Last preedit correction actually applied, for the diagnostic.
-  let preeditDx = 0;
-  let preeditDy = 0;
 
   const sync = (): ImeAnchorCorrection | null => {
     if (!composing) {
@@ -509,34 +515,43 @@ export function attachImeAnchor(
       }
     }
     if (!isUsableGeometry(geometry)) return null;
-    const live = paintedCursorPosition(bufferState(), geometry);
-    // The preedit is NEVER pinned (#942): while composing it gets the same
-    // anchor math against the live cursor — the ydisp term xterm forgot plus
-    // whatever the caret did since xterm last wrote its styles — and outside a
-    // composition it carries no transform at all (xterm hides it anyway).
-    if (preeditTransform && compositionView) {
-      if (composing) {
-        const actualPreedit = readStyledPoint(compositionView);
-        if (actualPreedit) {
-          const c = computeImeAnchorCorrection(live, actualPreedit);
-          preeditDx = c.dx;
-          preeditDy = c.dy;
-          preeditTransform.set(c.dx, c.dy);
-        }
-      } else {
-        preeditDx = 0;
-        preeditDy = 0;
-        preeditTransform.set(0, 0);
-      }
-    }
     const actual = readStyledPoint(textarea);
     // xterm has not positioned the textarea yet (stylesheet default
     // `left: -9999em`). Nothing to correct against, and forcing a transform
     // now would only move the off-screen parking spot around.
     if (!actual) return null;
-    const correction = computeImeAnchorCorrection(frozen ?? live, actual);
+    const desired = frozen ?? paintedCursorPosition(bufferState(), geometry);
+    const correction = computeImeAnchorCorrection(desired, actual);
     textareaTransform.set(correction.dx, correction.dy);
     return correction;
+  };
+
+  /**
+   * The preedit is NEVER pinned (#942): while composing it gets the same
+   * anchor math against the live cursor — the ydisp term xterm forgot —
+   * and outside a composition it carries no transform (xterm hides it).
+   *
+   * Deliberately called only from the composition handlers, NOT from
+   * onRender/onScroll: at a composition event xterm has just written the
+   * preedit's styles from the same instantaneous cursor this reads, so the
+   * correction reduces to the ydisp term and the preedit's motion profile
+   * stays exactly stock xterm's. Following the cursor per render frame would
+   * re-open the cause-3 hole for the preedit — an agent streaming into the
+   * pane parks the cursor mid-repaint on real JS turns, and a per-frame
+   * follow would drag the composing syllable around the screen (2-model
+   * panel finding on the first cut of this fix).
+   */
+  const syncPreedit = (): void => {
+    if (!preeditTransform || !compositionView) return;
+    if (!composing) {
+      preeditTransform.set(0, 0);
+      return;
+    }
+    if (!isUsableGeometry(geometry)) return;
+    const actualPreedit = readStyledPoint(compositionView);
+    if (!actualPreedit) return;
+    const c = computeImeAnchorCorrection(paintedCursorPosition(bufferState(), geometry), actualPreedit);
+    preeditTransform.set(c.dx, c.dy);
   };
 
   const resetTracker = (): void => {
@@ -565,19 +580,23 @@ export function attachImeAnchor(
   let reportedPreeditDx = 0;
   let reportedPreeditDy = 0;
 
-  const emitDiagnostic = (phase: 'start' | 'update' | 'end', correction: ImeAnchorCorrection | null): void => {
+  const emitDiagnostic = (phase: 'start' | 'update' | 'end'): void => {
     if (!options.onCompositionDiagnostic || lastSel === null) return;
-    const dx = correction?.dx ?? 0;
-    const dy = correction?.dy ?? 0;
+    // Report what is actually applied to the elements, not the last computed
+    // correction — when sync() bails (unusable geometry, unpositioned
+    // textarea) a previous transform is still live, and reporting zeros there
+    // would recreate the all-zeros-log misdiagnosis #942 was filed with.
+    const { dx, dy } = textareaTransform.get();
+    const preedit = preeditTransform?.get() ?? { dx: 0, dy: 0 };
     if (phase !== 'start'
       && dx === reportedDx && dy === reportedDy
-      && preeditDx === reportedPreeditDx && preeditDy === reportedPreeditDy) {
+      && preedit.dx === reportedPreeditDx && preedit.dy === reportedPreeditDy) {
       return;
     }
     reportedDx = dx;
     reportedDy = dy;
-    reportedPreeditDx = preeditDx;
-    reportedPreeditDy = preeditDy;
+    reportedPreeditDx = preedit.dx;
+    reportedPreeditDy = preedit.dy;
     const b = bufferState();
     options.onCompositionDiagnostic({
       phase,
@@ -588,8 +607,8 @@ export function attachImeAnchor(
       cellHeight: geometry.cellHeight,
       dx,
       dy,
-      preeditDx,
-      preeditDy,
+      preeditDx: preedit.dx,
+      preeditDy: preedit.dy,
       src: lastSel.src,
       held: lastSel.held,
       restAge: lastSel.restAge,
@@ -615,43 +634,50 @@ export function attachImeAnchor(
     frozen = isUsableGeometry(geometry)
       ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;
-    emitDiagnostic('start', sync());
+    sync();
+    syncPreedit();
+    emitDiagnostic('start');
   };
 
   const onCompositionUpdate = (): void => {
     // xterm's own compositionupdate handler already ran (it registered first)
     // and re-anchored the children; correct on top of that. It also queues a
     // setTimeout(0) re-run of the same repositioning, so queue one behind it.
-    emitDiagnostic('update', sync());
+    sync();
+    syncPreedit();
+    emitDiagnostic('update');
     if (pendingCompositionSync !== null) clearTimeout(pendingCompositionSync);
     pendingCompositionSync = setTimeout(() => {
       pendingCompositionSync = null;
-      emitDiagnostic('update', sync());
+      sync();
+      syncPreedit();
+      emitDiagnostic('update');
     }, 0);
   };
 
   const onCompositionEnd = (): void => {
     composing = false;
     frozen = null;
-    emitDiagnostic('end', sync());
+    // A deferred update-sync from this composition must not straddle into the
+    // next one and report against its selection.
+    if (pendingCompositionSync !== null) {
+      clearTimeout(pendingCompositionSync);
+      pendingCompositionSync = null;
+    }
+    sync();
+    syncPreedit();
+    emitDiagnostic('end');
     lastSel = null;
   };
 
   // onRender fires after xterm has written the child styles for the frame, so
-  // reading them here never sees a half-updated position. Mid-composition this
-  // is also where a committed syllable's PTY echo lands (cursor advances, cells
-  // repaint), so the diagnostic samples here too — change-gated, so a quiet
-  // frame costs a few compares and no record.
-  const renderSub = terminal.onRender(() => {
-    const correction = sync();
-    if (composing) emitDiagnostic('update', correction);
-  });
+  // reading them here never sees a half-updated position. Only the textarea is
+  // corrected here — see syncPreedit for why the preedit must not follow the
+  // per-frame cursor.
+  const renderSub = terminal.onRender(() => sync());
   // xterm does NOT re-sync the textarea on scroll — that omission is half of
   // #874 — so this is where the scrolled-viewport correction actually lands.
-  const scrollSub = terminal.onScroll(() => {
-    const correction = sync();
-    if (composing) emitDiagnostic('update', correction);
-  });
+  const scrollSub = terminal.onScroll(() => sync());
   const resizeSub = terminal.onResize(onRefreshGeometry);
   // Coalesced per parse batch by xterm; the handler is a compare plus a few
   // number writes, so the streaming hot path stays cold.
