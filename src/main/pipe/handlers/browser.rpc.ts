@@ -70,15 +70,16 @@ export type BrowserCallerScopeDecision =
     }
   | {
       kind: 'scoped';
-      lane: 'pinned' | 'declared';
+      lane: 'pinned' | 'hosted' | 'declared';
       workspaceId: string;
     }
   | {
       kind: 'rejected';
-      lane: 'context' | 'pinned' | 'declared';
+      lane: 'context' | 'pinned' | 'hosted' | 'declared';
       reason: BrowserScopeShadowReason;
       requestedWorkspaceId?: string;
       pinnedWorkspaceId?: string;
+      hostedWorkspaceId?: string;
     };
 
 function requestedWorkspaceId(params: Record<string, unknown>): string | undefined {
@@ -114,17 +115,28 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           lookup; it is refused. This is the caller #810 describes.
  *   closes  a pinned commander can no longer name a workspace other than the
  *           one its validated token is bound to.
+ *   closes  (#922) an approved IFRAME PLUGIN can no longer act on a workspace
+ *           other than the one the user is in. It used to reach `declared` and
+ *           receive whatever workspace it named, while #719 already held it to
+ *           the active workspace for OBSERVATION — "may watch here, may act
+ *           anywhere" was an asymmetry, not a decision.
  *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
- *           it is the caller's own. Nothing in the main process binds a
- *           clientName to a workspace — `mcp.claimWorkspace` forwards to the
- *           renderer and records no server-side association — so a caller that
- *           names a foreign workspace is still accepted here, exactly as before.
+ *           it is the caller's own. For a WIRE caller nothing in the main
+ *           process binds a clientName to a workspace — `mcp.claimWorkspace`
+ *           forwards to the renderer and records no server-side association —
+ *           so one that names a foreign workspace is still accepted here.
  *   OPEN    the `legacy` lane (no `clientName`) stays allowed and unscoped, and
  *           `PermissionEnforcer` grandfathers the same callers. Dropping the
  *           identity envelope therefore still bypasses this.
  *
- * Both OPEN items need a caller-identity binding that does not exist yet; they
- * are tracked on #810 rather than papered over here.
+ * The hosted lane closes one caller CLASS, not the general problem: it works
+ * only because the plugin host derives both halves of the identity itself.
+ * Both OPEN items are wire callers, still need the peer-credential primitive
+ * that does not exist yet, and are tracked on #922.
+ *
+ * Ceiling, stated so the lane is not read as more than it is: this confines an
+ * APPROVED plugin to the scope its approval implied. It is not a defence
+ * against hostile code already running as the user.
  */
 export function callerScope(
   ctx: RpcContext | undefined,
@@ -179,6 +191,44 @@ export function callerScope(
       };
     }
     return { kind: 'scoped', lane: 'pinned', workspaceId: pinnedWorkspaceId };
+  }
+
+  // #922 — the hosted lane. The plugin host derives BOTH halves of this
+  // caller's identity: `clientName` is stamped from the manifest and
+  // `hostedWorkspace` is the workspace the host is showing. Neither is
+  // readable from the bridge envelope, so unlike `declared` this is an
+  // ownership fact rather than a claim, and it is applied with the pinned
+  // lane's exact rules: omitted resolves to it, a mismatch is refused.
+  const hostedWorkspaceId =
+    typeof ctx.hostedWorkspace === 'string' && ctx.hostedWorkspace.length > 0
+      ? ctx.hostedWorkspace
+      : undefined;
+  if (hostedWorkspaceId) {
+    // Mirror of the pinned lane's source check, pointed the other way: pinned
+    // must arrive on the local wire, hosted must arrive in-process. RpcRouter
+    // already refuses the option off the firstParty lane, so this is the
+    // fail-closed second reading rather than the only one. The operator is not
+    // tested here because it returns above — it may act across workspaces by
+    // design, and dispatch rejects operator + hostedWorkspace outright.
+    if (ctx.firstParty !== true || ctx.externalWire === true) {
+      return {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-source-unqualified',
+        ...(requested && { requestedWorkspaceId: requested }),
+        hostedWorkspaceId,
+      };
+    }
+    if (requested && requested !== hostedWorkspaceId) {
+      return {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-workspace-mismatch',
+        requestedWorkspaceId: requested,
+        hostedWorkspaceId,
+      };
+    }
+    return { kind: 'scoped', lane: 'hosted', workspaceId: hostedWorkspaceId };
   }
 
   if (!ctx.clientName) {
@@ -239,6 +289,10 @@ const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
     'a workspace-pinned caller must arrive on the local wmux wire',
   'pinned-workspace-mismatch':
     'address a surface in the workspace your token is bound to',
+  'hosted-source-unqualified':
+    'a host-bound caller must arrive through the in-process plugin host',
+  'hosted-workspace-mismatch':
+    'omit workspaceId and this resolves to the workspace you are hosted in',
   'workspace-unresolved':
     'send the workspaceId of the workspace you are calling from',
 };
@@ -366,6 +420,9 @@ export function registerBrowserRpc(
             }),
             ...(decision.pinnedWorkspaceId && {
               pinnedWorkspaceId: decision.pinnedWorkspaceId,
+            }),
+            ...(decision.hostedWorkspaceId && {
+              hostedWorkspaceId: decision.hostedWorkspaceId,
             }),
           });
         } catch {

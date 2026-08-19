@@ -114,6 +114,41 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
       .toMatchObject({ kind: 'response', id: 'after' });
   });
 
+  // #922 — every plugin request carries the workspace the HOST is showing, on
+  // its own channel, so main can tell what this caller IS from what it ASKED
+  // for. Read at request time rather than captured at load: the same port must
+  // report ws-2 after the user switches, without the bridge being rebuilt
+  // (making it an effect dependency is what #928 fixed).
+  it('sends the host workspace with each request and follows a switch', async () => {
+    act(() => {
+      root.render(React.createElement(PluginFrame, {
+        pluginName: 'demo',
+        entry: 'index.html',
+        forwardEvents: false,
+      }));
+    });
+
+    const iframe = container.querySelector('iframe')!;
+    const framePostMessage = vi.fn();
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      get: () => ({ postMessage: framePostMessage }),
+    });
+
+    await act(async () => { iframe.dispatchEvent(new Event('load')); });
+    const port = pluginPort(framePostMessage);
+    port.start();
+
+    await settledOrTimedOut(request(port, 'before', 'browser.navigate'));
+    expect(rpc).toHaveBeenLastCalledWith('demo', 'browser.navigate', {}, 'ws-1');
+
+    await act(async () => { useStore.setState({ activeWorkspaceId: 'ws-2' }); });
+
+    // Same port, no reload, no re-render of the bridge — only the store moved.
+    await settledOrTimedOut(request(port, 'after', 'browser.navigate'));
+    expect(rpc).toHaveBeenLastCalledWith('demo', 'browser.navigate', {}, 'ws-2');
+  });
+
   // A response belongs to the document that ASKED. The reload window is what
   // makes that observable: an rpc started on the old port resolves after the
   // new one exists, and answering on the current port hands the fresh document
@@ -203,12 +238,12 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
       await act(async () => { iframe.dispatchEvent(new Event('load')); });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
 
-      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-1' });
+      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-1' }, 'ws-1');
 
       await act(async () => { useStore.setState({ activeWorkspaceId: 'ws-2' }); });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
 
-      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-2' });
+      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-2' }, 'ws-2');
       // ...and never keeps polling the workspace the user left.
       const pollsAfterSwitch = rpc.mock.calls
         .slice(rpc.mock.calls.findIndex((c) => c[2]?.workspaceId === 'ws-2'))
@@ -243,7 +278,7 @@ describe('PluginFrame — bridge lifetime across a workspace switch', () => {
 
       await act(async () => { iframe.dispatchEvent(new Event('load')); });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-1' });
+      expect(rpc).toHaveBeenCalledWith('demo', 'events.poll', { workspaceId: 'ws-1' }, 'ws-1');
 
       // Swap the plugin: the bridge effect tears down and the new frame has
       // not loaded yet, so there is no port.

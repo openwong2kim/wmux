@@ -224,6 +224,79 @@ describe('RpcRouter dispatch provenance', () => {
     expect(systemIdentifyHandler).not.toHaveBeenCalled();
   });
 
+  it('threads the plugin host workspace onto the context it dispatches (#922)', async () => {
+    let seen: RpcContext | undefined;
+    router.register('system.identify', async (_params, ctx) => {
+      seen = ctx;
+      return { name: 'wmux' };
+    });
+
+    const response = await router.dispatch(
+      {
+        id: 'hosted',
+        method: 'system.identify',
+        params: { workspaceId: 'ws-other' },
+        clientName: 'hello-panel',
+      },
+      { firstParty: true, hostedWorkspace: 'ws-host' },
+    );
+
+    expect(response.ok).toBe(true);
+    // The option wins over anything the request carried: the params still say
+    // 'ws-other' and the context says 'ws-host'. Keeping both visible is the
+    // point — the handler decides, and it can only decide if it can tell them
+    // apart.
+    expect(seen?.hostedWorkspace).toBe('ws-host');
+    expect(seen?.firstParty).toBe(true);
+  });
+
+  it('never lets a request envelope populate the host workspace (#922)', async () => {
+    let seen: RpcContext | undefined;
+    router.register('system.identify', async (_params, ctx) => {
+      seen = ctx;
+      return { name: 'wmux' };
+    });
+
+    const response = await router.dispatch(
+      {
+        id: 'forged',
+        method: 'system.identify',
+        params: { hostedWorkspace: 'ws-forged' },
+        clientName: 'hello-panel',
+        // A wire client is free to put this on the envelope; it is not a
+        // field the router reads.
+        ...({ hostedWorkspace: 'ws-forged' } as Record<string, unknown>),
+      } as RpcRequest,
+      { externalWire: true },
+    );
+
+    expect(response.ok).toBe(true);
+    expect(seen?.hostedWorkspace).toBeUndefined();
+  });
+
+  it('rejects a host workspace supplied off the plugin-host lane (#922)', async () => {
+    for (const lane of [{ externalWire: true }, { operator: true }] as const) {
+      const response = await router.dispatch(
+        {
+          id: 'hosted-off-lane',
+          method: 'system.identify',
+          params: {},
+          clientName: 'claude-code',
+        },
+        { ...lane, hostedWorkspace: 'ws-host' } as unknown as DispatchOptions,
+      );
+
+      // Loud, not lenient: dropping the field would leave a context that reads
+      // as merely unscoped, which is the state this lane exists to end.
+      expect(response).toEqual({
+        id: 'hosted-off-lane',
+        ok: false,
+        error: 'Invalid RPC dispatch provenance',
+      });
+    }
+    expect(systemIdentifyHandler).not.toHaveBeenCalled();
+  });
+
   it('does not inherit external-wire provenance into an unmarked nested dispatch', async () => {
     records.set('claude-code', approved('claude-code'));
     router.register('system.identify', async () =>

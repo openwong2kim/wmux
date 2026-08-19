@@ -156,6 +156,91 @@ describe('callerScope shadow decision (#810)', () => {
       },
     ],
     [
+      // #922 — the plugin host derives both halves of this identity, so an
+      // omitted workspaceId resolves instead of being refused. Contrast the
+      // `declared` cases below: those callers name their own scope.
+      'hosted plugin omitting its scope resolves to the host workspace',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: 'ws-host',
+      },
+      {},
+      { kind: 'scoped', lane: 'hosted', workspaceId: 'ws-host' },
+    ],
+    [
+      'hosted plugin naming its own workspace',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: 'ws-host',
+      },
+      { workspaceId: 'ws-host' },
+      { kind: 'scoped', lane: 'hosted', workspaceId: 'ws-host' },
+    ],
+    [
+      // THE defect #922 describes: before this lane the same call landed in
+      // `declared` and was scoped to 'ws-other' — a foreign workspace, on one
+      // approval, from a plugin that #719 already forbids from WATCHING it.
+      'hosted plugin naming a foreign workspace is refused',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: 'ws-host',
+      },
+      { workspaceId: 'ws-other' },
+      {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-workspace-mismatch',
+        requestedWorkspaceId: 'ws-other',
+        hostedWorkspaceId: 'ws-host',
+      },
+    ],
+    [
+      // Provenance, not payload: dispatch already refuses the option off the
+      // firstParty lane, so a wire context carrying one is malformed. It is
+      // refused rather than quietly demoted to `declared`, which would let a
+      // malformed context buy the OLD behaviour back.
+      'wire caller carrying a host workspace is refused',
+      {
+        origin: 'local',
+        externalWire: true,
+        clientName: 'approved-plugin',
+        hostedWorkspace: 'ws-host',
+      },
+      { workspaceId: 'ws-other' },
+      {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-source-unqualified',
+        requestedWorkspaceId: 'ws-other',
+        hostedWorkspaceId: 'ws-host',
+      },
+    ],
+    [
+      // The pinned lane is checked first and stays first: a forged commander
+      // pin is refused before the hosted lane can rescue the same caller.
+      'hosted plugin forging a server pin is still refused as pinned',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: 'ws-host',
+        commanderWorkspace: 'ws-forged',
+      },
+      {},
+      {
+        kind: 'rejected',
+        lane: 'pinned',
+        reason: 'pinned-source-unqualified',
+        pinnedWorkspaceId: 'ws-forged',
+      },
+    ],
+    [
       'identified caller declaring a scope',
       { origin: 'local', externalWire: true, clientName: 'approved-plugin' },
       { workspaceId: 'ws-declared' },

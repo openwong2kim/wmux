@@ -75,11 +75,18 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
  * dispatch(). No marker is accepted from the RpcRequest envelope. `operator`
  * is the renderer bridge; `firstParty` is the in-process plugin host;
  * `externalWire` is the authenticated PipeServer boundary.
+ *
+ * #922 — `hostedWorkspace` rides on the `firstParty` variant alone, because the
+ * plugin host is the only dispatch source that DERIVES its caller's workspace
+ * instead of being told it. The other two declare it `never`: the operator may
+ * act across workspaces by design, and a wire caller has no host to derive
+ * anything. Supplying it elsewhere is an internal provenance failure, caught by
+ * the type here and by a runtime guard in dispatch for JS/casted call sites.
  */
 type RpcDispatchOptions = (
-  | { operator: true; firstParty?: never; externalWire?: never }
-  | { firstParty: true; operator?: never; externalWire?: never }
-  | { externalWire: true; operator?: never; firstParty?: never }
+  | { operator: true; firstParty?: never; externalWire?: never; hostedWorkspace?: never }
+  | { firstParty: true; operator?: never; externalWire?: never; hostedWorkspace?: string }
+  | { externalWire: true; operator?: never; firstParty?: never; hostedWorkspace?: never }
 ) & {
   /**
    * Cancellation for handlers that WAIT (see RpcContext.signal). Supplied by
@@ -223,6 +230,25 @@ export class RpcRouter {
     }
     const firstParty = operator || inProcessFirstParty;
 
+    // Host-derived workspace (#922). Accepted ONLY from the in-process plugin
+    // host lane. A non-firstParty caller that supplies it is the same class of
+    // internal provenance failure as a conflicting trust marker, so it fails
+    // the same way — loudly, before any handler runs — rather than being
+    // dropped into a context that then looks merely unscoped.
+    const hostedWorkspaceOpt = typeof opts?.hostedWorkspace === 'string'
+      ? opts.hostedWorkspace.trim()
+      : undefined;
+    if (hostedWorkspaceOpt !== undefined && !inProcessFirstParty) {
+      return {
+        id: request.id,
+        ok: false,
+        error: 'Invalid RPC dispatch provenance',
+      };
+    }
+    const hostedWorkspace = hostedWorkspaceOpt && hostedWorkspaceOpt.length > 0
+      ? hostedWorkspaceOpt
+      : undefined;
+
     const handler = this.handlers.get(request.method);
 
     if (!handler) {
@@ -253,6 +279,9 @@ export class RpcRouter {
       // Positive local-wire provenance. Never inferred from request JSON,
       // origin, or the absence of firstParty; only PipeServer supplies it.
       externalWire: externalWire ? true : undefined,
+      // The workspace the plugin host derived for this caller (#922). Absent
+      // for every other dispatch source, and never readable from the envelope.
+      ...(hostedWorkspace && { hostedWorkspace }),
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

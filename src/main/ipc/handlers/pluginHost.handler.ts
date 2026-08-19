@@ -46,6 +46,7 @@ export function registerPluginHostHandlers(
     pluginName: unknown,
     method: unknown,
     params: unknown,
+    hostWorkspaceId: unknown,
   ): Promise<RpcResponse> => {
     if (typeof pluginName !== 'string' || typeof method !== 'string'
       || method.length === 0 || method.length > MAX_METHOD_LEN) {
@@ -53,6 +54,14 @@ export function registerPluginHostHandlers(
     }
     if (params !== undefined && (typeof params !== 'object' || params === null || Array.isArray(params))) {
       throw new Error('Invalid plugin RPC params');
+    }
+    // #922 — the workspace the HOST is showing, passed as its own argument by
+    // the host component, never taken from the plugin's own params. The preload
+    // signature makes the position mandatory so a new call site cannot forget
+    // it; the value may still be absent before any workspace exists, and a
+    // hosted caller without one simply lands in the lane it lands in today.
+    if (hostWorkspaceId !== undefined && typeof hostWorkspaceId !== 'string') {
+      throw new Error('Invalid plugin RPC host workspace');
     }
     const loader = getLoader();
     const plugin = loader?.get(pluginName);
@@ -75,7 +84,15 @@ export function registerPluginHostHandlers(
       params: (params ?? {}) as Record<string, unknown>,
       clientName: plugin.manifest.name,
       clientVersion: plugin.manifest.version,
-    }, { firstParty: true });
+    }, {
+      firstParty: true,
+      // Both halves of this caller's identity are derived main-side or
+      // host-side: the name from the manifest just above, the workspace from
+      // the host component that owns the iframe. Neither is readable from the
+      // bridge envelope, which is what lets `browser.rpc.ts` treat the pair as
+      // an ownership claim instead of a declaration (#922).
+      ...(hostWorkspaceId ? { hostedWorkspace: hostWorkspaceId } : {}),
+    });
   }));
 
   // Renderer-initiated approval for an unconfirmed plugin. Breaks the UI
