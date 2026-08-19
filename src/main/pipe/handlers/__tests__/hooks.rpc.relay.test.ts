@@ -46,6 +46,7 @@ function stubHookRouter() {
     recordDetector: vi.fn(),
     touchAuthority,
     isGovernedFor: vi.fn().mockReturnValue(false),
+    governsDetectorStatus: vi.fn().mockReturnValue(false),
     getLatencyMeter: () => ({
       recordSignal: vi.fn(),
       recordWorkspaceMatch: vi.fn(),

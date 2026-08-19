@@ -70,6 +70,7 @@ function stubHookRouter(decision: 'emit' | 'dedup' = 'emit'): HookSignalRouter {
     recordHook: vi.fn().mockReturnValue('emit'),
     touchAuthority: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
+    governsDetectorStatus: vi.fn().mockReturnValue(false),
   } as unknown as HookSignalRouter;
 }
 

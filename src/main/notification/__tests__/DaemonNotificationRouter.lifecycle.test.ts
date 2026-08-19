@@ -105,6 +105,7 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
     touchAuthority: vi.fn(),
     // Tests here exercise the detector tee — no pane is hook-governed.
     isGovernedFor: vi.fn().mockReturnValue(false),
+    governsDetectorStatus: vi.fn().mockReturnValue(false),
   } as unknown as HookSignalRouter;
 }
 
@@ -201,6 +202,11 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
       isGovernedFor: vi.fn().mockReturnValue(true),
+      // #935: the status broadcast rides the same authority as the veto.
+      governsDetectorStatus: vi.fn(
+        (_p: string, slug: string | null | undefined, status: string) =>
+          !!slug && (status === 'waiting' || status === 'complete'),
+      ),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -218,6 +224,42 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
     }
   });
 
+  it('#935 REGRESSION: a governed pane never gets a detector "waiting" onto agentStatus', async () => {
+    // Daemon-mode twin of the PTYBridge #935 test, and the path the packaged
+    // Windows build actually takes. Claude's `bypass permissions on` footer is
+    // on screen for the whole turn, so an ungated status broadcast marked a
+    // working pane 'waiting' and inflated the "N need you" chip.
+    const hookRouter = {
+      recordDetector: vi.fn(),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+      governsDetectorStatus: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready for input' },
+      });
+      await flushMicrotasks();
+
+      expect(vi.mocked(hookRouter.governsDetectorStatus)).toHaveBeenCalledWith('pty-a', 'claude', 'waiting');
+      const statusCalls = broadcastMetadataUpdateMock.mock.calls.filter(
+        (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+      );
+      expect(statusCalls).toHaveLength(0);
+      expect(broadcastMetadataUpdateMock.mock.calls[0][1]).toMatchObject({
+        ptyId: 'pty-a',
+        agentName: 'Claude Code',
+        agentSlug: 'claude',
+      });
+    } finally {
+      nr.stop();
+    }
+  });
+
   it('codex review catch (round 2): the veto does NOT cover awaiting_input — daemon-mode twin of the PTYBridge exemption test', async () => {
     // Same rationale as the PTYBridge test: Claude's hooks.json only wires
     // PreToolUse for AskUserQuestion — generic approval prompts ("Do you
@@ -228,6 +270,11 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
       isGovernedFor: vi.fn().mockReturnValue(true),
+      // #935: the status broadcast rides the same authority as the veto.
+      governsDetectorStatus: vi.fn(
+        (_p: string, slug: string | null | undefined, status: string) =>
+          !!slug && (status === 'waiting' || status === 'complete'),
+      ),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -258,6 +305,11 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
       isGovernedFor: vi.fn().mockReturnValue(true),
+      // #935: the status broadcast rides the same authority as the veto.
+      governsDetectorStatus: vi.fn(
+        (_p: string, slug: string | null | undefined, status: string) =>
+          !!slug && (status === 'waiting' || status === 'complete'),
+      ),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -325,8 +377,12 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
     }
   });
 
-  it('decision:"veto" updates the status dot only — no toast, no tee', async () => {
+  it('#935 decision:"veto" withholds the lifecycle status too — no dot, no toast, no tee', async () => {
     // The daemon applied the hook-authority rule main used to apply locally.
+    // It used to leave the status dot live, which put the detector's reading
+    // of Claude's always-visible bypass footer onto the roster row and into
+    // "N need you" while the agent was still working. The hook owns lifecycle
+    // on a vetoed event; identity still rides the broadcast.
     const hookRouter = stubHookRouter('emit');
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -344,7 +400,15 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       });
       await flushMicrotasks();
 
-      expect(broadcastMetadataUpdateMock).toHaveBeenCalled(); // dot stays live
+      // Identity still broadcast, lifecycle status withheld.
+      expect(broadcastMetadataUpdateMock.mock.calls[0][1]).toMatchObject({
+        ptyId: 'pty-a',
+        agentName: 'Claude Code',
+      });
+      const statusCalls = broadcastMetadataUpdateMock.mock.calls.filter(
+        (c) => (c[1] as { agentStatus?: string }).agentStatus !== undefined,
+      );
+      expect(statusCalls).toHaveLength(0);
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
       expect(pollLifecycle()).toHaveLength(0);
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
@@ -431,6 +495,11 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
       isGovernedFor: vi.fn().mockReturnValue(true),
+      // #935: the status broadcast rides the same authority as the veto.
+      governsDetectorStatus: vi.fn(
+        (_p: string, slug: string | null | undefined, status: string) =>
+          !!slug && (status === 'waiting' || status === 'complete'),
+      ),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {

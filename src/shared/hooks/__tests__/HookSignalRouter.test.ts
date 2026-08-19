@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS } from '../HookSignalRouter';
+import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS, HOOK_AUTHORITY_TTL_MS } from '../HookSignalRouter';
 import { SignalLatencyMeter } from '../SignalLatencyMeter';
 import type { AgentSignal } from '../signal-types';
 
@@ -238,6 +238,33 @@ describe('HookSignalRouter', () => {
       router.touchAuthority('p1', 'codex', 2000);
       expect(router.isGovernedFor('p1', 'claude', 2100)).toBe(false);
       expect(router.isGovernedFor('p1', 'codex', 2100)).toBe(true);
+    });
+
+    it('#935 governsDetectorStatus covers waiting/complete on a governed pane', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2000)).toBe(true);
+    });
+
+    it('#935 governsDetectorStatus spares awaiting_input and running', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      // Approval prompts have no hook (PreToolUse is wired for AskUserQuestion
+      // only), so the detector is their sole source — withholding this status
+      // would leave a blocked pane looking idle for the full authority TTL.
+      expect(router.governsDetectorStatus('p1', 'claude', 'awaiting_input', 2000)).toBe(false);
+      // 'running' is a working cue, not a turn boundary.
+      expect(router.governsDetectorStatus('p1', 'claude', 'running', 2000)).toBe(false);
+    });
+
+    it('#935 governsDetectorStatus is false without authority, slug, or a matching agent', () => {
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(false);
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.governsDetectorStatus('p1', null, 'waiting', 2000)).toBe(false);
+      expect(router.governsDetectorStatus('p1', undefined, 'waiting', 2000)).toBe(false);
+      // A different agent on the same pane is a genuinely distinct source.
+      expect(router.governsDetectorStatus('p1', 'codex', 'waiting', 2000)).toBe(false);
+      // Past the authority TTL the detector is the backstop again.
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 1000 + HOOK_AUTHORITY_TTL_MS)).toBe(false);
     });
 
     it('dropPty releases authority immediately (pane disposal)', () => {

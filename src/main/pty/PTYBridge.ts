@@ -429,9 +429,18 @@ export class PTYBridge {
       try {
         const win = this.getWindow();
         const status = agentEvent.status as AgentStatus;
+        const slug = agentDisplayToSlug(agentEvent.agent);
+        const hookRouter = this.getHookRouter?.() ?? null;
+        // #935: the status broadcast is governed by the same hook authority as
+        // the notification veto below. Claude's bypass-mode footer is on screen
+        // for the WHOLE turn, so leaving the metadata ungated wrote a false
+        // 'waiting' onto a working pane's roster row and into "N need you".
+        // Identity (name/slug) still rides every event — only the lifecycle
+        // status is withheld.
+        const withholdStatus = hookRouter?.governsDetectorStatus(ptyId, slug, status) === true;
         broadcastMetadataUpdate(win, {
           ptyId,
-          agentStatus: status,
+          ...(withholdStatus ? {} : { agentStatus: status }),
           agentName: agentEvent.agent,
           // P2: carry the slug so the renderer builds the `(<agent>)` auto-name
           // suffix without importing the main-only display→slug map.
@@ -442,7 +451,6 @@ export class PTYBridge {
         // arms the turn gate on an ungoverned pane and clears `announced`
         // after a confirmed completion (the next turn's boundary). Keyed to
         // the detected slug; an agent-less running event has nothing to arm.
-        const slug = agentDisplayToSlug(agentEvent.agent);
         const alarm = this.getAlarm?.() ?? null;
         if (status === 'running' && alarm && slug) {
           alarm.observe(ptyId, slug, { class: 'working' });
@@ -461,8 +469,10 @@ export class PTYBridge {
           // hook lands as 'dedup' → the true completion goes silent.
           // Skipping recordDetector + the EventBus tee here is the point:
           // the hook path emits the one canonical lifecycle event. The
-          // metadata broadcast above (status dot) is intentionally NOT
-          // gated — visual state stays live either way.
+          // metadata broadcast above rides the SAME rule now (#935) —
+          // `governsDetectorStatus` withholds the lifecycle status while
+          // still carrying identity, so the roster stops showing a working
+          // pane as waiting.
           //
           // codex review catch (round 2): must NOT cover 'awaiting_input'.
           // Claude's hooks.json wires PreToolUse ONLY for the
@@ -473,8 +483,11 @@ export class PTYBridge {
           // `status`) are the ONLY signal source for those. Vetoing here
           // would leave an agent blocked on a real approval prompt
           // completely silent for the full authority TTL (30 minutes).
-          const hookRouter = this.getHookRouter?.() ?? null;
-          if (status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(ptyId, slug)) {
+          // Same predicate the status broadcast above used — one expression of
+          // the rule, so the two cannot drift apart. Inside this block the
+          // status set is {waiting, complete, awaiting_input}, and
+          // `governsDetectorStatus` covers exactly the first two.
+          if (withholdStatus) {
             return;
           }
 

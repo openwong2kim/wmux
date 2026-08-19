@@ -176,6 +176,43 @@ export class HookSignalRouter {
   }
 
   /**
+   * True when the pane's live hook bridge owns this detector-sourced status,
+   * so the caller must withhold it from `metadata.agentStatus` as well as from
+   * the notification.
+   *
+   * `waiting` and `complete` are the two statuses the bridge's Stop signal
+   * speaks for. They are also the two the detector infers from ALWAYS-VISIBLE
+   * TUI chrome: Claude Code's footer reads `bypass permissions on` /
+   * `shift+tab to cycle` for the whole turn in bypass-permissions mode, so
+   * every repaint re-asserts "ready for input" while the agent is working.
+   * The notification veto (`isGovernedFor`) has always covered the toast, but
+   * the status broadcast ran BEFORE it and was deliberately left ungated —
+   * which put the false read straight onto the roster row and into the
+   * "N need you" roll-up, the one signal that must never cry wolf (#935).
+   *
+   * Deliberately NOT covered:
+   *   - `awaiting_input` — Claude's hooks wire PreToolUse only for
+   *     AskUserQuestion, so the ordinary approval prompts have no hook at all
+   *     and the detector is their only source. Same carve-out the notification
+   *     veto makes, and for the same reason.
+   *   - `running` — a working cue, not a turn boundary; nothing about it
+   *     competes with the Stop signal.
+   *
+   * An ungoverned pane (no bridge, or a bridge gone quiet past the authority
+   * TTL) is unaffected: the detector stays the backstop it has always been.
+   */
+  governsDetectorStatus(
+    ptyId: string,
+    slug: string | null | undefined,
+    status: string,
+    now: number = Date.now(),
+  ): boolean {
+    if (status !== 'waiting' && status !== 'complete') return false;
+    if (!slug) return false;
+    return this.isGovernedFor(ptyId, slug, now);
+  }
+
+  /**
    * Record a hook-bridge signal. Returns `emit` when the caller should
    * proceed to fan-out, `dedup` when a recent detector emission already
    * covered the same (slug, ptyId, kind) tuple.
