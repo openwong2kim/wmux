@@ -99,6 +99,41 @@ export class ActivityMonitor {
     s.lastReschedule = 0;
   }
 
+  /**
+   * Re-arm a cycle from an authoritative TURN END (a Stop hook), so the pane's
+   * next turn can report `running` again.
+   *
+   * Why this is needed at all: `onActive` fires once per cycle and the cycle is
+   * otherwise re-armed only inside the idle timer — which requires
+   * IDLE_DELAY_MS of complete byte silence. A TUI that paints a live counter
+   * every second (`Whirlpooling… (21m 27s)`) keeps rescheduling that timer, so
+   * the cycle never re-arms; a `complete` written by the Stop hook then
+   * survives the whole NEXT turn. Status is a level, but every writer is
+   * edge-triggered, and this is the missing edge.
+   *
+   * Deliberately NOT `beginTurn`: that one is proof that a turn is starting
+   * (the user pressed Enter), so it lets the first byte count. A turn END is
+   * proof of the opposite, and the pane may keep emitting idle chrome, so this
+   * re-arms the THRESHOLD path instead — the next genuine burst of output
+   * proves the new turn, a stray repaint does not. No callback fires here.
+   */
+  endTurn(ptyId: string): void {
+    const s = this.states.get(ptyId);
+    if (!s) return;
+    if (s.idleTimer) clearTimeout(s.idleTimer);
+    s.bytes = 0;
+    s.windowStart = Date.now();
+    s.active = false;
+    // `notified` false, so `feed`'s first gate (`!active && !notified`) is open
+    // again: leaving it true would route the next burst through the re-arm
+    // branch, which is equivalent here but says something this edge does not
+    // mean (that an idle callback had already been delivered).
+    s.notified = false;
+    s.activeFired = false;
+    s.idleTimer = null;
+    s.lastReschedule = 0;
+  }
+
   feed(ptyId: string, byteCount: number): void {
     const s = this.states.get(ptyId);
     if (!s) return;

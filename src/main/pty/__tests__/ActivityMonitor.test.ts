@@ -265,4 +265,104 @@ describe('ActivityMonitor', () => {
       expect(fired).toEqual([]);
     });
   });
+
+  // endTurn is the turn-END counterpart. The cycle otherwise re-arms only
+  // inside the idle timer, which needs IDLE_DELAY_MS of byte silence — a TUI
+  // painting a live counter every second never reaches it, so the `complete`
+  // written at the turn end sticks through the pane's next turn.
+  describe('endTurn (authoritative turn-end boundary)', () => {
+    let activeFired: string[];
+
+    beforeEach(() => {
+      activeFired = [];
+      monitor.onActive((id) => activeFired.push(id));
+    });
+
+    it('fires nothing by itself', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      activeFired.length = 0;
+      monitor.endTurn('p1');
+      vi.advanceTimersByTime(10_000);
+      expect(activeFired).toEqual([]);
+      expect(fired).toEqual([]);
+    });
+
+    it('lets the NEXT burst report running on a pane that never went silent', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+
+      // A live elapsed-time counter: sub-threshold repaints every second keep
+      // rescheduling the idle timer, so the cycle never re-arms on its own.
+      for (let i = 0; i < 30; i += 1) {
+        vi.advanceTimersByTime(1000);
+        monitor.feed('p1', 40);
+      }
+      expect(fired).toEqual([]);        // never idled
+      expect(activeFired).toEqual(['p1']); // and never re-fired
+
+      // Stop hook lands, then the agent starts a new turn by itself.
+      monitor.endTurn('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1', 'p1']);
+    });
+
+    it('does NOT let idle chrome flip the pane back to running', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      activeFired.length = 0;
+      monitor.endTurn('p1');
+
+      // Sub-threshold repaints of a pane that is genuinely done must not read
+      // as a new turn — this is the difference from beginTurn, where the first
+      // byte counts because submitted input already proved a turn started.
+      monitor.feed('p1', 40);
+      monitor.feed('p1', 40);
+      expect(activeFired).toEqual([]);
+    });
+
+    it('clears a pending idle timer so the old cycle cannot fire late', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      vi.advanceTimersByTime(2_500);
+      monitor.endTurn('p1');
+      vi.advanceTimersByTime(10_000);
+      expect(fired).toEqual([]);
+    });
+
+    it('leaves the pane able to reach idle again after the next burst', () => {
+      monitor.start('p1');
+      monitor.endTurn('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+      vi.advanceTimersByTime(5000);
+      expect(fired).toEqual(['p1']);
+    });
+
+    it('is per-pty and does not arm a sibling', () => {
+      monitor.start('p1');
+      monitor.start('p2');
+      monitor.feed('p1', 3000);
+      monitor.feed('p2', 3000);
+      activeFired.length = 0;
+
+      monitor.endTurn('p1');
+      monitor.feed('p2', 3000);
+      expect(activeFired).toEqual([]);   // p2's cycle is untouched
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('is a no-op for an unknown pty and after stop()', () => {
+      expect(() => monitor.endTurn('does-not-exist')).not.toThrow();
+      monitor.start('p1');
+      monitor.stop('p1');
+      monitor.endTurn('p1');
+      monitor.feed('p1', 5000);
+      vi.advanceTimersByTime(10_000);
+      expect(activeFired).toEqual([]);
+      expect(fired).toEqual([]);
+    });
+  });
 });

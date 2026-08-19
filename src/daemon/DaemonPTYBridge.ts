@@ -154,6 +154,16 @@ export class DaemonPTYBridge extends EventEmitter {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
     }
+    // Re-arm the activity cycle on the authoritative turn end. Without this the
+    // cycle only re-arms after IDLE_DELAY_MS of byte silence, which a TUI
+    // painting a live elapsed-time counter never reaches — so the `complete`
+    // just recorded stays on the pane through its next turn, and an
+    // agent-initiated turn (a background task finishing and the agent resuming,
+    // with no submitted input to call `beginTurn`) never reports running at all.
+    // Threshold-based, so idle chrome cannot flip the pane back to running.
+    if (this.activityMonitor && this.sessionId) {
+      this.activityMonitor.endTurn(this.sessionId);
+    }
   }
 
   private scanSubmittedInput(data: string): boolean {
