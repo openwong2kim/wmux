@@ -200,6 +200,18 @@ export class HookSignalRouter {
    *
    * An ungoverned pane (no bridge, or a bridge gone quiet past the authority
    * TTL) is unaffected: the detector stays the backstop it has always been.
+   *
+   * Accepted cost, stated because a reviewer will ask: this rides the same
+   * 30-minute authority TTL as the notification veto, so a bridge that stops
+   * speaking while its agent process is still alive leaves the status stale
+   * until the TTL expires. That is deliberately symmetric — the notification
+   * veto has always accepted exactly that window on the LOUDER surface, and
+   * making the status less trusting than the toast would be the odd choice.
+   * A shorter TTL is not the answer either: a single turn can run past twenty
+   * minutes with no bridge traffic at all on a turn-boundary-only hook install
+   * (the #935 report measured 21m), so a short window would simply restore the
+   * bug it fixes. Confirmed process death already releases authority ahead of
+   * the TTL (`expireAuthorityFor`, wired to the daemon's liveness poll).
    */
   governsDetectorStatus(
     ptyId: string,

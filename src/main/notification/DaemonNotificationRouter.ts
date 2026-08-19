@@ -709,17 +709,37 @@ export class DaemonNotificationRouter {
           return;
         }
 
-        // #935 — daemon-mode twin of the PTYBridge status gate. The lifecycle
-        // status is withheld when the pane's hook bridge owns it, or when the
-        // daemon already vetoed this detector event for that same reason
-        // (`decision: 'veto'`). Claude's bypass-mode footer is on screen for the
-        // whole turn, so an ungated broadcast wrote a false 'waiting' onto the
-        // roster row and into "N need you". Identity still rides every event.
+        // #935 — daemon-mode twin of the PTYBridge status gate. Claude's
+        // bypass-mode footer is on screen for the whole turn, so an ungated
+        // broadcast wrote a false 'waiting' onto the roster row and into
+        // "N need you". Identity still rides every event; only the lifecycle
+        // status is withheld.
+        //
+        // The two arms mirror the notification veto's own split below, and for
+        // the same reason — an arbitrated event already carries the daemon's
+        // judgement, so main must not re-run its own authority on top of it:
+        //
+        //   arbitrated  → trust the stamp. Withhold on 'veto' (the daemon
+        //                 applied exactly this rule) and nothing else. Note
+        //                 M1 makes this the ONLY live arm: `hooks.rpc` returns
+        //                 at the daemon relay, above its `touchAuthority`
+        //                 call, so main's router never gains authority over a
+        //                 daemon-served pane.
+        //   otherwise   → the pre-M1 fallback, where main's own authority is
+        //                 the only thing that knows.
+        //
+        // `awaiting_input` is excluded on BOTH arms. The daemon already
+        // refuses to stamp 'veto' on it (HookIngest), but that guarantee lives
+        // in another process: an older daemon paired with this main would
+        // otherwise hide a real approval prompt for the full authority TTL,
+        // which is worse than the bug this fixes. Cheap to enforce locally.
         const statusSlug = agentDisplayToSlug(ev.agent);
         const statusRouter = this.getHookRouter?.() ?? null;
-        const withholdStatus =
-          arbitratedDecision(ev) === 'veto'
-          || statusRouter?.governsDetectorStatus(payload.sessionId, statusSlug, ev.status) === true;
+        const withholdStatus = ev.status !== 'awaiting_input' && (
+          arbitratedSource(ev)
+            ? arbitratedDecision(ev) === 'veto'
+            : statusRouter?.governsDetectorStatus(payload.sessionId, statusSlug, ev.status) === true
+        );
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
           ...(withholdStatus ? {} : { agentStatus: ev.status }),

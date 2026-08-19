@@ -98,10 +98,17 @@ export interface HookIngestSession {
  *   - 'emit'  → fan out the notification AND the `agent.lifecycle` tee
  *   - 'dedup' → the other source already covered this turn: lifecycle tee with
  *               `decision:'dedup'`, NO notification
- *   - 'veto'  → detector-only, hook-governed pane: metadata/status dot only,
+ *   - 'veto'  → detector-only, hook-governed pane: identity metadata only,
  *               no notification and no lifecycle tee (the hook is canonical
  *               here and the detector's always-visible footer would both
- *               re-fire mid-turn and poison the ledger against the real Stop)
+ *               re-fire mid-turn and poison the ledger against the real Stop).
+ *               #935: main also withholds the lifecycle STATUS on a veto —
+ *               that footer is what put a false 'waiting' on the roster row
+ *               and into "N need you". 'internal' does NOT share this (the
+ *               alarm's own judgement leaves the status live), so the two
+ *               verdicts are no longer interchangeable main-side.
+ *               `agent.awaiting_input` is never stamped 'veto' here, and main
+ *               enforces that locally too rather than trusting this process.
  *
  * `decision` is absent for DETECTOR statuses that are not emit-class (e.g.
  * 'running'): those never participated in dedup on either side.
