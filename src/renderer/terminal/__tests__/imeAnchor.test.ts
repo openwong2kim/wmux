@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 /**
- * #874 — IME candidate-window anchoring.
+ * #874 — IME candidate-window anchoring; #942 — the composition pin is split
+ * per child (textarea pinned, inline preedit live) so Korean inline
+ * composition is never dragged onto committed cells.
  *
  * Three layers, because each catches a class the others cannot:
  *   1. Pure math, including a regression lock on the live-measured drift.
@@ -141,6 +143,7 @@ function translateOf(el: HTMLElement): { dx: number; dy: number } | null {
 
 function buildTerminalDom(cellWidth = 10, cellHeight = 17.6, rows = 39, cols = 142): {
   root: HTMLElement; screen: HTMLElement; helpers: HTMLElement; textarea: HTMLTextAreaElement;
+  compView: HTMLElement;
 } {
   const root = document.createElement('div');
   root.className = 'xterm';
@@ -150,14 +153,17 @@ function buildTerminalDom(cellWidth = 10, cellHeight = 17.6, rows = 39, cols = 1
   helpers.className = 'xterm-helpers';
   const textarea = document.createElement('textarea');
   textarea.className = 'xterm-helper-textarea';
+  const compView = document.createElement('div');
+  compView.className = 'composition-view';
   helpers.appendChild(textarea);
+  helpers.appendChild(compView);
   screen.appendChild(helpers);
   root.appendChild(screen);
   document.body.appendChild(root);
   // jsdom has no layout; stand in for the measured cell grid.
   Object.defineProperty(screen, 'clientWidth', { value: cellWidth * cols, configurable: true });
   Object.defineProperty(screen, 'clientHeight', { value: cellHeight * rows, configurable: true });
-  return { root, screen, helpers, textarea };
+  return { root, screen, helpers, textarea, compView };
 }
 
 function makeTerminal(dom: ReturnType<typeof buildTerminalDom>, rows = 39, cols = 142): {
@@ -197,7 +203,7 @@ describe('#874 attachImeAnchor', () => {
     const handle = attachImeAnchor(terminal);
     onRender.fire(undefined);
     // style.left is still xterm's -9999em stylesheet default.
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
     handle.dispose();
   });
 
@@ -209,8 +215,8 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${38 * 17.6}px`;
     dom.textarea.style.left = `${12 * 10}px`;
     onRender.fire(undefined);
-    expect(translateOf(dom.helpers)?.dx).toBe(0);
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(8 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBe(0);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(8 * 17.6, 6);
     handle.dispose();
   });
 
@@ -222,11 +228,11 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${38 * 17.6}px`;
     dom.textarea.style.left = '0px';
     onScroll.fire(undefined);
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
     // User wheels up 4 rows. xterm leaves style.top alone; we absorb it.
     state.viewportY = 18;
     onScroll.fire(undefined);
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(4 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(4 * 17.6, 6);
     handle.dispose();
   });
 
@@ -238,7 +244,7 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${5 * 17.6}px`;
     dom.textarea.style.left = '20px';
     onRender.fire(undefined);
-    const spy = vi.spyOn(dom.helpers.style, 'transform', 'set');
+    const spy = vi.spyOn(dom.textarea.style, 'transform', 'set');
     for (let i = 0; i < 60; i++) onRender.fire(undefined);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
@@ -253,7 +259,7 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${30 * 17.6}px`;
     dom.textarea.style.left = '80px';
     onRender.fire(undefined);
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
 
     dom.textarea.dispatchEvent(new Event('compositionstart'));
 
@@ -265,12 +271,16 @@ describe('#874 attachImeAnchor', () => {
     onRender.fire(undefined);
 
     // Candidate window must stay on row 30 / col 8 where the user started.
-    expect(translateOf(dom.helpers)?.dx).toBeCloseTo(40, 6);
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(12 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo(40, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(12 * 17.6, 6);
+    // The pin covers the textarea only — the inline preedit is never dragged
+    // by it (#942; xterm has not positioned the preedit here, so no live
+    // correction exists either).
+    expect(dom.compView.style.transform).toBe('');
 
     dom.textarea.dispatchEvent(new Event('compositionend'));
     onRender.fire(undefined);
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
     handle.dispose();
   });
 
@@ -287,7 +297,7 @@ describe('#874 attachImeAnchor', () => {
     // Simulate xterm's deferred updateCompositionElements(true) moving it.
     dom.textarea.style.top = `${6 * 17.6}px`;
     await new Promise((r) => setTimeout(r, 1));
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(14 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(14 * 17.6, 6);
     handle.dispose();
   });
 
@@ -299,14 +309,14 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${4 * 17.6}px`;
     dom.textarea.style.left = '0px';
     onRender.fire(undefined);
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(2 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(2 * 17.6, 6);
     // Font size bumped: cells get taller, and xterm re-anchors at the new
     // metrics. Our correction must track the new cell height, which it only
     // learns about from onResize (never from a per-frame layout read).
     Object.defineProperty(dom.screen, 'clientHeight', { value: 20 * 39, configurable: true });
     dom.textarea.style.top = `${4 * 20}px`;
     onResize.fire(undefined);
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(2 * 20, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(2 * 20, 6);
     handle.dispose();
   });
 
@@ -323,7 +333,7 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.height = '16px'; // what _syncTextArea writes
     onRender.fire(undefined);
     // Exactly two cells of drift at xterm's 16px, not 2 * 17.59.
-    expect(translateOf(dom.helpers)?.dy).toBe(32);
+    expect(translateOf(dom.textarea)?.dy).toBe(32);
     handle.dispose();
   });
 
@@ -336,14 +346,14 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.left = '0px';
     dom.textarea.style.height = '16px';
     onRender.fire(undefined);
-    expect(translateOf(dom.helpers)?.dy).toBe(32);
+    expect(translateOf(dom.textarea)?.dy).toBe(32);
 
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     // xterm now writes the preedit box height here, not a cell height.
     dom.textarea.style.height = '48px';
     onRender.fire(undefined);
     // Frozen at the composition-start row, and still using the 16px cell.
-    expect(translateOf(dom.helpers)?.dy).toBe(32);
+    expect(translateOf(dom.textarea)?.dy).toBe(32);
     handle.dispose();
   });
 
@@ -355,11 +365,11 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = '0px';
     dom.textarea.style.left = '0px';
     onRender.fire(undefined);
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
     handle.dispose();
   });
 
-  it('reports the composition diagnostic once per composition', () => {
+  it('reports a start diagnostic per composition and stays quiet while nothing changes', () => {
     const dom = buildTerminalDom(10, 17.6, 47);
     const { terminal, state } = makeTerminal(dom, 47);
     const diag = vi.fn();
@@ -369,8 +379,10 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.left = '120px';
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     expect(diag).toHaveBeenCalledTimes(1);
-    expect(diag.mock.calls[0][0]).toMatchObject({ baseY: 22, viewportY: 14, cursorY: 38, cursorX: 12 });
+    expect(diag.mock.calls[0][0]).toMatchObject({ phase: 'start', baseY: 22, viewportY: 14, cursorY: 38, cursorX: 12 });
     expect(diag.mock.calls[0][0].dy).toBeCloseTo(140.8, 6);
+    // An update with no correction change is change-gated out (#942 made the
+    // diagnostic fire mid-composition, but only when there is news).
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
     expect(diag).toHaveBeenCalledTimes(1);
     handle.dispose();
@@ -384,10 +396,11 @@ describe('#874 attachImeAnchor', () => {
     dom.textarea.style.top = `${4 * 17.6}px`;
     dom.textarea.style.left = '0px';
     onRender.fire(undefined);
-    expect(dom.helpers.style.transform).not.toBe('');
+    expect(dom.textarea.style.transform).not.toBe('');
 
     handle.dispose();
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
+    expect(dom.compView.style.transform).toBe('');
     expect(onRender.size).toBe(0);
     expect(onScroll.size).toBe(0);
     expect(onResize.size).toBe(0);
@@ -396,7 +409,7 @@ describe('#874 attachImeAnchor', () => {
     // A composition after dispose must not resurrect the transform.
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     onRender.fire(undefined);
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
   });
 
   it('is a no-op when the helper container is missing', () => {
@@ -411,6 +424,141 @@ describe('#874 attachImeAnchor', () => {
       onCursorMove: new FakeEmitter<unknown>().event,
     } as ImeAnchorTerminal;
     expect(() => attachImeAnchor(terminal).dispose()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#942 inline preedit (Korean IME) — the pin never drags the preedit', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  /** Typing at an idle prompt: caret at (row, col), both children positioned
+   *  there by xterm, then a composition starts. */
+  function composeAt(row: number, col: number): {
+    dom: ReturnType<typeof buildTerminalDom>;
+    t: ReturnType<typeof makeTerminal>;
+    handle: { dispose(): void };
+    diag: ReturnType<typeof vi.fn>;
+    positionChildren: (r: number, c: number) => void;
+  } {
+    const dom = buildTerminalDom();
+    const t = makeTerminal(dom);
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 0, viewportY: 0, cursorY: row, cursorX: col });
+    const positionChildren = (r: number, c: number): void => {
+      dom.textarea.style.top = `${r * 17.6}px`;
+      dom.textarea.style.left = `${c * 10}px`;
+      dom.compView.style.top = `${r * 17.6}px`;
+      dom.compView.style.left = `${c * 10}px`;
+    };
+    positionChildren(row, col);
+    const handle = attachImeAnchor(t.terminal, { onCompositionDiagnostic: diag });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    return { dom, t, handle, diag, positionChildren };
+  }
+
+  it('a committed syllable\'s echo advances the caret: preedit follows, textarea stays pinned', () => {
+    // 대한민국 on Korean Microsoft IME: 민 is composing at col 23 when the echo
+    // of the committed 한 lands. The buffer cursor advances two cells and xterm
+    // re-anchors BOTH children to the live caret on the next compositionupdate.
+    // The candidate-window pin must hold the textarea at the start cell — and
+    // must NOT haul the visible preedit back onto the syllable that just
+    // committed (the #942 symptom: 대한민국 reads 대한국 while typing).
+    const { dom, t, handle, positionChildren } = composeAt(30, 23);
+    expect(dom.textarea.style.transform).toBe('');
+    expect(dom.compView.style.transform).toBe('');
+
+    // Echo arrives: cursor advances past the pinned cell, cells repaint.
+    Object.assign(t.state, { cursorX: 25 });
+    t.onRender.fire(undefined);
+    // The preedit is corrected forward onto the live caret even before xterm's
+    // next reposition; the pinned textarea has nothing to move yet.
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo(2 * 10, 6);
+    expect(dom.textarea.style.transform).toBe('');
+
+    // Next compositionupdate: xterm re-anchors both children to the live caret.
+    positionChildren(30, 25);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    // Textarea pinned back to the start cell (candidate-window anchor stays
+    // where the user started typing)…
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo(-2 * 10, 6);
+    // …while the preedit stays on the live caret: zero correction. Under the
+    // #875 container transform both children were dragged back to col 23,
+    // painting the composing syllable over the committed one.
+    expect(dom.compView.style.transform).toBe('');
+
+    dom.textarea.dispatchEvent(new Event('compositionend'));
+    // Composition over: xterm hides the preedit, the pin dissolves, the real
+    // cells repaint — nothing left to correct on either child.
+    expect(dom.textarea.style.transform).toBe('');
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+
+  it('while composing scrolled up, the preedit gets the same ydisp correction as the textarea', () => {
+    // Cause 1 applies to the preedit too: xterm anchors it ybase-relative while
+    // the renderer paints ydisp-relative. The split must not lose that.
+    const dom = buildTerminalDom(10, 17.6, 47);
+    const t = makeTerminal(dom, 47);
+    const handle = attachImeAnchor(t.terminal);
+    Object.assign(t.state, { baseY: 22, viewportY: 14, cursorY: 38, cursorX: 12 });
+    dom.textarea.style.top = `${38 * 17.6}px`;
+    dom.textarea.style.left = '120px';
+    dom.compView.style.top = `${38 * 17.6}px`;
+    dom.compView.style.left = '120px';
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(8 * 17.6, 6);
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo(8 * 17.6, 6);
+    handle.dispose();
+  });
+
+  it('diagnostic: change-gated update/end records capture a mid-composition offset', () => {
+    // #942's field log was 40/41 correction=(0,0): the start-only diagnostic
+    // fired before the committed syllable's echo moved anything. The update
+    // and end phases exist so this class of report is self-diagnosing.
+    const { dom, t, handle, diag, positionChildren } = composeAt(30, 23);
+    expect(diag).toHaveBeenCalledTimes(1);
+    expect(diag.mock.calls[0][0]).toMatchObject({ phase: 'start', dx: 0, dy: 0, preeditDx: 0, preeditDy: 0 });
+
+    Object.assign(t.state, { cursorX: 25 });
+    t.onRender.fire(undefined);
+    expect(diag).toHaveBeenCalledTimes(2);
+    expect(diag.mock.calls[1][0]).toMatchObject({ phase: 'update', dx: 0 });
+    expect(diag.mock.calls[1][0].preeditDx).toBeCloseTo(2 * 10, 6);
+
+    positionChildren(30, 25);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(diag).toHaveBeenCalledTimes(3);
+    expect(diag.mock.calls[2][0]).toMatchObject({ phase: 'update', preeditDx: 0 });
+    expect(diag.mock.calls[2][0].dx).toBeCloseTo(-2 * 10, 6);
+
+    // A quiet frame adds no record.
+    t.onRender.fire(undefined);
+    expect(diag).toHaveBeenCalledTimes(3);
+
+    dom.textarea.dispatchEvent(new Event('compositionend'));
+    expect(diag).toHaveBeenCalledTimes(4);
+    expect(diag.mock.calls[3][0]).toMatchObject({ phase: 'end', dx: 0, dy: 0, preeditDx: 0, preeditDy: 0 });
+
+    // Post-composition renders never report.
+    t.onRender.fire(undefined);
+    expect(diag).toHaveBeenCalledTimes(4);
+    handle.dispose();
+  });
+
+  it('a missing .composition-view degrades to stock preedit behavior, not a crash', () => {
+    const dom = buildTerminalDom();
+    dom.compView.remove();
+    const t = makeTerminal(dom);
+    const handle = attachImeAnchor(t.terminal);
+    Object.assign(t.state, { cursorY: 30, cursorX: 23 });
+    dom.textarea.style.top = `${30 * 17.6}px`;
+    dom.textarea.style.left = '230px';
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    Object.assign(t.state, { cursorX: 25 });
+    expect(() => t.onRender.fire(undefined)).not.toThrow();
+    expect(dom.textarea.style.transform).toBe('');
+    handle.dispose();
   });
 });
 
@@ -553,8 +701,8 @@ describe('#874 resting-cell wiring (cause 3)', () => {
     setClock(1105);        // 5ms later — inside the burst window
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     // Anchor must land on the caret cell (30, 8): correction = desired - actual.
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo((30 - 49) * 17.6, 6);
-    expect(translateOf(dom.helpers)?.dx).toBeCloseTo((8 - 113) * 10, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo((30 - 49) * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((8 - 113) * 10, 6);
     expect(diag.mock.calls[0][0]).toMatchObject({
       src: 'resting', held: 5, restAge: 5, selY: 30, selX: 8, cursorY: 49, cursorX: 113,
     });
@@ -570,7 +718,7 @@ describe('#874 resting-cell wiring (cause 3)', () => {
     setClock(1200); // held 200ms >= RESTING_MS
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     // Pinned at bottom, cursor at rest: nothing to correct, no transform.
-    expect(dom.helpers.style.transform).toBe('');
+    expect(dom.textarea.style.transform).toBe('');
     expect(diag.mock.calls[0][0]).toMatchObject({ src: 'instant', selY: 30, selX: 8 });
     handle.dispose();
   });
@@ -648,6 +796,10 @@ describe('#874 upstream contracts', () => {
       expect(helpers).not.toBeNull();
       expect(helpers!.parentElement).toBe(screen);
       expect(helpers!.querySelector('.xterm-helper-textarea')).not.toBeNull();
+      // #942 splits the correction across the two children, so the preedit box
+      // must still live here under this class — if an upgrade renames it, the
+      // preedit silently loses its ydisp correction (degrades, not breaks).
+      expect(helpers!.querySelector('.composition-view')).not.toBeNull();
       // Not yet positioned — the -9999em parking spot parsePxOrNull rejects.
       expect(parsePxOrNull((term.textarea as HTMLTextAreaElement).style.top)).toBeNull();
     } finally {
@@ -677,7 +829,7 @@ describe('#874 upstream contracts', () => {
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     expect(order).toEqual(['xterm', 'ours']);
     // 4 rows of scrollback offset, read against the value xterm just wrote.
-    expect(translateOf(dom.helpers)?.dy).toBeCloseTo(4 * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(4 * 17.6, 6);
     handle.dispose();
   });
 

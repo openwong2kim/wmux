@@ -1104,34 +1104,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       },
     });
 
-    // #874: keep the IME candidate window on the cursor. xterm anchors its
-    // hidden helper textarea at the ybase-relative cursor row while the
+    // #874/#942: keep the IME candidate window on the cursor. xterm anchors
+    // its hidden helper textarea at the ybase-relative cursor row while the
     // renderer paints the cursor at the ydisp-relative one, so a scrolled-up
     // viewport offsets the candidate window by exactly that many rows, and the
     // composition path re-anchors on every keystroke so the window chases the
-    // TUI's cursor while an agent streams. See terminal/imeAnchor.ts.
-    // #874 could not be reproduced locally (no CJK IME on the dev boxes), so
-    // the anchor reports what it corrected and a reporter's log tells us
-    // whether any offset survives. A CJK user starts a composition per word,
-    // so this is capped: the first few are all anyone needs to diagnose, and
-    // the cap keeps it from filling main-*.log for the rest of the session.
-    // Remove the whole diagnostic once #874 is confirmed fixed in the field.
+    // TUI's cursor while an agent streams. The pin covers the textarea only;
+    // the inline preedit box follows the live cursor (#942, Korean IME draws
+    // its composition inline with no candidate window). See
+    // terminal/imeAnchor.ts.
+    // Neither issue could be reproduced locally (no CJK IME on the dev boxes),
+    // so the anchor reports what it corrected and a reporter's log tells us
+    // whether any offset survives. Start records fire per composition;
+    // update/end records only when a correction changed mid-composition
+    // (#942's field log was all zeros because the drag developed after the
+    // start-only diagnostic had fired). Capped: the first few are all anyone
+    // needs to diagnose, and the cap keeps it from filling main-*.log for the
+    // rest of the session. Remove the whole diagnostic once #874/#942 are
+    // confirmed fixed in the field.
     let imeAnchorLogsLeft = 20;
     const imeAnchor = attachImeAnchor(terminal, {
-      onCompositionDiagnostic: ({ baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, src, held, restAge, selY, selX }) => {
+      onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, selY, selX }) => {
         if (imeAnchorLogsLeft <= 0) return;
         imeAnchorLogsLeft -= 1;
         // Mirrored into the main-side log file by src/main/index.ts's
-        // console-message listener, so the user can share it. The "2" in the
-        // tag marks the resting-cell build so a shared log is unambiguous
+        // console-message listener, so the user can share it. The "3" in the
+        // tag marks the split-surface build so a shared log is unambiguous
         // about which release produced it. src/held/restAge/sel are the
         // cause-3 discriminator: src=resting means the composition started
         // mid-repaint and the anchor used the last resting cell instead of
-        // the instantaneous cursor.
+        // the instantaneous cursor. pin= is the textarea correction,
+        // preedit= the live composition-view correction.
         console.info(
-          `[wmux:ime-anchor2] pty=${ptyIdRef.current} compositionstart ybase=${baseY} ydisp=${viewportY} ` +
+          `[wmux:ime-anchor3] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
           `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src} held=${held.toFixed(0)}ms ` +
-          `restAge=${restAge.toFixed(0)}ms cellHeight=${cellHeight.toFixed(2)} correction=(${dx.toFixed(1)},${dy.toFixed(1)})` +
+          `restAge=${restAge.toFixed(0)}ms cellHeight=${cellHeight.toFixed(2)} pin=(${dx.toFixed(1)},${dy.toFixed(1)}) ` +
+          `preedit=(${preeditDx.toFixed(1)},${preeditDy.toFixed(1)})` +
           (imeAnchorLogsLeft === 0 ? ' (last one, diagnostic capped)' : ''),
         );
       },
