@@ -201,8 +201,16 @@ export interface RpcContext {
    * therefore treat it as the caller's own workspace — which `browser.rpc.ts`
    * does in its `hosted` lane — where `declared` can only check that some
    * workspaceId is present.
+   *
+   * Three states, and the difference between the last two is load-bearing:
+   *   `string`     the host is showing this workspace; bind the call to it.
+   *   `null`       the plugin host dispatched this and had NO workspace to
+   *                bind it to. Still a hosted caller — a handler that scopes
+   *                on this must refuse, never fall through to a lane that lets
+   *                the caller name its own workspace.
+   *   `undefined`  not a plugin-host dispatch at all.
    */
-  hostedWorkspace?: string;
+  hostedWorkspace?: string | null;
 }
 
 export type RpcResponse =

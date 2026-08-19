@@ -251,27 +251,67 @@ describe('RpcRouter dispatch provenance', () => {
   });
 
   it('never lets a request envelope populate the host workspace (#922)', async () => {
-    let seen: RpcContext | undefined;
+    const seen: (RpcContext | undefined)[] = [];
     router.register('system.identify', async (_params, ctx) => {
-      seen = ctx;
+      seen.push(ctx);
       return { name: 'wmux' };
     });
 
-    const response = await router.dispatch(
+    // Positive control first, so this test cannot pass with the feature
+    // removed: the OPTION sets the binding even while the envelope and the
+    // params both name something else.
+    await router.dispatch(
+      {
+        id: 'option-wins',
+        method: 'system.identify',
+        params: { hostedWorkspace: 'ws-forged' },
+        clientName: 'hello-panel',
+        ...({ hostedWorkspace: 'ws-forged' } as Record<string, unknown>),
+      } as RpcRequest,
+      { firstParty: true, hostedWorkspace: 'ws-host' },
+    );
+    expect(seen[0]?.hostedWorkspace).toBe('ws-host');
+
+    // Same envelope, no option: a wire client is free to put the field on the
+    // request, and the router still does not read it.
+    await router.dispatch(
       {
         id: 'forged',
         method: 'system.identify',
         params: { hostedWorkspace: 'ws-forged' },
         clientName: 'hello-panel',
-        // A wire client is free to put this on the envelope; it is not a
-        // field the router reads.
         ...({ hostedWorkspace: 'ws-forged' } as Record<string, unknown>),
       } as RpcRequest,
       { externalWire: true },
     );
+    expect(seen[1]?.hostedWorkspace).toBeUndefined();
+  });
 
-    expect(response.ok).toBe(true);
-    expect(seen?.hostedWorkspace).toBeUndefined();
+  it('keeps an unbound plugin-host dispatch distinguishable from a non-hosted one (#922)', async () => {
+    const seen: (RpcContext | undefined)[] = [];
+    router.register('system.identify', async (_params, ctx) => {
+      seen.push(ctx);
+      return { name: 'wmux' };
+    });
+
+    for (const value of [null, '', '   '] as const) {
+      await router.dispatch(
+        { id: `unbound-${String(value)}`, method: 'system.identify', params: {}, clientName: 'hello-panel' },
+        { firstParty: true, hostedWorkspace: value },
+      );
+    }
+    // null, not undefined: the caller IS the plugin host, it just has no
+    // workspace to bind to. Collapsing the two is what let an unbound plugin
+    // fall through to a lane that accepts its own workspaceId.
+    expect(seen.map((c) => c?.hostedWorkspace)).toEqual([null, null, null]);
+    expect(seen.every((c) => c !== undefined && 'hostedWorkspace' in c)).toBe(true);
+
+    // A plain first-party dispatch that is not the plugin host stays absent.
+    await router.dispatch(
+      { id: 'not-hosted', method: 'system.identify', params: {}, clientName: 'hello-panel' },
+      { firstParty: true },
+    );
+    expect(seen[3]?.hostedWorkspace).toBeUndefined();
   });
 
   it('rejects a host workspace supplied off the plugin-host lane (#922)', async () => {

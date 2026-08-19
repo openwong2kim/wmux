@@ -115,11 +115,15 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           lookup; it is refused. This is the caller #810 describes.
  *   closes  a pinned commander can no longer name a workspace other than the
  *           one its validated token is bound to.
- *   closes  (#922) an approved IFRAME PLUGIN can no longer act on a workspace
- *           other than the one the user is in. It used to reach `declared` and
- *           receive whatever workspace it named, while #719 already held it to
- *           the active workspace for OBSERVATION — "may watch here, may act
- *           anywhere" was an asymmetry, not a decision.
+ *   closes  (#922) an approved IFRAME PLUGIN can no longer point a browser
+ *           target lookup — every `browser.*` method that resolves through
+ *           `scopeFor` — at a workspace other than the one hosting it. It used
+ *           to reach `declared` and receive whatever workspace it named, while
+ *           #719 already held it to the active workspace for OBSERVATION:
+ *           "may watch here, may act anywhere" was an asymmetry, not a
+ *           decision. Confined to THIS table: the renderer's own fallbacks
+ *           (`pane.list`, `browser.open` in `useRpcBridge.ts`) resolve a
+ *           workspace without ever reaching here and are not covered.
  *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
  *           it is the caller's own. For a WIRE caller nothing in the main
  *           process binds a clientName to a workspace — `mcp.claimWorkspace`
@@ -199,24 +203,41 @@ export function callerScope(
   // readable from the bridge envelope, so unlike `declared` this is an
   // ownership fact rather than a claim, and it is applied with the pinned
   // lane's exact rules: omitted resolves to it, a mismatch is refused.
-  const hostedWorkspaceId =
-    typeof ctx.hostedWorkspace === 'string' && ctx.hostedWorkspace.length > 0
-      ? ctx.hostedWorkspace
-      : undefined;
-  if (hostedWorkspaceId) {
+  //
+  // The lane is keyed on the PRESENCE of the field, not on it holding a
+  // workspace. A hosted caller with `null` — the host had no active workspace
+  // to bind to — is refused here. Falling through on the empty case would send
+  // exactly the caller this lane exists for into `declared`, where its own
+  // `workspaceId` is accepted: an unbound plugin would be strictly less
+  // confined than a bound one.
+  if (ctx.hostedWorkspace !== undefined) {
+    const hostedWorkspaceId =
+      typeof ctx.hostedWorkspace === 'string' && ctx.hostedWorkspace.length > 0
+        ? ctx.hostedWorkspace
+        : undefined;
     // Mirror of the pinned lane's source check, pointed the other way: pinned
-    // must arrive on the local wire, hosted must arrive in-process. RpcRouter
-    // already refuses the option off the firstParty lane, so this is the
-    // fail-closed second reading rather than the only one. The operator is not
-    // tested here because it returns above — it may act across workspaces by
-    // design, and dispatch rejects operator + hostedWorkspace outright.
+    // must arrive on the local wire, hosted must arrive in-process. This is an
+    // invariant backstop, not production telemetry — RpcRouter rejects the
+    // option off the firstParty lane before a context is ever built, so the
+    // only way here is a hand-built context (tests, a future context
+    // constructor). It stays because the lane must fail closed for those too.
+    // The operator is not tested: it returns above, may act across workspaces
+    // by design, and dispatch refuses operator + hostedWorkspace outright.
     if (ctx.firstParty !== true || ctx.externalWire === true) {
       return {
         kind: 'rejected',
         lane: 'hosted',
         reason: 'hosted-source-unqualified',
         ...(requested && { requestedWorkspaceId: requested }),
-        hostedWorkspaceId,
+        ...(hostedWorkspaceId && { hostedWorkspaceId }),
+      };
+    }
+    if (!hostedWorkspaceId) {
+      return {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-workspace-unbound',
+        ...(requested && { requestedWorkspaceId: requested }),
       };
     }
     if (requested && requested !== hostedWorkspaceId) {
@@ -291,6 +312,8 @@ const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
     'address a surface in the workspace your token is bound to',
   'hosted-source-unqualified':
     'a host-bound caller must arrive through the in-process plugin host',
+  'hosted-workspace-unbound':
+    'the plugin host has no active workspace to resolve this call against',
   'hosted-workspace-mismatch':
     'omit workspaceId and this resolves to the workspace you are hosted in',
   'workspace-unresolved':

@@ -82,6 +82,7 @@ export type BrowserScopeShadowReason =
   | 'pinned-source-unqualified'
   | 'pinned-workspace-mismatch'
   | 'hosted-source-unqualified'
+  | 'hosted-workspace-unbound'
   | 'hosted-workspace-mismatch'
   | 'workspace-unresolved';
 

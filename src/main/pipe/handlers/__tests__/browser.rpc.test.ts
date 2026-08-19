@@ -222,6 +222,41 @@ describe('callerScope shadow decision (#810)', () => {
       },
     ],
     [
+      // The host had no active workspace, so there is nothing to bind to. This
+      // must NOT fall through to `declared`, which would accept the plugin's
+      // own workspaceId — an unbound plugin would end up less confined than a
+      // bound one.
+      'hosted plugin with no binding is refused, not demoted',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: null,
+      },
+      { workspaceId: 'ws-other' },
+      {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-workspace-unbound',
+        requestedWorkspaceId: 'ws-other',
+      },
+    ],
+    [
+      'hosted plugin with a blank binding is refused the same way',
+      {
+        origin: 'local',
+        firstParty: true,
+        clientName: 'hello-panel',
+        hostedWorkspace: '',
+      },
+      {},
+      {
+        kind: 'rejected',
+        lane: 'hosted',
+        reason: 'hosted-workspace-unbound',
+      },
+    ],
+    [
       // The pinned lane is checked first and stays first: a forged commander
       // pin is refused before the hosted lane can rescue the same caller.
       'hosted plugin forging a server pin is still refused as pinned',
@@ -745,6 +780,76 @@ describe('registerBrowserRpc', () => {
   // options or a request field. Its decisions are covered pure-functionally in
   // the `callerScope` describe above; `scopeFor` funnels every rejected lane
   // through one branch, exercised by the unresolved cases here.
+
+  // The hosted lane, unlike pinned, IS reachable from here: `hostedWorkspace`
+  // comes from the dispatch options the plugin host supplies, so these drive
+  // the real handler chain rather than the decision function alone.
+  it('resolves a hosted plugin that omits its workspace to the host binding', async () => {
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-hosted-omitted',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'hello-panel',
+    }, { firstParty: true, hostedWorkspace: 'ws-host' });
+
+    expect(response.ok).toBe(true);
+    // The binding, not the absent request field, is what the lookup receives.
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-host');
+  });
+
+  it('refuses a hosted plugin that names another workspace, before any lookup', async () => {
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-hosted-mismatch',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-other' },
+      clientName: 'hello-panel',
+    }, { firstParty: true, hostedWorkspace: 'ws-host' });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+      expect(response.error).toContain('omit workspaceId');
+    }
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(cdpOf(router).ensureAwake).not.toHaveBeenCalled();
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'hello-panel',
+      method: 'browser.evaluate',
+      reason: 'hosted-workspace-mismatch',
+      requestedWorkspaceId: 'ws-other',
+      hostedWorkspaceId: 'ws-host',
+    });
+  });
+
+  it('refuses an unbound hosted plugin instead of accepting the workspace it names', async () => {
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-hosted-unbound',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-other' },
+      clientName: 'hello-panel',
+    }, { firstParty: true, hostedWorkspace: null });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+    // The regression this guards: before the lane keyed on presence, this call
+    // landed in `declared` and was scoped to 'ws-other'.
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'hello-panel',
+      method: 'browser.evaluate',
+      reason: 'hosted-workspace-unbound',
+      requestedWorkspaceId: 'ws-other',
+    });
+  });
 
   it('hands the decided workspace to the lookup, not the raw request field', async () => {
     const router = register(() => null, undefined, 'enforce');

@@ -73,13 +73,16 @@ describe('plugins:rpc host workspace binding', () => {
     expect(request.params).toEqual({ hostedWorkspace: 'ws-forged' });
   });
 
-  it('omits the option when the host has no workspace yet', async () => {
+  it.each([undefined, '', '   '])('says "hosted, unbound" rather than going quiet (%p)', async (value) => {
     const rpc = setup();
 
-    await rpc({}, 'demo', 'workspace.current', {}, undefined);
+    await rpc({}, 'demo', 'workspace.current', {}, value);
 
     const [, opts] = dispatch.mock.calls[0] as DispatchArgs;
-    expect(opts).toEqual({ firstParty: true });
+    // The key is present with a null value. Omitting it would make this
+    // indistinguishable from a caller that is not the plugin host at all, and
+    // the browser lane would then let the plugin name its own workspace.
+    expect(opts).toEqual({ firstParty: true, hostedWorkspace: null });
   });
 
   it('refuses a non-string host workspace instead of coercing it', async () => {

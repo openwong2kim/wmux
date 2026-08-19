@@ -58,8 +58,8 @@ export function registerPluginHostHandlers(
     // #922 — the workspace the HOST is showing, passed as its own argument by
     // the host component, never taken from the plugin's own params. The preload
     // signature makes the position mandatory so a new call site cannot forget
-    // it; the value may still be absent before any workspace exists, and a
-    // hosted caller without one simply lands in the lane it lands in today.
+    // it; the value may still be absent before any workspace exists, which is
+    // forwarded as an explicit `null` rather than as an omission.
     if (hostWorkspaceId !== undefined && typeof hostWorkspaceId !== 'string') {
       throw new Error('Invalid plugin RPC host workspace');
     }
@@ -91,7 +91,12 @@ export function registerPluginHostHandlers(
       // the host component that owns the iframe. Neither is readable from the
       // bridge envelope, which is what lets `browser.rpc.ts` treat the pair as
       // an ownership claim instead of a declaration (#922).
-      ...(hostWorkspaceId ? { hostedWorkspace: hostWorkspaceId } : {}),
+      // Sent on EVERY call, `null` included: presence is what tells main this
+      // is a plugin-host caller. A host with no active workspace yet says so
+      // explicitly rather than looking like a caller that may name its own.
+      hostedWorkspace: typeof hostWorkspaceId === 'string' && hostWorkspaceId.trim().length > 0
+        ? hostWorkspaceId.trim()
+        : null,
     });
   }));
 
