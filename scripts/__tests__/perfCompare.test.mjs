@@ -175,9 +175,11 @@ describe('compareResults — strict > boundary (not >=)', () => {
 });
 
 describe('compareResults — frame-margin gate on the quantized W2 family (#940)', () => {
-  // frameDeltaMs.p95 only ever lands on multiples of one frame interval
-  // (15.625 ms). These are the five distinct values the last 25 `main` records
-  // took, judged against the blessed 1-frame baseline.
+  // frameDeltaMs.p95 lands in clusters one frame interval apart. These are the
+  // five distinct values the last 25 `main` records took, judged against the
+  // blessed 1-frame baseline. The gate's interval is FRAME_INTERVAL_MS = 15.7,
+  // the top of the one-frame cluster — see the cluster-width case below for
+  // why it is not the 15.625 ms tick these numbers come from physically.
   const gateOf = (p95, basep95 = 15.7) =>
     verdictFor(
       compareResults(makeResult({ frameBudgetN16: p95 }), makeResult({ frameBudgetN16: basep95 })),
@@ -224,8 +226,8 @@ describe('compareResults — frame-margin gate on the quantized W2 family (#940)
     //   old rule: FAIL needs cur > 31.3*2 (62.6) AND cur > 31.3+8 — so a
     //             4-frame sample at 62.5 PASSED, i.e. blessing a bad baseline
     //             doubled the allowance to 4 frames.
-    //   new rule: FAIL needs cur > 31.3 + 15.625 (46.925) — 3 frames is the
-    //             most it can reach, whatever the baseline is blessed at.
+    //   new rule: FAIL needs cur > 31.3 + 15.7 (47.0) — 3 frames is the most
+    //             it can reach, whatever the baseline is blessed at.
     const oldRuleWouldPass = 62.5 > 31.3 * 2.0 && 62.5 > 31.3 + 8;
     expect(oldRuleWouldPass).toBe(false);                    // the old gate let it through
     expect(gateOf(62.5, 31.3).status).toBe('FAIL');          // the new one does not
