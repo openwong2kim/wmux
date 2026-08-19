@@ -104,18 +104,40 @@ export const GATES = [
     absMargin: 157286400, // 150 MiB
     unit: 'bytes',
   },
-  // W2 — N-pane concurrent-streaming frame budget (design §2.1/§3). ratio 2.0
-  // encodes the strategy doc's "예산 2배" trigger directly. Calibrated against
-  // real CI runs (2026-07-10, 4 runs): frameDeltaMs.p95 is vsync-pinned at
-  // 15.7ms for every N with zero run-to-run spread, so a single dropped-frame
-  // step (33.3ms) trips the 2.0x + 8ms double condition exactly as designed.
-  // Each N gates against its OWN baseline entry (no single 16.7ms budget
-  // across N).
+  // W2 — N-pane concurrent-streaming frame budget (design §2.1/§3). Calibrated
+  // against real CI runs (2026-07-10, 4 runs): frameDeltaMs.p95 is vsync-pinned
+  // for every N with zero run-to-run spread. Each N gates against its OWN
+  // baseline entry (no single budget across N).
+  //
+  // #940 — gated on FRAMES rather than on a ratio to the baseline. The metric
+  // is quantized: across all 216 `bench-history` records these p95s only land
+  // in frame-interval clusters (15.7-15.8, 31.1-31.4, 46.8-47.0, 62.4-62.5,
+  // 78.1). Against a 1-frame baseline `ratio: 2.0` puts the threshold at
+  // exactly 31.4 — the top of the two-frame cluster — so those records passed
+  // only because "regressed past 2x" is strictly-greater. The verdict was
+  // riding on threshold placement rather than on measurement, and it drifted
+  // multiplicatively: a baseline blessed from a 2-frame run would have allowed
+  // 4 frames.
+  //
+  // `frameMargin: 1` says the intended thing on the metric's own unit — p95 may
+  // sit up to one whole frame interval above the blessed baseline, and past
+  // that is red. It replaces both halves of the double condition (the 8 ms
+  // absMargin was already additive, just half a frame and arbitrary). Drift is
+  // now linear: a 2-frame baseline allows 3 frames, not 4.
+  //
+  // Verdicts are unchanged. Replayed over every record in the trend — 648
+  // samples, 216 records x 3 N — the old rule and this one disagree on nothing.
+  // The dropped-frame step the original calibration was written around (33.3 ms
+  // against 15.7, and the 37.1 ms the confirmation fixtures use) still trips it.
+  //
+  // `ratio` / `absMargin` stay on these entries for the delta columns and for
+  // consumers reading the gate table; they no longer decide the verdict.
   {
     key: 'frameBudgetP95Ms_N4',
     label: 'frameBudget.N4.frameDeltaMs.p95',
     path: 'scenarios.frameBudget.N4.frameDeltaMs.p95',
     scenarioPath: 'scenarios.frameBudget.N4',
+    frameMargin: 1, // #940 — whole frame intervals allowed above baseline
     ratio: 2.0,
     absMargin: 8, // ms (see calibration note above)
     unit: 'ms',
@@ -125,6 +147,7 @@ export const GATES = [
     label: 'frameBudget.N8.frameDeltaMs.p95',
     path: 'scenarios.frameBudget.N8.frameDeltaMs.p95',
     scenarioPath: 'scenarios.frameBudget.N8',
+    frameMargin: 1, // #940 — whole frame intervals allowed above baseline
     ratio: 2.0,
     absMargin: 8, // ms
     unit: 'ms',
@@ -134,6 +157,7 @@ export const GATES = [
     label: 'frameBudget.N16.frameDeltaMs.p95',
     path: 'scenarios.frameBudget.N16.frameDeltaMs.p95',
     scenarioPath: 'scenarios.frameBudget.N16',
+    frameMargin: 1, // #940 — whole frame intervals allowed above baseline
     ratio: 2.0,
     absMargin: 8, // ms
     unit: 'ms',
@@ -272,6 +296,27 @@ function deltaPct(current, baseline) {
  *     NEW   — current has it, baseline doesn't (informational)
  *   improved: boolean — current < baseline * IMPROVEMENT_FRACTION
  */
+/**
+ * One frame interval, in ms — the quantum `frameDeltaMs.p95` is measured in.
+ *
+ * Read off the measurement, not off a refresh rate: 15.7 is what
+ * `bench/baseline-ci.json` holds for all three N, and it is the top of the
+ * one-frame cluster in the trend. The perf job is `windows-latest` only, so
+ * there is one quantum to fit.
+ *
+ * The cluster has width — across all 216 `bench-history` records the two-frame
+ * samples run 31.1 to 31.4 and the three-frame ones 46.8 to 47.0 — so the
+ * constant has to be the TOP of the one-frame cluster, not its middle. At
+ * 15.625 (the Windows timer tick, which is where these numbers come from
+ * physically) the threshold lands at 31.325, inside the two-frame cluster, and
+ * two real records at 31.4 flip from PASS to FAIL. That is the same
+ * between-quanta accident this change exists to remove, one quantum lower.
+ *
+ * Checked against every record in the trend: 648 samples (216 records x 3 N),
+ * zero verdict changes.
+ */
+export const FRAME_INTERVAL_MS = 15.7;
+
 export function compareResults(current, baseline, gates = GATES) {
   const results = [];
   for (const gate of gates) {
@@ -341,16 +386,29 @@ export function compareResults(current, baseline, gates = GATES) {
       continue;
     }
 
-    // Both sides have numbers — apply the double-condition gate.
+    // Both sides have numbers — apply the gate.
     r.deltaPct = deltaPct(cur, base);
+    // #940 — a frame-margin gate allows a fixed number of whole frame intervals
+    // above the baseline instead of the ratio + margin double condition,
+    // because the metric is quantized and a ratio threshold lands between
+    // quanta. No rounding: the margin is wall-clock, so a sample that is not on
+    // a quantum is judged by how far past the allowance it actually is.
+    const frameAllowance = gate.frameMargin ? gate.frameMargin * FRAME_INTERVAL_MS : null;
     const overRatio = cur > base * gate.ratio;
     const overAbs = cur > base + gate.absMargin;
-    if (overRatio && overAbs) {
+    const failed = gate.frameMargin
+      ? cur > base + frameAllowance
+      : (overRatio && overAbs);
+    if (failed) {
       r.status = 'FAIL';
-      r.note = `regressed past ${gate.ratio}x and +${fmtValue(
-        gate.absMargin,
-        gate.unit,
-      )}`;
+      r.note = gate.frameMargin
+        ? `regressed past +${gate.frameMargin} frame interval`
+          + `${gate.frameMargin === 1 ? '' : 's'} `
+          + `(+${fmtValue(frameAllowance, gate.unit)})`
+        : `regressed past ${gate.ratio}x and +${fmtValue(
+          gate.absMargin,
+          gate.unit,
+        )}`;
     } else {
       r.status = 'PASS';
       if (cur < base * IMPROVEMENT_FRACTION) {
