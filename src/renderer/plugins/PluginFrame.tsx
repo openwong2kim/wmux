@@ -112,7 +112,12 @@ export default function PluginFrame({
         const req = parseBridgeRequest(e.data);
         if (!req || disposed) return;
         window.electronAPI.plugins
-          .rpc(pluginName, req.method, req.params)
+          // #922: the workspace the host is showing rides alongside the
+          // request, never inside it, so main can tell what this plugin IS
+          // from what it ASKED for. Read at request time on purpose — making
+          // it a dependency of this effect would tear the port down on every
+          // workspace switch, which is exactly what #928 fixed.
+          .rpc(pluginName, req.method, req.params, useStore.getState().activeWorkspaceId)
           .then((raw) => {
             const resp = raw as { ok?: boolean; result?: unknown; error?: string } | null;
             if (resp && resp.ok === true) {
@@ -182,9 +187,18 @@ export default function PluginFrame({
       if (stopped || inFlight) return;
       inFlight = true;
       window.electronAPI.plugins
-        .rpc(pluginName, 'events.poll', cursor === null
-          ? { workspaceId: activeWorkspaceId }
-          : { cursor, workspaceId: activeWorkspaceId })
+        .rpc(
+          pluginName,
+          'events.poll',
+          cursor === null
+            ? { workspaceId: activeWorkspaceId }
+            : { cursor, workspaceId: activeWorkspaceId },
+          // Same value the params carry here (this effect re-runs on a
+          // workspace switch), passed on the host channel as well so every
+          // plugin-host dispatch states the host's binding, not just the
+          // methods that read it today.
+          activeWorkspaceId,
+        )
         .then((raw) => {
           const resp = raw as { ok?: boolean; result?: { events?: unknown[]; nextCursor?: number } } | null;
           if (!resp || resp.ok !== true || !resp.result) {

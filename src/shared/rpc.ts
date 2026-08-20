@@ -189,6 +189,28 @@ export interface RpcContext {
    * envelope field — validation is the only writer.
    */
   commanderWorkspace?: string;
+  /**
+   * #922 — the workspace the PLUGIN HOST derived for this caller, not one the
+   * caller named. Set by RpcRouter only from the `hostedWorkspace` dispatch
+   * option, and only on the in-process `firstParty` lane; a request envelope
+   * can never populate it and the external wire never carries it.
+   *
+   * The iframe plugin surface is the one caller class where neither half of the
+   * identity is caller-supplied: `clientName` is stamped from the loaded
+   * manifest, and this is the workspace the host is showing. Handlers may
+   * therefore treat it as the caller's own workspace — which `browser.rpc.ts`
+   * does in its `hosted` lane — where `declared` can only check that some
+   * workspaceId is present.
+   *
+   * Three states, and the difference between the last two is load-bearing:
+   *   `string`     the host is showing this workspace; bind the call to it.
+   *   `null`       the plugin host dispatched this and had NO workspace to
+   *                bind it to. Still a hosted caller — a handler that scopes
+   *                on this must refuse, never fall through to a lane that lets
+   *                the caller name its own workspace.
+   *   `undefined`  not a plugin-host dispatch at all.
+   */
+  hostedWorkspace?: string | null;
 }
 
 export type RpcResponse =

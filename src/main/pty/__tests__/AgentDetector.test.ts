@@ -45,6 +45,57 @@ describe('AgentDetector', () => {
       expect(det.getLastAgent()).toBe('Claude Code');
     });
 
+    // ── #935: the gate against the wire, not against a hand-typed fixture ──
+    //
+    // Every fixture above spells the footer with literal spaces on its own
+    // line. Claude Code does neither. Captured from a live pane (v2.1.235):
+    // spaces are cursor advances, and the whole bottom region arrives as one
+    // newline-free run whose rows are placed with CUP escapes. Both of those
+    // kept the compound gate shut on every real Claude pane, which made the
+    // detector's entire Claude block — waiting AND the approval awaiting_input
+    // regexes — dead code against the shipping product.
+    const ESC = String.fromCharCode(27);
+    /** Join with cursor-forward-1 where the TUI would have written a space. */
+    const cuf = (...words: string[]) => words.join(`${ESC}[1C`);
+    /** Position the following text at a screen row, as a full-screen TUI does. */
+    const at = (row: number) => `${ESC}[${row};3H`;
+    const FOOTER_WIRE = `⏵⏵${ESC}[1C${cuf('bypass', 'permissions', 'on', '(shift+tab', 'to', 'cycle)')}`;
+
+    it('#935 opens the gate on the wire form Claude emits (cursor-drawn spaces)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.235\n');
+      expect(cb).not.toHaveBeenCalled();
+      det.feed(`${FOOTER_WIRE}\n`);
+      expect(det.getLastAgent()).toBe('Claude Code');
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('running');
+      expect(statuses).toContain('waiting');
+    });
+
+    it('#935 opens the gate when the footer shares one cursor-addressed blob', () => {
+      // The real bottom region: a Claude warning carrying `=`, the mode footer,
+      // and the user's own echoed prompt carrying `;`. No newline anywhere in
+      // it. Split on newlines alone this is ONE ~900-char "line", and
+      // SOURCE_LINE_RE rejects it as source because of characters that belong
+      // to neither the footer nor any code.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.235\n');
+      const blob = [
+        at(44) + cuf('Transcript', 'saving', 'is', 'off', '-', 'restart', 'with', 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1'),
+        at(46) + FOOTER_WIRE,
+        at(48) + cuf('Opus', '5', '(high)'),
+        at(50) + '> Run `sleep 8; echo s1`, then `sleep 8; echo s2`.',
+      ].join('');
+      det.feed(`${blob}\n`);
+      expect(det.getLastAgent()).toBe('Claude Code');
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).toContain('waiting');
+    });
+
     it('emits "waiting" for "shift+tab to cycle" Claude prompt', () => {
       const { det, cb } = claudeGated();
       det.feed('  shift+tab to cycle modes\n');

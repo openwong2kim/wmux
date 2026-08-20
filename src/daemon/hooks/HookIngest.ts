@@ -98,10 +98,17 @@ export interface HookIngestSession {
  *   - 'emit'  → fan out the notification AND the `agent.lifecycle` tee
  *   - 'dedup' → the other source already covered this turn: lifecycle tee with
  *               `decision:'dedup'`, NO notification
- *   - 'veto'  → detector-only, hook-governed pane: metadata/status dot only,
+ *   - 'veto'  → detector-only, hook-governed pane: identity metadata only,
  *               no notification and no lifecycle tee (the hook is canonical
  *               here and the detector's always-visible footer would both
- *               re-fire mid-turn and poison the ledger against the real Stop)
+ *               re-fire mid-turn and poison the ledger against the real Stop).
+ *               #935: main also withholds the lifecycle STATUS on a veto —
+ *               that footer is what put a false 'waiting' on the roster row
+ *               and into "N need you". 'internal' does NOT share this (the
+ *               alarm's own judgement leaves the status live), so the two
+ *               verdicts are no longer interchangeable main-side.
+ *               `agent.awaiting_input` is never stamped 'veto' here, and main
+ *               enforces that locally too rather than trusting this process.
  *
  * `decision` is absent for DETECTOR statuses that are not emit-class (e.g.
  * 'running'): those never participated in dedup on either side.
@@ -573,7 +580,7 @@ export class HookIngest {
 
     // Touch authority on every gate signal — the bridge is alive on this pane.
     // `exact` (#919): only exact-ptyId routing may decide identity alone.
-    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
@@ -702,7 +709,7 @@ export class HookIngest {
     // "a toast just fired". The detector-emission site consults
     // isGovernedFor before fanning out its own notifications. `exact` (#919):
     // a cwd-prefix-resolved signal may corroborate identity but never stand alone.
-    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
@@ -986,7 +993,11 @@ export class HookIngest {
       if (cue) this.alarm.observe(sessionId, slug, cue);
       return { source };
     }
-    if (kind !== 'agent.awaiting_input' && this.router.isGovernedFor(sessionId, slug, this.now())) {
+    // #935 — one predicate, both processes. `governsDetectorStatus` already
+    // excludes `awaiting_input` (and every non-lifecycle status) and adds the
+    // turn-liveness scope that plain `isGovernedFor` lacks: a live bridge on an
+    // IDLE pane must not veto the detector's true "ready for input" read.
+    if (this.router.governsDetectorStatus(sessionId, slug, event.status, this.now())) {
       return { source, decision: 'veto' };
     }
     // Verdict gate (R1): the candidate holds a provisional window before it

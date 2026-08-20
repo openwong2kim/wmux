@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS } from '../HookSignalRouter';
+import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS, HOOK_AUTHORITY_TTL_MS } from '../HookSignalRouter';
 import { SignalLatencyMeter } from '../SignalLatencyMeter';
 import type { AgentSignal } from '../signal-types';
 
@@ -238,6 +238,61 @@ describe('HookSignalRouter', () => {
       router.touchAuthority('p1', 'codex', 2000);
       expect(router.isGovernedFor('p1', 'claude', 2100)).toBe(false);
       expect(router.isGovernedFor('p1', 'codex', 2100)).toBe(true);
+    });
+
+    it('#935 governsDetectorStatus covers waiting/complete on a governed pane', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2000)).toBe(true);
+    });
+
+    it('#935 SessionStart alone does not hand the lifecycle to the hook', () => {
+      // The bridge is alive but has never written a lifecycle status, so the
+      // detector's read is all the roster has. Withholding it left a freshly
+      // launched agent showing the gate's one-shot `running` while it sat at
+      // its prompt — live-measured at 30+ seconds per launch.
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.session_start');
+      expect(router.isGovernedFor('p1', 'claude', 2000)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(false);
+    });
+
+    it('#935 any signal after SessionStart hands the lifecycle back to the hook', () => {
+      // Including the turn END: the post-Stop veto is what stops a detector
+      // repaint from double-toasting a completion the hook already announced.
+      for (const kind of ['agent.activity', 'agent.stop', 'agent.subagent_stop'] as const) {
+        router.resetForTests();
+        router.touchAuthority('p1', 'claude', 1000, true, 'agent.session_start');
+        router.touchAuthority('p1', 'claude', 2000, true, kind);
+        expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2100)).toBe(true);
+      }
+    });
+
+    it('#935 a relaunch in the same pane returns the lifecycle to the detector', () => {
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.stop');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 1100)).toBe(true);
+      router.touchAuthority('p1', 'claude', 2000, true, 'agent.session_start');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2100)).toBe(false);
+    });
+
+    it('#935 governsDetectorStatus spares awaiting_input and running', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      // Approval prompts have no hook (PreToolUse is wired for AskUserQuestion
+      // only), so the detector is their sole source — withholding this status
+      // would leave a blocked pane looking idle for the full authority TTL.
+      expect(router.governsDetectorStatus('p1', 'claude', 'awaiting_input', 2000)).toBe(false);
+      // 'running' is a working cue, not a turn boundary.
+      expect(router.governsDetectorStatus('p1', 'claude', 'running', 2000)).toBe(false);
+    });
+
+    it('#935 governsDetectorStatus is false without authority, slug, or a matching agent', () => {
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(false);
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.governsDetectorStatus('p1', null, 'waiting', 2000)).toBe(false);
+      expect(router.governsDetectorStatus('p1', undefined, 'waiting', 2000)).toBe(false);
+      // A different agent on the same pane is a genuinely distinct source.
+      expect(router.governsDetectorStatus('p1', 'codex', 'waiting', 2000)).toBe(false);
+      // Past the authority TTL the detector is the backstop again.
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 1000 + HOOK_AUTHORITY_TTL_MS)).toBe(false);
     });
 
     it('dropPty releases authority immediately (pane disposal)', () => {

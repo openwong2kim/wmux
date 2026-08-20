@@ -81,6 +81,9 @@ export type BrowserScopeShadowReason =
   | 'caller-origin-unsupported'
   | 'pinned-source-unqualified'
   | 'pinned-workspace-mismatch'
+  | 'hosted-source-unqualified'
+  | 'hosted-workspace-unbound'
+  | 'hosted-workspace-mismatch'
   | 'workspace-unresolved';
 
 /**
@@ -95,6 +98,12 @@ export interface BrowserScopeShadowEntry {
   reason: BrowserScopeShadowReason;
   requestedWorkspaceId?: string;
   pinnedWorkspaceId?: string;
+  /**
+   * #922 — the workspace the plugin host derived for the caller. Recorded for
+   * the same reason as `pinnedWorkspaceId`: this is a local operator-owned
+   * audit file, so it may hold what a refusal message must never disclose.
+   */
+  hostedWorkspaceId?: string;
 }
 
 export type BrowserScopeShadowInput = Omit<BrowserScopeShadowEntry, 'entryKind' | 'ts'>;

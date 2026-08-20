@@ -847,8 +847,17 @@ const electronAPI = {
       plugins: unknown[];
       failures: Array<{ name: string; errors: string[] }>;
     }>,
-    rpc: (pluginName: string, method: string, params?: Record<string, unknown>) =>
-      ipcRenderer.invoke(IPC.PLUGINS_RPC, pluginName, method, params) as Promise<unknown>,
+    // `hostWorkspaceId` is the workspace the HOST is showing (#922) — a
+    // mandatory position with a nullable value, so a future call site cannot
+    // silently omit the binding, while a host that genuinely has no workspace
+    // yet can still say so.
+    rpc: (
+      pluginName: string,
+      method: string,
+      params: Record<string, unknown> | undefined,
+      hostWorkspaceId: string | undefined,
+    ) =>
+      ipcRenderer.invoke(IPC.PLUGINS_RPC, pluginName, method, params, hostWorkspaceId) as Promise<unknown>,
     requestApproval: (pluginName: string) =>
       ipcRenderer.invoke(IPC.PLUGINS_REQUEST_APPROVAL, pluginName) as Promise<{ approved: boolean }>,
     onPaneDecoration: (callback: (decoration: {

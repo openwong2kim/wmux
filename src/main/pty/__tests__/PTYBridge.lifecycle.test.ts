@@ -95,11 +95,19 @@ function stubHookRouter(
   decision: 'emit' | 'dedup',
   opts: { governed?: boolean } = {},
 ): HookSignalRouter {
+  const governed = opts.governed ?? false;
   return {
     recordDetector: vi.fn().mockReturnValue(decision),
     recordHook: vi.fn().mockReturnValue('emit'),
     touchAuthority: vi.fn(),
-    isGovernedFor: vi.fn().mockReturnValue(opts.governed ?? false),
+    isGovernedFor: vi.fn().mockReturnValue(governed),
+    // Mirrors the real predicate: only the two statuses the Stop hook speaks
+    // for, and only on a governed pane. Stubbing it as a flat `governed`
+    // would wrongly withhold 'awaiting_input' too.
+    governsDetectorStatus: vi.fn(
+      (_ptyId: string, slug: string | null | undefined, status: string) =>
+        governed && !!slug && (status === 'waiting' || status === 'complete'),
+    ),
   } as unknown as HookSignalRouter;
 }
 
@@ -188,13 +196,12 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(pollLifecycle().length).toBeGreaterThanOrEqual(1);
   });
 
-  it('hook-authority veto: governed (ptyId, slug) suppresses detector notification, ledger write and tee — status dot stays', () => {
+  it('hook-authority veto: governed (ptyId, slug) suppresses detector notification, ledger write and tee', () => {
     // While the pane's hook bridge is fresh for the SAME agent, the
     // detector's footer heuristics must go fully silent on the
     // notification path: no sendNotification, no recordDetector (a ledger
     // write here would make the REAL Stop hook land as 'dedup' → silent
-    // completion), no lifecycle tee (the hook path emits the canonical
-    // one). Metadata/status broadcasts are NOT gated.
+    // completion), no lifecycle tee (the hook path emits the canonical one).
     const router = stubHookRouter('emit', { governed: true });
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
@@ -203,11 +210,48 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
-    expect(router.isGovernedFor).toHaveBeenCalledWith('pty-1', 'claude');
     expect(mocks.sendNotification).not.toHaveBeenCalled();
     expect(router.recordDetector).not.toHaveBeenCalled();
     expect(pollLifecycle()).toHaveLength(0);
-    // Sidebar dot still updated (agentStatus broadcast precedes the veto).
+  });
+
+  it('#935 REGRESSION: a governed pane never gets a detector "waiting" onto agentStatus — Claude\'s bypass footer is on screen the WHOLE turn', () => {
+    // The bug: the status broadcast ran BEFORE the veto and was deliberately
+    // ungated, so `bypass permissions on` — permanent chrome in
+    // bypass-permissions mode, not a turn boundary — wrote 'waiting' onto a
+    // working pane's roster row. selectors/fleet.ts counts 'waiting' toward
+    // the "N need you" chip, so every mid-turn repaint became a false
+    // attention badge. The hook's Stop signal owns lifecycle on this pane;
+    // the detector must not contradict it on the status either.
+    const router = stubHookRouter('emit', { governed: true });
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    expect(router.governsDetectorStatus).toHaveBeenCalledWith('pty-1', 'claude', 'waiting');
+    const statusCalls = mocks.broadcastMetadataUpdate.mock.calls.filter(
+      (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+    );
+    expect(statusCalls).toHaveLength(0);
+    // Identity still rides the same broadcast — withholding the status must
+    // not cost the pane its `(Claude Code)` auto-name.
+    expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentName: 'Claude Code', agentSlug: 'claude' }),
+    );
+  });
+
+  it('#935: an UNGOVERNED pane keeps the detector status — no hook bridge means the detector is still the backstop', () => {
+    const router = stubHookRouter('emit', { governed: false });
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
     expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'waiting' }),
