@@ -10,6 +10,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
+import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
@@ -524,6 +525,16 @@ export class DaemonSessionManager extends EventEmitter {
     // buffer — the exact garbling util/outputModeTracker.ts exists to prevent.
     if (params.scrollbackData && params.scrollbackData.length > 0) {
       ringBuffer.write(params.scrollbackData);
+      // #952: the dump repainted the DEAD process's screen, but the fresh
+      // process spawned above starts from an empty ConPTY whose absolute
+      // coordinates begin at row 1 — any restored rows left in the viewport
+      // get overdrawn by its first absolute repaint (PSReadLine, TUIs). The
+      // seam scrolls the restored screen fully into scrollback and homes the
+      // cursor, so the new prompt lands on the empty viewport both sides
+      // agree on. Written into the ring (not the PTY): it is display state
+      // for clients, and it must sit between the dump and the first live
+      // bytes on every future replay of this ring.
+      ringBuffer.write(Buffer.from(restoreSeam(rows), 'utf8'));
     }
 
     // Bridge: PTY data → RingBuffer + events
