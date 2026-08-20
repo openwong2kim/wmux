@@ -84,14 +84,17 @@
  * its real cursor at the LAST column of the line it painted, and a long gap
  * then certifies that placeholder. A CJK composition can never sit on the
  * last column (the glyph alone is two cells wide), so such a selection is
- * FLAGGED (`edge=1` in the diagnostic) and line-end cells are never taken
- * as quiet-caret snapshots — but the selection itself is NOT rerouted. Two
- * fallback generations were field-tested and both lost to this baseline:
- * re-selecting the quiet snapshot wandered between inputs (an idle TUI
- * keeps twitching its cursor, so consecutive quiet spans certify different
- * cells), and reusing the previous composition's anchor locked whatever
- * error the first anchor had for the whole session. The reporter ranked
- * the un-rerouted build best of the three, so the line-end miss stays a
+ * FLAGGED (`edge=1` in the diagnostic) and nothing else — the selection is
+ * NOT rerouted and the cell is still eligible as a quiet-caret snapshot.
+ * Three generations of acting on the flag were field-tested and all lost to
+ * this baseline: re-selecting the quiet snapshot wandered between inputs (an
+ * idle TUI keeps twitching its cursor, so consecutive quiet spans certify
+ * different cells); reusing the previous composition's anchor locked
+ * whatever error the first anchor had for the whole session; and merely
+ * withholding line-end cells from the snapshot — behaviourally invisible on
+ * paper, since it only ever drops a snapshot the streaming path would have
+ * used — still measured worse in the field, so the tracker takes the cell
+ * exactly as it did before the flag existed. The line-end miss stays a
  * KNOWN, flagged residual. Fixing it for real needs a different signal
  * class than the cursor — the ecosystem contract says the TUI must park
  * its cursor on the caret (Ink's useCursor exists; Claude Code has not
@@ -389,23 +392,15 @@ export function noteCursorMove(state: RestingTrackerState, absRow: number, col: 
  * exceeds RESTING_MS by construction) with a promotion clock inside this
  * chunk.
  */
-export function noteOutputParsed(state: RestingTrackerState, now: number, cols?: number): void {
+export function noteOutputParsed(state: RestingTrackerState, now: number): void {
   if (now - state.lastOutputAt >= OUTPUT_QUIET_MS) {
     state.epochStart = now;
-    // Line-end parks are never snapshotted (#953 field cases 1-2): a TUI
-    // idling with an empty input box parks its cursor at the last column,
-    // and a snapshot taken there would just relocate the mis-anchor from
-    // the instant path into the caret path.
-    const lastCol = cols !== undefined ? cols - 1 : Infinity;
     if (state.currentSince <= state.lastOutputAt) {
-      if (state.currentCol < lastCol) {
-        state.caretRelRow = state.currentRelRow;
-        state.caretCol = state.currentCol;
-        state.caretAt = now;
-        state.hasCaret = true;
-      }
-    } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt
-      && state.lastRestingCol < lastCol) {
+      state.caretRelRow = state.currentRelRow;
+      state.caretCol = state.currentCol;
+      state.caretAt = now;
+      state.hasCaret = true;
+    } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt) {
       state.caretRelRow = state.lastRestingRelRow;
       state.caretCol = state.lastRestingCol;
       state.caretAt = now;
@@ -505,9 +500,10 @@ export function selectFreezeCell(
   const outputGap = now - state.lastOutputAt;
   const caretAge = state.hasCaret ? now - state.caretAt : -1;
   // Diagnostic only (#953): a last-column cursor is a TUI line-end park, not
-  // a caret — but two generations of rerouting it (quiet snapshot, previous
-  // anchor) both field-tested worse than leaving it alone, so it is flagged
-  // and NOT redirected. See the header for the full account.
+  // a caret — but every generation of acting on it (reroute to the quiet
+  // snapshot, reuse the previous anchor, withhold the snapshot) field-tested
+  // worse than leaving it alone, so it is flagged and nothing more. See the
+  // header for the full account.
   const lastCol = viewport?.cols !== undefined ? viewport.cols - 1 : Infinity;
   const edge = instCol >= lastCol;
   if (outputGap < OUTPUT_QUIET_MS
@@ -928,7 +924,7 @@ export function attachImeAnchor(
   // clock compare plus at most three number writes, so the streaming hot path
   // stays cold. noteOutputParsed tolerates either firing order relative to
   // onCursorMove within a chunk (see its doc comment).
-  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now(), geometry.cols));
+  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now()));
   // Normal <-> alt buffer switches change what an absolute row means.
   const bufferSub = terminal.buffer.onBufferChange(resetTracker);
 

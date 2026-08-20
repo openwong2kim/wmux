@@ -881,15 +881,18 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: true });
   });
 
-  it('#953: line-end cells are never snapshotted as the caret', () => {
+  it('#953: a line-end park is still snapshotted — the flag drives nothing', () => {
+    // Withholding these cells from the snapshot was the last of three
+    // generations of acting on `edge`, and the reporter measured it worse
+    // than the untouched baseline, so the tracker takes the cell as before.
     const t = createRestingTracker(647, 236, 1000, 47);
-    noteOutputParsed(t, 1600, 237); // spanning cell is a line-end park
-    expect(t.hasCaret).toBe(false);
+    noteOutputParsed(t, 1600); // spanning cell is a line-end park
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 47, caretCol: 236 });
   });
 
   it('#953: a mid-line at-rest cursor keeps the instant selection, unflagged', () => {
     const t = createRestingTracker(640, 100, 1000, 40);
-    noteOutputParsed(t, 1600, 237);
+    noteOutputParsed(t, 1600);
     const sel = selectFreezeCell(t, 640, 100, 3400, { top: 600, rows: 48, cols: 237 }, 600);
     expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
   });
