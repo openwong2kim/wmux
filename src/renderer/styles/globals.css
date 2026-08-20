@@ -479,7 +479,13 @@ select option {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  z-index: 50;
+  /* #946: pane decorations must sit above pane content (toolbar caps the
+   * pane-local stack at z-30) but BELOW the --z-overlay(50) baseline. The
+   * pane root creates no stacking context, so these pseudo-elements compete
+   * document-wide: at 50 they tied with dropdowns/pickers and won on DOM
+   * order, painting the ring over the new-workspace picker. 40 keeps them
+   * over everything inside the pane and under every piece of app chrome. */
+  z-index: 40;
   /* Attention ring = warm accent (2-accent grammar: alive/attention is warm). */
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.3);
   animation: notification-ring-pulse 2s ease-in-out infinite;
@@ -511,7 +517,9 @@ select option {
   background: var(--accent);
   pointer-events: none;
   animation: pane-flash 0.5s ease-out forwards;
-  z-index: 100;
+  /* #946: below --z-overlay(50) — see .notification-ring::before. At 100 the
+   * 500ms flash painted over modals and dialogs. */
+  z-index: 40;
 }
 
 /* ─── T11: state-machine notification ring (DESIGN D3) ──────────────────────
@@ -581,7 +589,9 @@ select option {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  z-index: 50;
+  /* #946: below --z-overlay(50), above the toolbar (z-30) — see
+   * .notification-ring::before for the full stacking rationale. */
+  z-index: 40;
   box-shadow: 0 0 0 2px var(--accent-green) inset;
   animation: pane-complete-blink 1.2s ease-in-out infinite;
 }
@@ -594,7 +604,10 @@ select option {
   border-radius: 2px;
   background: var(--accent);
   box-shadow: none;
-  z-index: 100;
+  /* #946: same containment as the ring/blink — the flash is the same ::after
+   * element, so it needs no extra elevation to win over the blink rule, and
+   * at 100 it painted over modals/dialogs for its 500ms. */
+  z-index: 40;
   animation: pane-flash 0.5s ease-out forwards;
 }
 
