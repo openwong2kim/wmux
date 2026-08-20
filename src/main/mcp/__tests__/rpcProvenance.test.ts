@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { isLocalExternalWireContext } from '../wireProvenance';
+import { isLocalExternalWireContext } from '../rpcProvenance';
 
 const MAIN_DIR = path.resolve(__dirname, '..', '..');
 
