@@ -83,11 +83,24 @@
  * TUI with nothing to point at — empty input box, mid-edit redraw — parks
  * its real cursor at the LAST column of the line it painted, and a long gap
  * then certifies that placeholder. A CJK composition can never sit on the
- * last column (the glyph alone is two cells wide), so a last-column cursor
- * is rejected outright (`edge=1` in the diagnostic) in favor of the caret
- * snapshot, and line-end cells are never snapshotted either.
- * Known residuals, all self-healing at the next quiet span and identifiable
- * in a field log via the src/gap/caretAge fields: a mid-stream pause longer
+ * last column (the glyph alone is two cells wide), so such a selection is
+ * FLAGGED (`edge=1` in the diagnostic) and line-end cells are never taken
+ * as quiet-caret snapshots — but the selection itself is NOT rerouted. Two
+ * fallback generations were field-tested and both lost to this baseline:
+ * re-selecting the quiet snapshot wandered between inputs (an idle TUI
+ * keeps twitching its cursor, so consecutive quiet spans certify different
+ * cells), and reusing the previous composition's anchor locked whatever
+ * error the first anchor had for the whole session. The reporter ranked
+ * the un-rerouted build best of the three, so the line-end miss stays a
+ * KNOWN, flagged residual. Fixing it for real needs a different signal
+ * class than the cursor — the ecosystem contract says the TUI must park
+ * its cursor on the caret (Ink's useCursor exists; Claude Code has not
+ * shipped it, see anthropics/claude-code#25186), and the content-aware
+ * fallback proven by other terminals (detect the agent's input-line marker
+ * in the buffer, gated per known agent) is follow-up work, not another
+ * cursor heuristic.
+ * Known residuals, all identifiable in a field log via the src/gap/
+ * caretAge/edge fields: the line-end park above; a mid-stream pause longer
  * than OUTPUT_QUIET_MS with the cursor parked mid-line on repaint state
  * re-snapshots a wrong caret; a resize or clear mid-stream drops (resize)
  * or strands (clear — no reset event fires) the snapshot until output next
@@ -274,15 +287,6 @@ export const OUTPUT_QUIET_MS = 500;
 export const STREAM_SUSTAIN_MS = 700;
 
 /**
- * How long a previous composition's anchor stays the preferred fallback.
- * Long enough to survive the think-pauses of an ordinary typing session, so
- * consecutive compositions land at one consistent spot; short enough that an
- * abandoned session does not resurrect a long-dead anchor — and any quiet
- * non-edge composition refreshes it anyway.
- */
-export const ANCHOR_CONTINUITY_MS = 60_000;
-
-/**
  * Mutable tracker record. The transition functions below mutate it in place —
  * that is how "pure-function testability" and an allocation-free hot path
  * coexist: each function is deterministic in (state, args), returns scalars,
@@ -321,18 +325,6 @@ export interface RestingTrackerState {
   /** Clock reading when the caret snapshot was taken. */
   caretAt: number;
   hasCaret: boolean;
-  /**
-   * Anchor cell of the most recent composition whose selection was
-   * trustworthy (#953 third field pass). Consecutive compositions land at
-   * the same input line, so the previous anchor is the best predictor of
-   * the next one — and, unlike any cursor-derived cell, it is stable across
-   * inputs, which is precisely what the field reports asked for.
-   */
-  anchorRelRow: number;
-  anchorCol: number;
-  /** Clock reading when the anchor was recorded. */
-  anchorAt: number;
-  hasAnchor: boolean;
 }
 
 /**
@@ -359,10 +351,6 @@ export function createRestingTracker(absRow: number, col: number, now: number, r
     caretCol: 0,
     caretAt: 0,
     hasCaret: false,
-    anchorRelRow: 0,
-    anchorCol: 0,
-    anchorAt: 0,
-    hasAnchor: false,
   };
 }
 
@@ -428,19 +416,6 @@ export function noteOutputParsed(state: RestingTrackerState, now: number, cols?:
 }
 
 /**
- * Record where a composition actually anchored (#953). Called by the wiring
- * after each selection whose source is trustworthy — a quiet non-edge
- * instant cell, the quiet-caret snapshot, or a reused previous anchor —
- * never a line-end park or a mid-burst cell.
- */
-export function noteCompositionAnchor(state: RestingTrackerState, relRow: number, col: number, now: number): void {
-  state.anchorRelRow = relRow;
-  state.anchorCol = col;
-  state.anchorAt = now;
-  state.hasAnchor = true;
-}
-
-/**
  * Invalidate everything and re-seed. Resize reflow and buffer switches
  * (alt-screen) change what both an absolute and a screen row mean, so neither
  * a resting cell nor a quiet caret recorded before either event may be
@@ -461,7 +436,6 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
   state.currentSince = now;
   state.hasResting = false;
   state.hasCaret = false;
-  state.hasAnchor = false;
   state.lastOutputAt = now;
   state.epochStart = now;
 }
@@ -469,10 +443,8 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
 /** Where the freeze cell came from. `scrolled_out` is `instant` chosen because
  *  the resting cell had left the viewport — kept distinct so a field log can
  *  tell that rejection apart from a cursor that was simply at rest. `caret` is
- *  the quiet-caret snapshot, chosen because output was still flowing (#951).
- *  `prev` is the previous composition's anchor, reused for cross-input
- *  stability (#953 third field pass). */
-export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out' | 'caret' | 'prev';
+ *  the quiet-caret snapshot, chosen because output was still flowing (#951). */
+export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out' | 'caret';
 
 export interface FreezeCellSelection {
   absRow: number;
@@ -486,8 +458,8 @@ export interface FreezeCellSelection {
   outputGap: number;
   /** Age of the caret snapshot at selection time; -1 when none exists. */
   caretAge: number;
-  /** True when the instantaneous cursor sat on the last column and was
-   *  rejected as a line-end park (#953 field cases 1-3). */
+  /** True when the instantaneous cursor sat on the last column — a TUI
+   *  line-end park (#953). Diagnostic only; the selection is not rerouted. */
   edge: boolean;
 }
 
@@ -498,10 +470,10 @@ export interface FreezeCellSelection {
  * output is recent AND sustained (STREAM_SUSTAIN_MS since the current epoch
  * began), dwell time certifies nothing (#951: a streaming agent parks its
  * cursor on screen corners between bursts for far longer than RESTING_MS),
- * so the previous composition's anchor — then the quiet-caret snapshot —
- * wins over both. Recent-but-isolated output — a committed syllable's echo —
- * keeps the normal dwell selection, because there the freshly moved cursor
- * IS the caret and any remembered cell is one word stale. The snapshot's
+ * so the quiet-caret snapshot wins over both. Recent-but-isolated output —
+ * a committed syllable's echo — keeps the normal dwell selection, because
+ * there the freshly moved cursor IS the caret and the snapshot is one word
+ * stale. The snapshot's
  * screen row is rebased onto the CURRENT ybase: the TUI keeps its input line
  * at a fixed screen position while output scrolls the buffer underneath.
  * `pointFromCell` clamps the result into the viewport, which for a scrolled-up
@@ -532,53 +504,28 @@ export function selectFreezeCell(
   const restAge = state.hasResting ? now - state.lastRestingAt : -1;
   const outputGap = now - state.lastOutputAt;
   const caretAge = state.hasCaret ? now - state.caretAt : -1;
-  const anchorFresh = state.hasAnchor && now - state.anchorAt <= ANCHOR_CONTINUITY_MS;
-  // Streaming (recent AND sustained output): the buffer cursor is the
-  // agent's repaint state, so it never wins here. The previous composition's
-  // anchor is preferred over the quiet-caret snapshot — the snapshot can be
-  // re-taken across mid-stream pauses and wander between inputs (#953 third
-  // field pass), while the previous anchor is by construction where the user
-  // last composed.
-  if (outputGap < OUTPUT_QUIET_MS && now - state.epochStart >= STREAM_SUSTAIN_MS) {
-    if (anchorFresh) {
-      return {
-        absRow: baseY + state.anchorRelRow, col: state.anchorCol,
-        src: 'prev', held, restAge, outputGap, caretAge, edge: false,
-      };
-    }
-    if (state.hasCaret) {
-      return {
-        absRow: baseY + state.caretRelRow, col: state.caretCol,
-        src: 'caret', held, restAge, outputGap, caretAge, edge: false,
-      };
-    }
-  }
-  // Line-end park rejection (#953 field cases 1-3). A TUI that has nothing
-  // to point at — empty input box, mid-edit redraw — parks its real cursor
-  // at the LAST column of the line it just painted ((236,47) on a 237-col
-  // pane, (127,43) on a 128-col one), and a long output gap then certifies
-  // that placeholder as an at-rest caret. A real CJK composition can never
-  // sit on the last column (the glyph alone is two cells wide), so a
-  // last-column cursor yields to the previous composition's anchor when one
-  // is fresh. With no anchor it deliberately degrades to the instant cell:
-  // the third field pass showed every quiet cursor-derived fallback (the
-  // snapshot, the resting cell) wanders between inputs, and a stable
-  // right-edge anchor read as better than an unpredictable one.
+  // Diagnostic only (#953): a last-column cursor is a TUI line-end park, not
+  // a caret — but two generations of rerouting it (quiet snapshot, previous
+  // anchor) both field-tested worse than leaving it alone, so it is flagged
+  // and NOT redirected. See the header for the full account.
   const lastCol = viewport?.cols !== undefined ? viewport.cols - 1 : Infinity;
-  if (instCol >= lastCol && anchorFresh) {
+  const edge = instCol >= lastCol;
+  if (outputGap < OUTPUT_QUIET_MS
+    && now - state.epochStart >= STREAM_SUSTAIN_MS
+    && state.hasCaret) {
     return {
-      absRow: baseY + state.anchorRelRow, col: state.anchorCol,
-      src: 'prev', held, restAge, outputGap, caretAge, edge: true,
+      absRow: baseY + state.caretRelRow, col: state.caretCol,
+      src: 'caret', held, restAge, outputGap, caretAge, edge,
     };
   }
   if (held >= RESTING_MS || !state.hasResting) {
-    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge: false };
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge };
   }
   if (viewport && (state.lastRestingAbsRow < viewport.top
     || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
-    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge: false };
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge };
   }
-  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge: false };
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge };
 }
 
 // ---------------------------------------------------------------------------
@@ -645,8 +592,8 @@ export interface ImeAnchorOptions {
      *  A large value on a src=caret record means the anchor came from a
      *  long-past quiet span — the stale-snapshot residual in action. */
     caretAge: number;
-    /** True when the cursor sat on the last column and was rejected as a
-     *  line-end park (#953 field cases 1-3). */
+    /** True when the cursor sat on the last column — a TUI line-end park
+     *  (#953). Diagnostic only; the selection is not rerouted. */
     edge: boolean;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
     selY: number;
@@ -800,15 +747,15 @@ export function attachImeAnchor(
    * composing syllable with the caret (Korean inline input). Outside a
    * composition it carries no transform (xterm hides it).
    *
-   * The one exception is a composition whose freeze cell did NOT come from
-   * the live cursor (`src=caret`/`src=prev`/edge-rejected, #951/#953 field
-   * reports): there the live cursor is the TUI's repaint or placeholder
-   * position, and following it split the two IME surfaces apart — the
-   * candidate window pinned at the input line while the inline pinyin chased
-   * the agent's output rows. Both surfaces must anchor to the same cell, so
-   * those compositions pin the preedit to the same frozen point as the
-   * textarea. The ordinary quiet case is untouched: there the selection is
-   * instant/resting and the live follow stays (#942 stays fixed).
+   * The one exception is a composition whose freeze cell came from the quiet
+   * caret (`src=caret`, #951/#953 field report): there the live cursor IS the
+   * streaming agent's repaint cursor, and following it split the two IME
+   * surfaces apart — the candidate window pinned at the input line while the
+   * inline pinyin chased the agent's output rows. Both surfaces must anchor
+   * to the same cell, so a caret-sourced composition pins the preedit to the
+   * same frozen point as the textarea. The quiet case is untouched: there the
+   * selection is instant/resting and the live follow stays (#942 stays
+   * fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -829,7 +776,7 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const desired = frozen !== null && (lastSel?.src === 'caret' || lastSel?.src === 'prev' || lastSel?.edge)
+    const desired = frozen !== null && lastSel?.src === 'caret'
       ? frozen
       : paintedCursorPosition(bufferState(), geometry);
     const c = computeImeAnchorCorrection(desired, actualPreedit);
@@ -923,14 +870,6 @@ export function attachImeAnchor(
     }, b.baseY);
     lastSel = sel;
     lastSelRelY = sel.absRow - b.baseY;
-    // Remember trustworthy anchors for cross-input continuity (#953): a
-    // quiet non-edge instant cell, the quiet-caret snapshot, or a reused
-    // anchor (which refreshes its own lease). Line-end parks and mid-burst
-    // cells are never remembered.
-    if ((sel.src === 'instant' || sel.src === 'caret' || sel.src === 'prev')
-      && sel.col < geometry.cols - 1) {
-      noteCompositionAnchor(tracker, sel.absRow - b.baseY, sel.col, now());
-    }
     frozen = isUsableGeometry(geometry)
       ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;

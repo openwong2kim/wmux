@@ -21,8 +21,6 @@ import {
   computeImeAnchorCorrection,
   createRestingTracker,
   isUsableGeometry,
-  ANCHOR_CONTINUITY_MS,
-  noteCompositionAnchor,
   noteCursorMove,
   noteOutputParsed,
   OUTPUT_QUIET_MS,
@@ -871,36 +869,16 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'resting' });
   });
 
-  it('#953 case 1-2: a last-column park yields to the previous composition anchor', () => {
+  it('#953: a quiet line-end park is flagged edge=1 but NOT rerouted', () => {
     // Claude Code idling with an empty input box parks its real cursor at
-    // the line end — (236,47) on a 237-col pane — and a long output gap then
-    // certified it as an at-rest caret, pushing the candidate window and the
-    // pinyin off the right edge. A CJK composition can never sit on the last
-    // column, so the selection reuses where the user last composed.
-    const t = createRestingTracker(640, 5, 1000, 40);
-    noteCompositionAnchor(t, 40, 12, 2000);  // previous composition anchored here
-    noteCursorMove(t, 647, 236, 2500, 47);   // TUI parks at the line end
-    const sel = selectFreezeCell(t, 647, 236, 4000, { top: 600, rows: 48, cols: 237 }, 600);
-    expect(sel).toMatchObject({ absRow: 640, col: 12, src: 'prev', edge: true });
-  });
-
-  it('#953: with no previous anchor a line-end park degrades to the instant cell', () => {
-    // Third field pass: every quiet cursor-derived fallback (the snapshot,
-    // the resting cell) wanders between inputs — a stable right-edge anchor
-    // read as better than an unpredictable one. Cold start keeps instant.
+    // the line end — (236,47) on a 237-col pane. Two fallback generations
+    // (quiet snapshot, previous-composition anchor) both field-tested worse
+    // than leaving the selection alone, so the park is only flagged for the
+    // field log and the selection stays the instant cell.
     const t = createRestingTracker(640, 5, 1000, 40);
     noteCursorMove(t, 647, 236, 1100, 47);
     const sel = selectFreezeCell(t, 647, 236, 3000, { top: 600, rows: 48, cols: 237 }, 600);
-    expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: false });
-  });
-
-  it('#953: an expired anchor no longer participates', () => {
-    const t = createRestingTracker(640, 5, 1000, 40);
-    noteCompositionAnchor(t, 40, 12, 2000);
-    noteCursorMove(t, 647, 236, 2500, 47);
-    const late = 2000 + ANCHOR_CONTINUITY_MS + 1;
-    const sel = selectFreezeCell(t, 647, 236, late, { top: 600, rows: 48, cols: 237 }, 600);
-    expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: false });
+    expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: true });
   });
 
   it('#953: line-end cells are never snapshotted as the caret', () => {
@@ -909,33 +887,11 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(t.hasCaret).toBe(false);
   });
 
-  it('#953: a mid-line at-rest cursor keeps the instant selection (regression lock)', () => {
+  it('#953: a mid-line at-rest cursor keeps the instant selection, unflagged', () => {
     const t = createRestingTracker(640, 100, 1000, 40);
     noteOutputParsed(t, 1600, 237);
     const sel = selectFreezeCell(t, 640, 100, 3400, { top: 600, rows: 48, cols: 237 }, 600);
     expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
-  });
-
-  it('#953: consecutive streaming compositions reuse the previous anchor, not a re-taken snapshot', () => {
-    // The snapshot can be re-captured across mid-stream pauses and wander
-    // between inputs (field: rows 36 vs 43, cols 23-79). Once a composition
-    // has anchored, the next one lands at the same spot.
-    const t = createRestingTracker(640, 5, 1000, 40);
-    noteCursorMove(t, 643, 60, 2000, 43);
-    noteOutputParsed(t, 2000, 128);  // snapshot + epoch start
-    noteOutputParsed(t, 2300, 128);
-    noteOutputParsed(t, 2700, 128);
-    const first = selectFreezeCell(t, 643, 60, 2760, { top: 600, rows: 45, cols: 128 }, 600);
-    expect(first).toMatchObject({ src: 'caret', absRow: 640, col: 5 });
-    noteCompositionAnchor(t, first.absRow - 600, first.col, 2760);
-    // A mid-stream pause re-snapshots a DIFFERENT (wrong) cell…
-    noteCursorMove(t, 636, 79, 3200, 36);
-    noteOutputParsed(t, 3900, 128); // 1.2s pause ended — snapshot re-taken at (43,60)
-    noteOutputParsed(t, 4200, 128);
-    noteOutputParsed(t, 4650, 128);
-    const second = selectFreezeCell(t, 636, 79, 4700, { top: 600, rows: 45, cols: 128 }, 600);
-    // …but the previous anchor wins, so the candidate window does not wander.
-    expect(second).toMatchObject({ src: 'prev', absRow: 640, col: 5 });
   });
 
   it('a same-cell report still refreshes the screen row (scroll under a stationary cursor)', () => {
@@ -1009,15 +965,6 @@ describe('#951 quiet-caret wiring', () => {
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
     expect(translateOf(dom.compView)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
     expect(translateOf(dom.compView)?.dx).toBeCloseTo((5 - 127) * 10, 6);
-    // The composition recorded its anchor; the next one mid-stream reuses it
-    // (src=prev) so the candidate window does not wander between inputs.
-    dom.textarea.dispatchEvent(new Event('compositionend'));
-    clock = 2900;
-    t.onWriteParsed.fire(undefined);
-    clock = 2950;
-    dom.textarea.dispatchEvent(new Event('compositionstart'));
-    const last = diag.mock.calls[diag.mock.calls.length - 1][0];
-    expect(last).toMatchObject({ phase: 'start', src: 'prev', selY: 40, selX: 5 });
     handle.dispose();
   });
 });
