@@ -33,6 +33,7 @@ import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
+import { RestingCursorGuard } from '../terminal/restingCursor';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -1934,7 +1935,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // the bytes are held out of xterm entirely (the flush-complete handler
     // resets the stale buffer FIRST, then writes them onto the clean one — a
     // direct write here could parse ahead of that reset and be wiped).
-    const routePtyData = (data: string) => {
+    // #929: frame-writer TUIs (codex) end some ?2026 frames with the cursor
+    // visibly parked on the status row; render the cursor only at rest. The
+    // guard's own show-injection goes through `deliverPtyData` (NOT
+    // routePtyData) so it is ordered with queued output but never re-enters
+    // the guard.
+    const restingCursor = new RestingCursorGuard((seq) => deliverPtyData(seq));
+    const routePtyData = (data: string) => deliverPtyData(restingCursor.process(data));
+    const deliverPtyData = (data: string) => {
       const st = resyncRef.current;
       if (st.pending) {
         st.buffer.push(data);
@@ -2256,6 +2264,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // stops stray input during the defer window.
       onDataDisposable.dispose();
       resizeObserver.disconnect();
+      // #929: cancel any pending resting-cursor show before dispose — a late
+      // inject into a disposed xterm is the #582 class of bug.
+      restingCursor.dispose();
       removeDataListener?.();
       removeExitListener?.();
       removeDaemonConnectedForRestore?.();
