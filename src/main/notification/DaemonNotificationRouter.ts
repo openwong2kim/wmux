@@ -709,14 +709,45 @@ export class DaemonNotificationRouter {
           return;
         }
 
+        // #935 — daemon-mode twin of the PTYBridge status gate. Claude's
+        // bypass-mode footer is on screen for the whole turn, so an ungated
+        // broadcast wrote a false 'waiting' onto the roster row and into
+        // "N need you". Identity still rides every event; only the lifecycle
+        // status is withheld.
+        //
+        // The two arms mirror the notification veto's own split below, and for
+        // the same reason — an arbitrated event already carries the daemon's
+        // judgement, so main must not re-run its own authority on top of it:
+        //
+        //   arbitrated  → trust the stamp. Withhold on 'veto' (the daemon
+        //                 applied exactly this rule) and nothing else. Note
+        //                 M1 makes this the ONLY live arm: `hooks.rpc` returns
+        //                 at the daemon relay, above its `touchAuthority`
+        //                 call, so main's router never gains authority over a
+        //                 daemon-served pane.
+        //   otherwise   → the pre-M1 fallback, where main's own authority is
+        //                 the only thing that knows.
+        //
+        // `awaiting_input` is excluded on BOTH arms. The daemon already
+        // refuses to stamp 'veto' on it (HookIngest), but that guarantee lives
+        // in another process: an older daemon paired with this main would
+        // otherwise hide a real approval prompt for the full authority TTL,
+        // which is worse than the bug this fixes. Cheap to enforce locally.
+        const statusSlug = agentDisplayToSlug(ev.agent);
+        const statusRouter = this.getHookRouter?.() ?? null;
+        const withholdStatus = ev.status !== 'awaiting_input' && (
+          arbitratedSource(ev)
+            ? arbitratedDecision(ev) === 'veto'
+            : statusRouter?.governsDetectorStatus(payload.sessionId, statusSlug, ev.status) === true
+        );
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
-          agentStatus: ev.status,
+          ...(withholdStatus ? {} : { agentStatus: ev.status }),
           agentName: ev.agent,
           // P2: carry the slug (daemon-mode path — the packaged production path)
           // so the renderer builds the pane auto-name `(<agent>)` suffix. ev.agent
           // is the display name; mirrors the PTYBridge local-mode broadcast.
-          agentSlug: agentDisplayToSlug(ev.agent) ?? null,
+          agentSlug: statusSlug ?? null,
         });
         // Cache the agent display name for any subsequent OSC 133
         // command_end on this PTY. Daemon mode has no direct equivalent
@@ -734,8 +765,10 @@ export class DaemonNotificationRouter {
           // hook Stop signal is canonical: the detector's footer heuristics
           // fire mid-turn (Claude's status footer is always visible) and
           // would pre-poison the dedup ledger so the real Stop lands as
-          // 'dedup' → silent completion. The metadata broadcast above
-          // (status dot) stays live either way.
+          // 'dedup' → silent completion. The metadata broadcast above rides
+          // the SAME rule now (#935) — it withholds the lifecycle status and
+          // carries identity only, so the roster stops showing a working pane
+          // as waiting.
           //
           // codex review catch (round 2): this must NOT cover
           // 'awaiting_input'. Claude's hooks.json wires PreToolUse ONLY for
@@ -764,8 +797,10 @@ export class DaemonNotificationRouter {
             // 'internal' is the daemon's CompletionAlarm rejecting the
             // candidate as not-a-real-turn-end (subagent stop, leftover
             // background work, turn-gate miss, already announced, or a
-            // rebutted window). Same treatment either way: the status dot
-            // (broadcast above) stays live; nothing else fires.
+            // rebutted window). Nothing else fires either way. They differ
+            // only in the status dot: 'veto' means the hook owns the
+            // lifecycle, so the broadcast above withheld the status (#935);
+            // 'internal' is the alarm's own judgement and leaves it live.
             if (decision === 'veto' || decision === 'internal') return;
           } else if (
             ev.status !== 'awaiting_input'

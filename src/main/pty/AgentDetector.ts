@@ -122,7 +122,16 @@ const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s
 // `shift+tab to cycle` from source; treating the blob as one string opened
 // the gate on a live Grok pane (2026-08-16).
 // Signal B (prompt): the same fragments, but only as TUI footer chrome.
-const CLAUDE_PROMPT_RE = /bypass permissions on|shift\+tab to cycle/;
+//
+// \s* — same treatment CLAUDE_BANNER_RE already carries, and for the same
+// reason. Claude Code (measured on v2.1.235) paints its footer by advancing
+// the cursor instead of writing spaces: the wire carries
+// `⏵⏵ESC[1Cbypass ESC[1Cpermissions ESC[1Con ESC[1C(shift+tab...`, which
+// strips to `bypasspermissionson(shift+tabtocycle)`. The space-bearing form
+// could never match a live pane, so the compound gate never closed its second
+// half and the whole Claude pattern block — waiting AND the approval
+// awaiting_input regexes — was dead code against the real product.
+const CLAUDE_PROMPT_RE = /bypass\s*permissions\s*on|shift\+tab\s*to\s*cycle/;
 // Cheap `ap.gate` hint only — checkGates does not use this on the 4 KB
 // probe. Line-level `isClaudeBannerChrome` is the real banner signal.
 const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code/;
@@ -159,8 +168,8 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // appears while a response is in flight (hint that the user can ESC to
       // cancel), not when the agent is idle. Including it produced
       // false-positive "waiting" notifications mid-turn. Removed.
-      { regex: /bypass permissions on/,          status: 'waiting',          message: 'Ready for input' },
-      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      { regex: /bypass\s*permissions\s*on/,      status: 'waiting',          message: 'Ready for input' },
+      { regex: /shift\+tab\s*to\s*cycle/,        status: 'waiting',          message: 'Ready for input' },
       // Approval prompts — Claude Code is paused mid-turn waiting for the user
       // to pick an option. Orchestrators can react to 'awaiting_input' to feed
       // pre-approved answers without waiting for the full turn to end.
@@ -378,10 +387,26 @@ const MAX_BUFFER = 16 * 1024;
 // eslint-disable-next-line no-control-regex
 const ANSI_STRIP = /\x1b(?:\[[0-9;?<=>]*[a-zA-Z@]|\][^\x07]*\x07|\([A-Z])/g;
 
+/**
+ * Row boundaries as a full-screen TUI actually draws them.
+ *
+ * Newlines are only half the story. Claude repaints its whole bottom region —
+ * input box, statusline, mode footer — as ONE run with no newline in it,
+ * positioning each visual row with a CUP escape (`ESC[<row>;<col>H`). Splitting
+ * on newlines alone therefore hands the chrome tests a single ~900-char blob,
+ * and `isClaudePromptChrome` then rejects the footer via SOURCE_LINE_RE because
+ * something ELSE in that blob looks like code. Measured on a live pane: the
+ * user's own echoed prompt (`sleep 8; echo s1`) and an env var in a Claude
+ * warning (`CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`) each supplied the `;`/`=`
+ * that killed the gate. Cutting on CUP restores the row the TUI meant to draw,
+ * `bypasspermissionson(shift+tabtocycle)`, which reads as chrome cleanly.
+ */
+// eslint-disable-next-line no-control-regex
+const ROW_BREAK_RE = /\r\n|\n|\r|\u001b\[[0-9]{0,4}(?:;[0-9]{0,4})?[Hf]/;
 /** Complete lines in `text`, or `[text]` itself when it is still a tail. */
 function candidateLines(text: string): string[] {
-  if (!/[\r\n]/.test(text)) return [text];
-  return text.split(/\r\n|\n|\r/).filter((l) => l.length > 0);
+  if (!ROW_BREAK_RE.test(text)) return [text];
+  return text.split(new RegExp(ROW_BREAK_RE.source, 'g')).filter((l) => l.length > 0);
 }
 
 function stripAnsi(line: string): string {
@@ -618,7 +643,10 @@ export class AgentDetector {
         probe.includes('Claude') || probe.includes('claude')
       );
       const mayContainPrompt = !this.claudePromptSeen && (
-        probe.includes('bypass permissions') || probe.includes('shift+tab')
+        // Both spellings: the cursor-drawn footer collapses to
+        // `bypasspermissionson` after the strip (see CLAUDE_PROMPT_RE), and
+        // this prefilter runs on the stripped probe as well as the raw one.
+        probe.includes('bypass permissions') || probe.includes('bypasspermissions') || probe.includes('shift+tab')
       );
 
       if (mayContainBanner || mayContainPrompt) {

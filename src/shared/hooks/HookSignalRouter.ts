@@ -73,6 +73,34 @@ interface LedgerEntry {
 export type RouteDecision = 'emit' | 'dedup';
 
 /**
+ * Has the pane's hook bridge taken over its lifecycle yet?
+ *
+ * `isGovernedFor` answers "a bridge speaks for this pane". That is the right
+ * question for the notification veto but a subtly wrong one for the status
+ * broadcast, and the gap has a name: a bridge that has said `SessionStart` and
+ * nothing else is alive but has never written a lifecycle status. Withholding
+ * the detector's read there leaves the roster showing whatever it had —
+ * the gate's one-shot `running` — so a freshly launched agent sitting at its
+ * prompt reads as busy until its first turn ends. Live-measured at 30+ seconds
+ * per launch.
+ *
+ * So: `agent.session_start` (and only it) hands the lifecycle BACK to the
+ * detector, because it is the one signal that says "this pane's hook history
+ * starts here, and nothing has been claimed yet". A relaunch in the same pane
+ * resets ownership for the same reason.
+ *
+ * Every other kind — work, turn ends, subagent stops, permission-gate state —
+ * means the bridge is speaking for the turn, so the hook owns the lifecycle
+ * and the detector's always-visible footer must not overwrite it.
+ *
+ * An absent kind also means owned: a caller that does not name its signal gets
+ * the pre-#935 behavior, which is the conservative direction here.
+ */
+function hookOwnsLifecycleAfter(kind: AgentSignalKind | undefined): boolean {
+  return kind !== 'agent.session_start';
+}
+
+/**
  * Wiring: one instance per process. In main it is constructed in
  * main/index.ts and shared across:
  *   - `src/main/pipe/handlers/hooks.rpc.ts` (calls recordHook on every
@@ -98,7 +126,7 @@ export class HookSignalRouter {
    *  fallback: only exact-routed authority may decide identity alone. */
   private readonly authority = new Map<
     string,
-    { agent: string; lastSignalAt: number; exact: boolean }
+    { agent: string; lastSignalAt: number; exact: boolean; lifecycleOwned: boolean }
   >();
 
   constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number; authorityTtlMs?: number }) {
@@ -117,14 +145,23 @@ export class HookSignalRouter {
    * cwd-prefix fallback passes false — #919 lets only exact-routed authority
    * decide identity uncorroborated, since a cwd guess can attach to a
    * neighboring pane.
+   *
+   * `kind` sets the pane's lifecycle-ownership latch that
+   * `governsDetectorStatus` reads — see `hookOwnsLifecycleAfter`.
    */
   touchAuthority(
     ptyId: string,
     agent: string,
     now: number = Date.now(),
     exact = true,
+    kind?: AgentSignalKind,
   ): void {
-    this.authority.set(ptyId, { agent, lastSignalAt: now, exact });
+    this.authority.set(ptyId, {
+      agent,
+      lastSignalAt: now,
+      exact,
+      lifecycleOwned: hookOwnsLifecycleAfter(kind),
+    });
   }
 
   /**
@@ -173,6 +210,63 @@ export class HookSignalRouter {
     const entry = this.authority.get(ptyId);
     if (!entry || entry.agent !== slug) return false;
     return now - entry.lastSignalAt < this.authorityTtlMs;
+  }
+
+  /**
+   * True when the pane's live hook bridge owns this detector-sourced status,
+   * so the caller must withhold it from `metadata.agentStatus` as well as from
+   * the notification.
+   *
+   * `waiting` and `complete` are the two statuses the bridge's Stop signal
+   * speaks for. They are also the two the detector infers from ALWAYS-VISIBLE
+   * TUI chrome: Claude Code's footer reads `bypass permissions on` /
+   * `shift+tab to cycle` for the whole turn in bypass-permissions mode, so
+   * every repaint re-asserts "ready for input" while the agent is working.
+   * The notification veto (`isGovernedFor`) has always covered the toast, but
+   * the status broadcast ran BEFORE it and was deliberately left ungated —
+   * which put the false read straight onto the roster row and into the
+   * "N need you" roll-up, the one signal that must never cry wolf (#935).
+   *
+   * Deliberately NOT covered:
+   *   - `awaiting_input` — Claude's hooks wire PreToolUse only for
+   *     AskUserQuestion, so the ordinary approval prompts have no hook at all
+   *     and the detector is their only source. Same carve-out the notification
+   *     veto makes, and for the same reason.
+   *   - `running` — a working cue, not a turn boundary; nothing about it
+   *     competes with the Stop signal.
+   *   - a pane whose bridge has said `SessionStart` and nothing since. It is
+   *     governed, but the hook has not written a lifecycle status yet, so
+   *     withholding the detector's read leaves the roster on the gate's
+   *     one-shot `running` — a launched-but-idle agent reading as busy, live-
+   *     measured at 30+ seconds per launch. See `hookOwnsLifecycleAfter`. Once
+   *     any other kind arrives the hook owns the lifecycle and this returns
+   *     true again, so the post-Stop double-toast veto is unaffected.
+   *
+   * An ungoverned pane (no bridge, or a bridge gone quiet past the authority
+   * TTL) is unaffected: the detector stays the backstop it has always been.
+   *
+   * Accepted cost, stated because a reviewer will ask: this rides the same
+   * 30-minute authority TTL as the notification veto, so a bridge that stops
+   * speaking while its agent process is still alive leaves the status stale
+   * until the TTL expires. That is deliberately symmetric — the notification
+   * veto has always accepted exactly that window on the LOUDER surface, and
+   * making the status less trusting than the toast would be the odd choice.
+   * A shorter TTL is not the answer either: a single turn can run past twenty
+   * minutes with no bridge traffic at all on a turn-boundary-only hook install
+   * (the #935 report measured 21m), so a short window would simply restore the
+   * bug it fixes. Confirmed process death already releases authority ahead of
+   * the TTL (`expireAuthorityFor`, wired to the daemon's liveness poll).
+   */
+  governsDetectorStatus(
+    ptyId: string,
+    slug: string | null | undefined,
+    status: string,
+    now: number = Date.now(),
+  ): boolean {
+    if (status !== 'waiting' && status !== 'complete') return false;
+    if (!slug) return false;
+    if (!this.isGovernedFor(ptyId, slug, now)) return false;
+    return this.authority.get(ptyId)?.lifecycleOwned === true;
   }
 
   /**
