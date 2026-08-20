@@ -103,10 +103,19 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'waiting' });
     });
 
-    it('REGRESSION (R3): does NOT match "esc to interrupt" — Claude in-flight hint, not idle', () => {
+    it('REGRESSION (R3): "esc to interrupt" is never idle — it is the in-flight hint', () => {
       const { det, cb } = claudeGated();
       det.feed('press esc to interrupt\n');
-      expect(cb).not.toHaveBeenCalled();
+      // R3 guards against reading the in-flight hint as idle, which is what the
+      // original bug was. #935 direction 2 turned the same string into the
+      // detector's `running` signal (see the pattern's comment), so the
+      // assertion is now the rule itself — never waiting/complete — rather
+      // than "no emission at all", which was only true while the string had no
+      // meaning to the detector.
+      const statuses = cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status);
+      expect(statuses).not.toContain('waiting');
+      expect(statuses).not.toContain('complete');
+      expect(statuses).toEqual(['running']);
     });
 
     it('REGRESSION (R2): Aider "Applied edit to" emits "complete" (was "completed")', () => {
@@ -729,6 +738,75 @@ describe('AgentDetector', () => {
       b.feed('  shift+tab to cycle\n');
       expect(a.getLastAgent()).toBeNull();
       expect(b.getLastAgent()).toBeNull();
+    });
+  });
+
+  // #935 direction 2 — the interrupt hint is the only Claude Code chrome that
+  // exists solely while a response is in flight, so it is the detector's one
+  // honest `running` signal. The guard matters as much as the pattern: a
+  // flattened line can merge the spinner row with the permanent footer, and
+  // firing `running` off a merged line would reopen the daemon's
+  // terminal-status gate on a pane that may be finished.
+  describe('running from the interrupt hint', () => {
+    const statusesOf = (cb: { mock: { calls: unknown[][] } }): string[] =>
+      cb.mock.calls.map((c) => (c[0] as { status: string }).status);
+
+    it('emits running when the hint arrives alone', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Whirlpooling… (21m 27s · esc to interrupt)\n');
+      expect(statusesOf(cb)).toEqual(['running']);
+    });
+
+    it('survives the TUI spacing that ANSI stripping leaves behind', () => {
+      const { det, cb } = claudeGated();
+      // Cursor-forward spacing and colour around the hint — the shape real
+      // captures carry (measured: 462 raw occurrences, 462 after strip).
+      det.feed('\x1b[38;5;219m✻\x1b[1C Garnishing…\x1b[1C(3m\x1b[1C41s\x1b[1C·\x1b[1Cesc to interrupt)\x1b[0m\n');
+      expect(statusesOf(cb)).toEqual(['running']);
+    });
+
+    it('abstains when the line merges the hint with the mode footer', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Cooking… (2m 3s · esc to interrupt)  bypass permissions on\n');
+      expect(statusesOf(cb)).not.toContain('running');
+    });
+
+    it('abstains when the line merges the hint with the cycle footer', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Cooking… (2m 3s · esc to interrupt)  shift+tab to cycle\n');
+      expect(statusesOf(cb)).not.toContain('running');
+    });
+
+    it('the merged line still reports waiting, exactly as before this pattern', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Cooking… (2m 3s · esc to interrupt)  bypass permissions on\n');
+      expect(statusesOf(cb)).toEqual(['waiting']);
+    });
+
+    it('a hint-only line after a merged one still promotes to running', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Cooking… (1m 0s · esc to interrupt)  shift+tab to cycle\n');
+      cb.mockClear();
+      // One spinner tick later the partial repaint carries the hint alone —
+      // this is the "abstention costs one tick" claim, held as a test.
+      det.feed('✻ Cooking… (1m 1s · esc to interrupt)\n');
+      expect(statusesOf(cb)).toEqual(['running']);
+    });
+
+    it('does not fire on a pane whose Claude gate never opened', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('✻ Whirlpooling… (21m 27s · esc to interrupt)\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('repeated identical hint lines collapse to one emission', () => {
+      const { det, cb } = claudeGated();
+      det.feed('✻ Cooking… (esc to interrupt)\n');
+      det.feed('✻ Cooking… (esc to interrupt)\n');
+      det.feed('✻ Cooking… (esc to interrupt)\n');
+      expect(statusesOf(cb)).toEqual(['running']);
     });
   });
 });

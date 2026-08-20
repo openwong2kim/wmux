@@ -69,7 +69,22 @@ interface AgentPattern {
   // An optional "gate" regex: patterns are only checked if the gate has
   // previously matched in this session, confirming the agent is active.
   gate?: RegExp;
-  patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
+  patterns: {
+    regex: RegExp;
+    status: AgentEvent['status'];
+    message: string;
+    /**
+     * Optional abstention guard: when this matches the same (stripped) line,
+     * the pattern does NOT fire, and evaluation continues to the next pattern.
+     *
+     * Needed because a "line" in this stream is not a screen row — row
+     * boundaries are cursor jumps, so one flattened line can merge several
+     * frames. A pattern whose evidence is only meaningful in isolation says so
+     * here rather than relying on its position in the array, which the next
+     * person to reorder these would silently break.
+     */
+    unless?: RegExp;
+  }[];
 }
 
 /**
@@ -232,6 +247,34 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // older patterns use, so the new class includes them.)
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+      // Running (#935 direction 2) — the interrupt hint. This is the ONE piece
+      // of Claude Code chrome that exists only while a response is in flight,
+      // which is exactly what the note at the top of this block says about it:
+      // it was removed from the WAITING list, where it was plainly wrong, and
+      // never considered here, where it is the evidence this detector otherwise
+      // does not have. No agent had a text pattern producing `running` before
+      // this — the only `running` emission was the gate's one-shot "Agent
+      // started" — so an autonomous turn (a background task resuming the agent:
+      // no submitted input, and no per-tool hook on a plugin-less install) had
+      // nothing at all to report it, and a `complete` from the previous turn
+      // stayed on the pane.
+      //
+      // Anchored on the hint rather than the spinner: the verbs are a moving
+      // target by design, while this string is stable chrome. Measured against
+      // 16 real daemon captures (73 MB of Claude Code output): 462 occurrences
+      // raw, 462 after ANSI strip — the cursor-forward spacing hazard that has
+      // bitten hand-written fixtures for this TUI does not reach inside it.
+      //
+      // `unless` is the whole safety story. A flattened line can merge the
+      // spinner row with the footer rows (in those captures, 138 of 447
+      // hint-bearing lines also carried `shift+tab to cycle`), and firing
+      // `running` off such a line would reopen the daemon's terminal-status
+      // gate on what may be a finished pane — sticky wrongness in the state
+      // that is supposed to be the floor. Abstaining costs at most one spinner
+      // tick of latency, because the next partial repaint carries the hint
+      // alone. Both footer markers are covered by CLAUDE_PROMPT_RE: scoping on
+      // one would leave the other free to merge in.
+      { regex: /esc\s*to\s*interrupt/, status: 'running', message: 'Working', unless: CLAUDE_PROMPT_RE },
     ],
   },
 
@@ -779,6 +822,9 @@ export class AgentDetector {
       if (this.lastAgent && ap.agent !== this.lastAgent) continue;
 
       for (const p of ap.patterns) {
+        // Abstention guard (see AgentPattern.unless): evidence that only holds
+        // in isolation must not fire off a line that merged several frames.
+        if (p.unless?.test(clean)) continue;
         const match = clean.match(p.regex);
         if (match) {
           const key = `${ap.agent}:${p.status}`;
