@@ -1127,23 +1127,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // field.
     const imeAnchorLogsLeft = { start: 20, mid: 20 };
     const imeAnchor = attachImeAnchor(terminal, {
-      onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, selY, selX }) => {
+      onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, outputGap, caretAge, selY, selX }) => {
         const budget = phase === 'start' ? 'start' : 'mid';
         if (imeAnchorLogsLeft[budget] <= 0) return;
         imeAnchorLogsLeft[budget] -= 1;
         // Mirrored into the main-side log file by src/main/index.ts's
-        // console-message listener, so the user can share it. The "3" in the
-        // tag marks the split-surface build so a shared log is unambiguous
-        // about which release produced it. src/held/restAge/sel are the
-        // cause-3 discriminator: src=resting means the composition started
-        // mid-repaint and the anchor used the last resting cell instead of
-        // the instantaneous cursor. pin= is the textarea correction,
-        // preedit= the live composition-view correction.
+        // console-message listener, so the user can share it. The "4" in the
+        // tag marks the quiet-caret build (#951) so a shared log is
+        // unambiguous about which release produced it. src/held/restAge/sel
+        // are the cause-3 discriminator: src=resting means the composition
+        // started mid-repaint and the anchor used the last resting cell;
+        // src=caret with gap= is the #951 discriminator: output was still
+        // flowing, so the anchor used the quiet-caret snapshot instead of
+        // any buffer cursor. pin= is the textarea correction, preedit= the
+        // live composition-view correction.
         console.info(
-          `[wmux:ime-anchor3] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
+          `[wmux:ime-anchor4] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
           `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src} held=${held.toFixed(0)}ms ` +
-          `restAge=${restAge.toFixed(0)}ms cellHeight=${cellHeight.toFixed(2)} pin=(${dx.toFixed(1)},${dy.toFixed(1)}) ` +
-          `preedit=(${preeditDx.toFixed(1)},${preeditDy.toFixed(1)})` +
+          `restAge=${restAge.toFixed(0)}ms gap=${outputGap.toFixed(0)}ms caretAge=${caretAge.toFixed(0)}ms ` +
+          `cellHeight=${cellHeight.toFixed(2)} ` +
+          `pin=(${dx.toFixed(1)},${dy.toFixed(1)}) preedit=(${preeditDx.toFixed(1)},${preeditDy.toFixed(1)})` +
           (imeAnchorLogsLeft[budget] === 0 ? ` (last ${budget} record, diagnostic capped)` : ''),
         );
       },
