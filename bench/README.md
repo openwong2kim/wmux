@@ -181,7 +181,7 @@ nothing for six weeks (#602).
 
 ## Gate semantics
 
-A metric **FAILS only when both** of these hold:
+Most metrics **FAIL only when both** of these hold:
 
 - `current > baseline * ratio`, **and**
 - `current > baseline + absMargin`.
@@ -189,17 +189,43 @@ A metric **FAILS only when both** of these hold:
 The double condition stops tiny baselines (a few ms, a few MiB) from tripping on
 ordinary noise. Thresholds per metric:
 
-| metric | ratio | abs margin |
-| --- | --- | --- |
-| `coldStart.best.firstPtyDataMs` | 1.5 | 1000 ms |
-| `inputLatency.echoMs.p95` | 1.5 | 10 ms |
-| `inputLatency.frameMs.p95` | 1.5 | 10 ms |
-| `inputLatency8.frameMs.p95` | 1.5 | 10 ms |
-| `ram.idle1Pane.workingSetBytes` | 1.3 | 100 MiB |
-| `ram.panes8.workingSetBytes` | 1.3 | 150 MiB |
-| `frameBudget.N4/N8/N16.frameDeltaMs.p95` | 2.0 | 8 ms |
-| `hiddenFlood.N4/N8.echoMs.p95` | 2.0 | 50 ms |
-| `hiddenFlood.N4/N8.frameDeltaMs.p95` | 2.0 | 8 ms |
+| metric | rule |
+| --- | --- |
+| `coldStart.best.firstPtyDataMs` | ratio 1.5 and +1000 ms |
+| `inputLatency.echoMs.p95` | ratio 1.5 and +10 ms |
+| `inputLatency.frameMs.p95` | ratio 1.5 and +10 ms |
+| `inputLatency8.frameMs.p95` | ratio 1.5 and +10 ms |
+| `ram.idle1Pane.workingSetBytes` | ratio 1.3 and +100 MiB |
+| `ram.panes8.workingSetBytes` | ratio 1.3 and +150 MiB |
+| `frameBudget.N4/N8/N16.frameDeltaMs.p95` | **+1 frame interval** (see below) |
+| `hiddenFlood.N4/N8.echoMs.p95` | ratio 2.0 and +50 ms |
+| `hiddenFlood.N4/N8.frameDeltaMs.p95` | ratio 2.0 and +8 ms |
+
+### The frame-budget family is gated in frames (#940)
+
+`frameBudget.*.frameDeltaMs.p95` is quantized. The perf job runs on
+`windows-latest` only, so there is one frame interval to fit, and across all 216
+`bench-history` records these p95s land in clusters one interval apart:
+15.7–15.8, 31.1–31.4, 46.8–47.0, 62.4–62.5, 78.1 — one through five frames.
+
+A ratio rule does not fit that shape. Against the blessed 1-frame baseline
+`ratio: 2.0` put the threshold at exactly 31.4 ms — the top of the two-frame
+cluster — so those records passed only because the comparison is
+strictly-greater, and a baseline blessed from a 2-frame run would have moved the
+ceiling to 4 frames.
+
+So this family uses `frameMargin: 1` instead of the double condition: **FAIL
+when `current > baseline + 15.7 ms`.** One whole frame above the blessed
+baseline is the allowance; the second is red. Drift is linear rather than
+multiplicative — a 2-frame baseline allows 3 frames, not 4. `ratio` and
+`absMargin` remain on those entries for the delta columns only.
+
+The interval is 15.7 and not 15.625: the clusters have width, and 15.625 (the
+Windows timer tick these numbers come from physically) would put the threshold
+at 31.325, *inside* the two-frame cluster, flipping the two real records that
+measured 31.4. The constant is read off the measurement — 15.7 is what
+`baseline-ci.json` holds for all three N — and the change was replayed over
+every record in the trend (648 samples) with zero verdict changes.
 
 Each `N` gates against its own baseline entry — there is no single budget shared
 across N. Two further gates are baseline-**independent** correctness checks

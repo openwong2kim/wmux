@@ -174,6 +174,73 @@ describe('compareResults — strict > boundary (not >=)', () => {
   });
 });
 
+describe('compareResults — frame-margin gate on the quantized W2 family (#940)', () => {
+  // frameDeltaMs.p95 lands in clusters one frame interval apart. These are the
+  // five distinct values the last 25 `main` records took, judged against the
+  // blessed 1-frame baseline. The gate's interval is FRAME_INTERVAL_MS = 15.7,
+  // the top of the one-frame cluster — see the cluster-width case below for
+  // why it is not the 15.625 ms tick these numbers come from physically.
+  const gateOf = (p95, basep95 = 15.7) =>
+    verdictFor(
+      compareResults(makeResult({ frameBudgetN16: p95 }), makeResult({ frameBudgetN16: basep95 })),
+      'frameBudgetP95Ms_N16',
+    );
+
+  it('keeps every verdict the 25 real `main` records already had', () => {
+    expect(gateOf(15.7).status).toBe('PASS');   // 1 frame  — 12 records
+    expect(gateOf(31.2).status).toBe('PASS');   // 2 frames — 8 records
+    expect(gateOf(31.3).status).toBe('PASS');   // 2 frames
+    expect(gateOf(46.8).status).toBe('FAIL');   // 3 frames — 4 records
+    expect(gateOf(78.1).status).toBe('FAIL');   // 5 frames — 1 record
+  });
+
+  it('still trips on the dropped-frame step the original calibration named', () => {
+    // The pre-#940 comment on this gate was written around 33.3 ms tripping
+    // `2.0x + 8ms`. It has to keep tripping, or this is a loosening, not a
+    // reshaping. 37.1 is the value perfConfirm's fixtures use for the same job.
+    expect(gateOf(33.3).status).toBe('FAIL');
+    expect(gateOf(37.1).status).toBe('FAIL');
+  });
+
+  it('allows exactly one frame above the baseline, and no more', () => {
+    expect(gateOf(15.7 + 15.7).status).toBe('PASS');         // exactly +1 frame
+    expect(gateOf(15.7 + 15.71).status).toBe('FAIL');        // a hair past it
+  });
+
+  it('clears the whole width of the two-frame cluster', () => {
+    // The quanta are clusters, not points: across all 216 bench-history
+    // records the two-frame samples span 31.1-31.4 and the three-frame ones
+    // 46.8-47.0. The threshold has to sit in the gap, so the top of the
+    // two-frame cluster passes and the bottom of the three-frame one fails.
+    // A frame interval of 15.625 (the Windows timer tick these numbers come
+    // from) would put it at 31.325 and flip the two real 31.4 records.
+    expect(gateOf(31.1).status).toBe('PASS');
+    expect(gateOf(31.4).status).toBe('PASS');
+    expect(gateOf(46.8).status).toBe('FAIL');
+    expect(gateOf(47.0).status).toBe('FAIL');
+  });
+
+  it('drifts linearly with the baseline, where the ratio drifted multiplicatively', () => {
+    // The behaviour change, stated as a before/after rather than asserted as
+    // equivalent. Baseline blessed from a 2-frame run (31.3):
+    //   old rule: FAIL needs cur > 31.3*2 (62.6) AND cur > 31.3+8 — so a
+    //             4-frame sample at 62.5 PASSED, i.e. blessing a bad baseline
+    //             doubled the allowance to 4 frames.
+    //   new rule: FAIL needs cur > 31.3 + 15.7 (47.0) — 3 frames is the most
+    //             it can reach, whatever the baseline is blessed at.
+    const oldRuleWouldPass = 62.5 > 31.3 * 2.0 && 62.5 > 31.3 + 8;
+    expect(oldRuleWouldPass).toBe(false);                    // the old gate let it through
+    expect(gateOf(62.5, 31.3).status).toBe('FAIL');          // the new one does not
+    expect(gateOf(46.8, 31.3).status).toBe('PASS');          // 3 frames still allowed
+  });
+
+  it('names the frame margin in the note, not a ratio', () => {
+    const r = gateOf(78.1);
+    expect(r.note).toContain('frame interval');
+    expect(r.note).not.toContain('2x');
+  });
+});
+
 describe('compareResults — missing current metric', () => {
   it('FAILS when baseline has the metric but current dropped the whole scenario', () => {
     const base = makeResult();

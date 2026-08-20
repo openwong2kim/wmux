@@ -656,4 +656,16 @@ describe('renderConfirmationMarkdown', () => {
     expect(md).toContain('the gate stands red');
     expect(md).toContain('still FAIL');
   });
+
+  it('says the re-run shared the runner, and does not call it independent (#940)', () => {
+    // The re-run measures on the machine that produced the first sample, so it
+    // can separate a transient tail spike from a repeatable one but cannot
+    // refute a runner that was degraded for its whole lifetime. Claiming an
+    // "independent measurement" invited reading every red as a regression.
+    const original = result({ frameBudgetN8: 60 });
+    const { verdicts, reproduced } = judgeRetry(result({ frameBudgetN8: 60 }), result(), ['frameBudgetP95Ms_N8']);
+    const md = renderConfirmationMarkdown({ plan, verdicts, original, reproduced });
+    expect(md).toContain('same runner');
+    expect(md).not.toContain('independent measurement');
+  });
 });
