@@ -1445,3 +1445,94 @@ describe('events.rpc — blocking poll cancellation', () => {
     if (res.ok) expect((res.result as { events: unknown[] }).events).toHaveLength(1);
   });
 });
+
+// === #922 E — hosted (plugin-host) callers are not the operator ===
+//
+// The renderer bridge and the plugin host both dispatch first-party, but only
+// the renderer is the operator. Before this suite's fix, `privateSet =
+// clientSet` keyed on bare firstParty, so an approved plugin could gate
+// another workspace's PRIVATE events (a2a.task, channel.*) by naming its id —
+// with `events.subscribe`, an ordinary declarable capability. The hosted rule
+// mirrors the B3 agent path: caller-supplied workspaceId is IGNORED for
+// private types; the scope is the server-derived binding on the context.
+describe('events.rpc — #922 hosted caller private-event scope', () => {
+  const VICTIM = 'ws-victim';
+  const OTHER = 'ws-other';
+  const PLUGIN_WS = 'ws-plugin';
+
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  function seed(): void {
+    expect(
+      publishA2aTask({ type: 'a2a.task', from: VICTIM, to: OTHER, taskId: 'tv', state: 'submitted', kind: 'created' }),
+    ).toBe(true);
+    expect(
+      publishA2aTask({ type: 'a2a.task', from: PLUGIN_WS, to: OTHER, taskId: 'tp', state: 'submitted', kind: 'created' }),
+    ).toBe(true);
+    // A lifecycle event in the victim workspace — hosted callers keep the
+    // every-subscriber lifecycle semantics, so this must stay visible.
+    eventBus.emit({ type: 'pane.created', workspaceId: VICTIM, paneId: 'p-v' });
+  }
+
+  async function pollAs(
+    router: RpcRouter,
+    params: Record<string, unknown>,
+    opts: { firstParty: true; hostedWorkspace?: string | null },
+  ): Promise<Array<{ type: string; from?: string }>> {
+    const res = await router.dispatch({ id: 'hp', method: 'events.poll', params }, opts);
+    if (!res.ok) throw new Error('poll dispatch failed');
+    return (res.result as { events: Array<{ type: string; from?: string }> }).events;
+  }
+
+  it("a hosted caller naming the victim workspace gets its OWN events — the claim is ignored", async () => {
+    const router = setupRouter();
+    seed();
+    const events = await pollAs(
+      router,
+      { cursor: 0, workspaceId: VICTIM, types: ['a2a.task'] },
+      { firstParty: true, hostedWorkspace: PLUGIN_WS },
+    );
+    // The victim's private event is NOT returned; the binding scope is.
+    expect(events).toHaveLength(1);
+    expect(events[0]?.from).toBe(PLUGIN_WS);
+  });
+
+  it("the same poll as the operator still works — the fix distinguishes, not narrows", async () => {
+    const router = setupRouter();
+    seed();
+    const events = await pollAs(router, { cursor: 0, workspaceId: VICTIM, types: ['a2a.task'] }, { firstParty: true });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.from).toBe(VICTIM);
+  });
+
+  it("a hosted caller that names nothing still resolves to its binding", async () => {
+    const router = setupRouter();
+    seed();
+    const own = await pollAs(
+      router,
+      { cursor: 0, types: ['a2a.task'] },
+      { firstParty: true, hostedWorkspace: PLUGIN_WS },
+    );
+    expect(own).toHaveLength(1);
+    expect(own[0]?.from).toBe(PLUGIN_WS);
+  });
+
+  it('an UNBOUND hosted caller (null binding) gets private types failed closed, lifecycle intact', async () => {
+    const router = setupRouter();
+    seed();
+    const priv = await pollAs(
+      router,
+      { cursor: 0, workspaceId: VICTIM, types: ['a2a.task'] },
+      { firstParty: true, hostedWorkspace: null },
+    );
+    expect(priv).toHaveLength(0);
+    const lifecycle = await pollAs(
+      router,
+      { cursor: 0, types: ['pane.created'] },
+      { firstParty: true, hostedWorkspace: null },
+    );
+    expect(lifecycle.some((e) => e.type === 'pane.created')).toBe(true);
+  });
+});

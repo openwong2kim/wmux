@@ -49,6 +49,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
+import { isHostedCaller, hostedBindingOf } from '../../../shared/rpc';
 import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
@@ -223,6 +224,28 @@ export function registerA2aChannelRpc(
           },
         };
       }
+      // #922 E — a hosted (plugin-host) caller is first-party but NOT the
+      // operator. On this no-senderPtyId read path the caller-supplied
+      // `verifiedWorkspaceId` was left in place under process-boundary trust
+      // — written for the renderer, inherited by the plugin. For the one
+      // caller class whose workspace the host derives, apply D5's own rule:
+      // stamp the server-derived binding over any self-claim, so membership
+      // scoping and the owner-scoped reads below answer for the plugin's own
+      // workspace, not whichever one it named. An unbound hosted caller
+      // (`null` binding) fails closed — same rule as the browser hosted lane.
+      if (isHostedCaller(ctx)) {
+        const bound = hostedBindingOf(ctx);
+        if (!bound) {
+          return {
+            ok: false,
+            error: {
+              code: 'NOT_AUTHORIZED',
+              message: `${method} requires a workspace-bound caller (hosted caller has no workspace binding)`,
+            },
+          };
+        }
+        base.verifiedWorkspaceId = bound;
+      }
       if (ownerScoped && !ctx?.firstParty) {
         // An owner-scoped read off the wire with no resolvable senderPtyId
         // would answer for whatever workspace the caller named. The MCP
@@ -259,12 +282,20 @@ export function registerA2aChannelRpc(
       // above either. This also closes the PRE-W1 residual (wire reads of
       // human-member channels); other self-claimed workspace reads keep the
       // documented same-user residual (out of scope here).
-      if (base.verifiedWorkspaceId === HUMAN_WORKSPACE_ID && !ctx?.firstParty) {
+      // #922 E — the gate is OPERATOR-only, not firstParty-only: the plugin
+      // host also dispatches first-party, and a hosted caller must not read as
+      // ws-human (its binding can never be ws-human — the stamp above makes
+      // this unreachable for hosted callers — but the gate states the rule
+      // rather than relying on that).
+      if (
+        base.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
+        !(ctx?.firstParty && !isHostedCaller(ctx))
+      ) {
         return {
           ok: false,
           error: {
             code: 'NOT_AUTHORIZED',
-            message: `reserved human workspace ('${HUMAN_WORKSPACE_ID}') reads are first-party only`,
+            message: `reserved human workspace ('${HUMAN_WORKSPACE_ID}') reads are operator-only`,
           },
         };
       }
