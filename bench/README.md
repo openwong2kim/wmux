@@ -282,6 +282,41 @@ commit whose entire diff was the length of a web pairing code. A confirmation on
 the same machine is a check on the code's determinism, not on the machine's
 fitness to measure.
 
+## Fresh-runner confirmation (#940)
+
+That one unanswerable case now has an answer that is not a human clicking
+"re-run all jobs". When the same-runner re-run REPRODUCES the failure — and
+only then — `perf-compare.mjs --escalate <path>` writes the failing plan
+(commit, gates, legs, bench args) to that file and exits **0**; `perf.yml`
+then runs the `bench-confirm` job, a dependent job on a different machine by
+construction, and **that job carries the gate's verdict**
+(`perf-confirm-fresh.mjs`):
+
+- every escalated gate passes there → green. The failure was measured twice on
+  one machine and not at all on another; that is the signature of a runner
+  degraded for its lifetime. The first sample is already in the trend — the
+  trend records what was measured, not what was excused.
+- anything fails there → red, reproduced on a **second machine** — the
+  strongest claim this pipeline can make.
+- anything unverifiable → red. Same fail-closed contract as the in-job re-run.
+
+Escalation is deliberately narrow: a red that CLEARED needs nothing, and an
+UNCONFIRMABLE red (correctness gate, harness failure) fails closed on the
+first runner — "could not measure it again" is not a measurement question and
+must not ride to another machine as one.
+
+The in-job re-run avoids a cross-job handshake on principle; a dependent job
+cannot, so the handshake is bound to the only identity that matters — the
+**commit**. The escalation file names the short SHA the gate measured;
+`bench-confirm` checks out `github.sha` explicitly, refuses to run unless its
+own HEAD matches the escalation, and refuses the verdict unless the fresh
+sample's recorded SHA matches too. A stale artifact, a moved PR base, or a
+replayed escalation all fail closed on the same check. The whole topology —
+the `--escalate` flag, the literal existence-check step, the job wiring, the
+single-line verdict command — is pinned by `perfWorkflow.test.mjs`, because an
+escalated red exits the first job green and every link in that chain is
+load-bearing.
+
 Stating the compounded trade plainly: best-of-N and the confirmation re-run
 multiply. A cold-start red now requires the fastest boot of the first run AND
 the fastest boot of the re-run to both trip the thresholds — a regression that

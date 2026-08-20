@@ -403,19 +403,35 @@ describe('confirmGate', () => {
 
   it('clears the gate and says so as a warning, not silently', () => {
     const ctx = ctxFor(result());
-    expect(base(ctx).cleared).toBe(true);
+    const out = base(ctx);
+    expect(out.cleared).toBe(true);
+    // #940: a cleared blip is settled here — there is nothing to escalate.
+    expect(out.escalation).toBeNull();
     expect(ctx.logs.join('')).toContain('::warning::');
   });
 
-  it('does not clear a reproduced failure', () => {
+  it('does not clear a reproduced failure, and hands its plan up for escalation', () => {
     const ctx = ctxFor(result({ frameBudgetN8: 60 }));
-    expect(base(ctx).cleared).toBe(false);
+    const out = base(ctx);
+    expect(out.cleared).toBe(false);
+    // #940: the reproduced red is the ONE case a same-runner measurement
+    // cannot settle — the plan travels up so perf-compare can escalate it to
+    // a fresh-runner job.
+    expect(out.escalation).toEqual({
+      failedGateKeys: ['frameBudgetP95Ms_N8'],
+      legs: ['w2'],
+      benchArgs: expect.arrayContaining(['--skip-cold']),
+    });
     expect(ctx.logs.join('')).toContain('::error::');
   });
 
   it('turns every unconfirmable case into a red rather than an exception', () => {
     const ctx = depsFor({ files: {}, bytes: { [CURRENT]: bytes, [BASELINE]: baseBytes } });
-    expect(base(ctx).cleared).toBe(false);
+    const out = base(ctx);
+    expect(out.cleared).toBe(false);
+    // #940: "could not measure it again" fails closed HERE — an infrastructure
+    // failure must never ride to another machine as a measurement question.
+    expect(out.escalation).toBeNull();
     expect(ctx.logs.join('')).toContain('The gate stays red');
   });
 
@@ -667,5 +683,91 @@ describe('renderConfirmationMarkdown', () => {
     const md = renderConfirmationMarkdown({ plan, verdicts, original, reproduced });
     expect(md).toContain('same runner');
     expect(md).not.toContain('independent measurement');
+  });
+});
+
+// #940 end to end: --escalate hands the reproduced red to a fresh-runner job.
+// Same fake-bench rig as the confirmation suite above — the only difference is
+// the flag, so each case here is a delta against the behavior pinned there.
+describe('perf-compare with --escalate (end to end, #940)', () => {
+  const COMPARE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'perf-compare.mjs');
+  const FAKE_BENCH = [
+    "import fs from 'node:fs';",
+    'const argv = process.argv.slice(2);',
+    "const out = argv[argv.indexOf('--json') + 1];",
+    'fs.writeFileSync(out, process.env.FAKE_RESULT, "utf8");',
+    'process.exit(Number(process.env.FAKE_STATUS ?? 0));',
+  ].join('\n');
+
+  function inTmp(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perf-esc-'));
+    try {
+      return fn(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function gate(dir, { currentP95 = 60, retryP95 = 60, ime = { pass: true } } = {}) {
+    const current = path.join(dir, 'perf-current.json');
+    const baseline = path.join(dir, 'baseline-ci.json');
+    const retry = path.join(dir, 'perf-retry.json');
+    const escalation = path.join(dir, 'perf-escalation.json');
+    const summary = path.join(dir, 'summary.md');
+    const bench = path.join(dir, 'fake-bench.mjs');
+    fs.writeFileSync(current, JSON.stringify(result({ frameBudgetN8: currentP95, ime })));
+    fs.writeFileSync(baseline, JSON.stringify(result()));
+    fs.writeFileSync(bench, FAKE_BENCH);
+    const res = spawnSync(process.execPath, [
+      COMPARE,
+      '--current', current, '--baseline', baseline, '--summary', summary,
+      '--confirm-retry', retry, '--confirm-bench', bench,
+      '--escalate', escalation,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, FAKE_RESULT: JSON.stringify(result({ frameBudgetN8: retryP95 })) },
+    });
+    return { res, current, escalation, summary };
+  }
+
+  it('exits 0 on a reproduced red and writes the plan for the fresh-runner job', () => {
+    inTmp((dir) => {
+      const { res, escalation, summary } = gate(dir);
+      expect(res.status).toBe(0);
+      const payload = JSON.parse(fs.readFileSync(escalation, 'utf8'));
+      expect(payload).toMatchObject({
+        schemaVersion: 1,
+        commit: 'abc1234',
+        failedGateKeys: ['frameBudgetP95Ms_N8'],
+        legs: ['w2'],
+      });
+      expect(payload.benchArgs).toContain('--skip-cold');
+      expect(res.stdout).toContain('escalated to a fresh-runner confirmation job');
+      expect(fs.readFileSync(summary, 'utf8')).toContain('its verdict is the gate');
+    });
+  });
+
+  it('exits 0 on a red that did not reproduce, and does NOT write an escalation', () => {
+    inTmp((dir) => {
+      const { res, escalation } = gate(dir, { retryP95: 15.7 });
+      expect(res.status).toBe(0);
+      expect(fs.existsSync(escalation)).toBe(false);
+    });
+  });
+
+  it('exits 1 on a correctness-gate red without escalating — that red is not a measurement question', () => {
+    inTmp((dir) => {
+      const { res, escalation } = gate(dir, { currentP95: 15.7, ime: { pass: false } });
+      expect(res.status).toBe(1);
+      expect(fs.existsSync(escalation)).toBe(false);
+    });
+  });
+
+  it('leaves a green run untouched', () => {
+    inTmp((dir) => {
+      const { res, escalation } = gate(dir, { currentP95: 15.7, retryP95: 15.7 });
+      expect(res.status).toBe(0);
+      expect(fs.existsSync(escalation)).toBe(false);
+    });
   });
 });

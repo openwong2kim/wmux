@@ -377,9 +377,20 @@ function appendSummary(file, text, log) {
 }
 
 /**
- * The entry perf-compare calls on a red. Returns `{ cleared }` — never throws
- * for an expected failure, because every one of them means the same thing: the
- * red stands.
+ * The entry perf-compare calls on a red. Returns `{ cleared, escalation }` —
+ * never throws for an expected failure, because every one of them means the
+ * same thing: the red stands.
+ *
+ * `escalation` is non-null on exactly one outcome: the re-run RAN and the
+ * failure REPRODUCED on this runner. That is the one case a same-runner
+ * measurement cannot settle (#940 — it separates a transient spike from a
+ * repeatable one, but not a code regression from a machine degraded for its
+ * whole lifetime), so it is the only case worth handing to a fresh-runner
+ * confirmation job. Everything else stays null on purpose:
+ *   - cleared: the red was a transient blip, absorbed here, nothing to escalate;
+ *   - unconfirmable: a correctness-gate red or an infrastructure failure —
+ *     "could not measure it again" must fail closed HERE, not ride to another
+ *     machine as if it were a measurement question.
  */
 export function confirmGate({
   current, baseline, results, currentJson, currentBytes, baselineJson, baselineBytes, retryJson,
@@ -396,7 +407,7 @@ export function confirmGate({
     const msg = `Perf gate: not confirmed by a re-run (${err.message}). The gate stays red.`;
     deps.log(`::error::${msg}\n`);
     appendSummary(summaryPath, `\n## Perf gate — confirmation re-run (#570)\n\n> [!CAUTION]\n> ${msg}\n`, deps.log);
-    return { cleared: false };
+    return { cleared: false, escalation: null };
   }
 
   appendSummary(summaryPath, renderConfirmationMarkdown({
@@ -409,7 +420,14 @@ export function confirmGate({
   if (outcome.reproduced) {
     const which = outcome.unresolved.map((v) => `${v.label} (${v.status})`).join(', ');
     deps.log(`::error::Perf gate: the failure reproduced on the same runner — ${which}\n`);
-    return { cleared: false };
+    return {
+      cleared: false,
+      escalation: {
+        failedGateKeys: outcome.plan.failedGateKeys,
+        legs: outcome.plan.legs,
+        benchArgs: outcome.plan.benchArgs,
+      },
+    };
   }
   // A green earned through this re-run must not report LESS than a plain green
   // would have: the first-run path prints tailRegressionNote when the median
@@ -426,5 +444,5 @@ export function confirmGate({
     `::warning::Perf gate: ${which} failed once and passed on an immediate re-run of the same code — `
     + 'recorded as CI noise, not a regression (#570). The original sample is in the trend and in this run\'s artifact.\n',
   );
-  return { cleared: true };
+  return { cleared: true, escalation: null };
 }
