@@ -25,6 +25,7 @@ import { NotificationsView, type NotificationsViewProps, type NotificationsViewW
 
 const noop = (): void => undefined;
 const noopBool = (_: boolean): void => undefined;
+const noopNum = (_v: number) => {};
 const noopChoice = (_: 'default' | 'none'): void => undefined;
 const noopMute = (_id: string, _muted: boolean): void => undefined;
 
@@ -51,6 +52,8 @@ function makeProps(overrides: Partial<NotificationsViewProps> = {}): Notificatio
     onChangeCategoryMuted: noop,
     paneRingEnabled: true,
     onChangePaneRingEnabled: noopBool,
+    paneGlowOpacity: 0.6,
+    onChangePaneGlowOpacity: noopNum,
     paneFlashEnabled: true,
     onChangePaneFlashEnabled: noopBool,
     taskbarFlashEnabled: true,

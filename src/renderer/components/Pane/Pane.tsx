@@ -289,6 +289,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // so the new visual is on by default until the user disables it.
   const ringState = useStore((s) => s.paneNotificationRing[pane.id]);
   const paneRingEnabled = useStore((s) => s.paneRingEnabled);
+  // #949: user-tunable glow dim. Fed to CSS as a custom property so the
+  // .pane-ring-glow rule stays the single owner of the visual; 1 turns the
+  // shadowing off while keeping the border-color glow as the unread cue.
+  const paneGlowOpacity = useStore((s) => s.paneGlowOpacity);
 
   // ─── B8: completed-terminal blink ────────────────────────────────────────
   // The pane's active surface ptyId drives the border blink. When that
@@ -482,6 +486,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     <div
       className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing, completeBlink })}
       style={{
+        // #949: dim level for the unread glow — consumed by .pane-ring-glow's
+        // `opacity: var(--pane-glow-opacity, 0.6)`. Set unconditionally so a
+        // glow that arrives without a re-render still reads the current value.
+        ['--pane-glow-opacity' as string]: String(paneGlowOpacity),
         // Design-system cohesion: panes keep a QUIET hairline in both states —
         // focus is signaled by the amber underline on the tab strip (mock's
         // .pane.focused .pane-head treatment), not a loud full border box.

@@ -872,6 +872,8 @@ export const en = {
   // Notification system expansion (T12)
   'settings.paneRing': 'Pane border ring on new notifications',
   'settings.paneRingDesc': 'Highlights the pane that received a notification with a blue border.',
+  'settings.paneGlowDim': 'Unread pane brightness',
+  'settings.paneGlowDimDesc': 'How bright a pane stays while it holds an unread glow. 100% disables the shadowing so inactive sessions remain fully readable; 60% is the classic dimmed look.',
   'settings.paneFlash': 'Flash effect on new notification ring',
   'settings.paneFlashDesc': 'Plays a 500ms flash before the steady glow. Skips flash if disabled (goes straight to glow).',
   'settings.taskbarFlash': 'Flash taskbar when window is unfocused',
