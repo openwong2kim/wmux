@@ -113,11 +113,15 @@
  * (typing 대한민국 reads 대한국, #942). The composition ending cleared the
  * transform and the WebGL repaint restored the real cells, which is why the
  * buffer was never wrong, only the paint. So the pin applies to the textarea
- * alone, and the preedit gets the same anchor math against the live cursor,
- * never frozen — applied at xterm's own composition-event cadence (not per
- * render frame, see syncPreedit) so it lands on the painted caret when the
- * viewport is scrolled (cause 1 applies to it too) without chasing mid-repaint
- * transient cursors.
+ * alone, and the preedit gets the same anchor math against the live cursor —
+ * applied at xterm's own composition-event cadence (not per render frame, see
+ * syncPreedit) so it lands on the painted caret when the viewport is scrolled
+ * (cause 1 applies to it too) without chasing mid-repaint transient cursors.
+ * One exception (#951 field report on the first quiet-caret build): when the
+ * freeze cell came from the quiet caret, the live cursor is the streaming
+ * agent's repaint cursor, so the preedit pins to the same frozen point as the
+ * textarea — otherwise the pinyin rides the agent's output rows while its
+ * candidate list sits at the input line, and the two IME surfaces tear apart.
  *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
@@ -697,9 +701,21 @@ export function attachImeAnchor(
   };
 
   /**
-   * The preedit is NEVER pinned (#942): while composing it gets the same
-   * anchor math against the live cursor — the ydisp term xterm forgot —
-   * and outside a composition it carries no transform (xterm hides it).
+   * The preedit follows the live cursor in a quiet pane (#942): while
+   * composing it gets the same anchor math against the live cursor — the
+   * ydisp term xterm forgot — so a committed syllable's echo advances the
+   * composing syllable with the caret (Korean inline input). Outside a
+   * composition it carries no transform (xterm hides it).
+   *
+   * The one exception is a composition whose freeze cell came from the quiet
+   * caret (`src=caret`, #951/#953 field report): there the live cursor IS the
+   * streaming agent's repaint cursor, and following it split the two IME
+   * surfaces apart — the candidate window pinned at the input line while the
+   * inline pinyin chased the agent's output rows. Both surfaces must anchor
+   * to the same cell, so a caret-sourced composition pins the preedit to the
+   * same frozen point as the textarea. The quiet case is untouched: there the
+   * selection is instant/resting and the live follow stays (#942 stays
+   * fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -720,7 +736,10 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const c = computeImeAnchorCorrection(paintedCursorPosition(bufferState(), geometry), actualPreedit);
+    const desired = frozen !== null && lastSel?.src === 'caret'
+      ? frozen
+      : paintedCursorPosition(bufferState(), geometry);
+    const c = computeImeAnchorCorrection(desired, actualPreedit);
     preeditTransform.set(c.dx, c.dy);
   };
 

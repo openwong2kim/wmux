@@ -929,6 +929,17 @@ describe('#951 quiet-caret wiring', () => {
     });
     expect(translateOf(dom.textarea)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
     expect(translateOf(dom.textarea)?.dx).toBeCloseTo((5 - 127) * 10, 6);
+    // xterm re-anchors the inline preedit to the live cursor on every
+    // compositionupdate. A caret-sourced composition must pull it back onto
+    // the same frozen point as the textarea — the first quiet-caret build
+    // left it on the live cursor, and the field report showed the pinyin
+    // riding the agent's output rows while its candidate list sat at the
+    // input line (the two IME surfaces torn apart).
+    dom.compView.style.top = `${43 * 17.6}px`;
+    dom.compView.style.left = `${127 * 10}px`;
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo((5 - 127) * 10, 6);
     handle.dispose();
   });
 });
