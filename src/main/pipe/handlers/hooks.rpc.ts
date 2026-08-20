@@ -576,7 +576,7 @@ export function registerHooksRpc(
     // mid-turn and pre-poison the dedup ledger against the real Stop) are
     // notification-suppressed. Detector metadata/status broadcasts are
     // unaffected. See HOOK_AUTHORITY_TTL_MS for staleness.
-    hookRouter.touchAuthority(ptyId, signal.agent);
+    hookRouter.touchAuthority(ptyId, signal.agent, Date.now(), true, signal.kind);
 
     // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
     // BEFORE the isEmitKind gate below, which drops SessionStart for the

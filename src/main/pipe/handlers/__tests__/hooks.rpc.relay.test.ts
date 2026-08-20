@@ -164,7 +164,9 @@ describe('hooks.signal — daemon relay', () => {
     expect(res.result).toEqual({ ok: true });
     expect(daemon.rpc).not.toHaveBeenCalled();
     expect(recordHook).toHaveBeenCalledTimes(1);
-    expect(touchAuthority).toHaveBeenCalledWith('pty-1', 'claude');
+    // The signal kind rides along (#935): it is what tells the router whether
+    // the hook has taken this pane's lifecycle over from the detector.
+    expect(touchAuthority).toHaveBeenCalledWith('pty-1', 'claude', expect.any(Number), true, 'agent.stop');
     expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
   });
 

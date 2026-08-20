@@ -580,7 +580,7 @@ export class HookIngest {
 
     // Touch authority on every gate signal — the bridge is alive on this pane.
     // `exact` (#919): only exact-ptyId routing may decide identity alone.
-    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
@@ -709,7 +709,7 @@ export class HookIngest {
     // "a toast just fired". The detector-emission site consults
     // isGovernedFor before fanning out its own notifications. `exact` (#919):
     // a cwd-prefix-resolved signal may corroborate identity but never stand alone.
-    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId);
+    this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
@@ -993,7 +993,11 @@ export class HookIngest {
       if (cue) this.alarm.observe(sessionId, slug, cue);
       return { source };
     }
-    if (kind !== 'agent.awaiting_input' && this.router.isGovernedFor(sessionId, slug, this.now())) {
+    // #935 — one predicate, both processes. `governsDetectorStatus` already
+    // excludes `awaiting_input` (and every non-lifecycle status) and adds the
+    // turn-liveness scope that plain `isGovernedFor` lacks: a live bridge on an
+    // IDLE pane must not veto the detector's true "ready for input" read.
+    if (this.router.governsDetectorStatus(sessionId, slug, event.status, this.now())) {
       return { source, decision: 'veto' };
     }
     // Verdict gate (R1): the candidate holds a provisional window before it
