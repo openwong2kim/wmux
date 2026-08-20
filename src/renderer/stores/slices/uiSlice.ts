@@ -387,6 +387,16 @@ export interface UISlice {
   paneFlashEnabled: boolean;
   setPaneFlashEnabled: (enabled: boolean) => void;
 
+  // paneGlowOpacity (#949): opacity applied to a pane while it holds the
+  //   steady unread glow (.pane-ring-glow). The glow used to hard-code 0.6,
+  //   which reads as "the pane is shadowed" and makes an inactive session
+  //   hard to monitor. 1 disables the dimming entirely (the border-color
+  //   glow stays); 0.6 is the historical look. Clamped to [0.6, 1] — below
+  //   0.6 would only make the readability complaint worse. Same
+  //   non-persisting family as paneRingEnabled above.
+  paneGlowOpacity: number;
+  setPaneGlowOpacity: (opacity: number) => void;
+
   taskbarFlashEnabled: boolean;
   setTaskbarFlashEnabled: (enabled: boolean) => void;
 
@@ -1212,6 +1222,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setPaneFlashEnabled: (enabled) => set((state) => {
     state.paneFlashEnabled = enabled;
+  }),
+
+  paneGlowOpacity: 0.6,
+
+  setPaneGlowOpacity: (opacity) => set((state) => {
+    // Clamp instead of reject: the slider is the only writer today, but a
+    // future caller (or a corrupt restore) must not be able to push the pane
+    // below the historical dim or above full opacity.
+    state.paneGlowOpacity = Math.min(1, Math.max(0.6, opacity));
   }),
 
   taskbarFlashEnabled: true,

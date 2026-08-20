@@ -3734,6 +3734,9 @@ export interface NotificationsViewProps {
   // T12 — 4 new toggles
   paneRingEnabled: boolean;
   onChangePaneRingEnabled: (v: boolean) => void;
+  // #949 — unread-glow dim level (1 = no dimming, 0.6 = historical look)
+  paneGlowOpacity: number;
+  onChangePaneGlowOpacity: (v: number) => void;
   paneFlashEnabled: boolean;
   onChangePaneFlashEnabled: (v: boolean) => void;
   taskbarFlashEnabled: boolean;
@@ -3767,6 +3770,7 @@ export function NotificationsView(props: NotificationsViewProps) {
     toastEnabled, onChangeToastEnabled,
     notificationRingEnabled, onChangeNotificationRingEnabled,
     paneRingEnabled, onChangePaneRingEnabled,
+    paneGlowOpacity, onChangePaneGlowOpacity,
     paneFlashEnabled, onChangePaneFlashEnabled,
     taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
     notificationSoundChoice, onChangeNotificationSoundChoice,
@@ -3809,6 +3813,27 @@ export function NotificationsView(props: NotificationsViewProps) {
             onChange={onChangePaneRingEnabled}
             label={t('settings.paneRing')}
           />
+        </SettingRow>
+
+        {/* #949 — Unread-glow dim level. A slider rather than a toggle so users
+            can land anywhere between "no shadowing" (100%) and the historical
+            look (60%). Disabled alongside the pane ring: with the ring off the
+            glow never renders, so the dim has nothing to act on. */}
+        <SettingRow label={t('settings.paneGlowDim')} description={t('settings.paneGlowDimDesc')}>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={60}
+              max={100}
+              step={5}
+              value={Math.round(paneGlowOpacity * 100)}
+              onChange={(e) => onChangePaneGlowOpacity(Number(e.target.value) / 100)}
+              disabled={!paneRingEnabled}
+              aria-label={t('settings.paneGlowDim')}
+              className="w-24 accent-[color:var(--accent-blue)] disabled:opacity-40"
+            />
+            <span className="text-xs font-mono tabular-nums text-[color:var(--text-sub)] w-9 text-right">{Math.round(paneGlowOpacity * 100)}%</span>
+          </div>
         </SettingRow>
 
         {/* T12 — Pane flash */}
@@ -3980,6 +4005,8 @@ function TabNotifications() {
   // T12 fields
   const paneRingEnabled          = useStore((s) => s.paneRingEnabled);
   const setPaneRingEnabled       = useStore((s) => s.setPaneRingEnabled);
+  const paneGlowOpacity          = useStore((s) => s.paneGlowOpacity);
+  const setPaneGlowOpacity       = useStore((s) => s.setPaneGlowOpacity);
   const paneFlashEnabled         = useStore((s) => s.paneFlashEnabled);
   const setPaneFlashEnabled      = useStore((s) => s.setPaneFlashEnabled);
   const taskbarFlashEnabled      = useStore((s) => s.taskbarFlashEnabled);
@@ -4016,6 +4043,8 @@ function TabNotifications() {
       onChangeNotificationRingEnabled={setNotificationRingEnabled}
       paneRingEnabled={paneRingEnabled}
       onChangePaneRingEnabled={setPaneRingEnabled}
+      paneGlowOpacity={paneGlowOpacity}
+      onChangePaneGlowOpacity={setPaneGlowOpacity}
       paneFlashEnabled={paneFlashEnabled}
       onChangePaneFlashEnabled={setPaneFlashEnabled}
       taskbarFlashEnabled={taskbarFlashEnabled}

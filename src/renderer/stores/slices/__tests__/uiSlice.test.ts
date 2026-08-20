@@ -203,6 +203,12 @@ describe('UISlice — notification surface toggles (T5)', () => {
     expect(store.getState().taskbarFlashEnabled).toBe(true);
   });
 
+  // #949 — the unread-glow dim ships at the historical 0.6 so existing
+  // installs see no visual change until they move the slider.
+  it('paneGlowOpacity defaults to 0.6', () => {
+    expect(store.getState().paneGlowOpacity).toBe(0.6);
+  });
+
   it('notificationSoundChoice defaults to \'default\'', () => {
     expect(store.getState().notificationSoundChoice).toBe('default');
   });
@@ -213,6 +219,20 @@ describe('UISlice — notification surface toggles (T5)', () => {
   it('setPaneRingEnabled(false) flips paneRingEnabled to false', () => {
     store.getState().setPaneRingEnabled(false);
     expect(store.getState().paneRingEnabled).toBe(false);
+  });
+
+  // #949 — slider round-trip plus the clamp: 1 must be reachable (that IS the
+  // "disable shadowing" position) and out-of-range writes must land on the
+  // nearest legal value rather than making panes dimmer than they ever were.
+  it('setPaneGlowOpacity stores the value and clamps to [0.6, 1]', () => {
+    store.getState().setPaneGlowOpacity(1);
+    expect(store.getState().paneGlowOpacity).toBe(1);
+    store.getState().setPaneGlowOpacity(0.8);
+    expect(store.getState().paneGlowOpacity).toBe(0.8);
+    store.getState().setPaneGlowOpacity(0.2);
+    expect(store.getState().paneGlowOpacity).toBe(0.6);
+    store.getState().setPaneGlowOpacity(3);
+    expect(store.getState().paneGlowOpacity).toBe(1);
   });
 
   it('setPaneFlashEnabled(false) flips paneFlashEnabled to false', () => {

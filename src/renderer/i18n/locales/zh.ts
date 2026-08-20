@@ -1053,6 +1053,8 @@ export const zh = {
   'settings.paneActionsVisibleDesc': '在每个面板的标签栏中显示新建终端、分割和新建浏览器按钮。',
   'settings.paneRing': '新通知的面板边框光环',
   'settings.paneRingDesc': '用蓝色边框高亮收到通知的面板。',
+  'settings.paneGlowDim': '未读面板亮度',
+  'settings.paneGlowDimDesc': '面板处于未读高亮状态时保持的亮度。100% 关闭变暗效果，让非活动会话始终清晰可读；60% 为经典的变暗外观。',
   'settings.paneFlash': '新通知光环的闪烁效果',
   'settings.paneFlashDesc': '在常亮辉光之前播放 500ms 闪烁。禁用则跳过闪烁（直接进入辉光）。',
   'settings.taskbarFlash': '窗口未聚焦时闪烁任务栏',

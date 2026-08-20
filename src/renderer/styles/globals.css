@@ -543,7 +543,10 @@ select option {
 
 .pane-ring-glow {
   border-color: var(--accent) !important;
-  opacity: 0.6;
+  /* #949: the dim is user-tunable (Settings → Notifications). Pane.tsx sets
+   * --pane-glow-opacity on the pane root; 1 = no shadowing (border glow only),
+   * 0.6 = the historical look and the fallback when the var is absent. */
+  opacity: var(--pane-glow-opacity, 0.6);
 }
 
 /* Reduced motion: drop the transition so the border flip is instant. The
