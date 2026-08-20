@@ -869,6 +869,17 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'resting' });
   });
 
+  it('a same-cell report still refreshes the screen row (scroll under a stationary cursor)', () => {
+    // baseY up + cursorY down by the same amount keeps the absolute cell
+    // identical while the screen row moves; the snapshot records screen rows,
+    // so a quiet span after such a scroll must capture the fresh one.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 640, 5, 1010, 38); // same abs cell, screen row moved up 2
+    expect(t.currentSince).toBe(1000);   // dwell clock untouched
+    noteOutputParsed(t, 1600);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 38, caretCol: 5 });
+  });
+
   it('resetRestingTracker drops the caret across a reflow boundary and re-seeds the quiet clock', () => {
     const t = createRestingTracker(640, 5, 1000, 40);
     noteOutputParsed(t, 1600);

@@ -332,7 +332,14 @@ export function createRestingTracker(absRow: number, col: number, now: number, r
 
 /** Record a cursor movement. Promotes the cell being left if it had rested. */
 export function noteCursorMove(state: RestingTrackerState, absRow: number, col: number, now: number, relRow: number = absRow): void {
-  if (absRow === state.currentAbsRow && col === state.currentCol) return;
+  if (absRow === state.currentAbsRow && col === state.currentCol) {
+    // Same buffer cell, so the dwell clock keeps running — but a scroll can
+    // move the screen row under a stationary absolute cell (baseY up, cursorY
+    // down by the same amount), and the caret snapshot records SCREEN rows,
+    // so the screen coordinate must stay fresh.
+    state.currentRelRow = relRow;
+    return;
+  }
   if (now - state.currentSince >= RESTING_MS) {
     state.lastRestingAbsRow = state.currentAbsRow;
     state.lastRestingCol = state.currentCol;
