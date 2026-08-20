@@ -34,6 +34,13 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+    # #940: `fresh-confirm-needed` is what hands a reproduced red to the
+    # bench-confirm job below. It is derived from the escalation FILE the
+    # compare step writes, never from the step's exit code — if the file could
+    # not be written, compare kept the red itself, so a missing file always
+    # means "nothing to escalate".
+    outputs:
+      fresh-confirm-needed: ${{ steps.escalation.outputs.needed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -85,8 +92,29 @@ jobs:
       # anywhere and nothing chained after the command that could swallow it.
       # scripts/__tests__/perfWorkflow.test.mjs pins that, because nothing else
       # checks YAML.
+      #
+      # --escalate (#940): the one red the same-runner re-run cannot settle —
+      # it REPRODUCED here — is written to out/perf-escalation.json and this
+      # step exits 0; the bench-confirm job below re-measures on a fresh
+      # machine and carries the verdict. Every other red (transient blips that
+      # cleared, correctness gates, harness failures) keeps its exit code
+      # here, exactly as before.
       - name: Compare against baseline
-        run: node scripts/perf-compare.mjs --current out/perf-current.json --baseline bench/baseline-ci.json --summary perf-summary.md --confirm-retry out/perf-retry.json ${{ steps.histflag.outputs.value }}
+        run: node scripts/perf-compare.mjs --current out/perf-current.json --baseline bench/baseline-ci.json --summary perf-summary.md --confirm-retry out/perf-retry.json --escalate out/perf-escalation.json ${{ steps.histflag.outputs.value }}
+
+      # #940: turn the escalation file's existence into the job output that
+      # triggers bench-confirm. Nothing else — the file is the contract, and
+      # perfWorkflow.test.mjs pins that this step stays a literal existence
+      # check (an `if:` here, or a rewrite, could silently orphan an escalated
+      # red into a green run).
+      - name: Detect escalation
+        id: escalation
+        run: |
+          if (Test-Path out/perf-escalation.json) {
+            "needed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "needed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
 
       - name: Append summary to step summary
         if: always()
@@ -103,6 +131,7 @@ jobs:
           path: |
             out/perf-current.json
             out/perf-retry.json
+            out/perf-escalation.json
             out/perf-history-line.ndjson
             perf-summary.md
           if-no-files-found: ignore
@@ -217,3 +246,73 @@ jobs:
           }
           # Loud, never fatal: a lost trend line must not fail the perf gate.
           exit 0
+
+  # #940: the fresh-runner confirmation. Runs on exactly one condition — the
+  # bench job's gate went red AND the red reproduced on that same runner, the
+  # one case a same-machine re-run cannot settle (it separates a transient
+  # spike from a repeatable one, but not a code regression from a runner
+  # degraded for its whole lifetime). This job re-measures the failing legs on
+  # a different machine and CARRIES THE GATE'S VERDICT: reproduced here → red
+  # on a second machine, the strongest claim the pipeline can make; not
+  # reproduced → runner-health noise, green with the reasoning in the summary.
+  # perf-confirm-fresh.mjs fails closed on everything else, and binds the
+  # cross-job handshake to the commit: the escalation artifact must name the
+  # SHA this job checked out itself, or it refuses to run.
+  #
+  # The checkout pins `github.sha` explicitly: for pull_request events the
+  # default ref is re-resolved at fetch time, so a base branch that moved
+  # between the two jobs would hand this job a DIFFERENT merge commit — the
+  # commit check would then fail closed, spending a packaged build to learn
+  # the artifact is stale. Pinning measures the same commit the bench did.
+  bench-confirm:
+    needs: bench
+    if: needs.bench.outputs.fresh-confirm-needed == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package app
+        run: npm run package
+
+      - name: Download first-run artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-${{ github.run_id }}
+          path: first
+
+      # Same single-line exit-code contract as the bench job's compare step,
+      # pinned by perfWorkflow.test.mjs: this command's exit code IS the job's
+      # verdict, nothing chained after it, no continue-on-error anywhere.
+      - name: Confirm on this runner
+        run: node scripts/perf-confirm-fresh.mjs --escalation first/out/perf-escalation.json --current first/out/perf-current.json --baseline bench/baseline-ci.json --json out/perf-fresh.json --summary perf-summary-fresh.md
+
+      - name: Append summary to step summary
+        if: always()
+        run: |
+          if (Test-Path perf-summary-fresh.md) {
+            Get-Content perf-summary-fresh.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      # Both machines' samples must leave the runners — this pair is exactly
+      # the evidence a runner-health investigation needs.
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-fresh-${{ github.run_id }}
+          path: |
+            out/perf-fresh.json
+            perf-summary-fresh.md
+          if-no-files-found: ignore

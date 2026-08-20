@@ -664,7 +664,7 @@ export function renderMarkdown(results, meta, extraNotes = []) {
 function parseArgs(argv) {
   const args = {
     current: null, baseline: null, summary: null, appendHistory: null,
-    confirmRetry: null, confirmBench: null,
+    confirmRetry: null, confirmBench: null, escalate: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -674,6 +674,7 @@ function parseArgs(argv) {
     else if (a === '--append-history') args.appendHistory = argv[++i];
     else if (a === '--confirm-retry') args.confirmRetry = argv[++i];
     else if (a === '--confirm-bench') args.confirmBench = argv[++i];
+    else if (a === '--escalate') args.escalate = argv[++i];
     else if (a === '--help' || a === '-h') args.help = true;
   }
   return args;
@@ -729,6 +730,7 @@ function usage() {
     '  node scripts/perf-compare.mjs --current <path> --baseline <path> \\',
     '       [--summary <md-path>] [--append-history <ndjson-path>] \\',
     '       [--confirm-retry <json-path>] [--confirm-bench <path>]',
+    '       [--escalate <json-path>]',
     '',
     '--confirm-retry turns a red into a question: the bench legs behind the',
     'failing metrics are measured once more into that file, and the failure only',
@@ -736,8 +738,17 @@ function usage() {
     'touched, and the history line is written from it before any re-run.',
     '--confirm-bench overrides which bench script the re-run invokes.',
     '',
-    'Exit codes: 0 pass / record-only / a red that did not reproduce, 1 gate',
-    'failure, 2 usage or current-file IO error.',
+    '--escalate hands the one verdict a same-runner re-run cannot settle to a',
+    'fresh-runner confirmation job (#940): when the failure REPRODUCED on this',
+    'runner, the failing plan is written to that file and the exit code is 0 —',
+    'the caller (perf.yml) runs perf-confirm-fresh.mjs on a different machine,',
+    'and THAT job carries the verdict. Every other red still exits 1 here:',
+    'an unconfirmable red (correctness gate, harness failure) fails closed on',
+    'this runner, and without --escalate nothing about the gate changes.',
+    '',
+    'Exit codes: 0 pass / record-only / a red that did not reproduce / a',
+    'reproduced red escalated via --escalate, 1 gate failure, 2 usage or',
+    'current-file IO error.',
   ].join('\n');
 }
 
@@ -761,6 +772,7 @@ async function main() {
     ['--summary', args.summary],
     ['--append-history', args.appendHistory],
     ['--confirm-retry', args.confirmRetry],
+    ['--escalate', args.escalate],
   ]) {
     if (!outPath) continue;
     for (const [inFlag, inPath] of [['--current', args.current], ['--baseline', args.baseline]]) {
@@ -888,7 +900,7 @@ async function main() {
   // published measurement.
   if (args.confirmRetry) {
     const { confirmGate } = await import('./perf-confirm.mjs');
-    const { cleared } = confirmGate({
+    const { cleared, escalation } = confirmGate({
       current,
       baseline: evaluated.baseline,
       results: allResults,
@@ -906,6 +918,53 @@ async function main() {
     // Fail closed by construction: confirmGate returns cleared only on an
     // explicit second PASS of every failing gate.
     if (cleared) return 0;
+    // #940: a red that REPRODUCED on this runner is the one verdict a
+    // same-runner measurement cannot settle — it separates a transient spike
+    // from a repeatable one, but not a code regression from a machine degraded
+    // for its whole lifetime. With --escalate, that exact case is handed to a
+    // dependent fresh-runner job: the failing plan is written for
+    // perf-confirm-fresh.mjs and THIS invocation exits 0, so the verdict moves
+    // to the job that can actually render it. perf.yml pins the topology
+    // (perfWorkflow.test.mjs): the marker's existence is what triggers the
+    // fresh job, so a marker that fails to write must keep the red HERE.
+    // Unconfirmable reds never reach this branch with a non-null escalation —
+    // they fail closed on this runner, above.
+    if (args.escalate && escalation) {
+      const payload = {
+        schemaVersion: 1,
+        commit: current?.meta?.commit ?? null,
+        resultSchemaVersion: current?.schemaVersion ?? null,
+        ...escalation,
+      };
+      try {
+        fs.mkdirSync(path.dirname(path.resolve(args.escalate)), { recursive: true });
+        fs.writeFileSync(args.escalate, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+      } catch (err) {
+        process.stderr.write(
+          `::error::could not write the escalation file '${args.escalate}' (${err.message}) — `
+          + 'the fresh-runner confirmation cannot be requested, so the red stands here.\n',
+        );
+        return 1;
+      }
+      process.stdout.write(
+        '::warning::Perf gate: the failure reproduced on the same runner — escalated to a '
+        + 'fresh-runner confirmation job (#940). That job now carries the verdict; this one '
+        + 'only measured.\n',
+      );
+      if (args.summary) {
+        try {
+          fs.appendFileSync(
+            args.summary,
+            '\n> [!CAUTION]\n'
+            + '> The failure reproduced on the same runner, which cannot distinguish a code '
+            + 'regression from a machine degraded for its whole lifetime (#940). A fresh-runner '
+            + 'confirmation job has been requested — **its verdict is the gate\'s**.\n',
+            'utf8',
+          );
+        } catch { /* the verdict does not depend on the summary */ }
+      }
+      return 0;
+    }
   }
   return 1;
 }
