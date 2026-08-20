@@ -832,7 +832,10 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
 };
-const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);
+const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm,
+  // #935 direction 2 — the hook's turn end re-arms the local pane's activity
+  // cycle. A daemon-backed ptyId is a no-op inside the bridge.
+  (ptyId) => ptyBridge.noteTurnEnd(ptyId));
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
 // Opt-in. Stays idle until the renderer sends IPC.USAGE_TOGGLE with `true`.

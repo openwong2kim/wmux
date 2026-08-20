@@ -436,6 +436,12 @@ export function registerHooksRpc(
   // this daemon-UNREACHABLE fallback path. Optional: an absent alarm keeps the
   // pre-gate immediate-emit behavior (tests, or a boot ordering gap).
   alarm?: CompletionAlarm,
+  // #935 direction 2 — authoritative turn end on the LOCAL path. Wired to
+  // PTYBridge.noteTurnEnd so the hook's Stop / awaiting_input re-arms the
+  // pane's activity cycle (the local mirror of DaemonPTYBridge calling
+  // ActivityMonitor.endTurn from noteAgentStatus). Optional: absent keeps the
+  // pre-#943 behavior; a daemon-backed ptyId is a no-op inside the bridge.
+  notePtyTurnEnd?: (ptyId: string) => void,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -657,6 +663,16 @@ export function registerHooksRpc(
       if (win) {
         broadcastMetadataUpdate(win, { ptyId, ...boundary });
       }
+      // #935 direction 2 — the Stop hook is the authoritative turn end:
+      // re-arm the pane's activity cycle so the NEXT turn's output can report
+      // `running` (see PTYBridge.noteTurnEnd). Keyed on the completion status
+      // the boundary actually carries, so session_start (a turn BEGINNING,
+      // which also builds a boundary) does not re-arm. Fired alongside the
+      // status write above, before the verdict gate — same ordering as the
+      // daemon, which settles the bridge before broadcasting.
+      if (boundary.agentStatus === 'complete') {
+        notePtyTurnEnd?.(ptyId);
+      }
     }
 
     // 4. Emit decision. PostToolUse / SessionStart never produce a
@@ -773,6 +789,11 @@ export function registerHooksRpc(
         // sidebar dot turns yellow — the part users see at a glance.
         if (signal.kind === 'agent.awaiting_input') {
           broadcastMetadataUpdate(win, { ptyId, agentStatus: 'awaiting_input' });
+          // Same #935 re-arm as the Stop boundary above: awaiting_input is a
+          // terminal status in the daemon's noteAgentStatus too. The pane sits
+          // on a y/N gate emitting only idle chrome; when the user answers,
+          // the resumed turn's burst must be able to report `running` again.
+          notePtyTurnEnd?.(ptyId);
         }
       }
     };

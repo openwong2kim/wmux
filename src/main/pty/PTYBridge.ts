@@ -234,6 +234,26 @@ export class PTYBridge {
   }
 
   /**
+   * Authoritative turn end for this pane (#935 direction 2) — re-arm the
+   * activity cycle so the NEXT turn's output can report `running` again.
+   *
+   * The local path is where the stuck cycle is real: unlike DaemonPTYBridge,
+   * this bridge feeds ActivityMonitor UNGATED (middleware 1 below), so a TUI
+   * painting a live elapsed-time counter keeps rescheduling the idle timer
+   * forever and the cycle never re-arms on its own. A `complete` written by
+   * the Stop hook then survives the pane's whole next turn.
+   *
+   * Called from the two local authoritative turn-end writers: the hook path
+   * (hooks.rpc.ts turn boundary, wired through main/index.ts) and the
+   * un-vetoed detector path (setupDataForwarding's onEvent below). A ptyId
+   * this bridge does not own — e.g. a daemon-backed pane arriving via the
+   * hook seam — is a harmless no-op inside endTurn.
+   */
+  noteTurnEnd(ptyId: string): void {
+    this.activityMonitor.endTurn(ptyId);
+  }
+
+  /**
    * Flush all pending chunks for `ptyId`: run middlewares once and send a
    * single IPC frame to the renderer. Safe to call when there is nothing
    * pending.
@@ -490,6 +510,15 @@ export class PTYBridge {
           if (withholdStatus) {
             return;
           }
+
+          // #935 direction 2 — an UN-VETOED terminal status is this pane's
+          // authoritative turn end on the detector path: re-arm the activity
+          // cycle so the next genuine burst reports `running` (threshold
+          // path — endTurn deliberately does not let idle chrome count).
+          // Below the veto on purpose: a governed pane's footer 'waiting' is
+          // mid-turn chrome, and re-arming on it would clear a live idle
+          // timer and promote a false edge to a cycle boundary.
+          this.activityMonitor.endTurn(ptyId);
 
           const title = `${agentEvent.agent}: ${agentEvent.message}`;
           const body = status === 'awaiting_input'
