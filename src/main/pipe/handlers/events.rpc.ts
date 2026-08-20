@@ -12,6 +12,7 @@ import {
   type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
+import { isHostedCaller, hostedBindingOf } from '../../../shared/rpc';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MAX_PIPE_CONNECTIONS } from '../PipeServer';
 
@@ -366,8 +367,22 @@ export function registerEventsRpc(
     // resolves server-side ('' ⇒ empty set ⇒ private types fail closed).
     const wantsPrivate = !types || types.some((t) => PRIVATE_EVENT_TYPES.has(t));
     let privateSet: Set<string>;
-    if (ctx?.firstParty) {
+    if (ctx?.firstParty && !isHostedCaller(ctx)) {
+      // The OPERATOR (renderer bridge): a human operates every local
+      // workspace, so the caller-supplied scope is trusted for private types.
       privateSet = clientSet;
+    } else if (isHostedCaller(ctx)) {
+      // #922 E — the plugin host also dispatches first-party, but it is NOT
+      // the operator (RpcContext.hostedWorkspace doc). Treating it as one let
+      // an approved plugin gate another workspace's a2a.task / channel.*
+      // events by simply naming its id. Same rule as the B3 agent path: the
+      // caller-supplied workspaceId is IGNORED for private types and the
+      // scope is the server-derived binding — the workspace the host is
+      // showing. An unbound hosted caller (`null`) resolves to the empty set,
+      // so private types fail closed exactly like an unresolvable agent;
+      // lifecycle types keep their every-subscriber semantics either way.
+      const bound = hostedBindingOf(ctx);
+      privateSet = bound ? new Set<string>([bound]) : new Set<string>();
     } else if (wantsPrivate) {
       const resolved = await resolveCallerWorkspace(getWindow, params);
       privateSet = resolved ? new Set<string>([resolved]) : new Set<string>();

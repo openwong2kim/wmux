@@ -213,6 +213,31 @@ export interface RpcContext {
   hostedWorkspace?: string | null;
 }
 
+/**
+ * #922 — is this context a plugin-host dispatch? Keyed on the PRESENCE of
+ * `hostedWorkspace` (its `null` state still means "hosted, unbound"), exactly
+ * like the browser `hosted` lane. `firstParty` alone cannot answer this: the
+ * renderer bridge and the plugin host both dispatch first-party, but only the
+ * former is the operator. Handlers that widen scope for "the operator" must
+ * use `firstParty && !isHostedCaller(ctx)`, never bare `firstParty`.
+ */
+export function isHostedCaller(ctx?: RpcContext): boolean {
+  return ctx !== undefined && ctx.hostedWorkspace !== undefined;
+}
+
+/**
+ * #922 — the hosted caller's server-derived workspace binding, or undefined
+ * when the host had no workspace to bind (`null`) or the context is not a
+ * hosted dispatch at all. Callers scoping on this must fail closed on
+ * undefined for a hosted context — never fall through to a caller-named
+ * workspace (see `RpcContext.hostedWorkspace`).
+ */
+export function hostedBindingOf(ctx?: RpcContext): string | undefined {
+  return typeof ctx?.hostedWorkspace === 'string' && ctx.hostedWorkspace.length > 0
+    ? ctx.hostedWorkspace
+    : undefined;
+}
+
 export type RpcResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: string; rejection?: RpcRejection };

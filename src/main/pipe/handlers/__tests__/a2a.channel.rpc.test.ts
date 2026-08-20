@@ -234,7 +234,7 @@ describe('a2a.channel.rpc — ws-human read scope is first-party only (W1)', () 
   );
 
   it.each(['a2a.channel.list', 'a2a.channel.getMessages'] as const)(
-    'first-party %s scoped to ws-human passes through (the renderer/plugin-host read path)',
+    'OPERATOR first-party %s scoped to ws-human passes through (the renderer read path; hosted callers are stamped to their binding instead — see the #922 suite)',
     async (method) => {
       const expected = { ok: true, value: [] };
       const daemon = makeFakeDaemon((m, params) => {
@@ -1061,5 +1061,84 @@ describe('a2a.channel.rpc — P5 create members[] cannot seed reserved identitie
       expect(r.error?.code).toBe('NOT_AUTHORIZED');
     }
     expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+});
+
+// === #922 E — hosted (plugin-host) reads are bound to the hosted workspace ===
+//
+// The no-senderPtyId read path left the caller-supplied verifiedWorkspaceId in
+// place under process-boundary trust, written for the renderer and inherited by
+// the plugin host — so an approved plugin could read any channel a NAMED
+// workspace was a member of (a2a.channel.read, an ordinary declarable
+// capability), and task.mission.list answered for whatever workspace it named.
+// D5's own rule now applies: the server-derived binding is stamped over any
+// self-claim, and an unbound hosted caller fails closed.
+describe('a2a.channel.rpc — #922 hosted caller read binding', () => {
+  const PLUGIN_WS = 'ws-plugin';
+
+  it.each(['a2a.channel.list', 'a2a.channel.getMessages', 'task.mission.list'] as const)(
+    'hosted %s self-claiming a foreign workspace is answered for the BINDING',
+    async (method) => {
+      const expected = { ok: true, value: [] };
+      const daemon = makeFakeDaemon((m, params) => {
+        expect(m).toBe(method);
+        expect((params as Record<string, unknown>).verifiedWorkspaceId).toBe(PLUGIN_WS);
+        return expected;
+      });
+      const router = setupHandlerRouter(daemon);
+
+      const res = await router.dispatch(
+        {
+          id: `hosted-${method}`,
+          method,
+          params: { channelId: CHANNEL_ID, verifiedWorkspaceId: 'ws-victim', workspaceId: 'ws-victim' },
+          clientName: 'hello-panel',
+        },
+        { firstParty: true, hostedWorkspace: PLUGIN_WS },
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.result).toBe(expected);
+    },
+  );
+
+  it('hosted read self-claiming ws-human is stamped to the binding, not refused as human', async () => {
+    const daemon = makeFakeDaemon((_m, params) => {
+      expect((params as Record<string, unknown>).verifiedWorkspaceId).toBe(PLUGIN_WS);
+      return { ok: true, value: [] };
+    });
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch(
+      {
+        id: 'hosted-human',
+        method: 'a2a.channel.list',
+        params: { channelId: CHANNEL_ID, verifiedWorkspaceId: 'ws-human' },
+        clientName: 'hello-panel',
+      },
+      { firstParty: true, hostedWorkspace: PLUGIN_WS },
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('an UNBOUND hosted caller (null binding) read is NOT_AUTHORIZED and never reaches the daemon', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: [] }));
+    const router = setupHandlerRouter(daemon);
+    const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+
+    const res = await router.dispatch(
+      {
+        id: 'hosted-unbound',
+        method: 'a2a.channel.list',
+        params: { channelId: CHANNEL_ID, verifiedWorkspaceId: 'ws-victim' },
+        clientName: 'hello-panel',
+      },
+      { firstParty: true, hostedWorkspace: null },
+    );
+    expect(res.ok).toBe(true); // transport envelope; the Result inside is the gate
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(rpcSpy).not.toHaveBeenCalled();
   });
 });
