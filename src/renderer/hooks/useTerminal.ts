@@ -34,6 +34,7 @@ import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
+import { restoreSeam } from '../../shared/restoreSeam';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -2077,15 +2078,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const restored = isDaemonModeActive() ? null : content;
         if (restored) {
           terminal.write(restored);
-          // Whitespace + ANSI reset boundary so restored scrollback doesn't
-          // visually fuse with the fresh PTY prompt drawn moments later.
-          // \x1b[0m closes any attribute left open by restored content; the
-          // surrounding \r\n pair guards cursor placement when restored
-          // content doesn't end on a newline and gives the new prompt one
-          // blank line of headroom. No text label — Search/copy/vi-copy
-          // would otherwise treat a localized divider string as real shell
-          // output.
-          terminal.write('\r\n\x1b[0m\r\n');
+          // #952: the fresh PTY about to connect starts from an empty ConPTY
+          // whose absolute coordinates begin at row 1 — restored rows left in
+          // the viewport get overdrawn by its first absolute repaint
+          // (PSReadLine line editing, TUI redraws). The seam scrolls the
+          // restored screen fully into scrollback and homes the cursor so the
+          // new prompt lands on the empty viewport both sides agree on; the
+          // history sits intact one wheel-notch above. (Replaces the old
+          // \r\n divider, which left the restored screen in the viewport.)
+          terminal.write(restoreSeam(terminal.rows));
           fireFirstData();
           didRestoreTxt = true;
           // Arm the late-connect clear. If daemon mode activates after this

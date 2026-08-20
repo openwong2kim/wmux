@@ -83,6 +83,7 @@ vi.mock('node-pty', () => ({
 
 // Import after mock is set up
 import { DaemonSessionManager } from '../DaemonSessionManager';
+import { restoreSeam } from '../../shared/restoreSeam';
 import { createDefaultConfig } from '../config';
 import { PWSH_EXIT_TAIL } from '../execWrapper';
 
@@ -554,7 +555,11 @@ describe('DaemonSessionManager', () => {
 
     const managed = manager.getSession('recover-1');
     const stored = managed?.ringBuffer.readAll().toString();
-    expect(stored).toBe('previous terminal output\r\n$ ls\r\nfile.txt');
+    // #952: the dump is followed by the restore seam, which scrolls the dead
+    // screen into scrollback so the fresh process paints on an empty viewport.
+    expect(stored).toBe(
+      'previous terminal output\r\n$ ls\r\nfile.txt' + restoreSeam(24),
+    );
     expect(session.id).toBe('recover-1');
   });
 
@@ -707,9 +712,9 @@ describe('DaemonSessionManager', () => {
         deferOutput: true,
       });
       const managed = manager.getSession('rec-2');
-      // Replay buffer was pre-filled.
+      // Replay buffer was pre-filled (dump + #952 restore seam).
       expect(managed?.ringBuffer.readAll().toString()).toBe(
-        'history-before-restart',
+        'history-before-restart' + restoreSeam(24),
       );
     });
 
@@ -729,16 +734,17 @@ describe('DaemonSessionManager', () => {
       });
       const managed = manager.getSession('rec-modes');
       const modes = managed?.bridge.outputModes;
-      expect(modes?.altScreen).toBe(true);
+      // #952: the restore seam appended after the dump leaves the alternate
+      // screen (`?1049l`) — the dead vim cannot own the fresh process's
+      // buffer, so the tracker's END state is normal-buffer…
+      expect(modes?.altScreen).toBe(false);
 
       const total = managed?.ringBuffer.totalBytesWritten ?? 0;
-      const alt = '\x1b[?1049h\x1b[2J\x1b[H';
-      // A window that still reaches the restored switch must NOT re-assert it
-      // (that would paint the scrollback ahead of it into the alt buffer)…
+      // …which means no window gets a stale alt-screen preamble: neither a
+      // full replay (the switch AND the seam's exit are both inside it) nor a
+      // tail window (the mode is no longer active at the end of the ring).
       expect(modes?.preamble(0)).toBe('');
-      // …and one that starts after it must.
-      expect(modes?.preamble(1)).toBe(alt);
-      expect(modes?.preamble(total - 16)).toBe(alt);
+      expect(modes?.preamble(total - 4)).toBe('');
     });
 
     it('unmutes after first resize plus the drain delay', () => {
