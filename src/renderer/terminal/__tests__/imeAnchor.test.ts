@@ -642,7 +642,7 @@ describe('#874 resting-cell tracker (cause 3, pure)', () => {
     noteCursorMove(t, 49, 113, 1100); // caret promoted, cursor parked at 49,113
     // 5ms after the park: mid-burst -> resting cell.
     const midBurst = selectFreezeCell(t, 49, 113, 1105);
-    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5, outputGap: 105, caretAge: -1 });
+    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5, outputGap: 105, caretAge: -1, edge: false });
     // 100ms after the park: the parked cell is now at rest -> trusted as-is
     // (the documented cause-3 residual: dwell cannot tell a caret from a parked
     // cell — the diagnostic fields are the field-log discriminator).
@@ -867,6 +867,45 @@ describe('#951 quiet-caret tracker (pure)', () => {
     noteOutputParsed(t, 1100);             // gap 100ms < quiet -> no caret ever
     const sel = selectFreezeCell(t, 643, 127, 1105, { top: 600, rows: 45 }, 600);
     expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'resting' });
+  });
+
+  it('#953 case 1-2: a last-column park is rejected even when output is quiet', () => {
+    // Claude Code idling with an empty input box parks its real cursor at
+    // the line end — (236,47) on a 237-col pane — and a 1.6s output gap then
+    // certified it as an at-rest caret, pushing the candidate window and the
+    // pinyin off the right edge. A CJK composition can never sit on the last
+    // column, so the selection must fall back to the caret snapshot.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600, 237);        // snapshot: the input-line cell
+    noteCursorMove(t, 647, 236, 1700, 47); // TUI parks at the line end
+    noteOutputParsed(t, 1700, 237);
+    const sel = selectFreezeCell(t, 647, 236, 3400, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'caret', edge: true });
+  });
+
+  it('#953: line-end cells are never snapshotted as the caret', () => {
+    const t = createRestingTracker(647, 236, 1000, 47);
+    noteOutputParsed(t, 1600, 237); // spanning cell is a line-end park
+    expect(t.hasCaret).toBe(false);
+    // …and with no snapshot and no resting cell, a last-column instant
+    // degrades to the pre-#953 selection instead of anchoring nowhere.
+    const sel = selectFreezeCell(t, 647, 236, 3000, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: false });
+  });
+
+  it('#953: without a snapshot, a last-column park falls back to the resting cell', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 647, 236, 1100, 47); // promotes the input-line cell
+    const sel = selectFreezeCell(t, 647, 236, 2000, { top: 600, rows: 48, cols: 237 }, 600);
+    // held=900ms would have certified the line end; edge rejection wins.
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'resting', edge: true });
+  });
+
+  it('#953: a mid-line at-rest cursor keeps the instant selection (regression lock)', () => {
+    const t = createRestingTracker(640, 100, 1000, 40);
+    noteOutputParsed(t, 1600, 237);
+    const sel = selectFreezeCell(t, 640, 100, 3400, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
   });
 
   it('a same-cell report still refreshes the screen row (scroll under a stationary cursor)', () => {

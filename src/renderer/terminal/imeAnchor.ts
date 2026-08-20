@@ -79,13 +79,20 @@
  * the next composition onto the stale snapshot instead of the correctly
  * advanced cursor, and a fluid typist's candidate window would drift further
  * from the caret with every word (3-model panel finding on the first cut).
+ * Dwell has one more blind spot even when quiet (#953 field cases 1-3): a
+ * TUI with nothing to point at — empty input box, mid-edit redraw — parks
+ * its real cursor at the LAST column of the line it painted, and a long gap
+ * then certifies that placeholder. A CJK composition can never sit on the
+ * last column (the glyph alone is two cells wide), so a last-column cursor
+ * is rejected outright (`edge=1` in the diagnostic) in favor of the caret
+ * snapshot, and line-end cells are never snapshotted either.
  * Known residuals, all self-healing at the next quiet span and identifiable
  * in a field log via the src/gap/caretAge fields: a mid-stream pause longer
- * than OUTPUT_QUIET_MS with the cursor parked on repaint state re-snapshots
- * a wrong caret; a resize or clear mid-stream drops (resize) or strands
- * (clear — no reset event fires) the snapshot until output next goes quiet;
- * and a caret deliberately moved by the very chunk that ends a quiet span is
- * snapshotted at its pre-move cell.
+ * than OUTPUT_QUIET_MS with the cursor parked mid-line on repaint state
+ * re-snapshots a wrong caret; a resize or clear mid-stream drops (resize)
+ * or strands (clear — no reset event fires) the snapshot until output next
+ * goes quiet; and a caret deliberately moved by the very chunk that ends a
+ * quiet span is snapshotted at its pre-move cell.
  *
  * All of this lives in upstream xterm and this repo does not patch
  * node_modules, so the correction is applied downstream as a `transform` that
@@ -369,15 +376,23 @@ export function noteCursorMove(state: RestingTrackerState, absRow: number, col: 
  * exceeds RESTING_MS by construction) with a promotion clock inside this
  * chunk.
  */
-export function noteOutputParsed(state: RestingTrackerState, now: number): void {
+export function noteOutputParsed(state: RestingTrackerState, now: number, cols?: number): void {
   if (now - state.lastOutputAt >= OUTPUT_QUIET_MS) {
     state.epochStart = now;
+    // Line-end parks are never snapshotted (#953 field cases 1-2): a TUI
+    // idling with an empty input box parks its cursor at the last column,
+    // and a snapshot taken there would just relocate the mis-anchor from
+    // the instant path into the caret path.
+    const lastCol = cols !== undefined ? cols - 1 : Infinity;
     if (state.currentSince <= state.lastOutputAt) {
-      state.caretRelRow = state.currentRelRow;
-      state.caretCol = state.currentCol;
-      state.caretAt = now;
-      state.hasCaret = true;
-    } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt) {
+      if (state.currentCol < lastCol) {
+        state.caretRelRow = state.currentRelRow;
+        state.caretCol = state.currentCol;
+        state.caretAt = now;
+        state.hasCaret = true;
+      }
+    } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt
+      && state.lastRestingCol < lastCol) {
       state.caretRelRow = state.lastRestingRelRow;
       state.caretCol = state.lastRestingCol;
       state.caretAt = now;
@@ -430,6 +445,9 @@ export interface FreezeCellSelection {
   outputGap: number;
   /** Age of the caret snapshot at selection time; -1 when none exists. */
   caretAge: number;
+  /** True when the instantaneous cursor sat on the last column and was
+   *  rejected as a line-end park (#953 field cases 1-3). */
+  edge: boolean;
 }
 
 /**
@@ -466,7 +484,7 @@ export function selectFreezeCell(
   instAbsRow: number,
   instCol: number,
   now: number,
-  viewport?: { top: number; rows: number },
+  viewport?: { top: number; rows: number; cols?: number },
   baseY = 0,
 ): FreezeCellSelection {
   const held = now - state.currentSince;
@@ -478,17 +496,44 @@ export function selectFreezeCell(
     && state.hasCaret) {
     return {
       absRow: baseY + state.caretRelRow, col: state.caretCol,
-      src: 'caret', held, restAge, outputGap, caretAge,
+      src: 'caret', held, restAge, outputGap, caretAge, edge: false,
     };
   }
+  // Line-end park rejection (#953 field cases 1-3). A TUI that has nothing
+  // to point at — empty input box, mid-edit redraw, streaming repaint —
+  // parks its real cursor at the LAST column of the line it just painted
+  // ((236,47) on a 237-col pane, (127,43) on a 128-col one), and a long
+  // output gap then certifies that placeholder as an at-rest caret. A real
+  // CJK composition can never sit on the last column (the glyph alone is
+  // two cells wide), so a last-column cursor is rejected outright and the
+  // selection falls back to the caret snapshot — even when output is quiet —
+  // then to the resting cell. With neither available it degrades to the
+  // instant cell exactly as before.
+  const lastCol = viewport?.cols !== undefined ? viewport.cols - 1 : Infinity;
+  if (instCol >= lastCol) {
+    if (state.hasCaret) {
+      return {
+        absRow: baseY + state.caretRelRow, col: state.caretCol,
+        src: 'caret', held, restAge, outputGap, caretAge, edge: true,
+      };
+    }
+    if (state.hasResting && state.lastRestingCol < lastCol
+      && !(viewport && (state.lastRestingAbsRow < viewport.top
+        || state.lastRestingAbsRow >= viewport.top + viewport.rows))) {
+      return {
+        absRow: state.lastRestingAbsRow, col: state.lastRestingCol,
+        src: 'resting', held, restAge, outputGap, caretAge, edge: true,
+      };
+    }
+  }
   if (held >= RESTING_MS || !state.hasResting) {
-    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge };
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge: false };
   }
   if (viewport && (state.lastRestingAbsRow < viewport.top
     || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
-    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge };
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge: false };
   }
-  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge };
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +600,9 @@ export interface ImeAnchorOptions {
      *  A large value on a src=caret record means the anchor came from a
      *  long-past quiet span — the stale-snapshot residual in action. */
     caretAge: number;
+    /** True when the cursor sat on the last column and was rejected as a
+     *  line-end park (#953 field cases 1-3). */
+    edge: boolean;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
     selY: number;
     selX: number;
@@ -808,6 +856,7 @@ export function attachImeAnchor(
       restAge: lastSel.restAge,
       outputGap: lastSel.outputGap,
       caretAge: lastSel.caretAge,
+      edge: lastSel.edge,
       selY: lastSelRelY,
       selX: lastSel.col,
     });
@@ -825,6 +874,7 @@ export function attachImeAnchor(
     const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now(), {
       top: b.viewportY,
       rows: geometry.rows,
+      cols: geometry.cols,
     }, b.baseY);
     lastSel = sel;
     lastSelRelY = sel.absRow - b.baseY;
@@ -886,7 +936,7 @@ export function attachImeAnchor(
   // clock compare plus at most three number writes, so the streaming hot path
   // stays cold. noteOutputParsed tolerates either firing order relative to
   // onCursorMove within a chunk (see its doc comment).
-  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now()));
+  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now(), geometry.cols));
   // Normal <-> alt buffer switches change what an absolute row means.
   const bufferSub = terminal.buffer.onBufferChange(resetTracker);
 
