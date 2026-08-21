@@ -7,17 +7,18 @@ on:
   # every change to this file, including every future dependabot bump of the
   # actions it pins, had production as its first test.
   #
-  # dry_run builds, packages, checksums and uploads artifacts exactly as a real
-  # run does; only the four publishing steps stand down. That covers the
+  # A manual dispatch builds, packages, checksums and uploads artifacts exactly
+  # as a real run does; every publishing step stands down. That covers the
   # checkout / setup-node / upload-artifact pins in all three jobs. It does NOT
   # cover action-gh-release, which by definition only runs when something is
   # actually published — that one still gets its first exercise on a real tag.
+  #
+  # Publishing is gated on `github.event_name == 'push'`, not on a dry-run
+  # input, because an input that can be unticked is a publish button on a
+  # branch: ref_name would be a branch, the release would be created against
+  # it, and Chocolatey/WinGet would receive it. Dispatch is a rehearsal, always
+  # — there is no way to spell "publish" that does not involve a tag.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build and package without publishing anything'
-        type: boolean
-        default: true
   push:
     tags: ['v*']
 
@@ -215,7 +216,7 @@ jobs:
           path: out/make/**/*
 
       - name: Create GitHub Release
-        if: inputs.dry_run != true
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
@@ -245,7 +246,7 @@ jobs:
         shell: pwsh
 
       - name: Push to Chocolatey
-        if: inputs.dry_run != true && env.CHOCO_API_KEY != ''
+        if: github.event_name == 'push' && env.CHOCO_API_KEY != ''
         continue-on-error: true
         run: choco push "out/choco/wmux.$env:PKG_VERSION.nupkg" --source https://push.chocolatey.org --api-key $env:CHOCO_API_KEY
         shell: pwsh
@@ -263,7 +264,7 @@ jobs:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - name: Publish to winget
-        if: inputs.dry_run != true && env.WINGET_TOKEN != ''
+        if: github.event_name == 'push' && env.WINGET_TOKEN != ''
         continue-on-error: true
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
@@ -361,7 +362,7 @@ jobs:
       #
       # continue-on-error: an upload hiccup must not fail the whole release.
       - name: Upload macOS artifacts to the release
-        if: always() && inputs.dry_run != true
+        if: always() && github.event_name == 'push'
         continue-on-error: true
         shell: bash
         env:
@@ -387,7 +388,7 @@ jobs:
         # a 404 download), and from failing LOUDLY (no continue-on-error): a
         # missing manifest silently cuts off darwin auto-updates until the next
         # release, which must show up red in CI.
-        if: always()
+        if: always() && github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -507,7 +508,7 @@ jobs:
       # Same reasoning as the macOS upload: deb/rpm/AppImage are made in
       # sequence, so one failing maker must not discard the ones that succeeded.
       - name: Upload Linux artifacts to the release
-        if: always() && inputs.dry_run != true
+        if: always() && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

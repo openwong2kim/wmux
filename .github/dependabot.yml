@@ -25,7 +25,7 @@ updates:
         patterns:
           - "actions/*"
       # The publishing path. release.yml only runs on a `v*` tag, so a bump
-      # here cannot be proven by its own PR. Run the workflow's dry_run first
+      # here cannot be proven by its own PR. Dispatch the workflow manually first
       # (Actions → Build & Release → Run workflow), then merge.
       release-actions:
         patterns:
@@ -33,7 +33,7 @@ updates:
           - "vedantmgoyal9/*"
     ignore:
       # Code signing. The SignPath steps are no-ops until SIGNPATH_API_TOKEN is
-      # configured, so nothing — not CI, not dry_run, not a real release —
+      # configured, so nothing — not CI, not a rehearsal, not a real release —
       # exercises this action today. An update nobody can verify should not
       # arrive automatically on the path that signs the binaries users install.
       # Revisit when signing is enabled and there is a test-signing canary.
